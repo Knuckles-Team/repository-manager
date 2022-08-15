@@ -1,5 +1,5 @@
 # Repository Manager
-*Version: 0.0.9*
+*Version: 0.1.1*
 
 Manage your Git projects
 
