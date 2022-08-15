@@ -54,7 +54,17 @@ class Git:
 
 
 def usage():
-    print("Usage:\ngit-manager --clone --pull --directory '/home/user/Downloads' --file '/home/user/Downloads/repositories.txt' --repositories 'https://github.com/Knucklessg1/media-downloader,https://github.com/Knucklessg1/genius-bot'")
+    print(f"Usage: \n"
+          f"-h | --help         [ See usage for script ]\n"
+          f"-f | --file         [ File with repository links   ]\n"
+          f"-c | --clone        [ Clone projects specified  ]\n"
+          f"-p | --pull         [ Pull projects in parent directory ]\n"
+          f"-d | --directory    [ Directory to clone/pull projects ]\n"
+          f"-r | --repositories [ Comma separated Git URLs ]\n"
+          f"\n"
+          f"repository-manager --clone --pull --directory '/home/user/Downloads' \\\n"
+          f"--file '/home/user/Downloads/repositories.txt' \\\n"
+          f"--repositories 'https://github.com/Knucklessg1/media-downloader,https://github.com/Knucklessg1/genius-bot'")
 
 
 def repository_manager(argv):
@@ -120,8 +130,15 @@ def repository_manager(argv):
         gitlab.pull_projects(set_to_default_branch=default_branch_flag)
 
 
+def main():
+    if len(sys.argv) < 2:
+        usage()
+        sys.exit(2)
+    repository_manager(sys.argv[1:])
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 1:
+    if len(sys.argv) < 2:
         usage()
         sys.exit(2)
     repository_manager(sys.argv[1:])
