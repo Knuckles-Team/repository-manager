@@ -50,17 +50,18 @@ class Git:
             if set_to_default_branch:
                 default_branch = self.git_action("git symbolic-ref refs/remotes/origin/HEAD")
                 default_branch = re.sub("refs/remotes/origin/", "", default_branch)
-                self.git_action(f'git checkout "{default_branch}"')
+                print(f"Checking out default branch ", self.git_action(f'git checkout "{default_branch}"'))
 
 
 def usage():
     print(f"Usage: \n"
-          f"-h | --help         [ See usage for script ]\n"
-          f"-f | --file         [ File with repository links   ]\n"
-          f"-c | --clone        [ Clone projects specified  ]\n"
-          f"-p | --pull         [ Pull projects in parent directory ]\n"
-          f"-d | --directory    [ Directory to clone/pull projects ]\n"
-          f"-r | --repositories [ Comma separated Git URLs ]\n"
+          f"-h | --help           [ See usage for script ]\n"
+          f"-b | --default-branch [ Checkout default branch ]\n"
+          f"-c | --clone          [ Clone projects specified  ]\n"
+          f"-d | --directory      [ Directory to clone/pull projects ]\n"
+          f"-f | --file           [ File with repository links   ]\n"          
+          f"-p | --pull           [ Pull projects in parent directory ]\n"          
+          f"-r | --repositories   [ Comma separated Git URLs ]\n"
           f"\n"
           f"repository-manager --clone --pull --directory '/home/user/Downloads' \\\n"
           f"--file '/home/user/Downloads/repositories.txt' \\\n"

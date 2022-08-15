@@ -1,19 +1,20 @@
 # Repository Manager
-*Version: 0.0.6*
+*Version: 0.0.8*
 
 Manage your Git projects
 
 Run all Git supported tasks using Git Actions command
 
 ### Usage:
-| Short Flag | Long Flag      | Description                       |
-|------------|----------------|-----------------------------------|
-| -h         | --help         | See Usage                         |
-| -f         | --file         | File with repository links        |
-| -c         | --clone        | Clone projects specified          |
-| -p         | --pull         | Pull projects in parent directory |
-| -d         | --directory    | Directory to clone/pull projects  |
-| -r         | --repositories | Comma separated Git URLs          |
+| Short Flag | Long Flag        | Description                       |
+|------------|------------------|-----------------------------------|
+| -h         | --help           | See Usage                         |
+| -b         | --default-branch | Checkout default branch           |
+| -c         | --clone          | Clone projects specified          |
+| -d         | --directory      | Directory to clone/pull projects  |
+| -f         | --file           | File with repository links        |
+| -p         | --pull           | Pull projects in parent directory |
+| -r         | --repositories   | Comma separated Git URLs          |
 
 ### Example:
 ```bash
