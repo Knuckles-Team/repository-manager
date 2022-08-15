@@ -38,5 +38,5 @@ setup(
         'Programming Language :: Python :: 3.8',
         'Programming Language :: Python :: 3.9',
     ],
-    entry_points={'console_scripts': ['repository-manager = repository_manager.repository_manager:repository_manager']},
+    entry_points={'console_scripts': ['repository-manager = repository_manager.repository_manager:main']},
 )
