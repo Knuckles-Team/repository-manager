@@ -48,7 +48,7 @@ class Git:
                   f'Pulling latest changes for {project_directory}\n'
                   f'{self.git_action(command="git pull", directory=f"{self.repository_directory}/{project_directory}")}')
             if set_to_default_branch:
-                default_branch = self.git_action("git symbolic-ref refs/remotes/origin/HEAD")
+                default_branch = self.git_action("git symbolic-ref refs/remotes/origin/HEAD", directory=f"{self.repository_directory}/{project_directory}")
                 default_branch = re.sub("refs/remotes/origin/", "", default_branch)
                 print(f"Checking out default branch ", self.git_action(f'git checkout "{default_branch}"'))
 
