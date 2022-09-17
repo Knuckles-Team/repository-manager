@@ -97,7 +97,8 @@ def repository_manager(argv):
         elif opt in ("-f", "--file"):
             file = arg
         elif opt in ("-r", "--repositories"):
-            repositories = arg.split(",")
+            repositories = arg.replace(" ", "")
+            repositories = repositories.split(",")
 
     # Verify directory to clone/pull exists
     if os.path.exists(directory):
