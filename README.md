@@ -21,6 +21,12 @@ Run all Git supported tasks using Git Actions command
 git-manager --clone --pull --directory '/home/user/Downloads' --file '/home/user/Downloads/repositories.txt' --repositories 'https://github.com/Knucklessg1/media-downloader,https://github.com/Knucklessg1/genius-bot'
 ```
 
+#### Install Instructions
+Install Python Package
+
+```bash
+python -m pip install repository-manager
+```
 
 #### Build Instructions
 Build Python Package
