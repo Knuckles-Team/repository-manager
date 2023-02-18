@@ -14,7 +14,7 @@ class Git:
         self.repository_directory = f"{os.getcwd()}"
         self.git_projects = []
         self.set_to_default_branch = False
-        self.threads = 4
+        self.threads = os.cpu_count()
 
     def git_action(self, command, directory=None):
         if directory is None:
@@ -44,14 +44,14 @@ class Git:
     def set_threads(self, threads):
         try:
             threads = int(threads)
-            if threads > 0:
+            if threads > 0 or threads < os.cpu_count():
                 self.threads = threads
             else:
-                print(f"Did not recognize {threads} as a valid value, defaulting to 4")
-                self.threads = 4
+                print(f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}")
+                self.threads = os.cpu_count()
         except Exception as e:
-            print(f"Did not recognize {threads} as a valid value, defaulting to 4\nError: {e}")
-            self.threads = 4
+            print(f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}\nError: {e}")
+            self.threads = os.cpu_count()
 
     def append_git_project(self, git_project):
         self.git_projects.append(git_project)
@@ -109,7 +109,7 @@ def repository_manager(argv):
     directory = os.curdir
     file = None
     repositories = None
-    threads = 4
+    threads = os.cpu_count()
     try:
         opts, args = getopt.getopt(argv, "hbcpd:f:r:t:",
                                    ["help", "default-branch", "clone", "pull", "directory=", "file=", "repositories=",
