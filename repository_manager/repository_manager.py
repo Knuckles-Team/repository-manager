@@ -6,12 +6,15 @@ import os
 import re
 import sys
 import getopt
+from multiprocessing import Pool
 
 
 class Git:
     def __init__(self):
         self.repository_directory = f"{os.getcwd()}"
         self.git_projects = []
+        self.set_to_default_branch = False
+        self.threads = 4
 
     def git_action(self, command, directory=None):
         if directory is None:
@@ -35,22 +38,46 @@ class Git:
     def set_git_projects(self, git_projects):
         self.git_projects = git_projects
 
+    def set_default_branch(self, set_to_default_branch):
+        self.set_to_default_branch = set_to_default_branch
+
+    def set_threads(self, threads):
+        try:
+            threads = int(threads)
+            if threads > 0:
+                self.threads = threads
+            else:
+                print(f"Did not recognize {threads} as a valid value, defaulting to 4")
+                self.threads = 4
+        except Exception as e:
+            print(f"Did not recognize {threads} as a valid value, defaulting to 4\nError: {e}")
+            self.threads = 4
+
     def append_git_project(self, git_project):
         self.git_projects.append(git_project)
 
-    def clone_projects(self):
-        for project in self.git_projects:
-            print(self.git_action(f"git clone {project}"))
+    def clone_projects_in_parallel(self):
+        pool = Pool(processes=self.threads)
+        pool.map(self.clone_project, self.git_projects)
 
-    def pull_projects(self, set_to_default_branch=False):
-        for project_directory in os.listdir(self.repository_directory):
-            print(f'Scanning: {self.repository_directory}/{project_directory}\n'
-                  f'Pulling latest changes for {project_directory}\n'
-                  f'{self.git_action(command="git pull", directory=f"{self.repository_directory}/{project_directory}")}')
-            if set_to_default_branch:
-                default_branch = self.git_action("git symbolic-ref refs/remotes/origin/HEAD", directory=f"{self.repository_directory}/{project_directory}")
-                default_branch = re.sub("refs/remotes/origin/", "", default_branch).strip()
-                print(f"Checking out default branch ", self.git_action(f'git checkout "{default_branch}"', directory=f"{self.repository_directory}/{project_directory}"))
+    def clone_project(self, git_project):
+        print(self.git_action(f"git clone {git_project}"))
+
+    def pull_projects_in_parallel(self):
+        pool = Pool(processes=self.threads)
+        pool.map(self.pull_project, os.listdir(self.repository_directory))
+
+    def pull_project(self, git_project):
+        print(f'Scanning: {self.repository_directory}/{git_project}\n'
+              f'Pulling latest changes for {git_project}\n'
+              f'{self.git_action(command="git pull", directory=os.path.normpath(os.path.join(self.repository_directory, git_project)))}')
+        if self.set_to_default_branch:
+            default_branch = self.git_action("git symbolic-ref refs/remotes/origin/HEAD",
+                                             directory=f"{self.repository_directory}/{git_project}")
+            default_branch = re.sub("refs/remotes/origin/", "", default_branch).strip()
+            print(f"Checking out default branch ",
+                  self.git_action(f'git checkout "{default_branch}"',
+                                  directory=f"{self.repository_directory}/{git_project}"))
 
 
 def usage():
@@ -59,13 +86,18 @@ def usage():
           f"-b | --default-branch [ Checkout default branch ]\n"
           f"-c | --clone          [ Clone projects specified  ]\n"
           f"-d | --directory      [ Directory to clone/pull projects ]\n"
-          f"-f | --file           [ File with repository links   ]\n"          
-          f"-p | --pull           [ Pull projects in parent directory ]\n"          
+          f"-f | --file           [ File with repository links   ]\n"
+          f"-p | --pull           [ Pull projects in parent directory ]\n"
           f"-r | --repositories   [ Comma separated Git URLs ]\n"
+          f"-t | --threads        [ Number of parallel threads - Default 4 ]\n"
           f"\n"
-          f"repository-manager --clone --pull --directory '/home/user/Downloads' \\\n"
-          f"--file '/home/user/Downloads/repositories.txt' \\\n"
-          f"--repositories 'https://github.com/Knucklessg1/media-downloader,https://github.com/Knucklessg1/genius-bot'")
+          f"repository-manager \n\t"
+          f"--clone \n\t"
+          f"--pull \n\t"
+          f"--directory '/home/user/Downloads'\n\t"
+          f"--file '/home/user/Downloads/repositories.txt' \n\t"
+          f"--repositories 'https://github.com/Knucklessg1/media-downloader,https://github.com/Knucklessg1/genius-bot'\n\t"
+          f"--threads 8")
 
 
 def repository_manager(argv):
@@ -77,8 +109,11 @@ def repository_manager(argv):
     directory = os.curdir
     file = None
     repositories = None
+    threads = 4
     try:
-        opts, args = getopt.getopt(argv, "hbcpd:f:r:", ["help", "default-branch", "clone", "pull", "directory=", "file=", "repositories="])
+        opts, args = getopt.getopt(argv, "hbcpd:f:r:t:",
+                                   ["help", "default-branch", "clone", "pull", "directory=", "file=", "repositories=",
+                                    "threads="])
     except getopt.GetoptError:
         usage()
         sys.exit(2)
@@ -99,6 +134,8 @@ def repository_manager(argv):
         elif opt in ("-r", "--repositories"):
             repositories = arg.replace(" ", "")
             repositories = repositories.split(",")
+        elif opt in ("-t", "--threads"):
+            threads = arg
 
     # Verify directory to clone/pull exists
     if os.path.exists(directory):
@@ -122,14 +159,18 @@ def repository_manager(argv):
         for repository in repositories:
             projects.append(repository)
 
+    gitlab.set_threads(threads=threads)
+
     projects = list(dict.fromkeys(projects))
 
     gitlab.set_git_projects(projects)
 
+    gitlab.set_default_branch(set_to_default_branch=default_branch_flag)
+
     if clone_flag:
-        gitlab.clone_projects()
+        gitlab.clone_projects_in_parallel()
     if pull_flag:
-        gitlab.pull_projects(set_to_default_branch=default_branch_flag)
+        gitlab.pull_projects_in_parallel()
 
 
 def main():
