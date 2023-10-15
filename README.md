@@ -20,7 +20,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 0.5.0*
+*Version: 0.6.0*
 
 Manage your Git projects
 
