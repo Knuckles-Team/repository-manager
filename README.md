@@ -47,6 +47,7 @@ This repository is actively maintained - Contributions are welcome!
 <details>
   <summary><b>Example:</b></summary>
 
+Run through CLI
 ```bash
 repository-manager \
     --clone  \
@@ -57,6 +58,24 @@ repository-manager \
     --threads 8
 ```
 
+Use directly in Python
+```python
+from repository_manager import Git
+
+gitlab = Git()
+
+gitlab.set_repository_directory("<directory>")
+
+gitlab.set_threads(threads=8)
+
+gitlab.set_git_projects("<projects>")
+
+gitlab.set_default_branch(set_to_default_branch=True)
+
+gitlab.clone_projects_in_parallel()
+
+gitlab.pull_projects_in_parallel()
+```
 </details>
 
 <details>
