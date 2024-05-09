@@ -19,11 +19,13 @@ class Git:
     def git_action(self, command, directory=None):
         if directory is None:
             directory = self.repository_directory
-        pipe = subprocess.Popen(command,
-                                shell=True,
-                                cwd=directory,
-                                stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE)
+        pipe = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=directory,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
         (out, error) = pipe.communicate()
         result = f"{str(out, 'utf-8')}{str(error, 'utf-8')}"
         pipe.wait()
@@ -33,7 +35,9 @@ class Git:
         if os.path.exists(repository_directory):
             self.repository_directory = repository_directory.replace(os.sep, "/")
         else:
-            print(f'Path specified does not exist: {repository_directory.replace(os.sep, "/")}')
+            print(
+                f'Path specified does not exist: {repository_directory.replace(os.sep, "/")}'
+            )
 
     def set_git_projects(self, git_projects):
         self.git_projects = git_projects
@@ -47,10 +51,14 @@ class Git:
             if threads > 0 or threads < os.cpu_count():
                 self.threads = threads
             else:
-                print(f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}")
+                print(
+                    f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}"
+                )
                 self.threads = os.cpu_count()
         except Exception as e:
-            print(f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}\nError: {e}")
+            print(
+                f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}\nError: {e}"
+            )
             self.threads = os.cpu_count()
 
     def append_git_project(self, git_project):
@@ -68,36 +76,46 @@ class Git:
         pool.map(self.pull_project, os.listdir(self.repository_directory))
 
     def pull_project(self, git_project):
-        print(f'Scanning: {self.repository_directory}/{git_project}\n'
-              f'Pulling latest changes for {git_project}\n'
-              f'{self.git_action(command="git pull", directory=os.path.normpath(os.path.join(self.repository_directory, git_project)))}')
+        print(
+            f"Scanning: {self.repository_directory}/{git_project}\n"
+            f"Pulling latest changes for {git_project}\n"
+            f'{self.git_action(command="git pull", directory=os.path.normpath(os.path.join(self.repository_directory, git_project)))}'
+        )
         if self.set_to_default_branch:
-            default_branch = self.git_action("git symbolic-ref refs/remotes/origin/HEAD",
-                                             directory=f"{self.repository_directory}/{git_project}")
+            default_branch = self.git_action(
+                "git symbolic-ref refs/remotes/origin/HEAD",
+                directory=f"{self.repository_directory}/{git_project}",
+            )
             default_branch = re.sub("refs/remotes/origin/", "", default_branch).strip()
-            print(f"Checking out default branch ",
-                  self.git_action(f'git checkout "{default_branch}"',
-                                  directory=f"{self.repository_directory}/{git_project}"))
+            print(
+                "Checking out default branch ",
+                self.git_action(
+                    f'git checkout "{default_branch}"',
+                    directory=f"{self.repository_directory}/{git_project}",
+                ),
+            )
 
 
 def usage():
-    print(f"Usage: \n"
-          f"-h | --help           [ See usage for script ]\n"
-          f"-b | --default-branch [ Checkout default branch ]\n"
-          f"-c | --clone          [ Clone projects specified  ]\n"
-          f"-d | --directory      [ Directory to clone/pull projects ]\n"
-          f"-f | --file           [ File with repository links   ]\n"
-          f"-p | --pull           [ Pull projects in parent directory ]\n"
-          f"-r | --repositories   [ Comma separated Git URLs ]\n"
-          f"-t | --threads        [ Number of parallel threads - Default 4 ]\n"
-          f"\n"
-          f"repository-manager \n\t"
-          f"--clone \n\t"
-          f"--pull \n\t"
-          f"--directory '/home/user/Downloads'\n\t"
-          f"--file '/home/user/Downloads/repositories.txt' \n\t"
-          f"--repositories 'https://github.com/Knucklessg1/media-downloader,https://github.com/Knucklessg1/genius-bot'\n\t"
-          f"--threads 8")
+    print(
+        "Usage: \n"
+        "-h | --help           [ See usage for script ]\n"
+        "-b | --default-branch [ Checkout default branch ]\n"
+        "-c | --clone          [ Clone projects specified  ]\n"
+        "-d | --directory      [ Directory to clone/pull projects ]\n"
+        "-f | --file           [ File with repository links   ]\n"
+        "-p | --pull           [ Pull projects in parent directory ]\n"
+        "-r | --repositories   [ Comma separated Git URLs ]\n"
+        "-t | --threads        [ Number of parallel threads - Default 4 ]\n"
+        "\n"
+        "repository-manager \n\t"
+        "--clone \n\t"
+        "--pull \n\t"
+        "--directory '/home/user/Downloads'\n\t"
+        "--file '/home/user/Downloads/repositories.txt' \n\t"
+        "--repositories 'https://github.com/Knucklessg1/media-downloader,https://github.com/Knucklessg1/genius-bot'\n\t"
+        "--threads 8"
+    )
 
 
 def repository_manager(argv):
@@ -111,9 +129,20 @@ def repository_manager(argv):
     repositories = None
     threads = os.cpu_count()
     try:
-        opts, args = getopt.getopt(argv, "hbcpd:f:r:t:",
-                                   ["help", "default-branch", "clone", "pull", "directory=", "file=", "repositories=",
-                                    "threads="])
+        opts, args = getopt.getopt(
+            argv,
+            "hbcpd:f:r:t:",
+            [
+                "help",
+                "default-branch",
+                "clone",
+                "pull",
+                "directory=",
+                "file=",
+                "repositories=",
+                "threads=",
+            ],
+        )
     except getopt.GetoptError:
         usage()
         sys.exit(2)
@@ -147,7 +176,7 @@ def repository_manager(argv):
 
     # Verify file with repositories exists
     if os.path.exists(file):
-        file_repositories = open(file, 'r')
+        file_repositories = open(file, "r")
         for repository in file_repositories:
             projects.append(repository)
     else:
