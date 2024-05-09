@@ -7,6 +7,7 @@ import re
 import sys
 import getopt
 from multiprocessing import Pool
+from typing import List
 
 
 class Git:
@@ -16,7 +17,7 @@ class Git:
         self.set_to_default_branch = False
         self.threads = os.cpu_count()
 
-    def git_action(self, command, directory=None):
+    def git_action(self, command, directory=None) -> str:
         if directory is None:
             directory = self.repository_directory
         pipe = subprocess.Popen(
