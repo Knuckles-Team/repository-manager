@@ -106,7 +106,9 @@ def clone_projects(
     ctx: Context = None,
 ) -> str:
     """
-    Clone multiple Git projects in parallel using a configured Git instance.
+    Clone multiple Git projects in parallel using a configured Git instance. Successful and Failed pulls
+    are to be expected from the response output. This function should only be run once. Just let the user know the
+    action was performed once finished.
 
     Args:
         projects (Optional[List[str]], optional): List of repository URLs to clone.
@@ -117,7 +119,8 @@ def clone_projects(
         ctx (Context, optional): MCP context for logging.
 
     Returns:
-        str: Combined output of all clone operations.
+        str: Combined output of all clone operations. This will likely show that a project was
+        cloned successfully, or that the project attempting to clone already exists.
 
     Raises:
         FileNotFoundError: If the repository directory or projects_file does not exist.
@@ -195,7 +198,9 @@ def pull_projects(
     ctx: Context = None,
 ) -> str:
     """
-    Pull updates for multiple Git projects located in the repository_directory.
+    Pull updates for multiple Git projects located in the repository_directory. Successful and Failed pulls
+    are to be expected from the response output. This function should only be run once. Just let the user know the
+    action was performed once finished.
 
     Args:
         repository_directory (Optional[str], optional): The directory containing the projects to pull.
@@ -204,7 +209,9 @@ def pull_projects(
         ctx (Context, optional): MCP context for logging.
 
     Returns:
-        str: Combined output of all pull operations.
+        str: Combined output of all pull operations. This will return a combined output of all the projects that were
+        identified in the repository folder. It is expected that some will show pulling successful,
+        while others show failures.
 
     Raises:
         FileNotFoundError: If the repository directory does not exist.

@@ -64,9 +64,9 @@ class Git:
         else:
             self.projects = []
         self.set_to_default_branch = set_to_default_branch
-        self.threads = 1
+        self.threads = 12
         self.capture_output = capture_output
-        self.maximum_threads = 12
+        self.maximum_threads = 36
         if threads:
             self.set_threads(threads=threads)
 

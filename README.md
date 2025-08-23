@@ -33,14 +33,16 @@ Run as an MCP Server for Agentic AI!
 AI Prompt:
 ```text
 Please use the list of repositories from the file located at
-/home/user/Development/repositories-list/repositories.txt to clone these repositories in parallel
-into my /home/user/Development folder. Once that operation completes, pull the projects in parallel
+/home/user/Development/repositories-list/repositories.txt to clone these repositories
+into my /home/user/Development folder. Once that operation completes, pull the projects
 located in the /home/user/Development repository folder.
 ```
 
 AI Response:
 ```text
-
+You have cloned the repositories in repositories-list.txt into the repositories directory. The git pull operation was
+also successful in pulling the latest changes from the remote repository. All repositories in /home/user/Development
+are now up to date!
 ```
 
 This repository is actively maintained - Contributions are welcome!
@@ -99,8 +101,9 @@ Use with Agentic AI
 ```json
 {
   "mcpServers": {
-    "gitlab": {
-      "command": "repository-manager-mcp"
+    "repository_manager": {
+      "command": "repository-manager-mcp",
+      "timeout": 300000
     }
   }
 }
