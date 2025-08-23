@@ -19,19 +19,20 @@ from multiprocessing import Pool
 # Configure logging
 def setup_logging(is_mcp_server=False, log_file="repository_manager.log"):
     logger = logging.getLogger("RepositoryManager")
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.DEBUG)  # Logger processes all levels
 
     # Clear any existing handlers to avoid duplicate logs
     logger.handlers.clear()
 
     if is_mcp_server:
-        # Log to a file when running as MCP server
+        # Log to a file in MCP server mode, only ERROR and above
         handler = logging.FileHandler(log_file)
+        handler.setLevel(logging.ERROR)  # Only log ERROR and CRITICAL
     else:
-        # Log to console (stdout) when running standalone
+        # Log to console (stdout) in CLI mode, all levels
         handler = logging.StreamHandler(sys.stdout)
+        handler.setLevel(logging.INFO)  # Log DEBUG and above
 
-    handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
@@ -165,7 +166,7 @@ class Git:
             str: The output of the Git clone command.
         """
         result = self.git_action(f"git clone {git_project}")
-        self.logger.debug(f"Cloning {git_project}: {result}")
+        self.logger.info(f"Cloning {git_project}: {result}")
         return result
 
     def pull_projects_in_parallel(self) -> str:
@@ -208,7 +209,7 @@ class Git:
                 os.path.join(self.repository_directory, git_project)
             ),
         )
-        self.logger.debug(
+        self.logger.info(
             f"Scanning: {self.repository_directory}/{git_project}\n"
             f"Pulling latest changes for {git_project}\n"
             f"{result}"
@@ -223,7 +224,7 @@ class Git:
                 f'git checkout "{default_branch}"',
                 directory=f"{self.repository_directory}/{git_project}",
             )
-            self.logger.debug(f"Checking out default branch: {default_branch_result}")
+            self.logger.info(f"Checking out default branch: {default_branch_result}")
             result = f"{result}\n{default_branch_result}"
         return result
 
