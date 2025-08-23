@@ -14,7 +14,7 @@ import getopt
 import logging
 import concurrent.futures
 import datetime
-from typing import List
+from typing import List, Dict
 
 
 # Configure logging
@@ -72,7 +72,7 @@ class Git:
         if threads:
             self.set_threads(threads=threads)
 
-    def git_action(self, command: str, directory: str = None) -> dict:
+    def git_action(self, command: str, directory: str = None) -> Dict:
         """
         Execute a Git command in the specified directory.
 
@@ -82,7 +82,7 @@ class Git:
                 Defaults to the repository directory.
 
         Returns:
-            dict: The combined stdout and stderr output of the command in structured format.
+            Dict: The combined stdout and stderr output of the command in structured format.
         """
         if directory is None:
             directory = self.repository_directory
@@ -102,16 +102,20 @@ class Git:
         result = {
             "status": "success" if return_code == 0 else "error",
             "data": out.strip() if out else "",
-            "error": None if return_code == 0 else {
-                "message": err.strip() if err else "Unknown error",
-                "code": return_code
-            },
+            "error": (
+                None
+                if return_code == 0
+                else {
+                    "message": err.strip() if err else "Unknown error",
+                    "code": return_code,
+                }
+            ),
             "metadata": {
                 "command": command,
                 "directory": directory,
                 "return_code": return_code,
-                "timestamp": datetime.datetime.now(datetime.UTC).isoformat() + "Z"
-            }
+                "timestamp": datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            },
         }
         # Logging
         if return_code != 0:
@@ -121,17 +125,17 @@ class Git:
 
         return result
 
-    def clone_projects_in_parallel(self) -> List[dict]:
+    def clone_projects_in_parallel(self) -> List[Dict]:
         """
         Clone all specified Git projects in parallel using multiple threads.
 
         Returns:
-            List[dict]: A list of dictionaries, each containing the result of a clone operation
+            List[Dict]: A list of dictionaries, each containing the result of a clone operation
                         with repository URL and git_action result.
         """
         try:
             with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=self.threads
+                max_workers=self.threads
             ) as executor:
                 results = list(executor.map(self.clone_project, self.projects))
             # Combine results with repository URLs for clarity
@@ -141,33 +145,35 @@ class Git:
                     "status": result["status"],
                     "data": result["data"],
                     "error": result["error"],
-                    "metadata": {
-                        **result["metadata"],
-                        "repository_url": project
-                    }
+                    "metadata": {**result["metadata"], "repository_url": project},
                 }
                 combined_results.append(combined_result)
-                self.logger.info(f"Cloning {project}: {result['data'] if result['status'] == 'success' else result['error']}")
+                self.logger.info(
+                    f"Cloning {project}: {result['data'] if result['status'] == 'success' else result['error']}"
+                )
             return combined_results
         except Exception as e:
             self.logger.error(f"Parallel cloning failed: {str(e)}")
-            return [{
-                "status": "error",
-                "data": "",
-                "error": {
-                    "message": f"Parallel cloning failed: {str(e)}",
-                    "code": -1
-                },
-                "metadata": {
-                    "command": "clone_projects_in_parallel",
-                    "directory": self.repository_directory,
-                    "return_code": None,
-                    "timestamp": datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                    "repository_url": None
+            return [
+                {
+                    "status": "error",
+                    "data": "",
+                    "error": {
+                        "message": f"Parallel cloning failed: {str(e)}",
+                        "code": -1,
+                    },
+                    "metadata": {
+                        "command": "clone_projects_in_parallel",
+                        "directory": self.repository_directory,
+                        "return_code": None,
+                        "timestamp": datetime.datetime.now(datetime.UTC).isoformat()
+                        + "Z",
+                        "repository_url": None,
+                    },
                 }
-            }]
+            ]
 
-    def clone_project(self, git_project: str) -> dict:
+    def clone_project(self, git_project: str) -> Dict:
         """
         Clone a single Git project.
 
@@ -181,18 +187,18 @@ class Git:
         self.logger.info(f"Cloning {git_project}: {result}")
         return result
 
-    def pull_projects_in_parallel(self) -> List[dict]:
+    def pull_projects_in_parallel(self) -> List[Dict]:
         """
         Pull updates for all projects in the repository directory in parallel.
 
         Returns:
-            List[dict]: A list of dictionaries, each containing the result of a pull operation
+            List[Dict]: A list of dictionaries, each containing the result of a pull operation
                         with project directory name and git_action result.
         """
         try:
             project_dirs = os.listdir(self.repository_directory)
             with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=self.threads
+                max_workers=self.threads
             ) as executor:
                 results = list(executor.map(self.pull_project, project_dirs))
             # Combine results with project directory names for clarity
@@ -202,10 +208,7 @@ class Git:
                     "status": result["status"],
                     "data": result["data"],
                     "error": result["error"],
-                    "metadata": {
-                        **result["metadata"],
-                        "project_directory": project
-                    }
+                    "metadata": {**result["metadata"], "project_directory": project},
                 }
                 combined_results.append(combined_result)
                 self.logger.info(
@@ -214,53 +217,99 @@ class Git:
             return combined_results
         except Exception as e:
             self.logger.error(f"Parallel pulling failed: {str(e)}")
-            return [{
-                "status": "error",
-                "data": "",
-                "error": {
-                    "message": f"Parallel pulling failed: {str(e)}",
-                    "code": -1
-                },
-                "metadata": {
-                    "command": "pull_projects_in_parallel",
-                    "directory": self.repository_directory,
-                    "return_code": None,
-                    "timestamp": datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                    "project_directory": None
+            return [
+                {
+                    "status": "error",
+                    "data": "",
+                    "error": {
+                        "message": f"Parallel pulling failed: {str(e)}",
+                        "code": -1,
+                    },
+                    "metadata": {
+                        "command": "pull_projects_in_parallel",
+                        "directory": self.repository_directory,
+                        "return_code": None,
+                        "timestamp": datetime.datetime.now(datetime.UTC).isoformat()
+                        + "Z",
+                        "project_directory": None,
+                    },
                 }
-            }]
+            ]
 
-    def pull_project(self, git_project: str) -> dict:
+    def pull_project(self, git_project: str) -> Dict:
         """
         Pull updates for a single Git project and optionally checkout the default branch.
 
         Args:
             git_project (str): The name of the project directory to pull.
+
+        Returns:
+            Dict: A dictionary containing the combined results of git pull and optional checkout,
+                  with status, data (list of command results), error, and metadata.
         """
-        result = self.git_action(
-            command="git pull",
-            directory=os.path.normpath(
-                os.path.join(self.repository_directory, git_project)
-            ),
+        project_path = os.path.normpath(
+            os.path.join(self.repository_directory, git_project)
         )
+        results = []
+
+        # Execute git pull
+        pull_result = self.git_action(command="git pull", directory=project_path)
+        results.append(pull_result)
+
         self.logger.info(
             f"Scanning: {self.repository_directory}/{git_project}\n"
             f"Pulling latest changes for {git_project}\n"
-            f"{result}"
+            f"{pull_result}"
         )
+
+        # Handle default branch checkout if enabled
         if self.set_to_default_branch:
-            default_branch = self.git_action(
-                "git symbolic-ref refs/remotes/origin/HEAD",
-                directory=f"{self.repository_directory}/{git_project}",
-            )
-            default_branch = re.sub("refs/remotes/origin/", "", default_branch['data']).strip()
+            # Get default branch
             default_branch_result = self.git_action(
-                f'git checkout "{default_branch}"',
-                directory=f"{self.repository_directory}/{git_project}",
+                "git symbolic-ref refs/remotes/origin/HEAD",
+                directory=project_path,
             )
-            self.logger.info(f"Checking out default branch: {default_branch_result}")
-            result = f"{result}\n{default_branch_result}"
-        return result
+            if default_branch_result["status"] == "success":
+                default_branch = re.sub(
+                    "refs/remotes/origin/", "", default_branch_result["data"]
+                ).strip()
+                # Execute checkout
+                checkout_result = self.git_action(
+                    f'git checkout "{default_branch}"',
+                    directory=project_path,
+                )
+                results.append(checkout_result)
+                self.logger.info(f"Checking out default branch: {checkout_result}")
+            else:
+                results.append(default_branch_result)
+                self.logger.error(
+                    f"Failed to get default branch for {git_project}: {default_branch_result['error']}"
+                )
+
+        # Combine results into a single dictionary
+        combined_status = (
+            "success" if all(r["status"] == "success" for r in results) else "error"
+        )
+        combined_error = None
+        if combined_status == "error":
+            # Collect first error encountered
+            for r in results:
+                if r["error"]:
+                    combined_error = r["error"]
+                    break
+
+        return {
+            "status": combined_status,
+            "data": results,  # List of git_action results
+            "error": combined_error,
+            "metadata": {
+                "command": "pull_project",
+                "directory": project_path,
+                "return_code": None,  # No single return code for multiple commands
+                "timestamp": datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                "project_directory": git_project,
+            },
+        }
 
     def set_threads(self, threads: int) -> None:
         """
