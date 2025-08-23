@@ -53,7 +53,7 @@ def git_action(
         projects=projects,
         threads=threads,
         set_to_default_branch=set_to_default_branch,
-        capture_output=False,
+        capture_output=True,
     )
     if projects_file:
         git.read_project_list_file(file=projects_file)
@@ -95,7 +95,7 @@ def clone_project(
         repository_directory=repository_directory,
         threads=threads,
         set_to_default_branch=set_to_default_branch,
-        capture_output=False,
+        capture_output=True,
     )
     response = git.clone_project(git_project=git_project)
     return response
@@ -108,7 +108,7 @@ def clone_projects(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-) -> None:
+) -> str:
     """
     Clone multiple Git projects in parallel using a configured Git instance.
 
@@ -136,11 +136,12 @@ def clone_projects(
         projects=projects,
         threads=threads,
         set_to_default_branch=set_to_default_branch,
-        capture_output=False,
+        capture_output=True,
     )
     if projects_file:
         git.read_project_list_file(file=projects_file)
-    git.clone_projects_in_parallel()
+    reponse = git.clone_projects_in_parallel()
+    return reponse
 
 
 @mcp.tool()
@@ -176,10 +177,10 @@ def pull_project(
         repository_directory=repository_directory,
         threads=threads,
         set_to_default_branch=set_to_default_branch,
-        capture_output=False,
+        capture_output=True,
     )
-    result = git.pull_project(git_project=git_project)
-    return result
+    reponse = git.pull_project(git_project=git_project)
+    return reponse
 
 
 @mcp.tool()
@@ -187,7 +188,7 @@ def pull_projects(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-) -> None:
+) -> str:
     """
     Pull updates for multiple git projects located in the repository_directory,
     optionally checking out the default branch.
@@ -208,9 +209,10 @@ def pull_projects(
         repository_directory=repository_directory,
         threads=threads,
         set_to_default_branch=set_to_default_branch,
-        capture_output=False,
+        capture_output=True,
     )
-    git.clone_projects_in_parallel()
+    reponse = git.clone_projects_in_parallel()
+    return reponse
 
 
 def repository_manager_mcp(argv):
