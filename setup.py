@@ -44,10 +44,13 @@ setup(
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
     ],
     entry_points={
         "console_scripts": [
-            "repository-manager = repository_manager.repository_manager:main"
+            "repository-manager = repository_manager.repository_manager:main",
+            "repository-manager-mcp = repository_manager.repository_manager_mcp:main",
         ]
     },
 )
