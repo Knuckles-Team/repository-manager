@@ -14,7 +14,7 @@ mcp = FastMCP(name="GitRepositoryManager")
 
 
 @mcp.tool()
-async def git_action(
+def git_action(
     command: str,
     repository_directory: str = None,
     projects: Optional[list] = None,
@@ -51,7 +51,7 @@ async def git_action(
         FileNotFoundError: If the specified repository directory or projects_file does not exist.
     """
 
-    await ctx.debug("Starting analysis of numerical data")
+    ctx.debug("Starting analysis of numerical data")
     git = Git(
         repository_directory=repository_directory,
         projects=projects,
@@ -59,12 +59,12 @@ async def git_action(
         set_to_default_branch=set_to_default_branch,
         capture_output=True,
     )
-    await ctx.info("Analyzing data points")
+    ctx.info("Analyzing data points")
     if projects_file:
         git.read_project_list_file(file=projects_file)
-    await ctx.info(f"Projects File: {projects_file}")
+    ctx.info(f"Projects File: {projects_file}")
     response = git.git_action(command=command)
-    await ctx.info(f"Response: {response}")
+    ctx.info(f"Response: {response}")
     return response
 
 
@@ -109,7 +109,7 @@ def clone_project(
 
 
 @mcp.tool()
-async def clone_projects(
+def clone_projects(
     projects: Optional[List[str]] = None,
     projects_file: Optional[str] = None,
     repository_directory: str = None,
@@ -143,7 +143,7 @@ async def clone_projects(
         FileNotFoundError: If the repository directory or projects_file does not exist.
         ValueError: If neither projects nor projects_file is provided, or if both are provided but empty.
     """
-    await ctx.debug("Starting cloning of projects")
+    ctx.info("Starting cloning of projects")
     if not projects and not projects_file:
         raise ValueError("Either projects or projects_file must be provided")
     if projects_file and not os.path.exists(projects_file):
@@ -152,6 +152,7 @@ async def clone_projects(
         raise FileNotFoundError(
             f"Repository directory not found: {repository_directory}"
         )
+    ctx.info("Creating git class")
     git = Git(
         repository_directory=repository_directory,
         projects=projects,
@@ -161,9 +162,9 @@ async def clone_projects(
     )
     if projects_file:
         git.read_project_list_file(file=projects_file)
-    await ctx.info(f"Projects File: {projects_file}")
+    ctx.info(f"Projects File: {projects_file}")
     response = git.clone_projects_in_parallel()
-    await ctx.debug(f"Response: {response}")
+    ctx.info(f"Response: {response}")
     return response
 
 
@@ -207,7 +208,7 @@ def pull_project(
 
 
 @mcp.tool()
-async def pull_projects(
+def pull_projects(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
@@ -232,7 +233,7 @@ async def pull_projects(
     Raises:
         FileNotFoundError: If the repository directory does not exist.
     """
-    await ctx.debug("Starting pulling of projects")
+    ctx.debug("Starting pulling of projects")
     if repository_directory and not os.path.exists(repository_directory):
         raise FileNotFoundError(
             f"Repository directory not found: {repository_directory}"
@@ -244,7 +245,7 @@ async def pull_projects(
         capture_output=True,
     )
     response = git.pull_projects_in_parallel()
-    await ctx.debug(f"Response: {response}")
+    ctx.debug(f"Response: {response}")
     return response
 
 
