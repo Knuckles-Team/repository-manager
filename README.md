@@ -32,9 +32,9 @@ Run as an MCP Server for Agentic AI!
 
 AI Prompt:
 ```text
-Please use the list of repositories from the file located at 
-/home/user/Development/repositories-list/repositories.txt to clone these repositories in parallel 
-into my /home/user/Development folder. Once that operation completes, pull the projects in parallel 
+Please use the list of repositories from the file located at
+/home/user/Development/repositories-list/repositories.txt to clone these repositories in parallel
+into my /home/user/Development folder. Once that operation completes, pull the projects in parallel
 located in the /home/user/Development repository folder.
 ```
 

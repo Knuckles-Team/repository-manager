@@ -220,7 +220,6 @@ def repository_manager(argv: list) -> None:
     git = Git()
     clone_flag = False
     pull_flag = False
-    directory = os.curdir
     try:
         opts, args = getopt.getopt(
             argv,
