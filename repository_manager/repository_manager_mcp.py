@@ -100,7 +100,7 @@ def clone_project(
 
 
 @mcp.tool()
-def clone_projects_in_parallel(
+def clone_projects(
     projects: Optional[List[str]] = None,
     projects_file: Optional[str] = None,
     repository_directory: str = None,
@@ -179,7 +179,7 @@ def pull_project(
 
 
 @mcp.tool()
-def pull_projects_in_parallel(
+def pull_projects(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
