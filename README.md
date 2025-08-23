@@ -39,7 +39,7 @@ Afterwards, pull all the projects located in the "/home/genius/Development" repo
 AI Response:
 ```text
 All projects in "/home/genius/Development/repositories-list/repositories.txt" have been cloned to "/home/genius/Development"
-and all projects in "/home/genius/Development" and been pulled.
+and all projects in "/home/genius/Development" and been pulled from the repositories. Let me know if you need any further actions! 🚀.
 ```
 
 This repository is actively maintained - Contributions are welcome!
