@@ -101,7 +101,7 @@ def clone_project(
 
 @mcp.tool()
 def clone_projects_in_parallel(
-    git_projects: Optional[List[str]],
+    git_projects: Optional[List[str]] = None,
     git_projects_file: Optional[str] = None,
     repository_directory: str = None,
     threads: Optional[int] = None,
