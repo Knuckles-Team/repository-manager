@@ -218,7 +218,6 @@ def repository_manager(argv: list) -> None:
     """
     logger = setup_logging()
     git = Git()
-    projects = []
     clone_flag = False
     pull_flag = False
     directory = os.curdir
@@ -251,10 +250,10 @@ def repository_manager(argv: list) -> None:
         elif opt in ("-p", "--pull"):
             pull_flag = True
         elif opt in ("-d", "--directory"):
-            if os.path.exists(directory):
-                git.repository_directory = directory
+            if os.path.exists(arg):
+                git.repository_directory = arg
             else:
-                logger.error(f"Directory not found: {directory}")
+                logger.error(f"Directory not found: {arg}")
                 usage()
                 sys.exit(2)
         elif opt in ("-f", "--file"):
@@ -272,7 +271,7 @@ def repository_manager(argv: list) -> None:
         elif opt in ("-t", "--threads"):
             git.set_threads(threads=int(arg))
 
-    projects = list(dict.fromkeys(projects))
+    projects = list(dict.fromkeys(git.projects))
     git.projects = projects
 
     if clone_flag:
