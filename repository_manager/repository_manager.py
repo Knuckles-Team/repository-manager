@@ -74,8 +74,6 @@ class Git:
             command (str): The Git command to execute.
             directory (str, optional): The directory to execute the command in.
                 Defaults to the repository directory.
-            capture_output (bool, optional): If True, capture stdout and stderr without printing.
-                If False, print output to stdout in real-time. Defaults to True.
 
         Returns:
             str: The combined stdout and stderr output of the command.
@@ -153,7 +151,8 @@ class Git:
 
     def read_project_list_file(self, file: str = None):
         if file and not os.path.exists(file):
-            logger.error(f"File not found: {file}")
+            self.logger.error(f"File not found: {file}")
+            raise FileNotFoundError(f"File not found: {file}")
         with open(file, "r") as file_repositories:
             for repository in file_repositories:
                 self.projects.append(repository.strip())
@@ -319,7 +318,7 @@ def repository_manager(argv: list) -> None:
             usage()
             sys.exit()
         elif opt in ("-b", "--default-branch"):
-            git.set_default_branch = True
+            git.set_to_default_branch = True
         elif opt in ("-c", "--clone"):
             clone_flag = True
         elif opt in ("-p", "--pull"):

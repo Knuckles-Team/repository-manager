@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
-
+import os
 import sys
 import getopt
 import logging
@@ -127,10 +127,21 @@ def clone_projects(
         set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch after operations.
             Defaults to False.
 
+    Returns:
+        str: Combined output of all clone operations.
+
     Raises:
         FileNotFoundError: If the repository directory or projects_file does not exist.
         ValueError: If neither projects nor projects_file is provided, or if both are provided but empty.
     """
+    if not projects and not projects_file:
+        raise ValueError("Either projects or projects_file must be provided")
+    if projects_file and not os.path.exists(projects_file):
+        raise FileNotFoundError(f"Projects file not found: {projects_file}")
+    if repository_directory and not os.path.exists(repository_directory):
+        raise FileNotFoundError(
+            f"Repository directory not found: {repository_directory}"
+        )
     git = Git(
         repository_directory=repository_directory,
         projects=projects,
@@ -190,28 +201,34 @@ def pull_projects(
     set_to_default_branch: Optional[bool] = False,
 ) -> str:
     """
-    Pull updates for multiple git projects located in the repository_directory,
+    Pull updates for multiple Git projects located in the repository_directory,
     optionally checking out the default branch.
 
     Args:
-        repository_directory (Optional[], optional): The directory containing the projects to pull.
+        repository_directory (Optional[str], optional): The directory containing the projects to pull.
             Defaults to the current working directory.
         threads (Optional[int], optional): Number of threads for parallel processing.
             Defaults to the number of CPU cores.
         set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch after pulling.
             Defaults to False.
 
+    Returns:
+        str: Combined output of all pull operations.
+
     Raises:
-        FileNotFoundError: If the repository directory or projects_file does not exist.
-        ValueError: If neither projects nor projectsprojects_file is provided, or if both are provided but empty.
+        FileNotFoundError: If the repository directory does not exist.
     """
+    if repository_directory and not os.path.exists(repository_directory):
+        raise FileNotFoundError(
+            f"Repository directory not found: {repository_directory}"
+        )
     git = Git(
         repository_directory=repository_directory,
         threads=threads,
         set_to_default_branch=set_to_default_branch,
         capture_output=True,
     )
-    response = git.clone_projects_in_parallel()
+    response = git.pull_projects_in_parallel()
     return response
 
 
