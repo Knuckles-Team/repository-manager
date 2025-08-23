@@ -17,8 +17,8 @@ mcp = FastMCP("GitRepositoryManager")
 def git_action(
     command: str,
     repository_directory: str = None,
-    git_projects: Optional[list] = None,
-    git_projects_file: Optional[str] = None,
+    projects: Optional[list] = None,
+    projects_file: Optional[str] = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
 ) -> str:
@@ -33,9 +33,9 @@ def git_action(
         command (str): The Git command to execute (e.g., 'git pull', 'git clone <repository_url>').
         repository_directory (Optional[str], optional): The directory to execute the command in.
             Defaults to the current working directory.
-        git_projects (Optional[List[str]], optional): List of repository URLs for Git operations.
+        projects (Optional[List[str]], optional): List of repository URLs for Git operations.
             Defaults to None.
-        git_projects_file (Optional[str], optional): Path to a file containing a list of repository URLs,
+        projects_file (Optional[str], optional): Path to a file containing a list of repository URLs,
             one per line. Defaults to None.
         threads (Optional[int], optional): Number of threads for parallel processing.
             Defaults to the number of CPU cores.
@@ -46,16 +46,16 @@ def git_action(
         str: The combined stdout and stderr output of the executed Git command.
 
     Raises:
-        FileNotFoundError: If the specified repository directory or git_projects_file does not exist.
+        FileNotFoundError: If the specified repository directory or projects_file does not exist.
     """
     git = Git(
         repository_directory=repository_directory,
-        git_projects=git_projects,
+        projects=projects,
         threads=threads,
         set_to_default_branch=set_to_default_branch,
     )
-    if git_projects_file:
-        git.read_project_list_file(file=git_projects_file)
+    if projects_file:
+        git.read_project_list_file(file=projects_file)
     response = git.git_action(command=command)
     return response
 
@@ -101,8 +101,8 @@ def clone_project(
 
 @mcp.tool()
 def clone_projects_in_parallel(
-    git_projects: Optional[List[str]] = None,
-    git_projects_file: Optional[str] = None,
+    projects: Optional[List[str]] = None,
+    projects_file: Optional[str] = None,
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
@@ -115,8 +115,8 @@ def clone_projects_in_parallel(
     and uses multiple threads for efficient processing.
 
     Args:
-        git_projects (Optional[List[str]], optional): List of repository URLs to clone. Defaults to None.
-        git_projects_file (Optional[str], optional): Path to a file containing a list of repository URLs,
+        projects (Optional[List[str]], optional): List of repository URLs to clone. Defaults to None.
+        projects_file (Optional[str], optional): Path to a file containing a list of repository URLs,
             one per line. Defaults to None.
         repository_directory (Optional[str], optional): The directory to clone projects into.
             Defaults to the current working directory.
@@ -126,17 +126,17 @@ def clone_projects_in_parallel(
             Defaults to False.
 
     Raises:
-        FileNotFoundError: If the repository directory or git_projects_file does not exist.
-        ValueError: If neither git_projects nor git_projects_file is provided, or if both are provided but empty.
+        FileNotFoundError: If the repository directory or projects_file does not exist.
+        ValueError: If neither projects nor projects_file is provided, or if both are provided but empty.
     """
     git = Git(
         repository_directory=repository_directory,
-        git_projects=git_projects,
+        projects=projects,
         threads=threads,
         set_to_default_branch=set_to_default_branch,
     )
-    if git_projects_file:
-        git.read_project_list_file(file=git_projects_file)
+    if projects_file:
+        git.read_project_list_file(file=projects_file)
     git.clone_projects_in_parallel()
 
 
@@ -197,8 +197,8 @@ def pull_projects_in_parallel(
             Defaults to False.
 
     Raises:
-        FileNotFoundError: If the repository directory or git_projects_file does not exist.
-        ValueError: If neither git_projects nor git_projects_file is provided, or if both are provided but empty.
+        FileNotFoundError: If the repository directory or projects_file does not exist.
+        ValueError: If neither projects nor projectsprojects_file is provided, or if both are provided but empty.
     """
     git = Git(
         repository_directory=repository_directory,
