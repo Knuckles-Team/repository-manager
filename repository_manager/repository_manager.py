@@ -107,7 +107,7 @@ class Git:
             If the input is invalid, defaults to the number of CPU cores and logs a warning.
         """
         try:
-            if threads > 0 and threads <= os.cpu_count():
+            if 0 < threads <= os.cpu_count():
                 self.threads = threads
             else:
                 self.logger.warning(
@@ -165,7 +165,7 @@ class Git:
             str: The output of the Git clone command.
         """
         result = self.git_action(f"git clone {git_project}")
-        self.logger.info(f"Cloning {git_project}: {result}")
+        self.logger.debug(f"Cloning {git_project}: {result}")
         return result
 
     def pull_projects_in_parallel(self) -> str:
@@ -208,7 +208,7 @@ class Git:
                 os.path.join(self.repository_directory, git_project)
             ),
         )
-        self.logger.info(
+        self.logger.debug(
             f"Scanning: {self.repository_directory}/{git_project}\n"
             f"Pulling latest changes for {git_project}\n"
             f"{result}"
@@ -223,7 +223,7 @@ class Git:
                 f'git checkout "{default_branch}"',
                 directory=f"{self.repository_directory}/{git_project}",
             )
-            self.logger.info(f"Checking out default branch: {default_branch_result}")
+            self.logger.debug(f"Checking out default branch: {default_branch_result}")
             result = f"{result}\n{default_branch_result}"
         return result
 
