@@ -140,8 +140,8 @@ def clone_projects(
     )
     if projects_file:
         git.read_project_list_file(file=projects_file)
-    reponse = git.clone_projects_in_parallel()
-    return reponse
+    response = git.clone_projects_in_parallel()
+    return response
 
 
 @mcp.tool()
@@ -179,8 +179,8 @@ def pull_project(
         set_to_default_branch=set_to_default_branch,
         capture_output=True,
     )
-    reponse = git.pull_project(git_project=git_project)
-    return reponse
+    response = git.pull_project(git_project=git_project)
+    return response
 
 
 @mcp.tool()
@@ -211,8 +211,8 @@ def pull_projects(
         set_to_default_branch=set_to_default_branch,
         capture_output=True,
     )
-    reponse = git.clone_projects_in_parallel()
-    return reponse
+    response = git.clone_projects_in_parallel()
+    return response
 
 
 def repository_manager_mcp(argv):
