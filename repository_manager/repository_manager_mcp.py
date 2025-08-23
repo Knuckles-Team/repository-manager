@@ -180,24 +180,16 @@ def pull_project(
 
 @mcp.tool()
 def pull_projects_in_parallel(
-    git_projects: Optional[List[str]],
-    git_projects_file: Optional[str] = None,
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
 ) -> None:
     """
-    Pull updates for multiple Git projects in parallel using a configured Git instance.
-
-    This tool pulls updates for a list of Git project directories in parallel, optionally checking out the default branch,
-    leveraging a Git class instance configured with the provided parameters for repository management. It supports
-    reading project directory names from a file.
+    Pull updates for multiple git projects located in the repository_directory,
+    optionally checking out the default branch.
 
     Args:
-        git_projects (Optional[List[str]], optional): List of project directory names to pull. Defaults to None.
-        git_projects_file (Optional[str], optional): Path to a file containing a list of project directory names,
-            one per line. Defaults to None.
-        repository_directory (Optional[str], optional): The directory containing the projects to pull.
+        repository_directory (Optional[], optional): The directory containing the projects to pull.
             Defaults to the current working directory.
         threads (Optional[int], optional): Number of threads for parallel processing.
             Defaults to the number of CPU cores.
@@ -210,12 +202,9 @@ def pull_projects_in_parallel(
     """
     git = Git(
         repository_directory=repository_directory,
-        git_projects=git_projects,
         threads=threads,
         set_to_default_branch=set_to_default_branch,
     )
-    if git_projects_file:
-        git.read_project_list_file(file=git_projects_file)
     git.clone_projects_in_parallel()
 
 
