@@ -48,7 +48,7 @@ class Git:
         projects: list = None,
         threads: int = None,
         set_to_default_branch: bool = False,
-        capture_output: bool = True,
+        capture_output: bool = False,
     ):
         """Initialize the Git class with default settings."""
         self.logger = setup_logging()
@@ -104,7 +104,11 @@ class Git:
                 while True:
                     stdout_line = process.stdout.readline()
                     stderr_line = process.stderr.readline()
-                    if not stdout_line and not stderr_line and process.poll() is not None:
+                    if (
+                        not stdout_line
+                        and not stderr_line
+                        and process.poll() is not None
+                    ):
                         break
                     if stdout_line:
                         print(stdout_line, end="", flush=True)
@@ -154,10 +158,31 @@ class Git:
             for repository in file_repositories:
                 self.projects.append(repository.strip())
 
-    def clone_projects_in_parallel(self) -> None:
-        """Clone all specified Git projects in parallel using multiple threads."""
+    def clone_projects_in_parallel(self) -> str:
+        """
+        Clone all specified Git projects in parallel using multiple threads.
+
+        Returns:
+            str: Combined output of all clone operations, with each project's result
+                 prefixed by its repository URL.
+        """
         pool = Pool(processes=self.threads)
-        pool.map(self.clone_project, self.projects)
+        try:
+            # Collect results from parallel clone operations
+            results = pool.map(self.clone_project, self.projects)
+            # Close the pool and wait for all processes to complete
+            pool.close()
+            pool.join()
+            # Combine results with repository URLs for clarity
+            combined_results = []
+            for project, result in zip(self.projects, results):
+                combined_results.append(f"Repository: {project}\n{result}\n")
+            return "".join(combined_results)
+        except Exception as e:
+            self.logger.error(f"Parallel cloning failed: {e}")
+            return f"Error: Parallel cloning failed: {e}"
+        finally:
+            pool.terminate()  # Ensure pool is cleaned up
 
     def clone_project(self, git_project: str) -> str:
         """
@@ -165,15 +190,40 @@ class Git:
 
         Args:
             git_project (str): The repository URL to clone.
+
+        Returns:
+            str: The output of the Git clone command.
         """
         result = self.git_action(f"git clone {git_project}")
-        self.logger.info(result)
+        self.logger.info(f"Cloning {git_project}: {result}")
         return result
 
-    def pull_projects_in_parallel(self) -> None:
-        """Pull updates for all projects in the repository directory in parallel."""
+    def pull_projects_in_parallel(self) -> str:
+        """
+        Pull updates for all projects in the repository directory in parallel.
+
+        Returns:
+            str: Combined output of all pull operations, with each project's result
+                 prefixed by its directory name.
+        """
         pool = Pool(processes=self.threads)
-        pool.map(self.pull_project, os.listdir(self.repository_directory))
+        try:
+            # Collect results from parallel pull operations
+            project_dirs = os.listdir(self.repository_directory)
+            results = pool.map(self.pull_project, project_dirs)
+            # Close the pool and wait for all processes to complete
+            pool.close()
+            pool.join()
+            # Combine results with project directory names for clarity
+            combined_results = []
+            for project, result in zip(project_dirs, results):
+                combined_results.append(f"Project: {project}\n{result}\n")
+            return "".join(combined_results)
+        except Exception as e:
+            self.logger.error(f"Parallel pulling failed: {e}")
+            return f"Error: Parallel pulling failed: {e}"
+        finally:
+            pool.terminate()  # Ensure pool is cleaned up
 
     def pull_project(self, git_project: str) -> str:
         """
