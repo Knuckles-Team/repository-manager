@@ -3,12 +3,11 @@
 import os
 import sys
 import getopt
-import logging
 from typing import Optional, List
 from fastmcp import FastMCP, Context
 from repository_manager import setup_logging, Git
 
-setup_logging(is_mcp_server=True, log_file="repository_manager_mcp.log")
+logger = setup_logging(is_mcp_server=True, log_file="repository_manager_mcp.log")
 
 mcp = FastMCP(name="GitRepositoryManager")
 
@@ -26,22 +25,13 @@ def git_action(
     """
     Execute a Git command in the specified directory using a configured Git instance.
 
-    This tool executes a specified Git command within a given repository directory, leveraging a Git class instance
-    configured with the provided parameters for repository management. It supports parallel processing, optional default
-    branch checkout settings, and reading repository URLs from a file.
-
     Args:
         command (str): The Git command to execute (e.g., 'git pull', 'git clone <repository_url>').
         repository_directory (Optional[str], optional): The directory to execute the command in.
-            Defaults to the current working directory.
         projects (Optional[List[str]], optional): List of repository URLs for Git operations.
-            Defaults to None.
-        projects_file (Optional[str], optional): Path to a file containing a list of repository URLs,
-            one per line. Defaults to None.
+        projects_file (Optional[str], optional): Path to a file containing a list of repository URLs.
         threads (Optional[int], optional): Number of threads for parallel processing.
-            Defaults to the number of CPU cores.
-        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch after certain operations.
-            Defaults to False.
+        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
         ctx (Context, optional): MCP context for logging.
 
     Returns:
@@ -50,22 +40,22 @@ def git_action(
     Raises:
         FileNotFoundError: If the specified repository directory or projects_file does not exist.
     """
-
-    ctx.debug("Starting analysis of numerical data")
-    git = Git(
-        repository_directory=repository_directory,
-        projects=projects,
-        threads=threads,
-        set_to_default_branch=set_to_default_branch,
-        capture_output=True,
-    )
-    ctx.info("Analyzing data points")
-    if projects_file:
-        git.read_project_list_file(file=projects_file)
-    ctx.info(f"Projects File: {projects_file}")
-    response = git.git_action(command=command)
-    ctx.info(f"Response: {response}")
-    return response
+    try:
+        git = Git(
+            repository_directory=repository_directory,
+            projects=projects,
+            threads=threads,
+            set_to_default_branch=set_to_default_branch,
+            capture_output=True,
+            is_mcp_server=True,  # Pass is_mcp_server
+        )
+        if projects_file:
+            git.read_project_list_file(file=projects_file)
+        response = git.git_action(command=command)
+        return response
+    except Exception as e:
+        logger.error(f"Error in git_action: {e}")
+        raise
 
 
 @mcp.tool()
@@ -78,18 +68,11 @@ def clone_project(
     """
     Clone a single Git project using a configured Git instance.
 
-    This tool clones a specified Git repository into the given directory, leveraging a Git class instance
-    configured with the provided parameters for repository management. It supports parallel processing and
-    optional default branch checkout settings.
-
     Args:
-        git_project (Optional[str], optional): The repository URL to clone. Defaults to None.
+        git_project (Optional[str], optional): The repository URL to clone.
         repository_directory (Optional[str], optional): The directory to clone the project into.
-            Defaults to the current working directory.
         threads (Optional[int], optional): Number of threads for parallel processing.
-            Defaults to the number of CPU cores.
-        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch after operations.
-            Defaults to False.
+        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
 
     Returns:
         str: The output of the Git clone command.
@@ -98,14 +81,19 @@ def clone_project(
         FileNotFoundError: If the repository directory does not exist.
         ValueError: If git_project is not provided.
     """
-    git = Git(
-        repository_directory=repository_directory,
-        threads=threads,
-        set_to_default_branch=set_to_default_branch,
-        capture_output=True,
-    )
-    response = git.clone_project(git_project=git_project)
-    return response
+    try:
+        git = Git(
+            repository_directory=repository_directory,
+            threads=threads,
+            set_to_default_branch=set_to_default_branch,
+            capture_output=True,
+            is_mcp_server=True,
+        )
+        response = git.clone_project(git_project=git_project)
+        return response
+    except Exception as e:
+        logger.error(f"Error in clone_project: {e}")
+        raise
 
 
 @mcp.tool()
@@ -120,20 +108,12 @@ def clone_projects(
     """
     Clone multiple Git projects in parallel using a configured Git instance.
 
-    This tool clones a list of Git repositories into the specified directory in parallel, leveraging a Git class instance
-    configured with the provided parameters for repository management. It supports reading repository URLs from a file
-    and uses multiple threads for efficient processing.
-
     Args:
-        projects (Optional[List[str]], optional): List of repository URLs to clone. Defaults to None.
-        projects_file (Optional[str], optional): Path to a file containing a list of repository URLs,
-            one per line. Defaults to None.
+        projects (Optional[List[str]], optional): List of repository URLs to clone.
+        projects_file (Optional[str], optional): Path to a file containing a list of repository URLs.
         repository_directory (Optional[str], optional): The directory to clone projects into.
-            Defaults to the current working directory.
         threads (Optional[int], optional): Number of threads for parallel processing.
-            Defaults to the number of CPU cores.
-        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch after operations.
-            Defaults to False.
+        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
         ctx (Context, optional): MCP context for logging.
 
     Returns:
@@ -141,31 +121,32 @@ def clone_projects(
 
     Raises:
         FileNotFoundError: If the repository directory or projects_file does not exist.
-        ValueError: If neither projects nor projects_file is provided, or if both are provided but empty.
+        ValueError: If neither projects nor projects_file is provided, or if both are empty.
     """
-    ctx.info("Starting cloning of projects")
-    if not projects and not projects_file:
-        raise ValueError("Either projects or projects_file must be provided")
-    if projects_file and not os.path.exists(projects_file):
-        raise FileNotFoundError(f"Projects file not found: {projects_file}")
-    if repository_directory and not os.path.exists(repository_directory):
-        raise FileNotFoundError(
-            f"Repository directory not found: {repository_directory}"
+    try:
+        if not projects and not projects_file:
+            raise ValueError("Either projects or projects_file must be provided")
+        if projects_file and not os.path.exists(projects_file):
+            raise FileNotFoundError(f"Projects file not found: {projects_file}")
+        if repository_directory and not os.path.exists(repository_directory):
+            raise FileNotFoundError(
+                f"Repository directory not found: {repository_directory}"
+            )
+        git = Git(
+            repository_directory=repository_directory,
+            projects=projects,
+            threads=threads,
+            set_to_default_branch=set_to_default_branch,
+            capture_output=True,
+            is_mcp_server=True,
         )
-    ctx.info("Creating git class")
-    git = Git(
-        repository_directory=repository_directory,
-        projects=projects,
-        threads=threads,
-        set_to_default_branch=set_to_default_branch,
-        capture_output=True,
-    )
-    if projects_file:
-        git.read_project_list_file(file=projects_file)
-    ctx.info(f"Projects File: {projects_file}")
-    response = git.clone_projects_in_parallel()
-    ctx.info(f"Response: {response}")
-    return response
+        if projects_file:
+            git.read_project_list_file(file=projects_file)
+        response = git.clone_projects_in_parallel()
+        return response
+    except Exception as e:
+        logger.error(f"Error in clone_projects: {e}")
+        raise
 
 
 @mcp.tool()
@@ -178,17 +159,11 @@ def pull_project(
     """
     Pull updates for a single Git project using a configured Git instance.
 
-    This tool pulls updates for a specified Git project directory and optionally checks out the default branch,
-    leveraging a Git class instance configured with the provided parameters for repository management.
-
     Args:
         git_project (str): The name of the project directory to pull.
         repository_directory (Optional[str], optional): The parent directory containing the project.
-            Defaults to the current working directory.
         threads (Optional[int], optional): Number of threads for parallel processing.
-            Defaults to the number of CPU cores.
-        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch after pulling.
-            Defaults to False.
+        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
 
     Returns:
         str: The output of the Git pull command, including checkout output if applicable.
@@ -197,14 +172,19 @@ def pull_project(
         FileNotFoundError: If the project directory does not exist.
         ValueError: If git_project is not provided.
     """
-    git = Git(
-        repository_directory=repository_directory,
-        threads=threads,
-        set_to_default_branch=set_to_default_branch,
-        capture_output=True,
-    )
-    response = git.pull_project(git_project=git_project)
-    return response
+    try:
+        git = Git(
+            repository_directory=repository_directory,
+            threads=threads,
+            set_to_default_branch=set_to_default_branch,
+            capture_output=True,
+            is_mcp_server=True,
+        )
+        response = git.pull_project(git_project=git_project)
+        return response
+    except Exception as e:
+        logger.error(f"Error in pull_project: {e}")
+        raise
 
 
 @mcp.tool()
@@ -215,16 +195,12 @@ def pull_projects(
     ctx: Context = None,
 ) -> str:
     """
-    Pull updates for multiple Git projects located in the repository_directory,
-    optionally checking out the default branch.
+    Pull updates for multiple Git projects located in the repository_directory.
 
     Args:
         repository_directory (Optional[str], optional): The directory containing the projects to pull.
-            Defaults to the current working directory.
         threads (Optional[int], optional): Number of threads for parallel processing.
-            Defaults to the number of CPU cores.
-        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch after pulling.
-            Defaults to False.
+        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
         ctx (Context, optional): MCP context for logging.
 
     Returns:
@@ -233,20 +209,23 @@ def pull_projects(
     Raises:
         FileNotFoundError: If the repository directory does not exist.
     """
-    ctx.debug("Starting pulling of projects")
-    if repository_directory and not os.path.exists(repository_directory):
-        raise FileNotFoundError(
-            f"Repository directory not found: {repository_directory}"
+    try:
+        if repository_directory and not os.path.exists(repository_directory):
+            raise FileNotFoundError(
+                f"Repository directory not found: {repository_directory}"
+            )
+        git = Git(
+            repository_directory=repository_directory,
+            threads=threads,
+            set_to_default_branch=set_to_default_branch,
+            capture_output=True,
+            is_mcp_server=True,
         )
-    git = Git(
-        repository_directory=repository_directory,
-        threads=threads,
-        set_to_default_branch=set_to_default_branch,
-        capture_output=True,
-    )
-    response = git.pull_projects_in_parallel()
-    ctx.debug(f"Response: {response}")
-    return response
+        response = git.pull_projects_in_parallel()
+        return response
+    except Exception as e:
+        logger.error(f"Error in pull_projects: {e}")
+        raise
 
 
 def repository_manager_mcp(argv):
@@ -275,7 +254,6 @@ def repository_manager_mcp(argv):
     elif transport == "http":
         mcp.run(transport="http", host=host, port=port)
     else:
-        logger = logging.getLogger("RepositoryManager")
         logger.error("Transport not supported")
         sys.exit(1)
 
