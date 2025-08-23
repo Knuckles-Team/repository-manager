@@ -5,22 +5,23 @@ import sys
 import getopt
 import logging
 from typing import Optional, List
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
 from repository_manager import setup_logging, Git
 
 setup_logging(is_mcp_server=True, log_file="repository_manager_mcp.log")
 
-mcp = FastMCP("GitRepositoryManager")
+mcp = FastMCP(name="GitRepositoryManager")
 
 
 @mcp.tool()
-def git_action(
+async def git_action(
     command: str,
     repository_directory: str = None,
     projects: Optional[list] = None,
     projects_file: Optional[str] = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
+    ctx: Context = None,
 ) -> str:
     """
     Execute a Git command in the specified directory using a configured Git instance.
@@ -41,6 +42,7 @@ def git_action(
             Defaults to the number of CPU cores.
         set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch after certain operations.
             Defaults to False.
+        ctx (Context, optional): MCP context for logging.
 
     Returns:
         str: The combined stdout and stderr output of the executed Git command.
@@ -48,6 +50,8 @@ def git_action(
     Raises:
         FileNotFoundError: If the specified repository directory or projects_file does not exist.
     """
+
+    await ctx.debug("Starting analysis of numerical data")
     git = Git(
         repository_directory=repository_directory,
         projects=projects,
@@ -55,9 +59,12 @@ def git_action(
         set_to_default_branch=set_to_default_branch,
         capture_output=True,
     )
+    await ctx.info("Analyzing data points")
     if projects_file:
         git.read_project_list_file(file=projects_file)
+    await ctx.info(f"Projects File: {projects_file}")
     response = git.git_action(command=command)
+    await ctx.info(f"Response: {response}")
     return response
 
 
@@ -102,12 +109,13 @@ def clone_project(
 
 
 @mcp.tool()
-def clone_projects(
+async def clone_projects(
     projects: Optional[List[str]] = None,
     projects_file: Optional[str] = None,
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
+    ctx: Context = None,
 ) -> str:
     """
     Clone multiple Git projects in parallel using a configured Git instance.
@@ -126,6 +134,7 @@ def clone_projects(
             Defaults to the number of CPU cores.
         set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch after operations.
             Defaults to False.
+        ctx (Context, optional): MCP context for logging.
 
     Returns:
         str: Combined output of all clone operations.
@@ -134,6 +143,7 @@ def clone_projects(
         FileNotFoundError: If the repository directory or projects_file does not exist.
         ValueError: If neither projects nor projects_file is provided, or if both are provided but empty.
     """
+    await ctx.debug("Starting cloning of projects")
     if not projects and not projects_file:
         raise ValueError("Either projects or projects_file must be provided")
     if projects_file and not os.path.exists(projects_file):
@@ -151,7 +161,9 @@ def clone_projects(
     )
     if projects_file:
         git.read_project_list_file(file=projects_file)
+    await ctx.info(f"Projects File: {projects_file}")
     response = git.clone_projects_in_parallel()
+    await ctx.debug(f"Response: {response}")
     return response
 
 
@@ -195,10 +207,11 @@ def pull_project(
 
 
 @mcp.tool()
-def pull_projects(
+async def pull_projects(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
+    ctx: Context = None,
 ) -> str:
     """
     Pull updates for multiple Git projects located in the repository_directory,
@@ -211,6 +224,7 @@ def pull_projects(
             Defaults to the number of CPU cores.
         set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch after pulling.
             Defaults to False.
+        ctx (Context, optional): MCP context for logging.
 
     Returns:
         str: Combined output of all pull operations.
@@ -218,6 +232,7 @@ def pull_projects(
     Raises:
         FileNotFoundError: If the repository directory does not exist.
     """
+    await ctx.debug("Starting pulling of projects")
     if repository_directory and not os.path.exists(repository_directory):
         raise FileNotFoundError(
             f"Repository directory not found: {repository_directory}"
@@ -229,6 +244,7 @@ def pull_projects(
         capture_output=True,
     )
     response = git.pull_projects_in_parallel()
+    await ctx.debug(f"Response: {response}")
     return response
 
 
