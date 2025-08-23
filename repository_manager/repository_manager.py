@@ -16,7 +16,7 @@ from multiprocessing import Pool
 
 
 # Configure logging
-def setup_logging(is_mcp_server=False, log_file="repository_manager.log"):
+def setup_logging(is_mcp_server=False, log_file="repository_manager_mcp.log"):
     logger = logging.getLogger("RepositoryManager")
     logger.setLevel(logging.DEBUG)  # Logger processes all levels
 
@@ -25,7 +25,7 @@ def setup_logging(is_mcp_server=False, log_file="repository_manager.log"):
 
     if is_mcp_server:
         # Log to a file in MCP server mode, only ERROR and above
-        handler = logging.FileHandler(log_file)
+        handler = logging.FileHandler(log_file, mode="a")
         handler.setLevel(logging.ERROR)  # Only log ERROR and CRITICAL
     else:
         # Log to console (stdout) in CLI mode, all levels
