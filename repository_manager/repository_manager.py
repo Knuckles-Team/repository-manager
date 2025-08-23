@@ -12,8 +12,7 @@ import re
 import sys
 import getopt
 import logging
-from multiprocessing import Pool
-from multiprocessing.managers import BaseManager
+import concurrent.futures
 
 
 # Configure logging
@@ -39,14 +38,6 @@ def setup_logging(is_mcp_server=False, log_file="repository_manager_mcp.log"):
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
-
-
-# Custom manager for sharing logger across processes
-class LoggerManager(BaseManager):
-    pass
-
-
-LoggerManager.register("Logger", logging.getLogger)
 
 
 class Git:
@@ -75,6 +66,7 @@ class Git:
         self.set_to_default_branch = set_to_default_branch
         self.threads = 1
         self.capture_output = capture_output
+        self.maximum_threads = 12
         if threads:
             self.set_threads(threads=threads)
 
@@ -119,21 +111,21 @@ class Git:
             threads (int): The number of threads.
 
         Notes:
-            If the input is invalid, defaults to the number of CPU cores and logs a warning.
+            If the input is invalid, defaults 12
         """
         try:
-            if 0 < threads <= os.cpu_count():
+            if 0 < threads <= self.maximum_threads:
                 self.threads = threads
             else:
                 self.logger.warning(
-                    f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}"
+                    f"Did not recognize {threads} as a valid value, defaulting to: {self.maximum_threads}"
                 )
-                self.threads = os.cpu_count()
+                self.threads = self.maximum_threads
         except Exception as e:
             self.logger.error(
-                f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}. Error: {e}"
+                f"Did not recognize {threads} as a valid value, defaulting to: {self.maximum_threads}. Error: {e}"
             )
-            self.threads = os.cpu_count()
+            self.threads = self.maximum_threads
 
     def read_project_list_file(self, file: str = None):
         if file and not os.path.exists(file):
@@ -151,18 +143,11 @@ class Git:
             str: Combined output of all clone operations, with each project's result
                  prefixed by its repository URL.
         """
-        manager = LoggerManager()
-        manager.start()
-        logger = manager.Logger("RepositoryManager")
-        pool = Pool(
-            processes=self.threads, initializer=self.init_worker, initargs=(logger,)
-        )
         try:
-            # Collect results from parallel clone operations
-            results = pool.map(self.clone_project, self.projects)
-            # Close the pool and wait for all processes to complete
-            pool.close()
-            pool.join()
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.threads
+            ) as executor:
+                results = list(executor.map(self.clone_project, self.projects))
             # Combine results with repository URLs for clarity
             combined_results = []
             for project, result in zip(self.projects, results):
@@ -171,8 +156,6 @@ class Git:
         except Exception as e:
             self.logger.error(f"Parallel cloning failed: {e}")
             return f"Error: Parallel cloning failed: {e}"
-        finally:
-            pool.terminate()  # Ensure pool is cleaned up
 
     def clone_project(self, git_project: str) -> str:
         """
@@ -196,19 +179,12 @@ class Git:
             str: Combined output of all pull operations, with each project's result
                  prefixed by its directory name.
         """
-        manager = LoggerManager()
-        manager.start()
-        logger = manager.Logger("RepositoryManager")
-        pool = Pool(
-            processes=self.threads, initializer=self.init_worker, initargs=(logger,)
-        )
         try:
-            # Collect results from parallel pull operations
             project_dirs = os.listdir(self.repository_directory)
-            results = pool.map(self.pull_project, project_dirs)
-            # Close the pool and wait for all processes to complete
-            pool.close()
-            pool.join()
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.threads
+            ) as executor:
+                results = list(executor.map(self.pull_project, project_dirs))
             # Combine results with project directory names for clarity
             combined_results = []
             for project, result in zip(project_dirs, results):
@@ -217,8 +193,6 @@ class Git:
         except Exception as e:
             self.logger.error(f"Parallel pulling failed: {e}")
             return f"Error: Parallel pulling failed: {e}"
-        finally:
-            pool.terminate()  # Ensure pool is cleaned up
 
     def pull_project(self, git_project: str) -> str:
         """
@@ -251,10 +225,6 @@ class Git:
             self.logger.info(f"Checking out default branch: {default_branch_result}")
             result = f"{result}\n{default_branch_result}"
         return result
-
-    def init_worker(self, logger):
-        """Initializer for multiprocessing to set up logger in child processes."""
-        logging.getLogger("RepositoryManager").handlers = logger.handlers
 
 
 def usage() -> None:
