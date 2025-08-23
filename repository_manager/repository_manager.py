@@ -45,7 +45,7 @@ class Git:
     def __init__(
         self,
         repository_directory: str = None,
-        git_projects: list = None,
+        projects: list = None,
         threads: int = None,
         set_to_default_branch: bool = False,
     ):
@@ -55,10 +55,10 @@ class Git:
             self.repository_directory = repository_directory
         else:
             self.repository_directory = f"{os.getcwd()}"
-        if git_projects:
-            self.git_projects = git_projects
+        if projects:
+            self.projects = projects
         else:
-            self.git_projects = []
+            self.projects = []
         self.set_to_default_branch = set_to_default_branch
         self.threads = 1
         if threads:
@@ -119,12 +119,12 @@ class Git:
             logger.error(f"File not found: {file}")
         with open(file, "r") as file_repositories:
             for repository in file_repositories:
-                self.git_projects.append(repository.strip())
+                self.projects.append(repository.strip())
 
     def clone_projects_in_parallel(self) -> None:
         """Clone all specified Git projects in parallel using multiple threads."""
         pool = Pool(processes=self.threads)
-        pool.map(self.clone_project, self.git_projects)
+        pool.map(self.clone_project, self.projects)
 
     def clone_project(self, git_project: str) -> str:
         """
