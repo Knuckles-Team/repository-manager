@@ -12,7 +12,6 @@ import re
 import sys
 import getopt
 import logging
-import shlex
 from multiprocessing import Pool
 
 
@@ -92,7 +91,7 @@ class Git:
             text=True,
         )
         (out, error) = pipe.communicate()
-        #result = f"{str(out, 'utf-8')}{str(error, 'utf-8')}"
+        # result = f"{str(out, 'utf-8')}{str(error, 'utf-8')}"
         result = f"{out}{error}"
         pipe.wait()
         return result
