@@ -3,8 +3,8 @@
 import os
 import sys
 import getopt
-from typing import Optional, List
-from fastmcp import FastMCP, Context
+from typing import Optional, List, Dict
+from fastmcp import FastMCP
 from repository_manager import setup_logging, Git
 
 logger = setup_logging(is_mcp_server=True, log_file="repository_manager_mcp.log")
@@ -20,8 +20,7 @@ def git_action(
     projects_file: Optional[str] = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-    ctx: Context = None,
-) -> str:
+) -> Dict:
     """
     Execute a Git command in the specified directory using a configured Git instance.
 
@@ -35,7 +34,7 @@ def git_action(
         ctx (Context, optional): MCP context for logging.
 
     Returns:
-        str: The combined stdout and stderr output of the executed Git command.
+        Dict: The combined stdout and stderr output of the executed Git command in structured format.
 
     Raises:
         FileNotFoundError: If the specified repository directory or projects_file does not exist.
@@ -64,7 +63,7 @@ def clone_project(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-) -> str:
+) -> Dict:
     """
     Clone a single Git project using a configured Git instance.
 
@@ -75,7 +74,7 @@ def clone_project(
         set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
 
     Returns:
-        str: The output of the Git clone command.
+        Dict: The combined stdout and stderr output of the executed Git command in structured format.
 
     Raises:
         FileNotFoundError: If the repository directory does not exist.
@@ -103,8 +102,7 @@ def clone_projects(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-    ctx: Context = None,
-) -> str:
+) -> List[Dict]:
     """
     Clone multiple Git projects in parallel using a configured Git instance. Successful and Failed pulls
     are to be expected from the response output. This function should only be run once. Just let the user know the
@@ -119,8 +117,8 @@ def clone_projects(
         ctx (Context, optional): MCP context for logging.
 
     Returns:
-        str: Combined output of all clone operations. This will likely show that a project was
-        cloned successfully, or that the project attempting to clone already exists.
+        List[Dict]: The combined stdout and stderr output of the executed Git command in structured format
+        for all the cloned projects.
 
     Raises:
         FileNotFoundError: If the repository directory or projects_file does not exist.
@@ -158,7 +156,7 @@ def pull_project(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-) -> str:
+) -> Dict:
     """
     Pull updates for a single Git project using a configured Git instance.
 
@@ -169,7 +167,7 @@ def pull_project(
         set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
 
     Returns:
-        str: The output of the Git pull command, including checkout output if applicable.
+        Dict: The combined stdout and stderr output of the executed Git command in structured format.
 
     Raises:
         FileNotFoundError: If the project directory does not exist.
@@ -195,8 +193,7 @@ def pull_projects(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-    ctx: Context = None,
-) -> str:
+) -> List[Dict]:
     """
     Pull updates for multiple Git projects located in the repository_directory. Successful and Failed pulls
     are to be expected from the response output. This function should only be run once. Just let the user know the
@@ -209,9 +206,8 @@ def pull_projects(
         ctx (Context, optional): MCP context for logging.
 
     Returns:
-        str: Combined output of all pull operations. This will return a combined output of all the projects that were
-        identified in the repository folder. It is expected that some will show pulling successful,
-        while others show failures.
+        List[Dict]: The combined stdout and stderr output of the executed Git command in structured format
+        for all the pulled projects.
 
     Raises:
         FileNotFoundError: If the repository directory does not exist.
