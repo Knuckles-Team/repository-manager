@@ -13,6 +13,7 @@ import sys
 import getopt
 import logging
 from multiprocessing import Pool
+from multiprocessing.managers import BaseManager
 
 
 # Configure logging
@@ -30,7 +31,7 @@ def setup_logging(is_mcp_server=False, log_file="repository_manager_mcp.log"):
     else:
         # Log to console (stdout) in CLI mode, all levels
         handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(logging.INFO)  # Log DEBUG and above
+        handler.setLevel(logging.INFO)  # Log INFO and above
 
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -38,6 +39,14 @@ def setup_logging(is_mcp_server=False, log_file="repository_manager_mcp.log"):
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     return logger
+
+
+# Custom manager for sharing logger across processes
+class LoggerManager(BaseManager):
+    pass
+
+
+LoggerManager.register("Logger", logging.getLogger)
 
 
 class Git:
@@ -50,9 +59,11 @@ class Git:
         threads: int = None,
         set_to_default_branch: bool = False,
         capture_output: bool = False,
+        is_mcp_server: bool = False,  # Added parameter
     ):
         """Initialize the Git class with default settings."""
-        self.logger = setup_logging()
+        self.logger = setup_logging(is_mcp_server=is_mcp_server)  # Pass is_mcp_server
+        self.is_mcp_server = is_mcp_server
         if repository_directory:
             self.repository_directory = repository_directory
         else:
@@ -92,8 +103,12 @@ class Git:
         )
         (out, error) = pipe.communicate()
         # result = f"{str(out, 'utf-8')}{str(error, 'utf-8')}"
-        result = f"{out}{error}"
+        result = f"{out}{error}".strip()
         pipe.wait()
+        if error and pipe.returncode != 0:
+            self.logger.error(f"Command failed: {command}\nError: {error}")
+        elif not self.is_mcp_server:
+            self.logger.info(f"Command: {command}\nOutput: {result}")
         return result
 
     def set_threads(self, threads: int) -> None:
@@ -136,7 +151,12 @@ class Git:
             str: Combined output of all clone operations, with each project's result
                  prefixed by its repository URL.
         """
-        pool = Pool(processes=self.threads)
+        manager = LoggerManager()
+        manager.start()
+        logger = manager.Logger("RepositoryManager")
+        pool = Pool(
+            processes=self.threads, initializer=self.init_worker, initargs=(logger,)
+        )
         try:
             # Collect results from parallel clone operations
             results = pool.map(self.clone_project, self.projects)
@@ -176,7 +196,12 @@ class Git:
             str: Combined output of all pull operations, with each project's result
                  prefixed by its directory name.
         """
-        pool = Pool(processes=self.threads)
+        manager = LoggerManager()
+        manager.start()
+        logger = manager.Logger("RepositoryManager")
+        pool = Pool(
+            processes=self.threads, initializer=self.init_worker, initargs=(logger,)
+        )
         try:
             # Collect results from parallel pull operations
             project_dirs = os.listdir(self.repository_directory)
@@ -226,6 +251,10 @@ class Git:
             self.logger.info(f"Checking out default branch: {default_branch_result}")
             result = f"{result}\n{default_branch_result}"
         return result
+
+    def init_worker(logger):
+        """Initializer for multiprocessing to set up logger in child processes."""
+        logging.getLogger("RepositoryManager").handlers = logger.handlers
 
 
 def usage() -> None:
