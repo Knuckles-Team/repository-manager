@@ -252,7 +252,7 @@ class Git:
             result = f"{result}\n{default_branch_result}"
         return result
 
-    def init_worker(logger):
+    def init_worker(self, logger):
         """Initializer for multiprocessing to set up logger in child processes."""
         logging.getLogger("RepositoryManager").handlers = logger.handlers
 
