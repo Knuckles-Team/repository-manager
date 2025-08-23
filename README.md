@@ -32,7 +32,7 @@ Run as an MCP Server for Agentic AI!
 
 AI Prompt:
 ```text
-Clone all the git projects located in the file "/home/genius/Development/repositories-list/repositories.txt" to my "/home/genius/Development" folder. 
+Clone all the git projects located in the file "/home/genius/Development/repositories-list/repositories.txt" to my "/home/genius/Development" folder.
 Afterwards, pull all the projects located in the "/home/genius/Development" repository folder.
 ```
 
