@@ -134,7 +134,6 @@ class Git:
             git_project (str): The repository URL to clone.
         """
         result = self.git_action(f"git clone {git_project}")
-        print(result)
         self.logger.info(result)
         return result
 
@@ -161,11 +160,6 @@ class Git:
             f"Pulling latest changes for {git_project}\n"
             f"{result}"
         )
-        print(
-            f"Scanning: {self.repository_directory}/{git_project}\n"
-            f"Pulling latest changes for {git_project}\n"
-            f"{result}"
-        )
         if self.set_to_default_branch:
             default_branch = self.git_action(
                 "git symbolic-ref refs/remotes/origin/HEAD",
@@ -177,7 +171,6 @@ class Git:
                 directory=f"{self.repository_directory}/{git_project}",
             )
             self.logger.info(f"Checking out default branch: {default_branch_result}")
-            print(f"Checking out default branch: {default_branch_result}")
             result = f"{result}\n{default_branch_result}"
         return result
 
