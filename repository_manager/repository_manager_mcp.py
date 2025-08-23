@@ -63,7 +63,7 @@ def clone_project(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-) -> Dict:
+) -> str:
     """
     Clone a single Git project using a configured Git instance.
 
@@ -74,7 +74,7 @@ def clone_project(
         set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
 
     Returns:
-        Dict: The combined stdout and stderr output of the executed Git command in structured format.
+        str: The response message string
 
     Raises:
         FileNotFoundError: If the repository directory does not exist.
@@ -89,7 +89,7 @@ def clone_project(
             is_mcp_server=True,
         )
         response = git.clone_project(git_project=git_project)
-        return response
+        return f"Project {git_project} cloned to {repository_directory} successfully!"
     except Exception as e:
         logger.error(f"Error in clone_project: {e}")
         raise
@@ -102,7 +102,7 @@ def clone_projects(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-) -> List[Dict]:
+) -> str:
     """
     Clone multiple Git projects in parallel using a configured Git instance. Successful and Failed pulls
     are to be expected from the response output. This function should only be run once. Just let the user know the
@@ -117,8 +117,7 @@ def clone_projects(
         ctx (Context, optional): MCP context for logging.
 
     Returns:
-        List[Dict]: The combined stdout and stderr output of the executed Git command in structured format
-        for all the cloned projects.
+        str: The response message string
 
     Raises:
         FileNotFoundError: If the repository directory or projects_file does not exist.
@@ -144,7 +143,7 @@ def clone_projects(
         if projects_file:
             git.read_project_list_file(file=projects_file)
         response = git.clone_projects_in_parallel()
-        return response
+        return f"Project {git.projects} cloned to {repository_directory} successfully!"
     except Exception as e:
         logger.error(f"Error in clone_projects: {e}")
         raise
@@ -156,7 +155,7 @@ def pull_project(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-) -> Dict:
+) -> str:
     """
     Pull updates for a single Git project using a configured Git instance.
 
@@ -167,7 +166,7 @@ def pull_project(
         set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
 
     Returns:
-        Dict: The combined stdout and stderr output of the executed Git command in structured format.
+        str: The response message string
 
     Raises:
         FileNotFoundError: If the project directory does not exist.
@@ -182,7 +181,7 @@ def pull_project(
             is_mcp_server=True,
         )
         response = git.pull_project(git_project=git_project)
-        return response
+        return f"Project {git_project} pulled to {repository_directory} successfully!"
     except Exception as e:
         logger.error(f"Error in pull_project: {e}")
         raise
@@ -193,7 +192,7 @@ def pull_projects(
     repository_directory: str = None,
     threads: Optional[int] = None,
     set_to_default_branch: Optional[bool] = False,
-) -> List[Dict]:
+) -> str:
     """
     Pull updates for multiple Git projects located in the repository_directory. Successful and Failed pulls
     are to be expected from the response output. This function should only be run once. Just let the user know the
@@ -206,8 +205,7 @@ def pull_projects(
         ctx (Context, optional): MCP context for logging.
 
     Returns:
-        List[Dict]: The combined stdout and stderr output of the executed Git command in structured format
-        for all the pulled projects.
+        str: The response message string
 
     Raises:
         FileNotFoundError: If the repository directory does not exist.
@@ -225,7 +223,7 @@ def pull_projects(
             is_mcp_server=True,
         )
         response = git.pull_projects_in_parallel()
-        return response
+        return f"All projects in {repository_directory} pulled successfully!"
     except Exception as e:
         logger.error(f"Error in pull_projects: {e}")
         raise
