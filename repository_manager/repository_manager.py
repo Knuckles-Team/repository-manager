@@ -78,17 +78,27 @@ class Git:
         """
         if directory is None:
             directory = self.repository_directory
-        pipe = subprocess.Popen(
-            command,
-            shell=True,
-            cwd=directory,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        (out, error) = pipe.communicate()
-        result = f"{str(out, 'utf-8')}{str(error, 'utf-8')}"
-        pipe.wait()
-        return result
+        try:
+            # Split command into arguments, assuming simple commands for now
+            args = ["git"] + command.split()
+            pipe = subprocess.Popen(
+                args,
+                cwd=directory,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True,
+            )
+            out, error = pipe.communicate(timeout=120)
+            result = f"{out}{error}"
+            return result
+        except subprocess.TimeoutExpired:
+            self.logger.error(f"Command '{command}' timed out after 120 seconds")
+            pipe.kill()
+            return "Error: Command timed out"
+        except OSError as e:
+            self.logger.error(f"Command '{command}' failed: {e}")
+            return f"Error: {e}"
 
     def set_threads(self, threads: int) -> None:
         """
