@@ -12,6 +12,7 @@ import re
 import sys
 import getopt
 import logging
+import shlex
 from multiprocessing import Pool
 
 
@@ -66,23 +67,30 @@ class Git:
         if threads:
             self.set_threads(threads=threads)
 
-    def git_action(self, command: str, directory: str = None) -> str:
+    def git_action(
+        self, command: str, directory: str = None, capture_output: bool = None
+    ) -> str:
         """
         Execute a Git command in the specified directory.
 
         Args:
-            command (str): The Git command to execute.
+            command (str): The Git command to execute (e.g., 'clone https://github.com/user/repo.git').
             directory (str, optional): The directory to execute the command in.
                 Defaults to the repository directory.
+            capture_output (bool, optional): If True, capture stdout and stderr without printing.
+                If False, print output to stdout/stderr in real-time. Defaults to self.capture_output.
 
         Returns:
             str: The combined stdout and stderr output of the command.
         """
         if directory is None:
             directory = self.repository_directory
+        if capture_output is None:
+            capture_output = self.capture_output
+
         try:
-            # Split command into arguments, assuming simple commands for now
-            args = ["git"] + command.split()
+            # Use shlex.split for proper command parsing
+            args = shlex.split(f"git {command}")
             process = subprocess.Popen(
                 args,
                 cwd=directory,
@@ -92,13 +100,14 @@ class Git:
                 text=True,
             )
             output = []
-            if self.capture_output:
+            if capture_output:
                 # Collect output without printing
                 out, error = process.communicate(timeout=120)
                 result = f"{out}{error}"
+                self.logger.debug(f"Command '{command}' output: {result}")
                 return result
             else:
-                # Stream output to stdout in real-time and collect it
+                # Stream output to stdout/stderr in real-time and collect it
                 while True:
                     stdout_line = process.stdout.readline()
                     stderr_line = process.stderr.readline()
@@ -116,11 +125,17 @@ class Git:
                         output.append(stderr_line)
                 process.wait(timeout=120)
                 result = "".join(output)
+                self.logger.debug(f"Command '{command}' output: {result}")
                 return result
         except subprocess.TimeoutExpired:
             self.logger.error(f"Command '{command}' timed out after 120 seconds")
             process.kill()
             return "Error: Command timed out"
+        except subprocess.CalledProcessError as e:
+            self.logger.error(
+                f"Command '{command}' failed with exit code {e.returncode}: {e.stderr}"
+            )
+            return f"Error: {e.stderr}"
         except OSError as e:
             self.logger.error(f"Command '{command}' failed: {e}")
             return f"Error: {e}"
