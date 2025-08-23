@@ -48,6 +48,7 @@ class Git:
         projects: list = None,
         threads: int = None,
         set_to_default_branch: bool = False,
+        capture_output: bool = True,
     ):
         """Initialize the Git class with default settings."""
         self.logger = setup_logging()
@@ -61,6 +62,7 @@ class Git:
             self.projects = []
         self.set_to_default_branch = set_to_default_branch
         self.threads = 1
+        self.capture_output = capture_output
         if threads:
             self.set_threads(threads=threads)
 
@@ -72,6 +74,8 @@ class Git:
             command (str): The Git command to execute.
             directory (str, optional): The directory to execute the command in.
                 Defaults to the repository directory.
+            capture_output (bool, optional): If True, capture stdout and stderr without printing.
+                If False, print output to stdout in real-time. Defaults to True.
 
         Returns:
             str: The combined stdout and stderr output of the command.
@@ -81,7 +85,7 @@ class Git:
         try:
             # Split command into arguments, assuming simple commands for now
             args = ["git"] + command.split()
-            pipe = subprocess.Popen(
+            process = subprocess.Popen(
                 args,
                 cwd=directory,
                 stdout=subprocess.PIPE,
@@ -89,12 +93,31 @@ class Git:
                 stdin=subprocess.DEVNULL,
                 text=True,
             )
-            out, error = pipe.communicate(timeout=120)
-            result = f"{out}{error}"
-            return result
+            output = []
+            if self.capture_output:
+                # Collect output without printing
+                out, error = process.communicate(timeout=120)
+                result = f"{out}{error}"
+                return result
+            else:
+                # Stream output to stdout in real-time and collect it
+                while True:
+                    stdout_line = process.stdout.readline()
+                    stderr_line = process.stderr.readline()
+                    if not stdout_line and not stderr_line and process.poll() is not None:
+                        break
+                    if stdout_line:
+                        print(stdout_line, end="", flush=True)
+                        output.append(stdout_line)
+                    if stderr_line:
+                        print(stderr_line, end="", flush=True, file=sys.stderr)
+                        output.append(stderr_line)
+                process.wait(timeout=120)
+                result = "".join(output)
+                return result
         except subprocess.TimeoutExpired:
             self.logger.error(f"Command '{command}' timed out after 120 seconds")
-            pipe.kill()
+            process.kill()
             return "Error: Command timed out"
         except OSError as e:
             self.logger.error(f"Command '{command}' failed: {e}")
