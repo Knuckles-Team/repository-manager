@@ -67,78 +67,34 @@ class Git:
         if threads:
             self.set_threads(threads=threads)
 
-    def git_action(
-        self, command: str, directory: str = None, capture_output: bool = None
-    ) -> str:
+    def git_action(self, command: str, directory: str = None) -> str:
         """
         Execute a Git command in the specified directory.
 
         Args:
-            command (str): The Git command to execute (e.g., 'clone https://github.com/user/repo.git').
+            command (str): The Git command to execute.
             directory (str, optional): The directory to execute the command in.
                 Defaults to the repository directory.
-            capture_output (bool, optional): If True, capture stdout and stderr without printing.
-                If False, print output to stdout/stderr in real-time. Defaults to self.capture_output.
 
         Returns:
             str: The combined stdout and stderr output of the command.
         """
         if directory is None:
             directory = self.repository_directory
-        if capture_output is None:
-            capture_output = self.capture_output
-
-        try:
-            # Use shlex.split for proper command parsing
-            args = shlex.split(f"git {command}")
-            process = subprocess.Popen(
-                args,
-                cwd=directory,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                text=True,
-            )
-            output = []
-            if capture_output:
-                # Collect output without printing
-                out, error = process.communicate(timeout=120)
-                result = f"{out}{error}"
-                self.logger.debug(f"Command '{command}' output: {result}")
-                return result
-            else:
-                # Stream output to stdout/stderr in real-time and collect it
-                while True:
-                    stdout_line = process.stdout.readline()
-                    stderr_line = process.stderr.readline()
-                    if (
-                        not stdout_line
-                        and not stderr_line
-                        and process.poll() is not None
-                    ):
-                        break
-                    if stdout_line:
-                        print(stdout_line, end="", flush=True)
-                        output.append(stdout_line)
-                    if stderr_line:
-                        print(stderr_line, end="", flush=True, file=sys.stderr)
-                        output.append(stderr_line)
-                process.wait(timeout=120)
-                result = "".join(output)
-                self.logger.debug(f"Command '{command}' output: {result}")
-                return result
-        except subprocess.TimeoutExpired:
-            self.logger.error(f"Command '{command}' timed out after 120 seconds")
-            process.kill()
-            return "Error: Command timed out"
-        except subprocess.CalledProcessError as e:
-            self.logger.error(
-                f"Command '{command}' failed with exit code {e.returncode}: {e.stderr}"
-            )
-            return f"Error: {e.stderr}"
-        except OSError as e:
-            self.logger.error(f"Command '{command}' failed: {e}")
-            return f"Error: {e}"
+        pipe = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=directory,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+        )
+        (out, error) = pipe.communicate()
+        #result = f"{str(out, 'utf-8')}{str(error, 'utf-8')}"
+        result = f"{out}{error}"
+        pipe.wait()
+        return result
 
     def set_threads(self, threads: int) -> None:
         """
@@ -360,8 +316,7 @@ def repository_manager(argv: list) -> None:
         elif opt in ("-t", "--threads"):
             git.set_threads(threads=int(arg))
 
-    projects = list(dict.fromkeys(git.projects))
-    git.projects = projects
+    git.projects = list(dict.fromkeys(git.projects))
 
     if clone_flag:
         git.clone_projects_in_parallel()
