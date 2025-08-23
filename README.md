@@ -32,17 +32,14 @@ Run as an MCP Server for Agentic AI!
 
 AI Prompt:
 ```text
-Please use the list of repositories from the file located at
-/home/user/Development/repositories-list/repositories.txt to clone these repositories
-into my /home/user/Development folder. Once that operation completes, pull the projects
-located in the /home/user/Development repository folder.
+Clone all the git projects located in the file "/home/genius/Development/repositories-list/repositories.txt" to my "/home/genius/Development" folder. 
+Afterwards, pull all the projects located in the "/home/genius/Development" repository folder.
 ```
 
 AI Response:
 ```text
-You have cloned the repositories in repositories-list.txt into the repositories directory. The git pull operation was
-also successful in pulling the latest changes from the remote repository. All repositories in /home/user/Development
-are now up to date!
+All projects in "/home/genius/Development/repositories-list/repositories.txt" have been cloned to "/home/genius/Development"
+and all projects in "/home/genius/Development" and been pulled.
 ```
 
 This repository is actively maintained - Contributions are welcome!

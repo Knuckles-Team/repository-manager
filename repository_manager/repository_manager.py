@@ -13,6 +13,8 @@ import sys
 import getopt
 import logging
 import concurrent.futures
+import datetime
+from typing import List
 
 
 # Configure logging
@@ -70,7 +72,7 @@ class Git:
         if threads:
             self.set_threads(threads=threads)
 
-    def git_action(self, command: str, directory: str = None) -> str:
+    def git_action(self, command: str, directory: str = None) -> dict:
         """
         Execute a Git command in the specified directory.
 
@@ -80,7 +82,7 @@ class Git:
                 Defaults to the repository directory.
 
         Returns:
-            str: The combined stdout and stderr output of the command.
+            dict: The combined stdout and stderr output of the command in structured format.
         """
         if directory is None:
             directory = self.repository_directory
@@ -93,14 +95,171 @@ class Git:
             stdin=subprocess.DEVNULL,
             text=True,
         )
-        (out, error) = pipe.communicate()
-        # result = f"{str(out, 'utf-8')}{str(error, 'utf-8')}"
-        result = f"{out}{error}".strip()
-        pipe.wait()
-        if error and pipe.returncode != 0:
-            self.logger.error(f"Command failed: {command}\nError: {error}")
+        out, err = pipe.communicate()
+        return_code = pipe.wait()
+
+        # Prepare the result dictionary
+        result = {
+            "status": "success" if return_code == 0 else "error",
+            "data": out.strip() if out else "",
+            "error": None if return_code == 0 else {
+                "message": err.strip() if err else "Unknown error",
+                "code": return_code
+            },
+            "metadata": {
+                "command": command,
+                "directory": directory,
+                "return_code": return_code,
+                "timestamp": datetime.datetime.now(datetime.UTC).isoformat() + "Z"
+            }
+        }
+        # Logging
+        if return_code != 0:
+            self.logger.error(f"Command failed: {command}\nError: {err}")
         elif not self.is_mcp_server:
-            self.logger.info(f"Command: {command}\nOutput: {result}")
+            self.logger.info(f"Command: {command}\nOutput: {out}")
+
+        return result
+
+    def clone_projects_in_parallel(self) -> List[dict]:
+        """
+        Clone all specified Git projects in parallel using multiple threads.
+
+        Returns:
+            List[dict]: A list of dictionaries, each containing the result of a clone operation
+                        with repository URL and git_action result.
+        """
+        try:
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.threads
+            ) as executor:
+                results = list(executor.map(self.clone_project, self.projects))
+            # Combine results with repository URLs for clarity
+            combined_results = []
+            for project, result in zip(self.projects, results):
+                combined_result = {
+                    "status": result["status"],
+                    "data": result["data"],
+                    "error": result["error"],
+                    "metadata": {
+                        **result["metadata"],
+                        "repository_url": project
+                    }
+                }
+                combined_results.append(combined_result)
+                self.logger.info(f"Cloning {project}: {result['data'] if result['status'] == 'success' else result['error']}")
+            return combined_results
+        except Exception as e:
+            self.logger.error(f"Parallel cloning failed: {str(e)}")
+            return [{
+                "status": "error",
+                "data": "",
+                "error": {
+                    "message": f"Parallel cloning failed: {str(e)}",
+                    "code": -1
+                },
+                "metadata": {
+                    "command": "clone_projects_in_parallel",
+                    "directory": self.repository_directory,
+                    "return_code": None,
+                    "timestamp": datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                    "repository_url": None
+                }
+            }]
+
+    def clone_project(self, git_project: str) -> dict:
+        """
+        Clone a single Git project.
+
+        Args:
+            git_project (str): The repository URL to clone.
+
+        Returns:
+            str: The output of the Git clone command.
+        """
+        result = self.git_action(f"git clone {git_project}")
+        self.logger.info(f"Cloning {git_project}: {result}")
+        return result
+
+    def pull_projects_in_parallel(self) -> List[dict]:
+        """
+        Pull updates for all projects in the repository directory in parallel.
+
+        Returns:
+            List[dict]: A list of dictionaries, each containing the result of a pull operation
+                        with project directory name and git_action result.
+        """
+        try:
+            project_dirs = os.listdir(self.repository_directory)
+            with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.threads
+            ) as executor:
+                results = list(executor.map(self.pull_project, project_dirs))
+            # Combine results with project directory names for clarity
+            combined_results = []
+            for project, result in zip(project_dirs, results):
+                combined_result = {
+                    "status": result["status"],
+                    "data": result["data"],
+                    "error": result["error"],
+                    "metadata": {
+                        **result["metadata"],
+                        "project_directory": project
+                    }
+                }
+                combined_results.append(combined_result)
+                self.logger.info(
+                    f"Pulling {project}: {result['data'] if result['status'] == 'success' else result['error']}"
+                )
+            return combined_results
+        except Exception as e:
+            self.logger.error(f"Parallel pulling failed: {str(e)}")
+            return [{
+                "status": "error",
+                "data": "",
+                "error": {
+                    "message": f"Parallel pulling failed: {str(e)}",
+                    "code": -1
+                },
+                "metadata": {
+                    "command": "pull_projects_in_parallel",
+                    "directory": self.repository_directory,
+                    "return_code": None,
+                    "timestamp": datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                    "project_directory": None
+                }
+            }]
+
+    def pull_project(self, git_project: str) -> dict:
+        """
+        Pull updates for a single Git project and optionally checkout the default branch.
+
+        Args:
+            git_project (str): The name of the project directory to pull.
+        """
+        result = self.git_action(
+            command="git pull",
+            directory=os.path.normpath(
+                os.path.join(self.repository_directory, git_project)
+            ),
+        )
+        self.logger.info(
+            f"Scanning: {self.repository_directory}/{git_project}\n"
+            f"Pulling latest changes for {git_project}\n"
+            f"{result}"
+        )
+        if self.set_to_default_branch:
+            default_branch = self.git_action(
+                "git symbolic-ref refs/remotes/origin/HEAD",
+                directory=f"{self.repository_directory}/{git_project}",
+            )
+            default_branch = re.sub("refs/remotes/origin/", "", default_branch['data']).strip()
+            default_branch_result = self.git_action(
+                f'git checkout "{default_branch}"',
+                directory=f"{self.repository_directory}/{git_project}",
+            )
+            self.logger.info(f"Checking out default branch: {default_branch_result}")
+            result = f"{result}\n{default_branch_result}"
         return result
 
     def set_threads(self, threads: int) -> None:
@@ -134,97 +293,6 @@ class Git:
         with open(file, "r") as file_repositories:
             for repository in file_repositories:
                 self.projects.append(repository.strip())
-
-    def clone_projects_in_parallel(self) -> str:
-        """
-        Clone all specified Git projects in parallel using multiple threads.
-
-        Returns:
-            str: Combined output of all clone operations, with each project's result
-                 prefixed by its repository URL.
-        """
-        try:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.threads
-            ) as executor:
-                results = list(executor.map(self.clone_project, self.projects))
-            # Combine results with repository URLs for clarity
-            combined_results = []
-            for project, result in zip(self.projects, results):
-                combined_results.append(f"Repository: {project}\n{result}\n")
-            return "".join(combined_results)
-        except Exception as e:
-            self.logger.error(f"Parallel cloning failed: {e}")
-            return f"Error: Parallel cloning failed: {e}"
-
-    def clone_project(self, git_project: str) -> str:
-        """
-        Clone a single Git project.
-
-        Args:
-            git_project (str): The repository URL to clone.
-
-        Returns:
-            str: The output of the Git clone command.
-        """
-        result = self.git_action(f"git clone {git_project}")
-        self.logger.info(f"Cloning {git_project}: {result}")
-        return result
-
-    def pull_projects_in_parallel(self) -> str:
-        """
-        Pull updates for all projects in the repository directory in parallel.
-
-        Returns:
-            str: Combined output of all pull operations, with each project's result
-                 prefixed by its directory name.
-        """
-        try:
-            project_dirs = os.listdir(self.repository_directory)
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.threads
-            ) as executor:
-                results = list(executor.map(self.pull_project, project_dirs))
-            # Combine results with project directory names for clarity
-            combined_results = []
-            for project, result in zip(project_dirs, results):
-                combined_results.append(f"Project: {project}\n{result}\n")
-            return "".join(combined_results)
-        except Exception as e:
-            self.logger.error(f"Parallel pulling failed: {e}")
-            return f"Error: Parallel pulling failed: {e}"
-
-    def pull_project(self, git_project: str) -> str:
-        """
-        Pull updates for a single Git project and optionally checkout the default branch.
-
-        Args:
-            git_project (str): The name of the project directory to pull.
-        """
-        result = self.git_action(
-            command="git pull",
-            directory=os.path.normpath(
-                os.path.join(self.repository_directory, git_project)
-            ),
-        )
-        self.logger.info(
-            f"Scanning: {self.repository_directory}/{git_project}\n"
-            f"Pulling latest changes for {git_project}\n"
-            f"{result}"
-        )
-        if self.set_to_default_branch:
-            default_branch = self.git_action(
-                "git symbolic-ref refs/remotes/origin/HEAD",
-                directory=f"{self.repository_directory}/{git_project}",
-            )
-            default_branch = re.sub("refs/remotes/origin/", "", default_branch).strip()
-            default_branch_result = self.git_action(
-                f'git checkout "{default_branch}"',
-                directory=f"{self.repository_directory}/{git_project}",
-            )
-            self.logger.info(f"Checking out default branch: {default_branch_result}")
-            result = f"{result}\n{default_branch_result}"
-        return result
 
 
 def usage() -> None:
