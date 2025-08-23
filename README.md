@@ -26,6 +26,8 @@ Manage your Git projects
 
 Run all Git supported tasks using Git Actions command
 
+Run as an MCP Server for Agentic AI!
+
 This repository is actively maintained - Contributions are welcome!
 
 <details>
@@ -76,6 +78,20 @@ gitlab.clone_projects_in_parallel()
 
 gitlab.pull_projects_in_parallel()
 ```
+
+Use with Agentic AI
+
+```json
+{
+  "mcpServers": {
+    "gitlab": {
+      "command": "repository-manager-mcp"
+    }
+  }
+}
+
+```
+
 </details>
 
 <details>

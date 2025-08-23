@@ -11,18 +11,58 @@ import os
 import re
 import sys
 import getopt
+import logging
 from multiprocessing import Pool
+
+
+# Configure logging
+def setup_logging(is_mcp_server=False, log_file="repository_manager.log"):
+    logger = logging.getLogger("RepositoryManager")
+    logger.setLevel(logging.DEBUG)
+
+    # Clear any existing handlers to avoid duplicate logs
+    logger.handlers.clear()
+
+    if is_mcp_server:
+        # Log to a file when running as MCP server
+        handler = logging.FileHandler(log_file)
+    else:
+        # Log to console (stdout) when running standalone
+        handler = logging.StreamHandler(sys.stdout)
+
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return logger
 
 
 class Git:
     """A class to handle Git operations such as cloning and pulling repositories."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        repository_directory: str = None,
+        git_projects: list = None,
+        threads: int = None,
+        set_to_default_branch: bool = False,
+    ):
         """Initialize the Git class with default settings."""
-        self.repository_directory = f"{os.getcwd()}"
-        self.git_projects = []
-        self.set_to_default_branch = False
-        self.threads = os.cpu_count()
+        self.logger = setup_logging()
+        if repository_directory:
+            self.repository_directory = repository_directory
+        else:
+            self.repository_directory = f"{os.getcwd()}"
+        if git_projects:
+            self.git_projects = git_projects
+        else:
+            self.git_projects = []
+        self.set_to_default_branch = set_to_default_branch
+        self.threads = 1
+        if threads:
+            self.set_threads(threads=threads)
 
     def git_action(self, command: str, directory: str = None) -> str:
         """
@@ -50,41 +90,6 @@ class Git:
         pipe.wait()
         return result
 
-    def set_repository_directory(self, repository_directory: str) -> None:
-        """
-        Set the repository directory for Git operations.
-
-        Args:
-            repository_directory (str): The path to the repository directory.
-
-        Notes:
-            If the specified directory does not exist, a message is printed.
-        """
-        if os.path.exists(repository_directory):
-            self.repository_directory = repository_directory.replace(os.sep, "/")
-        else:
-            print(
-                f'Path specified does not exist: {repository_directory.replace(os.sep, "/")}'
-            )
-
-    def set_git_projects(self, git_projects: list) -> None:
-        """
-        Set the list of Git projects (repository URLs).
-
-        Args:
-            git_projects (list): A list of repository URLs.
-        """
-        self.git_projects = git_projects
-
-    def set_default_branch(self, set_to_default_branch: bool) -> None:
-        """
-        Set the flag to checkout the default branch after pulling.
-
-        Args:
-            set_to_default_branch (bool): Whether to checkout the default branch.
-        """
-        self.set_to_default_branch = set_to_default_branch
-
     def set_threads(self, threads: int) -> None:
         """
         Set the number of threads for parallel processing.
@@ -93,61 +98,73 @@ class Git:
             threads (int): The number of threads.
 
         Notes:
-            If the input is invalid, defaults to the number of CPU cores.
+            If the input is invalid, defaults to the number of CPU cores and logs a warning.
         """
         try:
-            if threads > 0 or threads < os.cpu_count():
+            if threads > 0 and threads <= os.cpu_count():
                 self.threads = threads
             else:
-                print(
+                self.logger.warning(
                     f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}"
                 )
                 self.threads = os.cpu_count()
         except Exception as e:
-            print(
-                f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}\nError: {e}"
+            self.logger.error(
+                f"Did not recognize {threads} as a valid value, defaulting to CPU Count: {os.cpu_count()}. Error: {e}"
             )
             self.threads = os.cpu_count()
 
-    def append_git_project(self, git_project: str) -> None:
-        """
-        Append a single Git project URL to the list of projects.
-
-        Args:
-            git_project (str): The repository URL to append.
-        """
-        self.git_projects.append(git_project)
+    def read_project_list_file(self, file: str = None):
+        if file and not os.path.exists(file):
+            logger.error(f"File not found: {file}")
+        with open(file, "r") as file_repositories:
+            for repository in file_repositories:
+                self.git_projects.append(repository.strip())
 
     def clone_projects_in_parallel(self) -> None:
         """Clone all specified Git projects in parallel using multiple threads."""
         pool = Pool(processes=self.threads)
         pool.map(self.clone_project, self.git_projects)
 
-    def clone_project(self, git_project: str) -> None:
+    def clone_project(self, git_project: str) -> str:
         """
         Clone a single Git project.
 
         Args:
             git_project (str): The repository URL to clone.
         """
-        print(self.git_action(f"git clone {git_project}"))
+        result = self.git_action(f"git clone {git_project}")
+        print(result)
+        self.logger.info(result)
+        return result
 
     def pull_projects_in_parallel(self) -> None:
         """Pull updates for all projects in the repository directory in parallel."""
         pool = Pool(processes=self.threads)
         pool.map(self.pull_project, os.listdir(self.repository_directory))
 
-    def pull_project(self, git_project: str) -> None:
+    def pull_project(self, git_project: str) -> str:
         """
         Pull updates for a single Git project and optionally checkout the default branch.
 
         Args:
             git_project (str): The name of the project directory to pull.
         """
+        result = self.git_action(
+            command="git pull",
+            directory=os.path.normpath(
+                os.path.join(self.repository_directory, git_project)
+            ),
+        )
+        self.logger.info(
+            f"Scanning: {self.repository_directory}/{git_project}\n"
+            f"Pulling latest changes for {git_project}\n"
+            f"{result}"
+        )
         print(
             f"Scanning: {self.repository_directory}/{git_project}\n"
             f"Pulling latest changes for {git_project}\n"
-            f'{self.git_action(command="git pull", directory=os.path.normpath(os.path.join(self.repository_directory, git_project)))}'
+            f"{result}"
         )
         if self.set_to_default_branch:
             default_branch = self.git_action(
@@ -155,18 +172,20 @@ class Git:
                 directory=f"{self.repository_directory}/{git_project}",
             )
             default_branch = re.sub("refs/remotes/origin/", "", default_branch).strip()
-            print(
-                "Checking out default branch ",
-                self.git_action(
-                    f'git checkout "{default_branch}"',
-                    directory=f"{self.repository_directory}/{git_project}",
-                ),
+            default_branch_result = self.git_action(
+                f'git checkout "{default_branch}"',
+                directory=f"{self.repository_directory}/{git_project}",
             )
+            self.logger.info(f"Checking out default branch: {default_branch_result}")
+            print(f"Checking out default branch: {default_branch_result}")
+            result = f"{result}\n{default_branch_result}"
+        return result
 
 
 def usage() -> None:
-    """Print the usage instructions for the command-line tool."""
-    print(
+    """Log the usage instructions for the command-line tool."""
+    logger = setup_logging()
+    logger.info(
         "Usage: \n"
         "-h | --help           [ See usage for script ]\n"
         "-b | --default-branch [ Checkout default branch ]\n"
@@ -197,15 +216,12 @@ def repository_manager(argv: list) -> None:
     Exits:
         If invalid arguments or paths are provided, or if usage is requested.
     """
-    gitlab = Git()
+    logger = setup_logging()
+    git = Git()
     projects = []
-    default_branch_flag = False
     clone_flag = False
     pull_flag = False
     directory = os.curdir
-    file = None
-    repositories = None
-    threads = os.cpu_count()
     try:
         opts, args = getopt.getopt(
             argv,
@@ -228,56 +244,41 @@ def repository_manager(argv: list) -> None:
         if opt in ("-h", "--help"):
             usage()
             sys.exit()
-        elif opt in ("-b", "--b"):
-            default_branch_flag = True
+        elif opt in ("-b", "--default-branch"):
+            git.set_default_branch = True
         elif opt in ("-c", "--clone"):
             clone_flag = True
         elif opt in ("-p", "--pull"):
             pull_flag = True
         elif opt in ("-d", "--directory"):
-            directory = arg
+            if os.path.exists(directory):
+                git.repository_directory = directory
+            else:
+                logger.error(f"Directory not found: {directory}")
+                usage()
+                sys.exit(2)
         elif opt in ("-f", "--file"):
-            file = arg
+            # Verify file with repositories exists
+            if arg and not os.path.exists(arg):
+                logger.error(f"File not found: {arg}")
+                usage()
+                sys.exit(2)
+            git.read_project_list_file(file=arg)
         elif opt in ("-r", "--repositories"):
             repositories = arg.replace(" ", "")
             repositories = repositories.split(",")
+            for repository in repositories:
+                git.projects.append(repository)
         elif opt in ("-t", "--threads"):
-            threads = arg
-
-    # Verify directory to clone/pull exists
-    if os.path.exists(directory):
-        gitlab.set_repository_directory(directory)
-    else:
-        print(f"Directory not found: {directory}")
-        usage()
-        sys.exit(2)
-
-    # Verify file with repositories exists
-    if os.path.exists(file):
-        file_repositories = open(file, "r")
-        for repository in file_repositories:
-            projects.append(repository)
-    else:
-        print(f"File not found: {file}")
-        usage()
-        sys.exit(2)
-
-    if repositories:
-        for repository in repositories:
-            projects.append(repository)
-
-    gitlab.set_threads(threads=int(threads))
+            git.set_threads(threads=int(arg))
 
     projects = list(dict.fromkeys(projects))
-
-    gitlab.set_git_projects(projects)
-
-    gitlab.set_default_branch(set_to_default_branch=default_branch_flag)
+    git.projects = projects
 
     if clone_flag:
-        gitlab.clone_projects_in_parallel()
+        git.clone_projects_in_parallel()
     if pull_flag:
-        gitlab.pull_projects_in_parallel()
+        git.pull_projects_in_parallel()
 
 
 def main():
@@ -287,7 +288,9 @@ def main():
     Exits:
         If insufficient arguments are provided, displays usage and exits.
     """
+    logger = setup_logging()
     if len(sys.argv) < 2:
+        logger.error("Insufficient arguments provided")
         usage()
         sys.exit(2)
     repository_manager(sys.argv[1:])
@@ -297,7 +300,9 @@ if __name__ == "__main__":
     """
     Execute the main function when the script is run directly.
     """
+    logger = setup_logging()
     if len(sys.argv) < 2:
+        logger.error("Insufficient arguments provided")
         usage()
         sys.exit(2)
     repository_manager(sys.argv[1:])
