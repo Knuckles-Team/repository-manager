@@ -63,7 +63,8 @@ This repository is actively maintained - Contributions are welcome!
 <details>
   <summary><b>Example:</b></summary>
 
-Run through CLI
+### Use in CLI
+
 ```bash
 repository-manager \
     --clone  \
@@ -74,7 +75,8 @@ repository-manager \
     --threads 8
 ```
 
-Use directly in Python
+### Use in Python
+
 ```python
 from repository_manager import Git
 
@@ -93,7 +95,30 @@ gitlab.clone_projects_in_parallel()
 gitlab.pull_projects_in_parallel()
 ```
 
-Use with Agentic AI
+### Use with AI
+
+Deploy MCP Server as a Service
+```bash
+docker pull knucklessg1/repository-manager:latest
+```
+
+Modify the `compose.yml`
+
+```compose
+services:
+  repository-manager-mcp:
+    image: knucklessg1/repository-manager:latest
+    volumes:
+      - development:/root/Development
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8001
+    ports:
+      - 8001:8001
+```
+
+Configure `mcp.json`
+
 
 ```json
 {
