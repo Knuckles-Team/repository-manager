@@ -117,12 +117,17 @@ services:
 
 Configure `mcp.json`
 
-
 ```json
 {
   "mcpServers": {
     "repository_manager": {
       "command": "repository-manager-mcp",
+      "env": {
+        "REPOSITORY_DIRECTORY": "/home/user/Development/",            // Optional - Can be specified at prompt
+        "THREADS": "12",                                              // Optional - Can be specified at prompt
+        "DEFAULT_BRANCH": "True",                                     // Optional - Can be specified at prompt
+        "PROJECTS_FILE": "/home/user/Development/repositories.txt"    // Optional - Can be specified at prompt
+      },
       "timeout": 300000
     }
   }

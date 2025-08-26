@@ -11,15 +11,46 @@ logger = setup_logging(is_mcp_server=True, log_file="repository_manager_mcp.log"
 
 mcp = FastMCP(name="GitRepositoryManager")
 
+def to_boolean(string):
+    # Normalize the string: strip whitespace and convert to lowercase
+    normalized = str(string).strip().lower()
+
+    # Define valid true/false values
+    true_values = {'t', 'true', 'y', 'yes', '1'}
+    false_values = {'f', 'false', 'n', 'no', '0'}
+
+    if normalized in true_values:
+        return True
+    elif normalized in false_values:
+        return False
+    else:
+        raise ValueError(f"Cannot convert '{string}' to boolean")
+
+def to_integer(arg):
+    try:
+        # Strip whitespace and convert to int
+        return int(arg.strip())
+    except ValueError:
+        raise ValueError(f"Cannot convert '{arg}' to integer")
+
+environment_repository_directory = os.environ.get("REPOSITORY_DIRECTORY", None)
+environment_threads = os.environ.get("THREADS", None)
+environment_set_to_default_branch = os.environ.get("DEFAULT_BRANCH", None)
+environment_projects_file = os.environ.get("PROJECTS_FILE", None)
+
+if environment_set_to_default_branch:
+    environment_set_to_default_branch = to_boolean(environment_set_to_default_branch)
+if environment_threads:
+    environment_threads = to_integer(environment_threads)
 
 @mcp.tool()
 def git_action(
     command: str,
-    repository_directory: str = None,
+    repository_directory: str = environment_repository_directory,
     projects: Optional[list] = None,
-    projects_file: Optional[str] = None,
-    threads: Optional[int] = None,
-    set_to_default_branch: Optional[bool] = False,
+    projects_file: Optional[str] = environment_projects_file,
+    threads: Optional[int] = environment_threads,
+    set_to_default_branch: Optional[bool] = environment_set_to_default_branch,
 ) -> Dict:
     """
     Execute a Git command in the specified directory using a configured Git instance.
@@ -27,10 +58,14 @@ def git_action(
     Args:
         command (str): The Git command to execute (e.g., 'git pull', 'git clone <repository_url>').
         repository_directory (Optional[str], optional): The directory to execute the command in.
+            This will also look for the environment variable REPOSITORY_DIRECTORY
         projects (Optional[List[str]], optional): List of repository URLs for Git operations.
         projects_file (Optional[str], optional): Path to a file containing a list of repository URLs.
+            This will also look for the environment variable PROJECTS_FILE
         threads (Optional[int], optional): Number of threads for parallel processing.
+            This will also look for the environment variable THREADS
         set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
+            This will also look for the environment variable DEFAULT_BRANCH
         ctx (Context, optional): MCP context for logging.
 
     Returns:
@@ -60,9 +95,9 @@ def git_action(
 @mcp.tool()
 def clone_project(
     git_project: str = None,
-    repository_directory: str = None,
-    threads: Optional[int] = None,
-    set_to_default_branch: Optional[bool] = False,
+    repository_directory: str = environment_repository_directory,
+    threads: Optional[int] = environment_threads,
+    set_to_default_branch: Optional[bool] = environment_set_to_default_branch,
 ) -> str:
     """
     Clone a single Git project using a configured Git instance.
@@ -98,10 +133,10 @@ def clone_project(
 @mcp.tool()
 def clone_projects(
     projects: Optional[List[str]] = None,
-    projects_file: Optional[str] = None,
-    repository_directory: str = None,
-    threads: Optional[int] = None,
-    set_to_default_branch: Optional[bool] = False,
+    projects_file: Optional[str] = environment_projects_file,
+    repository_directory: str = environment_repository_directory,
+    threads: Optional[int] = environment_threads,
+    set_to_default_branch: Optional[bool] = environment_set_to_default_branch,
 ) -> str:
     """
     Clone multiple Git projects in parallel using a configured Git instance. Successful and Failed pulls
@@ -152,9 +187,9 @@ def clone_projects(
 @mcp.tool()
 def pull_project(
     git_project: str,
-    repository_directory: str = None,
-    threads: Optional[int] = None,
-    set_to_default_branch: Optional[bool] = False,
+    repository_directory: str = environment_repository_directory,
+    threads: Optional[int] = environment_threads,
+    set_to_default_branch: Optional[bool] = environment_set_to_default_branch,
 ) -> str:
     """
     Pull updates for a single Git project using a configured Git instance.
@@ -189,9 +224,9 @@ def pull_project(
 
 @mcp.tool()
 def pull_projects(
-    repository_directory: str = None,
-    threads: Optional[int] = None,
-    set_to_default_branch: Optional[bool] = False,
+    repository_directory: str = environment_repository_directory,
+    threads: Optional[int] = environment_threads,
+    set_to_default_branch: Optional[bool] = environment_set_to_default_branch,
 ) -> str:
     """
     Pull updates for multiple Git projects located in the repository_directory. Successful and Failed pulls
