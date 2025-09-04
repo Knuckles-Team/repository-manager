@@ -17,7 +17,9 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 requires-python = ">=3.8"
-dependencies = []
+dependencies = [
+    "fastmcp>=2.11.3",
+]
 
 [project.scripts]
 repository-manager = "repository_manager.repository_manager:main"
