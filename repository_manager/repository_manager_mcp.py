@@ -11,13 +11,14 @@ logger = setup_logging(is_mcp_server=True, log_file="repository_manager_mcp.log"
 
 mcp = FastMCP(name="GitRepositoryManager")
 
+
 def to_boolean(string):
     # Normalize the string: strip whitespace and convert to lowercase
     normalized = str(string).strip().lower()
 
     # Define valid true/false values
-    true_values = {'t', 'true', 'y', 'yes', '1'}
-    false_values = {'f', 'false', 'n', 'no', '0'}
+    true_values = {"t", "true", "y", "yes", "1"}
+    false_values = {"f", "false", "n", "no", "0"}
 
     if normalized in true_values:
         return True
@@ -26,12 +27,14 @@ def to_boolean(string):
     else:
         raise ValueError(f"Cannot convert '{string}' to boolean")
 
+
 def to_integer(arg):
     try:
         # Strip whitespace and convert to int
         return int(arg.strip())
     except ValueError:
         raise ValueError(f"Cannot convert '{arg}' to integer")
+
 
 environment_repository_directory = os.environ.get("REPOSITORY_DIRECTORY", None)
 environment_threads = os.environ.get("THREADS", None)
@@ -42,6 +45,7 @@ if environment_set_to_default_branch:
     environment_set_to_default_branch = to_boolean(environment_set_to_default_branch)
 if environment_threads:
     environment_threads = to_integer(environment_threads)
+
 
 @mcp.tool()
 def git_action(
