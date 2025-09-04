@@ -20,7 +20,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.0.33*
+*Version: 1.0.34*
 
 Manage your Git projects
 
@@ -123,7 +123,13 @@ Configure `mcp.json`
 {
   "mcpServers": {
     "repository_manager": {
-      "command": "repository-manager-mcp",
+      "command": "uv",
+      "args": [
+        "run",
+        "--with",
+        "repository-manager",
+        "repository-manager-mcp"
+      ],
       "env": {
         "REPOSITORY_DIRECTORY": "/home/user/Development/",            // Optional - Can be specified at prompt
         "THREADS": "12",                                              // Optional - Can be specified at prompt
