@@ -6,7 +6,9 @@ import getopt
 from typing import Optional, List, Dict
 from fastmcp import FastMCP
 from repository_manager import setup_logging, Git
+from pydantic import Field
 
+# Initialize logging for MCP server
 logger = setup_logging(is_mcp_server=True, log_file="repository_manager_mcp.log")
 
 mcp = FastMCP(name="GitRepositoryManager")
@@ -15,11 +17,8 @@ mcp = FastMCP(name="GitRepositoryManager")
 def to_boolean(string):
     # Normalize the string: strip whitespace and convert to lowercase
     normalized = str(string).strip().lower()
-
-    # Define valid true/false values
     true_values = {"t", "true", "y", "yes", "1"}
     false_values = {"f", "false", "n", "no", "0"}
-
     if normalized in true_values:
         return True
     elif normalized in false_values:
@@ -30,7 +29,6 @@ def to_boolean(string):
 
 def to_integer(arg):
     try:
-        # Strip whitespace and convert to int
         return int(arg.strip())
     except ValueError:
         raise ValueError(f"Cannot convert '{arg}' to integer")
@@ -47,37 +45,44 @@ if environment_threads:
     environment_threads = to_integer(environment_threads)
 
 
-@mcp.tool()
-def git_action(
-    command: str,
-    repository_directory: str = environment_repository_directory,
-    projects: Optional[list] = None,
-    projects_file: Optional[str] = environment_projects_file,
-    threads: Optional[int] = environment_threads,
-    set_to_default_branch: Optional[bool] = environment_set_to_default_branch,
+@mcp.tool(
+    annotations={
+        "title": "Execute Git Command",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+    tags={"git_operations"},
+)
+async def git_action(
+    command: str = Field(
+        description="The Git command to execute (e.g., 'git pull', 'git clone <repository_url>')"
+    ),
+    repository_directory: Optional[str] = Field(
+        description="The directory to execute the command in. Defaults to REPOSITORY_DIRECTORY env variable.",
+        default=environment_repository_directory,
+    ),
+    projects: Optional[List[str]] = Field(
+        description="List of repository URLs for Git operations.", default=None
+    ),
+    projects_file: Optional[str] = Field(
+        description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
+        default=environment_projects_file,
+    ),
+    threads: Optional[int] = Field(
+        description="Number of threads for parallel processing. Defaults to THREADS env variable.",
+        default=environment_threads,
+    ),
+    set_to_default_branch: Optional[bool] = Field(
+        description="Whether to checkout the default branch. Defaults to DEFAULT_BRANCH env variable.",
+        default=environment_set_to_default_branch,
+    ),
 ) -> Dict:
-    """
-    Execute a Git command in the specified directory using a configured Git instance.
-
-    Args:
-        command (str): The Git command to execute (e.g., 'git pull', 'git clone <repository_url>').
-        repository_directory (Optional[str], optional): The directory to execute the command in.
-            This will also look for the environment variable REPOSITORY_DIRECTORY
-        projects (Optional[List[str]], optional): List of repository URLs for Git operations.
-        projects_file (Optional[str], optional): Path to a file containing a list of repository URLs.
-            This will also look for the environment variable PROJECTS_FILE
-        threads (Optional[int], optional): Number of threads for parallel processing.
-            This will also look for the environment variable THREADS
-        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
-            This will also look for the environment variable DEFAULT_BRANCH
-        ctx (Context, optional): MCP context for logging.
-
-    Returns:
-        Dict: The combined stdout and stderr output of the executed Git command in structured format.
-
-    Raises:
-        FileNotFoundError: If the specified repository directory or projects_file does not exist.
-    """
+    """Executes a Git command in the specified directory."""
+    logger.debug(
+        f"Executing git_action with command: {command}, directory: {repository_directory}"
+    )
     try:
         git = Git(
             repository_directory=repository_directory,
@@ -85,7 +90,7 @@ def git_action(
             threads=threads,
             set_to_default_branch=set_to_default_branch,
             capture_output=True,
-            is_mcp_server=True,  # Pass is_mcp_server
+            is_mcp_server=True,
         )
         if projects_file:
             git.read_project_list_file(file=projects_file)
@@ -96,30 +101,38 @@ def git_action(
         raise
 
 
-@mcp.tool()
-def clone_project(
-    git_project: str = None,
-    repository_directory: str = environment_repository_directory,
-    threads: Optional[int] = environment_threads,
-    set_to_default_branch: Optional[bool] = environment_set_to_default_branch,
+@mcp.tool(
+    annotations={
+        "title": "Clone Single Git Project",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+    tags={"git_operations"},
+)
+async def clone_project(
+    git_project: Optional[str] = Field(
+        description="The repository URL to clone.", default=None
+    ),
+    repository_directory: Optional[str] = Field(
+        description="The directory to clone the project into. Defaults to REPOSITORY_DIRECTORY env variable.",
+        default=environment_repository_directory,
+    ),
+    threads: Optional[int] = Field(
+        description="Number of threads for parallel processing. Defaults to THREADS env variable.",
+        default=environment_threads,
+    ),
+    set_to_default_branch: Optional[bool] = Field(
+        description="Whether to checkout the default branch. Defaults to DEFAULT_BRANCH env variable.",
+        default=environment_set_to_default_branch,
+    ),
 ) -> str:
-    """
-    Clone a single Git project using a configured Git instance.
-
-    Args:
-        git_project (Optional[str], optional): The repository URL to clone.
-        repository_directory (Optional[str], optional): The directory to clone the project into.
-        threads (Optional[int], optional): Number of threads for parallel processing.
-        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
-
-    Returns:
-        str: The response message string
-
-    Raises:
-        FileNotFoundError: If the repository directory does not exist.
-        ValueError: If git_project is not provided.
-    """
+    """Clones a single Git project to the specified directory."""
+    logger.debug(f"Cloning project: {git_project}, directory: {repository_directory}")
     try:
+        if not git_project:
+            raise ValueError("git_project must not be empty")
         git = Git(
             repository_directory=repository_directory,
             threads=threads,
@@ -134,34 +147,39 @@ def clone_project(
         raise
 
 
-@mcp.tool()
-def clone_projects(
-    projects: Optional[List[str]] = None,
-    projects_file: Optional[str] = environment_projects_file,
-    repository_directory: str = environment_repository_directory,
-    threads: Optional[int] = environment_threads,
-    set_to_default_branch: Optional[bool] = environment_set_to_default_branch,
+@mcp.tool(
+    annotations={
+        "title": "Clone Multiple Git Projects",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+    tags={"git_operations"},
+)
+async def clone_projects(
+    projects: Optional[List[str]] = Field(
+        description="List of repository URLs to clone.", default=None
+    ),
+    projects_file: Optional[str] = Field(
+        description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
+        default=environment_projects_file,
+    ),
+    repository_directory: Optional[str] = Field(
+        description="The directory to clone projects into. Defaults to REPOSITORY_DIRECTORY env variable.",
+        default=environment_repository_directory,
+    ),
+    threads: Optional[int] = Field(
+        description="Number of threads for parallel processing. Defaults to THREADS env variable.",
+        default=environment_threads,
+    ),
+    set_to_default_branch: Optional[bool] = Field(
+        description="Whether to checkout the default branch. Defaults to DEFAULT_BRANCH env variable.",
+        default=environment_set_to_default_branch,
+    ),
 ) -> str:
-    """
-    Clone multiple Git projects in parallel using a configured Git instance. Successful and Failed pulls
-    are to be expected from the response output. This function should only be run once. Just let the user know the
-    action was performed once finished.
-
-    Args:
-        projects (Optional[List[str]], optional): List of repository URLs to clone.
-        projects_file (Optional[str], optional): Path to a file containing a list of repository URLs.
-        repository_directory (Optional[str], optional): The directory to clone projects into.
-        threads (Optional[int], optional): Number of threads for parallel processing.
-        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
-        ctx (Context, optional): MCP context for logging.
-
-    Returns:
-        str: The response message string
-
-    Raises:
-        FileNotFoundError: If the repository directory or projects_file does not exist.
-        ValueError: If neither projects nor projects_file is provided, or if both are empty.
-    """
+    """Clones multiple Git projects in parallel to the specified directory."""
+    logger.debug(f"Cloning projects to directory: {repository_directory}")
     try:
         if not projects and not projects_file:
             raise ValueError("Either projects or projects_file must be provided")
@@ -188,30 +206,36 @@ def clone_projects(
         raise
 
 
-@mcp.tool()
-def pull_project(
-    git_project: str,
-    repository_directory: str = environment_repository_directory,
-    threads: Optional[int] = environment_threads,
-    set_to_default_branch: Optional[bool] = environment_set_to_default_branch,
+@mcp.tool(
+    annotations={
+        "title": "Pull Single Git Project",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+    tags={"git_operations"},
+)
+async def pull_project(
+    git_project: str = Field(description="The name of the project directory to pull."),
+    repository_directory: Optional[str] = Field(
+        description="The parent directory containing the project. Defaults to REPOSITORY_DIRECTORY env variable.",
+        default=environment_repository_directory,
+    ),
+    threads: Optional[int] = Field(
+        description="Number of threads for parallel processing. Defaults to THREADS env variable.",
+        default=environment_threads,
+    ),
+    set_to_default_branch: Optional[bool] = Field(
+        description="Whether to checkout the default branch. Defaults to DEFAULT_BRANCH env variable.",
+        default=environment_set_to_default_branch,
+    ),
 ) -> str:
-    """
-    Pull updates for a single Git project using a configured Git instance.
-
-    Args:
-        git_project (str): The name of the project directory to pull.
-        repository_directory (Optional[str], optional): The parent directory containing the project.
-        threads (Optional[int], optional): Number of threads for parallel processing.
-        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
-
-    Returns:
-        str: The response message string
-
-    Raises:
-        FileNotFoundError: If the project directory does not exist.
-        ValueError: If git_project is not provided.
-    """
+    """Pulls updates for a single Git project."""
+    logger.debug(f"Pulling project: {git_project}, directory: {repository_directory}")
     try:
+        if not git_project:
+            raise ValueError("git_project must not be empty")
         git = Git(
             repository_directory=repository_directory,
             threads=threads,
@@ -226,29 +250,32 @@ def pull_project(
         raise
 
 
-@mcp.tool()
-def pull_projects(
-    repository_directory: str = environment_repository_directory,
-    threads: Optional[int] = environment_threads,
-    set_to_default_branch: Optional[bool] = environment_set_to_default_branch,
+@mcp.tool(
+    annotations={
+        "title": "Pull Multiple Git Projects",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    },
+    tags={"git_operations"},
+)
+async def pull_projects(
+    repository_directory: Optional[str] = Field(
+        description="The directory containing the projects to pull. Defaults to REPOSITORY_DIRECTORY env variable.",
+        default=environment_repository_directory,
+    ),
+    threads: Optional[int] = Field(
+        description="Number of threads for parallel processing. Defaults to THREADS env variable.",
+        default=environment_threads,
+    ),
+    set_to_default_branch: Optional[bool] = Field(
+        description="Whether to checkout the default branch. Defaults to DEFAULT_BRANCH env variable.",
+        default=environment_set_to_default_branch,
+    ),
 ) -> str:
-    """
-    Pull updates for multiple Git projects located in the repository_directory. Successful and Failed pulls
-    are to be expected from the response output. This function should only be run once. Just let the user know the
-    action was performed once finished.
-
-    Args:
-        repository_directory (Optional[str], optional): The directory containing the projects to pull.
-        threads (Optional[int], optional): Number of threads for parallel processing.
-        set_to_default_branch (Optional[bool], optional): Whether to checkout the default branch.
-        ctx (Context, optional): MCP context for logging.
-
-    Returns:
-        str: The response message string
-
-    Raises:
-        FileNotFoundError: If the repository directory does not exist.
-    """
+    """Pulls updates for multiple Git projects in parallel."""
+    logger.debug(f"Pulling projects from directory: {repository_directory}")
     try:
         if repository_directory and not os.path.exists(repository_directory):
             raise FileNotFoundError(
@@ -289,8 +316,8 @@ def repository_manager_mcp(argv):
             host = arg
         elif opt in ("-p", "--port"):
             try:
-                port = int(arg)  # Attempt to convert port to integer
-                if not (0 <= port <= 65535):  # Valid port range
+                port = int(arg)
+                if not (0 <= port <= 65535):
                     print(f"Error: Port {arg} is out of valid range (0-65535).")
                     sys.exit(1)
             except ValueError:
