@@ -10,7 +10,7 @@ import subprocess
 import os
 import re
 import sys
-import getopt
+import argparse
 import logging
 import concurrent.futures
 import datetime
@@ -368,69 +368,60 @@ def usage() -> None:
     )
 
 
-def repository_manager(argv: list) -> None:
+def repository_manager() -> None:
     """
     Process command-line arguments and manage Git repository operations.
-
-    Args:
-        argv (list): List of command-line arguments.
-
-    Exits:
-        If invalid arguments or paths are provided, or if usage is requested.
     """
+    parser = argparse.ArgumentParser(description="Git Repository Manager Utility")
+    parser.add_argument(
+        "-b",
+        "--default-branch",
+        action="store_true",
+        help="Set repository to default branch",
+    )
+    parser.add_argument("-c", "--clone", action="store_true", help="Clone repositories")
+    parser.add_argument("-p", "--pull", action="store_true", help="Pull repositories")
+    parser.add_argument(
+        "-d", "--directory", type=str, help="Specify repository directory"
+    )
+    parser.add_argument(
+        "-f", "--file", type=str, help="Specify file with repository list"
+    )
+    parser.add_argument(
+        "-r", "--repositories", type=str, help="Comma-separated list of repositories"
+    )
+    parser.add_argument(
+        "-t", "--threads", type=int, help="Number of threads for parallel operations"
+    )
+
+    args = parser.parse_args()
+
     logger = setup_logging()
     git = Git()
-    clone_flag = False
-    pull_flag = False
-    try:
-        opts, args = getopt.getopt(
-            argv,
-            "hbcpd:f:r:t:",
-            [
-                "help",
-                "default-branch",
-                "clone",
-                "pull",
-                "directory=",
-                "file=",
-                "repositories=",
-                "threads=",
-            ],
-        )
-    except getopt.GetoptError:
-        usage()
-        sys.exit(2)
-    for opt, arg in opts:
-        if opt in ("-h", "--help"):
-            usage()
-            sys.exit()
-        elif opt in ("-b", "--default-branch"):
-            git.set_to_default_branch = True
-        elif opt in ("-c", "--clone"):
-            clone_flag = True
-        elif opt in ("-p", "--pull"):
-            pull_flag = True
-        elif opt in ("-d", "--directory"):
-            if os.path.exists(arg):
-                git.repository_directory = arg
-            else:
-                logger.error(f"Directory not found: {arg}")
-                usage()
-                sys.exit(2)
-        elif opt in ("-f", "--file"):
-            # Verify file with repositories exists
-            if arg and not os.path.exists(arg):
-                logger.error(f"File not found: {arg}")
-                usage()
-                sys.exit(2)
-            git.read_project_list_file(file=arg)
-        elif opt in ("-r", "--repositories"):
-            repositories = arg.replace(" ", "")
-            repositories = repositories.split(",")
-            for repository in repositories:
-                git.projects.append(repository)
-        elif opt in ("-t", "--threads"):
-            git.set_threads(threads=int(arg))
+    clone_flag = args.clone
+    pull_flag = args.pull
+
+    if args.default_branch:
+        git.set_to_default_branch = True
+    if args.directory:
+        if os.path.exists(args.directory):
+            git.repository_directory = args.directory
+        else:
+            logger.error(f"Directory not found: {args.directory}")
+            parser.print_help()
+            sys.exit(2)
+    if args.file:
+        if not os.path.exists(args.file):
+            logger.error(f"File not found: {args.file}")
+            parser.print_help()
+            sys.exit(2)
+        git.read_project_list_file(file=args.file)
+    if args.repositories:
+        repositories = args.repositories.replace(" ", "").split(",")
+        for repository in repositories:
+            git.projects.append(repository)
+    if args.threads:
+        git.set_threads(threads=args.threads)
 
     git.projects = list(dict.fromkeys(git.projects))
 
@@ -440,28 +431,8 @@ def repository_manager(argv: list) -> None:
         git.pull_projects_in_parallel()
 
 
-def main():
-    """
-    Entry point for the command-line tool.
-
-    Exits:
-        If insufficient arguments are provided, displays usage and exits.
-    """
-    logger = setup_logging()
-    if len(sys.argv) < 2:
-        logger.error("Insufficient arguments provided")
-        usage()
-        sys.exit(2)
-    repository_manager(sys.argv[1:])
-
-
 if __name__ == "__main__":
     """
     Execute the main function when the script is run directly.
     """
-    logger = setup_logging()
-    if len(sys.argv) < 2:
-        logger.error("Insufficient arguments provided")
-        usage()
-        sys.exit(2)
-    repository_manager(sys.argv[1:])
+    repository_manager()
