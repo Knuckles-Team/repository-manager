@@ -29,6 +29,8 @@ def to_boolean(string):
 
 
 def to_integer(arg):
+    if not arg:
+        return 0
     try:
         return int(arg.strip())
     except ValueError:
@@ -62,7 +64,7 @@ async def git_action(
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", None)),
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", 6)),
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
@@ -111,7 +113,7 @@ async def clone_project(
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", None)),
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", 6)),
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
@@ -161,7 +163,7 @@ async def clone_projects(
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", None)),
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", 6)),
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
@@ -214,7 +216,7 @@ async def pull_project(
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", None)),
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", 6)),
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
@@ -257,7 +259,7 @@ async def pull_projects(
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", None)),
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", 6)),
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
