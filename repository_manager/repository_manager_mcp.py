@@ -4,7 +4,7 @@ import os
 import sys
 import argparse
 import logging
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Union
 from fastmcp import FastMCP
 from repository_manager import setup_logging, Git
 from pydantic import Field
@@ -15,8 +15,9 @@ logger = setup_logging(is_mcp_server=True, log_file="repository_manager_mcp.log"
 mcp = FastMCP(name="GitRepositoryManager")
 
 
-def to_boolean(string):
-    # Normalize the string: strip whitespace and convert to lowercase
+def to_boolean(string: str = None) -> bool:
+    if not string:
+        return False
     normalized = str(string).strip().lower()
     true_values = {"t", "true", "y", "yes", "1"}
     false_values = {"f", "false", "n", "no", "0"}
@@ -28,13 +29,13 @@ def to_boolean(string):
         raise ValueError(f"Cannot convert '{string}' to boolean")
 
 
-def to_integer(arg):
-    if not arg:
+def to_integer(string: Union[str] = None) -> int:
+    if not string:
         return 0
     try:
-        return int(arg.strip())
+        return int(string.strip())
     except ValueError:
-        raise ValueError(f"Cannot convert '{arg}' to integer")
+        raise ValueError(f"Cannot convert '{string}' to integer")
 
 
 @mcp.tool(
@@ -64,14 +65,17 @@ async def git_action(
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", 6)),
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
         default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
     ),
 ) -> Dict:
-    """Executes a Git command in the specified directory."""
+    """
+    Executes a Git command in the specified directory.
+    Returns details from that git action run
+    """
     logger.debug(
         f"Executing git_action with command: {command}, directory: {repository_directory}"
     )
@@ -113,14 +117,17 @@ async def clone_project(
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", 6)),
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
         default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
     ),
 ) -> str:
-    """Clones a single Git project to the specified directory."""
+    """
+    Clones a single Git project to the specified directory.
+    Returns details about the cloned project
+    """
     logger.debug(f"Cloning project: {git_project}, directory: {repository_directory}")
     try:
         if not git_project:
@@ -163,14 +170,17 @@ async def clone_projects(
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", 6)),
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
         default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
     ),
 ) -> str:
-    """Clones multiple Git projects in parallel to the specified directory."""
+    """
+    Clones multiple Git projects in parallel to the specified directory.
+    Returns a list of projects that were cloned
+    """
     logger.debug(f"Cloning projects to directory: {repository_directory}")
     try:
         if not projects and not projects_file:
@@ -216,14 +226,17 @@ async def pull_project(
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", 6)),
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
         default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
     ),
 ) -> str:
-    """Pulls updates for a single Git project."""
+    """
+    Pulls updates for a single Git project.
+    Returns details about project pulled using git
+    """
     logger.debug(f"Pulling project: {git_project}, directory: {repository_directory}")
     try:
         if not git_project:
@@ -259,14 +272,17 @@ async def pull_projects(
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", 6)),
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
         default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
     ),
 ) -> str:
-    """Pulls updates for multiple Git projects in parallel."""
+    """
+    Pulls updates for multiple Git projects in parallel.
+    Returns a list of projects that were pulled
+    """
     logger.debug(f"Pulling projects from directory: {repository_directory}")
     try:
         if repository_directory and not os.path.exists(repository_directory):
