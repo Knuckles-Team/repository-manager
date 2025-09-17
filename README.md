@@ -20,7 +20,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.0.35*
+*Version: 1.1.0*
 
 Manage your Git projects
 
@@ -131,10 +131,10 @@ Configure `mcp.json`
         "repository-manager-mcp"
       ],
       "env": {
-        "REPOSITORY_DIRECTORY": "/home/user/Development/",            // Optional - Can be specified at prompt
-        "THREADS": "12",                                              // Optional - Can be specified at prompt
-        "DEFAULT_BRANCH": "True",                                     // Optional - Can be specified at prompt
-        "PROJECTS_FILE": "/home/user/Development/repositories.txt"    // Optional - Can be specified at prompt
+        "REPOSITORY_MANAGER_DIRECTORY": "/home/user/Development/",                       // Optional - Can be specified at prompt
+        "REPOSITORY_MANAGER_THREADS": "12",                                              // Optional - Can be specified at prompt
+        "REPOSITORY_MANAGER_DEFAULT_BRANCH": "True",                                     // Optional - Can be specified at prompt
+        "REPOSITORY_MANAGER_PROJECTS_FILE": "/home/user/Development/repositories.txt"    // Optional - Can be specified at prompt
       },
       "timeout": 300000
     }
