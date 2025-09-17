@@ -2,7 +2,8 @@
 # coding: utf-8
 import os
 import sys
-import getopt
+import argparse
+import logging
 from typing import Optional, List, Dict
 from fastmcp import FastMCP
 from repository_manager import setup_logging, Git
@@ -34,17 +35,6 @@ def to_integer(arg):
         raise ValueError(f"Cannot convert '{arg}' to integer")
 
 
-environment_repository_directory = os.environ.get("REPOSITORY_DIRECTORY", None)
-environment_threads = os.environ.get("THREADS", None)
-environment_set_to_default_branch = os.environ.get("DEFAULT_BRANCH", None)
-environment_projects_file = os.environ.get("PROJECTS_FILE", None)
-
-if environment_set_to_default_branch:
-    environment_set_to_default_branch = to_boolean(environment_set_to_default_branch)
-if environment_threads:
-    environment_threads = to_integer(environment_threads)
-
-
 @mcp.tool(
     annotations={
         "title": "Execute Git Command",
@@ -60,23 +50,23 @@ async def git_action(
         description="The Git command to execute (e.g., 'git pull', 'git clone <repository_url>')"
     ),
     repository_directory: Optional[str] = Field(
-        description="The directory to execute the command in. Defaults to REPOSITORY_DIRECTORY env variable.",
-        default=environment_repository_directory,
+        description="The directory to execute the command in. Defaults to REPOSITORY_MANAGER_DIRECTORY env variable.",
+        default=os.environ.get("REPOSITORY_MANAGER_DIRECTORY", None),
     ),
     projects: Optional[List[str]] = Field(
         description="List of repository URLs for Git operations.", default=None
     ),
     projects_file: Optional[str] = Field(
         description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-        default=environment_projects_file,
+        default=os.environ.get("PROJECTS_FILE", None),
     ),
     threads: Optional[int] = Field(
-        description="Number of threads for parallel processing. Defaults to THREADS env variable.",
-        default=environment_threads,
+        description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", None)),
     ),
     set_to_default_branch: Optional[bool] = Field(
-        description="Whether to checkout the default branch. Defaults to DEFAULT_BRANCH env variable.",
-        default=environment_set_to_default_branch,
+        description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
+        default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
     ),
 ) -> Dict:
     """Executes a Git command in the specified directory."""
@@ -116,16 +106,16 @@ async def clone_project(
         description="The repository URL to clone.", default=None
     ),
     repository_directory: Optional[str] = Field(
-        description="The directory to clone the project into. Defaults to REPOSITORY_DIRECTORY env variable.",
-        default=environment_repository_directory,
+        description="The directory to clone the project into. Defaults to REPOSITORY_MANAGER_DIRECTORY env variable.",
+        default=os.environ.get("REPOSITORY_MANAGER_DIRECTORY", None),
     ),
     threads: Optional[int] = Field(
-        description="Number of threads for parallel processing. Defaults to THREADS env variable.",
-        default=environment_threads,
+        description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", None)),
     ),
     set_to_default_branch: Optional[bool] = Field(
-        description="Whether to checkout the default branch. Defaults to DEFAULT_BRANCH env variable.",
-        default=environment_set_to_default_branch,
+        description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
+        default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
     ),
 ) -> str:
     """Clones a single Git project to the specified directory."""
@@ -163,19 +153,19 @@ async def clone_projects(
     ),
     projects_file: Optional[str] = Field(
         description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-        default=environment_projects_file,
+        default=os.environ.get("PROJECTS_FILE", None),
     ),
     repository_directory: Optional[str] = Field(
-        description="The directory to clone projects into. Defaults to REPOSITORY_DIRECTORY env variable.",
-        default=environment_repository_directory,
+        description="The directory to clone projects into. Defaults to REPOSITORY_MANAGER_DIRECTORY env variable.",
+        default=os.environ.get("REPOSITORY_MANAGER_DIRECTORY", None),
     ),
     threads: Optional[int] = Field(
-        description="Number of threads for parallel processing. Defaults to THREADS env variable.",
-        default=environment_threads,
+        description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", None)),
     ),
     set_to_default_branch: Optional[bool] = Field(
-        description="Whether to checkout the default branch. Defaults to DEFAULT_BRANCH env variable.",
-        default=environment_set_to_default_branch,
+        description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
+        default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
     ),
 ) -> str:
     """Clones multiple Git projects in parallel to the specified directory."""
@@ -219,16 +209,16 @@ async def clone_projects(
 async def pull_project(
     git_project: str = Field(description="The name of the project directory to pull."),
     repository_directory: Optional[str] = Field(
-        description="The parent directory containing the project. Defaults to REPOSITORY_DIRECTORY env variable.",
-        default=environment_repository_directory,
+        description="The parent directory containing the project. Defaults to REPOSITORY_MANAGER_DIRECTORY env variable.",
+        default=os.environ.get("REPOSITORY_MANAGER_DIRECTORY", None),
     ),
     threads: Optional[int] = Field(
-        description="Number of threads for parallel processing. Defaults to THREADS env variable.",
-        default=environment_threads,
+        description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", None)),
     ),
     set_to_default_branch: Optional[bool] = Field(
-        description="Whether to checkout the default branch. Defaults to DEFAULT_BRANCH env variable.",
-        default=environment_set_to_default_branch,
+        description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
+        default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
     ),
 ) -> str:
     """Pulls updates for a single Git project."""
@@ -262,16 +252,16 @@ async def pull_project(
 )
 async def pull_projects(
     repository_directory: Optional[str] = Field(
-        description="The directory containing the projects to pull. Defaults to REPOSITORY_DIRECTORY env variable.",
-        default=environment_repository_directory,
+        description="The directory containing the projects to pull. Defaults to REPOSITORY_MANAGER_DIRECTORY env variable.",
+        default=os.environ.get("REPOSITORY_MANAGER_DIRECTORY", None),
     ),
     threads: Optional[int] = Field(
-        description="Number of threads for parallel processing. Defaults to THREADS env variable.",
-        default=environment_threads,
+        description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
+        default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", None)),
     ),
     set_to_default_branch: Optional[bool] = Field(
-        description="Whether to checkout the default branch. Defaults to DEFAULT_BRANCH env variable.",
-        default=environment_set_to_default_branch,
+        description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
+        default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
     ),
 ) -> str:
     """Pulls updates for multiple Git projects in parallel."""
@@ -295,46 +285,37 @@ async def pull_projects(
         raise
 
 
-def repository_manager_mcp(argv):
-    transport = "stdio"
-    host = "0.0.0.0"
-    port = 8000
-    try:
-        opts, args = getopt.getopt(
-            argv,
-            "ht:h:p:",
-            ["help", "transport=", "host=", "port="],
-        )
-    except getopt.GetoptError:
-        sys.exit(2)
-    for opt, arg in opts:
-        if opt in ("-h", "--help"):
-            sys.exit()
-        elif opt in ("-t", "--transport"):
-            transport = arg
-        elif opt in ("-h", "--host"):
-            host = arg
-        elif opt in ("-p", "--port"):
-            try:
-                port = int(arg)
-                if not (0 <= port <= 65535):
-                    print(f"Error: Port {arg} is out of valid range (0-65535).")
-                    sys.exit(1)
-            except ValueError:
-                print(f"Error: Port {arg} is not a valid integer.")
-                sys.exit(1)
+def repository_manager_mcp():
+    parser = argparse.ArgumentParser(description="Repository Manager MCP Utility")
+    parser.add_argument(
+        "-t", "--transport", default="stdio", help="Transport method (stdio or http)"
+    )
+    parser.add_argument(
+        "-s", "--host", default="0.0.0.0", help="Host address for HTTP transport"
+    )
+    parser.add_argument(
+        "-p", "--port", type=int, default=8000, help="Port for HTTP transport"
+    )
+
+    args = parser.parse_args()
+
+    transport = args.transport
+    host = args.host
+    port = args.port
+
+    if not (0 <= port <= 65535):
+        print(f"Error: Port {port} is out of valid range (0-65535).")
+        sys.exit(1)
+
     if transport == "stdio":
         mcp.run(transport="stdio")
     elif transport == "http":
         mcp.run(transport="http", host=host, port=port)
     else:
+        logger = logging.getLogger("RepositoryManager")
         logger.error("Transport not supported")
         sys.exit(1)
 
 
-def main():
-    repository_manager_mcp(sys.argv[1:])
-
-
 if __name__ == "__main__":
-    repository_manager_mcp(sys.argv[1:])
+    repository_manager_mcp()
