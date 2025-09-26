@@ -305,30 +305,40 @@ async def pull_projects(
 
 def repository_manager_mcp():
     parser = argparse.ArgumentParser(description="Repository Manager MCP Utility")
+
     parser.add_argument(
-        "-t", "--transport", default="stdio", help="Transport method (stdio or http)"
+        "-t",
+        "--transport",
+        default="stdio",
+        choices=["stdio", "http", "sse"],
+        help="Transport method: 'stdio', 'http', or 'sse' [legacy] (default: stdio)",
     )
     parser.add_argument(
-        "-s", "--host", default="0.0.0.0", help="Host address for HTTP transport"
+        "-s",
+        "--host",
+        default="0.0.0.0",
+        help="Host address for HTTP transport (default: 0.0.0.0)",
     )
     parser.add_argument(
-        "-p", "--port", type=int, default=8000, help="Port for HTTP transport"
+        "-p",
+        "--port",
+        type=int,
+        default=8000,
+        help="Port number for HTTP transport (default: 8000)",
     )
 
     args = parser.parse_args()
 
-    transport = args.transport
-    host = args.host
-    port = args.port
-
-    if not (0 <= port <= 65535):
-        print(f"Error: Port {port} is out of valid range (0-65535).")
+    if args.port < 0 or args.port > 65535:
+        print(f"Error: Port {args.port} is out of valid range (0-65535).")
         sys.exit(1)
 
-    if transport == "stdio":
+    if args.transport == "stdio":
         mcp.run(transport="stdio")
-    elif transport == "http":
-        mcp.run(transport="http", host=host, port=port)
+    elif args.transport == "http":
+        mcp.run(transport="http", host=args.host, port=args.port)
+    elif args.transport == "sse":
+        mcp.run(transport="sse", host=args.host, port=args.port)
     else:
         logger = logging.getLogger("RepositoryManager")
         logger.error("Transport not supported")
