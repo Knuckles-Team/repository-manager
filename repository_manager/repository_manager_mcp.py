@@ -15,7 +15,9 @@ logger = setup_logging(is_mcp_server=True, log_file="repository_manager_mcp.log"
 mcp = FastMCP(name="GitRepositoryManager")
 
 
-def to_boolean(string: str = None) -> bool:
+def to_boolean(string: Union[str, bool] = None) -> bool:
+    if isinstance(string, bool):
+        return string
     if not string:
         return False
     normalized = str(string).strip().lower()
