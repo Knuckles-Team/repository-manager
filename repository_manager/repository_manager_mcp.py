@@ -31,7 +31,9 @@ def to_boolean(string: Union[str, bool] = None) -> bool:
         raise ValueError(f"Cannot convert '{string}' to boolean")
 
 
-def to_integer(string: Union[str] = None) -> int:
+def to_integer(string: Union[str, int] = None) -> int:
+    if isinstance(string, int):
+        return string
     if not string:
         return 0
     try:
