@@ -8,6 +8,6 @@ ENV PORT=${PORT}
 ENV TRANSPORT=${TRANSPORT}
 ENV PATH="/usr/local/bin:${PATH}"
 RUN pip install uv \
-    && uv pip install --system repository-manager
+    && uv pip install --system repository-manager>=1.1.8
 
 ENTRYPOINT exec repository-manager-mcp --transport "${TRANSPORT}" --host "${HOST}" --port "${PORT}"
