@@ -114,7 +114,8 @@ class Git:
                 "command": command,
                 "directory": directory,
                 "return_code": return_code,
-                "timestamp": datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                + "Z",
             },
         }
         # Logging
@@ -166,7 +167,9 @@ class Git:
                         "command": "clone_projects_in_parallel",
                         "directory": self.repository_directory,
                         "return_code": None,
-                        "timestamp": datetime.datetime.now(datetime.UTC).isoformat()
+                        "timestamp": datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
                         + "Z",
                         "repository_url": None,
                     },
@@ -229,7 +232,9 @@ class Git:
                         "command": "pull_projects_in_parallel",
                         "directory": self.repository_directory,
                         "return_code": None,
-                        "timestamp": datetime.datetime.now(datetime.UTC).isoformat()
+                        "timestamp": datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
                         + "Z",
                         "project_directory": None,
                     },
@@ -306,7 +311,8 @@ class Git:
                 "command": "pull_project",
                 "directory": project_path,
                 "return_code": None,  # No single return code for multiple commands
-                "timestamp": datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                + "Z",
                 "project_directory": git_project,
             },
         }

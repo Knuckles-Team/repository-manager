@@ -144,7 +144,7 @@ async def clone_project(
             is_mcp_server=True,
         )
         response = git.clone_project(git_project=git_project)
-        return f"Project {git_project} cloned to {repository_directory} successfully!"
+        return f"Project {git_project} cloned to {repository_directory} successfully!\nFull Response: \n{response}"
     except Exception as e:
         logger.error(f"Error in clone_project: {e}")
         raise
@@ -206,7 +206,7 @@ async def clone_projects(
         if projects_file:
             git.read_project_list_file(file=projects_file)
         response = git.clone_projects_in_parallel()
-        return f"Project {git.projects} cloned to {repository_directory} successfully!"
+        return f"Project {git.projects} cloned to {repository_directory} successfully!\nFull Response: \n{response}"
     except Exception as e:
         logger.error(f"Error in clone_projects: {e}")
         raise
@@ -253,7 +253,7 @@ async def pull_project(
             is_mcp_server=True,
         )
         response = git.pull_project(git_project=git_project)
-        return f"Project {git_project} pulled to {repository_directory} successfully!"
+        return f"Project {git_project} pulled to {repository_directory} successfully!\nFull Response: \n{response}"
     except Exception as e:
         logger.error(f"Error in pull_project: {e}")
         raise
@@ -301,7 +301,7 @@ async def pull_projects(
             is_mcp_server=True,
         )
         response = git.pull_projects_in_parallel()
-        return f"All projects in {repository_directory} pulled successfully!"
+        return f"All projects in {repository_directory} pulled successfully!\nFull Response: \n{response}"
     except Exception as e:
         logger.error(f"Error in pull_projects: {e}")
         raise
