@@ -48,7 +48,7 @@ ENV EUNOMIA_REMOTE_URL=${EUNOMIA_REMOTE_URL}
 ENV PATH="/usr/local/bin:${PATH}"
 
 RUN pip install uv \
-    && uv pip install --system --upgrade repository-manager>=1.1.11
+    && uv pip install --system --upgrade repository-manager>=1.1.12
 
 ENTRYPOINT exec repository-manager-mcp \
     --transport "${TRANSPORT}" \
