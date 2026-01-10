@@ -22,13 +22,17 @@
 
 *Version: 1.1.14*
 
-Manage your Git projects
+## Overview
+
+Do you have several repositories you wish you could manage at once? This is a tool to be able to manage your repositories in bulk!
+
+Manage your Git projects - Bulk clone and bulk pull repositories
 
 Run all Git supported tasks using Git Actions command
 
-Run as an MCP Server for Agentic AI!
+Run as an MCP Server for Agentic AI with an A2A Server!
 
-#### Using an an MCP Server:
+## MCP
 
 AI Prompt:
 ```text
@@ -44,8 +48,61 @@ and all projects in "/home/genius/Development" and been pulled from the reposito
 
 This repository is actively maintained - Contributions are welcome!
 
-<details>
-  <summary><b>Usage:</b></summary>
+## A2A Agent
+
+### Architecture:
+
+```mermaid
+---
+config:
+  layout: dagre
+---
+flowchart TB
+ subgraph subGraph0["Agent Capabilities"]
+        C["Agent"]
+        B["A2A Server - Uvicorn/FastAPI"]
+        D["MCP Tools"]
+        F["Agent Skills"]
+  end
+    C --> D & F
+    A["User Query"] --> B
+    B --> C
+    D --> E["Platform API"]
+
+     C:::agent
+     B:::server
+     A:::server
+    classDef server fill:#f9f,stroke:#333
+    classDef agent fill:#bbf,stroke:#333,stroke-width:2px
+    style B stroke:#000000,fill:#FFD600
+    style D stroke:#000000,fill:#BBDEFB
+    style F fill:#BBDEFB
+    style A fill:#C8E6C9
+    style subGraph0 fill:#FFF9C4
+```
+
+### Component Interaction Diagram
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant Server as A2A Server
+    participant Agent as Agent
+    participant Skill as Agent Skills
+    participant MCP as MCP Tools
+
+    User->>Server: Send Query
+    Server->>Agent: Invoke Agent
+    Agent->>Skill: Analyze Skills Available
+    Skill->>Agent: Provide Guidance on Next Steps
+    Agent->>MCP: Invoke Tool
+    MCP-->>Agent: Tool Response Returned
+    Agent-->>Agent: Return Results Summarized
+    Agent-->>Server: Final Response
+    Server-->>User: Output
+```
+
+## Usage 
 
 ### CLI
 
@@ -97,6 +154,22 @@ repository-manager \
 |            | --eunomia-type                     | Eunomia authorization type: 'none', 'embedded', 'remote' (default: none)   |
 |            | --eunomia-policy-file              | Policy file for embedded Eunomia (default: mcp_policies.json)              |
 |            | --eunomia-remote-url               | URL for remote Eunomia server                                              |
+
+
+### A2A CLI
+
+| Short Flag | Long Flag         | Description                                                            |
+|------------|-------------------|------------------------------------------------------------------------|
+| -h         | --help            | Display help information                                               |
+|            | --host            | Host to bind the server to (default: 0.0.0.0)                          |
+|            | --port            | Port to bind the server to (default: 9000)                             |
+|            | --reload          | Enable auto-reload                                                     |
+|            | --provider        | LLM Provider: 'openai', 'anthropic', 'google', 'huggingface'           |
+|            | --model-id        | LLM Model ID (default: qwen3:4b)                                       |
+|            | --base-url        | LLM Base URL (for OpenAI compatible providers)                         |
+|            | --api-key         | LLM API Key                                                            |
+|            | --mcp-url         | MCP Server URL (default: http://localhost:8000/mcp)                    |
+
 
 ### Using as an MCP Server
 
@@ -252,12 +325,25 @@ docker-compose up -d
 
 ```
 
-</details>
+### A2A
 
-<details>
-  <summary><b>Installation Instructions:</b></summary>
+#### A2A CLI
 
-Install Python Package
+| Short Flag | Long Flag         | Description                                                            |
+|------------|-------------------|------------------------------------------------------------------------|
+| -h         | --help            | Display help information                                               |
+|            | --host            | Host to bind the server to (default: 0.0.0.0)                          |
+|            | --port            | Port to bind the server to (default: 9000)                             |
+|            | --reload          | Enable auto-reload                                                     |
+|            | --provider        | LLM Provider: 'openai', 'anthropic', 'google', 'huggingface'           |
+|            | --model-id        | LLM Model ID (default: qwen3:4b)                                       |
+|            | --base-url        | LLM Base URL (for OpenAI compatible providers)                         |
+|            | --api-key         | LLM API Key                                                            |
+|            | --mcp-url         | MCP Server URL (default: http://localhost:8000/mcp)                    |
+
+
+## Install Python Package
+
 ```bash
 python -m pip install --upgrade repository-manager
 ```
@@ -268,13 +354,10 @@ or
 uv pip install --upgrade repository-manager
 ```
 
-</details>
 
-<details>
-  <summary><b>Repository Owners:</b></summary>
+## Repository Owners
 
 <img width="100%" height="180em" src="https://github-readme-stats.vercel.app/api?username=Knucklessg1&show_icons=true&hide_border=true&&count_private=true&include_all_commits=true" />
 
 ![GitHub followers](https://img.shields.io/github/followers/Knucklessg1)
 ![GitHub User's stars](https://img.shields.io/github/stars/Knucklessg1)
-</details>

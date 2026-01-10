@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "repository-manager": {
+      "url": "${MCP_URL:-http://localhost:8007/mcp}"
+    }
+  }
+}
