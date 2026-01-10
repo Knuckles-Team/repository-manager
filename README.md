@@ -20,7 +20,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.1.14*
+*Version: 1.2.0*
 
 ## Overview
 
@@ -102,7 +102,7 @@ sequenceDiagram
     Server-->>User: Output
 ```
 
-## Usage 
+## Usage
 
 ### CLI
 
