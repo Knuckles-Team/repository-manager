@@ -72,7 +72,7 @@ class Git:
         if threads:
             self.set_threads(threads=threads)
 
-    def git_action(self, command: str, directory: str = None) -> Dict:
+    def git_action(self, command: str, directory: str = None, project: str = None) -> Dict:
         """
         Execute a Git command in the specified directory.
 
@@ -80,12 +80,15 @@ class Git:
             command (str): The Git command to execute.
             directory (str, optional): The directory to execute the command in.
                 Defaults to the repository directory.
+            project (str, optional): Specify a single project
 
         Returns:
             Dict: The combined stdout and stderr output of the command in structured format.
         """
         if directory is None:
             directory = self.repository_directory
+        if project:
+            directory = os.path.join(directory,project)
         pipe = subprocess.Popen(
             command,
             shell=True,

@@ -67,6 +67,7 @@ async def git_action(
         description="The directory to execute the command in. Defaults to REPOSITORY_MANAGER_DIRECTORY env variable.",
         default=os.environ.get("REPOSITORY_MANAGER_DIRECTORY", None),
     ),
+    project: Optional[str] = Field(description="The project to execute the command in.", default=None),
     projects: Optional[List[str]] = Field(
         description="List of repository URLs for Git operations.", default=None
     ),
@@ -101,7 +102,7 @@ async def git_action(
         )
         if projects_file:
             git.read_project_list_file(file=projects_file)
-        response = git.git_action(command=command)
+        response = git.git_action(command=command, directory=repository_directory, project=project)
         return response
     except Exception as e:
         logger.error(f"Error in git_action: {e}")
@@ -320,8 +321,8 @@ def repository_manager_mcp():
         "-t",
         "--transport",
         default="stdio",
-        choices=["stdio", "http", "sse"],
-        help="Transport method: 'stdio', 'http', or 'sse' [legacy] (default: stdio)",
+        choices=["stdio", "streamable-http", "sse"],
+        help="Transport method: 'stdio', 'streamable-http', or 'sse' [legacy] (default: stdio)",
     )
     parser.add_argument(
         "-s",
@@ -549,8 +550,8 @@ def repository_manager_mcp():
 
     if args.transport == "stdio":
         mcp.run(transport="stdio")
-    elif args.transport == "http":
-        mcp.run(transport="http", host=args.host, port=args.port)
+    elif args.transport == "streamable-http":
+        mcp.run(transport="streamable-http", host=args.host, port=args.port)
     elif args.transport == "sse":
         mcp.run(transport="sse", host=args.host, port=args.port)
     else:
