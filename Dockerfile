@@ -50,16 +50,21 @@ ENV PATH="/usr/local/bin:${PATH}"
 ENV UV_HTTP_TIMEOUT=3600
 ENV REPOSITORY_MANAGER_DIRECTORY=${REPOSITORY_MANAGER_DIRECTORY}
 
-# For local debugging
-WORKDIR /app
-COPY . /app
-RUN apt update && apt install git -y && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} && git config --global --add safe.directory "${REPOSITORY_MANAGER_DIRECTORY}" && pip install .[all]
-
-## For production
-#RUN apt update && apt install git -y \
+## For local debugging
+#WORKDIR /app
+#COPY . /app
+#RUN apt update \
+#    && apt install git -y \
 #    && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
-#    && git config --global --add safe.directory "${REPOSITORY_MANAGER_DIRECTORY}" &&
-#    && pip install uv \
-#    && uv pip install --system --upgrade repository-manager>=1.2.0
+#    && git config --global --add safe.directory "*" \
+#    && pip install .[all]
+
+# For production
+RUN apt update \
+    && apt install git -y \
+    && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
+    && git config --global --add safe.directory "*" \
+    && pip install uv \
+    && uv pip install --system --upgrade repository-manager>=1.2.1
 
 CMD ["repository-manager-mcp"]
