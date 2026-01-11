@@ -1,8 +1,8 @@
 ---
 services:
   repository-manager-mcp:
-    # image: docker.io/knucklessg1/repository-manager:latest
-    build: . # Debug
+    image: docker.io/knucklessg1/repository-manager:latest
+    # build: . # Debug
     container_name: repository-manager-mcp
     hostname: repository-manager-mcp
     volumes:
@@ -10,11 +10,11 @@ services:
     command:
       - repository-manager-mcp
       - --transport
-      - "${TRANSPORT}"
+      - "${TRANSPORT:-streamable-http}"
       - --host
-      - "${HOST}"
+      - "${HOST:-0.0.0.0}"
       - --port
-      - "${PORT}"
+      - "${PORT:-8007}"
     logging:
       driver: json-file
       options:
@@ -32,28 +32,28 @@ services:
     network_mode: "host"
 
   repository-manager-a2a:
-    # image: docker.io/knucklessg1/repository-manager:latest
-    build: . # Debug
+    image: docker.io/knucklessg1/repository-manager:latest
+    # build: . # Debug
     container_name: repository-manager-a2a
     hostname: repository-manager-a2a
     command:
       - repository-manager-a2a
       - --host
-      - "${HOST}"
+      - "${HOST:-0.0.0.0}"
       - --port
-      - "${PORT}"
+      - "${PORT:-9009}"
       - --provider
-      - "${PROVIDER}"
+      - "${PROVIDER:-openai}"
       - --model-id
-      - "${MODEL_ID}"
+      - "${MODEL_ID:-qwen/qwen3-8b}"
       - --base-url
-      - "${OPENAI_BASE_URL}"
+      - "${OPENAI_BASE_URL:-http://localhost:1234/v1}"
       - --api-key
-      - "${OPENAI_API_KEY}"
+      - "${OPENAI_API_KEY:-llama}"
       - --mcp-url
-      - "${MCP_URL}"
+      - "${MCP_URL:-http://localhost:8007/mcp}"
       - --debug
-      - "${DEBUG}"
+      - "${DEBUG:-True}"
     depends_on:
       - repository-manager-mcp
     logging:

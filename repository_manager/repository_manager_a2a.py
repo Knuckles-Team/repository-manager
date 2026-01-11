@@ -51,7 +51,9 @@ DEFAULT_MCP_CONFIG = os.getenv("MCP_CONFIG", mcp_config_path)
 DEFAULT_SKILLS_DIRECTORY = os.getenv("SKILLS_DIRECTORY", skills_path)
 
 AGENT_NAME = "Repository Manager"
-AGENT_DESCRIPTION = "An agent built with Agent Skills and Git MCP tools to maximize Git interactivity."
+AGENT_DESCRIPTION = (
+    "An agent built with Agent Skills and Git MCP tools to maximize Git interactivity."
+)
 
 
 def create_model(

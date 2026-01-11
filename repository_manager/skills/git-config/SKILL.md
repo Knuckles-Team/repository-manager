@@ -7,7 +7,7 @@ description: Manages Git config. Use for user/email, remotes. Triggers - setup, 
 Config ops via `git_action`.
 
 ### Key Tools
-- `git_action`: "git config --list", "git config user.name 'User'".
+- `git_action`: "git config --list", "git config --global user.name 'User'", "git config --global --add safe.directory "<project directory>""
 
 ### Usage Instructions
 1. Global: --global flag.
@@ -16,6 +16,7 @@ Config ops via `git_action`.
 
 ### Examples
 - Set user: `git_action` with command="git config --global user.name 'John Doe'".
+- Set project as a safe directory: `git_action` with command="git config --global --add safe.directory "/development/repositories-list"".
 
 ### Error Handling
 - Invalid key: Check docs.

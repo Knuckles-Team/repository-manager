@@ -72,7 +72,9 @@ class Git:
         if threads:
             self.set_threads(threads=threads)
 
-    def git_action(self, command: str, directory: str = None, project: str = None) -> Dict:
+    def git_action(
+        self, command: str, directory: str = None, project: str = None
+    ) -> Dict:
         """
         Execute a Git command in the specified directory.
 
@@ -88,7 +90,7 @@ class Git:
         if directory is None:
             directory = self.repository_directory
         if project:
-            directory = os.path.join(directory,project)
+            directory = os.path.join(directory, project)
         pipe = subprocess.Popen(
             command,
             shell=True,

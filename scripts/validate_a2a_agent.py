@@ -14,7 +14,7 @@ async def main():
     print(f"Validating A2A Agent at {A2A_URL}...")
 
     questions = [
-        "Give me the git status of the repository-manager project?",
+        "Give me the git status of the repository-manager project. If there are any issues, please try to resolve them with the available skills and tools at hand.",
         # "Pull all the projects in parallel",
     ]
 
