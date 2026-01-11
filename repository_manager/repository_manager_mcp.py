@@ -67,7 +67,9 @@ async def git_action(
         description="The directory to execute the command in. Defaults to REPOSITORY_MANAGER_DIRECTORY env variable.",
         default=os.environ.get("REPOSITORY_MANAGER_DIRECTORY", None),
     ),
-    project: Optional[str] = Field(description="The project to execute the command in.", default=None),
+    project: Optional[str] = Field(
+        description="The project to execute the command in.", default=None
+    ),
     projects: Optional[List[str]] = Field(
         description="List of repository URLs for Git operations.", default=None
     ),
@@ -102,7 +104,9 @@ async def git_action(
         )
         if projects_file:
             git.read_project_list_file(file=projects_file)
-        response = git.git_action(command=command, directory=repository_directory, project=project)
+        response = git.git_action(
+            command=command, directory=repository_directory, project=project
+        )
         return response
     except Exception as e:
         logger.error(f"Error in git_action: {e}")

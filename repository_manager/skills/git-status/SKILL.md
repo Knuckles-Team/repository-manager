@@ -16,4 +16,4 @@ Project status via `git_action`.
 - Status: `git_action` with command="git status" directory="projects directory" project="the project (directory name) inside projects directory to run command in"
 
 ### Error Handling
-- Specify the project the user is trying to work with inside the repositories directory. 
+- Specify the project the user is trying to work with inside the repositories directory.
