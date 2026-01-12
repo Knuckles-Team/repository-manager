@@ -54,20 +54,8 @@ ENV REPOSITORY_MANAGER_DIRECTORY=${REPOSITORY_MANAGER_DIRECTORY}
 WORKDIR /development
 
 # For local debugging
-COPY . /development
-RUN apt update \
-    && apt-get install -y git curl make \
-    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
-    && apt-get install -y nodejs unzip \
-    && npm install -g smart-coding-mcp \
-    && curl -fsSL https://deno.land/install.sh | sh \
-    && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
-    && git config --global --add safe.directory "*" \
-    && pip install .[all] \
-    && repository-manager -c -p -b
-
-# For production
-# RUN apt-get update \
+# COPY . /development
+# RUN apt update \
 #     && apt-get install -y git curl make \
 #     && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 #     && apt-get install -y nodejs unzip \
@@ -75,8 +63,20 @@ RUN apt update \
 #     && curl -fsSL https://deno.land/install.sh | sh \
 #     && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
 #     && git config --global --add safe.directory "*" \
-#     && pip install uv \
-#     && uv pip install --system --upgrade repository-manager>=1.2.2 \
+#     && pip install .[all] \
 #     && repository-manager -c -p -b
+
+# For production
+RUN apt-get update \
+    && apt-get install -y git curl make \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y nodejs unzip \
+    && npm install -g smart-coding-mcp \
+    && curl -fsSL https://deno.land/install.sh | sh \
+    && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
+    && git config --global --add safe.directory "*" \
+    && pip install uv \
+    && uv pip install --system --upgrade repository-manager>=1.2.2 \
+    && repository-manager -c -p -b
 
 CMD ["repository-manager-mcp"]

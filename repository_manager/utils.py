@@ -4,6 +4,7 @@
 import os
 import pickle
 from typing import Any, Union
+from importlib.resources import files, as_file
 
 
 def to_integer(string: Union[str, int] = None) -> int:
@@ -44,3 +45,24 @@ def load_model(file: str) -> Any:
     with open(file, "rb") as model_file:
         model = pickle.load(model_file)
     return model
+
+
+def get_skills_path() -> str:
+    skills_dir = files("repository_manager") / "skills"
+    with as_file(skills_dir) as path:
+        skills_path = str(path)
+    return skills_path
+
+
+def get_mcp_config_path() -> str:
+    mcp_config_file = files("repository_manager") / "mcp_config.json"
+    with as_file(mcp_config_file) as path:
+        mcp_config_path = str(path)
+    return mcp_config_path
+
+
+def get_projects_file_path() -> str:
+    repositories_list_file = files("repository_manager") / "repositories-list.txt"
+    with as_file(repositories_list_file) as path:
+        repositories_list_path = str(path)
+    return repositories_list_path

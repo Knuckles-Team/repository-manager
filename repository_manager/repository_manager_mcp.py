@@ -14,6 +14,7 @@ from fastmcp.server.middleware.logging import LoggingMiddleware
 from fastmcp.server.middleware.timing import TimingMiddleware
 from fastmcp.server.middleware.rate_limiting import RateLimitingMiddleware
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
+from repository_manager.utils import get_projects_file_path
 from repository_manager.repository_manager import setup_logging, Git
 
 # Initialize logging for MCP server
@@ -75,7 +76,7 @@ async def git_action(
     ),
     projects_file: Optional[str] = Field(
         description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-        default=os.environ.get("PROJECTS_FILE", None),
+        default=os.environ.get("PROJECTS_FILE", get_projects_file_path()),
     ),
     threads: Optional[int] = Field(
         description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
@@ -83,7 +84,7 @@ async def git_action(
     ),
     set_to_default_branch: Optional[bool] = Field(
         description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
-        default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)),
+        default=to_boolean(os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", False)),
     ),
 ) -> Dict:
     """
@@ -178,7 +179,7 @@ async def clone_projects(
     ),
     projects_file: Optional[str] = Field(
         description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-        default=os.environ.get("PROJECTS_FILE", None),
+        default=os.environ.get("PROJECTS_FILE", get_projects_file_path()),
     ),
     repository_directory: Optional[str] = Field(
         description="The directory to clone projects into. Defaults to REPOSITORY_MANAGER_DIRECTORY env variable.",

@@ -6,6 +6,7 @@ import logging
 import uvicorn
 from typing import Optional, Any, List
 from pathlib import Path
+import json
 import yaml
 
 from fastmcp import Client
@@ -18,8 +19,14 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.huggingface import HuggingFaceModel
 from fasta2a import Skill
-from repository_manager.utils import to_integer, to_boolean
-from importlib.resources import files, as_file
+from repository_manager.utils import (
+    to_integer,
+    to_boolean,
+    get_projects_file_path,
+    get_skills_path,
+    get_mcp_config_path,
+)
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,13 +38,6 @@ logging.getLogger("fastmcp").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
-mcp_config_file = files("repository_manager") / "mcp_config.json"
-with as_file(mcp_config_file) as path:
-    mcp_config_path = str(path)
-
-skills_dir = files("repository_manager") / "skills"
-with as_file(skills_dir) as path:
-    skills_path = str(path)
 
 DEFAULT_HOST = os.getenv("HOST", "0.0.0.0")
 DEFAULT_PORT = to_integer(string=os.getenv("PORT", "9000"))
@@ -47,12 +47,21 @@ DEFAULT_MODEL_ID = os.getenv("MODEL_ID", "qwen/qwen3-8b")
 DEFAULT_OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:1234/v1")
 DEFAULT_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "ollama")
 DEFAULT_MCP_URL = os.getenv("MCP_URL", None)
-DEFAULT_MCP_CONFIG = os.getenv("MCP_CONFIG", mcp_config_path)
-DEFAULT_SKILLS_DIRECTORY = os.getenv("SKILLS_DIRECTORY", skills_path)
+DEFAULT_MCP_CONFIG = os.getenv("MCP_CONFIG", get_mcp_config_path())
+DEFAULT_SKILLS_DIRECTORY = os.getenv("SKILLS_DIRECTORY", get_skills_path())
+DEFAULT_PROJECTS_FILE = os.getenv("PROJECTS_FILE", get_projects_file_path())
+DEFAULT_SMART_CODING_MCP_ENABLE = to_boolean(
+    string=os.getenv("SMART_CODING_MCP_ENABLE", "True")
+)
+DEFAULT_PYTHON_SANDBOX_ENABLE = to_boolean(
+    string=os.getenv("PYTHON_SANDBOX_ENABLE", "True")
+)
 
-AGENT_NAME = "Repository Manager"
+AGENT_NAME = "Repository Manager and Codebase Expert"
 AGENT_DESCRIPTION = (
-    "An agent built with Agent Skills and Git MCP tools to maximize Git interactivity."
+    "A coding and git repository manager agent built with Agent Skills and MCP tools to maximize code interactivity. "
+    "Capable of executing Python code in a secure sandbox. "
+    "Enabled with Smart Coding MCP so you can query the agent about the code base you are managing."
 )
 
 
@@ -122,18 +131,19 @@ def create_agent(
     return Agent(
         model=model,
         system_prompt=(
-            "You are the GitLab Agent.\n"
-            "You have access to all GitLab skills and toolsets to interact with the API.\n"
+            "You are a Repository Manager and Codebase Expert Agent.\n"
+            "You are an expert Senior Software principal engineer with over 25 years of experience in software development and architecture.\n"
+            "You have access to git commands to manage the repository and smart-coding-mcp which allows you to search the codebase. \n"
+            "You also have access to python sandbox to execute python code.\n"
             "Your responsibilities:\n"
             "1. Analyze the user's request.\n"
-            "2. Identify the domain (e.g., branches, commits, MRs) and select the appropriate skills.\n"
-            "3. Use the skills to reference the tools you will need to search for using the tool_search skill.\n"
-            "4. If a complicated task requires multiple skills (e.g. 'check out branch X and verify the last commit'), "
-            "   orchestrate them sequentially: call the Branch skill, then the Commit skill.\n"
+            "2. Use the skills to reference the tools you will need.\n"
+            "3. If a complicated task requires multiple skills, orchestrate them sequentially.\n"
+            "4. If you ever make changes to a codebase, or suggest code solutions, always validate them by executing them in the execution environment first and resolving errors before providing the cleanup up version.\n"
             "5. Always be warm, professional, and helpful.\n"
             "6. Explain your plan in detail before executing."
         ),
-        name="GitLab_Agent",
+        name="Repository Manager and Codebase Expert Agent",
         toolsets=agent_toolsets,
         deps_type=Any,
     )
@@ -273,6 +283,93 @@ def create_a2a_server(
     )
 
 
+def configure_mcp_servers(
+    base_directory: str,
+    mcp_config_path: str,
+    enable_smart_coding: bool = False,
+    enable_python_sandbox: bool = False,
+):
+    """
+    Configures MCP servers in mcp_config.json based on enabled flags.
+    """
+    if not enable_smart_coding and not enable_python_sandbox:
+        return
+
+    # Load existing config
+    config = {}
+    if os.path.exists(mcp_config_path):
+        try:
+            with open(mcp_config_path, "r") as f:
+                config = json.load(f)
+        except Exception as e:
+            logger.error(f"Error loading MCP config from {mcp_config_path}: {e}")
+            return
+
+    if "mcpServers" not in config:
+        config["mcpServers"] = {}
+
+    updates_made = False
+
+    # Smart Coding MCP Configuration
+    if enable_smart_coding:
+        if not os.path.exists(base_directory):
+            logger.warning(f"Directory not found: {base_directory}")
+        else:
+            # Scan for directories containing .git
+            git_projects = []
+            base_path = Path(base_directory)
+            try:
+                for item in base_path.iterdir():
+                    if item.is_dir() and (item / ".git").exists():
+                        git_projects.append(item)
+            except Exception as e:
+                logger.error(f"Error scanning directory {base_directory}: {e}")
+
+            if git_projects:
+                logger.info(
+                    f"Found {len(git_projects)} git projects for Smart Coding MCP."
+                )
+                for project in git_projects:
+                    server_name = f"smart-coding-{project.name}"
+                    if server_name not in config["mcpServers"]:
+                        config["mcpServers"][server_name] = {
+                            "command": "smart-coding-mcp",
+                            "args": ["--workspace", str(project.absolute())],
+                        }
+                        updates_made = True
+                        logger.info(f"Added MCP server configuration for {server_name}")
+                    else:
+                        # Ensure args are up to date
+                        config["mcpServers"][server_name][
+                            "command"
+                        ] = "smart-coding-mcp"
+                        config["mcpServers"][server_name]["args"] = [
+                            "--workspace",
+                            str(project.absolute()),
+                        ]
+                        updates_made = True
+
+    # Python Sandbox Configuration
+    if enable_python_sandbox:
+        if "python-sandbox" not in config["mcpServers"]:
+            config["mcpServers"]["python-sandbox"] = {
+                "command": "uvx",
+                "args": ["mcp-run-python", "stdio"],
+            }
+            updates_made = True
+            logger.info("Added MCP server configuration for python-sandbox")
+        else:
+            logger.debug("python-sandbox MCP server already configured.")
+
+    if updates_made:
+        try:
+            with open(mcp_config_path, "w") as f:
+                json.dump(config, f, indent=2)
+            logger.info(f"Updated MCP config at {mcp_config_path}")
+        except Exception as e:
+            logger.error(f"Error writing MCP config: {e}")
+
+
 def agent_server():
     parser = argparse.ArgumentParser(description=f"Run the {AGENT_NAME} A2A Server")
     parser.add_argument(
@@ -301,7 +398,37 @@ def agent_server():
     parser.add_argument(
         "--mcp-config", default=DEFAULT_MCP_CONFIG, help="MCP Server Config"
     )
+    parser.add_argument(
+        "--smart-coding-mcp-enable",
+        action="store_true",
+        default=DEFAULT_SMART_CODING_MCP_ENABLE,
+        help="Enable Smart Coding MCP configuration",
+    )
+    parser.add_argument(
+        "--python-sandbox-enable",
+        action="store_true",
+        default=DEFAULT_PYTHON_SANDBOX_ENABLE,
+        help="Enable Python Sandbox MCP configuration",
+    )
+    parser.add_argument(
+        "--repository-directory",
+        default=os.getcwd(),
+        help="Directory to scan for git projects",
+    )
     args = parser.parse_args()
+
+    # Configure MCP servers based on flags
+    configure_mcp_servers(
+        base_directory=args.repository_directory,
+        mcp_config_path=args.mcp_config,
+        enable_smart_coding=args.smart_coding_mcp_enable,
+        enable_python_sandbox=args.python_sandbox_enable,
+    )
+
+    # Set default projects file if not set
+    if "PROJECTS_FILE" not in os.environ and DEFAULT_PROJECTS_FILE:
+        os.environ["PROJECTS_FILE"] = DEFAULT_PROJECTS_FILE
+        logger.info(f"Set PROJECTS_FILE to default: {DEFAULT_PROJECTS_FILE}")
 
     if args.debug:
         # Force reconfiguration of logging

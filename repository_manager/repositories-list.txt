@@ -1,0 +1,14 @@
+https://github.com/Knuckles-Team/media-downloader.git
+https://github.com/Knuckles-Team/repository-manager.git
+https://github.com/Knuckles-Team/systems-manager.git
+https://github.com/Knuckles-Team/gitlab-api.git
+https://github.com/Knuckles-Team/servicenow-api.git
+https://github.com/Knuckles-Team/tunnel-manager.git
+https://github.com/Knuckles-Team/container-manager-mcp.git
+https://github.com/Knuckles-Team/audio-transcriber.git
+https://github.com/Knuckles-Team/fan-manager.git
+https://github.com/Knuckles-Team/vector-mcp.git
+https://github.com/Knuckles-Team/archivebox-api.git
+https://github.com/Knuckles-Team/documentdb-mcp.git
+https://github.com/Knuckles-Team/ansible-tower-mcp.git
+https://github.com/Knuckles-Team/searxng-mcp.git
