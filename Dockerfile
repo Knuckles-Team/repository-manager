@@ -46,25 +46,37 @@ ENV ALLOWED_CLIENT_REDIRECT_URIS=${ALLOWED_CLIENT_REDIRECT_URIS}
 ENV EUNOMIA_TYPE=${EUNOMIA_TYPE}
 ENV EUNOMIA_POLICY_FILE=${EUNOMIA_POLICY_FILE}
 ENV EUNOMIA_REMOTE_URL=${EUNOMIA_REMOTE_URL}
-ENV PATH="/usr/local/bin:${PATH}"
+ENV DENO_INSTALL="/root/.deno"
+ENV PATH="/usr/local/bin:$DENO_INSTALL/bin:${PATH}"
 ENV UV_HTTP_TIMEOUT=3600
 ENV REPOSITORY_MANAGER_DIRECTORY=${REPOSITORY_MANAGER_DIRECTORY}
 
-## For local debugging
-#WORKDIR /app
-#COPY . /app
-#RUN apt update \
-#    && apt install git -y \
-#    && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
-#    && git config --global --add safe.directory "*" \
-#    && pip install .[all]
+WORKDIR /development
 
-# For production
+# For local debugging
+COPY . /development
 RUN apt update \
-    && apt install git -y \
+    && apt-get install -y git curl make \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y nodejs unzip \
+    && npm install -g smart-coding-mcp \
+    && curl -fsSL https://deno.land/install.sh | sh \
     && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
     && git config --global --add safe.directory "*" \
-    && pip install uv \
-    && uv pip install --system --upgrade repository-manager>=1.2.1
+    && pip install .[all] \
+    && repository-manager -c -p -b
+
+# For production
+# RUN apt-get update \
+#     && apt-get install -y git curl make \
+#     && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+#     && apt-get install -y nodejs unzip \
+#     && npm install -g smart-coding-mcp \
+#     && curl -fsSL https://deno.land/install.sh | sh \
+#     && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
+#     && git config --global --add safe.directory "*" \
+#     && pip install uv \
+#     && uv pip install --system --upgrade repository-manager>=1.2.2 \
+#     && repository-manager -c -p -b
 
 CMD ["repository-manager-mcp"]
