@@ -20,7 +20,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.2.1*
+*Version: 1.2.2*
 
 ## Overview
 
@@ -168,7 +168,39 @@ repository-manager \
 |            | --model-id        | LLM Model ID (default: qwen3:4b)                                       |
 |            | --base-url        | LLM Base URL (for OpenAI compatible providers)                         |
 |            | --api-key         | LLM API Key                                                            |
-|            | --mcp-url         | MCP Server URL (default: http://localhost:8000/mcp)                    |
+|            | --smart-coding-mcp-enable | Enable Smart Coding MCP configuration                                  |
+|            | --python-sandbox-enable | Enable Python Sandbox MCP configuration                                  |
+|            | --repository-directory | Directory to scan for git projects (default: current directory)       |
+
+
+### Smart Coding MCP Integration
+
+The Repository Manager A2A Agent can automatically configure `smart-coding-mcp` for any Git projects found in a specified directory.
+
+```bash
+repository_manager_a2a --smart-coding-mcp-enable --repository-directory /path/to/my/projects
+```
+
+This will:
+1. Scan `/path/to/my/projects` for any subdirectories containing a `.git` folder.
+2. Update `mcp_config.json` to include a `smart-coding-mcp` server entry for each found project.
+3. Start the agent with access to these new MCP servers, allowing for semantic code search within your projects.
+
+### Python Sandbox Integration
+
+The Agent can execute Python code in a secure Deno sandbox using `mcp-run-python`.
+
+```bash
+repository_manager_a2a --python-sandbox-enable
+```
+
+This will:
+1.  Configure `mcp_config.json` to include the `python-sandbox` server.
+2.  Enable the `Python Sandbox` skill, allowing the agent to run scripts for calculation, testing, or logic verification.
+
+### Default Repository List
+
+The agent will automatically load the `repositories-list.txt` file included in the package as the default project list if no `PROJECTS_FILE` environment variable is set. This ensures the agent always has a list of repositories to work with.
 
 
 ### Using as an MCP Server
