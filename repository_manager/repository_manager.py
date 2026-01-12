@@ -15,6 +15,17 @@ import logging
 import concurrent.futures
 import datetime
 from typing import List, Dict
+from repository_manager.utils import to_boolean, get_projects_file_path
+
+
+DEFAULT_PROJECTS_FILE = os.getenv("PROJECTS_FILE", get_projects_file_path())
+DEFAULT_REPOSITORY_MANAGER_THREADS = os.getenv("REPOSITORY_MANAGER_THREADS", 12)
+DEFAULT_REPOSITORY_MANAGER_DEFAULT_BRANCH = to_boolean(
+    os.getenv("REPOSITORY_MANAGER_DEFAULT_BRANCH", "False")
+)
+DEFAULT_REPOSITORY_MANAGER_DIRECTORY = os.getenv(
+    "REPOSITORY_MANAGER_DIRECTORY", os.path.normpath("/development")
+)
 
 
 # Configure logging
@@ -389,20 +400,33 @@ def repository_manager() -> None:
         "--default-branch",
         action="store_true",
         help="Set repository to default branch",
+        default=DEFAULT_REPOSITORY_MANAGER_DEFAULT_BRANCH,
     )
     parser.add_argument("-c", "--clone", action="store_true", help="Clone repositories")
     parser.add_argument("-p", "--pull", action="store_true", help="Pull repositories")
     parser.add_argument(
-        "-d", "--directory", type=str, help="Specify repository directory"
+        "-d",
+        "--directory",
+        type=str,
+        help="Specify repository directory",
+        default=DEFAULT_REPOSITORY_MANAGER_DIRECTORY,
     )
     parser.add_argument(
-        "-f", "--file", type=str, help="Specify file with repository list"
+        "-f",
+        "--file",
+        type=str,
+        help="Specify file with repository list",
+        default=DEFAULT_PROJECTS_FILE,
     )
     parser.add_argument(
         "-r", "--repositories", type=str, help="Comma-separated list of repositories"
     )
     parser.add_argument(
-        "-t", "--threads", type=int, help="Number of threads for parallel operations"
+        "-t",
+        "--threads",
+        type=int,
+        help="Number of threads for parallel operations",
+        default=DEFAULT_REPOSITORY_MANAGER_THREADS,
     )
 
     args = parser.parse_args()

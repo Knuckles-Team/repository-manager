@@ -6,7 +6,7 @@ services:
     container_name: repository-manager-mcp
     hostname: repository-manager-mcp
     volumes:
-      - /home/genius/Development:/development
+      - ./development:/development
     command:
       - repository-manager-mcp
       - --transport
@@ -28,7 +28,6 @@ services:
       - "REPOSITORY_MANAGER_DIRECTORY=/development"
       - "REPOSITORY_MANAGER_THREADS=12"
       - "REPOSITORY_MANAGER_DEFAULT_BRANCH=True"
-      - "PROJECTS_FILE=/development/repositories-list/repositories.txt"
     network_mode: "host"
 
   repository-manager-a2a:
