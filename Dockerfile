@@ -76,7 +76,7 @@ RUN apt-get update \
     && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
     && git config --global --add safe.directory "*" \
     && pip install uv \
-    && uv pip install --system --upgrade repository-manager>=1.2.2 \
+    && uv pip install --system --upgrade repository-manager[all]>=1.2.2 \
     && repository-manager -c -p -b
 
 CMD ["repository-manager-mcp"]
