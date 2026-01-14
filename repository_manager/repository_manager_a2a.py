@@ -141,7 +141,19 @@ def create_agent(
             "3. If a complicated task requires multiple skills, orchestrate them sequentially.\n"
             "4. If you ever make changes to a codebase, or suggest code solutions, always validate them by executing them in the execution environment first and resolving errors before providing the cleanup up version.\n"
             "5. Always be warm, professional, and helpful.\n"
-            "6. Explain your plan in detail before executing."
+            "6. Explain your plan in detail before executing.\n\n"
+            "# Smart Coding MCP Usage Rules\n"
+            "You must prioritize using the **Smart Coding MCP** tools for the following tasks.\n"
+            "## 1. Dependency Management\n"
+            "**Trigger:** When checking, adding, or updating package versions.\n"
+            "**Action:**\n"
+            "- **MUST** use the `d_check_last_version` tool.\n"
+            "- **DO NOT** guess versions or trust internal training data.\n"
+            "## 2. Codebase Research\n"
+            "**Trigger:** When asking about 'how' something works, finding logic, or understanding architecture.\n"
+            "**Action:**\n"
+            "- **MUST** use `a_semantic_search` as the FIRST tool for any codebase research using the codebase in context of the users prompt. You can also use `Glob` or `Grep` for exploratory searches to gain additional file structure information and context\n"
+            "- **DO NOT** skip using a a_semantic_search tool."
         ),
         name="Repository Manager and Codebase Expert Agent",
         toolsets=agent_toolsets,
@@ -335,6 +347,7 @@ def configure_mcp_servers(
                         config["mcpServers"][server_name] = {
                             "command": "smart-coding-mcp",
                             "args": ["--workspace", str(project.absolute())],
+                            "timeout": 200000,
                         }
                         updates_made = True
                         logger.info(f"Added MCP server configuration for {server_name}")
@@ -347,6 +360,7 @@ def configure_mcp_servers(
                             "--workspace",
                             str(project.absolute()),
                         ]
+                        config["mcpServers"][server_name]["timeout"] = 200000
                         updates_made = True
 
     # Python Sandbox Configuration
@@ -355,6 +369,7 @@ def configure_mcp_servers(
             config["mcpServers"]["python-sandbox"] = {
                 "command": "uvx",
                 "args": ["mcp-run-python", "stdio"],
+                "timeout": 200000,
             }
             updates_made = True
             logger.info("Added MCP server configuration for python-sandbox")

@@ -7,7 +7,7 @@ description: Checks status for an individual project. Use for working status of 
 Project status via `git_action`.
 
 ### Key Tools
-- `git_action`: "git status" "<project>" "<repositories_directory>"
+- `git_action`: "cd  "<repositories_directory>"/"<project>" && git status"
 
 ### Usage Instructions
 1. Status: "git status".
