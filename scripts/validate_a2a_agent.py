@@ -6,7 +6,7 @@ import uuid
 
 # Configuration
 A2A_URL = (
-    "http://localhost:9009/"  # Discovered endpoint is POST / based on 405 on GET /
+    "http://127.0.0.1:9009/"  # Discovered endpoint is POST / based on 405 on GET /
 )
 
 
@@ -15,7 +15,8 @@ async def main():
 
     questions = [
         "Give me the git status of the repository-manager project. If there are any issues, please try to resolve them with the available skills and tools at hand.",
-        # "Pull all the projects in parallel",
+        "What is the output of running this code 'print('Hello World!')'?",
+        "How are Agent Skills implemented?",
     ]
 
     async with httpx.AsyncClient(timeout=10000.0) as client:
