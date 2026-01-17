@@ -7,7 +7,6 @@ import uvicorn
 from typing import Optional, Any, List
 from pathlib import Path
 import json
-import yaml
 
 from fastmcp import Client
 from pydantic_ai import Agent
@@ -25,6 +24,7 @@ from repository_manager.utils import (
     get_projects_file_path,
     get_skills_path,
     get_mcp_config_path,
+    load_skills_from_directory,
 )
 
 
@@ -183,51 +183,6 @@ async def stream_chat(agent: Agent, prompt: str) -> None:
         ):  # ← streams partial text deltas
             print(text_chunk, end="", flush=True)
         print("\nDone!")  # optional
-
-
-def load_skills_from_directory(directory: str) -> List[Skill]:
-    skills = []
-    base_path = Path(directory)
-
-    if not base_path.exists():
-        logger.warning(f"Skills directory not found: {directory}")
-        return skills
-
-    for item in base_path.iterdir():
-        if item.is_dir():
-            skill_file = item / "SKILL.md"
-            if skill_file.exists():
-                try:
-                    with open(skill_file, "r") as f:
-                        # Extract frontmatter
-                        content = f.read()
-                        if content.startswith("---"):
-                            _, frontmatter, _ = content.split("---", 2)
-                            data = yaml.safe_load(frontmatter)
-
-                            skill_id = item.name
-                            skill_name = data.get("name", skill_id)
-                            skill_desc = data.get(
-                                "description", f"Access to {skill_name} tools"
-                            )
-
-                            tag_name = skill_id.replace("git-", "")
-                            tags = ["repository-manager", tag_name]
-
-                            skills.append(
-                                Skill(
-                                    id=skill_id,
-                                    name=skill_name,
-                                    description=skill_desc,
-                                    tags=tags,
-                                    input_modes=["text"],
-                                    output_modes=["text"],
-                                )
-                            )
-                except Exception as e:
-                    logger.error(f"Error loading skill from {skill_file}: {e}")
-
-    return skills
 
 
 def create_a2a_server(

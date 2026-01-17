@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "repository-manager": {
-      "url": "${MCP_URL:-http://localhost:8007/mcp}"
+      "url": "${MCP_URL:-http://localhost:8007/mcp}",
+      "timeout": 300000
     }
   }
 }
