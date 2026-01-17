@@ -6,15 +6,8 @@ services:
     container_name: repository-manager-mcp
     hostname: repository-manager-mcp
     volumes:
-      - ./development:/development
-    command:
-      - repository-manager-mcp
-      - --transport
-      - "${TRANSPORT:-streamable-http}"
-      - --host
-      - "${HOST:-0.0.0.0}"
-      - --port
-      - "${PORT:-8007}"
+      - ./mcp/development:/development
+    command: ["repository-manager-mcp"]
     logging:
       driver: json-file
       options:
@@ -23,36 +16,20 @@ services:
     restart: always
     environment:
       - "HOST=0.0.0.0"
-      - "PORT=8007"
+      - "PORT=8017"
       - "TRANSPORT=streamable-http"
       - "REPOSITORY_MANAGER_DIRECTORY=/development"
       - "REPOSITORY_MANAGER_THREADS=12"
       - "REPOSITORY_MANAGER_DEFAULT_BRANCH=True"
-    network_mode: "host"
+    ports:
+      - "8017:8017"
 
   repository-manager-a2a:
     image: docker.io/knucklessg1/repository-manager:latest
     # build: . # Debug
     container_name: repository-manager-a2a
     hostname: repository-manager-a2a
-    command:
-      - repository-manager-a2a
-      - --host
-      - "${HOST:-0.0.0.0}"
-      - --port
-      - "${PORT:-9009}"
-      - --provider
-      - "${PROVIDER:-openai}"
-      - --model-id
-      - "${MODEL_ID:-qwen/qwen3-8b}"
-      - --base-url
-      - "${OPENAI_BASE_URL:-http://localhost:1234/v1}"
-      - --api-key
-      - "${OPENAI_API_KEY:-llama}"
-      - --mcp-url
-      - "${MCP_URL:-http://localhost:8007/mcp}"
-      - --debug
-      - "${DEBUG:-True}"
+    command: ["repository-manager-a2a"]
     depends_on:
       - repository-manager-mcp
     logging:
@@ -63,19 +40,13 @@ services:
     restart: always
     environment:
       - "HOST=0.0.0.0"
-      - "PORT=9009"
+      - "PORT=9017"
       # - "MCP_CONFIG=./repository_manager/mcp_config.json" # Optionally specify your own file - Default will use MCP_URL in the pre-packaged mcp_config.json
-      - "MCP_URL=http://localhost:8007/mcp"
+      - "MCP_URL=http://repository-manager-mcp:8017/mcp"
       - "PROVIDER=openai"
       - "OPENAI_BASE_URL=http://localhost:1234/v1"
       - "OPENAI_API_KEY=llama"
       - "MODEL_ID=qwen/qwen3-8b"
       - "DEBUG=False"
-    network_mode: "host"
-
-#  # Debug MCP Service
-#  mcp-inspector:
-#    image: mcpjam/mcp-inspector
-#    container_name: mcp-inspector
-#    ports:
-#      - "6274:6274"
+    ports:
+      - "9017:9017"
