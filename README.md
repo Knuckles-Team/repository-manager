@@ -1,6 +1,7 @@
 # Repository Manager
 
 ![PyPI - Version](https://img.shields.io/pypi/v/repository-manager)
+![MCP Server](https://badge.mcpx.dev?type=server 'MCP Server')
 ![PyPI - Downloads](https://img.shields.io/pypi/dd/repository-manager)
 ![GitHub Repo stars](https://img.shields.io/github/stars/Knuckles-Team/repository-manager)
 ![GitHub forks](https://img.shields.io/github/forks/Knuckles-Team/repository-manager)
@@ -20,7 +21,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.2.4*
+*Version: 1.2.5*
 
 ## Overview
 
