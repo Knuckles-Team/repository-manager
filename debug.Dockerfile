@@ -60,9 +60,9 @@ RUN apt update \
      && npm install -g smart-coding-mcp \
      && curl -fsSL https://deno.land/install.sh | sh \
      && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
-     && git config --global --add safe.directory "*" \
      && pip install uv \
      && uv pip install --system .[all] \
-     && repository-manager -c -p -b
+     && repository-manager -c -p -b \
+     && git config --global --add safe.directory "*"
 
 CMD ["repository-manager-mcp"]

@@ -17,7 +17,6 @@ import datetime
 from typing import List, Dict
 from repository_manager.utils import to_boolean, get_projects_file_path
 
-
 DEFAULT_PROJECTS_FILE = os.getenv("PROJECTS_FILE", get_projects_file_path())
 DEFAULT_REPOSITORY_MANAGER_THREADS = os.getenv("REPOSITORY_MANAGER_THREADS", 12)
 DEFAULT_REPOSITORY_MANAGER_DEFAULT_BRANCH = to_boolean(
