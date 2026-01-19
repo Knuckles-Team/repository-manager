@@ -1,6 +1,4 @@
 https://github.com/Knuckles-Team/repository-manager.git
 https://github.com/Knuckles-Team/systems-manager.git
-https://github.com/Knuckles-Team/gitlab-api.git
 https://github.com/Knuckles-Team/tunnel-manager.git
 https://github.com/Knuckles-Team/container-manager-mcp.git
-https://github.com/Knuckles-Team/vector-mcp.git

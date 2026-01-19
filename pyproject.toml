@@ -29,21 +29,21 @@ mcp = [
 ]
 
 a2a = [
-    "pydantic-ai-slim[fastmcp,openai,anthropic,google,huggingface,a2a]>=1.32.0",
+    "pydantic-ai-slim[fastmcp,openai,anthropic,google,huggingface,a2a,ag-ui,web]>=1.32.0",
     "pydantic-ai-skills",
 ]
 
 all = [
     "fastmcp>=2.13.0.2",
     "eunomia-mcp>=0.3.10",
-    "pydantic-ai-slim[fastmcp,openai,anthropic,google,huggingface,a2a]>=1.32.0",
+    "pydantic-ai-slim[fastmcp,openai,anthropic,google,huggingface,a2a,ag-ui,web]>=1.32.0",
     "pydantic-ai-skills",
 ]
 
 [project.scripts]
 repository-manager = "repository_manager.repository_manager:repository_manager"
 repository-manager-mcp = "repository_manager.repository_manager_mcp:repository_manager_mcp"
-repository-manager-a2a = "repository_manager.repository_manager_a2a:agent_server"
+repository-manager-agent = "repository_manager.repository_manager_agent:agent_server"
 
 [tool.setuptools.package-data]
 repository_manager = ["mcp_config.json", "skills/**", "repositories-list.txt"]

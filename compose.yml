@@ -8,6 +8,8 @@ services:
     volumes:
       - ./mcp/development:/development
     command: ["repository-manager-mcp"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     logging:
       driver: json-file
       options:
@@ -24,12 +26,14 @@ services:
     ports:
       - "8017:8017"
 
-  repository-manager-a2a:
+  repository-manager-agent:
     image: docker.io/knucklessg1/repository-manager:latest
     # build: . # Debug
-    container_name: repository-manager-a2a
-    hostname: repository-manager-a2a
-    command: ["repository-manager-a2a"]
+    container_name: repository-manager-agent
+    hostname: repository-manager-agent
+    command: ["repository-manager-agent"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       - repository-manager-mcp
     logging:
@@ -48,5 +52,6 @@ services:
       - "OPENAI_API_KEY=llama"
       - "MODEL_ID=qwen/qwen3-8b"
       - "DEBUG=False"
+      - "ENABLE_WEB_UI=True"
     ports:
       - "9017:9017"

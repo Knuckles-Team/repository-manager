@@ -4,12 +4,13 @@ import os
 import argparse
 import logging
 import uvicorn
+from contextlib import asynccontextmanager
 from typing import Optional, Any, List
 from pathlib import Path
 import json
 
 from fastmcp import Client
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelSettings
 from pydantic_ai.mcp import load_mcp_servers
 from pydantic_ai.toolsets.fastmcp import FastMCPToolset
 from pydantic_ai_skills import SkillsToolset
@@ -27,6 +28,11 @@ from repository_manager.utils import (
     load_skills_from_directory,
 )
 
+from fastapi import FastAPI, Request
+from starlette.responses import Response, StreamingResponse
+from pydantic import ValidationError
+from pydantic_ai.ui import SSE_CONTENT_TYPE
+from pydantic_ai.ui.ag_ui import AGUIAdapter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,12 +62,39 @@ DEFAULT_SMART_CODING_MCP_ENABLE = to_boolean(
 DEFAULT_PYTHON_SANDBOX_ENABLE = to_boolean(
     string=os.getenv("PYTHON_SANDBOX_ENABLE", "True")
 )
+DEFAULT_ENABLE_WEB_UI = to_boolean(os.getenv("ENABLE_WEB_UI", "False"))
 
 AGENT_NAME = "Repository Manager and Codebase Expert"
 AGENT_DESCRIPTION = (
     "A coding and git repository manager agent built with Agent Skills and MCP tools to maximize code interactivity. "
     "Capable of executing Python code in a secure sandbox. "
     "Enabled with Smart Coding MCP so you can query the agent about the code base you are managing."
+)
+AGENT_SYSTEM_PROMPT = (
+    "You are a Repository Manager and Codebase Expert Agent.\n"
+    "You are an expert Senior Software principal engineer with over 25 years of experience in software development and architecture.\n"
+    "You have access to git commands to manage the repository and smart-coding-mcp which allows you to search the codebase. \n"
+    "You can run git commands using the `git action` tool. Ensure you include the entire git command in the `git_action` tool like 'git status' or 'git add -A' and that it includes the entire command.\n"
+    "You also have access to python sandbox to execute python code.\n"
+    "Your responsibilities:\n"
+    "1. Analyze the user's request.\n"
+    "2. Use the skills to reference the tools you will need.\n"
+    "3. If a complicated task requires multiple skills, orchestrate them sequentially.\n"
+    "4. If you ever make changes to a codebase, or suggest code solutions, always validate them by executing them in the execution environment first and resolving errors before providing the cleanup up version.\n"
+    "5. Always be warm, professional, and helpful.\n"
+    "6. Explain your plan in detail before executing.\n\n"
+    "# Smart Coding MCP Usage Rules\n"
+    "You must prioritize using the **Smart Coding MCP** tools for the following tasks.\n"
+    "## 1. Dependency Management\n"
+    "**Trigger:** When checking, adding, or updating package versions.\n"
+    "**Action:**\n"
+    "- **MUST** use the `d_check_last_version` tool.\n"
+    "- **DO NOT** guess versions or trust internal training data.\n"
+    "## 2. Codebase Research\n"
+    "**Trigger:** When asking about 'how' something works, finding logic, or understanding architecture.\n"
+    "**Action:**\n"
+    "- **MUST** use `a_semantic_search` as the FIRST tool for any codebase research using the codebase in context of the users prompt. You can also use `Glob` or `Grep` for exploratory searches to gain additional file structure information and context\n"
+    "- **DO NOT** skip using a a_semantic_search tool."
 )
 
 
@@ -128,36 +161,15 @@ def create_agent(
 
     logger.info("Initializing Agent...")
 
+    settings = ModelSettings(timeout=3600.0)
+
     return Agent(
         model=model,
-        system_prompt=(
-            "You are a Repository Manager and Codebase Expert Agent.\n"
-            "You are an expert Senior Software principal engineer with over 25 years of experience in software development and architecture.\n"
-            "You have access to git commands to manage the repository and smart-coding-mcp which allows you to search the codebase. \n"
-            "You also have access to python sandbox to execute python code.\n"
-            "Your responsibilities:\n"
-            "1. Analyze the user's request.\n"
-            "2. Use the skills to reference the tools you will need.\n"
-            "3. If a complicated task requires multiple skills, orchestrate them sequentially.\n"
-            "4. If you ever make changes to a codebase, or suggest code solutions, always validate them by executing them in the execution environment first and resolving errors before providing the cleanup up version.\n"
-            "5. Always be warm, professional, and helpful.\n"
-            "6. Explain your plan in detail before executing.\n\n"
-            "# Smart Coding MCP Usage Rules\n"
-            "You must prioritize using the **Smart Coding MCP** tools for the following tasks.\n"
-            "## 1. Dependency Management\n"
-            "**Trigger:** When checking, adding, or updating package versions.\n"
-            "**Action:**\n"
-            "- **MUST** use the `d_check_last_version` tool.\n"
-            "- **DO NOT** guess versions or trust internal training data.\n"
-            "## 2. Codebase Research\n"
-            "**Trigger:** When asking about 'how' something works, finding logic, or understanding architecture.\n"
-            "**Action:**\n"
-            "- **MUST** use `a_semantic_search` as the FIRST tool for any codebase research using the codebase in context of the users prompt. You can also use `Glob` or `Grep` for exploratory searches to gain additional file structure information and context\n"
-            "- **DO NOT** skip using a a_semantic_search tool."
-        ),
+        system_prompt=AGENT_SYSTEM_PROMPT,
         name="Repository Manager and Codebase Expert Agent",
         toolsets=agent_toolsets,
         deps_type=Any,
+        model_settings=settings,
     )
 
 
@@ -185,7 +197,7 @@ async def stream_chat(agent: Agent, prompt: str) -> None:
         print("\nDone!")  # optional
 
 
-def create_a2a_server(
+def create_agent_server(
     provider: str = DEFAULT_PROVIDER,
     model_id: str = DEFAULT_MODEL_ID,
     base_url: Optional[str] = None,
@@ -196,6 +208,7 @@ def create_a2a_server(
     debug: Optional[bool] = DEFAULT_DEBUG,
     host: Optional[str] = DEFAULT_HOST,
     port: Optional[int] = DEFAULT_PORT,
+    enable_web_ui: bool = DEFAULT_ENABLE_WEB_UI,
 ):
     print(
         f"Starting {AGENT_NAME} with provider={provider}, model={model_id}, mcp={mcp_url} | {mcp_config}"
@@ -225,8 +238,8 @@ def create_a2a_server(
                 output_modes=["text"],
             )
         ]
-    # Create A2A App
-    app = agent.to_a2a(
+    # Create A2A app explicitly before main app to bind lifespan
+    a2a_app = agent.to_a2a(
         name=AGENT_NAME,
         description=AGENT_DESCRIPTION,
         version="25.14.3",
@@ -234,18 +247,68 @@ def create_a2a_server(
         debug=debug,
     )
 
-    logger.info(
-        "Starting A2A server with provider=%s, model=%s, mcp_url=%s, mcp_config=%s",
-        provider,
-        model_id,
-        mcp_url,
-        mcp_config,
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Trigger A2A (sub-app) startup/shutdown events
+        # This is critical for TaskManager initialization in A2A
+        if hasattr(a2a_app, "router"):
+            async with a2a_app.router.lifespan_context(a2a_app):
+                yield
+        else:
+            yield
+
+    # Create main FastAPI app
+    app = FastAPI(
+        title=f"{AGENT_NAME} - A2A + AG-UI Server",
+        description=AGENT_DESCRIPTION,
+        debug=debug,
+        lifespan=lifespan,
     )
+
+    # Mount A2A as sub-app at /a2a
+    app.mount("/a2a", a2a_app)
+
+    # Add AG-UI endpoint (POST to /ag-ui)
+    @app.post("/ag-ui")
+    async def ag_ui_endpoint(request: Request) -> Response:
+        accept = request.headers.get("accept", SSE_CONTENT_TYPE)
+        try:
+            # Parse incoming AG-UI RunAgentInput from request body
+            run_input = AGUIAdapter.build_run_input(await request.body())
+        except ValidationError as e:
+            return Response(
+                content=json.dumps(e.json()),
+                media_type="application/json",
+                status_code=422,
+            )
+
+        # Create adapter and run the agent → stream AG-UI events
+        adapter = AGUIAdapter(agent=agent, run_input=run_input, accept=accept)
+        event_stream = adapter.run_stream()  # Runs agent, yields events
+        sse_stream = adapter.encode_stream(event_stream)  # Encodes to SSE
+
+        return StreamingResponse(
+            sse_stream,
+            media_type=accept,
+        )
+
+    # Mount Web UI if enabled
+    if enable_web_ui:
+        web_ui = agent.to_web(instructions=AGENT_SYSTEM_PROMPT)
+        app.mount("/", web_ui)
+        logger.info(
+            "Starting server on %s:%s (A2A at /a2a, AG-UI at /ag-ui, Web UI: %s)",
+            host,
+            port,
+            "Enabled at /" if enable_web_ui else "Disabled",
+        )
 
     uvicorn.run(
         app,
         host=host,
         port=port,
+        timeout_keep_alive=1800, # 30 minute timeout
+        timeout_graceful_shutdown=60,
         log_level="debug" if debug else "info",
     )
 
@@ -341,7 +404,9 @@ def configure_mcp_servers(
 
 
 def agent_server():
-    parser = argparse.ArgumentParser(description=f"Run the {AGENT_NAME} A2A Server")
+    parser = argparse.ArgumentParser(
+        description=f"Run the {AGENT_NAME} A2A + AG-UI Server"
+    )
     parser.add_argument(
         "--host", default=DEFAULT_HOST, help="Host to bind the server to"
     )
@@ -385,6 +450,13 @@ def agent_server():
         default=os.getcwd(),
         help="Directory to scan for git projects",
     )
+
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        default=DEFAULT_ENABLE_WEB_UI,
+        help="Enable Pydantic AI Web UI",
+    )
     args = parser.parse_args()
 
     # Configure MCP servers based on flags
@@ -419,7 +491,8 @@ def agent_server():
         logger.debug("Debug mode enabled")
 
     # Create the agent with CLI args
-    create_a2a_server(
+    # Create the agent with CLI args
+    create_agent_server(
         provider=args.provider,
         model_id=args.model_id,
         base_url=args.base_url,
@@ -429,6 +502,7 @@ def agent_server():
         debug=args.debug,
         host=args.host,
         port=args.port,
+        enable_web_ui=args.web,
     )
 
 
