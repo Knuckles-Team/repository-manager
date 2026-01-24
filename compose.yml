@@ -7,7 +7,7 @@ services:
     hostname: repository-manager-mcp
     volumes:
       - ./mcp/development:/development
-    command: ["repository-manager-mcp"]
+    command: [ "repository-manager-mcp" ]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     logging:
@@ -25,13 +25,19 @@ services:
       - "REPOSITORY_MANAGER_DEFAULT_BRANCH=True"
     ports:
       - "8017:8017"
+    healthcheck:
+      test: [ "CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8017/health')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   repository-manager-agent:
     image: docker.io/knucklessg1/repository-manager:latest
     # build: . # Debug
     container_name: repository-manager-agent
     hostname: repository-manager-agent
-    command: ["repository-manager-agent"]
+    command: [ "repository-manager-agent" ]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -55,3 +61,9 @@ services:
       - "ENABLE_WEB_UI=True"
     ports:
       - "9017:9017"
+    healthcheck:
+      test: [ "CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9017/health')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

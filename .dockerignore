@@ -4,3 +4,14 @@ pytest.ini
 ./tests/
 Dockerfile
 compose.yml
+.bumpversion.cfg
+.pre-commit-config.yaml
+pytest.ini
+./tests/
+Dockerfile
+debug.Dockerfile
+./scripts/
+./mcp/
+./build/
+./.ruff_cache/
+./.git/
