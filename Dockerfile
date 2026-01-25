@@ -59,7 +59,7 @@ RUN apt-get update \
    && curl -fsSL https://deno.land/install.sh | sh \
    && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
    && pip install uv \
-   && uv pip install --system --upgrade repository-manager[all]>=1.2.8 \
+   && uv pip install --system --upgrade repository-manager[all]>=1.2.9 \
    && repository-manager -c -p -b \
    && git config --global --add safe.directory "*"
 
