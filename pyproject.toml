@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repository-manager"
-version = "1.2.9"
+version = "1.2.10"
 description = "Manage your git projects"
 readme = "README.md"
 authors = [{ name = "Audel Rouhi", email = "knucklessg1@gmail.com" }]
@@ -19,6 +19,9 @@ classifiers = [
 requires-python = ">=3.10"
 dependencies = [
     "fastmcp>=3.0.0b1",
+    "mcp-run-python",
+    "beautifulsoup4",
+    "httpx",
 ]
 
 
