@@ -103,7 +103,7 @@ def get_mcp_config_path() -> str:
 
 
 def get_projects_file_path() -> str:
-    repositories_list_file = files("repository_manager") / "repositories-list.txt"
+    repositories_list_file = files(retrieve_package_name()) / "repositories-list.txt"
     with as_file(repositories_list_file) as path:
         repositories_list_path = str(path)
     return repositories_list_path
@@ -181,3 +181,215 @@ def create_model(
             os.environ["HF_TOKEN"] = api_key
         return HuggingFaceModel(model_name=model_id)
     return OpenAIChatModel(model_name=model_id, provider="openai")
+
+
+def extract_tool_tags(tool_def: Any) -> List[str]:
+    """
+    Extracts tags from a tool definition object.
+
+    Found structure in debug:
+    tool_def.name (str)
+    tool_def.meta (dict) -> {'fastmcp': {'tags': ['tag']}}
+
+    This function checks multiple paths to be robust:
+    1. tool_def.meta['fastmcp']['tags']
+    2. tool_def.meta['tags']
+    3. tool_def.metadata['tags'] (legacy/alternative wrapper)
+    4. tool_def.metadata.get('meta')... (nested path)
+    """
+    tags_list = []
+
+    # 1. Direct 'meta' attribute (seen in pydantic-ai / mcp.types.Tool)
+    meta = getattr(tool_def, "meta", None)
+    if isinstance(meta, dict):
+        # Check fastmcp dict
+        fastmcp = meta.get("fastmcp") or meta.get("_fastmcp") or {}
+        tags_list = fastmcp.get("tags", [])
+        if tags_list:
+            return tags_list
+
+        # Check direct tags in meta
+        tags_list = meta.get("tags", [])
+        if tags_list:
+            return tags_list
+
+    # 2. 'metadata' attribute (common in some wrappers)
+    metadata = getattr(tool_def, "metadata", None)
+    if isinstance(metadata, dict):
+        # Path: metadata.tags
+        tags_list = metadata.get("tags", [])
+        if tags_list:
+            return tags_list
+
+        # Path: metadata.meta...
+        meta_nested = metadata.get("meta") or {}
+        fastmcp = meta_nested.get("fastmcp") or meta_nested.get("_fastmcp") or {}
+        tags_list = fastmcp.get("tags", [])
+        if tags_list:
+            return tags_list
+
+        tags_list = meta_nested.get("tags", [])
+        if tags_list:
+            return tags_list
+
+    # 3. Direct 'tags' attribute
+    tags_list = getattr(tool_def, "tags", [])
+    if isinstance(tags_list, list) and tags_list:
+        return tags_list
+
+    return []
+
+
+def tool_in_tag(tool_def: Any, tag: str) -> bool:
+    """
+    Checks if a tool belongs to a specific tag.
+    """
+    tool_tags = extract_tool_tags(tool_def)
+    if tag in tool_tags:
+        return True
+    else:
+        return False
+
+
+def filter_tools_by_tag(tools: List[Any], tag: str) -> List[Any]:
+    """
+    Filters a list of tools for a given tag.
+    """
+    return [t for t in tools if tool_in_tag(t, tag)]
+
+
+def generate_mermaid_diagram(execution_history: List[str]) -> str:
+    """
+    Generates a Mermaid sequence diagram from execution history.
+    Parsing relies on strings formatted like: "AgentName -> ToolName(args)"
+    """
+    diagram = ["sequenceDiagram"]
+    participants = set()
+
+    # Add participants
+    participants.add("User")
+    participants.add("Supervisor")
+
+    # We might need to parse the history strings to find agents
+    # Assuming history format: "AgentName: ToolName"
+
+    for event in execution_history:
+        # Heuristic parsing
+        if ": " in event:
+            agent, action = event.split(": ", 1)
+            participants.add(agent)
+
+    for p in sorted(participants):
+        diagram.append(f"    participant {p}")
+
+    for event in execution_history:
+        if ": " in event:
+            agent, action = event.split(": ", 1)
+            # Escape chars if needed
+            # Shorten action if too long?
+            action_safe = action.replace('"', "'")
+            if len(action_safe) > 50:
+                action_safe = action_safe[:47] + "..."
+
+            # Use 'Supervisor' as the caller for most things if we don't have better info?
+            # Or if we have "Supervisor -> Agent: Call"
+            # For now, let's just make everything come from Supervisor or previous?
+            # Creating a simple flow: Supervisor -> Agent -> Tool
+
+            diagram.append(f"    Supervisor->>{agent}: {action_safe}")
+            diagram.append(f"    {agent}-->>Supervisor: (result)")
+
+    return "\n".join(diagram)
+
+
+def fetch_pyodide_packages() -> List[str]:
+    """
+    Fetches the list of packages supported by Pyodide from the official pyodide-lock.json.
+    Dynamically fetches the latest stable version from GitHub API.
+    Returns strings "PackageName (Version)".
+    """
+    import httpx
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # Default to a recent stable version if API fails
+    latest_version = "0.26.4"
+
+    try:
+        # Fetch latest version tag from GitHub API
+        gh_url = "https://api.github.com/repos/pyodide/pyodide/releases/latest"
+        gh_resp = httpx.get(gh_url, timeout=5.0, follow_redirects=True)
+        if gh_resp.status_code == 200:
+            tag_name = gh_resp.json().get("tag_name")
+            if tag_name:
+                # Strip 'v' prefix if present (though pyodide usually uses e.g. 0.26.0)
+                # But CDN url structure expects v<version>
+                # Let's verify what tag_name is. Usually "0.26.4" or "v0.26.4".
+                # CDN expects: https://cdn.jsdelivr.net/pyodide/v0.26.4/...
+                # If tag is "0.26.4", we need "v0.26.4".
+                # If tag is "v0.26.4", we use it as is.
+                if not tag_name.startswith("v"):
+                    latest_version = f"v{tag_name}"
+                else:
+                    latest_version = tag_name
+                logger.info(f"Resolved latest Pyodide version: {latest_version}")
+    except Exception as e:
+        logger.warning(
+            f"Failed to fetch latest Pyodide version from GitHub: {e}. Using fallback {latest_version}."
+        )
+        if not latest_version.startswith("v"):
+            latest_version = f"v{latest_version}"
+
+    # URL for Pyodide pyodide-lock.json using resolved version
+    url = f"https://cdn.jsdelivr.net/pyodide/{latest_version}/full/pyodide-lock.json"
+
+    try:
+        response = httpx.get(url, timeout=10.0, follow_redirects=True)
+        response.raise_for_status()
+
+        data = response.json()
+        # pyodide-lock.json structure: {"packages": {"name": {...}}}
+        packages = data.get("packages", {})
+
+        result = []
+        for pkg_name, pkg_info in packages.items():
+            version = pkg_info.get("version", "unknown")
+            result.append(f"{pkg_name} ({version})")
+
+        if not result:
+            logger.warning("No packages found in pyodide-lock.json")
+            return ["Error: Empty package list derived from pyodide-lock.json"]
+
+        return sorted(result)
+
+    except Exception as e:
+        logger.error(f"Error fetching Pyodide packages from {url}: {e}")
+        return [f"Error fetching package list: {e}"]
+
+
+def list_workspace_projects() -> List[str]:
+    """
+    Scans the workspace for project directories (containing .git or pyproject.toml).
+    Returns a list of project names.
+    projects_file logic is preferred source of truth, but we can verify against actual dirs.
+    """
+    projects = []
+    try:
+        # Default workspace can be derived from existing config or env
+        # In this agent setup, we might need a way to pass the root dir.
+        # Check env or guess CWD.
+        workspace_root = Path(
+            os.getcwd()
+        )  # Safe assumption for now as agent runs in root
+
+        if workspace_root.exists():
+            for item in workspace_root.iterdir():
+                if item.is_dir():
+                    # Simple check: has .git?
+                    if (item / ".git").exists():
+                        projects.append(item.name)
+    except Exception as e:
+        print(f"Error listing projects: {e}")
+
+    return sorted(projects)

@@ -6,4 +6,4 @@ The **python-sandbox** skill allows you to execute Python code securely. Use thi
 
 ### Available Tools
 
--   `run_python_script`: Run a Python script in a secure sandbox.
+-   `code_sandbox`: Run Python code or scripts in a secure sandbox.
