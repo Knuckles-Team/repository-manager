@@ -14,16 +14,20 @@ import argparse
 import logging
 import concurrent.futures
 import datetime
-from typing import List, Dict
-from repository_manager.utils import to_boolean, get_projects_file_path
+from typing import List
+from repository_manager.utils import (
+    to_boolean,
+    get_projects_file_path,
+)
+from repository_manager.models import GitResult, GitError, GitMetadata, ReadmeResult
 
 DEFAULT_PROJECTS_FILE = os.getenv("PROJECTS_FILE", get_projects_file_path())
 DEFAULT_REPOSITORY_MANAGER_THREADS = os.getenv("REPOSITORY_MANAGER_THREADS", 12)
 DEFAULT_REPOSITORY_MANAGER_DEFAULT_BRANCH = to_boolean(
     os.getenv("REPOSITORY_MANAGER_DEFAULT_BRANCH", "False")
 )
-DEFAULT_REPOSITORY_MANAGER_DIRECTORY = os.getenv(
-    "REPOSITORY_MANAGER_DIRECTORY", os.path.normpath("/development")
+DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.getenv(
+    "REPOSITORY_MANAGER_WORKSPACE", os.path.normpath("/workspace")
 )
 
 
@@ -57,7 +61,7 @@ class Git:
 
     def __init__(
         self,
-        repository_directory: str = None,
+        workspace: str = None,
         projects: list = None,
         threads: int = None,
         set_to_default_branch: bool = False,
@@ -67,10 +71,10 @@ class Git:
         """Initialize the Git class with default settings."""
         self.logger = setup_logging(is_mcp_server=is_mcp_server)  # Pass is_mcp_server
         self.is_mcp_server = is_mcp_server
-        if repository_directory:
-            self.repository_directory = repository_directory
+        if workspace:
+            self.workspace = workspace
         else:
-            self.repository_directory = f"{os.getcwd()}"
+            self.workspace = f"{os.getcwd()}"
         if projects:
             self.projects = projects
         else:
@@ -81,10 +85,18 @@ class Git:
         self.maximum_threads = 36
         if threads:
             self.set_threads(threads=threads)
+        self.deduplicate_projects()
+
+    def deduplicate_projects(self):
+        """
+        Remove duplicate projects from the project list while preserving order.
+        """
+        if self.projects:
+            self.projects = list(dict.fromkeys(self.projects))
 
     def git_action(
-        self, command: str, directory: str = None, project: str = None
-    ) -> Dict:
+        self, command: str, workspace: str = None, project: str = None
+    ) -> GitResult:
         """
         Execute a Git command in the specified directory.
 
@@ -95,16 +107,16 @@ class Git:
             project (str, optional): Specify a single project
 
         Returns:
-            Dict: The combined stdout and stderr output of the command in structured format.
+            GitResult: The combined stdout and stderr output of the command in structured format.
         """
-        if directory is None:
-            directory = self.repository_directory
+        if workspace is None:
+            workspace = self.workspace
         if project:
-            directory = os.path.join(directory, project)
+            workspace = os.path.join(workspace, project)
         pipe = subprocess.Popen(
             command,
             shell=True,
-            cwd=directory,
+            cwd=workspace,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
@@ -113,26 +125,27 @@ class Git:
         out, err = pipe.communicate()
         return_code = pipe.wait()
 
-        # Prepare the result dictionary
-        result = {
-            "status": "success" if return_code == 0 else "error",
-            "data": out.strip() if out else "",
-            "error": (
-                None
-                if return_code == 0
-                else {
-                    "message": err.strip() if err else "Unknown error",
-                    "code": return_code,
-                }
-            ),
-            "metadata": {
-                "command": command,
-                "directory": directory,
-                "return_code": return_code,
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
-                + "Z",
-            },
-        }
+        # Prepare Metadata
+        metadata = GitMetadata(
+            command=command,
+            workspace=workspace,
+            return_code=return_code,
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+        )
+
+        error_obj = None
+        if return_code != 0:
+            error_obj = GitError(
+                message=err.strip() if err else "Unknown error", code=return_code
+            )
+
+        result = GitResult(
+            status="success" if return_code == 0 else "error",
+            data=out.strip() if out else "",
+            error=error_obj,
+            metadata=metadata,
+        )
+
         # Logging
         if return_code != 0:
             self.logger.error(f"Command failed: {command}\nError: {err}")
@@ -141,57 +154,54 @@ class Git:
 
         return result
 
-    def clone_projects_in_parallel(self) -> List[Dict]:
+    def clone_projects_in_parallel(self) -> List[GitResult]:
         """
         Clone all specified Git projects in parallel using multiple threads.
 
         Returns:
-            List[Dict]: A list of dictionaries, each containing the result of a clone operation
-                        with repository URL and git_action result.
+            List[GitResult]: A list of GitResult objects, one for each clone operation.
         """
-        try:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.threads
-            ) as executor:
-                results = list(executor.map(self.clone_project, self.projects))
-            # Combine results with repository URLs for clarity
-            combined_results = []
-            for project, result in zip(self.projects, results):
-                combined_result = {
-                    "status": result["status"],
-                    "data": result["data"],
-                    "error": result["error"],
-                    "metadata": {**result["metadata"], "repository_url": project},
-                }
-                combined_results.append(combined_result)
-                self.logger.info(
-                    f"Cloning {project}: {result['data'] if result['status'] == 'success' else result['error']}"
-                )
-            return combined_results
-        except Exception as e:
-            self.logger.error(f"Parallel cloning failed: {str(e)}")
-            return [
-                {
-                    "status": "error",
-                    "data": "",
-                    "error": {
-                        "message": f"Parallel cloning failed: {str(e)}",
-                        "code": -1,
-                    },
-                    "metadata": {
-                        "command": "clone_projects_in_parallel",
-                        "directory": self.repository_directory,
-                        "return_code": None,
-                        "timestamp": datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
-                        "repository_url": None,
-                    },
-                }
-            ]
+        if not self.projects:
+            return []
 
-    def clone_project(self, git_project: str) -> Dict:
+        if not self.threads:
+            self.set_threads(len(self.projects))
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            future_to_project = {
+                executor.submit(self.clone_project, project): project
+                for project in self.projects
+            }
+            results = []
+            for future in concurrent.futures.as_completed(future_to_project):
+                project = future_to_project[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as exc:
+                    self.logger.error(f"{project} generated an exception: {exc}")
+                    # Create an error result for the exception
+                    error_result = GitResult(
+                        status="error",
+                        data="",
+                        error=GitError(message=str(exc), code=1),
+                        metadata=GitMetadata(
+                            command=f"clone {project}",
+                            workspace=self.workspace,
+                            return_code=1,
+                            timestamp=datetime.datetime.now(
+                                datetime.timezone.utc
+                            ).isoformat()
+                            + "Z",
+                        ),
+                    )
+                    results.append(error_result)
+
+        return results
+
+    def clone_project(self, git_project: str) -> GitResult:
         """
         Clone a single Git project.
 
@@ -199,64 +209,72 @@ class Git:
             git_project (str): The repository URL to clone.
 
         Returns:
-            str: The output of the Git clone command.
+            GitResult: The result of the Git clone command.
         """
-        result = self.git_action(f"git clone {git_project}")
+        if not git_project:
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(message="No project URL provided", code=1),
+                metadata=GitMetadata(
+                    command="clone",
+                    workspace=self.workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        command = f"git clone {git_project}"
+        result = self.git_action(command, workspace=self.workspace)
         self.logger.info(f"Cloning {git_project}: {result}")
         return result
 
-    def pull_projects_in_parallel(self) -> List[Dict]:
+    def pull_projects_in_parallel(self) -> List[GitResult]:
         """
         Pull updates for all projects in the repository directory in parallel.
 
         Returns:
-            List[Dict]: A list of dictionaries, each containing the result of a pull operation
-                        with project directory name and git_action result.
+            List[GitResult]: A list of GitResult objects.
         """
         try:
-            project_dirs = os.listdir(self.repository_directory)
+            # Filter solely for directories that are git repositories
+            project_dirs = [
+                d
+                for d in os.listdir(self.workspace)
+                if os.path.isdir(os.path.join(self.workspace, d))
+                and os.path.exists(os.path.join(self.workspace, d, ".git"))
+            ]
+
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.threads
             ) as executor:
                 results = list(executor.map(self.pull_project, project_dirs))
-            # Combine results with project directory names for clarity
-            combined_results = []
-            for project, result in zip(project_dirs, results):
-                combined_result = {
-                    "status": result["status"],
-                    "data": result["data"],
-                    "error": result["error"],
-                    "metadata": {**result["metadata"], "project_directory": project},
-                }
-                combined_results.append(combined_result)
-                self.logger.info(
-                    f"Pulling {project}: {result['data'] if result['status'] == 'success' else result['error']}"
-                )
-            return combined_results
+
+            return results
+
         except Exception as e:
             self.logger.error(f"Parallel pulling failed: {str(e)}")
             return [
-                {
-                    "status": "error",
-                    "data": "",
-                    "error": {
-                        "message": f"Parallel pulling failed: {str(e)}",
-                        "code": -1,
-                    },
-                    "metadata": {
-                        "command": "pull_projects_in_parallel",
-                        "directory": self.repository_directory,
-                        "return_code": None,
-                        "timestamp": datetime.datetime.now(
+                GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message=f"Parallel pulling failed: {str(e)}", code=-1
+                    ),
+                    metadata=GitMetadata(
+                        command="pull_projects_in_parallel",
+                        workspace=self.workspace,
+                        return_code=-1,
+                        timestamp=datetime.datetime.now(
                             datetime.timezone.utc
                         ).isoformat()
                         + "Z",
-                        "project_directory": None,
-                    },
-                }
+                    ),
+                )
             ]
 
-    def pull_project(self, git_project: str) -> Dict:
+    def pull_project(self, git_project: str) -> GitResult:
         """
         Pull updates for a single Git project and optionally checkout the default branch.
 
@@ -264,20 +282,17 @@ class Git:
             git_project (str): The name of the project directory to pull.
 
         Returns:
-            Dict: A dictionary containing the combined results of git pull and optional checkout,
-                  with status, data (list of command results), error, and metadata.
+            GitResult: The result of the pull operation.
         """
-        project_path = os.path.normpath(
-            os.path.join(self.repository_directory, git_project)
-        )
+        project_path = os.path.normpath(os.path.join(self.workspace, git_project))
         results = []
 
         # Execute git pull
-        pull_result = self.git_action(command="git pull", directory=project_path)
+        pull_result = self.git_action(command="git pull", workspace=project_path)
         results.append(pull_result)
 
         self.logger.info(
-            f"Scanning: {self.repository_directory}/{git_project}\n"
+            f"Scanning: {self.workspace}/{git_project}\n"
             f"Pulling latest changes for {git_project}\n"
             f"{pull_result}"
         )
@@ -287,50 +302,52 @@ class Git:
             # Get default branch
             default_branch_result = self.git_action(
                 "git symbolic-ref refs/remotes/origin/HEAD",
-                directory=project_path,
+                workspace=project_path,
             )
-            if default_branch_result["status"] == "success":
+            if default_branch_result.status == "success":
                 default_branch = re.sub(
-                    "refs/remotes/origin/", "", default_branch_result["data"]
+                    "refs/remotes/origin/", "", default_branch_result.data
                 ).strip()
                 # Execute checkout
                 checkout_result = self.git_action(
                     f'git checkout "{default_branch}"',
-                    directory=project_path,
+                    workspace=project_path,
                 )
                 results.append(checkout_result)
                 self.logger.info(f"Checking out default branch: {checkout_result}")
             else:
+                # If we fail to find default branch, just log and append result
                 results.append(default_branch_result)
                 self.logger.error(
-                    f"Failed to get default branch for {git_project}: {default_branch_result['error']}"
+                    f"Failed to get default branch for {git_project}: {default_branch_result.error}"
                 )
 
-        # Combine results into a single dictionary
+        # Combine results into a single GitResult
         combined_status = (
-            "success" if all(r["status"] == "success" for r in results) else "error"
+            "success" if all(r.status == "success" for r in results) else "error"
         )
-        combined_error = None
-        if combined_status == "error":
-            # Collect first error encountered
-            for r in results:
-                if r["error"]:
-                    combined_error = r["error"]
-                    break
 
-        return {
-            "status": combined_status,
-            "data": results,  # List of git_action results
-            "error": combined_error,
-            "metadata": {
-                "command": "pull_project",
-                "directory": project_path,
-                "return_code": None,  # No single return code for multiple commands
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
-                + "Z",
-                "project_directory": git_project,
-            },
-        }
+        # Combine data
+        combined_data = "\n".join(
+            [f"[{r.metadata.command}]: {r.data}" for r in results]
+        )
+
+        # Find first error
+        combined_error = next((r.error for r in results if r.error), None)
+
+        metadata = GitMetadata(
+            command="pull_project",
+            workspace=project_path,
+            return_code=0 if combined_status == "success" else 1,
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+        )
+
+        return GitResult(
+            status=combined_status,
+            data=combined_data,
+            error=combined_error,
+            metadata=metadata,
+        )
 
     def set_threads(self, threads: int) -> None:
         """
@@ -356,6 +373,69 @@ class Git:
             )
             self.threads = self.maximum_threads
 
+    def pre_commit(
+        self,
+        run: bool = True,
+        autoupdate: bool = False,
+        workspace: str = None,
+    ) -> GitResult:
+        """
+        Execute pre-commit commands in the specified workspace.
+
+        Args:
+            run (bool): Whether to run 'pre-commit run --all-files'. Default True.
+            autoupdate (bool): Whether to run 'pre-commit autoupdate'. Default False.
+            workspace (str, optional): Workspace to run in. Defaults to repository_manager root.
+                                       Usually you want to pass a specific project path here.
+
+        Returns:
+            GitResult: Result of the execution.
+        """
+        if workspace is None:
+            workspace = self.workspace
+
+        # Check for config file
+        if not os.path.exists(os.path.join(workspace, ".pre-commit-config.yaml")):
+            return GitResult(
+                status="skipped",
+                data="No .pre-commit-config.yaml found.",
+                error=None,
+                metadata=GitMetadata(
+                    command="pre_commit_check",
+                    workspace=workspace,
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        # Build command
+        commands = []
+        if autoupdate:
+            commands.append("pre-commit autoupdate")
+        if run:
+            commands.append("pre-commit run --all-files")
+
+        if not commands:
+            return GitResult(
+                status="skipped",
+                data="No action selected (run=False, autoupdate=False).",
+                error=None,
+                metadata=GitMetadata(
+                    command="pre_commit_check",
+                    workspace=workspace,
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        full_command = " && ".join(commands)
+
+        # Execute
+        result = self.git_action(command=full_command, workspace=workspace)
+        return result
+
     def read_project_list_file(self, file: str = None):
         if file and not os.path.exists(file):
             self.logger.error(f"File not found: {file}")
@@ -363,6 +443,499 @@ class Git:
         with open(file, "r") as file_repositories:
             for repository in file_repositories:
                 self.projects.append(repository.strip())
+        self.deduplicate_projects()
+
+    def get_readme(self, project: str = None) -> ReadmeResult:
+        """
+        Get the content and path of the README.md file for a project or the workspace root.
+
+        Args:
+            project (str, optional): The project directory name. If None, checks the workspace root.
+
+        Returns:
+            ReadmeResult: Object containing 'content' and 'path' of the README.md file.
+        """
+        target_dir = self.workspace
+        if project:
+            target_dir = os.path.join(self.workspace, project)
+
+        if not os.path.exists(target_dir):
+            return ReadmeResult(content="", path="")
+
+        # Case-insensitive search for README.md
+        readme_path = None
+        for filename in os.listdir(target_dir):
+            if filename.lower() == "readme.md":
+                readme_path = os.path.join(target_dir, filename)
+                break
+
+        if not readme_path:
+            return ReadmeResult(content="", path="")
+
+        try:
+            with open(readme_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            return ReadmeResult(content=content, path=readme_path)
+        except Exception as e:
+            self.logger.error(f"Error reading README: {e}")
+            return ReadmeResult(content="", path=readme_path)
+
+    def text_editor(
+        self,
+        command: str,
+        path: str,
+        file_text: str = None,
+        view_range: list = None,
+        old_str: str = None,
+        new_str: str = None,
+        insert_line: int = None,
+    ) -> GitResult:
+        """
+        FileSystem Editor Tool
+        """
+        path = os.path.normpath(path)
+        if not os.path.isabs(path):
+            path = os.path.join(self.workspace, path)
+
+        meta = GitMetadata(
+            command=command,
+            workspace=path,
+            return_code=0,
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+        )
+
+        if command == "view":
+            if not os.path.exists(path):
+                meta.return_code = 1
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=f"File not found: {path}", code=1),
+                    metadata=meta,
+                )
+            try:
+                with open(path, "r") as f:
+                    content = f.read()
+                    if view_range:
+                        lines = content.splitlines()
+                        start = view_range[0] - 1
+                        end = view_range[1]
+                        # Check bounds
+                        if start < 0:
+                            start = 0
+                        if end > len(lines):
+                            end = len(lines)
+                        content = "\n".join(lines[start:end])
+                return GitResult(
+                    status="success", data=content, error=None, metadata=meta
+                )
+            except Exception as e:
+                meta.return_code = 1
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=str(e), code=1),
+                    metadata=meta,
+                )
+
+        elif command == "create":
+            if os.path.exists(path):
+                meta.return_code = 1
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=f"File already exists: {path}", code=1),
+                    metadata=meta,
+                )
+            try:
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write(file_text if file_text else "")
+                return GitResult(
+                    status="success",
+                    data=f"File created: {path}",
+                    error=None,
+                    metadata=meta,
+                )
+            except Exception as e:
+                meta.return_code = 1
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=str(e), code=1),
+                    metadata=meta,
+                )
+
+        elif command == "str_replace":
+            if not os.path.exists(path):
+                meta.return_code = 1
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=f"File not found: {path}", code=1),
+                    metadata=meta,
+                )
+            try:
+                with open(path, "r") as f:
+                    content = f.read()
+
+                # Check for uniqueness if required, or just replace
+                if content.count(old_str) > 1:
+                    meta.return_code = 1
+                    return GitResult(
+                        status="error",
+                        data="",
+                        error=GitError(
+                            message=f"Multiple occurrences of '{old_str}' found.",
+                            code=1,
+                        ),
+                        metadata=meta,
+                    )
+                if old_str not in content:
+                    meta.return_code = 1
+                    return GitResult(
+                        status="error",
+                        data="",
+                        error=GitError(
+                            message=f"'{old_str}' not found in file.", code=1
+                        ),
+                        metadata=meta,
+                    )
+
+                new_content = content.replace(old_str, new_str)
+                with open(path, "w") as f:
+                    f.write(new_content)
+                return GitResult(
+                    status="success",
+                    data=f"File updated: {path}",
+                    error=None,
+                    metadata=meta,
+                )
+            except Exception as e:
+                meta.return_code = 1
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=str(e), code=1),
+                    metadata=meta,
+                )
+
+        elif command == "insert":
+            if not os.path.exists(path):
+                meta.return_code = 1
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=f"File not found: {path}", code=1),
+                    metadata=meta,
+                )
+            try:
+                with open(path, "r") as f:
+                    lines = f.readlines()
+
+                if insert_line < 0 or insert_line > len(lines) + 1:
+                    meta.return_code = 1
+                    return GitResult(
+                        status="error",
+                        data="",
+                        error=GitError(
+                            message=f"Invalid line number: {insert_line}", code=1
+                        ),
+                        metadata=meta,
+                    )
+
+                if new_str:
+                    lines.insert(insert_line - 1, new_str + "\n")
+
+                with open(path, "w") as f:
+                    f.writelines(lines)
+                return GitResult(
+                    status="success",
+                    data=f"File updated: {path}",
+                    error=None,
+                    metadata=meta,
+                )
+            except Exception as e:
+                meta.return_code = 1
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=str(e), code=1),
+                    metadata=meta,
+                )
+
+        meta.return_code = 1
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(message=f"Unknown command: {command}", code=1),
+            metadata=meta,
+        )
+
+    def create_project(self, project_name: str, workspace: str = None) -> GitResult:
+        """
+        Create a new project directory and initialize it as a git repository.
+
+        Args:
+            project_name (str): The name of the project directory to create.
+
+        Returns:
+            GitResult: Result of the operation.
+        """
+        if not workspace:
+            workspace = self.workspace
+        project_path = os.path.join(workspace, project_name)
+
+        if os.path.exists(project_path):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Directory already exists: {project_path}", code=1
+                ),
+                metadata=GitMetadata(
+                    command="create_project",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        try:
+            os.makedirs(project_path, exist_ok=True)
+            # Run git init
+            init_result = self.git_action("git init", workspace=project_path)
+
+            if init_result.status == "success":
+                self.logger.info(f"Created project: {project_path}")
+                return init_result
+            else:
+                return init_result
+
+        except Exception as e:
+            self.logger.error(f"Failed to create project {project_name}: {e}")
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(message=str(e), code=1),
+                metadata=GitMetadata(
+                    command="create_project",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+    def create_directory(self, workspace: str, project: str, path: str) -> GitResult:
+        """
+        Create a new directory at the specified path within a project in the workspace.
+
+        Args:
+            path (str): The path where the directory should be created within the project
+            project (str): The name of the project
+            workspace (str): The path to the workspace
+
+        Returns:
+            GitResult: Result of the operation.
+        """
+        if not workspace:
+            workspace = self.workspace
+        target_path = os.path.normpath(os.path.join(workspace, project, path))
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(workspace, target_path)
+
+        if os.path.exists(target_path):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Directory already exists: {target_path}", code=1
+                ),
+                metadata=GitMetadata(
+                    command="create_directory",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        try:
+            os.makedirs(target_path, exist_ok=True)
+            self.logger.info(f"Created directory: {target_path}")
+            return GitResult(
+                status="success",
+                data=f"Created directory: {target_path}",
+                error=None,
+                metadata=GitMetadata(
+                    command="create_directory",
+                    workspace=workspace,
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to create directory {target_path}: {e}")
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(message=str(e), code=1),
+                metadata=GitMetadata(
+                    command="create_directory",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+    def delete_directory(self, path: str) -> GitResult:
+        """
+        Delete a directory at the specified path.
+
+        Args:
+            path (str): The path of the directory to delete.
+
+        Returns:
+            GitResult: Result of the operation.
+        """
+        import shutil
+
+        target_path = os.path.normpath(path)
+        if not os.path.isabs(target_path):
+            target_path = os.path.join(self.workspace, target_path)
+
+        if not os.path.exists(target_path):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(message=f"Directory not found: {target_path}", code=1),
+                metadata=GitMetadata(
+                    command="delete_directory",
+                    workspace=self.workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        try:
+            if os.path.isfile(target_path):
+                os.remove(target_path)
+            else:
+                shutil.rmtree(target_path)
+
+            self.logger.info(f"Deleted directory/file: {target_path}")
+            return GitResult(
+                status="success",
+                data=f"Deleted: {target_path}",
+                error=None,
+                metadata=GitMetadata(
+                    command="delete_directory",
+                    workspace=self.workspace,
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to delete {target_path}: {e}")
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(message=str(e), code=1),
+                metadata=GitMetadata(
+                    command="delete_directory",
+                    workspace=self.workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+    def rename_directory(self, old_path: str, new_path: str) -> GitResult:
+        """
+        Rename/Move a directory or file.
+
+        Args:
+            old_path (str): The current path.
+            new_path (str): The new path.
+
+        Returns:
+            GitResult: Result of the operation.
+        """
+        abs_old_path = os.path.normpath(old_path)
+        if not os.path.isabs(abs_old_path):
+            abs_old_path = os.path.join(self.workspace, abs_old_path)
+
+        abs_new_path = os.path.normpath(new_path)
+        if not os.path.isabs(abs_new_path):
+            abs_new_path = os.path.join(self.workspace, abs_new_path)
+
+        if not os.path.exists(abs_old_path):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Source path not found: {abs_old_path}", code=1
+                ),
+                metadata=GitMetadata(
+                    command="rename_directory",
+                    workspace=self.workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        if os.path.exists(abs_new_path):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Destination path already exists: {abs_new_path}", code=1
+                ),
+                metadata=GitMetadata(
+                    command="rename_directory",
+                    workspace=self.workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        try:
+            os.renames(abs_old_path, abs_new_path)
+            self.logger.info(f"Renamed {abs_old_path} to {abs_new_path}")
+            return GitResult(
+                status="success",
+                data=f"Renamed {abs_old_path} to {abs_new_path}",
+                error=None,
+                metadata=GitMetadata(
+                    command="rename_directory",
+                    workspace=self.workspace,
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to rename {abs_old_path} to {abs_new_path}: {e}")
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(message=str(e), code=1),
+                metadata=GitMetadata(
+                    command="rename_directory",
+                    workspace=self.workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
 
 
 def usage() -> None:
@@ -373,7 +946,7 @@ def usage() -> None:
         "-h | --help           [ See usage for script ]\n"
         "-b | --default-branch [ Checkout default branch ]\n"
         "-c | --clone          [ Clone projects specified  ]\n"
-        "-d | --directory      [ Directory to clone/pull projects ]\n"
+        "-w | --workspace      [ Workspace to clone/pull projects ]\n"
         "-f | --file           [ File with repository links   ]\n"
         "-p | --pull           [ Pull projects in parent directory ]\n"
         "-r | --repositories   [ Comma separated Git URLs ]\n"
@@ -382,7 +955,7 @@ def usage() -> None:
         "repository-manager \n\t"
         "--clone \n\t"
         "--pull \n\t"
-        "--directory '/home/user/Downloads'\n\t"
+        "--workspace '/home/user/Downloads'\n\t"
         "--file '/home/user/Downloads/repositories.txt' \n\t"
         "--repositories 'https://github.com/Knucklessg1/media-downloader,https://github.com/Knucklessg1/genius-bot'\n\t"
         "--threads 8"
@@ -404,11 +977,11 @@ def repository_manager() -> None:
     parser.add_argument("-c", "--clone", action="store_true", help="Clone repositories")
     parser.add_argument("-p", "--pull", action="store_true", help="Pull repositories")
     parser.add_argument(
-        "-d",
-        "--directory",
+        "-w",
+        "--workspace",
         type=str,
-        help="Specify repository directory",
-        default=DEFAULT_REPOSITORY_MANAGER_DIRECTORY,
+        help="Specify repository workspace",
+        default=DEFAULT_REPOSITORY_MANAGER_WORKSPACE,
     )
     parser.add_argument(
         "-f",
@@ -437,11 +1010,11 @@ def repository_manager() -> None:
 
     if args.default_branch:
         git.set_to_default_branch = True
-    if args.directory:
-        if os.path.exists(args.directory):
-            git.repository_directory = args.directory
+    if args.workspace:
+        if os.path.exists(args.workspace):
+            git.workspace = args.workspace
         else:
-            logger.error(f"Directory not found: {args.directory}")
+            logger.error(f"Workspace not found: {args.workspace}")
             parser.print_help()
             sys.exit(2)
     if args.file:
@@ -457,9 +1030,10 @@ def repository_manager() -> None:
     if args.threads:
         git.set_threads(threads=args.threads)
 
-    git.projects = list(dict.fromkeys(git.projects))
+    git.deduplicate_projects()
 
     if clone_flag:
+
         git.clone_projects_in_parallel()
     if pull_flag:
         git.pull_projects_in_parallel()

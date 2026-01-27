@@ -2,12 +2,15 @@
 services:
   repository-manager-mcp:
     image: docker.io/knucklessg1/repository-manager:latest
-    # build: . # Debug
+    # build:
+    #   context: . # Debug
+    #   dockerfile: debug.Dockerfile
     container_name: repository-manager-mcp
     hostname: repository-manager-mcp
     volumes:
-      - ./mcp/development:/development
-    command: [ "repository-manager-mcp" ]
+      - ./mcp/workspace:/workspace:rw
+    working_dir: /workspace
+    command: [ "sh", "-c", "repository-manager -c -p -b && git config --global --add safe.directory \"*\" && repository-manager-mcp" ]
     extra_hosts:
       - "host.docker.internal:host-gateway"
     logging:
@@ -20,7 +23,7 @@ services:
       - "HOST=0.0.0.0"
       - "PORT=8017"
       - "TRANSPORT=streamable-http"
-      - "REPOSITORY_MANAGER_DIRECTORY=/development"
+      - "REPOSITORY_MANAGER_WORKSPACE=/workspace"
       - "REPOSITORY_MANAGER_THREADS=12"
       - "REPOSITORY_MANAGER_DEFAULT_BRANCH=True"
     ports:
@@ -34,7 +37,9 @@ services:
 
   repository-manager-agent:
     image: docker.io/knucklessg1/repository-manager:latest
-    # build: . # Debug
+    # build:
+    #   context: . # Debug
+    #   dockerfile: debug.Dockerfile
     container_name: repository-manager-agent
     hostname: repository-manager-agent
     command: [ "repository-manager-agent" ]
