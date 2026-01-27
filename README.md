@@ -21,24 +21,24 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.2.9*
+*Version: 1.2.10*
 
 ## Overview
 
-Do you have several repositories you wish you could manage at once? This is a tool to be able to manage your repositories in bulk!
+A Ralph Wiggum inspired coding agent and repository manager!
 
-Manage your Git projects - Bulk clone and bulk pull repositories
+This powerful agent can manage your repositories in bulk, implement new features using Ralph Wiggum methodology, run git commands, create and edit code in multiple projects, and query your code base!
 
 Run all Git supported tasks using Git Actions command
 
-Run as an MCP Server for Agentic AI with an A2A Server!
+Run as an MCP Server for Agentic AI with an A2A/AG-UI/Web Server!
 
 ## MCP
 
 AI Prompt:
 ```text
-Clone all the git projects located in the file "/home/genius/Development/repositories-list/repositories.txt" to my "/home/genius/Development" folder.
-Afterwards, pull all the projects located in the "/home/genius/Development" repository folder.
+Clone all the git projects located in the file "/home/genius/Development/repositories-list/repositories.txt" to my "/home/genius/Development" workspace.
+Afterwards, pull all the projects located in the "/home/genius/Development" repository workspace.
 ```
 
 AI Response:
@@ -112,7 +112,7 @@ sequenceDiagram
 | -h         | --help           | See Usage                              |
 | -b         | --default-branch | Checkout default branch                |
 | -c         | --clone          | Clone projects specified               |
-| -d         | --directory      | Directory to clone/pull projects       |
+| -w         | --workspace      | Workspace to clone/pull projects       |
 | -f         | --file           | File with repository links             |
 | -p         | --pull           | Pull projects in parent directory      |
 | -r         | --repositories   | Comma separated Git URLs               |
@@ -122,7 +122,7 @@ sequenceDiagram
 repository-manager \
     --clone  \
     --pull  \
-    --directory '/home/user/Downloads'  \
+    --workspace '/home/user/Downloads'  \
     --file '/home/user/Downloads/repositories.txt'  \
     --repositories 'https://github.com/Knucklessg1/media-downloader,https://github.com/Knucklessg1/genius-bot' \
     --threads 8
@@ -171,7 +171,7 @@ repository-manager \
 |            | --api-key         | LLM API Key                                                            |
 |            | --smart-coding-mcp-enable | Enable Smart Coding MCP configuration                                  |
 |            | --python-sandbox-enable | Enable Python Sandbox MCP configuration                                  |
-|            | --repository-directory | Directory to scan for git projects (default: current directory)       |
+|            | --workspace            | Workspace to scan for git projects (default: current directory)       |
 
 
 ### Smart Coding MCP Integration
@@ -179,7 +179,7 @@ repository-manager \
 The Repository Manager A2A Agent can automatically configure `smart-coding-mcp` for any Git projects found in a specified directory.
 
 ```bash
-repository_manager_a2a --smart-coding-mcp-enable --repository-directory /path/to/my/projects
+repository_manager_a2a --smart-coding-mcp-enable --workspace /path/to/my/projects
 ```
 
 This will:
@@ -225,7 +225,7 @@ from repository_manager.repository_manager import Git
 
 gitlab = Git()
 
-gitlab.set_repository_directory("<directory>")
+gitlab.set_workspace("<workspace>")
 
 gitlab.set_threads(threads=8)
 
@@ -346,7 +346,7 @@ docker-compose up -d
         "repository-manager-mcp"
       ],
       "env": {
-        "REPOSITORY_MANAGER_DIRECTORY": "/home/user/Development/",                       // Optional - Can be specified at prompt
+        "REPOSITORY_MANAGER_WORKSPACE": "/home/user/Development/",                       // Optional - Can be specified at prompt
         "REPOSITORY_MANAGER_THREADS": "12",                                              // Optional - Can be specified at prompt
         "REPOSITORY_MANAGER_DEFAULT_BRANCH": "True",                                     // Optional - Can be specified at prompt
         "REPOSITORY_MANAGER_PROJECTS_FILE": "/home/user/Development/repositories.txt"    // Optional - Can be specified at prompt

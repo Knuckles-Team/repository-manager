@@ -49,7 +49,7 @@ ENV EUNOMIA_REMOTE_URL=${EUNOMIA_REMOTE_URL}
 ENV DENO_INSTALL="/root/.deno"
 ENV PATH="/usr/local/bin:$DENO_INSTALL/bin:${PATH}"
 ENV UV_HTTP_TIMEOUT=3600
-ENV REPOSITORY_MANAGER_DIRECTORY=${REPOSITORY_MANAGER_DIRECTORY:-/development}
+ENV REPOSITORY_MANAGER_WORKSPACE=${REPOSITORY_MANAGER_WORKSPACE:-/workspace}
 
 RUN apt-get update \
    && apt-get install -y git curl make \
@@ -57,10 +57,10 @@ RUN apt-get update \
    && apt-get install -y nodejs unzip \
    && npm install -g smart-coding-mcp \
    && curl -fsSL https://deno.land/install.sh | sh \
-   && mkdir -p ${REPOSITORY_MANAGER_DIRECTORY} \
+   && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
    && pip install uv \
-   && uv pip install --system --upgrade repository-manager[all]>=1.2.9 \
-   && repository-manager -c -p -b \
-   && git config --global --add safe.directory "*"
+   && uv pip install --system --upgrade repository-manager[all]>=1.2.10
 
-CMD ["repository-manager-mcp"]
+WORKDIR /workspace
+
+CMD ["sh", "-c", "repository-manager -c -p -b && git config --global --add safe.directory \"*\" && repository-manager-mcp"]
