@@ -33,7 +33,6 @@ from repository_manager.utils import (
     create_model,
     generate_mermaid_diagram,
     fetch_pyodide_packages,
-    list_workspace_projects,
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
 
@@ -68,6 +67,7 @@ DEFAULT_PYTHON_SANDBOX_ENABLE = to_boolean(
     string=os.getenv("PYTHON_SANDBOX_ENABLE", "True")
 )
 DEFAULT_ENABLE_WEB_UI = to_boolean(os.getenv("ENABLE_WEB_UI", "False"))
+DEFAULT_GITLAB_AGENT_ENABLE = to_boolean(os.getenv("GITLAB_AGENT_ENABLE", "True"))
 
 AGENT_NAME = "Repository Manager Supervisor"
 AGENT_DESCRIPTION = (
@@ -80,6 +80,14 @@ AGENT_DESCRIPTION = (
 # System Prompts
 # -------------------------------------------------------------------------
 
+KARPATHY_GUIDELINES = (
+    "\n\nCORE PRINCIPLES (KARPATHY GUIDELINES):\n"
+    "1. Think Before Coding: State assumptions. Present tradeoffs. Stop and ask if confused. Don't guess.\n"
+    "2. Simplicity First: No overengineering. No 'flexibility' not asked for. If 200 lines can be 50, do 50.\n"
+    "3. Surgical Changes: Touch only what is needed. Match existing style. Don't 'improve' unrelated code. Clean up your own unused imports/variables.\n"
+    "4. Goal-Driven Execution: Transform tasks into verifiable goals (Step -> Verify). Loop until success is verified."
+)
+
 SUPERVISOR_SYSTEM_PROMPT = (
     "You are the Repository Manager Supervisor — persistent and adaptive.\n"
     "You orchestrate a team of agents to manage git repositories through ad hoc commands and/or complete coding tasks based on a PRD (Product Requirements Document) for more complex tasks.\n\n"
@@ -91,20 +99,27 @@ SUPERVISOR_SYSTEM_PROMPT = (
     "2. Call `elicit_product_requirements_document` to get user approval. The Product Manager may ask questions; "
     "you must bubble these up to the user via the tool's interaction pattern.\n"
     "3. Once PRD (Product Requirements Document) is approved, loop through tasks:\n"
-    "   - Call `execute_task` to implement it.\n"
-    "   - Call `validate_task` to verify it.\n"
-    "   - Use `create_specialized_agent` ONLY if you really need a new agent not covered by the Executor's capabilities.\n"
+    "   - **Agent Creation**: If the task appears to be about creating a new agent (e.g. 'Create SQL Agent'), CALL `create_specialized_agent` with the details (name, prompt, tools) found in the task description.\n"
+    "   - **Specialized Execution**: If the task is designated for a specialized agent (e.g. 'Use SQL Agent to...'), CALL the dynamic tool `run_{agent_name}` directly.\n"
+    "   - **Standard Execution**: For all other tasks, CALL `execute_task` to have the Executor implement it.\n"
+    "   - **Validation**: After execution, always CALL `validate_task` to verify it.\n"
     "4. Do not stop until the PRD (Product Requirements Document) is fully complete (is_complete=True).\n"
     "5. Once the PRD is complete, Call `finalize_prd_and_diagram` to aggregate execution history and generate a diagram.\n"
     "6. Then Call `update_documentation` to reflect all changes in the README.md including the diagram.\n"
-)
+) + KARPATHY_GUIDELINES
 
 PLANNER_SYSTEM_PROMPT = (
     "You are a PRD (Product Requirements Document) Planner.\n"
     "Your Goal: Break down a high-level request into a structured PRD (Product Requirements Document).\n"
     "Research Capabilities:\n"
-    "- Use `list_workspace_projects` to check if a project already exists. If the project exists, focus on it; if it doesn't, plan to create it.\n"
+    "- Use `list_projects` tool to check if a project already exists. If the project exists, focus on it; if it doesn't, plan to create it.\n"
     "- Use `match_pyodide_packages` to find the correct package names for the python-sandbox (e.g. `pygame-ce` for `pygame`). If no package is found, we can assume it will be installed as a native python pip.\n"
+    "Agent Strategy:\n"
+    "- **Evaluate Team**: Determine if the request requires a specialized team of agents (e.g., SQL related -> SQL Agent) or if the current team (Executor) uses standard capabilities (Python, Files, Git).\n"
+    "- **Prioritize Standard**: ALWAYS prefer the standard Executor team if they can meet the requirements.\n"
+    "- **Plan for Specialized**: IF a specialized agent is strictly needed, you MUST create a specific Task to 'Create [Role] Agent'.\n"
+    "  - In the description of this Task, you MUST specify the `system_prompt` and `tool_names` for the new agent so the Supervisor can create it.\n"
+    "  - For subsequent tasks that usage this agent, explicitly state 'Use the [Role] Agent to...' in the description.\n"
     "Requirements:\n"
     "- Output MUST be a valid PRD (Product Requirements Document) object.\n"
     "- Define `project_name`.\n"
@@ -124,7 +139,7 @@ PLANNER_SYSTEM_PROMPT = (
     "- **CRITICAL**: Use the `match_pyodide_packages` tool to ensure package names are compatible with Pyodide (e.g., use 'pygame-ce', not 'pygame').\n"
     "- Always include a final task for **Documentation Review** to ensure the README.md is updated with the changes.\n"
     "- Set `prd.last_agent = 'Planner'`."
-)
+) + KARPATHY_GUIDELINES
 
 PRODUCT_MANAGER_SYSTEM_PROMPT = (
     "You are a Product Manager.\n"
@@ -134,7 +149,7 @@ PRODUCT_MANAGER_SYSTEM_PROMPT = (
     "- If the PRD (Product Requirements Document) is good, Return the approved `PRD` object.\n"
     "- You can accept the user's input/answers to update the PRD (Product Requirements Document).\n"
     "- Set `prd.last_agent = 'Product Manager'`."
-)
+) + KARPATHY_GUIDELINES
 
 EXECUTOR_SYSTEM_PROMPT = (
     "You are a Task Executor.\n"
@@ -152,14 +167,14 @@ EXECUTOR_SYSTEM_PROMPT = (
     "- `run_python_in_sandbox`: For temporary development, executing and testing code. **CRITICAL**: Check `task.required_packages` and pass them as the `dependencies` argument (e.g., ['numpy', 'pygame-ce']). "
     "You can call it multiple times, adjusting deps or code based on previous results.\n"
     "- `text_editor`: For writing the final, tested code to the project files.\n"
-    "- `smart-coding-*`: To semantic search code repositories.\n"
+    "- `smart-coding-*`: To semantic search code repositories. There is a different instance of smart-coding-* for each project in the workspace so ensure you are using the correct one when using this tool.\n"
     "- `git-*`: To interact with git (via specific repo tools).\n"
     "Requirements:\n"
     "- Return the updated `Task` object.\n"
     "- Update `task.notes` with implementation details.\n"
     "- Set `task.passes = True` ONLY if you have verified it and written code to the workspace.\n"
     "- Set `task.last_agent = 'Executor'`."
-)
+) + KARPATHY_GUIDELINES
 
 VALIDATOR_SYSTEM_PROMPT = (
     "You are a Strict Validator.\n"
@@ -170,8 +185,8 @@ VALIDATOR_SYSTEM_PROMPT = (
     "- Verify the pre-commits are passing by running the `run_pre_commits` tool.\n"
     "- Return the updated `Task` object.\n"
     "- If verification fails, set `passes = False` and explain why in `notes`."
-    "- Set `prd.last_agent = 'Validator'`."
-)
+    "- Set `task.last_agent = 'Validator'`."
+) + KARPATHY_GUIDELINES
 
 REPOSITORY_MANAGER_SYSTEM_PROMPT = (
     "You are a specialist agent with access to git tools.\n"
@@ -181,7 +196,7 @@ REPOSITORY_MANAGER_SYSTEM_PROMPT = (
     "- You DO NOT have direct git access; use the specific repo tools.\n"
     "- Return the results of running the tools.\n"
     "- Set `prd.last_agent = 'Repository Manager'`."
-)
+) + KARPATHY_GUIDELINES
 
 DOCUMENTATION_AGENT_SYSTEM_PROMPT = (
     "You are a Documentation Specialist.\n"
@@ -195,7 +210,7 @@ DOCUMENTATION_AGENT_SYSTEM_PROMPT = (
     "- Verify required changes (Deprecations, examples, architecture diagrams, CLI tables, etc).\n"
     "- Return the updated `Task` object or status string.\n"
     "- Set `prd.last_agent = 'Documentation Agent'`."
-)
+) + KARPATHY_GUIDELINES
 
 
 # -------------------------------------------------------------------------
@@ -211,6 +226,7 @@ def create_agent(
     mcp_url: str = DEFAULT_MCP_URL,
     mcp_config: str = DEFAULT_MCP_CONFIG,
     skills_directory: Optional[str] = DEFAULT_SKILLS_DIRECTORY,
+    enable_gitlab_agent: bool = DEFAULT_GITLAB_AGENT_ENABLE,
 ) -> Agent:
 
     # 1. Setup Model
@@ -256,6 +272,10 @@ def create_agent(
     # WRAP IN TOOL OBJECT TO PREVENT PYDANTIC-AI FROM TREATING AS DYNAMIC TOOLSET
     sandbox_tool = Tool(run_python_in_sandbox)
     executor_tools.append(sandbox_tool)
+
+    # Add Master Skills (Shell, etc) to Executor
+    if master_skills:
+        executor_tools.extend(master_skills)
 
     # Variable to hold the repo manager agent if found
     repository_manager_agent = None
@@ -306,15 +326,16 @@ def create_agent(
                         temp_config_path = temp_config.name
 
                     try:
-                        repo_tools = load_mcp_servers(temp_config_path)
+                        codebase_tools = load_mcp_servers(temp_config_path)
 
                         # Create Child Agent (for Delegation)
-                        repo_agent = Agent(
+                        codebase_agent = Agent(
                             model=model,
-                            system_prompt=f"You are the {server_name} Agent.\nGoal: Manage the repository '{server_name}'.\nYou have full access to search and modify THIS repository.",
-                            toolsets=repo_tools,
+                            system_prompt=f"You are the {server_name} Codebase Agent.\nGoal: Manage the repository '{server_name}'.\nYou have full access to search and modify THIS repository.",
+                            toolsets=codebase_tools,
                             model_settings=settings,
                             name=server_name,
+                            retries=3,
                         )
                         logger.info(f"Created Child Agent for {server_name}")
 
@@ -324,24 +345,26 @@ def create_agent(
                                 ctx: RunContext[Any], instruction: str
                             ) -> str:
                                 """
-                                Delegate a specific instruction to the repository agent.
+                                Delegate a specific instruction to the Code Base Agent.
                                 The Codebase Agent can search code, read files, and manage git.
                                 """
                                 result = await agent_instance.run(instruction)
                                 return str(result.output)
 
                             delegate_to_repo.__name__ = (
-                                f"manage_repository_{s_name.replace('-', '_')}"
+                                f"search_codebase_{s_name.replace('-', '_')}"
                             )
                             return delegate_to_repo
 
-                        delegator = make_repo_delegator(repo_agent, server_name)
+                        delegator = make_repo_delegator(codebase_agent, server_name)
                         executor_tools.append(delegator)
 
                         # Register the DELEGATOR for dynamic usage (so other agents can manage this repo)
                         available_tools_registry[f"manage_{server_name}"] = [delegator]
                         # Also register the RAW tools if someone wants direct access (risky but permitted)
-                        available_tools_registry[f"tools_{server_name}"] = repo_tools
+                        available_tools_registry[f"tools_{server_name}"] = (
+                            codebase_tools
+                        )
 
                     except Exception as e:
                         logger.error(
@@ -418,6 +441,7 @@ def create_agent(
         output_type=PRD,
         tools=[pyodide_matcher_tool],
         name="Planner",
+        retries=3,
     )
 
     product_manager_agent = Agent(
@@ -426,6 +450,7 @@ def create_agent(
         model_settings=settings,
         output_type=Union[PRD, ElicitationRequest],
         name="Product Manager",
+        retries=3,
     )
 
     executor_agent = Agent(
@@ -435,6 +460,7 @@ def create_agent(
         toolsets=executor_tools,
         output_type=Task,
         name="Executor",
+        retries=3,
     )
 
     validator_agent = Agent(
@@ -444,22 +470,26 @@ def create_agent(
         toolsets=executor_tools,
         output_type=Task,
         name="Validator",
+        retries=3,
     )
 
     repository_manager_agent = Agent(
         model=model,
         system_prompt=REPOSITORY_MANAGER_SYSTEM_PROMPT,
-        toolsets=rm_tools,
+        toolsets=rm_tools + master_skills,
         model_settings=settings,
         name="Repository Manager",
+        retries=3,
     )
 
     documentation_agent = Agent(
         model=model,
         system_prompt=DOCUMENTATION_AGENT_SYSTEM_PROMPT,
-        toolsets=rm_tools,  # Access to get_project_readme and text_editor (part of repo manager mcp)
+        toolsets=rm_tools
+        + master_skills,  # Access to get_project_readme and text_editor (part of repo manager mcp)
         model_settings=settings,
         name="Documentation Agent",
+        retries=3,
     )
 
     logger.info("Created Specialist Agents")
@@ -471,22 +501,12 @@ def create_agent(
         system_prompt=SUPERVISOR_SYSTEM_PROMPT,
         name=AGENT_NAME,
         model_settings=settings,
+        retries=3,
     )
     logger.info("Created Supervisor Agent")
 
     @planner_agent.tool
-    def check_existing_projects(ctx: RunContext[Any]) -> str:
-        """
-        Check which projects already exist in the workspace.
-        This is critical to do BEFORE planning to create a new project.
-        Returns a list of project directory names.
-        """
-        projects = list_workspace_projects()
-        if projects:
-            return f"Existing Projects in Workspace: {', '.join(projects)}"
-        return "No existing projects found in workspace."
-
-    @planner_agent.tool
+    @supervisor.tool
     async def manage_repositories(ctx: RunContext[Any], instruction: str) -> str:
         """
         Delegate general repository management tasks (listing, cloning, bulk pulling) to the Repository Manager.
@@ -500,8 +520,16 @@ def create_agent(
         ctx: RunContext[Any], user_prompt: str
     ) -> PRD:
         """Generate an initial PRD (Product Requirements Document) from the user's high-level prompt."""
-        result = await planner_agent.run(user_prompt)
-        return result.output
+        logger.info(
+            f"[PLANNER] Starting plan_product_requirements_document. Prompt: {user_prompt[:50]}..."
+        )
+        try:
+            result = await planner_agent.run(user_prompt)
+            logger.info("[PLANNER] Successfully generated PRD.")
+            return result.output
+        except Exception as e:
+            logger.error(f"[PLANNER] Failed to generate PRD: {e}", exc_info=True)
+            return f"Error generating PRD: {str(e)}"
 
     @supervisor.tool
     async def elicit_product_requirements_document(
@@ -628,12 +656,7 @@ def create_agent(
 
         prd.execution_history = full_history
         prd.mermaid_diagram = generate_mermaid_diagram(full_history)
-
-        # Also try to append diagram to README directly here?
-        # Or just return the PRD and let the Supervisor call update_documentation with the diagram?
-        # Better: Return PRD. The Supervisor Prompt says "Call update_documentation".
-        # We should probably have update_documentation take the PRD? or instruction including the diagram.
-
+        prd.last_agent = "Supervisor"
         return prd
 
     @supervisor.tool
@@ -665,6 +688,7 @@ def create_agent(
             system_prompt=system_prompt,
             toolsets=selected_tools,
             name=name,
+            retries=3,
         )
 
         @supervisor.tool(name=f"run_{name}")
@@ -674,6 +698,36 @@ def create_agent(
             return str(result.output)
 
         return f"Created tool run_{name} with tools: {tool_names}"
+
+    ## Re-implement agent later once tool overlap issue is resolved. Create project triggers agent to create project, not the local file git repo project creation. Need to fine tune the prompts.
+    # # 6. Register External Agents (Standard Pattern)
+    # if enable_gitlab_agent:
+    #     try:
+    #         # Dynamic import to avoid hard dependency
+    #         from gitlab_api.gitlab_agent import create_agent as create_gitlab_agent
+
+    #         # Create the instance
+    #         gitlab_agent_instance = create_gitlab_agent()
+
+    #         @supervisor.tool
+    #         async def run_gitlab_agent(ctx: RunContext[Any], instruction: str) -> str:
+    #             """
+    #             Delegate functionality to the GitLab Agent.
+    #             This agent can interact with the GitLab API (issues, merge requests, pipelines, etc).
+    #             """
+    #             # Run the agent with the instruction
+    #             result = await gitlab_agent_instance.run(instruction)
+    #             return str(result.output)
+
+    #         logger.info("External GitLab Agent enabled and registered as 'run_gitlab_agent'.")
+
+    #     except ImportError:
+    #         logger.warning(
+    #             "gitlab-api module not found. GitLab Agent disabled. "
+    #             "Install with 'pip install gitlab-api[all]'"
+    #         )
+    #     except Exception as e:
+    #         logger.error(f"Failed to initialize GitLab Agent: {e}")
 
     return supervisor
 
@@ -695,6 +749,7 @@ def create_agent_server(
     host: Optional[str] = DEFAULT_HOST,
     port: Optional[int] = DEFAULT_PORT,
     enable_web_ui: bool = DEFAULT_ENABLE_WEB_UI,
+    enable_gitlab_agent: bool = DEFAULT_GITLAB_AGENT_ENABLE,
 ):
     logger.info(
         f"Starting {AGENT_NAME} with provider={provider}, model={model_id}, mcp={mcp_url} | {mcp_config}"
@@ -708,6 +763,7 @@ def create_agent_server(
         mcp_url=mcp_url,
         mcp_config=mcp_config,
         skills_directory=skills_directory,
+        enable_gitlab_agent=enable_gitlab_agent,
     )
 
     if skills_directory and os.path.exists(skills_directory):
@@ -728,7 +784,7 @@ def create_agent_server(
     a2a_app = agent.to_a2a(
         name=AGENT_NAME,
         description=AGENT_DESCRIPTION,
-        version="1.2.10",
+        version="1.2.11",
         skills=skills,
         debug=debug,
     )
@@ -891,15 +947,17 @@ def agent_server():
     parser.add_argument(
         "--web", action="store_true", default=DEFAULT_ENABLE_WEB_UI, help="Web UI"
     )
-    args = parser.parse_args()
-
-    # Configure MCP
-    configure_mcp_servers(
-        base_directory=args.workspace,
-        mcp_config_path=args.mcp_config,
-        enable_smart_coding=args.smart_coding_mcp_enable,
-        enable_python_sandbox=args.python_sandbox_enable,
+    parser.add_argument(
+        "--gitlab-agent-enable",
+        action="store_true",
+        default=DEFAULT_GITLAB_AGENT_ENABLE,
     )
+    parser.add_argument(
+        "--no-gitlab-agent-enable",
+        action="store_false",
+        dest="gitlab_agent_enable",
+    )
+    args = parser.parse_args()
 
     if "PROJECTS_FILE" not in os.environ and DEFAULT_PROJECTS_FILE:
         os.environ["PROJECTS_FILE"] = DEFAULT_PROJECTS_FILE
@@ -922,6 +980,7 @@ def agent_server():
         host=args.host,
         port=args.port,
         enable_web_ui=args.web,
+        enable_gitlab_agent=args.gitlab_agent_enable,
     )
 
 
