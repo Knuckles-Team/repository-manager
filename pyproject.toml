@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repository-manager"
-version = "1.2.10"
+version = "1.2.11"
 description = "Manage your git projects"
 readme = "README.md"
 authors = [{ name = "Audel Rouhi", email = "knucklessg1@gmail.com" }]
@@ -38,12 +38,17 @@ a2a = [
     "fastapi>=0.128.0",
 ]
 
+gitlab = [
+    "gitlab-api[all]>=25.14.9",
+]
+
 all = [
     "fastmcp>=3.0.0b1",
     "eunomia-mcp>=0.3.10",
     "pydantic-ai-slim[fastmcp,openai,anthropic,google,huggingface,a2a,ag-ui,web]>=1.32.0",
     "pydantic-ai-skills",
-    "fastapi>=0.128.0"
+    "fastapi>=0.128.0",
+    "gitlab-api[all]>=25.14.9",
 ]
 
 [project.scripts]
