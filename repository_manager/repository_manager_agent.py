@@ -68,6 +68,9 @@ DEFAULT_PYTHON_SANDBOX_ENABLE = to_boolean(
 )
 DEFAULT_ENABLE_WEB_UI = to_boolean(os.getenv("ENABLE_WEB_UI", "False"))
 DEFAULT_GITLAB_AGENT_ENABLE = to_boolean(os.getenv("GITLAB_AGENT_ENABLE", "True"))
+DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.getenv(
+    "REPOSITORY_MANAGER_WORKSPACE", "/workspace"
+)
 
 AGENT_NAME = "Repository Manager Supervisor"
 AGENT_DESCRIPTION = (
@@ -106,7 +109,7 @@ SUPERVISOR_SYSTEM_PROMPT = (
     "4. Do not stop until the PRD (Product Requirements Document) is fully complete (is_complete=True).\n"
     "5. Once the PRD is complete, Call `finalize_prd_and_diagram` to aggregate execution history and generate a diagram.\n"
     "6. Then Call `update_documentation` to reflect all changes in the README.md including the diagram.\n"
-) + KARPATHY_GUIDELINES
+)
 
 PLANNER_SYSTEM_PROMPT = (
     "You are a PRD (Product Requirements Document) Planner.\n"
@@ -128,18 +131,19 @@ PLANNER_SYSTEM_PROMPT = (
     "- **MANDATORY PROCEDURAL STEPS**: You MUST explicitly include the following procedural steps in the `description` or `acceptance_criteria` of the tasks:\n"
     "  1. **Initialization**: \n"
     "     - If NEW project: validation step to run `create_project` tool with the project name and workspace -> `create_directory` tool for structure within the project like src, tests, docs, etc. -> `text_editor` tool to create and update files.\n"
-    "  2. **Research**: For existing code or after initialization, include a task/step to use `smart-coding-*` tools to research the codebase.\n"
-    "  3. **Hybrid Development**: \n"
-    "     - **Write to Workspace First**: Mandate using `text_editor` to write code to the ACTUAL project files in the workspace (NOT sandbox).\n"
-    "     - **Test in Sandbox**: Mandate using `run_python_in_sandbox` to EXECUTE the code from the workspace files to validate logic. Read the file content and pass it to the sandbox.\n"
+    "  2. **Research**: For existing codebase, include a task/step to use `smart-coding-*` tools to research the codebase. Skip this step if its a new project.\n"
+    "  3. **Development**: \n"
+    "     - **Write to Workspace**: Mandate using `text_editor` to write code to the ACTUAL project files in the workspace.\n"
+    "     - **Conditional Sandbox Usage**: ONLY IF the user expressly asks to run/test in a sandbox, include a step to use `run_python_in_sandbox` to EXECUTE the code from the workspace files. Otherwise, rely on the filesystem.\n"
     "  4. **Validation**: \n"
     "     - Check for `.pre-commit` configuration and run `run_pre_commits` if present.\n"
-    "     - Create and run `pytest` tests to validate logic.\n"
+    "     - Create and run `pytest` tests to validate logic (run via `run_command` or similar if environment permits, otherwise rely on pre-commits).\n"
     "- Identify and list any `required_packages` (Python dependencies) needed for each task.\n"
-    "- **CRITICAL**: Use the `match_pyodide_packages` tool to ensure package names are compatible with Pyodide (e.g., use 'pygame-ce', not 'pygame').\n"
+    "- **CRITICAL**: Use the `match_pyodide_packages` tool to ensure package names are compatible with Pyodide (e.g., use 'pygame-ce', not 'pygame') IF sandbox usage is planned.\n"
+    "- **Dependencies**: If a task depends on one or more tasks, it MUST be a LIST of integers, e.g. `dependencies=[1]`, NOT `dependencies=1`.\n"
     "- Always include a final task for **Documentation Review** to ensure the README.md is updated with the changes.\n"
     "- Set `prd.last_agent = 'Planner'`."
-) + KARPATHY_GUIDELINES
+)
 
 PRODUCT_MANAGER_SYSTEM_PROMPT = (
     "You are a Product Manager.\n"
@@ -149,7 +153,7 @@ PRODUCT_MANAGER_SYSTEM_PROMPT = (
     "- If the PRD (Product Requirements Document) is good, Return the approved `PRD` object.\n"
     "- You can accept the user's input/answers to update the PRD (Product Requirements Document).\n"
     "- Set `prd.last_agent = 'Product Manager'`."
-) + KARPATHY_GUIDELINES
+)
 
 EXECUTOR_SYSTEM_PROMPT = (
     "You are a Task Executor.\n"
@@ -159,13 +163,13 @@ EXECUTOR_SYSTEM_PROMPT = (
     "   - Initialize new projects by running `create_project`. "
     "   - Navigate to existing projects by running `run_command` 'cd <project_name>'.\n"
     "2. **Research**: Use `smart-coding-*` tools to research the codebase and find relevant information pertaining to the task.\n"
-    "3. **Hybrid Development (Write -> Test)**: \n"
+    "3. **Development & Testing**: \n"
     "   - **Write to Workspace**: Use `text_editor` to write the code to the actual project files in the workspace.\n"
-    "   - **Test in Sandbox**: Read the content of the files you just wrote and use `run_python_in_sandbox` to execute/validate them.\n"
-    "   - **Iterate**: If validation fails, use `text_editor` to fix the workspace files and re-test in sandbox.\n"
+    "   - **Conditional Sandbox Test**: IF the task specifically instructs to use the sandbox, read the content of the files you just wrote and use `run_python_in_sandbox` to execute/validate them.\n"
+    "   - **Iterate**: If validation fails, use `text_editor` to fix the workspace files.\n"
     "Capabilities:\n"
-    "- `run_python_in_sandbox`: For temporary development, executing and testing code. **CRITICAL**: Check `task.required_packages` and pass them as the `dependencies` argument (e.g., ['numpy', 'pygame-ce']). "
-    "You can call it multiple times, adjusting deps or code based on previous results.\n"
+    "- `run_python_in_sandbox`: For temporary development, executing and testing code within a secure isolation. **CRITICAL**: Check `task.required_packages` and pass them as the `dependencies` argument (e.g., ['numpy', 'pygame-ce']). "
+    "You can call it multiple times, adjusting deps or code based on previous results. Use this ONLY if instructed.\n"
     "- `text_editor`: For writing the final, tested code to the project files.\n"
     "- `smart-coding-*`: To semantic search code repositories. There is a different instance of smart-coding-* for each project in the workspace so ensure you are using the correct one when using this tool.\n"
     "- `git-*`: To interact with git (via specific repo tools).\n"
@@ -186,7 +190,7 @@ VALIDATOR_SYSTEM_PROMPT = (
     "- Return the updated `Task` object.\n"
     "- If verification fails, set `passes = False` and explain why in `notes`."
     "- Set `task.last_agent = 'Validator'`."
-) + KARPATHY_GUIDELINES
+)
 
 REPOSITORY_MANAGER_SYSTEM_PROMPT = (
     "You are a specialist agent with access to git tools.\n"
@@ -196,7 +200,7 @@ REPOSITORY_MANAGER_SYSTEM_PROMPT = (
     "- You DO NOT have direct git access; use the specific repo tools.\n"
     "- Return the results of running the tools.\n"
     "- Set `prd.last_agent = 'Repository Manager'`."
-) + KARPATHY_GUIDELINES
+)
 
 DOCUMENTATION_AGENT_SYSTEM_PROMPT = (
     "You are a Documentation Specialist.\n"
@@ -210,7 +214,7 @@ DOCUMENTATION_AGENT_SYSTEM_PROMPT = (
     "- Verify required changes (Deprecations, examples, architecture diagrams, CLI tables, etc).\n"
     "- Return the updated `Task` object or status string.\n"
     "- Set `prd.last_agent = 'Documentation Agent'`."
-) + KARPATHY_GUIDELINES
+)
 
 
 # -------------------------------------------------------------------------
@@ -227,6 +231,7 @@ def create_agent(
     mcp_config: str = DEFAULT_MCP_CONFIG,
     skills_directory: Optional[str] = DEFAULT_SKILLS_DIRECTORY,
     enable_gitlab_agent: bool = DEFAULT_GITLAB_AGENT_ENABLE,
+    workspace: str = DEFAULT_REPOSITORY_MANAGER_WORKSPACE,
 ) -> Agent:
 
     # 1. Setup Model
@@ -247,7 +252,8 @@ def create_agent(
         available_tools_registry["git_skills"] = [loaded_skills]
 
     # 3. Prepare Executor Tools (Sandbox + Repo Delegates)
-    executor_tools = []
+    executor_tools_list = []
+    executor_toolsets_list = []
 
     # Dynamic Sandbox Tool
     async def run_python_in_sandbox(dependencies: List[str], code: str) -> str:
@@ -271,11 +277,13 @@ def create_agent(
 
     # WRAP IN TOOL OBJECT TO PREVENT PYDANTIC-AI FROM TREATING AS DYNAMIC TOOLSET
     sandbox_tool = Tool(run_python_in_sandbox)
-    executor_tools.append(sandbox_tool)
+    executor_tools_list.append(sandbox_tool)
+    # Register for dynamic usage
+    available_tools_registry["python_sandbox"] = [sandbox_tool]
 
     # Add Master Skills (Shell, etc) to Executor
     if master_skills:
-        executor_tools.extend(master_skills)
+        executor_toolsets_list.extend(master_skills)
 
     # Variable to hold the repo manager agent if found
     repository_manager_agent = None
@@ -311,7 +319,7 @@ def create_agent(
 
                     # Add RM tools to executor tools so it can use git directly
                     if rm_tools:
-                        executor_tools.extend(rm_tools)
+                        executor_toolsets_list.extend(rm_tools)
                         logger.info(
                             f"Added {len(rm_tools)} Repository Manager tools to Executor."
                         )
@@ -357,7 +365,7 @@ def create_agent(
                             return delegate_to_repo
 
                         delegator = make_repo_delegator(codebase_agent, server_name)
-                        executor_tools.append(delegator)
+                        executor_tools_list.append(delegator)
 
                         # Register the DELEGATOR for dynamic usage (so other agents can manage this repo)
                         available_tools_registry[f"manage_{server_name}"] = [delegator]
@@ -431,7 +439,7 @@ def create_agent(
 
     # 2. Optionally wrap it in a Tool object (gives more control, but not always needed)
     pyodide_matcher_tool = Tool(match_pyodide_packages)
-    executor_tools.append(pyodide_matcher_tool)
+    executor_tools_list.append(pyodide_matcher_tool)
 
     # 4. Define Functional Agents
     planner_agent = Agent(
@@ -457,7 +465,8 @@ def create_agent(
         model=model,
         system_prompt=EXECUTOR_SYSTEM_PROMPT,
         model_settings=settings,
-        toolsets=executor_tools,
+        tools=executor_tools_list,
+        toolsets=executor_toolsets_list,
         output_type=Task,
         name="Executor",
         retries=3,
@@ -467,7 +476,8 @@ def create_agent(
         model=model,
         system_prompt=VALIDATOR_SYSTEM_PROMPT,
         model_settings=settings,
-        toolsets=executor_tools,
+        tools=executor_tools_list,
+        toolsets=executor_toolsets_list,
         output_type=Task,
         name="Validator",
         retries=3,
@@ -524,9 +534,21 @@ def create_agent(
             f"[PLANNER] Starting plan_product_requirements_document. Prompt: {user_prompt[:50]}..."
         )
         try:
-            result = await planner_agent.run(user_prompt)
+            # Inject workspace into context
+            enhanced_prompt = (
+                f"{user_prompt}\n\nContext: The workspace root is '{workspace}'."
+            )
+            result = await planner_agent.run(enhanced_prompt)
+
+            # Force project_root path
+            prd = result.output
+            if prd.project_name:
+                import os
+
+                prd.project_root = os.path.join(workspace, prd.project_name)
+
             logger.info("[PLANNER] Successfully generated PRD.")
-            return result.output
+            return prd
         except Exception as e:
             logger.error(f"[PLANNER] Failed to generate PRD: {e}", exc_info=True)
             return f"Error generating PRD: {str(e)}"
@@ -581,9 +603,9 @@ def create_agent(
                 if hasattr(msg, "parts"):
                     for part in msg.parts:
                         # Check for ToolCallPart
-                        if hasattr(part, "tool_name"):
+                        if part.part_kind == "tool-call":
                             history_log.append(
-                                f"Executor: {part.tool_name}({part.args_as_dict()})"
+                                f"Executor: {part.tool_name}({part.args})"
                             )
 
             task_out = result.output
@@ -616,9 +638,9 @@ def create_agent(
                 if hasattr(msg, "parts"):
                     for part in msg.parts:
                         # Check for ToolCallPart
-                        if hasattr(part, "tool_name"):
+                        if part.part_kind == "tool-call":
                             history_log.append(
-                                f"Validator: {part.tool_name}({part.args_as_dict()})"
+                                f"Validator: {part.tool_name}({part.args})"
                             )
 
             task_out = result.output
@@ -659,6 +681,11 @@ def create_agent(
         prd.last_agent = "Supervisor"
         return prd
 
+    # Register supervisor tools for dynamic usage
+    available_tools_registry["execute_task"] = [Tool(execute_task)]
+    available_tools_registry["validate_task"] = [Tool(validate_task)]
+    available_tools_registry["update_documentation"] = [Tool(update_documentation)]
+
     @supervisor.tool
     async def create_specialized_agent(
         ctx: RunContext[Any],
@@ -668,7 +695,7 @@ def create_agent(
         ),
         tool_names: List[str] = Field(
             default_factory=list,
-            description="Names of available toolsets to give. Options: 'git_skills', 'python_sandbox', 'manage_smart-coding-repo-x'",
+            description="Names of available toolsets to give. Options: 'git_skills', 'python_sandbox', 'repository_manager_tools', 'execute_task', 'validate_task', 'update_documentation'",
         ),
     ) -> str:
         """Create a new specialized child agent with specific tools and add it as a tool to the supervisor."""
@@ -683,10 +710,20 @@ def create_agent(
 
         child_model = create_model(provider, model_id, base_url, api_key)
 
+        # Split tools and toolsets
+        child_tools = []
+        child_toolsets = []
+        for t in selected_tools:
+            if isinstance(t, Tool) or callable(t):
+                child_tools.append(t)
+            else:
+                child_toolsets.append(t)
+
         child_agent = Agent(
             model=child_model,
             system_prompt=system_prompt,
-            toolsets=selected_tools,
+            tools=child_tools,
+            toolsets=child_toolsets,
             name=name,
             retries=3,
         )
@@ -784,7 +821,7 @@ def create_agent_server(
     a2a_app = agent.to_a2a(
         name=AGENT_NAME,
         description=AGENT_DESCRIPTION,
-        version="1.2.11",
+        version="1.2.12",
         skills=skills,
         debug=debug,
     )
