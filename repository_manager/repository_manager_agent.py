@@ -236,7 +236,7 @@ def create_agent(
 
     # 1. Setup Model
     model = create_model(provider, model_id, base_url, api_key)
-    settings = ModelSettings(timeout=3600.0)
+    settings = ModelSettings(timeout=32400.0)
 
     # Dictionary to hold available toolsets by name for dynamic assignment
     # explicit_tools["name"] = [tool1, toolset1, ...]

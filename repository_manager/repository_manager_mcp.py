@@ -76,7 +76,7 @@ def register_tools(mcp: FastMCP):
         ),
         workspace: Optional[str] = Field(
             description="The workspace to execute the command in. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
+            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", "/workspace"),
         ),
         project: Optional[str] = Field(
             description="The project to execute the command in.", default=None
