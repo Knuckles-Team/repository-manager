@@ -2,9 +2,9 @@
 services:
   repository-manager-mcp:
     image: docker.io/knucklessg1/repository-manager:latest
-    # build:
-    #   context: . # Debug
-    #   dockerfile: debug.Dockerfile
+    #    build:
+    #     context: . # Debug
+    #     dockerfile: debug.Dockerfile
     container_name: repository-manager-mcp
     hostname: repository-manager-mcp
     volumes:
@@ -37,11 +37,14 @@ services:
 
   repository-manager-agent:
     image: docker.io/knucklessg1/repository-manager:latest
-    # build:
-    #   context: . # Debug
-    #   dockerfile: debug.Dockerfile
+    #    build:
+    #     context: . # Debug
+    #     dockerfile: debug.Dockerfile
     container_name: repository-manager-agent
     hostname: repository-manager-agent
+    volumes:
+      - ./mcp/workspace:/workspace:rw
+    working_dir: /workspace
     command: [ "repository-manager-agent" ]
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -56,7 +59,6 @@ services:
     environment:
       - "HOST=0.0.0.0"
       - "PORT=9017"
-      # - "MCP_CONFIG=./repository_manager/mcp_config.json" # Optionally specify your own file - Default will use MCP_URL in the pre-packaged mcp_config.json
       - "MCP_URL=http://repository-manager-mcp:8017/mcp"
       - "PROVIDER=openai"
       - "OPENAI_BASE_URL=http://host.docker.internal:1234/v1"
@@ -64,6 +66,7 @@ services:
       - "MODEL_ID=qwen/qwen3-4b-2507"
       - "DEBUG=False"
       - "ENABLE_WEB_UI=True"
+      - "REPOSITORY_MANAGER_WORKSPACE=/workspace"
     ports:
       - "9017:9017"
     healthcheck:

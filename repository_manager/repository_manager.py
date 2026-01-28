@@ -394,6 +394,27 @@ class Git:
         if workspace is None:
             workspace = self.workspace
 
+        workspace = os.path.abspath(workspace)
+        root_workspace = os.path.abspath(self.workspace)
+
+        # Security check: Ensure checking within main workspace
+        if not workspace.startswith(root_workspace):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Cannot run pre-commit outside of workspace: {workspace}",
+                    code=1,
+                ),
+                metadata=GitMetadata(
+                    command="pre_commit_check",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
         # Check for config file
         if not os.path.exists(os.path.join(workspace, ".pre-commit-config.yaml")):
             return GitResult(
@@ -455,9 +476,15 @@ class Git:
         Returns:
             ReadmeResult: Object containing 'content' and 'path' of the README.md file.
         """
-        target_dir = self.workspace
+        target_dir = os.path.abspath(self.workspace)
         if project:
-            target_dir = os.path.join(self.workspace, project)
+            target_dir = os.path.abspath(
+                os.path.normpath(os.path.join(self.workspace, project))
+            )
+
+        # Security check
+        if not target_dir.startswith(os.path.abspath(self.workspace)):
+            return ReadmeResult(content="", path="")
 
         if not os.path.exists(target_dir):
             return ReadmeResult(content="", path="")
@@ -493,16 +520,32 @@ class Git:
         """
         FileSystem Editor Tool
         """
-        path = os.path.normpath(path)
-        if not os.path.isabs(path):
-            path = os.path.join(self.workspace, path)
+        if os.path.isabs(path):
+            path = os.path.abspath(os.path.normpath(path))
+        else:
+            path = os.path.abspath(os.path.normpath(os.path.join(self.workspace, path)))
 
+        workspace_path = os.path.abspath(self.workspace)
+
+        # Meta creation needs path, but if path is invalid usually we error.
+        # But let's create meta with the resolved path.
         meta = GitMetadata(
             command=command,
             workspace=path,
             return_code=0,
             timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
         )
+
+        if not path.startswith(workspace_path):
+            meta.return_code = 1
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Path is outside the workspace: {path}", code=1
+                ),
+                metadata=meta,
+            )
 
         if command == "view":
             if not os.path.exists(path):
@@ -684,7 +727,29 @@ class Git:
         """
         if not workspace:
             workspace = self.workspace
-        project_path = os.path.join(workspace, project_name)
+
+        workspace = os.path.abspath(workspace)
+        project_path = os.path.abspath(
+            os.path.normpath(os.path.join(workspace, project_name))
+        )
+
+        # Security check
+        if not project_path.startswith(workspace):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Cannot create project outside of workspace: {project_path}",
+                    code=1,
+                ),
+                metadata=GitMetadata(
+                    command="create_project",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
 
         if os.path.exists(project_path):
             return GitResult(
@@ -742,9 +807,54 @@ class Git:
         """
         if not workspace:
             workspace = self.workspace
-        target_path = os.path.normpath(os.path.join(workspace, project, path))
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(workspace, target_path)
+
+        # Ensure workspace is absolute
+        workspace = os.path.abspath(workspace)
+
+        # Construct target path safely
+        parts = [workspace]
+        if project:
+            project_path = os.path.join(workspace, project)
+            if not os.path.exists(project_path):
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message=f"Project directory does not exist: {project_path}",
+                        code=1,
+                    ),
+                    metadata=GitMetadata(
+                        command="create_directory",
+                        workspace=workspace,
+                        return_code=1,
+                        timestamp=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
+                        + "Z",
+                    ),
+                )
+            parts.append(project)
+
+        parts.append(path)
+        target_path = os.path.normpath(os.path.join(*parts))
+
+        # Security check: Ensure target_path is within workspace
+        if not target_path.startswith(workspace):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Cannot create directory outside of workspace: {target_path}",
+                    code=1,
+                ),
+                metadata=GitMetadata(
+                    command="create_directory",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
 
         if os.path.exists(target_path):
             return GitResult(
@@ -804,9 +914,50 @@ class Git:
         """
         import shutil
 
-        target_path = os.path.normpath(path)
-        if not os.path.isabs(target_path):
-            target_path = os.path.join(self.workspace, target_path)
+        # Logic to resolve path against workspace safely
+        if os.path.isabs(path):
+            target_path = os.path.abspath(os.path.normpath(path))
+        else:
+            target_path = os.path.abspath(
+                os.path.normpath(os.path.join(self.workspace, path))
+            )
+
+        workspace_path = os.path.abspath(self.workspace)
+
+        # Safety Check: Do not allow deletion of workspace root or anything outside it if strict
+        if target_path == workspace_path:
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message="Cannot delete the workspace root directory.", code=1
+                ),
+                metadata=GitMetadata(
+                    command="delete_directory",
+                    workspace=self.workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        # Ensure we are operating within the workspace
+        if not target_path.startswith(workspace_path):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message="Cannot delete directories outside of the workspace.",
+                    code=1,
+                ),
+                metadata=GitMetadata(
+                    command="delete_directory",
+                    workspace=self.workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
 
         if not os.path.exists(target_path):
             return GitResult(
@@ -867,13 +1018,56 @@ class Git:
         Returns:
             GitResult: Result of the operation.
         """
-        abs_old_path = os.path.normpath(old_path)
-        if not os.path.isabs(abs_old_path):
-            abs_old_path = os.path.join(self.workspace, abs_old_path)
+        if os.path.isabs(old_path):
+            abs_old_path = os.path.abspath(os.path.normpath(old_path))
+        else:
+            abs_old_path = os.path.abspath(
+                os.path.normpath(os.path.join(self.workspace, old_path))
+            )
 
-        abs_new_path = os.path.normpath(new_path)
-        if not os.path.isabs(abs_new_path):
-            abs_new_path = os.path.join(self.workspace, abs_new_path)
+        if os.path.isabs(new_path):
+            abs_new_path = os.path.abspath(os.path.normpath(new_path))
+        else:
+            abs_new_path = os.path.abspath(
+                os.path.normpath(os.path.join(self.workspace, new_path))
+            )
+
+        workspace_path = os.path.abspath(self.workspace)
+
+        # Security validation
+        if not abs_old_path.startswith(workspace_path):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Source path is outside the workspace: {abs_old_path}",
+                    code=1,
+                ),
+                metadata=GitMetadata(
+                    command="rename_directory",
+                    workspace=self.workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        if not abs_new_path.startswith(workspace_path):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Destination path is outside the workspace: {abs_new_path}",
+                    code=1,
+                ),
+                metadata=GitMetadata(
+                    command="rename_directory",
+                    workspace=self.workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
 
         if not os.path.exists(abs_old_path):
             return GitResult(

@@ -4,6 +4,10 @@
 import os
 import pickle
 import yaml
+import httpx
+import logging
+from functools import lru_cache
+
 from pathlib import Path
 from typing import Any, Union, List, Optional
 from importlib.resources import files, as_file
@@ -12,6 +16,8 @@ from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.huggingface import HuggingFaceModel
 from fasta2a import Skill
+
+logger = logging.getLogger(__name__)
 
 
 def to_integer(string: Union[str, int] = None) -> int:
@@ -302,16 +308,14 @@ def generate_mermaid_diagram(execution_history: List[str]) -> str:
     return "\n".join(diagram)
 
 
+@lru_cache(maxsize=1)
 def fetch_pyodide_packages() -> List[str]:
     """
     Fetches the list of packages supported by Pyodide from the official pyodide-lock.json.
     Dynamically fetches the latest stable version from GitHub API.
     Returns strings "PackageName (Version)".
+    Cached to prevent repeated network calls.
     """
-    import httpx
-    import logging
-
-    logger = logging.getLogger(__name__)
 
     # Default to a recent stable version if API fails
     latest_version = "0.26.4"
@@ -366,30 +370,3 @@ def fetch_pyodide_packages() -> List[str]:
     except Exception as e:
         logger.error(f"Error fetching Pyodide packages from {url}: {e}")
         return [f"Error fetching package list: {e}"]
-
-
-def list_workspace_projects() -> List[str]:
-    """
-    Scans the workspace for project directories (containing .git or pyproject.toml).
-    Returns a list of project names.
-    projects_file logic is preferred source of truth, but we can verify against actual dirs.
-    """
-    projects = []
-    try:
-        # Default workspace can be derived from existing config or env
-        # In this agent setup, we might need a way to pass the root dir.
-        # Check env or guess CWD.
-        workspace_root = Path(
-            os.getcwd()
-        )  # Safe assumption for now as agent runs in root
-
-        if workspace_root.exists():
-            for item in workspace_root.iterdir():
-                if item.is_dir():
-                    # Simple check: has .git?
-                    if (item / ".git").exists():
-                        projects.append(item.name)
-    except Exception as e:
-        print(f"Error listing projects: {e}")
-
-    return sorted(projects)
