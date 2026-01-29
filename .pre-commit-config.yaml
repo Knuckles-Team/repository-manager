@@ -25,13 +25,15 @@ repos:
   - repo: https://github.com/psf/black
     rev: 26.1.0
     hooks:
-    - id: black
+      - id: black
+        exclude: ^(tests/|test/|scripts/|script/)
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.14.14
     hooks:
       - id: ruff
         types_or: [ python, pyi, jupyter ]
         args: ["--fix", "--ignore=E402"]
+        exclude: ^(tests/|test/|scripts/|script/)
   - repo: https://github.com/codespell-project/codespell
     rev: v2.4.1
     hooks:

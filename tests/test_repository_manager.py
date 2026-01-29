@@ -90,7 +90,9 @@ class TestDirectoryFunctions:
         mock_exists.return_value = True
         mock_isfile.return_value = False
 
-        result = git_instance.delete_directory(path="todelete")
+        result = git_instance.delete_directory(
+            workspace=git_instance.workspace, project="myproject", path="todelete"
+        )
 
         assert result.status == "success"
         mock_rmtree.assert_called_once()
@@ -98,20 +100,30 @@ class TestDirectoryFunctions:
 
     @patch("os.path.exists")
     def test_delete_directory_not_found(self, mock_exists, git_instance):
-        mock_exists.return_value = False
-        result = git_instance.delete_directory(path="missing")
+        def exists_side_effect(path):
+            if path.endswith("myproject"):
+                return True
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        result = git_instance.delete_directory(
+            workspace=git_instance.workspace, project="myproject", path="missing"
+        )
 
         assert result.status == "error"
-        assert "Directory not found" in result.error.message
+        assert "not found" in result.error.message
 
     def test_delete_directory_workspace_root(self, git_instance):
         result = git_instance.delete_directory(
-            path="."
+            workspace=git_instance.workspace, project=None, path="."
         )  # Relative to workspace, this is workspace root
         assert result.status == "error"
         assert "Cannot delete the workspace root" in result.error.message
 
-        result = git_instance.delete_directory(path=git_instance.workspace)
+        result = git_instance.delete_directory(
+            workspace=git_instance.workspace, project=None, path=git_instance.workspace
+        )
         assert result.status == "error"
         assert "Cannot delete the workspace root" in result.error.message
 
@@ -124,19 +136,39 @@ class TestDirectoryFunctions:
                 return True
             if "new" in path:
                 return False
+            if "myproject" in path:
+                return True  # Project exists
             return False
 
         mock_exists.side_effect = exists_side_effect
 
-        result = git_instance.rename_directory(old_path="old", new_path="new")
+        result = git_instance.rename_directory(
+            workspace=git_instance.workspace,
+            project="myproject",
+            old_path="old",
+            new_path="new",
+        )
 
         assert result.status == "success"
         mock_renames.assert_called_once()
 
     @patch("os.path.exists")
     def test_rename_directory_source_missing(self, mock_exists, git_instance):
-        mock_exists.return_value = False
-        result = git_instance.rename_directory(old_path="missing", new_path="new")
+        def exists_side_effect(path):
+            if "missing" in path:
+                return False
+            if "myproject" in path:
+                return True  # Project exists
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+
+        result = git_instance.rename_directory(
+            workspace=git_instance.workspace,
+            project="myproject",
+            old_path="missing",
+            new_path="new",
+        )
 
         assert result.status == "error"
         assert "Source path not found" in result.error.message
@@ -226,7 +258,7 @@ class TestProjectFunctions:
         process_mock.wait.return_value = 0
         mock_popen.return_value = process_mock
 
-        result = git_instance.create_project(project_name="newproj")
+        result = git_instance.create_project(project="newproj")
 
         assert result.status == "success"
         mock_makedirs.assert_called_once()
@@ -258,3 +290,55 @@ class TestProjectFunctions:
 
         assert result.content == "# Readme Content"
         assert result.path.endswith("README.md")
+
+    @patch("os.path.exists")
+    def test_bump_version_success(self, mock_exists, git_instance):
+        mock_exists.return_value = True
+        # Mock git_action
+        git_instance.git_action = MagicMock()
+        git_instance.git_action.return_value.status = "success"
+
+        result = git_instance.bump_version(
+            part="minor", workspace=git_instance.workspace, project="myproj"
+        )
+
+        assert result.status == "success"
+        # Check if command was constructed correctly
+        call_args = git_instance.git_action.call_args[1]
+        assert call_args["command"] == "bump2version minor"
+        assert "myproj" in call_args["workspace"]
+
+    @patch("os.path.exists")
+    def test_bump_version_allow_dirty(self, mock_exists, git_instance):
+        mock_exists.return_value = True
+        git_instance.git_action = MagicMock()
+        git_instance.git_action.return_value.status = "success"
+
+        result = git_instance.bump_version(
+            part="patch",
+            allow_dirty=True,
+            workspace=git_instance.workspace,
+            project="myproj",
+        )
+
+        call_args = git_instance.git_action.call_args[1]
+        assert "--allow-dirty" in call_args["command"]
+
+    @patch("os.path.exists")
+    def test_bump_version_invalid_part(self, mock_exists, git_instance):
+        mock_exists.return_value = True  # Ensure directory exists check passes
+        result = git_instance.bump_version(
+            part="supermajor", workspace=git_instance.workspace
+        )
+        assert result.status == "error"
+        # The message includes "Invalid part 'supermajor'. Must be one of..."
+        assert "Invalid part" in result.error.message
+
+    @patch("os.path.exists")
+    def test_bump_version_not_found(self, mock_exists, git_instance):
+        mock_exists.return_value = False
+        result = git_instance.bump_version(
+            part="major", workspace=git_instance.workspace, project="missing"
+        )
+        assert result.status == "error"
+        assert "Directory not found" in result.error.message
