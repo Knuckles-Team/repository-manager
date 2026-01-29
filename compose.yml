@@ -1,10 +1,10 @@
 ---
 services:
   repository-manager-mcp:
-    # image: docker.io/knucklessg1/repository-manager:latest
-    build:
-      context: . # Debug
-      dockerfile: debug.Dockerfile
+    image: docker.io/knucklessg1/repository-manager:latest
+    # build:
+    #   context: . # Debug
+    #   dockerfile: debug.Dockerfile
     container_name: repository-manager-mcp
     hostname: repository-manager-mcp
     volumes:
@@ -36,10 +36,10 @@ services:
       start_period: 10s
 
   repository-manager-agent:
-    # image: docker.io/knucklessg1/repository-manager:latest
-    build:
-      context: . # Debug
-      dockerfile: debug.Dockerfile
+    image: docker.io/knucklessg1/repository-manager:latest
+    # build:
+    #   context: . # Debug
+    #   dockerfile: debug.Dockerfile
     container_name: repository-manager-agent
     hostname: repository-manager-agent
     volumes:
