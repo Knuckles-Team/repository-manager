@@ -6,6 +6,8 @@ import logging
 import uvicorn
 import json
 import tempfile
+
+__version__ = "1.2.13"
 from contextlib import asynccontextmanager
 from typing import Optional, Any, List, Union, Dict
 from pathlib import Path
@@ -133,7 +135,7 @@ PLANNER_SYSTEM_PROMPT = (
     "     - If NEW project: validation step to run `create_project` tool with the project name and workspace -> `create_directory` tool for structure within the project like src, tests, docs, etc. -> `text_editor` tool to create and update files.\n"
     "  2. **Research**: For existing codebase, include a task/step to use `smart-coding-*` tools to research the codebase. Skip this step if its a new project.\n"
     "  3. **Development**: \n"
-    "     - **Write to Workspace**: Mandate using `text_editor` to write code to the ACTUAL project files in the workspace.\n"
+    "     - **Write to Workspace (CRITICAL)**: Mandate using `text_editor` to write code to the ACTUAL project files in the workspace. **YOU MUST SPECIFY FULL PATHS INCLUDING THE PROJECT DIRECTORY WHICH WAS THE PROJECT NAME** (e.g. `/workspace/my_project/src/main.py`, NOT just `src/main.py`).\n"
     "     - **Conditional Sandbox Usage**: ONLY IF the user expressly asks to run/test in a sandbox, include a step to use `run_python_in_sandbox` to EXECUTE the code from the workspace files. Otherwise, rely on the filesystem.\n"
     "  4. **Validation**: \n"
     "     - Check for `.pre-commit` configuration and run `run_pre_commits` if present.\n"
@@ -164,7 +166,9 @@ EXECUTOR_SYSTEM_PROMPT = (
     "   - Navigate to existing projects by running `run_command` 'cd <project_name>'.\n"
     "2. **Research**: Use `smart-coding-*` tools to research the codebase and find relevant information pertaining to the task.\n"
     "3. **Development & Testing**: \n"
-    "   - **Write to Workspace**: Use `text_editor` to write the code to the actual project files in the workspace.\n"
+    "   - **Write to Workspace (CRITICAL PATH WARNING)**: Use `text_editor` to write the code to the actual project files.\n"
+    "     - **YOU MUST ALWAYS USE THE FULL PROJECT PATH**. Example: If project is 'snake', write to `/workspace/snake/src/main.py`.\n"
+    "     - **DO NOT** write to `src/main.py` directly as this goes to the workspace root. **ALWAYS PREPEND THE PROJECT NAME AND WORKSPACE**.\n"
     "   - **Conditional Sandbox Test**: IF the task specifically instructs to use the sandbox, read the content of the files you just wrote and use `run_python_in_sandbox` to execute/validate them.\n"
     "   - **Iterate**: If validation fails, use `text_editor` to fix the workspace files.\n"
     "Capabilities:\n"
@@ -821,7 +825,7 @@ def create_agent_server(
     a2a_app = agent.to_a2a(
         name=AGENT_NAME,
         description=AGENT_DESCRIPTION,
-        version="1.2.12",
+        version=__version__,
         skills=skills,
         debug=debug,
     )
@@ -959,6 +963,7 @@ def configure_mcp_servers(
 
 
 def agent_server():
+    print(f"Repository Manager Agent v{__version__}")
     parser = argparse.ArgumentParser(description=f"Run the {AGENT_NAME} Server")
     parser.add_argument("--host", default=DEFAULT_HOST, help="Host")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port")
