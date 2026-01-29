@@ -12,6 +12,8 @@ import re
 import sys
 import argparse
 import logging
+
+__version__ = "1.2.13"
 import concurrent.futures
 import datetime
 from typing import List
@@ -715,12 +717,12 @@ class Git:
             metadata=meta,
         )
 
-    def create_project(self, project_name: str, workspace: str = None) -> GitResult:
+    def create_project(self, project: str, workspace: str = None) -> GitResult:
         """
         Create a new project directory and initialize it as a git repository.
 
         Args:
-            project_name (str): The name of the project directory to create.
+            project (str): The name of the project directory to create.
 
         Returns:
             GitResult: Result of the operation.
@@ -730,7 +732,7 @@ class Git:
 
         workspace = os.path.abspath(workspace)
         project_path = os.path.abspath(
-            os.path.normpath(os.path.join(workspace, project_name))
+            os.path.normpath(os.path.join(workspace, project))
         )
 
         # Security check
@@ -779,7 +781,7 @@ class Git:
                 return init_result
 
         except Exception as e:
-            self.logger.error(f"Failed to create project {project_name}: {e}")
+            self.logger.error(f"Failed to create project {project}: {e}")
             return GitResult(
                 status="error",
                 data="",
@@ -902,30 +904,59 @@ class Git:
                 ),
             )
 
-    def delete_directory(self, path: str) -> GitResult:
+    def delete_directory(self, workspace: str, project: str, path: str) -> GitResult:
         """
         Delete a directory at the specified path.
 
         Args:
-            path (str): The path of the directory to delete.
+            workspace (str): The workspace path.
+            project (str): The name of the project.
+            path (str): The path of the directory to delete (relative to project or workspace).
 
         Returns:
             GitResult: Result of the operation.
         """
         import shutil
 
-        # Logic to resolve path against workspace safely
-        if os.path.isabs(path):
-            target_path = os.path.abspath(os.path.normpath(path))
-        else:
-            target_path = os.path.abspath(
-                os.path.normpath(os.path.join(self.workspace, path))
-            )
+        if not workspace:
+            workspace = self.workspace
 
-        workspace_path = os.path.abspath(self.workspace)
+        # Ensure workspace is absolute
+        workspace = os.path.abspath(workspace)
+
+        # Construct target path safely
+        parts = [workspace]
+        if project:
+            project_path = os.path.join(workspace, project)
+            # We don't strictly *need* to check if the project dir exists before checking the target,
+            # but for consistency with create_directory we can, or just rely on target_path check.
+            # create_directory checks it. Let's generally try to be consistent but lighter here implies
+            # valid paths. However, if project doesn't exist, we can't delete a file inside it anyway.
+            if not os.path.exists(project_path):
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message=f"Project directory does not exist: {project_path}",
+                        code=1,
+                    ),
+                    metadata=GitMetadata(
+                        command="delete_directory",
+                        workspace=workspace,
+                        return_code=1,
+                        timestamp=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
+                        + "Z",
+                    ),
+                )
+            parts.append(project)
+
+        parts.append(path)
+        target_path = os.path.normpath(os.path.join(*parts))
 
         # Safety Check: Do not allow deletion of workspace root or anything outside it if strict
-        if target_path == workspace_path:
+        if target_path == workspace:
             return GitResult(
                 status="error",
                 data="",
@@ -934,7 +965,7 @@ class Git:
                 ),
                 metadata=GitMetadata(
                     command="delete_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -942,7 +973,7 @@ class Git:
             )
 
         # Ensure we are operating within the workspace
-        if not target_path.startswith(workspace_path):
+        if not target_path.startswith(workspace):
             return GitResult(
                 status="error",
                 data="",
@@ -952,7 +983,7 @@ class Git:
                 ),
                 metadata=GitMetadata(
                     command="delete_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -963,10 +994,12 @@ class Git:
             return GitResult(
                 status="error",
                 data="",
-                error=GitError(message=f"Directory not found: {target_path}", code=1),
+                error=GitError(
+                    message=f"Directory/File not found: {target_path}", code=1
+                ),
                 metadata=GitMetadata(
                     command="delete_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -974,7 +1007,7 @@ class Git:
             )
 
         try:
-            if os.path.isfile(target_path):
+            if os.path.isfile(target_path) or os.path.islink(target_path):
                 os.remove(target_path)
             else:
                 shutil.rmtree(target_path)
@@ -986,7 +1019,7 @@ class Git:
                 error=None,
                 metadata=GitMetadata(
                     command="delete_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=0,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -1000,42 +1033,63 @@ class Git:
                 error=GitError(message=str(e), code=1),
                 metadata=GitMetadata(
                     command="delete_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
                 ),
             )
 
-    def rename_directory(self, old_path: str, new_path: str) -> GitResult:
+    def rename_directory(
+        self, workspace: str, project: str, old_path: str, new_path: str
+    ) -> GitResult:
         """
         Rename/Move a directory or file.
 
         Args:
-            old_path (str): The current path.
-            new_path (str): The new path.
+            workspace (str): The workspace path.
+            project (str): The name of the project.
+            old_path (str): The current path (relative to project or workspace).
+            new_path (str): The new path (relative to project or workspace).
 
         Returns:
             GitResult: Result of the operation.
         """
-        if os.path.isabs(old_path):
-            abs_old_path = os.path.abspath(os.path.normpath(old_path))
-        else:
-            abs_old_path = os.path.abspath(
-                os.path.normpath(os.path.join(self.workspace, old_path))
-            )
+        if not workspace:
+            workspace = self.workspace
 
-        if os.path.isabs(new_path):
-            abs_new_path = os.path.abspath(os.path.normpath(new_path))
-        else:
-            abs_new_path = os.path.abspath(
-                os.path.normpath(os.path.join(self.workspace, new_path))
-            )
+        workspace = os.path.abspath(workspace)
 
-        workspace_path = os.path.abspath(self.workspace)
+        # Construct Base Path
+        base_parts = [workspace]
+        if project:
+            project_path = os.path.join(workspace, project)
+            if not os.path.exists(project_path):
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message=f"Project directory does not exist: {project_path}",
+                        code=1,
+                    ),
+                    metadata=GitMetadata(
+                        command="rename_directory",
+                        workspace=workspace,
+                        return_code=1,
+                        timestamp=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
+                        + "Z",
+                    ),
+                )
+            base_parts.append(project)
+
+        # Construct Full Paths
+        abs_old_path = os.path.normpath(os.path.join(*base_parts, old_path))
+        abs_new_path = os.path.normpath(os.path.join(*base_parts, new_path))
 
         # Security validation
-        if not abs_old_path.startswith(workspace_path):
+        if not abs_old_path.startswith(workspace):
             return GitResult(
                 status="error",
                 data="",
@@ -1045,14 +1099,14 @@ class Git:
                 ),
                 metadata=GitMetadata(
                     command="rename_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
                 ),
             )
 
-        if not abs_new_path.startswith(workspace_path):
+        if not abs_new_path.startswith(workspace):
             return GitResult(
                 status="error",
                 data="",
@@ -1062,7 +1116,7 @@ class Git:
                 ),
                 metadata=GitMetadata(
                     command="rename_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -1078,7 +1132,7 @@ class Git:
                 ),
                 metadata=GitMetadata(
                     command="rename_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -1094,7 +1148,7 @@ class Git:
                 ),
                 metadata=GitMetadata(
                     command="rename_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -1110,7 +1164,7 @@ class Git:
                 error=None,
                 metadata=GitMetadata(
                     command="rename_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=0,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -1124,7 +1178,7 @@ class Git:
                 error=GitError(message=str(e), code=1),
                 metadata=GitMetadata(
                     command="rename_directory",
-                    workspace=self.workspace,
+                    workspace=workspace,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -1160,6 +1214,7 @@ def repository_manager() -> None:
     """
     Process command-line arguments and manage Git repository operations.
     """
+    print(f"Repository Manager v{__version__}")
     parser = argparse.ArgumentParser(description="Git Repository Manager Utility")
     parser.add_argument(
         "-b",

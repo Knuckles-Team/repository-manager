@@ -54,14 +54,14 @@ ENV HOST=${HOST} \
     REPOSITORY_MANAGER_WORKSPACE=${REPOSITORY_MANAGER_WORKSPACE:-/workspace}
 
 RUN apt-get update \
-   && apt-get install -y git curl make nano \
-   && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
-   && apt-get install -y nodejs unzip \
-   && npm install -g smart-coding-mcp \
-   && curl -fsSL https://deno.land/install.sh | sh \
-   && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
-   && curl -LsSf https://astral.sh/uv/install.sh | sh \
-   && uv pip install --system --upgrade --verbose --no-cache --break-system-packages repository-manager[all]>=1.2.12
+    && apt-get install -y git curl make nano ca-certificates unzip build-essential make g++ pkg-config \
+    && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y nodejs \
+    && npm install -g smart-coding-mcp \
+    && curl -fsSL https://deno.land/install.sh | sh \
+    && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && uv pip install --system --upgrade --verbose --no-cache --break-system-packages repository-manager[all]>=1.2.13
 
 WORKDIR /workspace
 

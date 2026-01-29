@@ -3,6 +3,9 @@
 import os
 import sys
 import argparse
+
+__version__ = "1.2.13"
+
 from typing import Optional, Dict, List, Union, Any
 from pydantic import Field
 from starlette.requests import Request
@@ -546,7 +549,15 @@ def register_tools(mcp: FastMCP):
             description="The command to execute: view, create, str_replace, insert, undo_edit."
         ),
         path: str = Field(
-            description="Standardized file path (absolute or relative to workspace)."
+            description="Standardized file path (absolute or relative to the project)."
+        ),
+        workspace: str = Field(
+            description="The workspace containing the project. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
+            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
+        ),
+        project: str = Field(
+            description="The project containing the codebase and files. This is the name of the project.",
+            default=None,
         ),
         file_text: Optional[str] = Field(
             description="The content to write to the file (for create command).",
@@ -565,10 +576,6 @@ def register_tools(mcp: FastMCP):
         insert_line: Optional[int] = Field(
             description="The line number to insert at (for insert command).",
             default=None,
-        ),
-        workspace: Optional[str] = Field(
-            description="The workspace containing the file. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
         ),
     ) -> GitResult:
         """
@@ -616,7 +623,7 @@ def register_tools(mcp: FastMCP):
         tags={"git", "create_project"},
     )
     async def create_project(
-        project_name: str = Field(description="The name of the new project directory."),
+        project: str = Field(description="The name of the new project directory."),
         workspace: Optional[str] = Field(
             description="The workspace containing the project. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
@@ -638,7 +645,7 @@ def register_tools(mcp: FastMCP):
                 is_mcp_server=True,
             )
 
-            response = git.create_project(project_name=project_name)
+            response = git.create_project(project=project)
             return response
         except Exception as e:
             logger.error(f"Error in create_project: {e}")
@@ -662,7 +669,7 @@ def register_tools(mcp: FastMCP):
             description="The workspace containing all the projects. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
         ),
-        project: Optional[str] = Field(
+        project: str = Field(
             description="The project in the workspace.",
             default=None,
         ),
@@ -707,6 +714,10 @@ def register_tools(mcp: FastMCP):
             description="The workspace containing the directory. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
         ),
+        project: str = Field(
+            description="The project in the workspace.",
+            default=None,
+        ),
     ) -> GitResult:
         """
         Delete a directory at the specified path.
@@ -724,7 +735,9 @@ def register_tools(mcp: FastMCP):
                 is_mcp_server=True,
             )
 
-            response = git.delete_directory(path=path)
+            response = git.delete_directory(
+                path=path, project=project, workspace=target_dir
+            )
             return response
         except Exception as e:
             logger.error(f"Error in delete_directory: {e}")
@@ -747,6 +760,10 @@ def register_tools(mcp: FastMCP):
             description="The workspace containing the directory. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
         ),
+        project: str = Field(
+            description="The project in the workspace.",
+            default=None,
+        ),
     ) -> GitResult:
         """
         Rename/Move a directory or file.
@@ -764,7 +781,12 @@ def register_tools(mcp: FastMCP):
                 is_mcp_server=True,
             )
 
-            response = git.rename_directory(old_path=old_path, new_path=new_path)
+            response = git.rename_directory(
+                old_path=old_path,
+                new_path=new_path,
+                project=project,
+                workspace=target_dir,
+            )
             return response
         except Exception as e:
             logger.error(f"Error in rename_directory: {e}")
@@ -772,6 +794,7 @@ def register_tools(mcp: FastMCP):
 
 
 def repository_manager_mcp():
+    print(f"Repository Manager MCP v{__version__}")
     parser = argparse.ArgumentParser(description="Repository Manager MCP Utility")
     parser.add_argument(
         "-t",
