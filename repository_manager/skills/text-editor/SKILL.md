@@ -1,5 +1,5 @@
 ---
-name: text_editor
+name: text-editor
 description: View and edit files
 ---
 

@@ -16,7 +16,7 @@ Config ops via `git_action`.
 
 ### Examples
 - Set user: `git_action` with command="git config --global user.name 'John Doe'".
-- Set project as a safe directory: `git_action` with command="git config --global --add safe.directory "/development/repositories-list"".
+- Set project as a safe directory: `git_action` with command="git config --global --add safe.directory "/workspace/repositories-list"".
 
 ### Error Handling
 - Invalid key: Check docs.
