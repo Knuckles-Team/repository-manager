@@ -61,7 +61,7 @@ RUN apt-get update \
     && curl -fsSL https://deno.land/install.sh | sh \
     && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && uv pip install --system --upgrade --verbose --no-cache --break-system-packages repository-manager[all]>=1.2.14
+    && uv pip install --system --upgrade --verbose --no-cache --break-system-packages repository-manager[all]>=1.2.15
 
 WORKDIR /workspace
 
