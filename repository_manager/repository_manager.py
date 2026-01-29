@@ -13,7 +13,7 @@ import sys
 import argparse
 import logging
 
-__version__ = "1.2.13"
+__version__ = "1.2.14"
 import concurrent.futures
 import datetime
 from typing import List
@@ -1178,6 +1178,124 @@ class Git:
                 error=GitError(message=str(e), code=1),
                 metadata=GitMetadata(
                     command="rename_directory",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+    def bump_version(
+        self,
+        part: str,
+        allow_dirty: bool = False,
+        workspace: str = None,
+        project: str = None,
+    ) -> GitResult:
+        """
+        Bump the version of the project using bump2version.
+
+        Args:
+            part (str): The part of the version to bump (major, minor, patch).
+            allow_dirty (bool): Whether to allow dirty working directory.
+            workspace (str): The workspace path.
+            project (str): The name of the project.
+
+        Returns:
+            GitResult: Result of the operation.
+        """
+        if not workspace:
+            workspace = self.workspace
+
+        workspace = os.path.abspath(workspace)
+
+        # Determine target directory
+        target_dir = workspace
+        if project:
+            target_dir = os.path.join(workspace, project)
+
+        target_dir = os.path.abspath(os.path.normpath(target_dir))
+
+        # Security check
+        if not target_dir.startswith(workspace):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Cannot operate outside of workspace: {target_dir}",
+                    code=1,
+                ),
+                metadata=GitMetadata(
+                    command="bump_version",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        if not os.path.exists(target_dir):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Directory not found: {target_dir}",
+                    code=1,
+                ),
+                metadata=GitMetadata(
+                    command="bump_version",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        # Validate part
+        valid_parts = ["major", "minor", "patch"]
+        if part not in valid_parts:
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=f"Invalid part '{part}'. Must be one of {valid_parts}",
+                    code=1,
+                ),
+                metadata=GitMetadata(
+                    command="bump_version",
+                    workspace=workspace,
+                    return_code=1,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        # Build command
+        command = f"bump2version {part}"
+        if allow_dirty:
+            command += " --allow-dirty"
+
+        # Execute
+        try:
+            result = self.git_action(command=command, workspace=target_dir)
+
+            # Log successful bump
+            if result.status == "success":
+                self.logger.info(f"Bumped version ({part}) in {target_dir}")
+            else:
+                self.logger.error(
+                    f"Failed to bump version in {target_dir}: {result.error}"
+                )
+
+            return result
+        except Exception as e:
+            self.logger.error(f"Error in bump_version: {e}")
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(message=str(e), code=1),
+                metadata=GitMetadata(
+                    command="bump_version",
                     workspace=workspace,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()

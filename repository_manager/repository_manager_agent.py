@@ -7,7 +7,7 @@ import uvicorn
 import json
 import tempfile
 
-__version__ = "1.2.13"
+__version__ = "1.2.14"
 from contextlib import asynccontextmanager
 from typing import Optional, Any, List, Union, Dict
 from pathlib import Path
