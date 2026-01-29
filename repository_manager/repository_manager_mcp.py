@@ -4,7 +4,7 @@ import os
 import sys
 import argparse
 
-__version__ = "1.2.13"
+__version__ = "1.2.14"
 
 from typing import Optional, Dict, List, Union, Any
 from pydantic import Field
@@ -790,6 +790,59 @@ def register_tools(mcp: FastMCP):
             return response
         except Exception as e:
             logger.error(f"Error in rename_directory: {e}")
+            raise
+
+    @mcp.tool(
+        annotations={
+            "title": "Bump Version",
+            "description": "Bump the version of the project using bump2version.",
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+        },
+        tags={"git_operations", "versioning"},
+    )
+    async def bump_version(
+        part: str = Field(
+            description="The part of the version to bump (major, minor, patch)."
+        ),
+        allow_dirty: bool = Field(
+            description="Whether to allow dirty working directory.", default=True
+        ),
+        workspace: Optional[str] = Field(
+            description="The workspace containing the project. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
+            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
+        ),
+        project: Optional[str] = Field(
+            description="The project in the workspace.",
+            default=None,
+        ),
+    ) -> GitResult:
+        """
+        Bump the version of the project using bump2version.
+        """
+        try:
+            # Determine target workspace
+            target_dir = workspace
+            if not target_dir:
+                target_dir = (
+                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
+                )
+
+            git = Git(
+                workspace=target_dir,
+                is_mcp_server=True,
+            )
+
+            response = git.bump_version(
+                part=part,
+                allow_dirty=allow_dirty,
+                project=project,
+                workspace=target_dir,
+            )
+            return response
+        except Exception as e:
+            logger.error(f"Error in bump_version: {e}")
             raise
 
 
