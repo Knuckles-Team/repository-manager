@@ -7,7 +7,6 @@ import uvicorn
 import json
 import tempfile
 
-__version__ = "1.2.15"
 from contextlib import asynccontextmanager
 from typing import Optional, Any, List, Union, Dict
 from pathlib import Path
@@ -37,6 +36,8 @@ from repository_manager.utils import (
     fetch_pyodide_packages,
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
+
+__version__ = "1.2.16"
 
 logging.basicConfig(
     level=logging.INFO,
