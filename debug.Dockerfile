@@ -64,8 +64,8 @@ RUN apt update \
      && curl -fsSL https://deno.land/install.sh | sh \
      && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
      && curl -LsSf https://astral.sh/uv/install.sh | sh \
-     && uv pip install --system .[all]
+     && uv pip install --system --upgrade --verbose --no-cache --break-system-packages --prerelease=allow .[all]
 
 WORKDIR /workspace
 
-CMD ["sh", "-c", "repository-manager -c -p -b && git config --global --add safe.directory \"*\" && repository-manager-mcp"]
+CMD ["repository-manager-mcp"]
