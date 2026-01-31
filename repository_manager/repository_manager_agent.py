@@ -37,7 +37,7 @@ from repository_manager.utils import (
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
 
-__version__ = "1.2.16"
+__version__ = "1.2.17"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -112,6 +112,9 @@ SUPERVISOR_SYSTEM_PROMPT = (
     "4. Do not stop until the PRD (Product Requirements Document) is fully complete (is_complete=True).\n"
     "5. Once the PRD is complete, Call `finalize_prd_and_diagram` to aggregate execution history and generate a diagram.\n"
     "6. Then Call `update_documentation` to reflect all changes in the README.md including the diagram.\n"
+    "Memory Management:\n"
+    "- Use `add_memory` to save important context like the current active project, workspace path, or user preferences.\n"
+    "- Use `search_memories` to retrieve this context if it is missing.\n"
 )
 
 PLANNER_SYSTEM_PROMPT = (
@@ -120,6 +123,7 @@ PLANNER_SYSTEM_PROMPT = (
     "Research Capabilities:\n"
     "- Use `list_projects` tool to check if a project already exists. If the project exists, focus on it; if it doesn't, plan to create it.\n"
     "- Use `match_pyodide_packages` to find the correct package names for the python-sandbox (e.g. `pygame-ce` for `pygame`). If no package is found, we can assume it will be installed as a native python pip.\n"
+    "- Use `search_memories` to check for existing PRD requirements, project context, or user preferences to inform your plan.\n"
     "Agent Strategy:\n"
     "- **Evaluate Team**: Determine if the request requires a specialized team of agents (e.g., SQL related -> SQL Agent) or if the current team (Executor) uses standard capabilities (Python, Files, Git).\n"
     "- **Prioritize Standard**: ALWAYS prefer the standard Executor team if they can meet the requirements.\n"
@@ -178,6 +182,7 @@ EXECUTOR_SYSTEM_PROMPT = (
     "- `text_editor`: For writing the final, tested code to the project files.\n"
     "- `smart-coding-*`: To semantic search code repositories. There is a different instance of smart-coding-* for each project in the workspace so ensure you are using the correct one when using this tool.\n"
     "- `git-*`: To interact with git (via specific repo tools).\n"
+    "- `add_memory` / `search_memories`: To save or retrieve context about the execution or project state.\n"
     "Requirements:\n"
     "- Return the updated `Task` object.\n"
     "- Update `task.notes` with implementation details.\n"
@@ -259,6 +264,7 @@ def create_agent(
     # 3. Prepare Executor Tools (Sandbox + Repo Delegates)
     executor_tools_list = []
     executor_toolsets_list = []
+    memory_tools = []
 
     # Dynamic Sandbox Tool
     async def run_python_in_sandbox(dependencies: List[str], code: str) -> str:
@@ -328,6 +334,30 @@ def create_agent(
                         logger.info(
                             f"Added {len(rm_tools)} Repository Manager tools to Executor."
                         )
+                # B. Mem0 Memory Server
+                elif server_name == "mem0":
+                    with tempfile.NamedTemporaryFile(
+                        mode="w", suffix=".json", delete=False
+                    ) as temp_config:
+                        json.dump(
+                            {"mcpServers": {server_name: server_config}}, temp_config
+                        )
+                        temp_config_path = temp_config.name
+                    try:
+                        loaded_mem_tools = load_mcp_servers(temp_config_path)
+                        memory_tools = loaded_mem_tools
+                        available_tools_registry["memory_tools"] = loaded_mem_tools
+                        # Add to executor tools
+                        executor_tools_list.extend(loaded_mem_tools)
+                        logger.info(
+                            f"Loaded {len(loaded_mem_tools)} Mem0 Memory tools."
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to load mem0 tools: {e}")
+                    finally:
+                        if os.path.exists(temp_config_path):
+                            os.remove(temp_config_path)
+
                 # C. Smart Coding Repos
                 elif server_name.startswith("smart-coding-"):
                     with tempfile.NamedTemporaryFile(
@@ -346,6 +376,7 @@ def create_agent(
                             model=model,
                             system_prompt=f"You are the {server_name} Codebase Agent.\nGoal: Manage the repository '{server_name}'.\nYou have full access to search and modify THIS repository.",
                             toolsets=codebase_tools,
+                            tool_timeout=32400.0,
                             model_settings=settings,
                             name=server_name,
                             retries=3,
@@ -452,7 +483,7 @@ def create_agent(
         system_prompt=PLANNER_SYSTEM_PROMPT,
         model_settings=settings,
         output_type=PRD,
-        tools=[pyodide_matcher_tool],
+        tools=[pyodide_matcher_tool] + memory_tools,
         name="Planner",
         retries=3,
     )
@@ -472,6 +503,7 @@ def create_agent(
         model_settings=settings,
         tools=executor_tools_list,
         toolsets=executor_toolsets_list,
+        tool_timeout=32400.0,
         output_type=Task,
         name="Executor",
         retries=3,
@@ -483,6 +515,7 @@ def create_agent(
         model_settings=settings,
         tools=executor_tools_list,
         toolsets=executor_toolsets_list,
+        tool_timeout=32400.0,
         output_type=Task,
         name="Validator",
         retries=3,
@@ -492,6 +525,7 @@ def create_agent(
         model=model,
         system_prompt=REPOSITORY_MANAGER_SYSTEM_PROMPT,
         toolsets=rm_tools + master_skills,
+        tool_timeout=32400.0,
         model_settings=settings,
         name="Repository Manager",
         retries=3,
@@ -500,8 +534,8 @@ def create_agent(
     documentation_agent = Agent(
         model=model,
         system_prompt=DOCUMENTATION_AGENT_SYSTEM_PROMPT,
-        toolsets=rm_tools
-        + master_skills,  # Access to get_project_readme and text_editor (part of repo manager mcp)
+        toolsets=rm_tools + master_skills,
+        tool_timeout=32400.0,
         model_settings=settings,
         name="Documentation Agent",
         retries=3,
@@ -514,6 +548,7 @@ def create_agent(
     supervisor = Agent(
         model=model,
         system_prompt=SUPERVISOR_SYSTEM_PROMPT,
+        tools=memory_tools,
         name=AGENT_NAME,
         model_settings=settings,
         retries=3,
@@ -725,10 +760,12 @@ def create_agent(
                 child_toolsets.append(t)
 
         child_agent = Agent(
-            model=child_model,
             system_prompt=system_prompt,
+            model=child_model,
+            model_settings=settings,
             tools=child_tools,
             toolsets=child_toolsets,
+            tool_timeout=32400.0,
             name=name,
             retries=3,
         )

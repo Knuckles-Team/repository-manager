@@ -4,7 +4,7 @@ import os
 import sys
 import argparse
 
-__version__ = "1.2.16"
+__version__ = "1.2.17"
 
 from typing import Optional, Dict, List, Union, Any
 from pydantic import Field
