@@ -27,6 +27,9 @@ except ImportError:
 from repository_manager.utils import (
     to_integer,
     to_boolean,
+    to_float,
+    to_list,
+    to_dict,
     get_projects_file_path,
     get_skills_path,
     get_mcp_config_path,
@@ -34,6 +37,7 @@ from repository_manager.utils import (
     create_model,
     generate_mermaid_diagram,
     fetch_pyodide_packages,
+    prune_large_messages,
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
 
@@ -75,6 +79,21 @@ DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.getenv(
     "REPOSITORY_MANAGER_WORKSPACE", "/workspace"
 )
 
+# Model Settings
+DEFAULT_MAX_TOKENS = to_integer(os.getenv("MAX_TOKENS", "8192"))
+DEFAULT_TEMPERATURE = to_float(os.getenv("TEMPERATURE", "0.7"))
+DEFAULT_TOP_P = to_float(os.getenv("TOP_P", "1.0"))
+DEFAULT_TIMEOUT = to_float(os.getenv("TIMEOUT", "32400.0"))
+DEFAULT_TOOL_TIMEOUT = to_float(os.getenv("TOOL_TIMEOUT", "32400.0"))
+DEFAULT_PARALLEL_TOOL_CALLS = to_boolean(os.getenv("PARALLEL_TOOL_CALLS", "True"))
+DEFAULT_SEED = to_integer(os.getenv("SEED", None))
+DEFAULT_PRESENCE_PENALTY = to_float(os.getenv("PRESENCE_PENALTY", "0.0"))
+DEFAULT_FREQUENCY_PENALTY = to_float(os.getenv("FREQUENCY_PENALTY", "0.0"))
+DEFAULT_LOGIT_BIAS = to_dict(os.getenv("LOGIT_BIAS", None))
+DEFAULT_STOP_SEQUENCES = to_list(os.getenv("STOP_SEQUENCES", None))
+DEFAULT_EXTRA_HEADERS = to_dict(os.getenv("EXTRA_HEADERS", None))
+DEFAULT_EXTRA_BODY = to_dict(os.getenv("EXTRA_BODY", None))
+
 AGENT_NAME = "Repository Manager Supervisor"
 AGENT_DESCRIPTION = (
     "A Supervisor Agent that orchestrates a team of child agents (Planner, PM, Executor, Validator) "
@@ -86,13 +105,6 @@ AGENT_DESCRIPTION = (
 # System Prompts
 # -------------------------------------------------------------------------
 
-KARPATHY_GUIDELINES = (
-    "\n\nCORE PRINCIPLES (KARPATHY GUIDELINES):\n"
-    "1. Think Before Coding: State assumptions. Present tradeoffs. Stop and ask if confused. Don't guess.\n"
-    "2. Simplicity First: No overengineering. No 'flexibility' not asked for. If 200 lines can be 50, do 50.\n"
-    "3. Surgical Changes: Touch only what is needed. Match existing style. Don't 'improve' unrelated code. Clean up your own unused imports/variables.\n"
-    "4. Goal-Driven Execution: Transform tasks into verifiable goals (Step -> Verify). Loop until success is verified."
-)
 
 SUPERVISOR_SYSTEM_PROMPT = (
     "You are the Repository Manager Supervisor — persistent and adaptive.\n"
@@ -188,7 +200,12 @@ EXECUTOR_SYSTEM_PROMPT = (
     "- Update `task.notes` with implementation details.\n"
     "- Set `task.passes = True` ONLY if you have verified it and written code to the workspace.\n"
     "- Set `task.last_agent = 'Executor'`."
-) + KARPATHY_GUIDELINES
+    "\n\nCORE PRINCIPLES (KARPATHY GUIDELINES):\n"
+    "1. Think Before Coding: State assumptions. Present tradeoffs. Stop and ask if confused. Don't guess.\n"
+    "2. Simplicity First: No overengineering. No 'flexibility' not asked for. If 200 lines can be 50, do 50.\n"
+    "3. Surgical Changes: Touch only what is needed. Match existing style. Don't 'improve' unrelated code. Clean up your own unused imports/variables.\n"
+    "4. Goal-Driven Execution: Transform tasks into verifiable goals (Step -> Verify). Loop until success is verified."
+)
 
 VALIDATOR_SYSTEM_PROMPT = (
     "You are a Strict Validator.\n"
@@ -245,8 +262,22 @@ def create_agent(
 ) -> Agent:
 
     # 1. Setup Model
+    # 1. Setup Model
     model = create_model(provider, model_id, base_url, api_key)
-    settings = ModelSettings(timeout=32400.0)
+    settings = ModelSettings(
+        max_tokens=DEFAULT_MAX_TOKENS,
+        temperature=DEFAULT_TEMPERATURE,
+        top_p=DEFAULT_TOP_P,
+        timeout=DEFAULT_TIMEOUT,
+        parallel_tool_calls=DEFAULT_PARALLEL_TOOL_CALLS,
+        seed=DEFAULT_SEED,
+        presence_penalty=DEFAULT_PRESENCE_PENALTY,
+        frequency_penalty=DEFAULT_FREQUENCY_PENALTY,
+        logit_bias=DEFAULT_LOGIT_BIAS,
+        stop_sequences=DEFAULT_STOP_SEQUENCES,
+        extra_headers=DEFAULT_EXTRA_HEADERS,
+        extra_body=DEFAULT_EXTRA_BODY,
+    )
 
     # Dictionary to hold available toolsets by name for dynamic assignment
     # explicit_tools["name"] = [tool1, toolset1, ...]
@@ -376,7 +407,7 @@ def create_agent(
                             model=model,
                             system_prompt=f"You are the {server_name} Codebase Agent.\nGoal: Manage the repository '{server_name}'.\nYou have full access to search and modify THIS repository.",
                             toolsets=codebase_tools,
-                            tool_timeout=32400.0,
+                            tool_timeout=DEFAULT_TOOL_TIMEOUT,
                             model_settings=settings,
                             name=server_name,
                             retries=3,
@@ -503,7 +534,7 @@ def create_agent(
         model_settings=settings,
         tools=executor_tools_list,
         toolsets=executor_toolsets_list,
-        tool_timeout=32400.0,
+        tool_timeout=DEFAULT_TOOL_TIMEOUT,
         output_type=Task,
         name="Executor",
         retries=3,
@@ -515,7 +546,7 @@ def create_agent(
         model_settings=settings,
         tools=executor_tools_list,
         toolsets=executor_toolsets_list,
-        tool_timeout=32400.0,
+        tool_timeout=DEFAULT_TOOL_TIMEOUT,
         output_type=Task,
         name="Validator",
         retries=3,
@@ -525,7 +556,7 @@ def create_agent(
         model=model,
         system_prompt=REPOSITORY_MANAGER_SYSTEM_PROMPT,
         toolsets=rm_tools + master_skills,
-        tool_timeout=32400.0,
+        tool_timeout=DEFAULT_TOOL_TIMEOUT,
         model_settings=settings,
         name="Repository Manager",
         retries=3,
@@ -535,7 +566,7 @@ def create_agent(
         model=model,
         system_prompt=DOCUMENTATION_AGENT_SYSTEM_PROMPT,
         toolsets=rm_tools + master_skills,
-        tool_timeout=32400.0,
+        tool_timeout=DEFAULT_TOOL_TIMEOUT,
         model_settings=settings,
         name="Documentation Agent",
         retries=3,
@@ -765,7 +796,7 @@ def create_agent(
             model_settings=settings,
             tools=child_tools,
             toolsets=child_toolsets,
-            tool_timeout=32400.0,
+            tool_timeout=DEFAULT_TOOL_TIMEOUT,
             name=name,
             retries=3,
         )
@@ -900,6 +931,10 @@ def create_agent_server(
                 media_type="application/json",
                 status_code=422,
             )
+
+        # Prune large messages from history
+        if hasattr(run_input, "messages"):
+            run_input.messages = prune_large_messages(run_input.messages)
 
         adapter = AGUIAdapter(agent=agent, run_input=run_input, accept=accept)
         event_stream = adapter.run_stream()
