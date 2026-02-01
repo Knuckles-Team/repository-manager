@@ -75,11 +75,9 @@ class Task(BaseModel):
 
 
 class PRD(BaseModel):
-    project_name: str = Field(
-        ..., description="The name of the project this PRD applies to"
-    )
-    project_root: Optional[str] = Field(
-        default=None, description="Absolute path to the project directory"
+    project: str = Field(..., description="The name of the project this PRD applies to")
+    workspace: Optional[str] = Field(
+        default=None, description="The Workspace location of the project"
     )
     overall_goal: str = Field(
         ..., description="High-level summary of the project/feature"
