@@ -1,3 +1,4 @@
+import os
 from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
@@ -16,21 +17,11 @@ class Task(BaseModel):
     dependencies: Optional[List[int]] = Field(
         default=None, description="List of other task IDs this depends on"
     )
-    required_packages: List[str] = Field(
-        default_factory=list,
-        description="List of python packages required for this task (e.g. ['numpy', 'pandas'])",
-    )
     notes: Optional[str] = Field(
         default=None, description="Additional notes or learnings from the agent"
     )
     priority: Optional[str] = Field(
         default=None, description="Priority level: high, medium, low"
-    )
-    execution_history: List[str] = Field(
-        default_factory=list, description="Log of agent/tool interactions for this task"
-    )
-    last_agent: str = Field(
-        default="Unknown", description="The last agent that modified this task"
     )
 
     @field_validator("dependencies", mode="before")
@@ -53,9 +44,7 @@ class Task(BaseModel):
                 pass
         return [v]
 
-    @field_validator(
-        "acceptance_criteria", "required_packages", "execution_history", mode="before"
-    )
+    @field_validator("acceptance_criteria", mode="before")
     def ensure_list_of_strings(cls, v):
         if v is None:
             return []
@@ -75,14 +64,19 @@ class Task(BaseModel):
 
 
 class PRD(BaseModel):
-    project_name: str = Field(
-        ..., description="The name of the project this PRD applies to"
+    project: str = Field(
+        ...,
+        description="The name of the project. This will also be used as the folder in the workspace. (Always lowercase)",
     )
-    project_root: Optional[str] = Field(
-        default=None, description="Absolute path to the project directory"
+    workspace: Optional[str] = Field(
+        default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", "/documents"),
+        description="The Workspace location of the project",
     )
-    overall_goal: str = Field(
-        ..., description="High-level summary of the project/feature"
+    summary: str = Field(
+        default="", description="High-level summary of the project/feature"
+    )
+    description: str = Field(
+        default="", description="Detailed description of the project/feature"
     )
     guardrails: List[str] = Field(
         default_factory=list, description="Global rules or constraints"
@@ -91,21 +85,19 @@ class PRD(BaseModel):
     iteration_count: int = Field(
         default=0, description="Number of iterations completed"
     )
-    execution_history: List[str] = Field(
-        default_factory=list, description="Log of agent/tool interactions"
-    )
-    mermaid_diagram: Optional[str] = Field(
-        default=None, description="Mermaid diagram representing the execution flow"
-    )
-    last_agent: str = Field(
-        default="Unknown", description="The last agent that modified this PRD"
-    )
 
     @field_validator("stories", mode="before")
     def ensure_list_stories(cls, v):
         if isinstance(v, list):
             return v
         return [v]
+
+    @field_validator("project", mode="before")
+    def ensure_project_lowercase(cls, v):
+        if isinstance(v, str):
+            return v.lower()
+        else:
+            return str(v).lower()
 
     def is_complete(self) -> bool:
         """Check if all tasks are marked as passed."""
