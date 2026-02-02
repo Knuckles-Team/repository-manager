@@ -4,12 +4,11 @@
 import os
 import pickle
 import yaml
-import httpx
 import logging
-from functools import lru_cache
 
 from pathlib import Path
 from typing import Any, Union, List, Optional
+import json
 from importlib.resources import files, as_file
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.anthropic import AnthropicModel
@@ -45,6 +44,83 @@ def to_boolean(string: Union[str, bool] = None) -> bool:
         return False
     else:
         raise ValueError(f"Cannot convert '{string}' to boolean")
+
+
+def to_float(string: Union[str, float] = None) -> float:
+    if isinstance(string, float):
+        return string
+    if not string:
+        return 0.0
+    try:
+        return float(string.strip())
+    except ValueError:
+        raise ValueError(f"Cannot convert '{string}' to float")
+
+
+def to_list(string: Union[str, list] = None) -> list:
+    if isinstance(string, list):
+        return string
+    if not string:
+        return []
+    try:
+        return json.loads(string)
+    except Exception:
+        return string.split(",")
+
+
+def to_dict(string: Union[str, dict] = None) -> dict:
+    if isinstance(string, dict):
+        return string
+    if not string:
+        return {}
+    try:
+        return json.loads(string)
+    except Exception:
+        raise ValueError(f"Cannot convert '{string}' to dict")
+
+
+def prune_large_messages(messages: list[Any], max_length: int = 5000) -> list[Any]:
+    """
+    Summarize large tool outputs in the message history to save context window.
+    Keeps the most recent tool outputs intact if they are the very last message,
+    but generally we want to prune history.
+    """
+    pruned_messages = []
+    for i, msg in enumerate(messages):
+        content = getattr(msg, "content", None)
+        if content is None and isinstance(msg, dict):
+            content = msg.get("content")
+
+        if isinstance(content, str) and len(content) > max_length:
+            summary = (
+                f"{content[:200]} ... "
+                f"[Output truncated, original length {len(content)} characters] "
+                f"... {content[-200:]}"
+            )
+
+            # Replace content
+            if isinstance(msg, dict):
+                msg["content"] = summary
+                pruned_messages.append(msg)
+            elif hasattr(msg, "content"):
+                # Try to create a copy or modify in place if mutable
+                # If it's a Pydantic model it might be immutable or require copy
+                try:
+                    # Attempt shallow copy with update
+                    from copy import copy
+
+                    new_msg = copy(msg)
+                    new_msg.content = summary
+                    pruned_messages.append(new_msg)
+                except Exception:
+                    # Fallback: keep original if we can't modify
+                    pruned_messages.append(msg)
+            else:
+                pruned_messages.append(msg)
+        else:
+            pruned_messages.append(msg)
+
+    return pruned_messages
 
 
 def save_model(model: Any, file_name: str = "model", file_path: str = ".") -> str:
@@ -262,111 +338,3 @@ def filter_tools_by_tag(tools: List[Any], tag: str) -> List[Any]:
     Filters a list of tools for a given tag.
     """
     return [t for t in tools if tool_in_tag(t, tag)]
-
-
-def generate_mermaid_diagram(execution_history: List[str]) -> str:
-    """
-    Generates a Mermaid sequence diagram from execution history.
-    Parsing relies on strings formatted like: "AgentName -> ToolName(args)"
-    """
-    diagram = ["sequenceDiagram"]
-    participants = set()
-
-    # Add participants
-    participants.add("User")
-    participants.add("Supervisor")
-
-    # We might need to parse the history strings to find agents
-    # Assuming history format: "AgentName: ToolName"
-
-    for event in execution_history:
-        # Heuristic parsing
-        if ": " in event:
-            agent, action = event.split(": ", 1)
-            participants.add(agent)
-
-    for p in sorted(participants):
-        diagram.append(f"    participant {p}")
-
-    for event in execution_history:
-        if ": " in event:
-            agent, action = event.split(": ", 1)
-            # Escape chars if needed
-            # Shorten action if too long?
-            action_safe = action.replace('"', "'")
-            if len(action_safe) > 50:
-                action_safe = action_safe[:47] + "..."
-
-            # Use 'Supervisor' as the caller for most things if we don't have better info?
-            # Or if we have "Supervisor -> Agent: Call"
-            # For now, let's just make everything come from Supervisor or previous?
-            # Creating a simple flow: Supervisor -> Agent -> Tool
-
-            diagram.append(f"    Supervisor->>{agent}: {action_safe}")
-            diagram.append(f"    {agent}-->>Supervisor: (result)")
-
-    return "\n".join(diagram)
-
-
-@lru_cache(maxsize=1)
-def fetch_pyodide_packages() -> List[str]:
-    """
-    Fetches the list of packages supported by Pyodide from the official pyodide-lock.json.
-    Dynamically fetches the latest stable version from GitHub API.
-    Returns strings "PackageName (Version)".
-    Cached to prevent repeated network calls.
-    """
-
-    # Default to a recent stable version if API fails
-    latest_version = "0.26.4"
-
-    try:
-        # Fetch latest version tag from GitHub API
-        gh_url = "https://api.github.com/repos/pyodide/pyodide/releases/latest"
-        gh_resp = httpx.get(gh_url, timeout=5.0, follow_redirects=True)
-        if gh_resp.status_code == 200:
-            tag_name = gh_resp.json().get("tag_name")
-            if tag_name:
-                # Strip 'v' prefix if present (though pyodide usually uses e.g. 0.26.0)
-                # But CDN url structure expects v<version>
-                # Let's verify what tag_name is. Usually "0.26.4" or "v0.26.4".
-                # CDN expects: https://cdn.jsdelivr.net/pyodide/v0.26.4/...
-                # If tag is "0.26.4", we need "v0.26.4".
-                # If tag is "v0.26.4", we use it as is.
-                if not tag_name.startswith("v"):
-                    latest_version = f"v{tag_name}"
-                else:
-                    latest_version = tag_name
-                logger.info(f"Resolved latest Pyodide version: {latest_version}")
-    except Exception as e:
-        logger.warning(
-            f"Failed to fetch latest Pyodide version from GitHub: {e}. Using fallback {latest_version}."
-        )
-        if not latest_version.startswith("v"):
-            latest_version = f"v{latest_version}"
-
-    # URL for Pyodide pyodide-lock.json using resolved version
-    url = f"https://cdn.jsdelivr.net/pyodide/{latest_version}/full/pyodide-lock.json"
-
-    try:
-        response = httpx.get(url, timeout=10.0, follow_redirects=True)
-        response.raise_for_status()
-
-        data = response.json()
-        # pyodide-lock.json structure: {"packages": {"name": {...}}}
-        packages = data.get("packages", {})
-
-        result = []
-        for pkg_name, pkg_info in packages.items():
-            version = pkg_info.get("version", "unknown")
-            result.append(f"{pkg_name} ({version})")
-
-        if not result:
-            logger.warning("No packages found in pyodide-lock.json")
-            return ["Error: Empty package list derived from pyodide-lock.json"]
-
-        return sorted(result)
-
-    except Exception as e:
-        logger.error(f"Error fetching Pyodide packages from {url}: {e}")
-        return [f"Error fetching package list: {e}"]

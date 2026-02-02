@@ -4,7 +4,7 @@ import os
 import sys
 import argparse
 
-__version__ = "1.2.17"
+__version__ = "1.2.18"
 
 from typing import Optional, Dict, List, Union, Any
 from pydantic import Field
@@ -549,7 +549,7 @@ def register_tools(mcp: FastMCP):
             description="The command to execute: view, create, str_replace, insert, undo_edit."
         ),
         path: str = Field(
-            description="Standardized file path (absolute or relative to the project)."
+            description="Standardized file path relative to the project."
         ),
         workspace: str = Field(
             description="The workspace containing the project. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
