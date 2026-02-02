@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repository-manager"
-version = "1.2.17"
+version = "1.2.18"
 description = "Manage your git projects"
 readme = "README.md"
 authors = [{ name = "Audel Rouhi", email = "knucklessg1@gmail.com" }]
@@ -29,7 +29,6 @@ mcp = [
     "fastapi>=0.128.0",
     "beautifulsoup4>=4.14.3",
     "httpx>=0.28.1",
-    "mem0-mcp-server>=0.0.1",
 ]
 
 a2a = [
@@ -38,12 +37,6 @@ a2a = [
     "fastapi>=0.128.0",
     "pre-commit>=4.5.1",
     "bump2version>=1.0.1",
-    "mcp-run-python>=0.0.22",
-    "mem0-mcp-server>=0.0.1",
-]
-
-gitlab = [
-    "gitlab-api[all]>=25.14.9",
 ]
 
 all = [
@@ -52,13 +45,9 @@ all = [
     "pydantic-ai-slim[fastmcp,openai,anthropic,google,huggingface,a2a,ag-ui,web]>=1.32.0",
     "pydantic-ai-skills",
     "fastapi>=0.128.0",
-    "gitlab-api[all]>=25.14.9",
     "pre-commit>=4.5.1",
     "bump2version>=1.0.1",
-    "beautifulsoup4>=4.14.3",
     "httpx>=0.28.1",
-    "mcp-run-python>=0.0.22",
-    "mem0-mcp-server>=0.0.1",
 ]
 
 [project.scripts]
