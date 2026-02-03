@@ -1,4 +1,5 @@
 import os
+import json
 from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
@@ -23,6 +24,9 @@ class Task(BaseModel):
     priority: Optional[str] = Field(
         default=None, description="Priority level: high, medium, low"
     )
+    execution_history: List[str] = Field(
+        default_factory=list, description="Log of tool calls and execution steps"
+    )
 
     @field_validator("dependencies", mode="before")
     def convert_dependencies(cls, v):
@@ -34,8 +38,6 @@ class Task(BaseModel):
             return [v]
         if isinstance(v, str):
             try:
-                import json
-
                 parsed = json.loads(v)
                 if isinstance(parsed, list):
                     return parsed
@@ -52,8 +54,6 @@ class Task(BaseModel):
             return v
         if isinstance(v, str):
             try:
-                import json
-
                 parsed = json.loads(v)
                 if isinstance(parsed, list):
                     return parsed
@@ -70,7 +70,7 @@ class PRD(BaseModel):
     )
     workspace: Optional[str] = Field(
         default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", "/documents"),
-        description="The Workspace location of the project",
+        description="The workspace location of the project",
     )
     summary: str = Field(
         default="", description="High-level summary of the project/feature"
@@ -102,6 +102,18 @@ class PRD(BaseModel):
     def is_complete(self) -> bool:
         """Check if all tasks are marked as passed."""
         return all(task.passes for task in self.stories)
+
+    def get_next_task(self) -> Optional[Task]:
+        """Get the next undone task that has all dependencies satisfied."""
+        for task in self.stories:
+            if not task.passes:
+                if task.dependencies is None or all(
+                    self.stories[dep - 1].passes
+                    for dep in task.dependencies
+                    if dep - 1 < len(self.stories)
+                ):
+                    return task
+        return None
 
 
 class ElicitationRequest(BaseModel):
