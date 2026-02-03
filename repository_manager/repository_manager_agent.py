@@ -1,5 +1,6 @@
 #!/usr/bin/python
 # coding: utf-8
+import asyncio
 import os
 import argparse
 import logging
@@ -9,7 +10,15 @@ import tempfile
 
 from contextlib import asynccontextmanager
 from typing import Optional, Any, List, Union, Dict
-from pydantic_ai import Agent, ModelSettings, RunContext, Tool
+from pydantic_ai import (
+    Agent,
+    ModelSettings,
+    RunContext,
+    Tool,
+    UsageLimitExceeded,
+    ModelRetry,
+    UsageLimits,
+)
 from pydantic_ai.mcp import load_mcp_servers
 from pydantic_ai_skills import SkillsToolset
 from fasta2a import Skill
@@ -35,7 +44,7 @@ from repository_manager.utils import (
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
 
-__version__ = "1.2.18"
+__version__ = "1.2.19"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,6 +77,7 @@ DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.getenv(
 
 # Model Settings
 DEFAULT_MAX_TOKENS = to_integer(os.getenv("MAX_TOKENS", "8192"))
+DEFAULT_TOTAL_TOKENS = to_integer(os.getenv("TOTAL_TOKENS", "128000"))
 DEFAULT_TEMPERATURE = to_float(os.getenv("TEMPERATURE", "0.7"))
 DEFAULT_TOP_P = to_float(os.getenv("TOP_P", "1.0"))
 DEFAULT_TIMEOUT = to_float(os.getenv("TIMEOUT", "32400.0"))
@@ -97,21 +107,26 @@ SUPERVISOR_SYSTEM_PROMPT = (
     "You are the Repository Manager Supervisor\n"
     "You orchestrate a team of agents to manage Code Repositories.\n\n"
     "Workflow: \n"
-    "1. Assess the user's request and trigger the correct tool. Choose between `manage_repositories` and `plan_product_requirements_document` tools with the users request."
+    "1. Assess the user's request and trigger the correct tool. Choose between `manage_repositories` and `run_full_prd_process` tools with the users request."
 )
 
 PLANNER_SYSTEM_PROMPT = (
-    "You are a PRD (Product Requirements Document) Planner.\n"
-    "Your Goal: Break down a high-level request into a structured and detailed PRD (Product Requirements Document).\n"
+    "You are a PRD (Product Requirements Document) Planner and Orchestrator.\n"
+    "Your Goal: Break down a high-level request into a structured and detailed PRD, then orchestrate processing using tools.\n"
+    "Modes:\n"
+    "- If the prompt is a user request, generate and output a PRD object.\n"
+    "- If the prompt is to elicit approval for a PRD, use the 'elicit_product_requirements_document' tool in a loop until approved, then output the final PRD.\n"
+    "- If the prompt is to process a specific task, call 'execute_task' then 'validate_task', and output the updated Task.\n"
+    "- If the prompt is to finalize a PRD, call 'update_documentation' if needed, and output a status string.\n"
     "Research Capabilities:\n"
     "- Use `list_projects` tool to check if a project already exists. If the project exists, focus on it; if it doesn't, plan to create it. "
     "Note: Ensure the project name gets set on the PRD object.\n"
     "Agent Strategy:\n"
     "- **Plan for Specialized**: IF a specialized agent is strictly needed, you MUST create a specific Task to 'Create [Role] Agent'.\n"
     "  - In the description of this Task, you MUST specify the `system_prompt` and `tool_names` for the new agent so the Supervisor can create it.\n"
-    "  - For subsequent tasks that usage this agent, explicitly state 'Use the [Role] Agent to...' in the description.\n"
+    "  - For subsequent tasks that use this agent, explicitly state 'Use the [Role] Agent to...' in the description.\n"
     "Requirements:\n"
-    "- Output MUST be a valid PRD (Product Requirements Document) object.\n"
+    "- Output MUST match the mode: PRD for planning/elicit, Task for processing, str for finalize.\n"
     "- Define `project` - The name of the project. This will also be used as the folder in the workspace.\n"
     "- Define `summary` - Overall summary of the goal.\n"
     "- Define `description` - Detailed description of the goal.\n"
@@ -289,12 +304,10 @@ def create_agent(
         model=model,
         system_prompt=PLANNER_SYSTEM_PROMPT,
         model_settings=settings,
-        output_type=PRD,
-        # tools=rm_tools,
+        output_type=Union[PRD, Task, str],
         name="Planner",
         retries=3,
     )
-
     product_manager_agent = Agent(
         model=model,
         system_prompt=PRODUCT_MANAGER_SYSTEM_PROMPT,
@@ -334,6 +347,7 @@ def create_agent(
         toolsets=rm_tools + master_skills,
         tool_timeout=DEFAULT_TOOL_TIMEOUT,
         model_settings=settings,
+        output_type=Union[Task, str],
         name="Repository Manager",
         retries=3,
     )
@@ -344,6 +358,7 @@ def create_agent(
         toolsets=rm_tools + master_skills,
         tool_timeout=DEFAULT_TOOL_TIMEOUT,
         model_settings=settings,
+        output_type=Union[Task, str],
         name="Documentation Agent",
         retries=3,
     )
@@ -355,15 +370,12 @@ def create_agent(
     supervisor = Agent(
         model=model,
         system_prompt=SUPERVISOR_SYSTEM_PROMPT,
-        # tools=rm_tools,
         name=AGENT_NAME,
         model_settings=settings,
         retries=3,
     )
     logger.info("Created Supervisor Agent")
 
-    @executor_agent.tool
-    @planner_agent.tool
     @supervisor.tool
     async def manage_repositories(ctx: RunContext[Any], instruction: str) -> str:
         """
@@ -374,29 +386,101 @@ def create_agent(
         - running pre-commit scans
         - bumping versions
         """
-        result = await repository_manager_agent.run(instruction)
+        result = await repository_manager_agent.run(
+            instruction, deps=ctx.deps, usage=ctx.usage
+        )
         return str(result.output)
 
     @supervisor.tool
-    async def plan_product_requirements_document(
-        ctx: RunContext[Any], user_prompt: str
-    ) -> PRD | str:
-        """Generate an PRD (Product Requirements Document) from the user's request."""
-        logger.info(
-            f"[PLANNER] Starting plan_product_requirements_document. Prompt: {user_prompt[:50]}..."
+    async def run_full_prd_process(
+        ctx: RunContext[Any],
+        user_prompt: str,
+        max_iterations: Optional[int] = 10,  # Safety cap
+    ) -> str:
+        """Trigger the complete processing of a Product Requirements Document, including planning, elicitation, and task execution/validation loop."""
+        limits = UsageLimits(
+            request_limit=50,
+            tool_calls_limit=100,
+            total_tokens_limit=100_000,
         )
-        try:
-            # Inject workspace into context
-            enhanced_prompt = f"{user_prompt} \n\nThe workspace is '{workspace}', Please extrapolate the project field from the user's prompt."
-            result = await planner_agent.run(enhanced_prompt)
-            prd = result.output
-            logger.info("[PLANNER] Successfully generated PRD.")
-            return prd
-        except Exception as e:
-            logger.error(f"[PLANNER] Failed to generate PRD: {e}", exc_info=True)
-            return f"[PLANNER] Failed to generate PRD: {e}"
 
-    @supervisor.tool
+        try:
+            # Step 1: Planning via planner
+            plan_result = await run_with_retry(
+                planner_agent,
+                f"{user_prompt} \n\nThe workspace is '{workspace}', Please extrapolate the project field from the user's prompt.",
+                ctx,
+                usage_limits=limits,
+            )
+            if not isinstance(plan_result.output, PRD):
+                return f"Planning failed: {plan_result.output}"
+            prd = plan_result.output
+
+            # Step 2: Elicitation via planner delegation
+            elicit_result = await run_with_retry(
+                planner_agent,
+                f"Elicit approval for PRD: {prd.model_dump_json()}",
+                ctx,
+                usage_limits=limits,
+            )
+            if not isinstance(elicit_result.output, PRD):
+                return f"Elicitation failed: {elicit_result.output}"
+            prd = elicit_result.output
+
+            # Step 3: Task processing loop (per-task planner delegation)
+            iteration = 0
+            while not prd.is_complete() and iteration < max_iterations:
+                task = prd.get_next_task()
+                if task is None:
+                    break  # Dependencies block or done
+
+                process_result = await run_with_retry(
+                    planner_agent,
+                    f"Process task: {task.model_dump_json()}. Call execute_task then validate_task.",
+                    ctx,
+                    usage_limits=limits,
+                )
+                if not isinstance(process_result.output, Task):
+                    logger.warning(
+                        f"Task {task.id} processing failed: {process_result.output}"
+                    )
+                    continue  # Or raise
+
+                # Update PRD with processed task
+                for i, t in enumerate(prd.stories):
+                    if t.id == process_result.output.id:
+                        prd.stories[i] = process_result.output
+                        break
+
+                iteration += 1
+                prd.iteration_count += 1
+
+            # Step 4: Finalization via planner
+            finalize_result = await run_with_retry(
+                planner_agent,
+                f"Finalize PRD for project {prd.project}: update documentation.",
+                ctx,
+                usage_limits=limits,
+            )
+            status = (
+                finalize_result.output
+                if isinstance(finalize_result.output, str)
+                else "Finalization complete."
+            )
+
+            if prd.is_complete():
+                return f"PRD processing completed for project '{prd.project}'. All tasks passed. {status}"
+            else:
+                return f"PRD processing partially completed after {iteration} iterations. Remaining tasks: {[t.id for t in prd.stories if not t.passes]}. {status}"
+
+        except UsageLimitExceeded as e:
+            logger.error(f"Usage limit hit in PRD process: {e}")
+            return f"Safety limit hit: {str(e)}"
+        except Exception as e:
+            logger.exception(f"Error in PRD process: {e}")
+            return f"Error in PRD process: {str(e)}"
+
+    @planner_agent.tool
     async def elicit_product_requirements_document(
         ctx: RunContext[Any], prd: PRD
     ) -> PRD:
@@ -404,7 +488,9 @@ def create_agent(
         current_prd = prd
         for _ in range(10):
             result = await product_manager_agent.run(
-                f"Review this PRD:\n{current_prd.model_dump_json()}"
+                f"Review this PRD:\n{current_prd.model_dump_json()}",
+                usage=ctx.usage,
+                deps=ctx.deps,
             )
             output = result.output
 
@@ -420,24 +506,59 @@ def create_agent(
                 except EOFError:
                     user_response = "Proceed"
 
-                current_prd = await _feedback_loop_pm(current_prd, user_response)
+                current_prd = await _feedback_loop_pm(
+                    current_prd, user_response, ctx=ctx
+                )
 
         return current_prd
 
-    async def _feedback_loop_pm(prd: PRD, user_response: str) -> PRD:
+    async def _feedback_loop_pm(
+        prd: PRD, user_response: str, ctx: RunContext[Any]
+    ) -> PRD:
         res = await product_manager_agent.run(
-            f"Current PRD (Product Requirements Document): {prd.model_dump_json()}\nUser Answer to your question: {user_response}\nUpdate and Approve."
+            f"Current PRD (Product Requirements Document): {prd.model_dump_json()}\nUser Answer to your question: {user_response}\nUpdate and Approve.",
+            usage=ctx.usage,  # NEW
+            deps=ctx.deps,  # NEW
         )
         if isinstance(res.output, ElicitationRequest):
             pass
         return res.output
 
-    @supervisor.tool
+    async def run_with_retry(
+        agent: Agent,
+        prompt: str,
+        ctx: RunContext[Any],
+        max_attempts: int = 3,
+        usage_limits: Optional[UsageLimits] = None,
+    ) -> Any:
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await agent.run(
+                    prompt,
+                    usage=ctx.usage,
+                    deps=ctx.deps,
+                    usage_limits=usage_limits,
+                )
+            except UsageLimitExceeded:
+                raise  # Don't retry limits
+            except ValidationError as e:
+                if attempt == max_attempts:
+                    raise
+                raise ModelRetry(
+                    f"Output validation failed: {str(e)}. Refine and retry."
+                )
+            except Exception as e:
+                if attempt == max_attempts:
+                    raise
+                logger.warning(f"Retry {attempt} for {agent.name}: {str(e)}")
+                await asyncio.sleep(2**attempt)
+
+    @planner_agent.tool
     async def execute_task(ctx: RunContext[Any], task: Task) -> Task:
         """Execute one task from the PRD."""
         try:
-            result = await executor_agent.run(
-                f"Execute this task:\n{task.model_dump_json()}"
+            result = await run_with_retry(
+                executor_agent, f"Execute this task:\n{task.model_dump_json()}", ctx
             )
 
             # Capture history
@@ -467,12 +588,12 @@ def create_agent(
             task.passes = False
             return task
 
-    @supervisor.tool
+    @planner_agent.tool
     async def validate_task(ctx: RunContext[Any], task: Task) -> Task:
         """Validate a completed task."""
         try:
-            result = await validator_agent.run(
-                f"Validate this task:\n{task.model_dump_json()}"
+            result = await run_with_retry(
+                validator_agent, f"Validate this task:\n{task.model_dump_json()}", ctx
             )
 
             # Capture history
@@ -500,13 +621,13 @@ def create_agent(
             task.passes = False
             return task
 
-    @supervisor.tool
+    @planner_agent.tool
     async def update_documentation(ctx: RunContext[Any], instruction: str) -> str:
         """
         Delegate documentation tasks to the Documentation Agent.
         Use this to read, review, or update README.md files.
         """
-        result = await documentation_agent.run(instruction)
+        result = await run_with_retry(documentation_agent, instruction, ctx)
         return str(result.output)
 
     # Register supervisor tools for dynamic usage
@@ -514,7 +635,7 @@ def create_agent(
     available_tools_registry["validate_task"] = [Tool(validate_task)]
     available_tools_registry["update_documentation"] = [Tool(update_documentation)]
 
-    @supervisor.tool
+    @planner_agent.tool
     async def create_specialized_agent(
         ctx: RunContext[Any],
         name: str = Field(..., description="Short lowercase name for the new agent"),
@@ -558,7 +679,7 @@ def create_agent(
             retries=3,
         )
 
-        @supervisor.tool(name=f"run_{name}")
+        @planner_agent.tool(name=f"run_{name}")
         async def dynamic_tool(input_data: str) -> str:
             """Execute the specialized agent."""
             result = await child_agent.run(input_data)
@@ -659,9 +780,9 @@ def create_agent_server(
         # Prune large messages from history
         if hasattr(run_input, "messages"):
             run_input.messages = prune_large_messages(run_input.messages)
-
+        limits = UsageLimits(total_tokens_limit=DEFAULT_TOTAL_TOKENS) if debug else None
         adapter = AGUIAdapter(agent=agent, run_input=run_input, accept=accept)
-        event_stream = adapter.run_stream()
+        event_stream = adapter.run_stream(usage_limits=limits)
         sse_stream = adapter.encode_stream(event_stream)
         return StreamingResponse(sse_stream, media_type=accept)
 
