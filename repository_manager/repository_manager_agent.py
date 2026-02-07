@@ -1,4 +1,6 @@
 #!/usr/bin/python
+import sys
+
 # coding: utf-8
 import asyncio
 import os
@@ -44,7 +46,7 @@ from repository_manager.utils import (
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
 
-__version__ = "1.2.19"
+__version__ = "1.2.20"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -193,12 +195,20 @@ DOCUMENTATION_AGENT_SYSTEM_PROMPT = (
     "Your Goal: Manage project documentation, specifically README.md files.\n"
     "Capabilities:\n"
     "- Read README.md files using `get_project_readme`.\n"
-    "- Edit README.md files using `text_editor`.\n"
+    "- Edit README.md files using `text_editor` (Ensure to pass project and path fields).\n"
     "Requirements:\n"
     "- Ensure every README has a ## Changelog section.\n"
     "- Reflect changes from the PRD in the documentation.\n"
     "- Verify required changes (Deprecations, examples, architecture diagrams, CLI tables, etc).\n"
     "- Return the updated `Task` object or status string.\n"
+)
+
+INSTRUCTIONS = (
+    "The PRD object always contains the currently active project in its 'project' field.\n"
+    "→ You MUST read the project value from PRD['project'] (or equivalent path) at the beginning of every conversation turn.\n"
+    "→ For EVERY call to text_editor, git_action, or any other tool that accepts a 'project' parameter, "
+    "you MUST pass exactly that value as the project argument.\n"
+    "Never guess, hard-code, or use a project name from memory or previous messages."
 )
 
 
@@ -320,6 +330,7 @@ def create_agent(
     executor_agent = Agent(
         model=model,
         system_prompt=EXECUTOR_SYSTEM_PROMPT,
+        instructions=INSTRUCTIONS,
         model_settings=settings,
         tools=executor_tools_list,
         toolsets=executor_toolsets_list,
@@ -332,6 +343,7 @@ def create_agent(
     validator_agent = Agent(
         model=model,
         system_prompt=VALIDATOR_SYSTEM_PROMPT,
+        instructions=INSTRUCTIONS,
         model_settings=settings,
         tools=executor_tools_list,
         toolsets=executor_toolsets_list,
@@ -344,6 +356,7 @@ def create_agent(
     repository_manager_agent = Agent(
         model=model,
         system_prompt=REPOSITORY_MANAGER_SYSTEM_PROMPT,
+        instructions=INSTRUCTIONS,
         toolsets=rm_tools + master_skills,
         tool_timeout=DEFAULT_TOOL_TIMEOUT,
         model_settings=settings,
@@ -355,6 +368,7 @@ def create_agent(
     documentation_agent = Agent(
         model=model,
         system_prompt=DOCUMENTATION_AGENT_SYSTEM_PROMPT,
+        instructions=INSTRUCTIONS,
         toolsets=rm_tools + master_skills,
         tool_timeout=DEFAULT_TOOL_TIMEOUT,
         model_settings=settings,
@@ -802,7 +816,9 @@ def create_agent_server(
 
 def agent_server():
     print(f"Repository Manager Agent v{__version__}")
-    parser = argparse.ArgumentParser(description=f"Run the {AGENT_NAME} Server")
+    parser = argparse.ArgumentParser(
+        add_help=False, description=f"Run the {AGENT_NAME} Server"
+    )
     parser.add_argument("--host", default=DEFAULT_HOST, help="Host")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port")
     parser.add_argument("--debug", type=bool, default=DEFAULT_DEBUG, help="Debug")
@@ -817,7 +833,15 @@ def agent_server():
     parser.add_argument(
         "--web", action="store_true", default=DEFAULT_ENABLE_WEB_UI, help="Web UI"
     )
+    parser.add_argument("--help", action="store_true", help="Show usage")
+
     args = parser.parse_args()
+
+    if hasattr(args, "help") and args.help:
+
+        usage()
+
+        sys.exit(0)
 
     if "PROJECTS_FILE" not in os.environ and DEFAULT_PROJECTS_FILE:
         os.environ["PROJECTS_FILE"] = DEFAULT_PROJECTS_FILE
@@ -840,6 +864,29 @@ def agent_server():
         host=args.host,
         port=args.port,
         enable_web_ui=args.web,
+    )
+
+
+def usage():
+    print(
+        f"Repository Manager ({__version__}): CLI Tool\n\n"
+        "Usage:\n"
+        "--host          [ Host ]\n"
+        "--port          [ Port ]\n"
+        "--debug         [ Debug ]\n"
+        "--reload        [ Reload ]\n"
+        "--provider      [ Provider ]\n"
+        "--model-id      [ Model ID ]\n"
+        "--base-url      [ Base URL ]\n"
+        "--api-key       [ API Key ]\n"
+        "--mcp-url       [ MCP URL ]\n"
+        "--mcp-config    [ MCP Config ]\n"
+        "--workspace     [ Repository Workspace ]\n"
+        "--web           [ Web UI ]\n"
+        "\n"
+        "Examples:\n"
+        "  [Simple]  repository-manager-agent \n"
+        '  [Complex] repository-manager-agent --host "value" --port "value" --debug "value" --reload --provider "value" --model-id "value" --base-url "value" --api-key "value" --mcp-url "value" --mcp-config "value" --workspace "value" --web\n'
     )
 
 
