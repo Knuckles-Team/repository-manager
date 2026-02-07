@@ -13,7 +13,7 @@ import sys
 import argparse
 import logging
 
-__version__ = "1.2.19"
+__version__ = "1.2.20"
 import concurrent.futures
 import datetime
 from typing import List
@@ -1304,36 +1304,14 @@ class Git:
             )
 
 
-def usage() -> None:
-    """Log the usage instructions for the command-line tool."""
-    logger = setup_logging()
-    logger.info(
-        "Usage: \n"
-        "-h | --help           [ See usage for script ]\n"
-        "-b | --default-branch [ Checkout default branch ]\n"
-        "-c | --clone          [ Clone projects specified  ]\n"
-        "-w | --workspace      [ Workspace to clone/pull projects ]\n"
-        "-f | --file           [ File with repository links   ]\n"
-        "-p | --pull           [ Pull projects in parent directory ]\n"
-        "-r | --repositories   [ Comma separated Git URLs ]\n"
-        "-t | --threads        [ Number of parallel threads - Default 4 ]\n"
-        "\n"
-        "repository-manager \n\t"
-        "--clone \n\t"
-        "--pull \n\t"
-        "--workspace '/home/user/Downloads'\n\t"
-        "--file '/home/user/Downloads/repositories.txt' \n\t"
-        "--repositories 'https://github.com/Knucklessg1/media-downloader,https://github.com/Knucklessg1/genius-bot'\n\t"
-        "--threads 8"
-    )
-
-
 def repository_manager() -> None:
     """
     Process command-line arguments and manage Git repository operations.
     """
     print(f"Repository Manager v{__version__}")
-    parser = argparse.ArgumentParser(description="Git Repository Manager Utility")
+    parser = argparse.ArgumentParser(
+        add_help=False, description="Git Repository Manager Utility"
+    )
     parser.add_argument(
         "-b",
         "--default-branch",
@@ -1368,7 +1346,15 @@ def repository_manager() -> None:
         default=DEFAULT_REPOSITORY_MANAGER_THREADS,
     )
 
+    parser.add_argument("--help", action="store_true", help="Show usage")
+
     args = parser.parse_args()
+
+    if hasattr(args, "help") and args.help:
+
+        usage()
+
+        sys.exit(0)
 
     logger = setup_logging()
     git = Git()
@@ -1404,6 +1390,24 @@ def repository_manager() -> None:
         git.clone_projects_in_parallel()
     if pull_flag:
         git.pull_projects_in_parallel()
+
+
+def usage():
+    print(
+        f"Repository Manager ({__version__}): Git Repository Manager Utility\n\n"
+        "Usage:\n"
+        "-b | --default-branch    [ Set repository to default branch ]\n"
+        "-c | --clone             [ Clone repositories ]\n"
+        "-p | --pull              [ Pull repositories ]\n"
+        "-w | --workspace         [ Specify repository workspace ]\n"
+        "-f | --file              [ Specify file with repository list ]\n"
+        "-r | --repositories      [ Comma-separated list of repositories ]\n"
+        "-t | --threads           [ Number of threads for parallel operations ]\n"
+        "\n"
+        "Examples:\n"
+        "  [Simple]  repository-manager \n"
+        '  [Complex] repository-manager --default-branch --clone --pull --workspace "value" --file "value" --repositories "value" --threads "value"\n'
+    )
 
 
 if __name__ == "__main__":
