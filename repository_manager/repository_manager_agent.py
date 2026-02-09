@@ -758,6 +758,8 @@ def create_agent_server(
         debug=debug,
     )
 
+    # acp_app = agent.to_acp(name=AGENT_NAME, description=AGENT_DESCRIPTION)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if hasattr(a2a_app, "router"):
@@ -778,6 +780,8 @@ def create_agent_server(
         return {"status": "OK"}
 
     app.mount("/a2a", a2a_app)
+
+    # app.mount("/acp", acp_app)
 
     @app.post("/ag-ui")
     async def ag_ui_endpoint(request: Request) -> Response:
