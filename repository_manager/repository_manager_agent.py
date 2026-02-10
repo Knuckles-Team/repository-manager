@@ -30,7 +30,6 @@ from pydantic_ai.ui.ag_ui import AGUIAdapter
 from fastapi import FastAPI, Request
 from starlette.responses import Response, StreamingResponse
 
-
 from repository_manager.utils import (
     to_integer,
     to_boolean,
@@ -46,7 +45,7 @@ from repository_manager.utils import (
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,7 +56,6 @@ logging.getLogger("pydantic_ai").setLevel(logging.INFO)
 logging.getLogger("fastmcp").setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 DEFAULT_HOST = os.getenv("HOST", "0.0.0.0")
 DEFAULT_PORT = to_integer(string=os.getenv("PORT", "9000"))
@@ -103,7 +101,6 @@ AGENT_DESCRIPTION = (
 # -------------------------------------------------------------------------
 # System Prompts
 # -------------------------------------------------------------------------
-
 
 SUPERVISOR_SYSTEM_PROMPT = (
     "You are the Repository Manager Supervisor\n"
@@ -210,7 +207,6 @@ INSTRUCTIONS = (
     "you MUST pass exactly that value as the project argument.\n"
     "Never guess, hard-code, or use a project name from memory or previous messages."
 )
-
 
 # -------------------------------------------------------------------------
 # Agent Creation
@@ -758,11 +754,15 @@ def create_agent_server(
         debug=debug,
     )
 
-    # acp_app = agent.to_acp(name=AGENT_NAME, description=AGENT_DESCRIPTION)
-
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        yield
+        if hasattr(a2a_app, "router") and hasattr(a2a_app.router, "lifespan_context"):
+            async with a2a_app.router.lifespan_context(a2a_app):
+                yield
+        else:
+            yield
+
+    # acp_app = agent.to_acp(name=AGENT_NAME, description=AGENT_DESCRIPTION)
 
     app = FastAPI(
         title=f"{AGENT_NAME}",
