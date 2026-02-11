@@ -45,7 +45,7 @@ from repository_manager.utils import (
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,22 +61,21 @@ DEFAULT_HOST = os.getenv("HOST", "0.0.0.0")
 DEFAULT_PORT = to_integer(string=os.getenv("PORT", "9000"))
 DEFAULT_DEBUG = to_boolean(string=os.getenv("DEBUG", "False"))
 DEFAULT_PROVIDER = os.getenv("PROVIDER", "openai")
-DEFAULT_MODEL_ID = os.getenv("MODEL_ID", "qwen/qwen3-4b-2507")
-DEFAULT_OPENAI_BASE_URL = os.getenv(
-    "OPENAI_BASE_URL", "http://host.docker.internal:1234/v1"
-)
-DEFAULT_OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "ollama")
+DEFAULT_MODEL_ID = os.getenv("MODEL_ID", "qwen/qwen3-coder-next")
+DEFAULT_LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://host.docker.internal:1234/v1")
+DEFAULT_LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
 DEFAULT_MCP_URL = os.getenv("MCP_URL", None)
 DEFAULT_MCP_CONFIG = os.getenv("MCP_CONFIG", get_mcp_config_path())
 DEFAULT_SKILLS_DIRECTORY = os.getenv("SKILLS_DIRECTORY", get_skills_path())
 DEFAULT_PROJECTS_FILE = os.getenv("PROJECTS_FILE", get_projects_file_path())
 DEFAULT_ENABLE_WEB_UI = to_boolean(os.getenv("ENABLE_WEB_UI", "False"))
+DEFAULT_SSL_VERIFY = to_boolean(os.getenv("SSL_VERIFY", "True"))
 DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.getenv(
     "REPOSITORY_MANAGER_WORKSPACE", "/workspace"
 )
 
 # Model Settings
-DEFAULT_MAX_TOKENS = to_integer(os.getenv("MAX_TOKENS", "8192"))
+DEFAULT_MAX_TOKENS = to_integer(os.getenv("MAX_TOKENS", "16384"))
 DEFAULT_TOTAL_TOKENS = to_integer(os.getenv("TOTAL_TOKENS", "128000"))
 DEFAULT_TEMPERATURE = to_float(os.getenv("TEMPERATURE", "0.7"))
 DEFAULT_TOP_P = to_float(os.getenv("TOP_P", "1.0"))
@@ -221,11 +220,17 @@ def create_agent(
     mcp_config: str = DEFAULT_MCP_CONFIG,
     skills_directory: Optional[str] = DEFAULT_SKILLS_DIRECTORY,
     workspace: str = DEFAULT_REPOSITORY_MANAGER_WORKSPACE,
+    ssl_verify: bool = DEFAULT_SSL_VERIFY,
 ) -> Agent:
 
     # 1. Setup Model
-    # 1. Setup Model
-    model = create_model(provider, model_id, base_url, api_key)
+    model = create_model(
+        provider=provider,
+        model_id=model_id,
+        base_url=base_url,
+        api_key=api_key,
+        ssl_verify=ssl_verify,
+    )
     settings = ModelSettings(
         max_tokens=DEFAULT_MAX_TOKENS,
         temperature=DEFAULT_TEMPERATURE,
@@ -667,7 +672,13 @@ def create_agent(
             else:
                 return f"Error: Toolset '{t_name}' not found. Available: {list(available_tools_registry.keys())}"
 
-        child_model = create_model(provider, model_id, base_url, api_key)
+        child_model = create_model(
+            provider=provider,
+            model_id=model_id,
+            base_url=base_url,
+            api_key=api_key,
+            ssl_verify=ssl_verify,
+        )
 
         # Split tools and toolsets
         child_tools = []
@@ -717,6 +728,7 @@ def create_agent_server(
     host: Optional[str] = DEFAULT_HOST,
     port: Optional[int] = DEFAULT_PORT,
     enable_web_ui: bool = DEFAULT_ENABLE_WEB_UI,
+    ssl_verify: bool = DEFAULT_SSL_VERIFY,
 ):
     logger.info(
         f"Starting {AGENT_NAME} with provider={provider}, model={model_id}, mcp={mcp_url} | {mcp_config}"
@@ -729,6 +741,7 @@ def create_agent_server(
         api_key=api_key,
         mcp_config=mcp_config,
         skills_directory=skills_directory,
+        ssl_verify=ssl_verify,
     )
 
     if skills_directory and os.path.exists(skills_directory):
@@ -825,8 +838,8 @@ def agent_server():
     parser.add_argument("--reload", action="store_true", help="Reload")
     parser.add_argument("--provider", default=DEFAULT_PROVIDER, help="Provider")
     parser.add_argument("--model-id", default=DEFAULT_MODEL_ID, help="Model ID")
-    parser.add_argument("--base-url", default=DEFAULT_OPENAI_BASE_URL, help="Base URL")
-    parser.add_argument("--api-key", default=DEFAULT_OPENAI_API_KEY, help="API Key")
+    parser.add_argument("--base-url", default=DEFAULT_LLM_BASE_URL, help="Base URL")
+    parser.add_argument("--api-key", default=DEFAULT_LLM_API_KEY, help="API Key")
     parser.add_argument("--mcp-url", default=DEFAULT_MCP_URL, help="MCP URL")
     parser.add_argument("--mcp-config", default=DEFAULT_MCP_CONFIG, help="MCP Config")
     parser.add_argument("--workspace", default=os.getcwd(), help="Repository Workspace")
@@ -864,6 +877,7 @@ def agent_server():
         host=args.host,
         port=args.port,
         enable_web_ui=args.web,
+        ssl_verify=not args.insecure,
     )
 
 
