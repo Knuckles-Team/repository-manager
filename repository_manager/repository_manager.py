@@ -13,7 +13,7 @@ import sys
 import argparse
 import logging
 
-__version__ = "1.3.4"
+__version__ = "1.3.5"
 import concurrent.futures
 import datetime
 from typing import List
@@ -33,22 +33,18 @@ DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.getenv(
 )
 
 
-# Configure logging
 def setup_logging(is_mcp_server=False, log_file="repository_manager_mcp.log"):
     logger = logging.getLogger("RepositoryManager")
-    logger.setLevel(logging.DEBUG)  # Logger processes all levels
+    logger.setLevel(logging.DEBUG)
 
-    # Clear any existing handlers to avoid duplicate logs
     logger.handlers.clear()
 
     if is_mcp_server:
-        # Log to a file in MCP server mode, only ERROR and above
         handler = logging.FileHandler(log_file, mode="a")
-        handler.setLevel(logging.ERROR)  # Only log ERROR and CRITICAL
+        handler.setLevel(logging.ERROR)
     else:
-        # Log to console (stdout) in CLI mode, all levels
         handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(logging.INFO)  # Log INFO and above
+        handler.setLevel(logging.INFO)
 
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -68,10 +64,10 @@ class Git:
         threads: int = None,
         set_to_default_branch: bool = False,
         capture_output: bool = False,
-        is_mcp_server: bool = False,  # Added parameter
+        is_mcp_server: bool = False,
     ):
         """Initialize the Git class with default settings."""
-        self.logger = setup_logging(is_mcp_server=is_mcp_server)  # Pass is_mcp_server
+        self.logger = setup_logging(is_mcp_server=is_mcp_server)
         self.is_mcp_server = is_mcp_server
         if workspace:
             self.workspace = workspace
@@ -127,7 +123,6 @@ class Git:
         out, err = pipe.communicate()
         return_code = pipe.wait()
 
-        # Prepare Metadata
         metadata = GitMetadata(
             command=command,
             workspace=workspace,
@@ -148,7 +143,6 @@ class Git:
             metadata=metadata,
         )
 
-        # Logging
         if return_code != 0:
             self.logger.error(f"Command failed: {command}\nError: {err}")
         elif not self.is_mcp_server:
@@ -184,7 +178,6 @@ class Git:
                     results.append(result)
                 except Exception as exc:
                     self.logger.error(f"{project} generated an exception: {exc}")
-                    # Create an error result for the exception
                     error_result = GitResult(
                         status="error",
                         data="",
@@ -240,7 +233,6 @@ class Git:
             List[GitResult]: A list of GitResult objects.
         """
         try:
-            # Filter solely for directories that are git repositories
             project_dirs = [
                 d
                 for d in os.listdir(self.workspace)
@@ -289,7 +281,6 @@ class Git:
         project_path = os.path.normpath(os.path.join(self.workspace, git_project))
         results = []
 
-        # Execute git pull
         pull_result = self.git_action(command="git pull", workspace=project_path)
         results.append(pull_result)
 
@@ -299,9 +290,7 @@ class Git:
             f"{pull_result}"
         )
 
-        # Handle default branch checkout if enabled
         if self.set_to_default_branch:
-            # Get default branch
             default_branch_result = self.git_action(
                 "git symbolic-ref refs/remotes/origin/HEAD",
                 workspace=project_path,
@@ -310,7 +299,6 @@ class Git:
                 default_branch = re.sub(
                     "refs/remotes/origin/", "", default_branch_result.data
                 ).strip()
-                # Execute checkout
                 checkout_result = self.git_action(
                     f'git checkout "{default_branch}"',
                     workspace=project_path,
@@ -318,23 +306,19 @@ class Git:
                 results.append(checkout_result)
                 self.logger.info(f"Checking out default branch: {checkout_result}")
             else:
-                # If we fail to find default branch, just log and append result
                 results.append(default_branch_result)
                 self.logger.error(
                     f"Failed to get default branch for {git_project}: {default_branch_result.error}"
                 )
 
-        # Combine results into a single GitResult
         combined_status = (
             "success" if all(r.status == "success" for r in results) else "error"
         )
 
-        # Combine data
         combined_data = "\n".join(
             [f"[{r.metadata.command}]: {r.data}" for r in results]
         )
 
-        # Find first error
         combined_error = next((r.error for r in results if r.error), None)
 
         metadata = GitMetadata(
@@ -399,7 +383,6 @@ class Git:
         workspace = os.path.abspath(workspace)
         root_workspace = os.path.abspath(self.workspace)
 
-        # Security check: Ensure checking within main workspace
         if not workspace.startswith(root_workspace):
             return GitResult(
                 status="error",
@@ -417,7 +400,6 @@ class Git:
                 ),
             )
 
-        # Check for config file
         if not os.path.exists(os.path.join(workspace, ".pre-commit-config.yaml")):
             return GitResult(
                 status="skipped",
@@ -432,7 +414,6 @@ class Git:
                 ),
             )
 
-        # Build command
         commands = []
         if autoupdate:
             commands.append("pre-commit autoupdate")
@@ -455,7 +436,6 @@ class Git:
 
         full_command = " && ".join(commands)
 
-        # Execute
         result = self.git_action(command=full_command, workspace=workspace)
         return result
 
@@ -484,14 +464,12 @@ class Git:
                 os.path.normpath(os.path.join(self.workspace, project))
             )
 
-        # Security check
         if not target_dir.startswith(os.path.abspath(self.workspace)):
             return ReadmeResult(content="", path="")
 
         if not os.path.exists(target_dir):
             return ReadmeResult(content="", path="")
 
-        # Case-insensitive search for README.md
         readme_path = None
         for filename in os.listdir(target_dir):
             if filename.lower() == "readme.md":
@@ -529,8 +507,6 @@ class Git:
 
         workspace_path = os.path.abspath(self.workspace)
 
-        # Meta creation needs path, but if path is invalid usually we error.
-        # But let's create meta with the resolved path.
         meta = GitMetadata(
             command=command,
             workspace=path,
@@ -565,7 +541,6 @@ class Git:
                         lines = content.splitlines()
                         start = view_range[0] - 1
                         end = view_range[1]
-                        # Check bounds
                         if start < 0:
                             start = 0
                         if end > len(lines):
@@ -624,7 +599,6 @@ class Git:
                 with open(path, "r") as f:
                     content = f.read()
 
-                # Check for uniqueness if required, or just replace
                 if content.count(old_str) > 1:
                     meta.return_code = 1
                     return GitResult(
@@ -735,7 +709,6 @@ class Git:
             os.path.normpath(os.path.join(workspace, project))
         )
 
-        # Security check
         if not project_path.startswith(workspace):
             return GitResult(
                 status="error",
@@ -771,7 +744,6 @@ class Git:
 
         try:
             os.makedirs(project_path, exist_ok=True)
-            # Run git init
             init_result = self.git_action("git init", workspace=project_path)
 
             if init_result.status == "success":
@@ -810,10 +782,8 @@ class Git:
         if not workspace:
             workspace = self.workspace
 
-        # Ensure workspace is absolute
         workspace = os.path.abspath(workspace)
 
-        # Construct target path safely
         parts = [workspace]
         if project:
             project_path = os.path.join(workspace, project)
@@ -840,7 +810,6 @@ class Git:
         parts.append(path)
         target_path = os.path.normpath(os.path.join(*parts))
 
-        # Security check: Ensure target_path is within workspace
         if not target_path.startswith(workspace):
             return GitResult(
                 status="error",
@@ -921,17 +890,11 @@ class Git:
         if not workspace:
             workspace = self.workspace
 
-        # Ensure workspace is absolute
         workspace = os.path.abspath(workspace)
 
-        # Construct target path safely
         parts = [workspace]
         if project:
             project_path = os.path.join(workspace, project)
-            # We don't strictly *need* to check if the project dir exists before checking the target,
-            # but for consistency with create_directory we can, or just rely on target_path check.
-            # create_directory checks it. Let's generally try to be consistent but lighter here implies
-            # valid paths. However, if project doesn't exist, we can't delete a file inside it anyway.
             if not os.path.exists(project_path):
                 return GitResult(
                     status="error",
@@ -955,7 +918,6 @@ class Git:
         parts.append(path)
         target_path = os.path.normpath(os.path.join(*parts))
 
-        # Safety Check: Do not allow deletion of workspace root or anything outside it if strict
         if target_path == workspace:
             return GitResult(
                 status="error",
@@ -972,7 +934,6 @@ class Git:
                 ),
             )
 
-        # Ensure we are operating within the workspace
         if not target_path.startswith(workspace):
             return GitResult(
                 status="error",
@@ -1060,7 +1021,6 @@ class Git:
 
         workspace = os.path.abspath(workspace)
 
-        # Construct Base Path
         base_parts = [workspace]
         if project:
             project_path = os.path.join(workspace, project)
@@ -1084,11 +1044,9 @@ class Git:
                 )
             base_parts.append(project)
 
-        # Construct Full Paths
         abs_old_path = os.path.normpath(os.path.join(*base_parts, old_path))
         abs_new_path = os.path.normpath(os.path.join(*base_parts, new_path))
 
-        # Security validation
         if not abs_old_path.startswith(workspace):
             return GitResult(
                 status="error",
@@ -1209,14 +1167,12 @@ class Git:
 
         workspace = os.path.abspath(workspace)
 
-        # Determine target directory
         target_dir = workspace
         if project:
             target_dir = os.path.join(workspace, project)
 
         target_dir = os.path.abspath(os.path.normpath(target_dir))
 
-        # Security check
         if not target_dir.startswith(workspace):
             return GitResult(
                 status="error",
@@ -1251,7 +1207,6 @@ class Git:
                 ),
             )
 
-        # Validate part
         valid_parts = ["major", "minor", "patch"]
         if part not in valid_parts:
             return GitResult(
@@ -1270,16 +1225,13 @@ class Git:
                 ),
             )
 
-        # Build command
         command = f"bump2version {part}"
         if allow_dirty:
             command += " --allow-dirty"
 
-        # Execute
         try:
             result = self.git_action(command=command, workspace=target_dir)
 
-            # Log successful bump
             if result.status == "success":
                 self.logger.info(f"Bumped version ({part}) in {target_dir}")
             else:
