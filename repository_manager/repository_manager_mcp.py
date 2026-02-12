@@ -4,7 +4,7 @@ import os
 import sys
 import argparse
 
-__version__ = "1.3.4"
+__version__ = "1.3.5"
 
 from typing import Optional, Dict, List, Union, Any
 from pydantic import Field
@@ -41,7 +41,7 @@ config = {
     "enable_delegation": to_boolean(os.environ.get("ENABLE_DELEGATION", "False")),
     "audience": os.environ.get("AUDIENCE", None),
     "delegated_scopes": os.environ.get("DELEGATED_SCOPES", "api"),
-    "token_endpoint": None,  # Will be fetched dynamically from OIDC config
+    "token_endpoint": None,
     "oidc_client_id": os.environ.get("OIDC_CLIENT_ID", None),
     "oidc_client_secret": os.environ.get("OIDC_CLIENT_SECRET", None),
     "oidc_config_url": os.environ.get("OIDC_CONFIG_URL", None),
@@ -161,31 +161,19 @@ def register_tools(mcp: FastMCP):
                 is_mcp_server=True,
             )
 
-            # Load from file if present
             if projects_file and os.path.exists(projects_file):
                 git.read_project_list_file(file=projects_file)
 
-            # Use found projects list from Git class (which might eventually support scanning dir,
-            # currently Git() init handles projects list passed, but read_project_list_file appends)
-            # If we want to scan the directory too:
             if workspace and os.path.exists(workspace):
-                # Simple scan for directories that are git repos
                 try:
                     for item in os.listdir(workspace):
                         if os.path.isdir(
                             os.path.join(workspace, item)
                         ) and os.path.exists(os.path.join(workspace, item, ".git")):
-                            # Add basenames or full paths?
-                            # Git.projects usually stores URLs from file.
-                            # If we mix them, it might be confusing.
-                            # User asked to list "available projects".
-                            # Let's list the ones we know about (from file) + maybe ones that exist?
-                            # For now, let's stick to the file as that's the primary "Task" usually.
                             pass
                 except Exception:
                     pass
 
-            # Unique list
             return list(dict.fromkeys(git.projects))
 
         except Exception as e:
@@ -223,7 +211,6 @@ def register_tools(mcp: FastMCP):
             f"Running pre-commit: run={run}, autoupdate={autoupdate}, workspace={workspace}, project={project}"
         )
         try:
-            # Determine target workspace
             target_dir = workspace
             if not target_dir:
                 target_dir = os.getcwd()
@@ -478,7 +465,6 @@ def register_tools(mcp: FastMCP):
         """
         logger.debug(f"Getting README for project: {project}, workspace: {workspace}")
         try:
-            # Determine target workspace
             target_dir = workspace
             if not target_dir:
                 target_dir = (
@@ -585,7 +571,6 @@ def register_tools(mcp: FastMCP):
         logger.debug(f"Executing text_editor with command: {command}, path: {path}")
 
         try:
-            # Determine target workspace
             target_dir = workspace
             if not target_dir:
                 target_dir = (
@@ -617,7 +602,7 @@ def register_tools(mcp: FastMCP):
             "title": "Create Project",
             "description": "Create a new project directory and initialize it as a git repository.",
             "readOnlyHint": False,
-            "destructiveHint": False,  # Technically destructive as it creates files, but not deleting
+            "destructiveHint": False,
             "idempotentHint": False,
         },
         tags={"git", "create_project"},
@@ -633,7 +618,6 @@ def register_tools(mcp: FastMCP):
         Create a new project directory and initialize it as a git repository.
         """
         try:
-            # Determine target workspace
             target_dir = workspace
             if not target_dir:
                 target_dir = (
@@ -678,7 +662,6 @@ def register_tools(mcp: FastMCP):
         Create a new directory at the specified path.
         """
         try:
-            # Determine target workspace
             target_dir = workspace
             if not target_dir:
                 target_dir = (
@@ -723,7 +706,6 @@ def register_tools(mcp: FastMCP):
         Delete a directory at the specified path.
         """
         try:
-            # Determine target workspace
             target_dir = workspace
             if not target_dir:
                 target_dir = (
@@ -769,7 +751,6 @@ def register_tools(mcp: FastMCP):
         Rename/Move a directory or file.
         """
         try:
-            # Determine target workspace
             target_dir = workspace
             if not target_dir:
                 target_dir = (
@@ -822,7 +803,6 @@ def register_tools(mcp: FastMCP):
         Bump the version of the project using bump2version.
         """
         try:
-            # Determine target workspace
             target_dir = workspace
             if not target_dir:
                 target_dir = (
@@ -877,7 +857,6 @@ def repository_manager_mcp():
         choices=["none", "static", "jwt", "oauth-proxy", "oidc-proxy", "remote-oauth"],
         help="Authentication type for MCP server: 'none' (disabled), 'static' (internal), 'jwt' (external token verification), 'oauth-proxy', 'oidc-proxy', 'remote-oauth' (external) (default: none)",
     )
-    # JWT/Token params
     parser.add_argument(
         "--token-jwks-uri", default=None, help="JWKS URI for JWT verification"
     )
@@ -918,7 +897,6 @@ def repository_manager_mcp():
         default=os.getenv("FASTMCP_SERVER_AUTH_JWT_REQUIRED_SCOPES"),
         help="Comma-separated list of required scopes (e.g., gitlab.read,gitlab.write).",
     )
-    # OAuth Proxy params
     parser.add_argument(
         "--oauth-upstream-auth-endpoint",
         default=None,
@@ -942,14 +920,12 @@ def repository_manager_mcp():
     parser.add_argument(
         "--oauth-base-url", default=None, help="Base URL for OAuth Proxy"
     )
-    # OIDC Proxy params
     parser.add_argument(
         "--oidc-config-url", default=None, help="OIDC configuration URL"
     )
     parser.add_argument("--oidc-client-id", default=None, help="OIDC client ID")
     parser.add_argument("--oidc-client-secret", default=None, help="OIDC client secret")
     parser.add_argument("--oidc-base-url", default=None, help="Base URL for OIDC Proxy")
-    # Remote OAuth params
     parser.add_argument(
         "--remote-auth-servers",
         default=None,
@@ -958,13 +934,11 @@ def repository_manager_mcp():
     parser.add_argument(
         "--remote-base-url", default=None, help="Base URL for Remote OAuth"
     )
-    # Common
     parser.add_argument(
         "--allowed-client-redirect-uris",
         default=None,
         help="Comma-separated list of allowed client redirect URIs",
     )
-    # Eunomia params
     parser.add_argument(
         "--eunomia-type",
         default="none",
@@ -979,7 +953,6 @@ def repository_manager_mcp():
     parser.add_argument(
         "--eunomia-remote-url", default=None, help="URL for remote Eunomia server"
     )
-    # Delegation params
     parser.add_argument(
         "--enable-delegation",
         action="store_true",
@@ -1050,7 +1023,6 @@ def repository_manager_mcp():
         print(f"Error: Port {args.port} is out of valid range (0-65535).")
         sys.exit(1)
 
-    # Update config with CLI arguments
     config["enable_delegation"] = args.enable_delegation
     config["audience"] = args.audience or config["audience"]
     config["delegated_scopes"] = args.delegated_scopes or config["delegated_scopes"]
@@ -1060,7 +1032,6 @@ def repository_manager_mcp():
         args.oidc_client_secret or config["oidc_client_secret"]
     )
 
-    # Configure delegation if enabled
     if config["enable_delegation"]:
         if args.auth_type != "oidc-proxy":
             logger.error("Token delegation requires auth-type=oidc-proxy")
@@ -1080,7 +1051,6 @@ def repository_manager_mcp():
             )
             sys.exit(1)
 
-        # Fetch OIDC configuration to get token_endpoint
         try:
             logger.info(
                 "Fetching OIDC configuration",
@@ -1105,7 +1075,6 @@ def repository_manager_mcp():
             )
             sys.exit(1)
 
-    # Set auth based on type
     auth = None
     allowed_uris = (
         args.allowed_client_redirect_uris.split(",")
@@ -1123,7 +1092,6 @@ def repository_manager_mcp():
             }
         )
     elif args.auth_type == "jwt":
-        # Fallback to env vars if not provided via CLI
         jwks_uri = args.token_jwks_uri or os.getenv("FASTMCP_SERVER_AUTH_JWT_JWKS_URI")
         issuer = args.token_issuer or os.getenv("FASTMCP_SERVER_AUTH_JWT_ISSUER")
         audience = args.token_audience or os.getenv("FASTMCP_SERVER_AUTH_JWT_AUDIENCE")
@@ -1140,7 +1108,6 @@ def repository_manager_mcp():
             logger.error("JWT requires --token-issuer and --token-audience")
             sys.exit(1)
 
-        # Load static public key from file if path is given
         if args.token_public_key and os.path.isfile(args.token_public_key):
             try:
                 with open(args.token_public_key, "r") as f:
@@ -1151,15 +1118,13 @@ def repository_manager_mcp():
                 logger.error(f"Failed to read public key file: {e}")
                 sys.exit(1)
         elif args.token_public_key:
-            public_key_pem = args.token_public_key  # Inline PEM
+            public_key_pem = args.token_public_key
 
-        # Validation: Conflicting options
         if jwks_uri and (algorithm or secret_or_key):
             logger.warning(
                 "JWKS mode ignores --token-algorithm and --token-secret/--token-public-key"
             )
 
-        # HMAC mode
         if algorithm and algorithm.startswith("HS"):
             if not secret_or_key:
                 logger.error(f"HMAC algorithm {algorithm} requires --token-secret")
@@ -1171,7 +1136,6 @@ def repository_manager_mcp():
         else:
             public_key = public_key_pem
 
-        # Required scopes
         required_scopes = None
         if args.required_scopes:
             required_scopes = [
@@ -1308,7 +1272,6 @@ def repository_manager_mcp():
             base_url=args.remote_base_url,
         )
 
-    # === 2. Build Middleware List ===
     middlewares: List[
         Union[
             UserTokenMiddleware,
@@ -1327,7 +1290,7 @@ def repository_manager_mcp():
         JWTClaimsLoggingMiddleware(),
     ]
     if config["enable_delegation"] or args.auth_type == "jwt":
-        middlewares.insert(0, UserTokenMiddleware(config=config))  # Must be first
+        middlewares.insert(0, UserTokenMiddleware(config=config))
 
     if args.eunomia_type in ["embedded", "remote"]:
         try:

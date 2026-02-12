@@ -45,12 +45,12 @@ from repository_manager.utils import (
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
 
-__version__ = "1.3.4"
+__version__ = "1.3.5"
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler()],  # Output to console
+    handlers=[logging.StreamHandler()],
 )
 logging.getLogger("pydantic_ai").setLevel(logging.INFO)
 logging.getLogger("fastmcp").setLevel(logging.INFO)
@@ -74,7 +74,6 @@ DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.getenv(
     "REPOSITORY_MANAGER_WORKSPACE", "/workspace"
 )
 
-# Model Settings
 DEFAULT_MAX_TOKENS = to_integer(os.getenv("MAX_TOKENS", "16384"))
 DEFAULT_TOTAL_TOKENS = to_integer(os.getenv("TOTAL_TOKENS", "128000"))
 DEFAULT_TEMPERATURE = to_float(os.getenv("TEMPERATURE", "0.7"))
@@ -97,9 +96,6 @@ AGENT_DESCRIPTION = (
     "Capabilities include dynamic repository management, code execution, and strict Product Requirements Document (PRD) driven development."
 )
 
-# -------------------------------------------------------------------------
-# System Prompts
-# -------------------------------------------------------------------------
 
 SUPERVISOR_SYSTEM_PROMPT = (
     "You are the Repository Manager Supervisor\n"
@@ -207,23 +203,18 @@ INSTRUCTIONS = (
     "Never guess, hard-code, or use a project name from memory or previous messages."
 )
 
-# -------------------------------------------------------------------------
-# Agent Creation
-# -------------------------------------------------------------------------
-
 
 def create_agent(
     provider: str = DEFAULT_PROVIDER,
     model_id: str = DEFAULT_MODEL_ID,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    base_url: Optional[str] = DEFAULT_LLM_BASE_URL,
+    api_key: Optional[str] = DEFAULT_LLM_API_KEY,
     mcp_config: str = DEFAULT_MCP_CONFIG,
     skills_directory: Optional[str] = DEFAULT_SKILLS_DIRECTORY,
     workspace: str = DEFAULT_REPOSITORY_MANAGER_WORKSPACE,
     ssl_verify: bool = DEFAULT_SSL_VERIFY,
 ) -> Agent:
 
-    # 1. Setup Model
     model = create_model(
         provider=provider,
         model_id=model_id,
@@ -246,32 +237,24 @@ def create_agent(
         extra_body=DEFAULT_EXTRA_BODY,
     )
 
-    # Dictionary to hold available toolsets by name for dynamic assignment
-    # explicit_tools["name"] = [tool1, toolset1, ...]
     available_tools_registry: Dict[str, List[Any]] = {}
 
-    # 2. Master Skills (Git, etc)
     master_skills = []
     if skills_directory and os.path.exists(skills_directory):
         logger.info(f"Loading skills from {skills_directory}")
         loaded_skills = SkillsToolset(directories=[str(skills_directory)])
         master_skills.append(loaded_skills)
-        # Register for dynamic usage
         available_tools_registry["git_skills"] = [loaded_skills]
 
-    # 3. Prepare Executor Tools (Repo Delegates)
     executor_tools_list = []
     executor_toolsets_list = []
     rm_tools = []
 
-    # Add Master Skills (Shell, etc) to Executor
     if master_skills:
         executor_toolsets_list.extend(master_skills)
 
-    # Variable to hold the repo manager agent if found
     repository_manager_agent = None
 
-    # 4. Dynamic MCP Parsing & Registry Population
     if mcp_config and os.path.exists(mcp_config):
         try:
             with open(mcp_config, "r") as f:
@@ -281,7 +264,6 @@ def create_agent(
 
             for server_name, server_config in mcp_servers.items():
 
-                # A. Repository Manager (Bulk Git Ops) -> Supervisor Tool
                 if server_name == "repository-manager":
                     with tempfile.NamedTemporaryFile(
                         mode="w", suffix=".json", delete=False
@@ -292,7 +274,6 @@ def create_agent(
                         temp_config_path = temp_config.name
                     try:
                         rm_tools = load_mcp_servers(temp_config_path)
-                        # Register tools if needed dynamically
                         available_tools_registry["repository_manager_tools"] = rm_tools
                     except Exception as e:
                         logger.error(f"Failed to load repository-manager tools: {e}")
@@ -300,7 +281,6 @@ def create_agent(
                         if os.path.exists(temp_config_path):
                             os.remove(temp_config_path)
 
-                    # Add RM tools to executor tools so it can use git directly
                     if rm_tools:
                         executor_toolsets_list.extend(rm_tools)
                         logger.info(
@@ -310,7 +290,6 @@ def create_agent(
         except Exception as e:
             logger.error(f"Error parsing MCP config: {e}")
 
-    # 4. Define Functional Agents
     planner_agent = Agent(
         model=model,
         system_prompt=PLANNER_SYSTEM_PROMPT,
@@ -380,8 +359,6 @@ def create_agent(
 
     logger.info("Created Specialist Agents")
 
-    # 5. Supervisor Tools
-
     supervisor = Agent(
         model=model,
         system_prompt=SUPERVISOR_SYSTEM_PROMPT,
@@ -410,7 +387,7 @@ def create_agent(
     async def run_full_prd_process(
         ctx: RunContext[Any],
         user_prompt: str,
-        max_iterations: Optional[int] = 10,  # Safety cap
+        max_iterations: Optional[int] = 10,
     ) -> str:
         """Trigger the complete processing of a Product Requirements Document, including planning, elicitation, and task execution/validation loop."""
         limits = UsageLimits(
@@ -420,7 +397,6 @@ def create_agent(
         )
 
         try:
-            # Step 1: Planning via planner
             plan_result = await run_with_retry(
                 planner_agent,
                 f"{user_prompt} \n\nThe workspace is '{workspace}', Please extrapolate the project field from the user's prompt.",
@@ -431,7 +407,6 @@ def create_agent(
                 return f"Planning failed: {plan_result.output}"
             prd = plan_result.output
 
-            # Step 2: Elicitation via planner delegation
             elicit_result = await run_with_retry(
                 planner_agent,
                 f"Elicit approval for PRD: {prd.model_dump_json()}",
@@ -442,12 +417,11 @@ def create_agent(
                 return f"Elicitation failed: {elicit_result.output}"
             prd = elicit_result.output
 
-            # Step 3: Task processing loop (per-task planner delegation)
             iteration = 0
             while not prd.is_complete() and iteration < max_iterations:
                 task = prd.get_next_task()
                 if task is None:
-                    break  # Dependencies block or done
+                    break
 
                 process_result = await run_with_retry(
                     planner_agent,
@@ -459,9 +433,8 @@ def create_agent(
                     logger.warning(
                         f"Task {task.id} processing failed: {process_result.output}"
                     )
-                    continue  # Or raise
+                    continue
 
-                # Update PRD with processed task
                 for i, t in enumerate(prd.stories):
                     if t.id == process_result.output.id:
                         prd.stories[i] = process_result.output
@@ -470,7 +443,6 @@ def create_agent(
                 iteration += 1
                 prd.iteration_count += 1
 
-            # Step 4: Finalization via planner
             finalize_result = await run_with_retry(
                 planner_agent,
                 f"Finalize PRD for project {prd.project}: update documentation.",
@@ -532,8 +504,8 @@ def create_agent(
     ) -> PRD:
         res = await product_manager_agent.run(
             f"Current PRD (Product Requirements Document): {prd.model_dump_json()}\nUser Answer to your question: {user_response}\nUpdate and Approve.",
-            usage=ctx.usage,  # NEW
-            deps=ctx.deps,  # NEW
+            usage=ctx.usage,
+            deps=ctx.deps,
         )
         if isinstance(res.output, ElicitationRequest):
             pass
@@ -555,7 +527,7 @@ def create_agent(
                     usage_limits=usage_limits,
                 )
             except UsageLimitExceeded:
-                raise  # Don't retry limits
+                raise
             except ValidationError as e:
                 if attempt == max_attempts:
                     raise
@@ -576,12 +548,10 @@ def create_agent(
                 executor_agent, f"Execute this task:\n{task.model_dump_json()}", ctx
             )
 
-            # Capture history
             history_log = []
             for msg in result.all_messages():
                 if hasattr(msg, "parts"):
                     for part in msg.parts:
-                        # Check for ToolCallPart
                         if part.part_kind == "tool-call":
                             history_log.append(
                                 f"Executor: {part.tool_name}({part.part_kind})[{part.timestamp}]"
@@ -592,7 +562,6 @@ def create_agent(
                 task_out.execution_history.extend(history_log)
                 return task_out
 
-            # Fallback if output is not Task
             return task
         except Exception as e:
             logger.exception(f"Error executing task: {e}")
@@ -611,12 +580,10 @@ def create_agent(
                 validator_agent, f"Validate this task:\n{task.model_dump_json()}", ctx
             )
 
-            # Capture history
             history_log = []
             for msg in result.all_messages():
                 if hasattr(msg, "parts"):
                     for part in msg.parts:
-                        # Check for ToolCallPart
                         if part.part_kind == "tool-call":
                             history_log.append(
                                 f"Validator: {part.tool_name}({part.part_kind})[{part.timestamp}]"
@@ -645,7 +612,6 @@ def create_agent(
         result = await run_with_retry(documentation_agent, instruction, ctx)
         return str(result.output)
 
-    # Register supervisor tools for dynamic usage
     available_tools_registry["execute_task"] = [Tool(execute_task)]
     available_tools_registry["validate_task"] = [Tool(validate_task)]
     available_tools_registry["update_documentation"] = [Tool(update_documentation)]
@@ -664,7 +630,6 @@ def create_agent(
     ) -> str:
         """Create a new specialized child agent with specific tools and add it as a tool to the supervisor."""
 
-        # Resolve tools from registry
         selected_tools = []
         for t_name in tool_names:
             if t_name in available_tools_registry:
@@ -680,7 +645,6 @@ def create_agent(
             ssl_verify=ssl_verify,
         )
 
-        # Split tools and toolsets
         child_tools = []
         child_toolsets = []
         for t in selected_tools:
@@ -719,8 +683,8 @@ async def chat(agent: Agent, prompt: str):
 def create_agent_server(
     provider: str = DEFAULT_PROVIDER,
     model_id: str = DEFAULT_MODEL_ID,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
+    base_url: Optional[str] = DEFAULT_LLM_BASE_URL,
+    api_key: Optional[str] = DEFAULT_LLM_API_KEY,
     mcp_url: str = DEFAULT_MCP_URL,
     mcp_config: str = DEFAULT_MCP_CONFIG,
     skills_directory: Optional[str] = DEFAULT_SKILLS_DIRECTORY,
@@ -775,8 +739,6 @@ def create_agent_server(
         else:
             yield
 
-    # acp_app = agent.to_acp(name=AGENT_NAME, description=AGENT_DESCRIPTION)
-
     app = FastAPI(
         title=f"{AGENT_NAME}",
         description=AGENT_DESCRIPTION,
@@ -790,8 +752,6 @@ def create_agent_server(
 
     app.mount("/a2a", a2a_app)
 
-    # app.mount("/acp", acp_app)
-
     @app.post("/ag-ui")
     async def ag_ui_endpoint(request: Request) -> Response:
         accept = request.headers.get("accept", SSE_CONTENT_TYPE)
@@ -804,7 +764,6 @@ def create_agent_server(
                 status_code=422,
             )
 
-        # Prune large messages from history
         if hasattr(run_input, "messages"):
             run_input.messages = prune_large_messages(run_input.messages)
         limits = UsageLimits(total_tokens_limit=DEFAULT_TOTAL_TOKENS) if debug else None
@@ -864,7 +823,6 @@ def agent_server():
         for handler in logging.root.handlers[:]:
             logging.root.removeHandler(handler)
         logging.basicConfig(level=logging.DEBUG, force=True)
-        # ... logs ...
 
     create_agent_server(
         provider=args.provider,
