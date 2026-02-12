@@ -45,7 +45,7 @@ from repository_manager.utils import (
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
 
-__version__ = "1.3.5"
+__version__ = "1.3.6"
 
 logging.basicConfig(
     level=logging.INFO,
