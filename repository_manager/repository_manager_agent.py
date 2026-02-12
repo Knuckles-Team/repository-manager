@@ -45,7 +45,7 @@ from repository_manager.utils import (
 )
 from repository_manager.models import Task, PRD, ElicitationRequest
 
-__version__ = "1.3.6"
+__version__ = "1.3.7"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -221,6 +221,7 @@ def create_agent(
         base_url=base_url,
         api_key=api_key,
         ssl_verify=ssl_verify,
+        timeout=DEFAULT_TIMEOUT,
     )
     settings = ModelSettings(
         max_tokens=DEFAULT_MAX_TOKENS,
@@ -643,6 +644,7 @@ def create_agent(
             base_url=base_url,
             api_key=api_key,
             ssl_verify=ssl_verify,
+            timeout=DEFAULT_TIMEOUT,
         )
 
         child_tools = []
@@ -706,6 +708,7 @@ def create_agent_server(
         mcp_config=mcp_config,
         skills_directory=skills_directory,
         ssl_verify=ssl_verify,
+        timeout=DEFAULT_TIMEOUT,
     )
 
     if skills_directory and os.path.exists(skills_directory):
