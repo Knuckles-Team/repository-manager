@@ -9,7 +9,6 @@ def test_mcp_tools_registration():
     Verify that all tools in repository_manager_mcp can be registered without SchemaErrors.
     This catches issues where non-default arguments follow default arguments.
     """
-    # Setup mock environment for the tools
     os.environ["REPOSITORY_MANAGER_WORKSPACE"] = "/tmp"
 
     mcp = FastMCP("TestRepoManager")
@@ -18,6 +17,3 @@ def test_mcp_tools_registration():
         register_tools(mcp)
     except Exception as e:
         pytest.fail(f"Failed to register MCP tools: {e}")
-
-    # Verify tools are actually registered (checking if register_tools runs without error is sufficient for this bug)
-    # assert len(mcp._tool_registry) > 0
