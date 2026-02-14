@@ -42,7 +42,8 @@ class Task(BaseModel):
                 if isinstance(parsed, list):
                     return parsed
                 return [parsed]
-            except Exception:
+            except Exception as e:
+                print(f"Unable to retrieve toolset: {e}")
                 pass
         return [v]
 
