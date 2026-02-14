@@ -13,7 +13,7 @@ import sys
 import argparse
 import logging
 
-__version__ = "1.3.7"
+__version__ = "1.3.8"
 import concurrent.futures
 import datetime
 from typing import List
