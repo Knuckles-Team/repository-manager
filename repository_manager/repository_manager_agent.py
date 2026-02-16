@@ -1,5 +1,4 @@
 #!/usr/bin/python
-import sys
 
 # coding: utf-8
 import asyncio
@@ -9,14 +8,16 @@ import logging
 import uvicorn
 import json
 import tempfile
+import re
+from datetime import datetime
+from pathlib import Path
 
 from contextlib import asynccontextmanager
-from typing import Optional, Any, List, Union, Dict
+from typing import Optional, Any, List, Dict
 from pydantic_ai import (
     Agent,
     ModelSettings,
     RunContext,
-    Tool,
     UsageLimitExceeded,
     ModelRetry,
     UsageLimits,
@@ -24,7 +25,7 @@ from pydantic_ai import (
 from pydantic_ai.mcp import load_mcp_servers
 from pydantic_ai_skills import SkillsToolset
 from fasta2a import Skill
-from pydantic import ValidationError, Field
+from pydantic import ValidationError
 from pydantic_ai.ui import SSE_CONTENT_TYPE
 from pydantic_ai.ui.ag_ui import AGUIAdapter
 from fastapi import FastAPI, Request
@@ -43,9 +44,21 @@ from repository_manager.utils import (
     create_model,
     prune_large_messages,
 )
-from repository_manager.models import Task, PRD, ElicitationRequest
+from repository_manager.models import (
+    Task,
+    ImplementationPlan,
+    Clarification,
+    PlanStepResult,
+    TaskStepResult,
+)
+from repository_manager.prompts import (
+    CORE_SYSTEM_PROMPT,
+    ARCHITECT_SYSTEM_PROMPT,
+    ENGINEER_SYSTEM_PROMPT,
+    QA_SYSTEM_PROMPT,
+)
 
-__version__ = "1.3.8"
+__version__ = "2.0.0"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,115 +104,25 @@ DEFAULT_EXTRA_BODY = to_dict(os.getenv("EXTRA_BODY", None))
 
 AGENT_NAME = "Repository Manager Supervisor"
 AGENT_DESCRIPTION = (
-    "A Supervisor Agent that orchestrates a team of child agents (Planner, PM, Executor, Validator) "
-    "to manage git repositories using the Ralph Wiggum methodology. "
-    "Capabilities include dynamic repository management, code execution, and strict Product Requirements Document (PRD) driven development."
+    "A Supervisor Agent that orchestrates a team of child agents (Architect, Engineer, QA) "
+    "to manage git repositories using parallel execution."
 )
 
 
 SUPERVISOR_SYSTEM_PROMPT = (
-    "You are the Repository Manager Supervisor\n"
+    "You are the Repository Manager Supervisor.\n"
     "You orchestrate a team of agents to manage Code Repositories.\n\n"
     "Workflow: \n"
-    "1. Assess the user's request and trigger the correct tool. Choose between `manage_repositories` and `run_full_prd_process` tools with the users request."
+    "1. **Architect**: Designs an implementation plan.\n"
+    "2. **Engineer**: Executes tasks in parallel.\n"
+    "3. **QA**: Verifies completed tasks.\n\n"
+    "Use `run_implementation_process` to start the full workflow."
 )
 
-PLANNER_SYSTEM_PROMPT = (
-    "You are a PRD (Product Requirements Document) Planner and Orchestrator.\n"
-    "Your Goal: Break down a high-level request into a structured and detailed PRD, then orchestrate processing using tools.\n"
-    "Modes:\n"
-    "- If the prompt is a user request, generate and output a PRD object.\n"
-    "- If the prompt is to elicit approval for a PRD, use the 'elicit_product_requirements_document' tool in a loop until approved, then output the final PRD.\n"
-    "- If the prompt is to process a specific task, call 'execute_task' then 'validate_task', and output the updated Task.\n"
-    "- If the prompt is to finalize a PRD, call 'update_documentation' if needed, and output a status string.\n"
-    "Research Capabilities:\n"
-    "- Use `list_projects` tool to check if a project already exists. If the project exists, focus on it; if it doesn't, plan to create it. "
-    "Note: Ensure the project name gets set on the PRD object.\n"
-    "Agent Strategy:\n"
-    "- **Plan for Specialized**: IF a specialized agent is strictly needed, you MUST create a specific Task to 'Create [Role] Agent'.\n"
-    "  - In the description of this Task, you MUST specify the `system_prompt` and `tool_names` for the new agent so the Supervisor can create it.\n"
-    "  - For subsequent tasks that use this agent, explicitly state 'Use the [Role] Agent to...' in the description.\n"
-    "Requirements:\n"
-    "- Output MUST match the mode: PRD for planning/elicit, Task for processing, str for finalize.\n"
-    "- Define `project` - The name of the project. This will also be used as the folder in the workspace.\n"
-    "- Define `summary` - Overall summary of the goal.\n"
-    "- Define `description` - Detailed description of the goal.\n"
-    "- Define `guardrails` - These should be high level rules that apply to all tasks. Like maintaining the correct project reference.\n"
-    "- Define `stories` a list of atomic (Tasks).\n"
-    "- Each task must have clear `acceptance_criteria`, `description`, `id`, `priority`, `dependencies` (optional), `notes` (optional).\n"
-    "- Dependencies: If a task depends on one or more tasks, it MUST be a LIST of integers, e.g. `dependencies=[1]`, NOT `dependencies=1`.\n"
-)
-
-PRODUCT_MANAGER_SYSTEM_PROMPT = (
-    "You are a Product Manager.\n"
-    "Your Goal: Review the PRD (Product Requirements Document) and ensure it is complete and unambiguous.\n"
-    "Requirements:\n"
-    "- If information is missing, Return an `ElicitationRequest` object with a question for the user.\n"
-    "- If the PRD (Product Requirements Document) is good, Return the approved `PRD` object.\n"
-    "- You can accept the user's input/answers to update the PRD (Product Requirements Document).\n"
-)
-
-EXECUTOR_SYSTEM_PROMPT = (
-    "You are a Task Executor.\n"
-    "Your Goal: Implement a single Task fully in code.\n"
-    "Workflow:\n"
-    "1. Run `list_projects` and validate if project in the PRD exists."
-    "   - Initialize new projects by running `create_project(project=project)`. "
-    "2. **Development & Testing**: \n"
-    "   - Use `text_editor` to write the code.\n"
-    "   - **Ensure you specify the command, workspace, project, and path.** The path is relative to the project e.g. `src/main.py` or `README.md`.\n"
-    "   - **Iterate**: If validation fails, use `text_editor` to fix the workspace files. \n"
-    "   - **Validate** If a project has a .pre-commit-config.yaml file, run `run_pre_commits` tool to validate the code changes and resolve issues detected in codebase from the pre-commit tool logs\n"
-    "PRD Requirements:\n"
-    "- Return the updated `Task` object.\n"
-    "- Update `task.notes` with implementation details.\n"
-    "- Set `task.passes = True` ONLY if you have verified it.\n"
-    "Coding Principles (Karpathy's Guidelines):\n"
-    "1. Think Before Coding: State assumptions. Present tradeoffs. Stop and ask if confused. Don't guess.\n"
-    "2. Simplicity First: No overengineering. No 'flexibility' not asked for. If 200 lines can be 50, do 50.\n"
-    "3. Surgical Changes: Touch only what is needed. Match existing style. Don't 'improve' unrelated code. Clean up your own unused imports/variables.\n"
-    "4. Goal-Driven Execution: Transform tasks into verifiable goals (Step -> Verify). Loop until success is verified."
-)
-
-VALIDATOR_SYSTEM_PROMPT = (
-    "You are a Strict Validator.\n"
-    "Your Goal: Verify a completed Task against its acceptance criteria. You also need to review the code changes using git tools.\n"
-    "Requirements:\n"
-    "- Check EVERY criterion.\n"
-    "- Use git tools like `git_action(command='git diff')` or `git_action(command='git status')` to review the code changes and inspect code for quality and correctness.\n"
-    "- Verify the pre-commits are passing by running the `run_pre_commits` tool.\n"
-    "- Return the updated `Task` object.\n"
-    "- If verification fails, set `passes = False` and explain why in `notes`."
-)
-
-REPOSITORY_MANAGER_SYSTEM_PROMPT = (
-    "You are a specialist agent with access to git tools.\n"
-    "Your Goal: Manage git repositories. You have tools to manage pull and clone repositories in bulk.\n"
-    "Requirements:\n"
-    "- Use git tools to manage repositories.\n"
-    "- You DO NOT have direct git access; use the specific repo tools.\n"
-    "- Return the results of running the tools.\n"
-    "- Set `prd.last_agent = 'Repository Manager'`."
-)
-
-DOCUMENTATION_AGENT_SYSTEM_PROMPT = (
-    "You are a Documentation Specialist.\n"
-    "Your Goal: Manage project documentation, specifically README.md files.\n"
-    "Capabilities:\n"
-    "- Read README.md files using `get_project_readme`.\n"
-    "- Edit README.md files using `text_editor` (Ensure to pass project and path fields).\n"
-    "Requirements:\n"
-    "- Ensure every README has a ## Changelog section.\n"
-    "- Reflect changes from the PRD in the documentation.\n"
-    "- Verify required changes (Deprecations, examples, architecture diagrams, CLI tables, etc).\n"
-    "- Return the updated `Task` object or status string.\n"
-)
 
 INSTRUCTIONS = (
-    "The PRD object always contains the currently active project in its 'project' field.\n"
-    "→ You MUST read the project value from PRD['project'] (or equivalent path) at the beginning of every conversation turn.\n"
-    "→ For EVERY call to text_editor, git_action, or any other tool that accepts a 'project' parameter, "
-    "you MUST pass exactly that value as the project argument.\n"
+    "The ImplementationPlan object contains a summary and a list of tasks.\n"
+    "→ For EVERY call to repository tools, ensure you use the correct project name if applicable.\n"
     "Never guess, hard-code, or use a project name from memory or previous messages."
 )
 
@@ -247,14 +170,12 @@ def create_agent(
         master_skills.append(loaded_skills)
         available_tools_registry["git_skills"] = [loaded_skills]
 
-    executor_tools_list = []
-    executor_toolsets_list = []
+    engineer_tools_list = []
+    engineer_toolsets_list = []
     rm_tools = []
 
     if master_skills:
-        executor_toolsets_list.extend(master_skills)
-
-    repository_manager_agent = None
+        engineer_toolsets_list.extend(master_skills)
 
     if mcp_config and os.path.exists(mcp_config):
         try:
@@ -283,82 +204,54 @@ def create_agent(
                             os.remove(temp_config_path)
 
                     if rm_tools:
-                        executor_toolsets_list.extend(rm_tools)
+                        engineer_toolsets_list.extend(rm_tools)
                         logger.info(
-                            f"Added {len(rm_tools)} Repository Manager tools to Executor."
+                            f"Added {len(rm_tools)} Repository Manager tools to Engineer."
                         )
 
         except Exception as e:
             logger.error(f"Error parsing MCP config: {e}")
 
-    planner_agent = Agent(
+    # --- Architect Agent ---
+    architect_agent = Agent(
         model=model,
-        system_prompt=PLANNER_SYSTEM_PROMPT,
+        system_prompt=f"{CORE_SYSTEM_PROMPT}\n\n{ARCHITECT_SYSTEM_PROMPT}",
         model_settings=settings,
-        output_type=Union[PRD, Task, str],
-        name="Planner",
+        output_type=PlanStepResult,
+        name="Architect",
         retries=3,
-    )
-    product_manager_agent = Agent(
-        model=model,
-        system_prompt=PRODUCT_MANAGER_SYSTEM_PROMPT,
-        model_settings=settings,
-        output_type=Union[PRD, ElicitationRequest],
-        name="Product Manager",
-        retries=3,
+        toolsets=rm_tools,  # Architect needs tools to check existing projects (list_projects)
     )
 
-    executor_agent = Agent(
+    # --- Engineer Agent ---
+    engineer_agent = Agent(
         model=model,
-        system_prompt=EXECUTOR_SYSTEM_PROMPT,
+        system_prompt=f"{CORE_SYSTEM_PROMPT}\n\n{ENGINEER_SYSTEM_PROMPT}",
         instructions=INSTRUCTIONS,
         model_settings=settings,
-        tools=executor_tools_list,
-        toolsets=executor_toolsets_list,
+        tools=engineer_tools_list,
+        toolsets=engineer_toolsets_list,
         tool_timeout=DEFAULT_TOOL_TIMEOUT,
-        output_type=Task,
-        name="Executor",
+        output_type=TaskStepResult,
+        name="Engineer",
         retries=3,
     )
 
-    validator_agent = Agent(
+    # --- QA Agent ---
+    qa_agent = Agent(
         model=model,
-        system_prompt=VALIDATOR_SYSTEM_PROMPT,
+        system_prompt=f"{CORE_SYSTEM_PROMPT}\n\n{QA_SYSTEM_PROMPT}",
         instructions=INSTRUCTIONS,
         model_settings=settings,
-        tools=executor_tools_list,
-        toolsets=executor_toolsets_list,
+        tools=engineer_tools_list,
+        toolsets=engineer_toolsets_list,
         tool_timeout=DEFAULT_TOOL_TIMEOUT,
-        output_type=Task,
-        name="Validator",
+        output_type=TaskStepResult,
+        name="QA",
         retries=3,
     )
 
-    repository_manager_agent = Agent(
-        model=model,
-        system_prompt=REPOSITORY_MANAGER_SYSTEM_PROMPT,
-        instructions=INSTRUCTIONS,
-        toolsets=rm_tools + master_skills,
-        tool_timeout=DEFAULT_TOOL_TIMEOUT,
-        model_settings=settings,
-        output_type=Union[Task, str],
-        name="Repository Manager",
-        retries=3,
-    )
-
-    documentation_agent = Agent(
-        model=model,
-        system_prompt=DOCUMENTATION_AGENT_SYSTEM_PROMPT,
-        instructions=INSTRUCTIONS,
-        toolsets=rm_tools + master_skills,
-        tool_timeout=DEFAULT_TOOL_TIMEOUT,
-        model_settings=settings,
-        output_type=Union[Task, str],
-        name="Documentation Agent",
-        retries=3,
-    )
-
-    logger.info("Created Specialist Agents")
+    logger.info("Created Specialist Agents: Architect, Engineer, QA")
 
     supervisor = Agent(
         model=model,
@@ -370,147 +263,298 @@ def create_agent(
     logger.info("Created Supervisor Agent")
 
     @supervisor.tool
-    async def manage_repositories(ctx: RunContext[Any], instruction: str) -> str:
-        """
-        Execute commands
-        - listing, cloning, bulk pulling repositories
-        - creating, deleting, moving files and directories
-        - creating new projects (always use lowercase project name)
-        - running pre-commit scans
-        - bumping versions
-        """
-        result = await repository_manager_agent.run(
-            instruction, deps=ctx.deps, usage=ctx.usage
-        )
-        return str(result.output)
-
-    @supervisor.tool
-    async def run_full_prd_process(
+    async def run_implementation_process(
         ctx: RunContext[Any],
         user_prompt: str,
-        max_iterations: Optional[int] = 10,
+        max_iterations: Optional[int] = 15,
     ) -> str:
-        """Trigger the complete processing of a Product Requirements Document, including planning, elicitation, and task execution/validation loop."""
+        """Trigger the complete implementation process: Plan -> Execute (Parallel) -> Verify."""
         limits = UsageLimits(
             request_limit=50,
-            tool_calls_limit=100,
-            total_tokens_limit=100_000,
+            tool_calls_limit=200,
+            total_tokens_limit=DEFAULT_TOTAL_TOKENS,
         )
+
+        plan_filename_cache: Dict[str, str] = {}
+
+        def save_plan(plan: ImplementationPlan):
+            try:
+                if "filename" not in plan_filename_cache:
+                    # Create a slug from summary
+                    slug = re.sub(r"[^a-z0-9]+", "_", plan.summary.lower()).strip("_")
+                    if not slug:
+                        slug = "plan"
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    plan_filename_cache["filename"] = f"implementation_plan_{slug}_{timestamp}.md"
+
+                filename = plan_filename_cache["filename"]
+                # Save to workspace root
+                path = Path(workspace) / filename
+                with open(path, "w") as f:
+                    f.write(plan.to_markdown())
+                
+                # Also symlink or copy to 'implementation_plan.md' for consistency if desired?
+                # The user specifically asked for implementation_plan_<summary>_<timestamp>.md
+            except Exception as e:
+                logger.error(f"Failed to save plan artifact: {e}")
 
         try:
+            # 1. PLAN (Architect)
+            architect_prompt = f"{user_prompt} \n\nThe workspace is '{workspace}'. Design an ImplementationPlan."
             plan_result = await run_with_retry(
-                planner_agent,
-                f"{user_prompt} \n\nThe workspace is '{workspace}', Please extrapolate the project field from the user's prompt.",
+                architect_agent,
+                architect_prompt,
                 ctx,
                 usage_limits=limits,
             )
-            if not isinstance(plan_result.output, PRD):
-                return f"Planning failed: {plan_result.output}"
-            prd = plan_result.output
 
-            elicit_result = await run_with_retry(
-                planner_agent,
-                f"Elicit approval for PRD: {prd.model_dump_json()}",
-                ctx,
-                usage_limits=limits,
-            )
-            if not isinstance(elicit_result.output, PRD):
-                return f"Elicitation failed: {elicit_result.output}"
-            prd = elicit_result.output
+            # Initial output could be a Plan or Clarification
+            plan_output = plan_result.output.output
 
-            iteration = 0
-            while not prd.is_complete() and iteration < max_iterations:
-                task = prd.get_next_task()
-                if task is None:
-                    break
-
-                process_result = await run_with_retry(
-                    planner_agent,
-                    f"Process task: {task.model_dump_json()}. Call execute_task then validate_task.",
-                    ctx,
-                    usage_limits=limits,
+            # Clarification Loop
+            clarification_attempts = 0
+            while isinstance(plan_output, Clarification) and clarification_attempts < 3:
+                # In non-interactive mode, we might just have to stop or assume.
+                # For now, we simulate user input or just fail.
+                # Ideally, this should use notify_user if connected to a real user,
+                # but for an autonomous run, we can try to self-answer or abort.
+                # Here we assume the user might provide input via a side-channel or we log it.
+                logger.info(
+                    f"Architect requested clarification: {plan_output.question}"
                 )
-                if not isinstance(process_result.output, Task):
+
+                # Mock response for autonomous run if user_prompt didn't cover it
+                # In a real tool we might pause execution.
+                # For now, we treat it as an error if we can't get clarification.
+                return f"Architect requested clarification: {plan_output.question}"
+
+            if not isinstance(plan_output, ImplementationPlan):
+                return f"Planning failed. Output was: {type(plan_output)}"
+
+            plan = plan_output
+            logger.info(f"Plan created: {plan.summary} with {len(plan.tasks)} tasks.")
+            save_plan(plan)
+
+            # 2. EXECUTE & VERIFY LOOP
+            loop_count = 0
+            MAX_LOOPS = 25  # Safety break
+            MAX_TASK_RETRIES = 3
+
+            while not plan.is_complete() and loop_count < MAX_LOOPS:
+                logger.info(f"--- Loop {loop_count + 1} / {MAX_LOOPS} ---")
+
+                # A. Handle FAILURES (Planning adjustment)
+                failed_tasks = [t for t in plan.tasks if t.status == "failed"]
+                if failed_tasks:
                     logger.warning(
-                        f"Task {task.id} processing failed: {process_result.output}"
+                        f"Tasks failed: {[t.id for t in failed_tasks]}. Requesting Re-Plan."
                     )
-                    continue
 
-                for i, t in enumerate(prd.stories):
-                    if t.id == process_result.output.id:
-                        prd.stories[i] = process_result.output
-                        break
+                    replan_prompt = (
+                        f"The following tasks have failed after multiple attempts:\n"
+                        f"{[t.model_dump_json() for t in failed_tasks]}\n\n"
+                        f"Current Plan Context:\n{plan.model_dump_json(exclude={'tasks'})}\n\n"
+                        f"Please revise the ImplementationPlan to achieve the goal despite these failures. "
+                        f"You may remove the failed tasks and add new ones, or modify the approach."
+                    )
 
-                iteration += 1
-                prd.iteration_count += 1
+                    replan_result = await run_with_retry(
+                        architect_agent,
+                        replan_prompt,
+                        ctx,
+                        # Don't pass usage limits to avoid blowing up parent context
+                    )
 
-            finalize_result = await run_with_retry(
-                planner_agent,
-                f"Finalize PRD for project {prd.project}: update documentation.",
-                ctx,
-                usage_limits=limits,
-            )
-            status = (
-                finalize_result.output
-                if isinstance(finalize_result.output, str)
-                else "Finalization complete."
-            )
+                    new_plan_output = replan_result.output.output
+                    if isinstance(new_plan_output, ImplementationPlan):
+                        # Merge or Replace?
+                        # If we replace, we lose status of other tasks unless Architect is smart.
+                        # For simplicity, we assume Architect returns a FULL plan including old (completed) tasks if they are still relevant.
+                        # But Architect might not know about 'verified' status if we only passed failed ones.
+                        # To be safe, we should pass FULL plan to Architect.
+                        # Retrying with FULL plan context in prompt above.
 
-            if prd.is_complete():
-                return f"PRD processing completed for project '{prd.project}'. All tasks passed. {status}"
+                        # We hope Architect preserves IDs and statuses of non-failed tasks.
+                        # Usage of 'merge' logic might be safer but complex.
+                        # Let's trust the Architect to regenerate a valid full plan.
+                        plan = new_plan_output
+                        logger.info(f"Plan revised: {len(plan.tasks)} tasks.")
+                        save_plan(plan)
+                        # Reset failed tasks loop to process new plan
+                        failed_tasks = []
+                    else:
+                        logger.error("Architect failed to revise plan.")
+                        return f"Implementation failed. Architect could not revise plan for failed tasks: {[t.id for t in failed_tasks]}"
+
+                # B. EXECUTION (Engineer)
+                # Identify pending tasks
+                runnable_tasks = []
+                # Simple dependency check
+                # completed_ids was unused
+
+                # However, we only mark 'verified' after QA.
+                # Let's use get_next_tasks() from model which logic checks 'passes' (which typically means verified/done).
+                # But 'passes' is set by QA agent (or Engineer if self-verifying?).
+                # In our model, 'passes' is bool.
+
+                next_tasks = plan.get_next_tasks()
+                for t in next_tasks:
+                    if t.status == "pending":
+                        if t.attempt_count >= MAX_TASK_RETRIES:
+                            t.status = "failed"
+                            t.notes = (
+                                (t.notes or "")
+                                + f"\n[FAILED]: Max retries ({MAX_TASK_RETRIES}) reached."
+                            )
+                            # Trigger replan in next loop
+                        else:
+                            t.status = "in_progress"
+                            t.attempt_count += 1
+                            runnable_tasks.append(t)
+
+                if runnable_tasks:
+                    logger.info(
+                        f"Spawning Engineers for tasks: {[t.id for t in runnable_tasks]}"
+                    )
+
+                    async def run_engineer(t: Task):
+                        # Use a fresh limit for child agent to prevent 'Total Tokens Exceeded' on the parent
+                        # arising from child usage.
+                        # We DO NOT pass ctx.usage to avoid accumulating child usage onto supervisor's limit.
+                        child_limits = UsageLimits(
+                            request_limit=50,
+                            total_tokens_limit=None,  # Let child run as much as needed per task
+                        )
+
+                        try:
+                            # Note: We are creating a NEW prompt for every run.
+                            # engineer_agent is stateless (no history passed).
+                            res = await engineer_agent.run(
+                                f"Implement this task:\n{t.model_dump_json()}\n\nFull Plan Context:\n{plan.model_dump_json(exclude={'tasks'})}",
+                                deps=ctx.deps,
+                                usage_limits=child_limits,
+                            )
+                            # res.data is TaskStepResult
+                            task_out = res.data.output
+                            if isinstance(task_out, Task):
+                                task_out.status = "implemented"
+                                return task_out
+                            return t
+                        except Exception as e:
+                            logger.error(f"Engineer failed task {t.id}: {e}")
+                            t.notes = (t.notes or "") + f"\n[ERROR]: {str(e)}"
+                            t.status = "pending"  # Reset to pending to retry (attempt_count was already incremented)
+                            return t
+
+                    engineer_results = await asyncio.gather(
+                        *[run_engineer(t) for t in runnable_tasks]
+                    )
+
+                    # Update Plan
+                    for res_task in engineer_results:
+                        for i, t in enumerate(plan.tasks):
+                            if t.id == res_task.id:
+                                plan.tasks[i] = res_task
+                                break
+                    
+                    save_plan(plan)
+
+                # C. VERIFICATION (QA)
+                verify_tasks = [t for t in plan.tasks if t.status == "implemented"]
+                if verify_tasks:
+                    logger.info(
+                        f"Spawning QA for tasks: {[t.id for t in verify_tasks]}"
+                    )
+
+                    async def run_qa(t: Task):
+                        child_limits = UsageLimits(
+                            request_limit=50, total_tokens_limit=None
+                        )
+                        try:
+                            res = await qa_agent.run(
+                                f"Verify this task:\n{t.model_dump_json()}\n\nFull Plan Context:\n{plan.model_dump_json(exclude={'tasks'})}",
+                                deps=ctx.deps,
+                                usage_limits=child_limits,
+                            )
+                            # res.data is TaskStepResult
+                            task_out = res.data.output
+                            if isinstance(task_out, Task):
+                                if task_out.status == "verified":
+                                    pass  # Already marked as verified by QA
+                                else:
+                                    task_out.status = "pending"
+                                    # Note: We don't increment attempt_count here, but we could if we consider QA failure a 'try'.
+                                    # Since we send back to Engineer, the Engineer's next run will increment attempt_count.
+                                    # This effectively counts Implementation+QA cycles.
+                                    task_out.notes = (
+                                        task_out.notes or ""
+                                    ) + "\n[QA FAILED]: Verification failed."
+                                return task_out
+                            return t
+                        except Exception as e:
+                            logger.error(f"QA failed task {t.id}: {e}")
+                            # If QA crashes, maybe we assume it's NOT verified?
+                            # Leave as implemented? Or retry QA?
+                            # Let's retry QA by leaving as implemented (it will be picked up next loop)
+                            # But we need to avoid infinite loop.
+                            # Let's push back to pending to be safe.
+                            t.status = "pending"
+                            t.notes = (t.notes or "") + f"\n[QA ERROR]: {str(e)}"
+                            return t
+
+                    qa_results = await asyncio.gather(
+                        *[run_qa(t) for t in verify_tasks]
+                    )
+
+                    # Update Plan
+                    for res_task in qa_results:
+                        for i, t in enumerate(plan.tasks):
+                            if t.id == res_task.id:
+                                plan.tasks[i] = res_task
+                                break
+
+                    save_plan(plan)
+
+                # D. Check Progress
+                loop_count += 1
+                plan.iteration_count = loop_count
+
+                # If no tasks ran, check if we are stuck
+                if not runnable_tasks and not verify_tasks and not plan.is_complete():
+                    # Maybe dependencies are blocked?
+                    # Check if any tasks are pending but blocked
+                    pending = [t for t in plan.tasks if t.status == "pending"]
+                    if pending:
+                        # Blocked tasks?
+
+                        logger.warning(
+                            "No tasks ran this iteration but plan is incomplete. Dependencies might be blocked."
+                        )
+                        # Break loop to avoid infinite spin if logic is stuck
+                        # But 'failed' logic top of loop should handle if max retries hit.
+                        if all(t.attempt_count == 0 for t in pending):
+                            # Nothing started?
+                            pass
+                        else:
+                            # We might be waiting for something that never finishes?
+                            pass
+                    else:
+                        # e.g. all 'failed' and waiting for replan?
+                        pass
+
+            # 4. FINALIZE
+            if plan.is_complete():
+                return f"Implementation completed: {plan.summary}. All tasks verified."
             else:
-                return f"PRD processing partially completed after {iteration} iterations. Remaining tasks: {[t.id for t in prd.stories if not t.passes]}. {status}"
+                remaining = [t.id for t in plan.tasks if t.status != "verified"]
+                return f"Implementation stopped after {loop_count} loops. Remaining/Failed tasks: {remaining}."
 
         except UsageLimitExceeded as e:
-            logger.error(f"Usage limit hit in PRD process: {e}")
+            logger.error(f"Usage limit hit in process: {e}")
             return f"Safety limit hit: {str(e)}"
         except Exception as e:
-            logger.exception(f"Error in PRD process: {e}")
-            return f"Error in PRD process: {str(e)}"
-
-    @planner_agent.tool
-    async def elicit_product_requirements_document(
-        ctx: RunContext[Any], prd: PRD
-    ) -> PRD:
-        """Elicit approval for the PRD (Product Requirements Document) from the User."""
-        current_prd = prd
-        for _ in range(10):
-            result = await product_manager_agent.run(
-                f"Review this PRD:\n{current_prd.model_dump_json()}",
-                usage=ctx.usage,
-                deps=ctx.deps,
-            )
-            output = result.output
-
-            if isinstance(output, PRD):
-                return output
-
-            elif isinstance(output, ElicitationRequest):
-                logger.info(f"PM Elicitation Request: {output.question}")
-                try:
-                    user_response = input(
-                        f"[PM asks]: {output.question} (Context: {output.context})\n> "
-                    )
-                except EOFError:
-                    user_response = "Proceed"
-
-                current_prd = await _feedback_loop_pm(
-                    current_prd, user_response, ctx=ctx
-                )
-
-        return current_prd
-
-    async def _feedback_loop_pm(
-        prd: PRD, user_response: str, ctx: RunContext[Any]
-    ) -> PRD:
-        res = await product_manager_agent.run(
-            f"Current PRD (Product Requirements Document): {prd.model_dump_json()}\nUser Answer to your question: {user_response}\nUpdate and Approve.",
-            usage=ctx.usage,
-            deps=ctx.deps,
-        )
-        if isinstance(res.output, ElicitationRequest):
-            pass
-        return res.output
+            logger.exception(f"Error in process: {e}")
+            return f"Error in process: {str(e)}"
 
     async def run_with_retry(
         agent: Agent,
@@ -530,8 +574,10 @@ def create_agent(
             except UsageLimitExceeded:
                 raise
             except ValidationError as e:
+                # Basic output structure validation failed
                 if attempt == max_attempts:
                     raise
+                logger.warning(f"Validation error: {e}. Retrying.")
                 raise ModelRetry(
                     f"Output validation failed: {str(e)}. Refine and retry."
                 )
@@ -541,145 +587,22 @@ def create_agent(
                 logger.warning(f"Retry {attempt} for {agent.name}: {str(e)}")
                 await asyncio.sleep(2**attempt)
 
-    @planner_agent.tool
-    async def execute_task(ctx: RunContext[Any], task: Task) -> Task:
-        """Execute one task from the PRD."""
-        try:
-            result = await run_with_retry(
-                executor_agent, f"Execute this task:\n{task.model_dump_json()}", ctx
-            )
-
-            history_log = []
-            for msg in result.all_messages():
-                if hasattr(msg, "parts"):
-                    for part in msg.parts:
-                        if part.part_kind == "tool-call":
-                            history_log.append(
-                                f"Executor: {part.tool_name}({part.part_kind})[{part.timestamp}]"
-                            )
-
-            task_out = result.output
-            if isinstance(task_out, Task):
-                task_out.execution_history.extend(history_log)
-                return task_out
-
-            return task
-        except Exception as e:
-            logger.exception(f"Error executing task: {e}")
-            if task.notes:
-                task.notes += f"\n\n[FATAL ERROR]: {e}"
-            else:
-                task.notes = f"[FATAL ERROR]: {e}"
-            task.passes = False
-            return task
-
-    @planner_agent.tool
-    async def validate_task(ctx: RunContext[Any], task: Task) -> Task:
-        """Validate a completed task."""
-        try:
-            result = await run_with_retry(
-                validator_agent, f"Validate this task:\n{task.model_dump_json()}", ctx
-            )
-
-            history_log = []
-            for msg in result.all_messages():
-                if hasattr(msg, "parts"):
-                    for part in msg.parts:
-                        if part.part_kind == "tool-call":
-                            history_log.append(
-                                f"Validator: {part.tool_name}({part.part_kind})[{part.timestamp}]"
-                            )
-
-            task_out = result.output
-            if isinstance(task_out, Task):
-                task_out.execution_history.extend(history_log)
-                return task_out
-            return task
-        except Exception as e:
-            logger.exception("Error validating task")
-            if task.notes:
-                task.notes += f"\n\n[FATAL ERROR]: {e}"
-            else:
-                task.notes = f"[FATAL ERROR]: {e}"
-            task.passes = False
-            return task
-
-    @planner_agent.tool
-    async def update_documentation(ctx: RunContext[Any], instruction: str) -> str:
+    @supervisor.tool
+    async def manage_repositories(ctx: RunContext[Any], instruction: str) -> str:
         """
-        Delegate documentation tasks to the Documentation Agent.
-        Use this to read, review, or update README.md files.
+        Directly access repository tools for ad-hoc requests.
+        Delegates to the Engineer agent.
         """
-        result = await run_with_retry(documentation_agent, instruction, ctx)
+        result = await engineer_agent.run(
+            f"Execute this instruction: {instruction} (Task ID: 0, status: pending)",  # Dummy task context
+            deps=ctx.deps,
+            usage=ctx.usage,
+        )
+        if isinstance(result.output, TaskStepResult):
+            return f"Result: {result.output.output.action}\nNotes: {result.output.output.notes}"
         return str(result.output)
 
-    available_tools_registry["execute_task"] = [Tool(execute_task)]
-    available_tools_registry["validate_task"] = [Tool(validate_task)]
-    available_tools_registry["update_documentation"] = [Tool(update_documentation)]
-
-    @planner_agent.tool
-    async def create_specialized_agent(
-        ctx: RunContext[Any],
-        name: str = Field(..., description="Short lowercase name for the new agent"),
-        system_prompt: str = Field(
-            ..., description="System prompt for the child agent"
-        ),
-        tool_names: List[str] = Field(
-            ...,
-            description="Names of available toolsets to give. Options: 'git_skills', 'python_sandbox', 'repository_manager_tools', 'execute_task', 'validate_task', 'update_documentation'",
-        ),
-    ) -> str:
-        """Create a new specialized child agent with specific tools and add it as a tool to the supervisor."""
-
-        selected_tools = []
-        for t_name in tool_names:
-            if t_name in available_tools_registry:
-                selected_tools.extend(available_tools_registry[t_name])
-            else:
-                return f"Error: Toolset '{t_name}' not found. Available: {list(available_tools_registry.keys())}"
-
-        child_model = create_model(
-            provider=provider,
-            model_id=model_id,
-            base_url=base_url,
-            api_key=api_key,
-            ssl_verify=ssl_verify,
-            timeout=DEFAULT_TIMEOUT,
-        )
-
-        child_tools = []
-        child_toolsets = []
-        for t in selected_tools:
-            if isinstance(t, Tool) or callable(t):
-                child_tools.append(t)
-            else:
-                child_toolsets.append(t)
-
-        child_agent = Agent(
-            system_prompt=system_prompt,
-            model=child_model,
-            model_settings=settings,
-            tools=child_tools,
-            toolsets=child_toolsets,
-            tool_timeout=DEFAULT_TOOL_TIMEOUT,
-            name=name,
-            retries=3,
-        )
-
-        @planner_agent.tool(name=f"run_{name}")
-        async def dynamic_tool(input_data: str) -> str:
-            """Execute the specialized agent."""
-            result = await child_agent.run(input_data)
-            return str(result.output)
-
-        return f"Created tool run_{name} with tools: {tool_names}"
-
     return supervisor
-
-
-async def chat(agent: Agent, prompt: str):
-    result = await agent.run(prompt)
-    print(f"Response:\n\n{result.output}")
 
 
 def create_agent_server(
@@ -708,7 +631,7 @@ def create_agent_server(
         mcp_config=mcp_config,
         skills_directory=skills_directory,
         ssl_verify=ssl_verify,
-        timeout=DEFAULT_TIMEOUT,
+        # timeout=DEFAULT_TIMEOUT, # create_agent doesn't accept timeout? Check signature.
     )
 
     if skills_directory and os.path.exists(skills_directory):
@@ -719,7 +642,7 @@ def create_agent_server(
             Skill(
                 id="repository_manager_supervisor",
                 name="Repository Manager Supervisor",
-                description="Supervisor for Ralph Wiggum style repository management",
+                description="Supervisor for Repository Management",
                 tags=["repository_manager"],
                 input_modes=["text"],
                 output_modes=["text"],
@@ -798,70 +721,12 @@ def agent_server():
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port")
     parser.add_argument("--debug", type=bool, default=DEFAULT_DEBUG, help="Debug")
     parser.add_argument("--reload", action="store_true", help="Reload")
-    parser.add_argument("--provider", default=DEFAULT_PROVIDER, help="Provider")
-    parser.add_argument("--model-id", default=DEFAULT_MODEL_ID, help="Model ID")
-    parser.add_argument("--base-url", default=DEFAULT_LLM_BASE_URL, help="Base URL")
-    parser.add_argument("--api-key", default=DEFAULT_LLM_API_KEY, help="API Key")
-    parser.add_argument("--mcp-url", default=DEFAULT_MCP_URL, help="MCP URL")
-    parser.add_argument("--mcp-config", default=DEFAULT_MCP_CONFIG, help="MCP Config")
-    parser.add_argument("--workspace", default=os.getcwd(), help="Repository Workspace")
-    parser.add_argument(
-        "--web", action="store_true", default=DEFAULT_ENABLE_WEB_UI, help="Web UI"
-    )
-    parser.add_argument("--help", action="store_true", help="Show usage")
-
     args = parser.parse_args()
 
-    if hasattr(args, "help") and args.help:
-
-        usage()
-
-        sys.exit(0)
-
-    if "PROJECTS_FILE" not in os.environ and DEFAULT_PROJECTS_FILE:
-        os.environ["PROJECTS_FILE"] = DEFAULT_PROJECTS_FILE
-        logger.info(f"Set PROJECTS_FILE to default: {DEFAULT_PROJECTS_FILE}")
-
-    if args.debug:
-        for handler in logging.root.handlers[:]:
-            logging.root.removeHandler(handler)
-        logging.basicConfig(level=logging.DEBUG, force=True)
-
     create_agent_server(
-        provider=args.provider,
-        model_id=args.model_id,
-        base_url=args.base_url,
-        api_key=args.api_key,
-        mcp_url=args.mcp_url,
-        mcp_config=args.mcp_config,
-        debug=args.debug,
         host=args.host,
         port=args.port,
-        enable_web_ui=args.web,
-        ssl_verify=not args.insecure,
-    )
-
-
-def usage():
-    print(
-        f"Repository Manager ({__version__}): CLI Tool\n\n"
-        "Usage:\n"
-        "--host          [ Host ]\n"
-        "--port          [ Port ]\n"
-        "--debug         [ Debug ]\n"
-        "--reload        [ Reload ]\n"
-        "--provider      [ Provider ]\n"
-        "--model-id      [ Model ID ]\n"
-        "--base-url      [ Base URL ]\n"
-        "--api-key       [ API Key ]\n"
-        "--mcp-url       [ MCP URL ]\n"
-        "--mcp-config    [ MCP Config ]\n"
-        "--workspace     [ Repository Workspace ]\n"
-        "--web           [ Web UI ]\n"
-        "\n"
-        "Examples:\n"
-        "  [Simple]  repository-manager-agent \n"
-        '  [Complex] repository-manager-agent --host "value" --port "value" --debug "value" --reload --provider "value" --model-id "value" --base-url "value" --api-key "value" --mcp-url "value" --mcp-config "value" --workspace "value" --web\n'
+        debug=args.debug,
     )
 
 

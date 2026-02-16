@@ -1,10 +1,10 @@
 ---
 services:
   repository-manager-mcp:
-    image: docker.io/knucklessg1/repository-manager:latest
-    #    build:
-    #      context: . # Debug
-    #      dockerfile: debug.Dockerfile
+    # image: docker.io/knucklessg1/repository-manager:latest
+    build:
+      context: . # Debug
+      dockerfile: debug.Dockerfile
     container_name: repository-manager-mcp
     hostname: repository-manager-mcp
     command: [ "repository-manager-mcp" ]
@@ -23,25 +23,25 @@ services:
     environment:
       - "PYTHONUNBUFFERED=1"
       - "HOST=0.0.0.0"
-      - "PORT=8017"
+      - "PORT=8047"
       - "TRANSPORT=streamable-http"
       - "REPOSITORY_MANAGER_WORKSPACE=/workspace"
       - "REPOSITORY_MANAGER_THREADS=12"
       - "REPOSITORY_MANAGER_DEFAULT_BRANCH=True"
     ports:
-      - "8017:8017"
+      - "8047:8047"
     healthcheck:
-      test: [ "CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8017/health')" ]
+      test: [ "CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8047/health')" ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
 
   repository-manager-agent:
-    image: docker.io/knucklessg1/repository-manager:latest
-    #    build:
-    #      context: . # Debug
-    #      dockerfile: debug.Dockerfile
+    # image: docker.io/knucklessg1/repository-manager:latest
+    build:
+      context: . # Debug
+      dockerfile: debug.Dockerfile
     container_name: repository-manager-agent
     hostname: repository-manager-agent
     command: [ "repository-manager-agent" ]
@@ -60,12 +60,11 @@ services:
     restart: always
     env_file:
       - .env
-
     environment:
       - "PYTHONUNBUFFERED=1"
       - "HOST=0.0.0.0"
-      - "PORT=9017"
-      - "MCP_URL=http://repository-manager-mcp:8017/mcp"
+      - "PORT=9047"
+      - "MCP_URL=http://repository-manager-mcp:8047/mcp"
       - "PROVIDER=openai"
       - "LLM_BASE_URL=${LLM_BASE_URL:-http://host.docker.internal:1234/v1}"
       - "LLM_API_KEY=${LLM_API_KEY:-llama}"
@@ -74,9 +73,9 @@ services:
       - "ENABLE_WEB_UI=True"
       - "REPOSITORY_MANAGER_WORKSPACE=/workspace"
     ports:
-      - "9017:9017"
+      - "9047:9047"
     healthcheck:
-      test: [ "CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9017/health')" ]
+      test: [ "CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9047/health')" ]
       interval: 30s
       timeout: 10s
       retries: 3
