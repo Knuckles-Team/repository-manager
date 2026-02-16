@@ -285,14 +285,16 @@ def create_agent(
                     if not slug:
                         slug = "plan"
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    plan_filename_cache["filename"] = f"implementation_plan_{slug}_{timestamp}.md"
+                    plan_filename_cache["filename"] = (
+                        f"implementation_plan_{slug}_{timestamp}.md"
+                    )
 
                 filename = plan_filename_cache["filename"]
                 # Save to workspace root
                 path = Path(workspace) / filename
                 with open(path, "w") as f:
                     f.write(plan.to_markdown())
-                
+
                 # Also symlink or copy to 'implementation_plan.md' for consistency if desired?
                 # The user specifically asked for implementation_plan_<summary>_<timestamp>.md
             except Exception as e:
@@ -456,7 +458,7 @@ def create_agent(
                             if t.id == res_task.id:
                                 plan.tasks[i] = res_task
                                 break
-                    
+
                     save_plan(plan)
 
                 # C. VERIFICATION (QA)

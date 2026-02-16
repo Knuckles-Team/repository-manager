@@ -162,20 +162,20 @@ class ImplementationPlan(BaseModel):
 
             md.append(f"### {status_icon} Task {task.id}: {task.description}")
             md.append(f"**Status:** {task.status} | **Attempts:** {task.attempt_count}")
-            
+
             if task.dependencies:
                 md.append(f"**Dependencies:** {task.dependencies}")
-            
+
             if task.acceptance_criteria:
                 md.append("**Acceptance Criteria:**")
                 for ac in task.acceptance_criteria:
                     md.append(f"- {ac}")
-            
+
             if task.notes:
                 md.append(f"\n**Notes:**\n{task.notes}")
-            
+
             md.append("\n---")
-        
+
         return "\n".join(md)
 
 
