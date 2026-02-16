@@ -80,7 +80,6 @@ async def execute_bash_command(command: str) -> Dict[str, Any]:
         return {"status": 500, "error": str(e)}
 
 
-
 def register_tools(mcp: FastMCP):
     @mcp.custom_route("/health", methods=["GET"])
     async def health_check(request: Request) -> JSONResponse:
@@ -523,13 +522,12 @@ def register_tools(mcp: FastMCP):
         """
         if ctx:
             await ctx.report_progress(progress=0, total=100)
-        
+
         result = await execute_bash_command(command)
-        
+
         if ctx:
             await ctx.report_progress(progress=100, total=100)
         return result
-
 
     @mcp.tool(
         annotations={
