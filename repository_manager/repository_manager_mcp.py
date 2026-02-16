@@ -58,6 +58,29 @@ DEFAULT_HOST = os.environ.get("HOST", "0.0.0.0")
 DEFAULT_PORT = to_integer(os.environ.get("PORT", "8000"))
 
 
+async def execute_bash_command(command: str) -> Dict[str, Any]:
+    """
+    Core logic for executing a bash command.
+    Used by MCP tool and skills.
+    """
+    logger.debug(f"Executing bash command: {command}")
+    try:
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True, check=False
+        )
+        output = result.stdout
+        if result.stderr:
+            output += f"\nSTDERR:\n{result.stderr}"
+        return {
+            "status": 200 if result.returncode == 0 else 500,
+            "output": output,
+            "return_code": result.returncode,
+        }
+    except Exception as e:
+        return {"status": 500, "error": str(e)}
+
+
+
 def register_tools(mcp: FastMCP):
     @mcp.custom_route("/health", methods=["GET"])
     async def health_check(request: Request) -> JSONResponse:
@@ -77,19 +100,9 @@ def register_tools(mcp: FastMCP):
         command: str = Field(
             description="The Git command to execute (e.g., 'git pull', 'git clone <repository_url>')"
         ),
-        workspace: Optional[str] = Field(
-            description="The workspace to execute the command in. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
+        path: Optional[str] = Field(
+            description="The path to execute the command in. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", "/workspace"),
-        ),
-        project: Optional[str] = Field(
-            description="The project to execute the command in.", default=None
-        ),
-        projects: Optional[List[str]] = Field(
-            description="List of repository URLs for Git operations.", default=None
-        ),
-        projects_file: Optional[str] = Field(
-            description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-            default=os.environ.get("PROJECTS_FILE", get_projects_file_path()),
         ),
         threads: Optional[int] = Field(
             description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
@@ -103,26 +116,19 @@ def register_tools(mcp: FastMCP):
         ),
     ) -> GitResult:
         """
-        Executes a Git command in the specified workspace.
-        Returns details from that git action run
+        Executes an arbitrary Git command in the specified path.
+        Use this tool for any git operation not covered by specialized tools.
         """
-        logger.debug(
-            f"Executing git_action with command: {command}, workspace: {workspace}"
-        )
+        logger.debug(f"Executing git_action with command: {command}, path: {path}")
         try:
             git = Git(
-                workspace=workspace,
-                projects=projects,
+                path=path,
                 threads=threads,
                 set_to_default_branch=set_to_default_branch,
                 capture_output=True,
                 is_mcp_server=True,
             )
-            if projects_file:
-                git.read_project_list_file(file=projects_file)
-            response = git.git_action(
-                command=command, workspace=workspace, project=project
-            )
+            response = git.git_action(command=command, path=path)
             return response
         except Exception as e:
             logger.error(f"Error in git_action: {e}")
@@ -143,20 +149,19 @@ def register_tools(mcp: FastMCP):
             description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
             default=os.environ.get("PROJECTS_FILE", get_projects_file_path()),
         ),
-        workspace: Optional[str] = Field(
+        path: Optional[str] = Field(
             description="The parent workspace containing the projects. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
         ),
     ) -> List[str]:
         """
-        Lists all Git projects configured in the projects file or found in the workspace.
+        Lists all Git repositories found in the specified workspace path or defined in the projects file.
+        Use this to discover available projects before performing operations.
         """
-        logger.debug(
-            f"Listing projects from file: {projects_file} and workspace: {workspace}"
-        )
+        logger.debug(f"Listing projects from file: {projects_file} and path: {path}")
         try:
             git = Git(
-                workspace=workspace,
+                path=path,
                 projects=None,
                 is_mcp_server=True,
             )
@@ -164,13 +169,13 @@ def register_tools(mcp: FastMCP):
             if projects_file and os.path.exists(projects_file):
                 git.read_project_list_file(file=projects_file)
 
-            if workspace and os.path.exists(workspace):
+            if path and os.path.exists(path):
                 try:
-                    for item in os.listdir(workspace):
-                        if os.path.isdir(
-                            os.path.join(workspace, item)
-                        ) and os.path.exists(os.path.join(workspace, item, ".git")):
-                            pass
+                    for item in os.listdir(path):
+                        if os.path.isdir(os.path.join(path, item)) and os.path.exists(
+                            os.path.join(path, item, ".git")
+                        ):
+                            git.projects.append(item)
                 except Exception:
                     pass
 
@@ -188,44 +193,36 @@ def register_tools(mcp: FastMCP):
             "idempotentHint": False,
             "openWorldHint": False,
         },
-        tags={"git_operations", "code_quality"},
+        tags={"git_operations"},
     )
     async def run_pre_commit(
         run: bool = Field(description="Run 'pre-commit run --all-files'", default=True),
         autoupdate: bool = Field(
             description="Run 'pre-commit autoupdate'", default=False
         ),
-        workspace: Optional[str] = Field(
-            description="The workspace to run pre-commit in (e.g., path/to/project). Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
+        path: Optional[str] = Field(
+            description="The path to run pre-commit in (e.g., path/to/project). Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-        project: Optional[str] = Field(
-            description="Relative path to a specific project within the repository directory (optional).",
-            default=None,
         ),
     ) -> GitResult:
         """
-        Runs pre-commit checks and/or autoupdate on a repository.
+        Runs pre-commit hooks and/or autoupdate on a repository.
+        Enhances code quality by running configured hooks.
         """
         logger.debug(
-            f"Running pre-commit: run={run}, autoupdate={autoupdate}, workspace={workspace}, project={project}"
+            f"Running pre-commit: run={run}, autoupdate={autoupdate}, path={path}"
         )
         try:
-            target_dir = workspace
+            target_dir = path
             if not target_dir:
                 target_dir = os.getcwd()
 
-            if project:
-                target_dir = os.path.join(target_dir, project)
-
             git = Git(
-                workspace=target_dir,
+                path=target_dir,
                 is_mcp_server=True,
             )
 
-            response = git.pre_commit(
-                run=run, autoupdate=autoupdate, workspace=target_dir
-            )
+            response = git.pre_commit(run=run, autoupdate=autoupdate, path=target_dir)
             return response
 
         except Exception as e:
@@ -242,12 +239,20 @@ def register_tools(mcp: FastMCP):
         },
         tags={"git_operations"},
     )
+    @mcp.tool(
+        annotations={
+            "title": "Clone Single Git Project",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        tags={"git_operations"},
+    )
     async def clone_project(
-        git_project: Optional[str] = Field(
-            description="The repository URL to clone.", default=None
-        ),
-        workspace: Optional[str] = Field(
-            description="The workspace to clone the project into. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
+        url: str = Field(description="The repository URL to clone."),
+        path: Optional[str] = Field(
+            description="The path to clone the project into. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
         ),
         threads: Optional[int] = Field(
@@ -262,21 +267,20 @@ def register_tools(mcp: FastMCP):
         ),
     ) -> GitResult:
         """
-        Clones a single Git project to the specified workspace.
-        Returns details about the cloned project
+        Clones a single Git repository from the provided URL to the specified path.
         """
-        logger.debug(f"Cloning project: {git_project}, workspace: {workspace}")
+        logger.debug(f"Cloning project: {url}, path: {path}")
         try:
-            if not git_project:
-                raise ValueError("git_project must not be empty")
+            if not url:
+                raise ValueError("url must not be empty")
             git = Git(
-                workspace=workspace,
+                path=path,
                 threads=threads,
                 set_to_default_branch=set_to_default_branch,
                 capture_output=True,
                 is_mcp_server=True,
             )
-            response = git.clone_project(git_project=git_project)
+            response = git.clone_project(url=url)
             return response
         except Exception as e:
             logger.error(f"Error in clone_project: {e}")
@@ -300,8 +304,8 @@ def register_tools(mcp: FastMCP):
             description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
             default=os.environ.get("PROJECTS_FILE", get_projects_file_path()),
         ),
-        workspace: Optional[str] = Field(
-            description="The workspace to clone projects into. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
+        path: Optional[str] = Field(
+            description="The path to clone projects into. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
         ),
         threads: Optional[int] = Field(
@@ -316,19 +320,19 @@ def register_tools(mcp: FastMCP):
         ),
     ) -> List[GitResult]:
         """
-        Clones multiple Git projects in parallel to the specified workspace.
-        Returns a list of projects that were cloned
+        Clones multiple Git repository URLs in parallel to the specified workspace path.
+        Can use a list of URLs or a file containing URLs.
         """
-        logger.debug(f"Cloning projects to workspace: {workspace}")
+        logger.debug(f"Cloning projects to path: {path}")
         try:
             if not projects and not projects_file:
                 raise ValueError("Either projects or projects_file must be provided")
             if projects_file and not os.path.exists(projects_file):
                 raise FileNotFoundError(f"Projects file not found: {projects_file}")
-            if workspace and not os.path.exists(workspace):
-                raise FileNotFoundError(f"Repository workspace not found: {workspace}")
+            if path and not os.path.exists(path):
+                raise FileNotFoundError(f"Repository path not found: {path}")
             git = Git(
-                workspace=workspace,
+                path=path,
                 projects=projects,
                 threads=threads,
                 set_to_default_branch=set_to_default_branch,
@@ -337,7 +341,7 @@ def register_tools(mcp: FastMCP):
             )
             if projects_file:
                 git.read_project_list_file(file=projects_file)
-            response = git.clone_projects_in_parallel()
+            response = git.clone_projects()
             return response
         except Exception as e:
             logger.error(f"Error in clone_projects: {e}")
@@ -353,14 +357,18 @@ def register_tools(mcp: FastMCP):
         },
         tags={"git_operations"},
     )
+    @mcp.tool(
+        annotations={
+            "title": "Pull Single Git Project",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        tags={"git_operations"},
+    )
     async def pull_project(
-        git_project: str = Field(
-            description="The name of the project directory to pull."
-        ),
-        workspace: Optional[str] = Field(
-            description="The parent workspace containing the project. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
+        path: str = Field(description="The path of the project directory to pull."),
         threads: Optional[int] = Field(
             description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
             default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
@@ -373,21 +381,26 @@ def register_tools(mcp: FastMCP):
         ),
     ) -> GitResult:
         """
-        Pulls updates for a single Git project.
-        Returns details about project pulled using git
+        Performs a 'git pull' on the repository at the specified path.
+        Useful for updating a specific project to the latest commit.
         """
-        logger.debug(f"Pulling project: {git_project}, workspace: {workspace}")
+        logger.debug(f"Pulling project: path: {path}")
         try:
-            if not git_project:
-                raise ValueError("git_project must not be empty")
+            if not path:
+                raise ValueError("path must not be empty")
             git = Git(
-                workspace=workspace,
+                path=path,  # Use path as base or let Git manage?
                 threads=threads,
                 set_to_default_branch=set_to_default_branch,
                 capture_output=True,
                 is_mcp_server=True,
             )
-            response = git.pull_project(git_project=git_project)
+            # We want to pull specific project. Git initialized with path might assume path is the workspace.
+            # But pull_project in Git takes 'path' (the project path).
+            # If we call git.pull_project(path=path), it uses self._resolve_path(path).
+            # So if we init Git(path=os.path.dirname(path)) it might be cleaner, but Git defaults to self.path.
+            # If we init Git() (default), then pass absolute path, it should work.
+            response = git.pull_project(path=path)
             return response
         except Exception as e:
             logger.error(f"Error in pull_project: {e}")
@@ -403,8 +416,18 @@ def register_tools(mcp: FastMCP):
         },
         tags={"git_operations"},
     )
+    @mcp.tool(
+        annotations={
+            "title": "Pull Multiple Git Projects",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
+        tags={"git_operations"},
+    )
     async def pull_projects(
-        workspace: Optional[str] = Field(
+        path: Optional[str] = Field(
             description="The workspace containing the projects to pull. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
         ),
@@ -420,21 +443,21 @@ def register_tools(mcp: FastMCP):
         ),
     ) -> List[GitResult]:
         """
-        Pulls updates for multiple Git projects in parallel.
-        Returns a list of projects that were pulled
+        Pulls updates for all Git projects within the specified workspace path in parallel.
+        Useful for bulk updating multiple repositories at once.
         """
-        logger.debug(f"Pulling projects from workspace: {workspace}")
+        logger.debug(f"Pulling projects from path: {path}")
         try:
-            if workspace and not os.path.exists(workspace):
-                raise FileNotFoundError(f"Repository workspace not found: {workspace}")
+            if path and not os.path.exists(path):
+                raise FileNotFoundError(f"Repository path not found: {path}")
             git = Git(
-                workspace=workspace,
+                path=path,
                 threads=threads,
                 set_to_default_branch=set_to_default_branch,
                 capture_output=True,
                 is_mcp_server=True,
             )
-            response = git.pull_projects_in_parallel()
+            response = git.pull_projects()
             return response
         except Exception as e:
             logger.error(f"Error in pull_projects: {e}")
@@ -448,34 +471,31 @@ def register_tools(mcp: FastMCP):
             "idempotentHint": True,
             "openWorldHint": False,
         },
-        tags={"git_operations", "documentation"},
+        tags={"file_operations"},
     )
     async def get_project_readme(
-        project: Optional[str] = Field(
-            description="The project directory name. If checking workspace root, leave empty.",
-            default=None,
-        ),
-        workspace: Optional[str] = Field(
-            description="The workspace containing the project. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
+        path: Optional[str] = Field(
+            description="The path to the project or directory. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
         ),
     ) -> ReadmeResult:
         """
-        Retrieves the content and path of the README.md file for a project or the workspace root.
+        Retrieves the content of the README.md file for a project or directory.
+        Use this to quickly get an overview of a project.
         """
-        logger.debug(f"Getting README for project: {project}, workspace: {workspace}")
+        logger.debug(f"Getting README for path: {path}")
         try:
-            target_dir = workspace
+            target_dir = path
             if not target_dir:
                 target_dir = (
                     os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
                 )
 
             git = Git(
-                workspace=target_dir,
+                path=target_dir,
                 is_mcp_server=True,
             )
-            response = git.get_readme(project=project)
+            response = git.get_readme(path=path)
             return response
         except Exception as e:
             logger.error(f"Error in get_project_readme: {e}")
@@ -498,27 +518,18 @@ def register_tools(mcp: FastMCP):
         ),
     ) -> Dict[str, Any]:
         """
-        Run a bash command on the local system.
+        Executes a bash command on the local system.
+        Use with caution. Returns exit code, stdout, and stderr.
         """
-        logger.debug(f"Running command: {command}")
         if ctx:
             await ctx.report_progress(progress=0, total=100)
-        try:
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True, check=False
-            )
-            output = result.stdout
-            if result.stderr:
-                output += f"\nSTDERR:\n{result.stderr}"
-            if ctx:
-                await ctx.report_progress(progress=100, total=100)
-            return {
-                "status": 200 if result.returncode == 0 else 500,
-                "output": output,
-                "return_code": result.returncode,
-            }
-        except Exception as e:
-            return {"status": 500, "error": str(e)}
+        
+        result = await execute_bash_command(command)
+        
+        if ctx:
+            await ctx.report_progress(progress=100, total=100)
+        return result
+
 
     @mcp.tool(
         annotations={
@@ -528,7 +539,7 @@ def register_tools(mcp: FastMCP):
             "idempotentHint": False,
             "openWorldHint": True,
         },
-        tags={"text_editor", "files"},
+        tags={"file_operations"},
     )
     async def text_editor(
         command: str = Field(
@@ -536,14 +547,6 @@ def register_tools(mcp: FastMCP):
         ),
         path: str = Field(
             description="Standardized file path relative to the project."
-        ),
-        workspace: str = Field(
-            description="The workspace containing the project. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-        project: str = Field(
-            description="The project containing the codebase and files. This is the name of the project.",
-            default=None,
         ),
         file_text: Optional[str] = Field(
             description="The content to write to the file (for create command).",
@@ -565,20 +568,16 @@ def register_tools(mcp: FastMCP):
         ),
     ) -> GitResult:
         """
-        FileSystem Editor Tool.
-        Delegates to the Git class text_editor method.
+        A versatile file system editor tool.
+        Supports viewing, creating, replacing text, and inserting text in files.
         """
         logger.debug(f"Executing text_editor with command: {command}, path: {path}")
 
         try:
-            target_dir = workspace
-            if not target_dir:
-                target_dir = (
-                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
-                )
-
+            # We don't necessarily need to init Git with a specific path if path is absolute
+            # But the underlying method uses self._resolve_path.
             git = Git(
-                workspace=target_dir,
+                path=os.getcwd(),  # Default to CWD, let resolve_path handle the provided path
                 is_mcp_server=True,
             )
 
@@ -605,31 +604,23 @@ def register_tools(mcp: FastMCP):
             "destructiveHint": False,
             "idempotentHint": False,
         },
-        tags={"git", "create_project"},
+        tags={"git_operations"},
     )
     async def create_project(
-        project: str = Field(description="The name of the new project directory."),
-        workspace: Optional[str] = Field(
-            description="The workspace containing the project. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
+        path: str = Field(description="The path for the new project directory."),
     ) -> GitResult:
         """
-        Create a new project directory and initialize it as a git repository.
+        Create a new project directory at the specified path and initialize it as a git repository.
+        Use this to start a new project managed by git.
         """
         try:
-            target_dir = workspace
-            if not target_dir:
-                target_dir = (
-                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
-                )
-
+            # Init Git with base path or current directory, actual creation uses absolute path logic
             git = Git(
-                workspace=target_dir,
+                path=os.getcwd(),
                 is_mcp_server=True,
             )
 
-            response = git.create_project(project=project)
+            response = git.create_project(path=path)
             return response
         except Exception as e:
             logger.error(f"Error in create_project: {e}")
@@ -643,39 +634,23 @@ def register_tools(mcp: FastMCP):
             "destructiveHint": False,
             "idempotentHint": False,
         },
-        tags={"files", "create_directory"},
+        tags={"file_operations"},
     )
     async def create_directory(
         path: str = Field(
-            description="The path where the directory should be created in the project."
-        ),
-        workspace: Optional[str] = Field(
-            description="The workspace containing all the projects. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-        project: str = Field(
-            description="The project in the workspace.",
-            default=None,
+            description="The path where the directory should be created."
         ),
     ) -> GitResult:
         """
         Create a new directory at the specified path.
         """
         try:
-            target_dir = workspace
-            if not target_dir:
-                target_dir = (
-                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
-                )
-
             git = Git(
-                workspace=target_dir,
+                path=os.getcwd(),
                 is_mcp_server=True,
             )
 
-            response = git.create_directory(
-                path=path, project=project, workspace=workspace
-            )
+            response = git.create_directory(path=path)
             return response
         except Exception as e:
             logger.error(f"Error in create_directory: {e}")
@@ -689,37 +664,22 @@ def register_tools(mcp: FastMCP):
             "destructiveHint": True,
             "idempotentHint": False,
         },
-        tags={"files", "delete_directory"},
+        tags={"file_operations"},
     )
     async def delete_directory(
         path: str = Field(description="The path of the directory to delete."),
-        workspace: Optional[str] = Field(
-            description="The workspace containing the directory. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-        project: str = Field(
-            description="The project in the workspace.",
-            default=None,
-        ),
     ) -> GitResult:
         """
-        Delete a directory at the specified path.
+        Recursively delete a directory at the specified path.
+        Use with caution as this action is destructive.
         """
         try:
-            target_dir = workspace
-            if not target_dir:
-                target_dir = (
-                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
-                )
-
             git = Git(
-                workspace=target_dir,
+                path=os.getcwd(),
                 is_mcp_server=True,
             )
 
-            response = git.delete_directory(
-                path=path, project=project, workspace=target_dir
-            )
+            response = git.delete_directory(path=path)
             return response
         except Exception as e:
             logger.error(f"Error in delete_directory: {e}")
@@ -733,40 +693,24 @@ def register_tools(mcp: FastMCP):
             "destructiveHint": True,
             "idempotentHint": False,
         },
-        tags={"files", "rename_directory"},
+        tags={"file_operations"},
     )
     async def rename_directory(
         old_path: str = Field(description="The current path."),
         new_path: str = Field(description="The new path."),
-        workspace: Optional[str] = Field(
-            description="The workspace containing the directory. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-        project: str = Field(
-            description="The project in the workspace.",
-            default=None,
-        ),
     ) -> GitResult:
         """
-        Rename/Move a directory or file.
+        Rename or move a directory or file from old_path to new_path.
         """
         try:
-            target_dir = workspace
-            if not target_dir:
-                target_dir = (
-                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
-                )
-
             git = Git(
-                workspace=target_dir,
+                path=os.getcwd(),
                 is_mcp_server=True,
             )
 
             response = git.rename_directory(
                 old_path=old_path,
                 new_path=new_path,
-                project=project,
-                workspace=target_dir,
             )
             return response
         except Exception as e:
@@ -781,7 +725,7 @@ def register_tools(mcp: FastMCP):
             "destructiveHint": True,
             "idempotentHint": False,
         },
-        tags={"git_operations", "versioning"},
+        tags={"git_operations"},
     )
     async def bump_version(
         part: str = Field(
@@ -790,39 +734,218 @@ def register_tools(mcp: FastMCP):
         allow_dirty: bool = Field(
             description="Whether to allow dirty working directory.", default=True
         ),
-        workspace: Optional[str] = Field(
-            description="The workspace containing the project. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
+        path: Optional[str] = Field(
+            description="The path to the project directory. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
             default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-        project: Optional[str] = Field(
-            description="The project in the workspace.",
-            default=None,
         ),
     ) -> GitResult:
         """
-        Bump the version of the project using bump2version.
+        Bumps the version of the project using bump2version.
+        Automatically commits and tags the new version.
         """
         try:
-            target_dir = workspace
+            target_dir = path
             if not target_dir:
                 target_dir = (
                     os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
                 )
 
             git = Git(
-                workspace=target_dir,
+                path=target_dir,
                 is_mcp_server=True,
             )
 
             response = git.bump_version(
                 part=part,
                 allow_dirty=allow_dirty,
-                project=project,
-                workspace=target_dir,
+                path=path,
             )
             return response
         except Exception as e:
             logger.error(f"Error in bump_version: {e}")
+            raise
+
+    @mcp.tool(
+        annotations={
+            "title": "Search Codebase",
+            "description": "Search the codebase using ripgrep.",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+        },
+        tags={"git_operations", "search"},
+    )
+    @mcp.tool(
+        annotations={
+            "title": "Search Codebase",
+            "description": "Search the codebase using ripgrep.",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+        },
+        tags={"file_operations"},
+    )
+    async def search_codebase(
+        query: str = Field(description="The regex pattern to search for."),
+        path: Optional[str] = Field(
+            description="The path to search in (absolute or relative to CWD). Defaults to CWD or workspace.",
+            default=None,
+        ),
+        glob_pattern: Optional[str] = Field(
+            description="Glob pattern to filter files (e.g., '*.py').", default=None
+        ),
+        case_sensitive: bool = Field(
+            description="Whether the search should be case sensitive.", default=False
+        ),
+    ) -> GitResult:
+        """
+        Search for a regex pattern in the codebase using ripgrep.
+        Supports filtering by glob pattern and case sensitivity.
+        """
+        try:
+            target_dir = path
+            if not target_dir:
+                target_dir = (
+                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
+                )
+
+            git = Git(
+                path=target_dir,
+                is_mcp_server=True,
+            )
+
+            response = git.search_codebase(
+                query=query,
+                path=path,
+                glob_pattern=glob_pattern,
+                case_sensitive=case_sensitive,
+            )
+            return response
+        except Exception as e:
+            logger.error(f"Error in search_codebase: {e}")
+            raise
+
+    @mcp.tool(
+        annotations={
+            "title": "Find Files",
+            "description": "Find files using find.",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+        },
+        tags={"file_operations"},
+    )
+    async def find_files(
+        name_pattern: str = Field(
+            description="The name pattern to search for (e.g., '*.py')."
+        ),
+        path: Optional[str] = Field(
+            description="The path to search in (absolute or relative to CWD). Defaults to CWD or workspace.",
+            default=None,
+        ),
+    ) -> GitResult:
+        """
+        Find files in the codebase matching a name pattern.
+        """
+        try:
+            target_dir = path
+            if not target_dir:
+                target_dir = (
+                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
+                )
+
+            git = Git(
+                path=target_dir,
+                is_mcp_server=True,
+            )
+
+            response = git.find_files(
+                name_pattern=name_pattern,
+                path=path,
+            )
+            return response
+        except Exception as e:
+            logger.error(f"Error in find_files: {e}")
+            raise
+
+    @mcp.tool(
+        annotations={
+            "title": "Read File",
+            "description": "Read a file from the codebase.",
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+        },
+        tags={"file_operations"},
+    )
+    async def read_file(
+        path: str = Field(
+            description="The path to the file to read (absolute or relative to CWD)."
+        ),
+        start_line: Optional[int] = Field(
+            description="The starting line number (1-indexed).", default=None
+        ),
+        end_line: Optional[int] = Field(
+            description="The ending line number (1-indexed).", default=None
+        ),
+    ) -> GitResult:
+        """
+        Reads the content of a file, optionally within a specific line range.
+        use this to inspect code or configuration files.
+        """
+        try:
+            git = Git(
+                path=os.getcwd(),
+                is_mcp_server=True,
+            )
+
+            response = git.read_file(
+                path=path,
+                start_line=start_line,
+                end_line=end_line,
+            )
+            return response
+        except Exception as e:
+            logger.error(f"Error in read_file: {e}")
+            raise
+
+    @mcp.tool(
+        annotations={
+            "title": "Replace In File",
+            "description": "Replace a block of text in a file.",
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+        },
+        tags={"file_operations"},
+    )
+    async def replace_in_file(
+        path: str = Field(
+            description="The path to the file to modify (absolute or relative to CWD)."
+        ),
+        target_content: str = Field(description="The exact content to be replaced."),
+        replacement_content: str = Field(
+            description="The new content to replace with."
+        ),
+    ) -> GitResult:
+        """
+        Replaces a specific block of text in a file with new content.
+        Ensure target_content matches exactly, including whitespace.
+        """
+        try:
+            git = Git(
+                path=os.getcwd(),
+                is_mcp_server=True,
+            )
+
+            response = git.replace_in_file(
+                path=path,
+                target_content=target_content,
+                replacement_content=replacement_content,
+            )
+            return response
+        except Exception as e:
+            logger.error(f"Error in replace_in_file: {e}")
             raise
 
 
