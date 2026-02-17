@@ -58,7 +58,7 @@ from repository_manager.prompts import (
     QA_SYSTEM_PROMPT,
 )
 
-__version__ = "1.3.10"
+__version__ = "1.3.11"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,7 +79,7 @@ DEFAULT_LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://host.docker.internal:12
 DEFAULT_LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
 DEFAULT_MCP_URL = os.getenv("MCP_URL", None)
 DEFAULT_MCP_CONFIG = os.getenv("MCP_CONFIG", get_mcp_config_path())
-DEFAULT_SKILLS_DIRECTORY = os.getenv("SKILLS_DIRECTORY", get_skills_path())
+DEFAULT_CUSTOM_SKILLS_DIRECTORY = os.getenv("CUSTOM_SKILLS_DIRECTORY", None)
 DEFAULT_PROJECTS_FILE = os.getenv("PROJECTS_FILE", get_projects_file_path())
 DEFAULT_ENABLE_WEB_UI = to_boolean(os.getenv("ENABLE_WEB_UI", "False"))
 DEFAULT_SSL_VERIFY = to_boolean(os.getenv("SSL_VERIFY", "True"))
@@ -133,7 +133,7 @@ def create_agent(
     base_url: Optional[str] = DEFAULT_LLM_BASE_URL,
     api_key: Optional[str] = DEFAULT_LLM_API_KEY,
     mcp_config: str = DEFAULT_MCP_CONFIG,
-    skills_directory: Optional[str] = DEFAULT_SKILLS_DIRECTORY,
+    custom_skills_directory: Optional[str] = DEFAULT_CUSTOM_SKILLS_DIRECTORY,
     workspace: str = DEFAULT_REPOSITORY_MANAGER_WORKSPACE,
     ssl_verify: bool = DEFAULT_SSL_VERIFY,
 ) -> Agent:
@@ -164,9 +164,9 @@ def create_agent(
     available_tools_registry: Dict[str, List[Any]] = {}
 
     master_skills = []
-    if skills_directory and os.path.exists(skills_directory):
-        logger.info(f"Loading skills from {skills_directory}")
-        loaded_skills = SkillsToolset(directories=[str(skills_directory)])
+    if custom_skills_directory and os.path.exists(custom_skills_directory):
+        logger.info(f"Loading skills from {custom_skills_directory}")
+        loaded_skills = SkillsToolset(directories=[str(custom_skills_directory)])
         master_skills.append(loaded_skills)
         available_tools_registry["git_skills"] = [loaded_skills]
 
@@ -614,7 +614,7 @@ def create_agent_server(
     api_key: Optional[str] = DEFAULT_LLM_API_KEY,
     mcp_url: str = DEFAULT_MCP_URL,
     mcp_config: str = DEFAULT_MCP_CONFIG,
-    skills_directory: Optional[str] = DEFAULT_SKILLS_DIRECTORY,
+    custom_skills_directory: Optional[str] = DEFAULT_CUSTOM_SKILLS_DIRECTORY,
     debug: Optional[bool] = DEFAULT_DEBUG,
     host: Optional[str] = DEFAULT_HOST,
     port: Optional[int] = DEFAULT_PORT,
@@ -631,15 +631,31 @@ def create_agent_server(
         base_url=base_url,
         api_key=api_key,
         mcp_config=mcp_config,
-        skills_directory=skills_directory,
+        custom_skills_directory=custom_skills_directory,
         ssl_verify=ssl_verify,
         # timeout=DEFAULT_TIMEOUT, # create_agent doesn't accept timeout? Check signature.
     )
 
-    if skills_directory and os.path.exists(skills_directory):
-        skills = load_skills_from_directory(skills_directory)
-        logger.info(f"Loaded {len(skills)} skills from {skills_directory}")
-    else:
+    # Always load default skills
+
+    skills = load_skills_from_directory(get_skills_path())
+
+    logger.info(f"Loaded {len(skills)} default skills from {get_skills_path()}")
+
+    # Load custom skills if provided
+
+    if custom_skills_directory and os.path.exists(custom_skills_directory):
+
+        custom_skills = load_skills_from_directory(custom_skills_directory)
+
+        skills.extend(custom_skills)
+
+        logger.info(
+            f"Loaded {len(custom_skills)} custom skills from {custom_skills_directory}"
+        )
+
+    if not skills:
+
         skills = [
             Skill(
                 id="repository_manager_supervisor",
