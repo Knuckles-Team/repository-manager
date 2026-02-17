@@ -13,7 +13,7 @@ import sys
 import argparse
 import logging
 
-__version__ = "1.3.11"
+__version__ = "1.3.12"
 import concurrent.futures
 import datetime
 from typing import List
@@ -1437,8 +1437,7 @@ def repository_manager() -> None:
 
     if hasattr(args, "help") and args.help:
 
-        usage()
-
+        parser.print_help()
         sys.exit(0)
 
     logger = setup_logging()
@@ -1474,24 +1473,6 @@ def repository_manager() -> None:
         git.clone_projects()
     if pull_flag:
         git.pull_projects()
-
-
-def usage():
-    print(
-        f"Repository Manager ({__version__}): Git Repository Manager Utility\n\n"
-        "Usage:\n"
-        "-b | --default-branch    [ Set repository to default branch ]\n"
-        "-c | --clone             [ Clone repositories ]\n"
-        "-p | --pull              [ Pull repositories ]\n"
-        "-w | --workspace         [ Specify repository workspace ]\n"
-        "-f | --file              [ Specify file with repository list ]\n"
-        "-r | --repositories      [ Comma-separated list of repositories ]\n"
-        "-t | --threads           [ Number of threads for parallel operations ]\n"
-        "\n"
-        "Examples:\n"
-        "  [Simple]  repository-manager \n"
-        '  [Complex] repository-manager --default-branch --clone --pull --workspace "value" --file "value" --repositories "value" --threads "value"\n'
-    )
 
 
 if __name__ == "__main__":

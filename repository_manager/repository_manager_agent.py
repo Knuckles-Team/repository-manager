@@ -58,7 +58,7 @@ from repository_manager.prompts import (
     QA_SYSTEM_PROMPT,
 )
 
-__version__ = "1.3.11"
+__version__ = "1.3.12"
 
 logging.basicConfig(
     level=logging.INFO,
