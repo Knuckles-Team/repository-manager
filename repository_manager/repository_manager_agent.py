@@ -58,7 +58,7 @@ from repository_manager.prompts import (
     QA_SYSTEM_PROMPT,
 )
 
-__version__ = "1.3.12"
+__version__ = "1.3.13"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -164,9 +164,14 @@ def create_agent(
     available_tools_registry: Dict[str, List[Any]] = {}
 
     master_skills = []
+    skills_directories = [get_skills_path()]
+
     if custom_skills_directory and os.path.exists(custom_skills_directory):
-        logger.info(f"Loading skills from {custom_skills_directory}")
-        loaded_skills = SkillsToolset(directories=[str(custom_skills_directory)])
+        skills_directories.append(str(custom_skills_directory))
+
+    if skills_directories:
+        logger.info(f"Loading skills from {skills_directories}")
+        loaded_skills = SkillsToolset(directories=skills_directories)
         master_skills.append(loaded_skills)
         available_tools_registry["git_skills"] = [loaded_skills]
 
@@ -259,6 +264,7 @@ def create_agent(
         name=AGENT_NAME,
         model_settings=settings,
         retries=3,
+        # toolsets=master_skills,
     )
     logger.info("Created Supervisor Agent")
 
