@@ -58,7 +58,7 @@ ENV HOST=${HOST} \
 WORKDIR /development
 COPY . /development
 RUN apt-get update \
-    && apt-get install -y git curl nano ca-certificates \
+    && apt-get install -y ripgrep tree fd-find git curl nano ca-certificates \
     && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
     && uv pip install --system --upgrade --verbose --no-cache --break-system-packages --prerelease=allow .[all] mem0-mcp-server
