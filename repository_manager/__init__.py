@@ -12,8 +12,8 @@ CORE_MODULES = [
 ]
 
 OPTIONAL_MODULES = {
-    "repository_manager.repository_manager_agent": "a2a",
-    "repository_manager.repository_manager_mcp": "mcp",
+    "repository_manager.agent": "agent",
+    "repository_manager.mcp": "mcp",
 }
 
 
@@ -47,12 +47,12 @@ for module_name, extra_name in OPTIONAL_MODULES.items():
     else:
         globals()[f"_{extra_name.upper()}_AVAILABLE"] = False
 
-_MCP_AVAILABLE = OPTIONAL_MODULES.get("repository_manager.repository_manager_mcp") in [
+_MCP_AVAILABLE = OPTIONAL_MODULES.get("repository_manager.mcp") in [
     m.__name__ for m in globals().values() if hasattr(m, "__name__")
 ]
-_A2A_AVAILABLE = "repository_manager.repository_manager_agent" in globals()
+_AGENT_AVAILABLE = "repository_manager.agent" in globals()
 
-__all__.extend(["_MCP_AVAILABLE", "_A2A_AVAILABLE"])
+__all__.extend(["_MCP_AVAILABLE", "_AGENT_AVAILABLE"])
 
 
 """

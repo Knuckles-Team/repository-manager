@@ -1,6 +1,7 @@
 ---
-name: System Operations
+name: system-operations
 description: Specialized skill for executing system-level commands and scripts.
+tags: [system-operations]
 ---
 
 # System Operations

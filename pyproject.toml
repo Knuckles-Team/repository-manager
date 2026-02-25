@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repository-manager"
-version = "1.3.14"
+version = "1.3.15"
 description = "Manage your git projects"
 readme = "README.md"
 authors = [{ name = "Audel Rouhi", email = "knucklessg1@gmail.com" }]
@@ -18,43 +18,28 @@ classifiers = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "tree-sitter>=0.23.2",
-    "fastmcp>=3.0.0b1",
+    "agent-utilities[mcp]>=0.1.9",
 ]
-
 
 [project.optional-dependencies]
 mcp = [
-    "fastmcp>=3.0.0b1",
-    "eunomia-mcp>=0.3.10",
-    "fastapi>=0.128.0",
-    "beautifulsoup4>=4.14.3",
-    "httpx>=0.28.1",
+    "agent-utilities[mcp]>=0.1.9",
 ]
 
-a2a = [
-    "pydantic-ai-slim[fastmcp,openai,groq,anthropic,mistral,google,huggingface,a2a,ag-ui,web]>=1.60.0",
-    "pydantic-ai-skills>=v0.4.0",
-    "fastapi>=0.128.0",
+agent = [
+    "agent-utilities[agent]>=0.1.9",
     "pre-commit>=4.5.1",
     "bump2version>=1.0.1",
 ]
 
 all = [
-    "fastmcp>=3.0.0b1",
-    "eunomia-mcp>=0.3.10",
-    "pydantic-ai-slim[fastmcp,openai,groq,anthropic,mistral,google,huggingface,a2a,ag-ui,web]>=1.60.0",
-    "pydantic-ai-skills>=v0.4.0",
-    "fastapi>=0.128.0",
-    "pre-commit>=4.5.1",
-    "bump2version>=1.0.1",
-    "httpx>=0.28.1",
+    "repository-manager[agent]>=1.3.14",
 ]
 
 [project.scripts]
 repository-manager = "repository_manager.repository_manager:repository_manager"
-repository-manager-mcp = "repository_manager.repository_manager_mcp:repository_manager_mcp"
-repository-manager-agent = "repository_manager.repository_manager_agent:agent_server"
+repository-manager-mcp = "repository_manager.mcp:mcp_server"
+repository-manager-agent = "repository_manager.agent:agent_server"
 
 [tool.setuptools.package-data]
 repository_manager = ["mcp_config.json", "skills/**", "repositories-list.txt"]

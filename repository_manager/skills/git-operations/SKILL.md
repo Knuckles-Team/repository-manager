@@ -1,6 +1,7 @@
 ---
-name: Git Operations
+name: git-operations
 description: Comprehensive skill for managing Git repositories, including cloning, pulling, branching, and versioning.
+tags: [git-operations]
 ---
 
 # Git Operations

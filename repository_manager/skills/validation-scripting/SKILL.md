@@ -1,6 +1,7 @@
 ---
-name: Validation Scripting
+name: validation-scripting
 description: Create small Python scripts to validate library usage, troubleshoot issues, or verify functionality.
+tags: [validation-scripting]
 ---
 
 # Validation Scripting

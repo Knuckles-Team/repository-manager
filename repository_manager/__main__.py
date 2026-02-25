@@ -1,11 +1,11 @@
 import sys
-from repository_manager.repository_manager_mcp import repository_manager_mcp
+from repository_manager.mcp import repository_manager_mcp
 
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "agent":
         sys.argv.pop(1)
-        from repository_manager.repository_manager_agent import agent_server
+        from repository_manager.agent import agent_server
 
         agent_server()
     else:
