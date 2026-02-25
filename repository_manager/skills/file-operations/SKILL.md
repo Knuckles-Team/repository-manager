@@ -1,6 +1,7 @@
 ---
-name: File Operations
+name: file-operations
 description: Advanced skill for file navigation, reading, editing, and search within the codebase.
+tags: [file-operations]
 ---
 
 # File Operations
