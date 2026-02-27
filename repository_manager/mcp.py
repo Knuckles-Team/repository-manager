@@ -3,7 +3,7 @@
 import os
 import sys
 
-__version__ = "1.3.19"
+__version__ = "1.3.20"
 
 from typing import Optional, Dict, List, Union, Any
 from pydantic import Field
