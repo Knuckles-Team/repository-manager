@@ -3,7 +3,7 @@
 import os
 import sys
 
-__version__ = "1.3.17"
+__version__ = "1.3.18"
 
 from typing import Optional, Dict, List, Union, Any
 from pydantic import Field
@@ -130,7 +130,9 @@ def register_tools(mcp: FastMCP):
     async def list_projects(
         projects_file: Optional[str] = Field(
             description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-            default=os.environ.get("PROJECTS_FILE", get_library_file_path(file="repositories-list.txt")),
+            default=os.environ.get(
+                "PROJECTS_FILE", get_library_file_path(file="repositories-list.txt")
+            ),
         ),
         path: Optional[str] = Field(
             description="The parent workspace containing the projects. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
@@ -285,7 +287,9 @@ def register_tools(mcp: FastMCP):
         ),
         projects_file: Optional[str] = Field(
             description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-            default=os.environ.get("PROJECTS_FILE", get_library_file_path(file="repositories-list.txt")),
+            default=os.environ.get(
+                "PROJECTS_FILE", get_library_file_path(file="repositories-list.txt")
+            ),
         ),
         path: Optional[str] = Field(
             description="The path to clone projects into. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
