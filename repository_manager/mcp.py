@@ -3,7 +3,7 @@
 import os
 import sys
 
-__version__ = "1.3.16"
+__version__ = "1.3.17"
 
 from typing import Optional, Dict, List, Union, Any
 from pydantic import Field
@@ -24,9 +24,9 @@ import logging
 from eunomia_mcp.middleware import EunomiaMcpMiddleware
 from fastmcp.utilities.logging import get_logger
 from agent_utilities.base_utilities import to_integer, to_boolean
-from repository_manager.utils import get_projects_file_path
 from repository_manager.repository_manager import Git
 from repository_manager.models import GitResult, ReadmeResult
+from agent_utilities.base_utilities import get_library_file_path
 from agent_utilities.mcp_utilities import (
     create_mcp_parser,
     config,
@@ -130,7 +130,7 @@ def register_tools(mcp: FastMCP):
     async def list_projects(
         projects_file: Optional[str] = Field(
             description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-            default=os.environ.get("PROJECTS_FILE", get_projects_file_path()),
+            default=os.environ.get("PROJECTS_FILE", get_library_file_path(file="repositories-list.txt")),
         ),
         path: Optional[str] = Field(
             description="The parent workspace containing the projects. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
@@ -285,7 +285,7 @@ def register_tools(mcp: FastMCP):
         ),
         projects_file: Optional[str] = Field(
             description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-            default=os.environ.get("PROJECTS_FILE", get_projects_file_path()),
+            default=os.environ.get("PROJECTS_FILE", get_library_file_path(file="repositories-list.txt")),
         ),
         path: Optional[str] = Field(
             description="The path to clone projects into. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",

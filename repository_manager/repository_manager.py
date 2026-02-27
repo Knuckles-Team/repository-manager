@@ -13,17 +13,17 @@ import sys
 import argparse
 import logging
 
-__version__ = "1.3.16"
+__version__ = "1.3.17"
 import concurrent.futures
 import datetime
 from typing import List
-from repository_manager.utils import (
+from agent_utilities.base_utilities import get_library_file_path
+from repository_manager import (
     to_boolean,
-    get_projects_file_path,
 )
 from repository_manager.models import GitResult, GitError, GitMetadata, ReadmeResult
 
-DEFAULT_PROJECTS_FILE = os.getenv("PROJECTS_FILE", get_projects_file_path())
+DEFAULT_PROJECTS_FILE = os.getenv("PROJECTS_FILE", get_library_file_path(file="repositories-list.txt"))
 DEFAULT_REPOSITORY_MANAGER_THREADS = os.getenv("REPOSITORY_MANAGER_THREADS", 12)
 DEFAULT_REPOSITORY_MANAGER_DEFAULT_BRANCH = to_boolean(
     os.getenv("REPOSITORY_MANAGER_DEFAULT_BRANCH", "False")
