@@ -39,7 +39,7 @@ This skill involves writing and executing small, targeted Python scripts to vali
 # Create the validation script
 script_content = """
 import os
-from repository_manager.utils import to_boolean
+from agent_utilities.base_utilities import to_boolean
 
 print(f"True -> {to_boolean('True')}")
 print(f"false -> {to_boolean('false')}")

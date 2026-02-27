@@ -4,7 +4,7 @@ import os
 import json
 import logging
 from pydantic_ai.mcp import load_mcp_servers
-from repository_manager.utils import get_mcp_config_path
+from agent_utilities.mcp_utilities import get_mcp_config_path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
