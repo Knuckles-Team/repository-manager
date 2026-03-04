@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitdiffcore#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitdiffcore#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitdiffcore#_description)
@@ -35,8 +35,8 @@
 Localized versions of **gitdiffcore** manual
   1. [English ](https://git-scm.com/docs/gitdiffcore)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitdiffcore)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -292,11 +292,11 @@ The "extent of changes" parameter can be tweaked from the default 80% (that is, 
 Note that earlier implementation left a broken pair as separate creation and deletion patches. This was an unnecessary hack, and the latest implementation always merges all the broken pairs back into modifications, but the resulting patch output is formatted differently for easier review in case of such a complete rewrite by showing the entire contents of the old version prefixed with _-_ , followed by the entire contents of the new version prefixed with _+_.
 ##  [](https://git-scm.com/docs/gitdiffcore#_diffcore_pickaxe_for_detecting_additiondeletion_of_specified_string)diffcore-pickaxe: For Detecting Addition/Deletion of Specified String
 This transformation limits the set of filepairs to those that change specified strings between the preimage and the postimage in a certain way. -S<block-of-text> and -G<regular-expression> options are used to specify different ways these strings are sought.
-"-S<block-of-text>" detects filepairs whose preimage and postimage have different number of occurrences of the specified block of text. By definition, it will not detect in-file moves. Also, when a changeset moves a file wholesale without affecting the interesting string, diffcore-rename kicks in as usual, and `-S` omits the filepair (since the number of occurrences of that string didn’t change in that rename-detected filepair). When used with `--pickaxe-regex`, treat the <block-of-text> as an extended POSIX regular expression to match, instead of a literal string.
+"-S<block-of-text>" detects filepairs whose preimage and postimage have different number of occurrences of the specified block of text. By definition, it will not detect in-file moves. Also, when a changeset moves a file wholesale without affecting the interesting string, diffcore-rename kicks in as usual, and `-S` omits the filepair (since the number of occurrences of that string didn't change in that rename-detected filepair). When used with `--pickaxe-regex`, treat the <block-of-text> as an extended POSIX regular expression to match, instead of a literal string.
 "-G<regular-expression>" (mnemonic: grep) detects filepairs whose textual diff has an added or a deleted line that matches the given regular expression. This means that it will detect in-file (or what rename-detection considers the same file) moves, which is noise. The implementation runs diff twice and greps, and this can be quite expensive. To speed things up, binary files without textconv filters will be ignored.
 When `-S` or `-G` are used without `--pickaxe-all`, only filepairs that match their respective criterion are kept in the output. When `--pickaxe-all` is used, if even one filepair matches their respective criterion in a changeset, the entire changeset is kept. This behavior is designed to make reviewing changes in the context of the whole changeset easier.
 ##  [](https://git-scm.com/docs/gitdiffcore#_diffcore_order_for_sorting_the_output_based_on_filenames)diffcore-order: For Sorting the Output Based on Filenames
-This is used to reorder the filepairs according to the user’s (or project’s) taste, and is controlled by the -O option to the _git diff-*_ commands.
+This is used to reorder the filepairs according to the user's (or project's) taste, and is controlled by the -O option to the _git diff-*_ commands.
 This takes a text file each of whose lines is a shell glob pattern. Filepairs that match a glob pattern on an earlier line in the file are output before ones that match a later line, and filepairs that do not match any glob pattern are output last.
 As an example, a typical orderfile for the core Git probably would look like this:
 ```
@@ -312,10 +312,10 @@ t
 This transformation takes one pathname, and rotates the set of filepairs so that the filepair for the given pathname comes first, optionally discarding the paths that come before it. This is used to implement the `--skip-to` and the `--rotate-to` options. It is an error when the specified pathname is not in the set of filepairs, but it is not useful to error out when used with "git log" family of commands, because it is unreasonable to expect that a given path would be modified by each and every commit shown by the "git log" command. For this reason, when used with "git log", the filepair that sorts the same as, or the first one that sorts after, the given pathname is where the output starts.
 Use of this transformation combined with diffcore-order will produce unexpected results, as the input to this transformation is likely not sorted when diffcore-order is in effect.
 ##  [](https://git-scm.com/docs/gitdiffcore#_see_also)SEE ALSO
-[git-diff[1]](https://git-scm.com/docs/git-diff), [git-diff-files[1]](https://git-scm.com/docs/git-diff-files), [git-diff-index[1]](https://git-scm.com/docs/git-diff-index), [git-diff-tree[1]](https://git-scm.com/docs/git-diff-tree), [git-format-patch[1]](https://git-scm.com/docs/git-format-patch), [git-log[1]](https://git-scm.com/docs/git-log), [gitglossary[7]](https://git-scm.com/docs/gitglossary), [The Git User’s Manual](https://git-scm.com/docs/user-manual)
+[git-diff[1]](https://git-scm.com/docs/git-diff), [git-diff-files[1]](https://git-scm.com/docs/git-diff-files), [git-diff-index[1]](https://git-scm.com/docs/git-diff-index), [git-diff-tree[1]](https://git-scm.com/docs/git-diff-tree), [git-format-patch[1]](https://git-scm.com/docs/git-format-patch), [git-log[1]](https://git-scm.com/docs/git-log), [gitglossary[7]](https://git-scm.com/docs/gitglossary), [The Git User's Manual](https://git-scm.com/docs/user-manual)
 ##  [](https://git-scm.com/docs/gitdiffcore#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitdiffcore
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

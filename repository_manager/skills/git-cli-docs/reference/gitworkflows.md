@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitworkflows#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitworkflows#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitworkflows#_description)
@@ -31,8 +31,8 @@
 Localized versions of **gitworkflows** manual
   1. [English ](https://git-scm.com/docs/gitworkflows)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitworkflows)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -204,7 +204,7 @@ This document attempts to write down and motivate some of the workflow elements 
 We formulate a set of _rules_ for quick reference, while the prose tries to motivate each of them. Do not always take them literally; you should value good reasons for your actions higher than manpages such as this one.
 ##  [](https://git-scm.com/docs/gitworkflows#_separate_changes)SEPARATE CHANGES
 As a general rule, you should try to split your changes into small logical steps, and commit each of them. They should be consistent, working independently of any later commits, pass the test suite, etc. This makes the review process much easier, and the history much more useful for later inspection and analysis, for example with [git-blame[1]](https://git-scm.com/docs/git-blame) and [git-bisect[1]](https://git-scm.com/docs/git-bisect).
-To achieve this, try to split your work into small steps from the very beginning. It is always easier to squash a few commits together than to split one big commit into several. Don’t be afraid of making too small or imperfect steps along the way. You can always go back later and edit the commits with `git` `rebase` `--interactive` before you publish them. You can use `git` `stash` `push` `--keep-index` to run the test suite independent of other uncommitted changes; see the EXAMPLES section of [git-stash[1]](https://git-scm.com/docs/git-stash).
+To achieve this, try to split your work into small steps from the very beginning. It is always easier to squash a few commits together than to split one big commit into several. Don't be afraid of making too small or imperfect steps along the way. You can always go back later and edit the commits with `git` `rebase` `--interactive` before you publish them. You can use `git` `stash` `push` `--keep-index` to run the test suite independent of other uncommitted changes; see the EXAMPLES section of [git-stash[1]](https://git-scm.com/docs/git-stash).
 ##  [](https://git-scm.com/docs/gitworkflows#_managing_branches)MANAGING BRANCHES
 There are two main tools that can be used to include changes from one branch on another: [git-merge[1]](https://git-scm.com/docs/git-merge) and [git-cherry-pick[1]](https://git-scm.com/docs/git-cherry-pick).
 Merges have many advantages, so we try to solve as many problems as possible with merges alone. Cherry-picking is still occasionally useful; see "Merging upwards" below for an example.
@@ -292,7 +292,7 @@ The same rewind and rebuild process may be followed for _seen_. A public announc
 ##  [](https://git-scm.com/docs/gitworkflows#_distributed_workflows)DISTRIBUTED WORKFLOWS
 After the last section, you should know how to manage topics. In general, you will not be the only person working on the project, so you will have to share your work.
 Roughly speaking, there are two important workflows: merge and patch. The important difference is that the merge workflow can propagate full history, including merges, while patches cannot. Both workflows can be used in parallel: in `git.git`, only subsystem maintainers use the merge workflow, while everyone else sends patches.
-Note that the maintainer(s) may impose restrictions, such as "Signed-off-by" requirements, that all commits/patches submitted for inclusion must adhere to. Consult your project’s documentation for more information.
+Note that the maintainer(s) may impose restrictions, such as "Signed-off-by" requirements, that all commits/patches submitted for inclusion must adhere to. Consult your project's documentation for more information.
 ###  [](https://git-scm.com/docs/gitworkflows#_merge_workflow)Merge workflow
 The merge workflow works by copying branches between upstream and downstream. Upstream can merge contributions into the official history; downstream base their work on the official history.
 There are three main tools that can be used for this:
@@ -310,7 +310,7 @@ If you just want to get the newest copies of the integration branches, staying u
 Recipe: Push/pull: Staying up to date
 Use `git` `fetch` _< remote>_ or `git` `remote` `update` to stay up to date.
 Then simply fork your topic branches from the stable remotes as explained earlier.
-If you are a maintainer and would like to merge other people’s topic branches to the integration branches, they will typically send a request to do so by mail. Such a request looks like
+If you are a maintainer and would like to merge other people's topic branches to the integration branches, they will typically send a request to do so by mail. Such a request looks like
 ```
 Please pull from
     <URL> <branch>
@@ -321,7 +321,7 @@ Recipe: Push/pull: Merging remote topics
 `git` `pull` _< URL>_ _< branch>_
 Occasionally, the maintainer may get merge conflicts when they try to pull changes from downstream. In this case, they can ask downstream to do the merge and resolve the conflicts themselves (perhaps they will know better how to resolve them). It is one of the rare cases where downstream _should_ merge from upstream.
 ###  [](https://git-scm.com/docs/gitworkflows#_patch_workflow)Patch workflow
-If you are a contributor that sends changes upstream in the form of emails, you should use topic branches as usual (see above). Then use [git-format-patch[1]](https://git-scm.com/docs/git-format-patch) to generate the corresponding emails (highly recommended over manually formatting them because it makes the maintainer’s life easier).
+If you are a contributor that sends changes upstream in the form of emails, you should use topic branches as usual (see above). Then use [git-format-patch[1]](https://git-scm.com/docs/git-format-patch) to generate the corresponding emails (highly recommended over manually formatting them because it makes the maintainer's life easier).
 Recipe: format-patch/am: Publishing branches/topics
   * `git` `format-patch` `-M` `upstream..topic` to turn them into preformatted patch files
   * `git` `send-email` `--to=`_< recipient>_ _< patches>_
@@ -341,6 +341,6 @@ One feature worth pointing out is the three-way merge, which can help if you get
 ##  [](https://git-scm.com/docs/gitworkflows#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitworkflows
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

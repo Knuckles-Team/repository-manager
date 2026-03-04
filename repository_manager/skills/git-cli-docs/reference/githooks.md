@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/githooks#_name)
     * [SYNOPSIS](https://git-scm.com/docs/githooks#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/githooks#_description)
@@ -29,8 +29,8 @@
 Localized versions of **githooks** manual
   1. [English ](https://git-scm.com/docs/githooks)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/githooks)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -234,7 +234,7 @@ githooks - Hooks used by Git
 ##  [](https://git-scm.com/docs/githooks#_synopsis)SYNOPSIS
 $GIT_DIR/hooks/* (or `git config core.hooksPath`/*)
 ##  [](https://git-scm.com/docs/githooks#_description)DESCRIPTION
-Hooks are programs you can place in a hooks directory to trigger actions at certain points in git’s execution. Hooks that don’t have the executable bit set are ignored.
+Hooks are programs you can place in a hooks directory to trigger actions at certain points in git's execution. Hooks that don't have the executable bit set are ignored.
 By default the hooks directory is `$GIT_DIR/hooks`, but that can be changed via the `core.hooksPath` configuration variable (see [git-config[1]](https://git-scm.com/docs/git-config)).
 Before Git invokes a hook, it changes its working directory to either $GIT_DIR in a bare repository or the root of the working tree in a non-bare repository. An exception are hooks triggered during a push (_pre-receive_ , _update_ , _post-receive_ , _post-update_ , _push-to-checkout_) which are always executed in $GIT_DIR.
 Environment variables, such as `GIT_DIR`, `GIT_WORK_TREE`, etc., are exported so that Git commands run by the hook can correctly locate the repository. If your hook needs to invoke Git commands in a foreign repository or in a different working tree of the same repository, then it should clear these environment variables so they do not interfere with Git operations at the foreign location. For example:
@@ -244,7 +244,7 @@ foreign_desc=$(unset $(git rev-parse --local-env-vars); git -C ../foreign-repo d
 ```
 
 Hooks can get their arguments via the environment, command-line arguments, and stdin. See the documentation for each hook below for details.
-`git` `init` may copy hooks to the new repository, depending on its configuration. See the "TEMPLATE DIRECTORY" section in [git-init[1]](https://git-scm.com/docs/git-init) for details. When the rest of this document refers to "default hooks" it’s talking about the default template shipped with Git.
+`git` `init` may copy hooks to the new repository, depending on its configuration. See the "TEMPLATE DIRECTORY" section in [git-init[1]](https://git-scm.com/docs/git-init) for details. When the rest of this document refers to "default hooks" it's talking about the default template shipped with Git.
 The currently supported hooks are described below.
 ##  [](https://git-scm.com/docs/githooks#_hooks)HOOKS
 ###  [](https://git-scm.com/docs/githooks#_applypatch_msg)applypatch-msg
@@ -284,7 +284,7 @@ This hook is meant primarily for notification, and cannot affect the outcome of 
 ###  [](https://git-scm.com/docs/githooks#_pre_rebase)pre-rebase
 This hook is called by [git-rebase[1]](https://git-scm.com/docs/git-rebase) and can be used to prevent a branch from getting rebased. The hook may be called with one or two parameters. The first parameter is the upstream from which the series was forked. The second parameter is the branch being rebased, and is not set when rebasing the current branch.
 ###  [](https://git-scm.com/docs/githooks#_post_checkout)post-checkout
-This hook is invoked when a [git-checkout[1]](https://git-scm.com/docs/git-checkout) or [git-switch[1]](https://git-scm.com/docs/git-switch) is run after having updated the worktree. The hook is given three parameters: the ref of the previous HEAD, the ref of the new HEAD (which may or may not have changed), and a flag indicating whether the checkout was a branch checkout (changing branches, flag=1) or a file checkout (retrieving a file from the index, flag=0). This hook cannot affect the outcome of `git` `switch` or `git` `checkout`, other than that the hook’s exit status becomes the exit status of these two commands.
+This hook is invoked when a [git-checkout[1]](https://git-scm.com/docs/git-checkout) or [git-switch[1]](https://git-scm.com/docs/git-switch) is run after having updated the worktree. The hook is given three parameters: the ref of the previous HEAD, the ref of the new HEAD (which may or may not have changed), and a flag indicating whether the checkout was a branch checkout (changing branches, flag=1) or a file checkout (retrieving a file from the index, flag=0). This hook cannot affect the outcome of `git` `switch` or `git` `checkout`, other than that the hook's exit status becomes the exit status of these two commands.
 It is also run after [git-clone[1]](https://git-scm.com/docs/git-clone), unless the `--no-checkout` (`-n`) option is used. The first parameter given to the hook is the null-ref, the second the ref of the new HEAD and the flag is always 1. Likewise for `git` `worktree` `add` unless `--no-checkout` is used.
 This hook can be used to perform repository validity checks, auto-display differences from the previous HEAD if different, or set working dir metadata properties.
 ###  [](https://git-scm.com/docs/githooks#_post_merge)post-merge
@@ -292,7 +292,7 @@ This hook is invoked by [git-merge[1]](https://git-scm.com/docs/git-merge), whic
 This hook can be used in conjunction with a corresponding pre-commit hook to save and restore any form of metadata associated with the working tree (e.g.: permissions/ownership, ACLS, etc). See contrib/hooks/setgitperms.perl for an example of how to do this.
 ###  [](https://git-scm.com/docs/githooks#_pre_push)pre-push
 This hook is called by [git-push[1]](https://git-scm.com/docs/git-push) and can be used to prevent a push from taking place. The hook is called with two parameters which provide the name and location of the destination remote, if a named remote is not being used both values will be the same.
-Information about what is to be pushed is provided on the hook’s standard input with lines of the form:
+Information about what is to be pushed is provided on the hook's standard input with lines of the form:
 ```
 <local-ref> SP <local-object-name> SP <remote-ref> SP <remote-object-name> LF
 ```
@@ -314,7 +314,7 @@ This hook executes once for the receive operation. It takes no arguments, but fo
 where _< old-oid>_ is the old object name stored in the ref, _< new-oid>_ is the new object name to be stored in the ref and _< ref-name>_ is the full name of the ref. When creating a new ref, _< old-oid>_ is the all-zeroes object name.
 If the hook exits with non-zero status, none of the refs will be updated. If the hook exits with zero, updating of individual refs can still be prevented by the [_update_](https://git-scm.com/docs/githooks#update) hook.
 Both standard output and standard error output are forwarded to `git` `send-pack` on the other end, so you can simply `echo` messages for the user.
-The number of push options given on the command line of `git` `push` `--push-option=...` can be read from the environment variable `GIT_PUSH_OPTION_COUNT`, and the options themselves are found in `GIT_PUSH_OPTION_0`, `GIT_PUSH_OPTION_1`,…​ If it is negotiated to not use the push options phase, the environment variables will not be set. If the client selects to use push options, but doesn’t transmit any, the count variable will be set to zero, `GIT_PUSH_OPTION_COUNT=0`.
+The number of push options given on the command line of `git` `push` `--push-option=...` can be read from the environment variable `GIT_PUSH_OPTION_COUNT`, and the options themselves are found in `GIT_PUSH_OPTION_0`, `GIT_PUSH_OPTION_1`,…​ If it is negotiated to not use the push options phase, the environment variables will not be set. If the client selects to use push options, but doesn't transmit any, the count variable will be set to zero, `GIT_PUSH_OPTION_COUNT=0`.
 See the section on "Quarantine Environment" in [git-receive-pack[1]](https://git-scm.com/docs/git-receive-pack) for some caveats.
 ###  [](https://git-scm.com/docs/githooks#update)update
 This hook is invoked by [git-receive-pack[1]](https://git-scm.com/docs/git-receive-pack) when it reacts to `git` `push` and updates reference(s) in its repository. Just before updating the ref on the remote repository, the update hook is invoked. Its exit status determines the success or failure of the ref update.
@@ -327,7 +327,7 @@ The hook executes once for each ref to be updated, and takes three parameters:
 A zero exit from the update hook allows the ref to be updated. Exiting with a non-zero status prevents `git` `receive-pack` from updating that ref.
 This hook can be used to prevent _forced_ update on certain refs by making sure that the object name is a commit object that is a descendant of the commit object named by the old object name. That is, to enforce a "fast-forward only" policy.
 It could also be used to log the old..new status. However, it does not know the entire set of branches, so it would end up firing one e-mail per ref when used naively, though. The [_post-receive_](https://git-scm.com/docs/githooks#post-receive) hook is more suited to that.
-In an environment that restricts the users' access only to git commands over the wire, this hook can be used to implement access control without relying on filesystem ownership and group membership. See [git-shell[1]](https://git-scm.com/docs/git-shell) for how you might use the login shell to restrict the user’s access to only git commands.
+In an environment that restricts the users' access only to git commands over the wire, this hook can be used to implement access control without relying on filesystem ownership and group membership. See [git-shell[1]](https://git-scm.com/docs/git-shell) for how you might use the login shell to restrict the user's access to only git commands.
 Both standard output and standard error output are forwarded to `git` `send-pack` on the other end, so you can simply `echo` messages for the user.
 The default _update_ hook, when enabled—​and with `hooks.allowunannotated` config option unset or set to false—​prevents unannotated tags from being pushed.
 ###  [](https://git-scm.com/docs/githooks#proc-receive)proc-receive
@@ -381,7 +381,7 @@ This hook does not affect the outcome of `git` `receive-pack`, as it is called a
 This supersedes the [_post-update_](https://git-scm.com/docs/githooks#post-update) hook in that it gets both old and new values of all the refs in addition to their names.
 Both standard output and standard error output are forwarded to `git` `send-pack` on the other end, so you can simply `echo` messages for the user.
 The default _post-receive_ hook is empty, but there is a sample script `post-receive-email` provided in the `contrib/hooks` directory in Git distribution, which implements sending commit emails.
-The number of push options given on the command line of `git` `push` `--push-option=...` can be read from the environment variable `GIT_PUSH_OPTION_COUNT`, and the options themselves are found in `GIT_PUSH_OPTION_0`, `GIT_PUSH_OPTION_1`,…​ If it is negotiated to not use the push options phase, the environment variables will not be set. If the client selects to use push options, but doesn’t transmit any, the count variable will be set to zero, `GIT_PUSH_OPTION_COUNT=0`.
+The number of push options given on the command line of `git` `push` `--push-option=...` can be read from the environment variable `GIT_PUSH_OPTION_COUNT`, and the options themselves are found in `GIT_PUSH_OPTION_0`, `GIT_PUSH_OPTION_1`,…​ If it is negotiated to not use the push options phase, the environment variables will not be set. If the client selects to use push options, but doesn't transmit any, the count variable will be set to zero, `GIT_PUSH_OPTION_COUNT=0`.
 See the "post-receive" section in [git-receive-pack[1]](https://git-scm.com/docs/git-receive-pack) for additional details.
 ###  [](https://git-scm.com/docs/githooks#post-update)post-update
 This hook is invoked by [git-receive-pack[1]](https://git-scm.com/docs/git-receive-pack) when it reacts to `git` `push` and updates reference(s) in its repository. It executes on the remote repository once after all the refs have been updated.
@@ -421,16 +421,16 @@ The hook receives a list of the rewritten commits on stdin, in the format
 
 The _extra-info_ is again command-dependent. If it is empty, the preceding SP is also omitted. Currently, no commands pass any _extra-info_.
 The hook always runs after the automatic note copying (see "notes.rewrite.<command>" in [git-config[1]](https://git-scm.com/docs/git-config)) has happened, and thus has access to these notes.
-The following command-specific comments apply: 
+The following command-specific comments apply:
 
-[](https://git-scm.com/docs/githooks#Documentation/githooks.txt-rebase)rebase 
-    
+[](https://git-scm.com/docs/githooks#Documentation/githooks.txt-rebase)rebase
+
 For the _squash_ and _fixup_ operation, all commits that were squashed are listed as being rewritten to the squashed commit. This means that there will be several lines sharing the same _new-object-name_.
 The commits are guaranteed to be listed in the order that they were processed by rebase.
 ###  [](https://git-scm.com/docs/githooks#_sendemail_validate)sendemail-validate
 This hook is invoked by [git-send-email[1]](https://git-scm.com/docs/git-send-email).
 It takes these command line arguments. They are, 1. the name of the file which holds the contents of the email to be sent. 2. The name of the file which holds the SMTP headers of the email.
-The SMTP headers are passed in the exact same way as they are passed to the user’s Mail Transport Agent (MTA). In effect, the email given to the user’s MTA, is the contents of $2 followed by the contents of $1.
+The SMTP headers are passed in the exact same way as they are passed to the user's Mail Transport Agent (MTA). In effect, the email given to the user's MTA, is the contents of $2 followed by the contents of $1.
 An example of a few common headers is shown below. Take notice of the capitalization and multi-line tab structure.
 ```
 From: Example <from@example.com>
@@ -443,14 +443,14 @@ Subject: PATCH-STRING
 ```
 
 Exiting with a non-zero status causes `git` `send-email` to abort before sending any e-mails.
-The following environment variables are set when executing the hook. 
+The following environment variables are set when executing the hook.
 
-[](https://git-scm.com/docs/githooks#Documentation/githooks.txt-GITSENDEMAILFILECOUNTER)`GIT_SENDEMAIL_FILE_COUNTER` 
-    
-A 1-based counter incremented by one for every file holding an e-mail to be sent (excluding any FIFOs). This counter does not follow the patch series counter scheme. It will always start at 1 and will end at GIT_SENDEMAIL_FILE_TOTAL. 
+[](https://git-scm.com/docs/githooks#Documentation/githooks.txt-GITSENDEMAILFILECOUNTER)`GIT_SENDEMAIL_FILE_COUNTER`
 
-[](https://git-scm.com/docs/githooks#Documentation/githooks.txt-GITSENDEMAILFILETOTAL)`GIT_SENDEMAIL_FILE_TOTAL` 
-    
+A 1-based counter incremented by one for every file holding an e-mail to be sent (excluding any FIFOs). This counter does not follow the patch series counter scheme. It will always start at 1 and will end at GIT_SENDEMAIL_FILE_TOTAL.
+
+[](https://git-scm.com/docs/githooks#Documentation/githooks.txt-GITSENDEMAILFILETOTAL)`GIT_SENDEMAIL_FILE_TOTAL`
+
 The total number of files that will be sent (excluding any FIFOs). This counter does not follow the patch series counter scheme. It will always be equal to the number of files being sent, whether there is a cover letter or not.
 These variables may for instance be used to validate patch series.
 The sample `sendemail-validate` hook that comes with Git checks that all sent patches (excluding the cover letter) can be applied on top of the upstream repository default branch without conflicts. Some placeholders are left for additional validation steps to be performed after all patches of a given series have been applied.
@@ -489,6 +489,6 @@ Only one parameter should be set to "1" when the hook runs. The hook running pas
 ##  [](https://git-scm.com/docs/githooks#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### githooks
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

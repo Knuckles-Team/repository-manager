@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitprotocol-common#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitprotocol-common#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitprotocol-common#_description)
@@ -29,8 +29,8 @@
 Localized versions of **gitprotocol-common** manual
   1. [English ](https://git-scm.com/docs/gitprotocol-common)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitprotocol-common)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -207,7 +207,7 @@ We also define the following common rules:
   refname /=  "refs/" <see discussion below>
 ```
 
-A refname is a hierarchical octet string beginning with "refs/" and not violating the _git-check-ref-format_ command’s validation rules. More specifically, they:
+A refname is a hierarchical octet string beginning with "refs/" and not violating the _git-check-ref-format_ command's validation rules. More specifically, they:
   1. They can include slash `/` for hierarchical (directory) grouping, but no slash-separated component can begin with a dot `.`.
   2. They must contain at least one `/`. This enforces the presence of a category like `heads/`, `tags/` etc. but the actual names are not restricted.
   3. They cannot have two consecutive dots `..` anywhere.
@@ -220,10 +220,10 @@ A refname is a hierarchical octet string beginning with "refs/" and not violatin
 
 ##  [](https://git-scm.com/docs/gitprotocol-common#_pkt_line_format)pkt-line Format
 Much (but not all) of the payload is described around pkt-lines.
-A pkt-line is a variable length binary string. The first four bytes of the line, the pkt-len, indicates the total length of the line, in hexadecimal. The pkt-len includes the 4 bytes used to contain the length’s hexadecimal representation.
+A pkt-line is a variable length binary string. The first four bytes of the line, the pkt-len, indicates the total length of the line, in hexadecimal. The pkt-len includes the 4 bytes used to contain the length's hexadecimal representation.
 A pkt-line MAY contain binary data, so implementors MUST ensure pkt-line parsing/formatting routines are 8-bit clean.
 A non-binary line SHOULD BE terminated by an LF, which if present MUST be included in the total length. Receivers MUST treat pkt-lines with non-binary data the same whether or not they contain the trailing LF (stripping the LF if present, and not complaining when it is missing).
-The maximum length of a pkt-line’s data component is 65516 bytes. Implementations MUST NOT send pkt-line whose length exceeds 65520 (65516 bytes of payload + 4 bytes of length data).
+The maximum length of a pkt-line's data component is 65516 bytes. Implementations MUST NOT send pkt-line whose length exceeds 65520 (65516 bytes of payload + 4 bytes of length data).
 Implementations SHOULD NOT send an empty pkt-line ("0004").
 A pkt-line with a length field of 0 ("0000"), called a flush-pkt, is a special case and MUST be handled differently than an empty pkt-line ("0004").
 ```
@@ -249,6 +249,6 @@ Examples (as C-style strings):
 ##  [](https://git-scm.com/docs/gitprotocol-common#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitprotocol-common
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

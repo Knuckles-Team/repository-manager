@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitformat-chunk#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitformat-chunk#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitformat-chunk#_description)
@@ -30,8 +30,8 @@
 Localized versions of **gitformat-chunk** manual
   1. [English ](https://git-scm.com/docs/gitformat-chunk)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitformat-chunk)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -213,7 +213,7 @@ To read a chunk-based file format, the file must be opened as a memory-mapped re
 Initialize a `struct` `chunkfile` pointer with `init_chunkfile`(`NULL`).
 After reading the header information from the beginning of the file, including the chunk count, call `read_table_of_contents`() to populate the `struct` `chunkfile` with the list of chunks, their offsets, and their sizes.
 Extract the data information for each chunk using `pair_chunk`() or `read_chunk`():
-  * `pair_chunk`() assigns a given pointer with the location inside the memory-mapped file corresponding to that chunk’s offset. If the chunk does not exist, then the pointer is not modified.
+  * `pair_chunk`() assigns a given pointer with the location inside the memory-mapped file corresponding to that chunk's offset. If the chunk does not exist, then the pointer is not modified.
   * `read_chunk`() takes a `chunk_read_fn` function pointer and calls it with the appropriate initial pointer and size information. The function is not called if the chunk does not exist. Use this method to read chunks if you need to perform immediate parsing or if you need to execute logic based on the size of the chunk.
 
 
@@ -227,6 +227,6 @@ These file formats use the chunk-format API, and can be used as examples for fut
 ##  [](https://git-scm.com/docs/gitformat-chunk#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitformat-chunk
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

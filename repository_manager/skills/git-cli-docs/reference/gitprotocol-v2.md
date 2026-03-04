@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitprotocol-v2#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitprotocol-v2#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitprotocol-v2#_description)
@@ -32,8 +32,8 @@
 Localized versions of **gitprotocol-v2** manual
   1. [English ](https://git-scm.com/docs/gitprotocol-v2)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitprotocol-v2)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -207,7 +207,7 @@ gitprotocol-v2 - Git Wire Protocol, Version 2
 ```
 
 ##  [](https://git-scm.com/docs/gitprotocol-v2#_description)DESCRIPTION
-This document presents a specification for a version 2 of Git’s wire protocol. Protocol v2 will improve upon v1 in the following ways:
+This document presents a specification for a version 2 of Git's wire protocol. Protocol v2 will improve upon v1 in the following ways:
   * Instead of multiple service names, multiple commands will be supported by a single service
   * Easily extendable as capabilities are moved into their own section of the protocol, no longer being hidden behind a NUL byte and limited by the size of a pkt-line
   * Separate out other information hidden behind NUL bytes (e.g. agent string as a capability and symrefs can be requested using _ls-refs_)
@@ -254,7 +254,7 @@ S: <capability-advertisement>
 
 Subsequent requests are then made directly to the service `$GIT_URL/git-upload-pack`. (This works the same for git-receive-pack).
 Uses the `--http-backend-info-refs` option to [git-upload-pack[1]](https://git-scm.com/docs/git-upload-pack).
-The server may need to be configured to pass this header’s contents via the `GIT_PROTOCOL` variable. See the discussion in [git-http-backend[1]](https://git-scm.com/docs/git-http-backend).
+The server may need to be configured to pass this header's contents via the `GIT_PROTOCOL` variable. See the discussion in [git-http-backend[1]](https://git-scm.com/docs/git-http-backend).
 ##  [](https://git-scm.com/docs/gitprotocol-v2#_capability_advertisement)Capability Advertisement
 A server which decides to communicate (based on a request from a client) using protocol version 2, notifies the client by sending a version string in its initial response followed by an advertisement of its capabilities. Each capability is a key with an optional value. Clients must ignore all unknown keys. Semantics of unknown values are left to the definition of each key. Some capabilities will describe commands which can be requested to be executed by the client.
 ```
@@ -293,7 +293,7 @@ command-specific-args are packet line framed arguments defined by
 each individual command.
 ```
 
-The server will then check to ensure that the client’s request is comprised of a valid command as well as valid capabilities which were advertised. If the request is valid the server will then execute the command. A server MUST wait till it has received the client’s entire request before issuing a response. The format of the response is determined by the command being executed, but in all cases a flush-pkt indicates the end of the response.
+The server will then check to ensure that the client's request is comprised of a valid command as well as valid capabilities which were advertised. If the request is valid the server will then execute the command. A server MUST wait till it has received the client's entire request before issuing a response. The format of the response is determined by the command being executed, but in all cases a flush-pkt indicates the end of the response.
 When a command has finished, and the client has received the entire response from the server, a client can either request that another command be executed or can terminate the connection. A client may optionally send an empty request consisting of just a flush-pkt to indicate that no more requests will be made.
 ##  [](https://git-scm.com/docs/gitprotocol-v2#_capabilities)Capabilities
 There are two different types of capabilities: normal capabilities, which can be used to convey information or alter the behavior of a request, and commands, which are the core actions that a client wants to perform (fetch, push, etc).
@@ -319,7 +319,7 @@ show refs not matching the prefix if it chooses, and clients
 should filter the result themselves.
 ```
 
-If the _unborn_ feature is advertised the following argument can be included in the client’s request.
+If the _unborn_ feature is advertised the following argument can be included in the client's request.
 ```
    unborn
 The server will send information about HEAD even if it is a symref
@@ -396,7 +396,7 @@ to its base by position in pack rather than by an oid.  That is,
 they can read OBJ_OFS_DELTA (aka type 6) in a packfile.
 ```
 
-If the _shallow_ feature is advertised the following arguments can be included in the clients request as well as the potential addition of the _shallow-info_ section in the server’s response as explained below.
+If the _shallow_ feature is advertised the following arguments can be included in the clients request as well as the potential addition of the _shallow-info_ section in the server's response as explained below.
 ```
    shallow <oid>
 A client must notify the server of all commits for which it only
@@ -438,7 +438,7 @@ Cannot be used with "deepen", but can be used with
 "deepen-since".
 ```
 
-If the _filter_ feature is advertised, the following argument can be included in the client’s request:
+If the _filter_ feature is advertised, the following argument can be included in the client's request:
 ```
    filter <filter-spec>
 Request that various objects from the packfile be omitted
@@ -453,7 +453,7 @@ accept the following suffixes: 'k', 'm', and 'g' for 1024,
 1048576, and 1073741824, respectively.
 ```
 
-If the _ref-in-want_ feature is advertised, the following argument can be included in the client’s request as well as the potential addition of the _wanted-refs_ section in the server’s response as explained below.
+If the _ref-in-want_ feature is advertised, the following argument can be included in the client's request as well as the potential addition of the _wanted-refs_ section in the server's response as explained below.
 ```
    want-ref <ref>
 Indicates to the server that the client wants to retrieve a
@@ -462,7 +462,7 @@ server.  It is a protocol error to send want-ref for the
 same ref more than once.
 ```
 
-If the _sideband-all_ feature is advertised, the following argument can be included in the client’s request:
+If the _sideband-all_ feature is advertised, the following argument can be included in the client's request:
 ```
    sideband-all
 Instruct the server to send the whole response multiplexed, not just
@@ -472,7 +472,7 @@ indicating its sideband (1, 2, or 3), and the server may send "0005\2"
 (a PKT-LINE of sideband 2 with no payload) as a keepalive packet.
 ```
 
-If the _packfile-uris_ feature is advertised, the following argument can be included in the client’s request as well as the potential addition of the _packfile-uris_ section in the server’s response as explained below. Note that at most one `packfile-uris` line can be sent to the server.
+If the _packfile-uris_ feature is advertised, the following argument can be included in the client's request as well as the potential addition of the _packfile-uris_ section in the server's response as explained below. Note that at most one `packfile-uris` line can be sent to the server.
 ```
    packfile-uris <comma-separated-list-of-protocols>
 Indicates to the server that the client is willing to receive
@@ -482,7 +482,7 @@ client should download from all given URIs. Currently, the
 protocols supported are "http" and "https".
 ```
 
-If the _wait-for-done_ feature is advertised, the following argument can be included in the client’s request.
+If the _wait-for-done_ feature is advertised, the following argument can be included in the client's request.
 ```
    wait-for-done
 Indicates to the server that it should never send "ready", but
@@ -578,7 +578,7 @@ packfile = PKT-LINE("packfile" LF)
 ```
 
   * Always begins with the section header "packfile-uris".
-  * For each URI the server sends, it sends a hash of the pack’s contents (as output by git index-pack) followed by the URI.
+  * For each URI the server sends, it sends a hash of the pack's contents (as output by git index-pack) followed by the URI.
   * The hashes are 40 hex characters long. When Git upgrades to a new hash algorithm, this might need to be updated. (It should match whatever index-pack outputs after "pack\t" or "keep\t".
 ```
    packfile section
@@ -646,10 +646,10 @@ obj-info = obj-id SP obj-size
 ```
 
 ###  [](https://git-scm.com/docs/gitprotocol-v2#_bundle_uri)bundle-uri
-If the _bundle-uri_ capability is advertised, the server supports the ‘bundle-uri’ command.
+If the _bundle-uri_ capability is advertised, the server supports the 'bundle-uri' command.
 The capability is currently advertised with no value (i.e. not "bundle-uri=somevalue"), a value may be added in the future for supporting command-wide extensions. Clients MUST ignore any unknown capability values and proceed with the 'bundle-uri` dialog they support.
 The _bundle-uri_ command is intended to be issued before `fetch` to get URIs to bundle files (see [git-bundle[1]](https://git-scm.com/docs/git-bundle)) to "seed" and inform the subsequent `fetch` command.
-The client CAN issue `bundle-uri` before or after any other valid command. To be useful to clients it’s expected that it’ll be issued after an `ls-refs` and before `fetch`, but CAN be issued at any time in the dialog.
+The client CAN issue `bundle-uri` before or after any other valid command. To be useful to clients it's expected that it'll be issued after an `ls-refs` and before `fetch`, but CAN be issued at any time in the dialog.
 ####  [](https://git-scm.com/docs/gitprotocol-v2#_discussion_of_bundle_uri)DISCUSSION of bundle-uri
 The intent of the feature is optimize for server resource consumption in the common case by changing the common case of fetching a very large PACK during [git-clone[1]](https://git-scm.com/docs/git-clone) into a smaller incremental fetch.
 It also allows servers to achieve better caching in combination with an `uploadpack.packObjectsHook` (see [git-config[1]](https://git-scm.com/docs/git-config)).
@@ -659,42 +659,42 @@ One way that servers could take advantage of these bundles is that the server wo
 A `bundle-uri` request takes no arguments, and as noted above does not currently advertise a capability value. Both may be added in the future.
 When the client issues a `command=bundle-uri` request, the response is a list of key-value pairs provided as packet lines with value _< key>_`=`_< value>_. Each _< key>_ should be interpreted as a config key from the `bundle.*` namespace to construct a list of bundles. These keys are grouped by a `bundle.`_< id>_`.` subsection, where each key corresponding to a given _< id>_ contributes attributes to the bundle defined by that _< id>_. See [git-config[1]](https://git-scm.com/docs/git-config) for the specific details of these keys and how the Git client will interpret their values.
 Clients MUST parse the line according to the above format, lines that do not conform to the format SHOULD be discarded. The user MAY be warned in such a case.
-####  [](https://git-scm.com/docs/gitprotocol-v2#_bundle_uri_client_and_server_expectations)bundle-uri CLIENT AND SERVER EXPECTATIONS 
+####  [](https://git-scm.com/docs/gitprotocol-v2#_bundle_uri_client_and_server_expectations)bundle-uri CLIENT AND SERVER EXPECTATIONS
 
-[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-URICONTENTS)URI CONTENTS 
-    
+[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-URICONTENTS)URI CONTENTS
+
 The content at the advertised URIs MUST be one of two types.
 The advertised URI may contain a bundle file that `git` `bundle` `verify` would accept. I.e. they MUST contain one or more reference tips for use by the client, MUST indicate prerequisites (in any) with standard "-" prefixes, and MUST indicate their "object-format", if applicable.
-The advertised URI may alternatively contain a plaintext file that `git` `config` `--list` would accept (with the `--file` option). The key-value pairs in this list are in the `bundle.*` namespace (see [git-config[1]](https://git-scm.com/docs/git-config)). 
+The advertised URI may alternatively contain a plaintext file that `git` `config` `--list` would accept (with the `--file` option). The key-value pairs in this list are in the `bundle.*` namespace (see [git-config[1]](https://git-scm.com/docs/git-config)).
 
-[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-bundle-uriCLIENTERRORRECOVERY)bundle-uri CLIENT ERROR RECOVERY 
-    
+[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-bundle-uriCLIENTERRORRECOVERY)bundle-uri CLIENT ERROR RECOVERY
+
 A client MUST above all gracefully degrade on errors, whether that error is because of bad missing/data in the bundle URI(s), because that client is too dumb to e.g. understand and fully parse out bundle headers and their prerequisite relationships, or something else.
 Server operators should feel confident in turning on "bundle-uri" and not worry if e.g. their CDN goes down that clones or fetches will run into hard failures. Even if the server bundle(s) are incomplete, or bad in some way the client should still end up with a functioning repository, just as if it had chosen not to use this protocol extension.
-All subsequent discussion on client and server interaction MUST keep this in mind. 
+All subsequent discussion on client and server interaction MUST keep this in mind.
 
-[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-bundle-uriSERVERTOCLIENT)bundle-uri SERVER TO CLIENT 
-    
+[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-bundle-uriSERVERTOCLIENT)bundle-uri SERVER TO CLIENT
+
 The ordering of the returned bundle uris is not significant. Clients MUST parse their headers to discover their contained OIDS and prerequisites. A client MUST consider the content of the bundle(s) themselves and their header as the ultimate source of truth.
-A server MAY even return bundle(s) that don’t have any direct relationship to the repository being cloned (either through accident, or intentional "clever" configuration), and expect a client to sort out what data they’d like from the bundle(s), if any. 
+A server MAY even return bundle(s) that don't have any direct relationship to the repository being cloned (either through accident, or intentional "clever" configuration), and expect a client to sort out what data they'd like from the bundle(s), if any.
 
-[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-bundle-uriCLIENTTOSERVER)bundle-uri CLIENT TO SERVER 
-    
-The client SHOULD provide reference tips found in the bundle header(s) as _have_ lines in any subsequent `fetch` request. A client MAY also ignore the bundle(s) entirely if doing so is deemed worse for some reason, e.g. if the bundles can’t be downloaded, it doesn’t like the tips it finds etc. 
+[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-bundle-uriCLIENTTOSERVER)bundle-uri CLIENT TO SERVER
 
-[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-WHENADVERTISEDBUNDLESREQUIRENOFURTHERNEGOTIATION)WHEN ADVERTISED BUNDLE(S) REQUIRE NO FURTHER NEGOTIATION 
-    
-If after issuing `bundle-uri` and `ls-refs`, and getting the header(s) of the bundle(s) the client finds that the ref tips it wants can be retrieved entirely from advertised bundle(s), the client MAY disconnect from the Git server. The results of such a _clone_ or _fetch_ should be indistinguishable from the state attained without using bundle-uri. 
+The client SHOULD provide reference tips found in the bundle header(s) as _have_ lines in any subsequent `fetch` request. A client MAY also ignore the bundle(s) entirely if doing so is deemed worse for some reason, e.g. if the bundles can't be downloaded, it doesn't like the tips it finds etc.
 
-[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-EARLYCLIENTDISCONNECTIONSANDERRORRECOVERY)EARLY CLIENT DISCONNECTIONS AND ERROR RECOVERY 
-    
+[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-WHENADVERTISEDBUNDLESREQUIRENOFURTHERNEGOTIATION)WHEN ADVERTISED BUNDLE(S) REQUIRE NO FURTHER NEGOTIATION
+
+If after issuing `bundle-uri` and `ls-refs`, and getting the header(s) of the bundle(s) the client finds that the ref tips it wants can be retrieved entirely from advertised bundle(s), the client MAY disconnect from the Git server. The results of such a _clone_ or _fetch_ should be indistinguishable from the state attained without using bundle-uri.
+
+[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-EARLYCLIENTDISCONNECTIONSANDERRORRECOVERY)EARLY CLIENT DISCONNECTIONS AND ERROR RECOVERY
+
 A client MAY perform an early disconnect while still downloading the bundle(s) (having streamed and parsed their headers). In such a case the client MUST gracefully recover from any errors related to finishing the download and validation of the bundle(s).
 I.e. a client might need to re-connect and issue a _fetch_ command, and possibly fall back to not making use of _bundle-uri_ at all.
-This "MAY" behavior is specified as such (and not a "SHOULD") on the assumption that a server advertising bundle uris is more likely than not to be serving up a relatively large repository, and to be pointing to URIs that have a good chance of being in working order. A client MAY e.g. look at the payload size of the bundles as a heuristic to see if an early disconnect is worth it, should falling back on a full "fetch" dialog be necessary. 
+This "MAY" behavior is specified as such (and not a "SHOULD") on the assumption that a server advertising bundle uris is more likely than not to be serving up a relatively large repository, and to be pointing to URIs that have a good chance of being in working order. A client MAY e.g. look at the payload size of the bundles as a heuristic to see if an early disconnect is worth it, should falling back on a full "fetch" dialog be necessary.
 
-[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-WHENADVERTISEDBUNDLESREQUIREFURTHERNEGOTIATION)WHEN ADVERTISED BUNDLE(S) REQUIRE FURTHER NEGOTIATION 
-    
-A client SHOULD commence a negotiation of a PACK from the server via the "fetch" command using the OID tips found in advertised bundles, even if’s still in the process of downloading those bundle(s).
+[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-WHENADVERTISEDBUNDLESREQUIREFURTHERNEGOTIATION)WHEN ADVERTISED BUNDLE(S) REQUIRE FURTHER NEGOTIATION
+
+A client SHOULD commence a negotiation of a PACK from the server via the "fetch" command using the OID tips found in advertised bundles, even if's still in the process of downloading those bundle(s).
 This allows for aggressive early disconnects from any interactive server dialog. The client blindly trusts that the advertised OID tips are relevant, and issues them as _have_ lines, it then requests any tips it would like (usually from the "ls-refs" advertisement) via _want_ lines. The server will then compute a (hopefully small) PACK with the expected difference between the tips from the bundle(s) and the data requested.
 The only connection the client then needs to keep active is to the concurrently downloading static bundle(s), when those and the incremental PACK are retrieved they should be inflated and validated. Any errors at this point should be gracefully recovered from, see above.
 ####  [](https://git-scm.com/docs/gitprotocol-v2#_bundle_uri_protocol_features)bundle-uri PROTOCOL FEATURES
@@ -706,7 +706,7 @@ Some example key-value pairs that are not currently implemented but could be imp
   * Add a "hash=<val>" or "size=<bytes>" advertise the expected hash or size of the bundle file.
   * Advertise that one or more bundle files are the same (to e.g. have clients round-robin or otherwise choose one of N possible files).
   * A "oid=<OID>" shortcut and "prerequisite=<OID>" shortcut. For expressing the common case of a bundle with one tip and no prerequisites, or one tip and one prerequisite.
-This would allow for optimizing the common case of servers who’d like to provide one "big bundle" containing only their "main" branch, and/or incremental updates thereof.
+This would allow for optimizing the common case of servers who'd like to provide one "big bundle" containing only their "main" branch, and/or incremental updates thereof.
 A client receiving such a response MAY assume that they can skip retrieving the header from a bundle at the indicated URI, and thus save themselves and the server(s) the request(s) needed to inspect the headers of that bundle or bundles.
 
 
@@ -726,16 +726,16 @@ pr-field = field-name "=" field-value
 
 where all the `field-name` and `field-value` in a given `pr-fields` are field names and values related to a single promisor remote. A given `field-name` MUST NOT appear more than once in given `pr-fields`.
 The server MUST advertise at least the "name" and "url" field names along with the associated field values, which are the name of a valid remote and its URL, in each `pr-fields`. The "name" and "url" fields MUST appear first in each pr-fields, in that order.
-After these mandatory fields, the server MAY advertise the following optional fields in any order: 
+After these mandatory fields, the server MAY advertise the following optional fields in any order:
 
-[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-partialCloneFilter)`partialCloneFilter` 
-    
-The filter specification used by the remote. Clients can use this to determine if the remote’s filtering strategy is compatible with their needs (e.g., checking if both use "blob:none"). It corresponds to the "remote.<name>.partialCloneFilter" config setting. 
+[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-partialCloneFilter)`partialCloneFilter`
 
-[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-token)`token` 
-    
+The filter specification used by the remote. Clients can use this to determine if the remote's filtering strategy is compatible with their needs (e.g., checking if both use "blob:none"). It corresponds to the "remote.<name>.partialCloneFilter" config setting.
+
+[](https://git-scm.com/docs/gitprotocol-v2#Documentation/gitprotocol-v2.txt-token)`token`
+
 An authentication token that clients can use when connecting to the remote. It corresponds to the "remote.<name>.token" config setting.
-No other fields are defined by the protocol at this time. Field names are case-sensitive and MUST be transmitted exactly as specified above. Clients MUST ignore fields they don’t recognize to allow for future protocol extensions.
+No other fields are defined by the protocol at this time. Field names are case-sensitive and MUST be transmitted exactly as specified above. Clients MUST ignore fields they don't recognize to allow for future protocol extensions.
 For now, the client can only use information transmitted through these fields to decide if it accepts the advertised promisor remote. In the future that information might be used for other purposes though.
 Field values MUST be urlencoded.
 If the client decides to use one or more promisor remotes the server advertised, it can reply with "promisor-remote=<pr-names>" where <pr-names> should be of the form:
@@ -745,13 +745,13 @@ pr-names = pr-name | pr-names ";" pr-name
 
 where `pr-name` is the urlencoded name of a promisor remote the server advertised and the client accepts.
 Note that, everywhere in this document, the _;_ and _,_ characters MUST be encoded if they appear in `pr-name` or `field-value`.
-If the server doesn’t know any promisor remote that could be good for a client to use, or prefers a client not to use any promisor remote it uses or knows about, it shouldn’t advertise the "promisor-remote" capability at all.
-In this case, or if the client doesn’t want to use any promisor remote the server advertised, the client shouldn’t advertise the "promisor-remote" capability at all in its reply.
+If the server doesn't know any promisor remote that could be good for a client to use, or prefers a client not to use any promisor remote it uses or knows about, it shouldn't advertise the "promisor-remote" capability at all.
+In this case, or if the client doesn't want to use any promisor remote the server advertised, the client shouldn't advertise the "promisor-remote" capability at all in its reply.
 On the server side, the "promisor.advertise" and "promisor.sendFields" configuration options can be used to control what it advertises. On the client side, the "promisor.acceptFromServer" configuration option can be used to control what it accepts. See the documentation of these configuration options for more information.
-Note that in the future it would be nice if the "promisor-remote" protocol capability could be used by the server, when responding to `git` `fetch` or `git` `clone`, to advertise better-connected remotes that the client can use as promisor remotes, instead of this repository, so that the client can lazily fetch objects from these other better-connected remotes. This would require the server to omit in its response the objects available on the better-connected remotes that the client has accepted. This hasn’t been implemented yet though. So for now this "promisor-remote" capability is useful only when the server advertises some promisor remotes it already uses to borrow objects from.
+Note that in the future it would be nice if the "promisor-remote" protocol capability could be used by the server, when responding to `git` `fetch` or `git` `clone`, to advertise better-connected remotes that the client can use as promisor remotes, instead of this repository, so that the client can lazily fetch objects from these other better-connected remotes. This would require the server to omit in its response the objects available on the better-connected remotes that the client has accepted. This hasn't been implemented yet though. So for now this "promisor-remote" capability is useful only when the server advertises some promisor remotes it already uses to borrow objects from.
 ##  [](https://git-scm.com/docs/gitprotocol-v2#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitprotocol-v2
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

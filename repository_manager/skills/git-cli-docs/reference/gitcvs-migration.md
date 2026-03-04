@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitcvs-migration#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitcvs-migration#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitcvs-migration#_description)
@@ -34,8 +34,8 @@
 Localized versions of **gitcvs-migration** manual
   1. [English ](https://git-scm.com/docs/gitcvs-migration)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitcvs-migration)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -212,8 +212,8 @@ $ git pull origin
 ```
 
 which merges in any work that others might have done since the clone operation. If there are uncommitted changes in your working tree, commit them first before running git pull.
-Note |  The _pull_ command knows where to get updates from because of certain configuration variables that were set by the first _git clone_ command; see `git` `config` `-l` and the [git-config[1]](https://git-scm.com/docs/git-config) man page for details.  
----|---  
+Note |  The _pull_ command knows where to get updates from because of certain configuration variables that were set by the first _git clone_ command; see `git` `config` `-l` and the [git-config[1]](https://git-scm.com/docs/git-config) man page for details.
+---|---
 You can update the shared repository with your changes by first committing your changes, and then using the _git push_ command:
 ```
 $ git push origin master
@@ -237,7 +237,7 @@ $ git --bare init --shared
 $ git --bare fetch /home/alice/myproject master:master
 ```
 
-Next, give every team member read/write access to this repository. One easy way to do this is to give all the team members ssh access to the machine where the repository is hosted. If you don’t want to give them a full shell on the machine, there is a restricted shell which only allows users to do Git pushes and pulls; see [git-shell[1]](https://git-scm.com/docs/git-shell).
+Next, give every team member read/write access to this repository. One easy way to do this is to give all the team members ssh access to the machine where the repository is hosted. If you don't want to give them a full shell on the machine, there is a restricted shell which only allows users to do Git pushes and pulls; see [git-shell[1]](https://git-scm.com/docs/git-shell).
 Put all the committers in the same group, and make the repository writable by that group:
 ```
 $ chgrp -R $group /pub/my-repo.git
@@ -245,8 +245,8 @@ $ chgrp -R $group /pub/my-repo.git
 
 Make sure committers have a umask of at most 027, so that the directories they create are writable and searchable by other group members.
 ##  [](https://git-scm.com/docs/gitcvs-migration#_importing_a_cvs_archive)Importing a CVS archive
-Note |  These instructions use the `git-cvsimport` script which ships with git, but other importers may provide better results. See the note in [git-cvsimport[1]](https://git-scm.com/docs/git-cvsimport) for other options.   
----|---  
+Note |  These instructions use the `git-cvsimport` script which ships with git, but other importers may provide better results. See the note in [git-cvsimport[1]](https://git-scm.com/docs/git-cvsimport) for other options.
+---|---
 First, install version 2.1 or higher of cvsps from <https://github.com/andreyvit/cvsps> and make sure it is in your path. Then cd to a checked out CVS working directory of the project you are interested in and run [git-cvsimport[1]](https://git-scm.com/docs/git-cvsimport):
 ```
 $ git cvsimport -C <destination> <module>
@@ -263,14 +263,14 @@ You can enforce finer grained permissions using update hooks. See [Controlling a
 ##  [](https://git-scm.com/docs/gitcvs-migration#_providing_cvs_access_to_a_git_repository)Providing CVS Access to a Git Repository
 It is also possible to provide true CVS access to a Git repository, so that developers can still use CVS; see [git-cvsserver[1]](https://git-scm.com/docs/git-cvsserver) for details.
 ##  [](https://git-scm.com/docs/gitcvs-migration#_alternative_development_models)Alternative Development Models
-CVS users are accustomed to giving a group of developers commit access to a common repository. As we’ve seen, this is also possible with Git. However, the distributed nature of Git allows other development models, and you may want to first consider whether one of them might be a better fit for your project.
-For example, you can choose a single person to maintain the project’s primary public repository. Other developers then clone this repository and each work in their own clone. When they have a series of changes that they’re happy with, they ask the maintainer to pull from the branch containing the changes. The maintainer reviews their changes and pulls them into the primary repository, which other developers pull from as necessary to stay coordinated. The Linux kernel and other projects use variants of this model.
-With a small group, developers may just pull changes from each other’s repositories without the need for a central maintainer.
+CVS users are accustomed to giving a group of developers commit access to a common repository. As we've seen, this is also possible with Git. However, the distributed nature of Git allows other development models, and you may want to first consider whether one of them might be a better fit for your project.
+For example, you can choose a single person to maintain the project's primary public repository. Other developers then clone this repository and each work in their own clone. When they have a series of changes that they're happy with, they ask the maintainer to pull from the branch containing the changes. The maintainer reviews their changes and pulls them into the primary repository, which other developers pull from as necessary to stay coordinated. The Linux kernel and other projects use variants of this model.
+With a small group, developers may just pull changes from each other's repositories without the need for a central maintainer.
 ##  [](https://git-scm.com/docs/gitcvs-migration#_see_also)SEE ALSO
-[gittutorial[7]](https://git-scm.com/docs/gittutorial), [gittutorial-2[7]](https://git-scm.com/docs/gittutorial-2), [gitcore-tutorial[7]](https://git-scm.com/docs/gitcore-tutorial), [gitglossary[7]](https://git-scm.com/docs/gitglossary), [giteveryday[7]](https://git-scm.com/docs/giteveryday), [The Git User’s Manual](https://git-scm.com/docs/user-manual)
+[gittutorial[7]](https://git-scm.com/docs/gittutorial), [gittutorial-2[7]](https://git-scm.com/docs/gittutorial-2), [gitcore-tutorial[7]](https://git-scm.com/docs/gitcore-tutorial), [gitglossary[7]](https://git-scm.com/docs/gitglossary), [giteveryday[7]](https://git-scm.com/docs/giteveryday), [The Git User's Manual](https://git-scm.com/docs/user-manual)
 ##  [](https://git-scm.com/docs/gitcvs-migration#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitcvs-migration
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

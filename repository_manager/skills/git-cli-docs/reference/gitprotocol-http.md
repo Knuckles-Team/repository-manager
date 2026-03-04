@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitprotocol-http#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitprotocol-http#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitprotocol-http#_description)
@@ -37,8 +37,8 @@
 Localized versions of **gitprotocol-http** manual
   1. [English ](https://git-scm.com/docs/gitprotocol-http)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitprotocol-http)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -441,7 +441,7 @@ Commands MUST appear in the following order, if they appear at all in the reques
 The stream is terminated by a pkt-line flush (`0000`).
 A single "want" or "have" command MUST have one hex formatted object name as its value. Multiple object names MUST be sent by sending multiple commands. Object names MUST be given using the object format negotiated through the `object-format` capability (default SHA-1).
 The `have` list is created by popping the first 32 commits from `c_pending`. Fewer can be supplied if `c_pending` empties.
-If the client has sent 256 "have" commits and has not yet received one of those back from `s_common`, or the client has emptied `c_pending` it SHOULD include a "done" command to let the server know it won’t proceed:
+If the client has sent 256 "have" commits and has not yet received one of those back from `s_common`, or the client has emptied `c_pending` it SHOULD include a "done" command to let the server know it won't proceed:
 ```
 C: 0009done
 ```
@@ -516,6 +516,6 @@ TODO: Document this further.
 ##  [](https://git-scm.com/docs/gitprotocol-http#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitprotocol-http
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

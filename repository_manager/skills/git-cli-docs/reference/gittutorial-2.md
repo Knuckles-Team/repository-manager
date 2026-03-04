@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gittutorial-2#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gittutorial-2#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gittutorial-2#_description)
@@ -31,8 +31,8 @@
 Localized versions of **gittutorial-2** manual
   1. [English ](https://git-scm.com/docs/gittutorial-2)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gittutorial-2)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -195,9 +195,9 @@ git *
 
 ##  [](https://git-scm.com/docs/gittutorial-2#_description)DESCRIPTION
 You should work through [gittutorial[7]](https://git-scm.com/docs/gittutorial) before reading this tutorial.
-The goal of this tutorial is to introduce two fundamental pieces of Git’s architecture—​the object database and the index file—​and to provide the reader with everything necessary to understand the rest of the Git documentation.
+The goal of this tutorial is to introduce two fundamental pieces of Git's architecture—​the object database and the index file—​and to provide the reader with everything necessary to understand the rest of the Git documentation.
 ##  [](https://git-scm.com/docs/gittutorial-2#_the_git_object_database)The Git object database
-Let’s start a new project and create a small amount of history:
+Let's start a new project and create a small amount of history:
 ```
 $ mkdir test-project
 $ cd test-project
@@ -216,9 +216,9 @@ $ git commit -a -m "add emphasis"
 ```
 
 What are the 7 digits of hex that Git responded to the commit with?
-We saw in part one of the tutorial that commits have names like this. It turns out that every object in the Git history is stored under a 40-digit hex name. That name is the SHA-1 hash of the object’s contents; among other things, this ensures that Git will never store the same data twice (since identical data is given an identical SHA-1 name), and that the contents of a Git object will never change (since that would change the object’s name as well). The 7 char hex strings here are simply the abbreviation of such 40 character long strings. Abbreviations can be used everywhere where the 40 character strings can be used, so long as they are unambiguous.
+We saw in part one of the tutorial that commits have names like this. It turns out that every object in the Git history is stored under a 40-digit hex name. That name is the SHA-1 hash of the object's contents; among other things, this ensures that Git will never store the same data twice (since identical data is given an identical SHA-1 name), and that the contents of a Git object will never change (since that would change the object's name as well). The 7 char hex strings here are simply the abbreviation of such 40 character long strings. Abbreviations can be used everywhere where the 40 character strings can be used, so long as they are unambiguous.
 It is expected that the content of the commit object you created while following the example above generates a different SHA-1 hash than the one shown above because the commit object records the time when it was created and the name of the person performing the commit.
-We can ask Git about this particular object with the `cat-file` command. Don’t copy the 40 hex digits from this example but use those from your own version. Note that you can shorten it to only a few characters to save yourself typing all 40 hex digits:
+We can ask Git about this particular object with the `cat-file` command. Don't copy the 40 hex digits from this example but use those from your own version. Note that you can shorten it to only a few characters to save yourself typing all 40 hex digits:
 ```
 $ git cat-file -t 54196cc2
 commit
@@ -236,7 +236,7 @@ $ git ls-tree 92b8b694
 100644 blob 3b18e512dba79e4c8300dd08aeb37f8e728b8dad    file.txt
 ```
 
-Thus we see that this tree has one file in it. The SHA-1 hash is a reference to that file’s data:
+Thus we see that this tree has one file in it. The SHA-1 hash is a reference to that file's data:
 ```
 $ git cat-file -t 3b18e512
 blob
@@ -276,7 +276,7 @@ $ cat .git/HEAD
 ref: refs/heads/master
 ```
 
-As you can see, this tells us which branch we’re currently on, and it tells us this by naming a file under the .git directory, which itself contains a SHA-1 name referring to a commit object, which we can examine with cat-file:
+As you can see, this tells us which branch we're currently on, and it tells us this by naming a file under the .git directory, which itself contains a SHA-1 name referring to a commit object, which we can examine with cat-file:
 ```
 $ cat .git/refs/heads/master
 c4d59f390b9cfd4318117afde11d601c1085f241
@@ -311,9 +311,9 @@ initial commit
 
 The tree object is the tree we examined first, and this commit is unusual in that it lacks any parent.
 Most commits have only one parent, but it is also common for a commit to have multiple parents. In that case the commit represents a merge, with the parent references pointing to the heads of the merged branches.
-Besides blobs, trees, and commits, the only remaining type of object is a "tag", which we won’t discuss here; refer to [git-tag[1]](https://git-scm.com/docs/git-tag) for details.
-So now we know how Git uses the object database to represent a project’s history:
-  * "commit" objects refer to "tree" objects representing the snapshot of a directory tree at a particular point in the history, and refer to "parent" commits to show how they’re connected into the project history.
+Besides blobs, trees, and commits, the only remaining type of object is a "tag", which we won't discuss here; refer to [git-tag[1]](https://git-scm.com/docs/git-tag) for details.
+So now we know how Git uses the object database to represent a project's history:
+  * "commit" objects refer to "tree" objects representing the snapshot of a directory tree at a particular point in the history, and refer to "parent" commits to show how they're connected into the project history.
   * "tree" objects represent the state of a single directory, associating directory names to "blob" objects containing file data and "tree" objects containing subdirectory information.
   * "blob" objects contain file data without any other structure.
   * References to commit objects at the head of each branch are stored in files under .git/refs/heads/.
@@ -323,14 +323,14 @@ So now we know how Git uses the object database to represent a project’s histo
 Note, by the way, that lots of commands take a tree as an argument. But as we can see above, a tree can be referred to in many different ways—​by the SHA-1 name for that tree, by the name of a commit that refers to the tree, by the name of a branch whose head refers to that tree, etc.--and most such commands can accept any of these names.
 In command synopses, the word "tree-ish" is sometimes used to designate such an argument.
 ##  [](https://git-scm.com/docs/gittutorial-2#_the_index_file)The index file
-The primary tool we’ve been using to create commits is `git-commit` `-a`, which creates a commit including every change you’ve made to your working tree. But what if you want to commit changes only to certain files? Or only certain changes to certain files?
-If we look at the way commits are created under the cover, we’ll see that there are more flexible ways creating commits.
-Continuing with our test-project, let’s modify file.txt again:
+The primary tool we've been using to create commits is `git-commit` `-a`, which creates a commit including every change you've made to your working tree. But what if you want to commit changes only to certain files? Or only certain changes to certain files?
+If we look at the way commits are created under the cover, we'll see that there are more flexible ways creating commits.
+Continuing with our test-project, let's modify file.txt again:
 ```
 $ echo "hello world, again" >>file.txt
 ```
 
-but this time instead of immediately making the commit, let’s take an intermediate step, and ask for diffs along the way to keep track of what’s happening:
+but this time instead of immediately making the commit, let's take an intermediate step, and ask for diffs along the way to keep track of what's happening:
 ```
 $ git diff
 --- a/file.txt
@@ -342,7 +342,7 @@ $ git add file.txt
 $ git diff
 ```
 
-The last diff is empty, but no new commits have been made, and the head still doesn’t contain the new line:
+The last diff is empty, but no new commits have been made, and the head still doesn't contain the new line:
 ```
 $ git diff HEAD
 diff --git a/file.txt b/file.txt
@@ -354,7 +354,7 @@ index a042389..513feba 100644
 +hello world, again
 ```
 
-So _git diff_ is comparing against something other than the head. The thing that it’s comparing against is actually the index file, which is stored in .git/index in a binary format, but whose contents we can examine with ls-files:
+So _git diff_ is comparing against something other than the head. The thing that it's comparing against is actually the index file, which is stored in .git/index in a binary format, but whose contents we can examine with ls-files:
 ```
 $ git ls-files --stage
 100644 513feba2e53ebbd2532419ded848ba19de88ba00 0       file.txt
@@ -365,7 +365,7 @@ hello world!
 hello world, again
 ```
 
-So what our _git add_ did was store a new blob and then put a reference to it in the index file. If we modify the file again, we’ll see that the new modifications are reflected in the _git diff_ output:
+So what our _git add_ did was store a new blob and then put a reference to it in the index file. If we modify the file again, we'll see that the new modifications are reflected in the _git diff_ output:
 ```
 $ echo 'again?' >>file.txt
 $ git diff
@@ -414,7 +414,7 @@ index 513feba..ba3da7b 100644
 ```
 
 So by default _git commit_ uses the index to create the commit, not the working tree; the "-a" option to commit tells it to first update the index with all changes in the working tree.
-Finally, it’s worth looking at the effect of _git add_ on the index file:
+Finally, it's worth looking at the effect of _git add_ on the index file:
 ```
 $ echo "goodbye, world" >closing.txt
 $ git add closing.txt
@@ -449,20 +449,20 @@ Changes not staged for commit:
 	modified:   file.txt
 ```
 
-Since the current state of closing.txt is cached in the index file, it is listed as "Changes to be committed". Since file.txt has changes in the working directory that aren’t reflected in the index, it is marked "changed but not updated". At this point, running "git commit" would create a commit that added closing.txt (with its new contents), but that didn’t modify file.txt.
+Since the current state of closing.txt is cached in the index file, it is listed as "Changes to be committed". Since file.txt has changes in the working directory that aren't reflected in the index, it is marked "changed but not updated". At this point, running "git commit" would create a commit that added closing.txt (with its new contents), but that didn't modify file.txt.
 Also, note that a bare `git` `diff` shows the changes to file.txt, but not the addition of closing.txt, because the version of closing.txt in the index file is identical to the one in the working directory.
 In addition to being the staging area for new commits, the index file is also populated from the object database when checking out a branch, and is used to hold the trees involved in a merge operation. See [gitcore-tutorial[7]](https://git-scm.com/docs/gitcore-tutorial) and the relevant man pages for details.
 ##  [](https://git-scm.com/docs/gittutorial-2#_what_next)What next?
 At this point you should know everything necessary to read the man pages for any of the git commands; one good place to start would be with the commands mentioned in [giteveryday[7]](https://git-scm.com/docs/giteveryday). You should be able to find any unknown jargon in [gitglossary[7]](https://git-scm.com/docs/gitglossary).
-The [Git User’s Manual](https://git-scm.com/docs/user-manual) provides a more comprehensive introduction to Git.
+The [Git User's Manual](https://git-scm.com/docs/user-manual) provides a more comprehensive introduction to Git.
 [gitcvs-migration[7]](https://git-scm.com/docs/gitcvs-migration) explains how to import a CVS repository into Git, and shows how to use Git in a CVS-like way.
 For some interesting examples of Git use, see the [howtos](https://git-scm.com/docs/howto-index).
 For Git developers, [gitcore-tutorial[7]](https://git-scm.com/docs/gitcore-tutorial) goes into detail on the lower-level Git mechanisms involved in, for example, creating a new commit.
 ##  [](https://git-scm.com/docs/gittutorial-2#_see_also)SEE ALSO
-[gittutorial[7]](https://git-scm.com/docs/gittutorial), [gitcvs-migration[7]](https://git-scm.com/docs/gitcvs-migration), [gitcore-tutorial[7]](https://git-scm.com/docs/gitcore-tutorial), [gitglossary[7]](https://git-scm.com/docs/gitglossary), [git-help[1]](https://git-scm.com/docs/git-help), [giteveryday[7]](https://git-scm.com/docs/giteveryday), [The Git User’s Manual](https://git-scm.com/docs/user-manual)
+[gittutorial[7]](https://git-scm.com/docs/gittutorial), [gitcvs-migration[7]](https://git-scm.com/docs/gitcvs-migration), [gitcore-tutorial[7]](https://git-scm.com/docs/gitcore-tutorial), [gitglossary[7]](https://git-scm.com/docs/gitglossary), [git-help[1]](https://git-scm.com/docs/git-help), [giteveryday[7]](https://git-scm.com/docs/giteveryday), [The Git User's Manual](https://git-scm.com/docs/user-manual)
 ##  [](https://git-scm.com/docs/gittutorial-2#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gittutorial-2
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)
