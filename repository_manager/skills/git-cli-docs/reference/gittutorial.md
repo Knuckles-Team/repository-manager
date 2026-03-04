@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gittutorial#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gittutorial#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gittutorial#_description)
@@ -36,8 +36,8 @@
 Localized versions of **gittutorial** manual
   1. [English ](https://git-scm.com/docs/gittutorial)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gittutorial)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -212,7 +212,7 @@ git *
 
 ##  [](https://git-scm.com/docs/gittutorial#_description)DESCRIPTION
 This tutorial explains how to import a new project into Git, make changes to it, and share changes with other developers.
-If you are instead primarily interested in using Git to fetch a project, for example, to test the latest version, you may prefer to start with the first two chapters of [The Git User’s Manual](https://git-scm.com/docs/user-manual).
+If you are instead primarily interested in using Git to fetch a project, for example, to test the latest version, you may prefer to start with the first two chapters of [The Git User's Manual](https://git-scm.com/docs/user-manual).
 First, note that you can get documentation for a command such as `git` `log` `--graph` with:
 ```
 $ man git-log
@@ -243,7 +243,7 @@ Git will reply
 Initialized empty Git repository in .git/
 ```
 
-You’ve now initialized the working directory—​you may notice a new directory created, named `.git`.
+You've now initialized the working directory—​you may notice a new directory created, named `.git`.
 Next, tell Git to take a snapshot of the contents of all files under the current directory (note the `.`), with `git` `add`:
 ```
 $ git add .
@@ -254,7 +254,7 @@ This snapshot is now stored in a temporary staging area which Git calls the "ind
 $ git commit
 ```
 
-This will prompt you for a commit message. You’ve now stored the first version of your project in Git.
+This will prompt you for a commit message. You've now stored the first version of your project in Git.
 ##  [](https://git-scm.com/docs/gittutorial#_making_changes)Making changes
 Modify some files, then add their updated contents to the index:
 ```
@@ -266,7 +266,7 @@ You are now ready to commit. You can see what is about to be committed using `gi
 $ git diff --cached
 ```
 
-(Without `--cached`, `git` `diff` will show you any changes that you’ve made but not yet added to the index.) You can also get a brief summary of the situation with `git` `status`:
+(Without `--cached`, `git` `diff` will show you any changes that you've made but not yet added to the index.) You can also get a brief summary of the situation with `git` `status`:
 ```
 $ git status
 On branch master
@@ -290,9 +290,9 @@ $ git commit -a
 ```
 
 which will automatically notice any modified (but not new) files, add them to the index, and commit, all in one step.
-A note on commit messages: Though not required, it’s a good idea to begin the commit message with a single short (no more than 50 characters) line summarizing the change, followed by a blank line and then a more thorough description. The text up to the first blank line in a commit message is treated as the commit title, and that title is used throughout Git. For example, [git-format-patch[1]](https://git-scm.com/docs/git-format-patch) turns a commit into email, and it uses the title on the Subject line and the rest of the commit in the body.
+A note on commit messages: Though not required, it's a good idea to begin the commit message with a single short (no more than 50 characters) line summarizing the change, followed by a blank line and then a more thorough description. The text up to the first blank line in a commit message is treated as the commit title, and that title is used throughout Git. For example, [git-format-patch[1]](https://git-scm.com/docs/git-format-patch) turns a commit into email, and it uses the title on the Subject line and the rest of the commit in the body.
 ##  [](https://git-scm.com/docs/gittutorial#_git_tracks_content_not_files)Git tracks content not files
-Many revision control systems provide an `add` command that tells the system to start tracking changes to a new file. Git’s `add` command does something simpler and more powerful: `git` `add` is used both for new and newly modified files, and in both cases it takes a snapshot of the given files and stages that content in the index, ready for inclusion in the next commit.
+Many revision control systems provide an `add` command that tells the system to start tracking changes to a new file. Git's `add` command does something simpler and more powerful: `git` `add` is used both for new and newly modified files, and in both cases it takes a snapshot of the given files and stages that content in the index, ready for inclusion in the next commit.
 ##  [](https://git-scm.com/docs/gittutorial#_viewing_project_history)Viewing project history
 At any point you can view the history of your changes using
 ```
@@ -320,7 +320,7 @@ If you now run
 $ git branch
 ```
 
-you’ll get a list of all existing branches:
+you'll get a list of all existing branches:
 ```
   experimental
 * master
@@ -338,7 +338,7 @@ $ git commit -a
 $ git switch master
 ```
 
-Check that the change you made is no longer visible, since it was made on the `experimental` branch and you’re back on the `master` branch.
+Check that the change you made is no longer visible, since it was made on the `experimental` branch and you're back on the `master` branch.
 You can make a different change on the `master` branch:
 ```
 (edit file)
@@ -350,12 +350,12 @@ at this point the two branches have diverged, with different changes made in eac
 $ git merge experimental
 ```
 
-If the changes don’t conflict, you’re done. If there are conflicts, markers will be left in the problematic files showing the conflict;
+If the changes don't conflict, you're done. If there are conflicts, markers will be left in the problematic files showing the conflict;
 ```
 $ git diff
 ```
 
-will show this. Once you’ve edited the files to resolve the conflicts,
+will show this. Once you've edited the files to resolve the conflicts,
 ```
 $ git commit -a
 ```
@@ -385,7 +385,7 @@ Bob begins with:
 bob$ git clone /home/alice/project myrepo
 ```
 
-This creates a new directory `myrepo` containing a clone of Alice’s repository. The clone is on an equal footing with the original project, possessing its own copy of the original project’s history.
+This creates a new directory `myrepo` containing a clone of Alice's repository. The clone is on an equal footing with the original project, possessing its own copy of the original project's history.
 Bob then makes some changes and commits them:
 ```
 (edit files)
@@ -393,15 +393,15 @@ bob$ git commit -a
 (repeat as necessary)
 ```
 
-When he’s ready, he tells Alice to pull changes from the repository at `/home/bob/myrepo`. She does this with:
+When he's ready, he tells Alice to pull changes from the repository at `/home/bob/myrepo`. She does this with:
 ```
 alice$ cd /home/alice/project
 alice$ git pull /home/bob/myrepo master
 ```
 
-This merges the changes from Bob’s `master` branch into Alice’s current branch. If Alice has made her own changes in the meantime, then she may need to manually fix any conflicts.
+This merges the changes from Bob's `master` branch into Alice's current branch. If Alice has made her own changes in the meantime, then she may need to manually fix any conflicts.
 The `pull` command thus performs two operations: it fetches changes from a remote branch, then merges them into the current branch.
-Note that in general, Alice would want her local changes committed before initiating this `pull`. If Bob’s work conflicts with what Alice did since their histories forked, Alice will use her working tree and the index to resolve conflicts, and existing local changes will interfere with the conflict resolution process (Git will still perform the fetch but will refuse to merge — Alice will have to get rid of her local changes in some way and pull again when this happens).
+Note that in general, Alice would want her local changes committed before initiating this `pull`. If Bob's work conflicts with what Alice did since their histories forked, Alice will use her working tree and the index to resolve conflicts, and existing local changes will interfere with the conflict resolution process (Git will still perform the fetch but will refuse to merge — Alice will have to get rid of her local changes in some way and pull again when this happens).
 Alice can peek at what Bob did without merging first, using the `fetch` command; this allows Alice to inspect what Bob did, using a special symbol `FETCH_HEAD`, in order to determine if he has anything worth pulling, like this:
 ```
 alice$ git fetch /home/bob/myrepo master
@@ -422,7 +422,7 @@ $ gitk HEAD...FETCH_HEAD
 
 This means "show everything that is reachable from either one, but exclude anything that is reachable from both of them".
 Please note that these range notations can be used with both `gitk` and `git` `log`.
-After inspecting what Bob did, if there is nothing urgent, Alice may decide to continue working without pulling from Bob. If Bob’s history does have something Alice would immediately need, Alice may choose to stash her work-in-progress first, do a `pull`, and then finally unstash her work-in-progress on top of the resulting history.
+After inspecting what Bob did, if there is nothing urgent, Alice may decide to continue working without pulling from Bob. If Bob's history does have something Alice would immediately need, Alice may choose to stash her work-in-progress first, do a `pull`, and then finally unstash her work-in-progress on top of the resulting history.
 When you are working in a small closely knit group, it is not unusual to interact with the same repository over and over again. By defining _remote_ repository shorthand, you can make it easier:
 ```
 alice$ git remote add bob /home/bob/myrepo
@@ -438,7 +438,7 @@ Unlike the longhand form, when Alice fetches from Bob using a remote repository 
 alice$ git log -p master..bob/master
 ```
 
-shows a list of all the changes that Bob made since he branched from Alice’s `master` branch.
+shows a list of all the changes that Bob made since he branched from Alice's `master` branch.
 After examining those changes, Alice could merge the changes into her `master` branch:
 ```
 alice$ git merge bob/master
@@ -450,19 +450,19 @@ alice$ git pull . remotes/bob/master
 ```
 
 Note that git pull always merges into the current branch, regardless of what else is given on the command line.
-Later, Bob can update his repo with Alice’s latest changes using
+Later, Bob can update his repo with Alice's latest changes using
 ```
 bob$ git pull
 ```
 
-Note that he doesn’t need to give the path to Alice’s repository; when Bob cloned Alice’s repository, Git stored the location of her repository in the repository configuration, and that location is used for pulls:
+Note that he doesn't need to give the path to Alice's repository; when Bob cloned Alice's repository, Git stored the location of her repository in the repository configuration, and that location is used for pulls:
 ```
 bob$ git config --get remote.origin.url
 /home/alice/project
 ```
 
 (The complete configuration created by `git` `clone` is visible using `git` `config` `-l`, and the [git-config[1]](https://git-scm.com/docs/git-config) man page explains the meaning of each option.)
-Git also keeps a pristine copy of Alice’s `master` branch under the name `origin/master`:
+Git also keeps a pristine copy of Alice's `master` branch under the name `origin/master`:
 ```
 bob$ git branch -r
   origin/master
@@ -527,7 +527,7 @@ $ git reset --hard HEAD^ # reset your current branch and working
 			 # directory to its state at HEAD^
 ```
 
-Be careful with that last command: in addition to losing any changes in the working directory, it will also remove all later commits from this branch. If this branch is the only branch containing those commits, they will be lost. Also, don’t use `git` `reset` on a publicly-visible branch that other developers pull from, as it will force needless merges on other developers to clean up the history. If you need to undo changes that you have pushed, use `git` `revert` instead.
+Be careful with that last command: in addition to losing any changes in the working directory, it will also remove all later commits from this branch. If this branch is the only branch containing those commits, they will be lost. Also, don't use `git` `reset` on a publicly-visible branch that other developers pull from, as it will force needless merges on other developers to clean up the history. If you need to undo changes that you have pushed, use `git` `revert` instead.
 The `git` `grep` command can search for strings in any version of your project, so
 ```
 $ git grep "hello" v2.5
@@ -566,7 +566,7 @@ Most projects with multiple contributors (such as the Linux kernel, or Git itsel
 $ gitk --since="2 weeks ago" drivers/
 ```
 
-allows you to browse any commits from the last 2 weeks of commits that modified files under the `drivers` directory. (Note: you can adjust gitk’s fonts by holding down the control key while pressing "-" or "+".)
+allows you to browse any commits from the last 2 weeks of commits that modified files under the `drivers` directory. (Note: you can adjust gitk's fonts by holding down the control key while pressing "-" or "+".)
 Finally, most commands that take filenames will optionally allow you to precede any filename by a commit, to specify a particular version of the file:
 ```
 $ git diff v2.5:Makefile HEAD:Makefile.in
@@ -583,20 +583,20 @@ This tutorial should be enough to perform basic distributed revision control for
   * The index file is a cache of the state of a directory tree, used to create commits, check out working directories, and hold the various trees involved in a merge.
 
 
-Part two of this tutorial explains the object database, the index file, and a few other odds and ends that you’ll need to make the most of Git. You can find it at [gittutorial-2[7]](https://git-scm.com/docs/gittutorial-2).
-If you don’t want to continue with that right away, a few other digressions that may be interesting at this point are:
+Part two of this tutorial explains the object database, the index file, and a few other odds and ends that you'll need to make the most of Git. You can find it at [gittutorial-2[7]](https://git-scm.com/docs/gittutorial-2).
+If you don't want to continue with that right away, a few other digressions that may be interesting at this point are:
   * [git-format-patch[1]](https://git-scm.com/docs/git-format-patch), [git-am[1]](https://git-scm.com/docs/git-am): These convert series of git commits into emailed patches, and vice versa, useful for projects such as the Linux kernel which rely heavily on emailed patches.
-  * [git-bisect[1]](https://git-scm.com/docs/git-bisect): When there is a regression in your project, one way to track down the bug is by searching through the history to find the exact commit that’s to blame. `git` `bisect` can help you perform a binary search for that commit. It is smart enough to perform a close-to-optimal search even in the case of complex non-linear history with lots of merged branches.
+  * [git-bisect[1]](https://git-scm.com/docs/git-bisect): When there is a regression in your project, one way to track down the bug is by searching through the history to find the exact commit that's to blame. `git` `bisect` can help you perform a binary search for that commit. It is smart enough to perform a close-to-optimal search even in the case of complex non-linear history with lots of merged branches.
   * [gitworkflows[7]](https://git-scm.com/docs/gitworkflows): Gives an overview of recommended workflows.
   * [giteveryday[7]](https://git-scm.com/docs/giteveryday): Everyday Git with 20 Commands Or So.
   * [gitcvs-migration[7]](https://git-scm.com/docs/gitcvs-migration): Git for CVS users.
 
 
 ##  [](https://git-scm.com/docs/gittutorial#_see_also)SEE ALSO
-[gittutorial-2[7]](https://git-scm.com/docs/gittutorial-2), [gitcvs-migration[7]](https://git-scm.com/docs/gitcvs-migration), [gitcore-tutorial[7]](https://git-scm.com/docs/gitcore-tutorial), [gitglossary[7]](https://git-scm.com/docs/gitglossary), [git-help[1]](https://git-scm.com/docs/git-help), [gitworkflows[7]](https://git-scm.com/docs/gitworkflows), [giteveryday[7]](https://git-scm.com/docs/giteveryday), [The Git User’s Manual](https://git-scm.com/docs/user-manual)
+[gittutorial-2[7]](https://git-scm.com/docs/gittutorial-2), [gitcvs-migration[7]](https://git-scm.com/docs/gitcvs-migration), [gitcore-tutorial[7]](https://git-scm.com/docs/gitcore-tutorial), [gitglossary[7]](https://git-scm.com/docs/gitglossary), [git-help[1]](https://git-scm.com/docs/git-help), [gitworkflows[7]](https://git-scm.com/docs/gitworkflows), [giteveryday[7]](https://git-scm.com/docs/giteveryday), [The Git User's Manual](https://git-scm.com/docs/user-manual)
 ##  [](https://git-scm.com/docs/gittutorial#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gittutorial
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/git-bundle#_name)
     * [SYNOPSIS](https://git-scm.com/docs/git-bundle#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/git-bundle#_description)
@@ -39,8 +39,8 @@ Localized versions of **git-bundle** manual
   5. [українська мова ](https://git-scm.com/docs/git-bundle/uk)
   6. [简体中文 ](https://git-scm.com/docs/git-bundle/zh_HANS-CN)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/git-bundle)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -222,52 +222,52 @@ _git bundle_ unbundle [--progress] <file> [<refname>…​]
 ##  [](https://git-scm.com/docs/git-bundle#_description)DESCRIPTION
 Create, unpack, and manipulate "bundle" files. Bundles are used for the "offline" transfer of Git objects without an active "server" sitting on the other side of the network connection.
 They can be used to create both incremental and full backups of a repository (see the "full backup" example in "EXAMPLES"), and to relay the state of the references in one repository to another (see the second example).
-Git commands that fetch or otherwise "read" via protocols such as `ssh://` and `https://` can also operate on bundle files. It is possible [git-clone[1]](https://git-scm.com/docs/git-clone) a new repository from a bundle, to use [git-fetch[1]](https://git-scm.com/docs/git-fetch) to fetch from one, and to list the references contained within it with [git-ls-remote[1]](https://git-scm.com/docs/git-ls-remote). There’s no corresponding "write" support, i.e. a _git push_ into a bundle is not supported.
+Git commands that fetch or otherwise "read" via protocols such as `ssh://` and `https://` can also operate on bundle files. It is possible [git-clone[1]](https://git-scm.com/docs/git-clone) a new repository from a bundle, to use [git-fetch[1]](https://git-scm.com/docs/git-fetch) to fetch from one, and to list the references contained within it with [git-ls-remote[1]](https://git-scm.com/docs/git-ls-remote). There's no corresponding "write" support, i.e. a _git push_ into a bundle is not supported.
 ##  [](https://git-scm.com/docs/git-bundle#_bundle_format)BUNDLE FORMAT
 Bundles are `.pack` files (see [git-pack-objects[1]](https://git-scm.com/docs/git-pack-objects)) with a header indicating what references are contained within the bundle.
 Like the packed archive format itself bundles can either be self-contained, or be created using exclusions. See the "OBJECT PREREQUISITES" section below.
 Bundles created using revision exclusions are "thin packs" created using the `--thin` option to [git-pack-objects[1]](https://git-scm.com/docs/git-pack-objects), and unbundled using the `--fix-thin` option to [git-index-pack[1]](https://git-scm.com/docs/git-index-pack).
-There is no option to create a "thick pack" when using revision exclusions, and users should not be concerned about the difference. By using "thin packs", bundles created using exclusions are smaller in size. That they’re "thin" under the hood is merely noted here as a curiosity, and as a reference to other documentation.
+There is no option to create a "thick pack" when using revision exclusions, and users should not be concerned about the difference. By using "thin packs", bundles created using exclusions are smaller in size. That they're "thin" under the hood is merely noted here as a curiosity, and as a reference to other documentation.
 See [gitformat-bundle[5]](https://git-scm.com/docs/gitformat-bundle) for more details and the discussion of "thin pack" in [gitformat-pack[5]](https://git-scm.com/docs/gitformat-pack) for further details.
-##  [](https://git-scm.com/docs/git-bundle#_options)OPTIONS 
+##  [](https://git-scm.com/docs/git-bundle#_options)OPTIONS
 
-[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-createoptionsfilegit-rev-list-args)create [options] <file> <git-rev-list-args> 
-    
-Used to create a bundle named _file_. This requires the _< git-rev-list-args>_ arguments to define the bundle contents. _options_ contains the options specific to the _git bundle create_ subcommand. If _file_ is `-`, the bundle is written to stdout. 
+[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-createoptionsfilegit-rev-list-args)create [options] <file> <git-rev-list-args>
 
-[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-verifyfile)verify <file> 
-    
-Used to check that a bundle file is valid and will apply cleanly to the current repository. This includes checks on the bundle format itself as well as checking that the prerequisite commits exist and are fully linked in the current repository. Then, _git bundle_ prints a list of missing commits, if any. Finally, information about additional capabilities, such as "object filter", is printed. See "Capabilities" in [gitformat-bundle[5]](https://git-scm.com/docs/gitformat-bundle) for more information. The exit code is zero for success, but will be nonzero if the bundle file is invalid. If _file_ is `-`, the bundle is read from stdin. 
+Used to create a bundle named _file_. This requires the _< git-rev-list-args>_ arguments to define the bundle contents. _options_ contains the options specific to the _git bundle create_ subcommand. If _file_ is `-`, the bundle is written to stdout.
 
-[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-list-headsfile)list-heads <file> 
-    
-Lists the references defined in the bundle. If followed by a list of references, only references matching those given are printed out. If _file_ is `-`, the bundle is read from stdin. 
+[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-verifyfile)verify <file>
 
-[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-unbundlefile)unbundle <file> 
-    
-Passes the objects in the bundle to _git index-pack_ for storage in the repository, then prints the names of all defined references. If a list of references is given, only references matching those in the list are printed. This command is really plumbing, intended to be called only by _git fetch_. If _file_ is `-`, the bundle is read from stdin. 
+Used to check that a bundle file is valid and will apply cleanly to the current repository. This includes checks on the bundle format itself as well as checking that the prerequisite commits exist and are fully linked in the current repository. Then, _git bundle_ prints a list of missing commits, if any. Finally, information about additional capabilities, such as "object filter", is printed. See "Capabilities" in [gitformat-bundle[5]](https://git-scm.com/docs/gitformat-bundle) for more information. The exit code is zero for success, but will be nonzero if the bundle file is invalid. If _file_ is `-`, the bundle is read from stdin.
 
-[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-git-rev-list-args)<git-rev-list-args> 
-    
-A list of arguments, acceptable to _git rev-parse_ and _git rev-list_ (and containing a named ref, see SPECIFYING REFERENCES below), that specifies the specific objects and references to transport. For example, `master~10..master` causes the current master reference to be packaged along with all objects added since its 10th ancestor commit. There is no explicit limit to the number of references and objects that may be packaged. 
+[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-list-headsfile)list-heads <file>
 
-[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-refname)[<refname>…​] 
-    
-A list of references used to limit the references reported as available. This is principally of use to _git fetch_ , which expects to receive only those references asked for and not necessarily everything in the pack (in this case, _git bundle_ acts like _git fetch-pack_). 
+Lists the references defined in the bundle. If followed by a list of references, only references matching those given are printed out. If _file_ is `-`, the bundle is read from stdin.
 
-[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt---progress)--progress 
-    
-Progress status is reported on the standard error stream by default when it is attached to a terminal, unless -q is specified. This flag forces progress status even if the standard error stream is not directed to a terminal. 
+[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-unbundlefile)unbundle <file>
 
-[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt---versionversion)--version=<version> 
-    
-Specify the bundle version. Version 2 is the older format and can only be used with SHA-1 repositories; the newer version 3 contains capabilities that permit extensions. The default is the oldest supported format, based on the hash algorithm in use. 
+Passes the objects in the bundle to _git index-pack_ for storage in the repository, then prints the names of all defined references. If a list of references is given, only references matching those in the list are printed. This command is really plumbing, intended to be called only by _git fetch_. If _file_ is `-`, the bundle is read from stdin.
 
-[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt--q)-q 
+[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-git-rev-list-args)<git-rev-list-args>
+
+A list of arguments, acceptable to _git rev-parse_ and _git rev-list_ (and containing a named ref, see SPECIFYING REFERENCES below), that specifies the specific objects and references to transport. For example, `master~10..master` causes the current master reference to be packaged along with all objects added since its 10th ancestor commit. There is no explicit limit to the number of references and objects that may be packaged.
+
+[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt-refname)[<refname>…​]
+
+A list of references used to limit the references reported as available. This is principally of use to _git fetch_ , which expects to receive only those references asked for and not necessarily everything in the pack (in this case, _git bundle_ acts like _git fetch-pack_).
+
+[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt---progress)--progress
+
+Progress status is reported on the standard error stream by default when it is attached to a terminal, unless -q is specified. This flag forces progress status even if the standard error stream is not directed to a terminal.
+
+[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt---versionversion)--version=<version>
+
+Specify the bundle version. Version 2 is the older format and can only be used with SHA-1 repositories; the newer version 3 contains capabilities that permit extensions. The default is the oldest supported format, based on the hash algorithm in use.
+
+[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt--q)-q
 
 
-[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt---quiet)--quiet 
-    
+[](https://git-scm.com/docs/git-bundle#Documentation/git-bundle.txt---quiet)--quiet
+
 This flag makes the command not to report its progress on the standard error stream.
 ##  [](https://git-scm.com/docs/git-bundle#_specifying_references)SPECIFYING REFERENCES
 Revisions must be accompanied by reference names to be packaged in a bundle. Alternatively `--all` can be used to package all refs.
@@ -312,12 +312,12 @@ It is okay to err on the side of caution, causing the bundle file to contain obj
 If you want to provide the same set of refs that a clone directly from the source repository would get, use `--branches` `--tags` for the _< git-rev-list-args>_.
 The _git bundle verify_ command can be used to check whether your recipient repository has the required prerequisite commits for a bundle.
 ##  [](https://git-scm.com/docs/git-bundle#_examples)EXAMPLES
-We’ll discuss two cases:
+We'll discuss two cases:
   1. Taking a full backup of a repository
   2. Transferring the history of a repository to another machine when the two machines have no direct connection
 
 
-First let’s consider a full backup of the repository. The following command will take a full backup of the repository in the sense that all refs are included in the bundle:
+First let's consider a full backup of the repository. The following command will take a full backup of the repository in the sense that all refs are included in the bundle:
 ```
 $ git bundle create backup.bundle --all
 ```
@@ -384,7 +384,7 @@ $ git bundle verify mybundle
 ```
 
 This will list what commits you must have in order to extract from the bundle and will error out if you do not have them.
-A bundle from a recipient repository’s point of view is just like a regular repository which it fetches or pulls from. You can, for example, map references when fetching:
+A bundle from a recipient repository's point of view is just like a regular repository which it fetches or pulls from. You can, for example, map references when fetching:
 ```
 $ git fetch mybundle master:localRef
 ```
@@ -403,6 +403,6 @@ See [gitformat-bundle[5]](https://git-scm.com/docs/gitformat-bundle).
 ##  [](https://git-scm.com/docs/git-bundle#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### bundle
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

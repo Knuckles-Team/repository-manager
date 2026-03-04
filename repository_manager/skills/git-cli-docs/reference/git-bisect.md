@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/git-bisect#_name)
     * [SYNOPSIS](https://git-scm.com/docs/git-bisect#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/git-bisect#_description)
@@ -36,8 +36,8 @@ Localized versions of **git-bisect** manual
   6. [українська мова ](https://git-scm.com/docs/git-bisect/uk)
   7. [简体中文 ](https://git-scm.com/docs/git-bisect/zh_HANS-CN)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/git-bisect)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -235,8 +235,8 @@ _git bisect_ help
 ```
 
 ##  [](https://git-scm.com/docs/git-bisect#_description)DESCRIPTION
-This command uses a binary search algorithm to find which commit in your project’s history introduced a bug. You use it by first telling it a "bad" commit that is known to contain the bug, and a "good" commit that is known to be before the bug was introduced. Then `git` `bisect` picks a commit between those two endpoints and asks you whether the selected commit is "good" or "bad". It continues narrowing down the range until it finds the exact commit that introduced the change.
-In fact, `git` `bisect` can be used to find the commit that changed **any** property of your project; e.g., the commit that fixed a bug, or the commit that caused a benchmark’s performance to improve. To support this more general usage, the terms "old" and "new" can be used in place of "good" and "bad", or you can choose your own terms. See section "Alternate terms" below for more information.
+This command uses a binary search algorithm to find which commit in your project's history introduced a bug. You use it by first telling it a "bad" commit that is known to contain the bug, and a "good" commit that is known to be before the bug was introduced. Then `git` `bisect` picks a commit between those two endpoints and asks you whether the selected commit is "good" or "bad". It continues narrowing down the range until it finds the exact commit that introduced the change.
+In fact, `git` `bisect` can be used to find the commit that changed **any** property of your project; e.g., the commit that fixed a bug, or the commit that caused a benchmark's performance to improve. To support this more general usage, the terms "old" and "new" can be used in place of "good" and "bad", or you can choose your own terms. See section "Alternate terms" below for more information.
 ###  [](https://git-scm.com/docs/git-bisect#_basic_bisect_commands_start_bad_good)Basic bisect commands: start, bad, good
 As an example, suppose you are trying to find the commit that broke a feature that was known to work in version `v2.6.13-rc2` of your project. You start a bisect session as follows:
 ```
@@ -281,9 +281,9 @@ $ git bisect reset <commit>
 
 For example, `git` `bisect` `reset` `bisect/bad` will check out the first bad revision, while `git` `bisect` `reset` `HEAD` will leave you on the current bisection commit and avoid switching commits at all.
 ###  [](https://git-scm.com/docs/git-bisect#_alternate_terms)Alternate terms
-Sometimes you are not looking for the commit that introduced a breakage, but rather for a commit that caused a change between some other "old" state and "new" state. For example, you might be looking for the commit that introduced a particular fix. Or you might be looking for the first commit in which the source-code filenames were finally all converted to your company’s naming standard. Or whatever.
+Sometimes you are not looking for the commit that introduced a breakage, but rather for a commit that caused a change between some other "old" state and "new" state. For example, you might be looking for the commit that introduced a particular fix. Or you might be looking for the first commit in which the source-code filenames were finally all converted to your company's naming standard. Or whatever.
 In such cases it can be very confusing to use the terms "good" and "bad" to refer to "the state before the change" and "the state after the change". So instead, you can use the terms "old" and "new", respectively, in place of "good" and "bad". (But note that you cannot mix "good" and "bad" with "old" and "new" in a single session.)
-In this more general usage, you provide `git` `bisect` with a "new" commit that has some property and an "old" commit that doesn’t have that property. Each time `git` `bisect` checks out a commit, you test if that commit has the property. If it does, mark the commit as "new"; otherwise, mark it as "old". When the bisection is done, `git` `bisect` will report which commit introduced the property.
+In this more general usage, you provide `git` `bisect` with a "new" commit that has some property and an "old" commit that doesn't have that property. Each time `git` `bisect` checks out a commit, you test if that commit has the property. If it does, mark the commit as "new"; otherwise, mark it as "old". When the bisection is done, `git` `bisect` will report which commit introduced the property.
 To use "old" and "new" instead of "good" and bad, you must run `git` `bisect` `start` without commits as argument and then run the following commands to add the commits:
 ```
 git bisect old [<rev>]
@@ -403,16 +403,16 @@ Any other exit code will abort the bisect process. It should be noted that a pro
 The special exit code 125 should be used when the current source code cannot be tested. If the script exits with this code, the current revision will be skipped (see `git` `bisect` `skip` above). 125 was chosen as the highest sensible value to use for this purpose, because 126 and 127 are used by POSIX shells to signal specific error status (127 is for command not found, 126 is for command found but not executable—​these details do not matter, as they are normal errors in the script, as far as `bisect` `run` is concerned).
 You may often find that during a bisect session you want to have temporary modifications (e.g. s/#define DEBUG 0/#define DEBUG 1/ in a header file, or "revision that does not have this commit needs this patch applied to work around another problem this bisection is not interested in") applied to the revision being tested.
 To cope with such a situation, after the inner _git bisect_ finds the next revision to test, the script can apply the patch before compiling, run the real test, and afterwards decide if the revision (possibly with the needed patch) passed the test and then rewind the tree to the pristine state. Finally the script should exit with the status of the real test to let the `git` `bisect` `run` command loop determine the eventual outcome of the bisect session.
-##  [](https://git-scm.com/docs/git-bisect#_options)OPTIONS 
+##  [](https://git-scm.com/docs/git-bisect#_options)OPTIONS
 
-[](https://git-scm.com/docs/git-bisect#Documentation/git-bisect.txt---no-checkout)--no-checkout 
-    
+[](https://git-scm.com/docs/git-bisect#Documentation/git-bisect.txt---no-checkout)--no-checkout
+
 Do not checkout the new working tree at each iteration of the bisection process. Instead just update the reference named `BISECT_HEAD` to make it point to the commit that should be tested.
 This option may be useful when the test you would perform in each step does not require a checked out tree.
-If the repository is bare, `--no-checkout` is assumed. 
+If the repository is bare, `--no-checkout` is assumed.
 
-[](https://git-scm.com/docs/git-bisect#Documentation/git-bisect.txt---first-parent)--first-parent 
-    
+[](https://git-scm.com/docs/git-bisect#Documentation/git-bisect.txt---first-parent)--first-parent
+
 Follow only the first parent commit upon seeing a merge commit.
 In detecting regressions introduced through the merging of a branch, the merge commit will be identified as introduction of the bug and its ancestors will be ignored.
 This option is particularly useful in avoiding false positives when a merged branch contained broken or non-buildable commits, but the merge itself was OK.
@@ -516,6 +516,6 @@ Use `git` `bisect` to get a short usage description, and `git` `bisect` `help` o
 ##  [](https://git-scm.com/docs/git-bisect#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### bisect
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

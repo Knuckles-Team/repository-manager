@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitformat-pack#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitformat-pack#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitformat-pack#_description)
@@ -36,8 +36,8 @@
 Localized versions of **gitformat-pack** manual
   1. [English ](https://git-scm.com/docs/gitformat-pack)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitformat-pack)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -276,8 +276,8 @@ When encoding the size of an undeltified object in a pack, the size is that of t
 ###  [](https://git-scm.com/docs/gitformat-pack#_deltified_representation)Deltified representation
 Conceptually there are only four object types: commit, tree, tag and blob. However to save space, an object could be stored as a "delta" of another "base" object. These representations are assigned new types ofs-delta and ref-delta, which is only valid in a pack file.
 Both ofs-delta and ref-delta store the "delta" to be applied to another object (called _base object_) to reconstruct the object. The difference between them is, ref-delta directly encodes base object name. If the base object is in the same pack, ofs-delta encodes the offset of the base object in the pack instead.
-The base object could also be deltified if it’s in the same pack. Ref-delta can also refer to an object outside the pack (i.e. the so-called "thin pack"). When stored on disk however, the pack should be self contained to avoid cyclic dependency.
-The delta data starts with the size of the base object and the size of the object to be reconstructed. These sizes are encoded using the size encoding from above. The remainder of the delta data is a sequence of instructions to reconstruct the object from the base object. If the base object is deltified, it must be converted to canonical form first. Each instruction appends more and more data to the target object until it’s complete. There are two supported instructions so far: one for copying a byte range from the source object and one for inserting new data embedded in the instruction itself.
+The base object could also be deltified if it's in the same pack. Ref-delta can also refer to an object outside the pack (i.e. the so-called "thin pack"). When stored on disk however, the pack should be self contained to avoid cyclic dependency.
+The delta data starts with the size of the base object and the size of the object to be reconstructed. These sizes are encoded using the size encoding from above. The remainder of the delta data is a sequence of instructions to reconstruct the object from the base object. If the base object is deltified, it must be converted to canonical form first. Each instruction appends more and more data to the target object until it's complete. There are two supported instructions so far: one for copying a byte range from the source object and one for inserting new data embedded in the instruction itself.
 Each instruction has variable length. Instruction type is determined by the seventh bit of the first octet. The following diagrams follow the convention in RFC 1951 (Deflate compressed data format).
 ####  [](https://git-scm.com/docs/gitformat-pack#_instruction_to_copy_from_base_object)Instruction to copy from base object
 ```
@@ -288,7 +288,7 @@ Each instruction has variable length. Instruction type is determined by the seve
 
 This is the instruction format to copy a byte range from the source object. It encodes the offset to copy from and the number of bytes to copy. Offset and size are in little-endian order.
 All offset and size bytes are optional. This is to reduce the instruction size when encoding small offsets or sizes. The first seven bits in the first octet determine which of the next seven octets is present. If bit zero is set, offset1 is present. If bit one is set offset2 is present and so on.
-Note that a more compact instruction does not change offset and size encoding. For example, if only offset2 is omitted like below, offset3 still contains bits 16-23. It does not become offset2 and contains bits 8-15 even if it’s right next to offset1.
+Note that a more compact instruction does not change offset and size encoding. For example, if only offset2 is omitted like below, offset3 still contains bits 16-23. It does not become offset2 and contains bits 8-15 even if it's right next to offset1.
 ```
 +----------+---------+---------+
 | 10000101 | offset1 | offset3 |
@@ -581,17 +581,17 @@ Index checksum of the above contents.
 
 ##  [](https://git-scm.com/docs/gitformat-pack#_multi_pack_index_reverse_indexes)multi-pack-index reverse indexes
 Similar to the pack-based reverse index, the multi-pack index can also be used to generate a reverse index.
-Instead of mapping between offset, pack-, and index position, this reverse index maps between an object’s position within the MIDX, and that object’s position within a pseudo-pack that the MIDX describes (i.e., the ith entry of the multi-pack reverse index holds the MIDX position of ith object in pseudo-pack order).
+Instead of mapping between offset, pack-, and index position, this reverse index maps between an object's position within the MIDX, and that object's position within a pseudo-pack that the MIDX describes (i.e., the ith entry of the multi-pack reverse index holds the MIDX position of ith object in pseudo-pack order).
 To clarify the difference between these orderings, consider a multi-pack reachability bitmap (which does not yet exist, but is what we are building towards here). Each bit needs to correspond to an object in the MIDX, and so we need an efficient mapping from bit position to MIDX position.
 One solution is to let bits occupy the same position in the oid-sorted index stored by the MIDX. But because oids are effectively random, their resulting reachability bitmaps would have no locality, and thus compress poorly. (This is the reason that single-pack bitmaps use the pack ordering, and not the .idx ordering, for the same purpose.)
-So we’d like to define an ordering for the whole MIDX based around pack ordering, which has far better locality (and thus compresses more efficiently). We can think of a pseudo-pack created by the concatenation of all of the packs in the MIDX. E.g., if we had a MIDX with three packs (a, b, c), with 10, 15, and 20 objects respectively, we can imagine an ordering of the objects like:
+So we'd like to define an ordering for the whole MIDX based around pack ordering, which has far better locality (and thus compresses more efficiently). We can think of a pseudo-pack created by the concatenation of all of the packs in the MIDX. E.g., if we had a MIDX with three packs (a, b, c), with 10, 15, and 20 objects respectively, we can imagine an ordering of the objects like:
 ```
 |a,0|a,1|...|a,9|b,0|b,1|...|b,14|c,0|c,1|...|c,19|
 ```
 
-where the ordering of the packs is defined by the MIDX’s pack list, and then the ordering of objects within each pack is the same as the order in the actual packfile.
-Given the list of packs and their counts of objects, you can naïvely reconstruct that pseudo-pack ordering (e.g., the object at position 27 must be (c,1) because packs "a" and "b" consumed 25 of the slots). But there’s a catch. Objects may be duplicated between packs, in which case the MIDX only stores one pointer to the object (and thus we’d want only one slot in the bitmap).
-Callers could handle duplicates themselves by reading objects in order of their bit-position, but that’s linear in the number of objects, and much too expensive for ordinary bitmap lookups. Building a reverse index solves this, since it is the logical inverse of the index, and that index has already removed duplicates. But, building a reverse index on the fly can be expensive. Since we already have an on-disk format for pack-based reverse indexes, let’s reuse it for the MIDX’s pseudo-pack, too.
+where the ordering of the packs is defined by the MIDX's pack list, and then the ordering of objects within each pack is the same as the order in the actual packfile.
+Given the list of packs and their counts of objects, you can naïvely reconstruct that pseudo-pack ordering (e.g., the object at position 27 must be (c,1) because packs "a" and "b" consumed 25 of the slots). But there's a catch. Objects may be duplicated between packs, in which case the MIDX only stores one pointer to the object (and thus we'd want only one slot in the bitmap).
+Callers could handle duplicates themselves by reading objects in order of their bit-position, but that's linear in the number of objects, and much too expensive for ordinary bitmap lookups. Building a reverse index solves this, since it is the logical inverse of the index, and that index has already removed duplicates. But, building a reverse index on the fly can be expensive. Since we already have an on-disk format for pack-based reverse indexes, let's reuse it for the MIDX's pseudo-pack, too.
 Objects from the MIDX are ordered as follows to string together the pseudo-pack. Let `pack`(`o`) return the pack from which `o` was selected by the MIDX, and define an ordering of packs based on their numeric ID (as stored by the MIDX). Let `offset`(`o`) return the object offset of `o` within `pack`(`o`). Then, compare `o1` and `o2` as follows:
   * If one of `pack`(`o1`) and `pack`(`o2`) is preferred and the other is not, then the preferred one sorts first.
 (This is a detail that allows the MIDX bitmap to determine which pack should be used by the pack-reuse mechanism, since it can ask the MIDX for the pack containing the object at bit position 0).
@@ -599,39 +599,39 @@ Objects from the MIDX are ordered as follows to string together the pseudo-pack.
   * Otherwise, `pack`(`o1`) `=` `pack`(`o2`), and the objects are sorted in pack-order (i.e., `o1` sorts ahead of `o2` exactly when _offset(o1)_ _< offset(o2)_).
 
 
-In short, a MIDX’s pseudo-pack is the de-duplicated concatenation of objects in packs stored by the MIDX, laid out in pack order, and the packs arranged in MIDX order (with the preferred pack coming first).
-The MIDX’s reverse index is stored in the optional _RIDX_ chunk within the MIDX itself.
+In short, a MIDX's pseudo-pack is the de-duplicated concatenation of objects in packs stored by the MIDX, laid out in pack order, and the packs arranged in MIDX order (with the preferred pack coming first).
+The MIDX's reverse index is stored in the optional _RIDX_ chunk within the MIDX itself.
 ###  [](https://git-scm.com/docs/gitformat-pack#_btmp_chunk)`BTMP` chunk
-The Bitmapped Packfiles (`BTMP`) chunk encodes additional information about the objects in the multi-pack index’s reachability bitmap. Recall that objects from the MIDX are arranged in "pseudo-pack" order (see above) for reachability bitmaps.
+The Bitmapped Packfiles (`BTMP`) chunk encodes additional information about the objects in the multi-pack index's reachability bitmap. Recall that objects from the MIDX are arranged in "pseudo-pack" order (see above) for reachability bitmaps.
 From the example above, suppose we have packs "a", "b", and "c", with 10, 15, and 20 objects, respectively. In pseudo-pack order, those would be arranged as follows:
 ```
 |a,0|a,1|...|a,9|b,0|b,1|...|b,14|c,0|c,1|...|c,19|
 ```
 
-When working with single-pack bitmaps (or, equivalently, multi-pack reachability bitmaps with a preferred pack), [git-pack-objects[1]](https://git-scm.com/docs/git-pack-objects) performs “verbatim” reuse, attempting to reuse chunks of the bitmapped or preferred packfile instead of adding objects to the packing list.
+When working with single-pack bitmaps (or, equivalently, multi-pack reachability bitmaps with a preferred pack), [git-pack-objects[1]](https://git-scm.com/docs/git-pack-objects) performs "verbatim" reuse, attempting to reuse chunks of the bitmapped or preferred packfile instead of adding objects to the packing list.
 When a chunk of bytes is reused from an existing pack, any objects contained therein do not need to be added to the packing list, saving memory and CPU time. But a chunk from an existing packfile can only be reused when the following conditions are met:
-  * The chunk contains only objects which were requested by the caller (i.e. does not contain any objects which the caller didn’t ask for explicitly or implicitly).
+  * The chunk contains only objects which were requested by the caller (i.e. does not contain any objects which the caller didn't ask for explicitly or implicitly).
   * All objects stored in non-thin packs as offset- or reference-deltas also include their base object in the resulting pack.
 
 
-The `BTMP` chunk encodes the necessary information in order to implement multi-pack reuse over a set of packfiles as described above. Specifically, the `BTMP` chunk encodes three pieces of information (all 32-bit unsigned integers in network byte-order) for each packfile `p` that is stored in the MIDX, as follows: 
+The `BTMP` chunk encodes the necessary information in order to implement multi-pack reuse over a set of packfiles as described above. Specifically, the `BTMP` chunk encodes three pieces of information (all 32-bit unsigned integers in network byte-order) for each packfile `p` that is stored in the MIDX, as follows:
 
-[](https://git-scm.com/docs/gitformat-pack#Documentation/gitformat-pack.txt-bitmappos)`bitmap_pos` 
-    
-The first bit position (in pseudo-pack order) in the multi-pack index’s reachability bitmap occupied by an object from `p`. 
+[](https://git-scm.com/docs/gitformat-pack#Documentation/gitformat-pack.txt-bitmappos)`bitmap_pos`
 
-[](https://git-scm.com/docs/gitformat-pack#Documentation/gitformat-pack.txt-bitmapnr)`bitmap_nr` 
-    
+The first bit position (in pseudo-pack order) in the multi-pack index's reachability bitmap occupied by an object from `p`.
+
+[](https://git-scm.com/docs/gitformat-pack#Documentation/gitformat-pack.txt-bitmapnr)`bitmap_nr`
+
 The number of bit positions (including the one at `bitmap_pos`) that encode objects from that pack `p`.
-For example, the `BTMP` chunk corresponding to the above example (with packs “a”, “b”, and “c”) would look like:
-| `bitmap_pos` | `bitmap_nr`  
----|---|---  
-packfile “a” | `0` | `10`  
-packfile “b” | `10` | `15`  
-packfile “c” | `25` | `20`  
+For example, the `BTMP` chunk corresponding to the above example (with packs "a", "b", and "c") would look like:
+| `bitmap_pos` | `bitmap_nr`
+---|---|---
+packfile "a" | `0` | `10`
+packfile "b" | `10` | `15`
+packfile "c" | `25` | `20`
 With this information in place, we can treat each packfile as individually reusable in the same fashion as verbatim pack reuse is performed on individual packs prior to the implementation of the `BTMP` chunk.
 ##  [](https://git-scm.com/docs/gitformat-pack#_cruft_packs)cruft packs
-The cruft packs feature offer an alternative to Git’s traditional mechanism of removing unreachable objects. This document provides an overview of Git’s pruning mechanism, and how a cruft pack can be used instead to accomplish the same.
+The cruft packs feature offer an alternative to Git's traditional mechanism of removing unreachable objects. This document provides an overview of Git's pruning mechanism, and how a cruft pack can be used instead to accomplish the same.
 ###  [](https://git-scm.com/docs/gitformat-pack#_background)Background
 To remove unreachable objects from your repository, Git offers `git` `repack` `-Ad` (see [git-repack[1]](https://git-scm.com/docs/git-repack)). Quoting from the documentation:
 ```
@@ -640,8 +640,8 @@ instead of being left in the old pack. [...] loose unreachable objects will be
 pruned according to normal expiry rules with the next 'git gc' invocation.
 ```
 
-Unreachable objects aren’t removed immediately, since doing so could race with an incoming push which may reference an object which is about to be deleted. Instead, those unreachable objects are stored as loose objects and stay that way until they are older than the expiration window, at which point they are removed by [git-prune[1]](https://git-scm.com/docs/git-prune).
-Git must store these unreachable objects loose in order to keep track of their per-object mtimes. If these unreachable objects were written into one big pack, then either freshening that pack (because an object contained within it was re-written) or creating a new pack of unreachable objects would cause the pack’s mtime to get updated, and the objects within it would never leave the expiration window. Instead, objects are stored loose in order to keep track of the individual object mtimes and avoid a situation where all cruft objects are freshened at once.
+Unreachable objects aren't removed immediately, since doing so could race with an incoming push which may reference an object which is about to be deleted. Instead, those unreachable objects are stored as loose objects and stay that way until they are older than the expiration window, at which point they are removed by [git-prune[1]](https://git-scm.com/docs/git-prune).
+Git must store these unreachable objects loose in order to keep track of their per-object mtimes. If these unreachable objects were written into one big pack, then either freshening that pack (because an object contained within it was re-written) or creating a new pack of unreachable objects would cause the pack's mtime to get updated, and the objects within it would never leave the expiration window. Instead, objects are stored loose in order to keep track of the individual object mtimes and avoid a situation where all cruft objects are freshened at once.
 This can lead to undesirable situations when a repository contains many unreachable objects which have not yet left the grace period. Having large directories in the shards of `.git/objects` can lead to decreased performance in the repository. But given enough unreachable objects, this can lead to inode starvation and degrade the performance of the whole system. Since we can never pack those objects, these repositories often take up a large amount of disk space, since we can only zlib compress them, but not store them in delta chains.
 ###  [](https://git-scm.com/docs/gitformat-pack#_cruft_packs_2)Cruft packs
 A cruft pack eliminates the need for storing unreachable objects in a loose state by including the per-object mtimes in a separate file alongside a single pack containing all loose objects.
@@ -651,7 +651,7 @@ A cruft pack is written by `git` `repack` `--cruft` when generating a new pack. 
   3. Write the pack out, along with a `.mtimes` file that records the per-object timestamps.
 
 
-This mode is invoked internally by [git-repack[1]](https://git-scm.com/docs/git-repack) when instructed to write a cruft pack. Crucially, the set of in-core kept packs is exactly the set of packs which will not be deleted by the repack; in other words, they contain all of the repository’s reachable objects.
+This mode is invoked internally by [git-repack[1]](https://git-scm.com/docs/git-repack) when instructed to write a cruft pack. Crucially, the set of in-core kept packs is exactly the set of packs which will not be deleted by the repack; in other words, they contain all of the repository's reachable objects.
 When a repository already has a cruft pack, `git` `repack` `--cruft` typically only adds objects to it. An exception to this is when `git` `repack` is given the `--cruft-expiration` option, which allows the generated cruft pack to omit expired objects instead of waiting for [git-gc[1]](https://git-scm.com/docs/git-gc) to expire those objects later on.
 It is [git-gc[1]](https://git-scm.com/docs/git-gc) that is typically responsible for removing expired unreachable objects.
 ###  [](https://git-scm.com/docs/gitformat-pack#_alternatives)Alternatives
@@ -663,6 +663,6 @@ On the location of mtime data, a new auxiliary file tied to the pack was chosen 
 ##  [](https://git-scm.com/docs/gitformat-pack#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitformat-pack
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/git-mktag#_name)
     * [SYNOPSIS](https://git-scm.com/docs/git-mktag#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/git-mktag#_description)
@@ -34,8 +34,8 @@ Localized versions of **git-mktag** manual
   5. [українська мова ](https://git-scm.com/docs/git-mktag/uk)
   6. [简体中文 ](https://git-scm.com/docs/git-mktag/zh_HANS-CN)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/git-mktag)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -201,27 +201,27 @@ _git mktag_
 ```
 
 ##  [](https://git-scm.com/docs/git-mktag#_description)DESCRIPTION
-Reads a tag’s contents on standard input and creates a tag object. The output is the new tag’s <object> identifier.
+Reads a tag's contents on standard input and creates a tag object. The output is the new tag's <object> identifier.
 This command is mostly equivalent to [git-hash-object[1]](https://git-scm.com/docs/git-hash-object) invoked with `-t` `tag` `-w` `--stdin`. I.e. both of these will create and write a tag found in `my-tag`:
 ```
 git mktag <my-tag
 git hash-object -t tag -w --stdin <my-tag
 ```
 
-The difference is that mktag will die before writing the tag if the tag doesn’t pass a [git-fsck[1]](https://git-scm.com/docs/git-fsck) check.
+The difference is that mktag will die before writing the tag if the tag doesn't pass a [git-fsck[1]](https://git-scm.com/docs/git-fsck) check.
 The "fsck" check done by mktag is stricter than what [git-fsck[1]](https://git-scm.com/docs/git-fsck) would run by default in that all `fsck.`_< msg-id>_ messages are promoted from warnings to errors (so e.g. a missing "tagger" line is an error).
 Extra headers in the object are also an error under mktag, but ignored by [git-fsck[1]](https://git-scm.com/docs/git-fsck). This extra check can be turned off by setting the appropriate `fsck.`_< msg-id>_ variable:
 ```
 git -c fsck.extraHeaderEntry=ignore mktag <my-tag-with-headers
 ```
 
-##  [](https://git-scm.com/docs/git-mktag#_options)OPTIONS 
+##  [](https://git-scm.com/docs/git-mktag#_options)OPTIONS
 
-[](https://git-scm.com/docs/git-mktag#Documentation/git-mktag.txt---strict)--strict 
-    
+[](https://git-scm.com/docs/git-mktag#Documentation/git-mktag.txt---strict)--strict
+
 By default mktag turns on the equivalent of [git-fsck[1]](https://git-scm.com/docs/git-fsck) `--strict` mode. Use `--no-strict` to disable it.
 ##  [](https://git-scm.com/docs/git-mktag#_tag_format)Tag Format
-A tag signature file, to be fed to this command’s standard input, has a very simple fixed format: four lines of
+A tag signature file, to be fed to this command's standard input, has a very simple fixed format: four lines of
 ```
 object <hash>
 type <typename>
@@ -229,10 +229,10 @@ tag <tagname>
 tagger <tagger>
 ```
 
-followed by some _optional_ free-form message (some tags created by older Git may not have a `tagger` line). The message, when it exists, is separated by a blank line from the header. The message part may contain a signature that Git itself doesn’t care about, but that can be verified with gpg.
+followed by some _optional_ free-form message (some tags created by older Git may not have a `tagger` line). The message, when it exists, is separated by a blank line from the header. The message part may contain a signature that Git itself doesn't care about, but that can be verified with gpg.
 ##  [](https://git-scm.com/docs/git-mktag#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### mktag
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitprotocol-capabilities#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitprotocol-capabilities#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitprotocol-capabilities#_description)
@@ -53,8 +53,8 @@
 Localized versions of **gitprotocol-capabilities** manual
   1. [English ](https://git-scm.com/docs/gitprotocol-capabilities)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitprotocol-capabilities)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -214,8 +214,8 @@ gitprotocol-capabilities - Protocol v0 and v1 capabilities
 ```
 
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_description)DESCRIPTION
-Note |  this document describes capabilities for versions 0 and 1 of the pack protocol. For version 2, please refer to the [gitprotocol-v2[5]](https://git-scm.com/docs/gitprotocol-v2) doc.   
----|---  
+Note |  this document describes capabilities for versions 0 and 1 of the pack protocol. For version 2, please refer to the [gitprotocol-v2[5]](https://git-scm.com/docs/gitprotocol-v2) doc.
+---|---
 Servers SHOULD support all capabilities defined in this document.
 On the very first line of the initial server response of either receive-pack and upload-pack the first reference is followed by a NUL byte and then a list of space delimited server capabilities. These allow the server to declare what it can and cannot support to the client.
 Client will then send a space separated list of capabilities it wants to be in effect. The client MUST NOT ask for capabilities the server did not say it supports.
@@ -224,10 +224,10 @@ The _atomic_ , _report-status_ , _report-status-v2_ , _delete-refs_ , _quiet_ , 
 The _ofs-delta_ and _side-band-64k_ capabilities are sent and recognized by both upload-pack and receive-pack protocols. The _agent_ and _session-id_ capabilities may optionally be sent in both protocols.
 All other capabilities are only recognized by the upload-pack (fetch from server) process.
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_multi_ack)multi_ack
-The _multi_ack_ capability allows the server to return "ACK obj-id continue" as soon as it finds a commit that it can use as a common base, between the client’s wants and the client’s have set.
-By sending this early, the server can potentially head off the client from walking any further down that particular branch of the client’s repository history. The client may still need to walk down other branches, sending have lines for those, until the server has a complete cut across the DAG, or the client has said "done".
-Without multi_ack, a client sends have lines in --date-order until the server has found a common base. That means the client will send have lines that are already known by the server to be common, because they overlap in time with another branch on which the server hasn’t found a common base yet.
-For example suppose the client has commits in caps that the server doesn’t and the server has commits in lower case that the client doesn’t, as in the following diagram:
+The _multi_ack_ capability allows the server to return "ACK obj-id continue" as soon as it finds a commit that it can use as a common base, between the client's wants and the client's have set.
+By sending this early, the server can potentially head off the client from walking any further down that particular branch of the client's repository history. The client may still need to walk down other branches, sending have lines for those, until the server has a complete cut across the DAG, or the client has said "done".
+Without multi_ack, a client sends have lines in --date-order until the server has found a common base. That means the client will send have lines that are already known by the server to be common, because they overlap in time with another branch on which the server hasn't found a common base yet.
+For example suppose the client has commits in caps that the server doesn't and the server has commits in lower case that the client doesn't, as in the following diagram:
 ```
       +---- u ---------------------- x
      /              +----- y
@@ -237,10 +237,10 @@ For example suppose the client has commits in caps that the server doesn’t and
 +--- Q -- R -- S
 ```
 
-If the client wants x,y and starts out by saying have F,S, the server doesn’t know what F,S is. Eventually the client says "have d" and the server sends "ACK d continue" to let the client know to stop walking down that line (so don’t send c-b-a), but it’s not done yet, it needs a base for x. The client keeps going with S-R-Q, until a gets reached, at which point the server has a clear base and it all ends.
+If the client wants x,y and starts out by saying have F,S, the server doesn't know what F,S is. Eventually the client says "have d" and the server sends "ACK d continue" to let the client know to stop walking down that line (so don't send c-b-a), but it's not done yet, it needs a base for x. The client keeps going with S-R-Q, until a gets reached, at which point the server has a clear base and it all ends.
 Without multi_ack the client would have sent that c-b-a chain anyway, interleaved with S-R-Q.
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_multi_ack_detailed)multi_ack_detailed
-This is an extension of multi_ack that permits the client to better understand the server’s in-memory state. See [gitprotocol-pack[5]](https://git-scm.com/docs/gitprotocol-pack), section "Packfile Negotiation" for more information.
+This is an extension of multi_ack that permits the client to better understand the server's in-memory state. See [gitprotocol-pack[5]](https://git-scm.com/docs/gitprotocol-pack), section "Packfile Negotiation" for more information.
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_no_done)no-done
 This capability should only be used with the smart HTTP protocol. If multi_ack_detailed and no-done are both present, then the sender is free to immediately send a pack following its first "ACK obj-id ready" message.
 Without no-done in the smart HTTP protocol, the server session would end and the client has to make another trip to send "done" before the server can send the pack. no-done removes the last round and thus slightly reduces latency.
@@ -261,7 +261,7 @@ The stream code can be one of:
 ```
 
 The "side-band-64k" capability came about as a way for newer clients that can handle much larger packets to request packets that are actually crammed nearly full, while maintaining backward compatibility for the older clients.
-Further, with side-band and its up to 1000-byte messages, it’s actually 999 bytes of payload and 1 byte for the stream code. With side-band-64k, same deal, you have up to 65519 bytes of data and 1 byte for the stream code.
+Further, with side-band and its up to 1000-byte messages, it's actually 999 bytes of payload and 1 byte for the stream code. With side-band-64k, same deal, you have up to 65519 bytes of data and 1 byte for the stream code.
 The client MUST send only one of "side-band" and "side- band-64k". The server MUST diagnose it as an error if client requests both.
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_ofs_delta)ofs-delta
 The server can send, and the client can understand, PACKv2 with delta referring to its base by position in pack rather than by an obj-id. That is, they can send/read OBJ_OFS_DELTA (aka type 6) in a packfile.
@@ -278,16 +278,16 @@ Clients MAY use the parameters from this capability to select the proper initial
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_shallow)shallow
 This capability adds "deepen", "shallow" and "unshallow" commands to the fetch-pack/upload-pack protocol so clients can request shallow clones.
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_deepen_since)deepen-since
-This capability adds "deepen-since" command to fetch-pack/upload-pack protocol so the client can request shallow clones that are cut at a specific time, instead of depth. Internally it’s equivalent of doing "rev-list --max-age=<timestamp>" on the server side. "deepen-since" cannot be used with "deepen".
+This capability adds "deepen-since" command to fetch-pack/upload-pack protocol so the client can request shallow clones that are cut at a specific time, instead of depth. Internally it's equivalent of doing "rev-list --max-age=<timestamp>" on the server side. "deepen-since" cannot be used with "deepen".
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_deepen_not)deepen-not
-This capability adds "deepen-not" command to fetch-pack/upload-pack protocol so the client can request shallow clones that are cut at a specific revision, instead of depth. Internally it’s equivalent of doing "rev-list --not <rev>" on the server side. "deepen-not" cannot be used with "deepen", but can be used with "deepen-since".
+This capability adds "deepen-not" command to fetch-pack/upload-pack protocol so the client can request shallow clones that are cut at a specific revision, instead of depth. Internally it's equivalent of doing "rev-list --not <rev>" on the server side. "deepen-not" cannot be used with "deepen", but can be used with "deepen-since".
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_deepen_relative)deepen-relative
 If this capability is requested by the client, the semantics of "deepen" command is changed. The "depth" argument is the depth from the current shallow boundary, instead of the depth from remote refs.
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_no_progress)no-progress
-The client was started with "git clone -q" or something similar, and doesn’t want that side band 2. Basically the client just says "I do not wish to receive stream 2 on sideband, so do not send it to me, and if you did, I will drop it on the floor anyway". However, the sideband channel 3 is still used for error responses.
+The client was started with "git clone -q" or something similar, and doesn't want that side band 2. Basically the client just says "I do not wish to receive stream 2 on sideband, so do not send it to me, and if you did, I will drop it on the floor anyway". However, the sideband channel 3 is still used for error responses.
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_include_tag)include-tag
 The _include-tag_ capability is about sending annotated tags if we are sending objects they point to. If we pack an object to the client, and a tag object points exactly at that object, we pack the tag object too. In general this allows a client to get all new annotated tags when it fetches a branch, in a single network connection.
-Clients MAY always send include-tag, hardcoding it into a request when the server advertises this capability. The decision for a client to request include-tag only has to do with the client’s desires for tag data, whether or not a server had advertised objects in the refs/tags/* namespace.
+Clients MAY always send include-tag, hardcoding it into a request when the server advertises this capability. The decision for a client to request include-tag only has to do with the client's desires for tag data, whether or not a server had advertised objects in the refs/tags/* namespace.
 Servers MUST pack the tags if their referent is packed and the client has requested include-tags.
 Clients MUST be prepared for the case where a server has ignored include-tag and has not actually sent tags in the pack. In such cases the client SHOULD issue a subsequent fetch to acquire the tags that include-tag would have otherwise given the client.
 The server SHOULD send include-tag, if it supports it, regardless of whether or not there are tags available.
@@ -317,6 +317,6 @@ Session IDs should be unique to a given process. They must fit within a packet-l
 ##  [](https://git-scm.com/docs/gitprotocol-capabilities#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitprotocol-capabilities
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

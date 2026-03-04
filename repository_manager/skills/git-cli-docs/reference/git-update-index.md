@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/git-update-index#_name)
     * [SYNOPSIS](https://git-scm.com/docs/git-update-index#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/git-update-index#_description)
@@ -24,7 +24,7 @@
     * [USING --REFRESH](https://git-scm.com/docs/git-update-index#_using_refresh)
     * [USING --CACHEINFO OR --INFO-ONLY](https://git-scm.com/docs/git-update-index#_using_cacheinfo_or_info_only)
     * [USING --INDEX-INFO](https://git-scm.com/docs/git-update-index#_using_index_info)
-    * [USING “ASSUME UNCHANGED” BIT](https://git-scm.com/docs/git-update-index#_using_assume_unchanged_bit)
+    * [USING "ASSUME UNCHANGED" BIT](https://git-scm.com/docs/git-update-index#_using_assume_unchanged_bit)
     * [EXAMPLES](https://git-scm.com/docs/git-update-index#_examples)
     * [SKIP-WORKTREE BIT](https://git-scm.com/docs/git-update-index#_skip_worktree_bit)
     * [SPLIT INDEX](https://git-scm.com/docs/git-update-index#_split_index)
@@ -43,8 +43,8 @@ Localized versions of **git-update-index** manual
   3. [українська мова ](https://git-scm.com/docs/git-update-index/uk)
   4. [简体中文 ](https://git-scm.com/docs/git-update-index/zh_HANS-CN)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/git-update-index)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -255,169 +255,169 @@ _git update-index_
 Modifies the index. Each file mentioned is updated into the index and any _unmerged_ or _needs updating_ state is cleared.
 See also [git-add[1]](https://git-scm.com/docs/git-add) for a more user-friendly way to do some of the most common operations on the index.
 The way _git update-index_ handles files it is told about can be modified using the various options:
-##  [](https://git-scm.com/docs/git-update-index#_options)OPTIONS 
+##  [](https://git-scm.com/docs/git-update-index#_options)OPTIONS
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---add)--add 
-    
-If a specified file isn’t in the index already then it’s added. Default behaviour is to ignore new files. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---add)--add
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---remove)--remove 
-    
-If a specified file is in the index but is missing then it’s removed. Default behavior is to ignore removed files. 
+If a specified file isn't in the index already then it's added. Default behaviour is to ignore new files.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---refresh)--refresh 
-    
-Looks at the current index and checks to see if merges or updates are needed by checking stat() information. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---remove)--remove
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt--q)-q 
-    
-Quiet. If --refresh finds that the index needs an update, the default behavior is to error out. This option makes _git update-index_ continue anyway. 
+If a specified file is in the index but is missing then it's removed. Default behavior is to ignore removed files.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---ignore-submodules)--ignore-submodules 
-    
-Do not try to update submodules. This option is only respected when passed before --refresh. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---refresh)--refresh
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---unmerged)--unmerged 
-    
-If --refresh finds unmerged changes in the index, the default behavior is to error out. This option makes _git update-index_ continue anyway. 
+Looks at the current index and checks to see if merges or updates are needed by checking stat() information.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---ignore-missing)--ignore-missing 
-    
-Ignores missing files during a --refresh 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt--q)-q
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---cacheinfomodeobjectpath)--cacheinfo <mode>,<object>,<path> 
+Quiet. If --refresh finds that the index needs an update, the default behavior is to error out. This option makes _git update-index_ continue anyway.
 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---ignore-submodules)--ignore-submodules
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---cacheinfomodeobjectpath-1)--cacheinfo <mode> <object> <path> 
-    
-Directly insert the specified info into the index. For backward compatibility, you can also give these three arguments as three separate parameters, but new users are encouraged to use a single-parameter form. 
+Do not try to update submodules. This option is only respected when passed before --refresh.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---index-info)--index-info 
-    
-Read index information from stdin. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---unmerged)--unmerged
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---chmod-x)--chmod=(+|-)x 
-    
-Set the execute permissions on the updated files. 
+If --refresh finds unmerged changes in the index, the default behavior is to error out. This option makes _git update-index_ continue anyway.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---assume-unchanged)--assume-unchanged 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---ignore-missing)--ignore-missing
+
+Ignores missing files during a --refresh
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---cacheinfomodeobjectpath)--cacheinfo <mode>,<object>,<path>
 
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-assume-unchanged)--no-assume-unchanged 
-    
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---cacheinfomodeobjectpath-1)--cacheinfo <mode> <object> <path>
+
+Directly insert the specified info into the index. For backward compatibility, you can also give these three arguments as three separate parameters, but new users are encouraged to use a single-parameter form.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---index-info)--index-info
+
+Read index information from stdin.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---chmod-x)--chmod=(+|-)x
+
+Set the execute permissions on the updated files.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---assume-unchanged)--assume-unchanged
+
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-assume-unchanged)--no-assume-unchanged
+
 When this flag is specified, the object names recorded for the paths are not updated. Instead, this option sets/unsets the "assume unchanged" bit for the paths. When the "assume unchanged" bit is on, the user promises not to change the file and allows Git to assume that the working tree file matches what is recorded in the index. If you want to change the working tree file, you need to unset the bit to tell Git. This is sometimes helpful when working with a big project on a filesystem that has a very slow lstat(2) system call (e.g. cifs).
-Git will fail (gracefully) in case it needs to modify this file in the index e.g. when merging in a commit; thus, in case the assumed-untracked file is changed upstream, you will need to handle the situation manually. 
+Git will fail (gracefully) in case it needs to modify this file in the index e.g. when merging in a commit; thus, in case the assumed-untracked file is changed upstream, you will need to handle the situation manually.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---really-refresh)--really-refresh 
-    
-Like `--refresh`, but checks stat information unconditionally, without regard to the "assume unchanged" setting. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---really-refresh)--really-refresh
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---skip-worktree)--skip-worktree 
+Like `--refresh`, but checks stat information unconditionally, without regard to the "assume unchanged" setting.
 
-
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-skip-worktree)--no-skip-worktree 
-    
-When one of these flags is specified, the object names recorded for the paths are not updated. Instead, these options set and unset the "skip-worktree" bit for the paths. See section "Skip-worktree bit" below for more information. 
-
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---ignore-skip-worktree-entries)--ignore-skip-worktree-entries 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---skip-worktree)--skip-worktree
 
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-ignore-skip-worktree-entries)--no-ignore-skip-worktree-entries 
-    
-Do not remove skip-worktree (AKA "index-only") entries even when the `--remove` option was specified. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-skip-worktree)--no-skip-worktree
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---fsmonitor-valid)--fsmonitor-valid 
+When one of these flags is specified, the object names recorded for the paths are not updated. Instead, these options set and unset the "skip-worktree" bit for the paths. See section "Skip-worktree bit" below for more information.
 
-
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-fsmonitor-valid)--no-fsmonitor-valid 
-    
-When one of these flags is specified, the object names recorded for the paths are not updated. Instead, these options set and unset the "fsmonitor valid" bit for the paths. See section "File System Monitor" below for more information. 
-
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt--g)-g 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---ignore-skip-worktree-entries)--ignore-skip-worktree-entries
 
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---again)--again 
-    
-Runs _git update-index_ itself on the paths whose index entries are different from those of the `HEAD` commit. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-ignore-skip-worktree-entries)--no-ignore-skip-worktree-entries
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---unresolve)--unresolve 
-    
-Restores the _unmerged_ or _needs updating_ state of a file during a merge if it was cleared by accident. 
+Do not remove skip-worktree (AKA "index-only") entries even when the `--remove` option was specified.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---info-only)--info-only 
-    
-Do not create objects in the object database for all <file> arguments that follow this flag; just insert their object IDs into the index. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---fsmonitor-valid)--fsmonitor-valid
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---force-remove)--force-remove 
-    
-Remove the file from the index even when the working directory still has such a file. (Implies --remove.) 
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---replace)--replace 
-    
-By default, when a file `path` exists in the index, _git update-index_ refuses an attempt to add `path/file`. Similarly if a file `path/file` exists, a file `path` cannot be added. With --replace flag, existing entries that conflict with the entry being added are automatically removed with warning messages. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-fsmonitor-valid)--no-fsmonitor-valid
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---stdin)--stdin 
-    
-Instead of taking a list of paths from the command line, read a list of paths from the standard input. Paths are separated by LF (i.e. one path per line) by default. 
+When one of these flags is specified, the object names recorded for the paths are not updated. Instead, these options set and unset the "fsmonitor valid" bit for the paths. See section "File System Monitor" below for more information.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---verbose)--verbose 
-    
-Report what is being added and removed from the index. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt--g)-g
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---index-versionn)--index-version <n> 
-    
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---again)--again
+
+Runs _git update-index_ itself on the paths whose index entries are different from those of the `HEAD` commit.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---unresolve)--unresolve
+
+Restores the _unmerged_ or _needs updating_ state of a file during a merge if it was cleared by accident.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---info-only)--info-only
+
+Do not create objects in the object database for all <file> arguments that follow this flag; just insert their object IDs into the index.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---force-remove)--force-remove
+
+Remove the file from the index even when the working directory still has such a file. (Implies --remove.)
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---replace)--replace
+
+By default, when a file `path` exists in the index, _git update-index_ refuses an attempt to add `path/file`. Similarly if a file `path/file` exists, a file `path` cannot be added. With --replace flag, existing entries that conflict with the entry being added are automatically removed with warning messages.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---stdin)--stdin
+
+Instead of taking a list of paths from the command line, read a list of paths from the standard input. Paths are separated by LF (i.e. one path per line) by default.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---verbose)--verbose
+
+Report what is being added and removed from the index.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---index-versionn)--index-version <n>
+
 Write the resulting index out in the named on-disk format version. Supported versions are 2, 3, and 4. The current default version is 2 or 3, depending on whether extra features are used, such as `git` `add` `-N`. With `--verbose`, also report the version the index file uses before and after this command.
-Version 4 performs a simple pathname compression that reduces index size by 30%-50% on large repositories, which results in faster load time. Git supports it since version 1.8.0, released in October 2012, and support for it was added to libgit2 in 2016 and to JGit in 2020. Older versions of this manual page called it "relatively young", but it should be considered mature technology these days. 
+Version 4 performs a simple pathname compression that reduces index size by 30%-50% on large repositories, which results in faster load time. Git supports it since version 1.8.0, released in October 2012, and support for it was added to libgit2 in 2016 and to JGit in 2020. Older versions of this manual page called it "relatively young", but it should be considered mature technology these days.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---show-index-version)--show-index-version 
-    
-Report the index format version used by the on-disk index file. See `--index-version` above. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---show-index-version)--show-index-version
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt--z)-z 
-    
-Only meaningful with `--stdin` or `--index-info`; paths are separated with NUL character instead of LF. 
+Report the index format version used by the on-disk index file. See `--index-version` above.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---split-index)--split-index 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt--z)-z
+
+Only meaningful with `--stdin` or `--index-info`; paths are separated with NUL character instead of LF.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---split-index)--split-index
 
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-split-index)--no-split-index 
-    
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-split-index)--no-split-index
+
 Enable or disable split index mode. If split-index mode is already enabled and `--split-index` is given again, all changes in $GIT_DIR/index are pushed back to the shared index file.
-These options take effect whatever the value of the `core.splitIndex` configuration variable (see [git-config[1]](https://git-scm.com/docs/git-config)). But a warning is emitted when the change goes against the configured value, as the configured value will take effect next time the index is read and this will remove the intended effect of the option. 
+These options take effect whatever the value of the `core.splitIndex` configuration variable (see [git-config[1]](https://git-scm.com/docs/git-config)). But a warning is emitted when the change goes against the configured value, as the configured value will take effect next time the index is read and this will remove the intended effect of the option.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---untracked-cache)--untracked-cache 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---untracked-cache)--untracked-cache
 
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-untracked-cache)--no-untracked-cache 
-    
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-untracked-cache)--no-untracked-cache
+
 Enable or disable untracked cache feature. Please use `--test-untracked-cache` before enabling it.
-These options take effect whatever the value of the `core.untrackedCache` configuration variable (see [git-config[1]](https://git-scm.com/docs/git-config)). But a warning is emitted when the change goes against the configured value, as the configured value will take effect next time the index is read and this will remove the intended effect of the option. 
+These options take effect whatever the value of the `core.untrackedCache` configuration variable (see [git-config[1]](https://git-scm.com/docs/git-config)). But a warning is emitted when the change goes against the configured value, as the configured value will take effect next time the index is read and this will remove the intended effect of the option.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---test-untracked-cache)--test-untracked-cache 
-    
-Only perform tests on the working directory to make sure untracked cache can be used. You have to manually enable untracked cache using `--untracked-cache` or `--force-untracked-cache` or the `core.untrackedCache` configuration variable afterwards if you really want to use it. If a test fails the exit code is 1 and a message explains what is not working as needed, otherwise the exit code is 0 and OK is printed. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---test-untracked-cache)--test-untracked-cache
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---force-untracked-cache)--force-untracked-cache 
-    
-Same as `--untracked-cache`. Provided for backwards compatibility with older versions of Git where `--untracked-cache` used to imply `--test-untracked-cache` but this option would enable the extension unconditionally. 
+Only perform tests on the working directory to make sure untracked cache can be used. You have to manually enable untracked cache using `--untracked-cache` or `--force-untracked-cache` or the `core.untrackedCache` configuration variable afterwards if you really want to use it. If a test fails the exit code is 1 and a message explains what is not working as needed, otherwise the exit code is 0 and OK is printed.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---fsmonitor)--fsmonitor 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---force-untracked-cache)--force-untracked-cache
+
+Same as `--untracked-cache`. Provided for backwards compatibility with older versions of Git where `--untracked-cache` used to imply `--test-untracked-cache` but this option would enable the extension unconditionally.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---fsmonitor)--fsmonitor
 
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-fsmonitor)--no-fsmonitor 
-    
-Enable or disable files system monitor feature. These options take effect whatever the value of the `core.fsmonitor` configuration variable (see [git-config[1]](https://git-scm.com/docs/git-config)). But a warning is emitted when the change goes against the configured value, as the configured value will take effect next time the index is read and this will remove the intended effect of the option. 
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---no-fsmonitor)--no-fsmonitor
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---)-- 
-    
-Do not interpret any more arguments as options. 
+Enable or disable files system monitor feature. These options take effect whatever the value of the `core.fsmonitor` configuration variable (see [git-config[1]](https://git-scm.com/docs/git-config)). But a warning is emitted when the change goes against the configured value, as the configured value will take effect next time the index is read and this will remove the intended effect of the option.
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt-file)<file> 
-    
-Files to act on. Note that files beginning with _._ are discarded. This includes `./file` and `dir/./file`. If you don’t want this, then use cleaner names. The same applies to directories ending _/_ and paths with _//_
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt---)--
+
+Do not interpret any more arguments as options.
+
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt-file)<file>
+
+Files to act on. Note that files beginning with _._ are discarded. This includes `./file` and `dir/./file`. If you don't want this, then use cleaner names. The same applies to directories ending _/_ and paths with _//_
 ##  [](https://git-scm.com/docs/git-update-index#_using_refresh)USING --REFRESH
-`--refresh` does not calculate a new sha1 file or bring the index up to date for mode/content changes. But what it **does** do is to "re-match" the stat information of a file with the index, so that you can refresh the index for a file that hasn’t been changed but where the stat entry is out of date.
-For example, you’d want to do this after doing a _git read-tree_ , to link up the stat index details with the proper files.
+`--refresh` does not calculate a new sha1 file or bring the index up to date for mode/content changes. But what it **does** do is to "re-match" the stat information of a file with the index, so that you can refresh the index for a file that hasn't been changed but where the stat entry is out of date.
+For example, you'd want to do this after doing a _git read-tree_ , to link up the stat index details with the proper files.
 ##  [](https://git-scm.com/docs/git-update-index#_using_cacheinfo_or_info_only)USING --CACHEINFO OR --INFO-ONLY
 `--cacheinfo` is used to register a file that is not in the current working directory. This is useful for minimum-checkout merging.
 To pretend you have a file at path with mode and sha1, say:
@@ -426,7 +426,7 @@ $ git update-index --add --cacheinfo <mode>,<sha1>,<path>
 ```
 
 `--info-only` is used to register files without placing them in the object database. This is useful for status-only repositories.
-Both `--cacheinfo` and `--info-only` behave similarly: the index is updated but the object database isn’t. `--cacheinfo` is useful when the object is in the database but the file isn’t available locally. `--info-only` is useful when the file is available, but you do not wish to update the object database.
+Both `--cacheinfo` and `--info-only` behave similarly: the index is updated but the object database isn't. `--cacheinfo` is useful when the object is in the database but the file isn't available locally. `--info-only` is useful when the file is available, but you do not wish to update the object database.
 ##  [](https://git-scm.com/docs/git-update-index#_using_index_info)USING --INDEX-INFO
 `--index-info` is a more powerful mechanism that lets you feed multiple entry definitions from the standard input, and designed specifically for scripts. It can take inputs of three formats:
   1. mode SP type SP sha1 TAB path
@@ -459,7 +459,7 @@ $ git ls-files -s
 100755 8a1218a1024a212bb3db30becd860315f9f3ac52 2	frotz
 ```
 
-##  [](https://git-scm.com/docs/git-update-index#_using_assume_unchanged_bit)USING “ASSUME UNCHANGED” BIT
+##  [](https://git-scm.com/docs/git-update-index#_using_assume_unchanged_bit)USING "ASSUME UNCHANGED" BIT
 Many operations in Git depend on your filesystem to have an efficient `lstat`(`2`) implementation, so that `st_mtime` information for working tree files can be cheaply checked to see if the file contents have changed from the version recorded in the index file. Unfortunately, some filesystems have inefficient `lstat`(`2`). If your filesystem is one of them, you can set "assume unchanged" bit to paths you have not changed to cause Git not to do this check. Note that setting this bit on a path does not mean Git will check the contents of the file to see if it has changed — it makes Git to omit any checking and assume it has **not** changed. When you make changes to working tree files, you have to explicitly tell Git about it by dropping "assume unchanged" bit, either before or after you modify them.
 In order to set "assume unchanged" bit, use `--assume-unchanged` option. To unset, use `--no-assume-unchanged`. To see which files have the "assume unchanged" bit set, use `git` `ls-files` `-v` (see [git-ls-files[1]](https://git-scm.com/docs/git-ls-files)).
 The command looks at `core.ignorestat` configuration variable. When this is true, paths updated with `git` `update-index` `paths...` and paths updated with other Git commands that update both index and working tree (e.g. _git apply --index_ , _git checkout-index -u_ , and _git read-tree -u_) are automatically marked as "assume unchanged". Note that "assume unchanged" bit is **not** set if `git` `update-index` `--refresh` finds the working tree file matches the index (use `git` `update-index` `--really-refresh` if you want to mark them as "assume unchanged").
@@ -471,8 +471,8 @@ $ git checkout-index -n -f -a && git update-index --ignore-missing --refresh
 ```
 
 
-[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt-Onaninefficientfilesystemwithcoreignorestatset)On an inefficient filesystem with `core.ignorestat` set 
-    
+[](https://git-scm.com/docs/git-update-index#Documentation/git-update-index.txt-Onaninefficientfilesystemwithcoreignorestatset)On an inefficient filesystem with `core.ignorestat` set
+
 ```
 $ git update-index --really-refresh              **(1)**
 $ git update-index --no-assume-unchanged foo.c   **(2)**
@@ -505,7 +505,7 @@ Skip-worktree bit can be defined in one (long) sentence: Tell git to avoid writi
 Note that not all git commands will pay attention to this bit, and some only partially support it.
 The update-index flags and the read-tree capabilities relating to the skip-worktree bit predated the introduction of the [git-sparse-checkout[1]](https://git-scm.com/docs/git-sparse-checkout) command, which provides a much easier way to configure and handle the skip-worktree bits. If you want to reduce your working tree to only deal with a subset of the files in the repository, we strongly encourage the use of [git-sparse-checkout[1]](https://git-scm.com/docs/git-sparse-checkout) in preference to the low-level update-index and read-tree primitives.
 The primary purpose of the skip-worktree bit is to enable sparse checkouts, i.e. to have working directories with only a subset of paths present. When the skip-worktree bit is set, Git commands (such as `switch`, `pull`, `merge`) will avoid writing these files. However, these commands will sometimes write these files anyway in important cases such as conflicts during a merge or rebase. Git commands will also avoid treating the lack of such files as an intentional deletion; for example `git` `add` `-u` will not stage a deletion for these files and `git` `commit` `-a` will not make a commit deleting them either.
-Although this bit looks similar to assume-unchanged bit, its goal is different. The assume-unchanged bit is for leaving the file in the working tree but having Git omit checking it for changes and presuming that the file has not been changed (though if it can determine without stat’ing the file that it has changed, it is free to record the changes). skip-worktree tells Git to ignore the absence of the file, avoid updating it when possible with commands that normally update much of the working directory (e.g. `checkout`, `switch`, `pull`, etc.), and not have its absence be recorded in commits. Note that in sparse checkouts (setup by `git` `sparse-checkout` or by configuring core.sparseCheckout to true), if a file is marked as skip-worktree in the index but is found in the working tree, Git will clear the skip-worktree bit for that file.
+Although this bit looks similar to assume-unchanged bit, its goal is different. The assume-unchanged bit is for leaving the file in the working tree but having Git omit checking it for changes and presuming that the file has not been changed (though if it can determine without stat'ing the file that it has changed, it is free to record the changes). skip-worktree tells Git to ignore the absence of the file, avoid updating it when possible with commands that normally update much of the working directory (e.g. `checkout`, `switch`, `pull`, etc.), and not have its absence be recorded in commits. Note that in sparse checkouts (setup by `git` `sparse-checkout` or by configuring core.sparseCheckout to true), if a file is marked as skip-worktree in the index but is found in the working tree, Git will clear the skip-worktree bit for that file.
 ##  [](https://git-scm.com/docs/git-update-index#_split_index)SPLIT INDEX
 This mode is designed for repositories with very large indexes, and aims at reducing the time it takes to repeatedly write these indexes.
 In this mode, the index is split into two files, $GIT_DIR/index and $GIT_DIR/sharedindex.<SHA-1>. Changes are accumulated in $GIT_DIR/index, the split index, while the shared index file contains all index entries and stays unchanged.
@@ -514,8 +514,8 @@ Each time a new shared index file is created, the old shared index files are del
 To avoid deleting a shared index file that is still used, its modification time is updated to the current time every time a new split index based on the shared index file is either created or read from.
 ##  [](https://git-scm.com/docs/git-update-index#_untracked_cache)UNTRACKED CACHE
 This cache is meant to speed up commands that involve determining untracked files such as `git` `status`.
-This feature works by recording the mtime of the working tree directories and then omitting reading directories and stat calls against files in those directories whose mtime hasn’t changed. For this to work the underlying operating system and file system must change the `st_mtime` field of directories if files in the directory are added, modified or deleted.
-You can test whether the filesystem supports that with the `--test-untracked-cache` option. The `--untracked-cache` option used to implicitly perform that test in older versions of Git, but that’s no longer the case.
+This feature works by recording the mtime of the working tree directories and then omitting reading directories and stat calls against files in those directories whose mtime hasn't changed. For this to work the underlying operating system and file system must change the `st_mtime` field of directories if files in the directory are added, modified or deleted.
+You can test whether the filesystem supports that with the `--test-untracked-cache` option. The `--untracked-cache` option used to implicitly perform that test in older versions of Git, but that's no longer the case.
 If you want to enable (or disable) this feature, it is easier to use the `core.untrackedCache` configuration variable (see [git-config[1]](https://git-scm.com/docs/git-config)) than using the `--untracked-cache` option to `git` `update-index` in each repository, especially if you want to do so across all repositories you use, because you can set the configuration variable to `true` (or `false`) in your `$HOME/.gitconfig` just once and have it affect all repositories you touch.
 When the `core.untrackedCache` configuration variable is changed, the untracked cache is added to or removed from the index the next time a command reads the index; while when `--`[`no-`|`force-`]`untracked-cache` are used, the untracked cache is immediately added to or removed from the index.
 Before 2.17, the untracked cache had a bug where replacing a directory with a symlink to another directory could cause it to incorrectly show files tracked by git as untracked. See the "status: add a failing test showing a core.untrackedCache bug" commit to git.git. A workaround for that is (and this might work for other undiscovered bugs in the future):
@@ -524,7 +524,7 @@ $ git -c core.untrackedCache=false status
 ```
 
 This bug has also been shown to affect non-symlink cases of replacing a directory with a file when it comes to the internal structures of the untracked cache, but no case has been reported where this resulted in wrong "git status" output.
-There are also cases where existing indexes written by git versions before 2.17 will reference directories that don’t exist anymore, potentially causing many "could not open directory" warnings to be printed on "git status". These are new warnings for existing issues that were previously silently discarded.
+There are also cases where existing indexes written by git versions before 2.17 will reference directories that don't exist anymore, potentially causing many "could not open directory" warnings to be printed on "git status". These are new warnings for existing issues that were previously silently discarded.
 As with the bug described above the solution is to one-off do a "git status" run with `core.untrackedCache=false` to flush out the leftover bad data.
 ##  [](https://git-scm.com/docs/git-update-index#_file_system_monitor)FILE SYSTEM MONITOR
 This feature is intended to speed up git operations for repos that have large working directories.
@@ -546,6 +546,6 @@ For example, if the file you want to change is some sort of config file, the rep
 ##  [](https://git-scm.com/docs/git-update-index#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### update-index
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

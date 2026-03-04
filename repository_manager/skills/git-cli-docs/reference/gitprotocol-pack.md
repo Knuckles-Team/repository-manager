@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitprotocol-pack#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitprotocol-pack#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitprotocol-pack#_description)
@@ -42,8 +42,8 @@
 Localized versions of **gitprotocol-pack** manual
   1. [English ](https://git-scm.com/docs/gitprotocol-pack)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitprotocol-pack)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -256,7 +256,7 @@ $ ssh git.example.com "git-upload-pack '/project.git'"
 ```
 
 For a server to support Git pushing and pulling for a given user over SSH, that user needs to be able to execute one or both of those commands via the SSH shell that they are provided on login. On some systems, that shell access is limited to only being able to run those two commands, or even just one of them.
-In an ssh:// format URI, it’s absolute in the URI, so the _/_ after the host name (or port number) is sent as an argument, which is then read by the remote git-upload-pack exactly as is, so it’s effectively an absolute path in the remote filesystem.
+In an ssh:// format URI, it's absolute in the URI, so the _/_ after the host name (or port number) is sent as an argument, which is then read by the remote git-upload-pack exactly as is, so it's effectively an absolute path in the remote filesystem.
 ```
    git clone ssh://user@example.com/project.git
   |
@@ -264,7 +264,7 @@ In an ssh:// format URI, it’s absolute in the URI, so the _/_ after the host n
 ssh user@example.com "git-upload-pack '/project.git'"
 ```
 
-In a "user@host:path" format URI, it’s relative to the user’s home directory, because the Git client will run:
+In a "user@host:path" format URI, it's relative to the user's home directory, because the Git client will run:
 ```
    git clone user@example.com:project.git
     |
@@ -306,7 +306,7 @@ side-band side-band-64k ofs-delta shallow no-progress include-tag
 
 The returned response is a pkt-line stream describing each ref and its current value. The stream MUST be sorted by name according to the C locale ordering.
 If HEAD is a valid ref, HEAD MUST appear as the first advertised ref. If HEAD is not a valid ref, HEAD MUST NOT appear in the advertisement list at all, but other refs may still appear.
-The stream MUST include capability declarations behind a NUL on the first ref. The peeled value of a ref (that is "ref^{}") MUST be immediately after the ref itself, if presented. A conforming server MUST peel the ref if it’s an annotated tag.
+The stream MUST include capability declarations behind a NUL on the first ref. The peeled value of a ref (that is "ref^{}") MUST be immediately after the ref itself, if presented. A conforming server MUST peel the ref if it's an annotated tag.
 ```
   advertised-refs  =  *1("version 1")
 		      (no-refs / list-of-refs)
@@ -361,10 +361,10 @@ Otherwise, it enters the negotiation phase, where the client and server determin
 ```
 
 Clients MUST send all the obj-ids it wants from the reference discovery phase as _want_ lines. Clients MUST send at least one _want_ command in the request body. Clients MUST NOT mention an obj-id in a _want_ command which did not appear in the response obtained through ref discovery.
-The client MUST write all obj-ids which it only has shallow copies of (meaning that it does not have the parents of a commit) as _shallow_ lines so that the server is aware of the limitations of the client’s history.
+The client MUST write all obj-ids which it only has shallow copies of (meaning that it does not have the parents of a commit) as _shallow_ lines so that the server is aware of the limitations of the client's history.
 The client now sends the maximum commit history depth it wants for this transaction, which is the number of commits it wants from the tip of the history, if any, as a _deepen_ line. A depth of 0 is the same as not making a depth request. The client does not want to receive any commits beyond this depth, nor does it want objects needed only to complete those commits. Commits whose parents are not received as a result are defined as shallow and marked as such in the server. This information is sent back to the client in the next step.
 The client can optionally request that pack-objects omit various objects from the packfile using one of several filtering techniques. These are intended for use with partial clone and partial fetch operations. An object that does not meet a filter-spec value is omitted unless explicitly requested in a _want_ line. See `rev-list` for possible filter-spec values.
-Once all the _want’s and 'shallow’s (and optional 'deepen_) are transferred, clients MUST send a flush-pkt, to tell the server side that it is done sending the list.
+Once all the _want's and 'shallow's (and optional 'deepen_) are transferred, clients MUST send a flush-pkt, to tell the server side that it is done sending the list.
 Otherwise, if the client sent a positive depth request, the server will determine which commits will and will not be shallow and send this information to the client. If the client did not request a positive depth, this step is skipped.
 ```
   shallow-update   =  *shallow-line
@@ -376,7 +376,7 @@ Otherwise, if the client sent a positive depth request, the server will determin
   unshallow-line   =  PKT-LINE("unshallow" SP obj-id)
 ```
 
-If the client has requested a positive depth, the server will compute the set of commits which are no deeper than the desired depth. The set of commits starts at the client’s wants.
+If the client has requested a positive depth, the server will compute the set of commits which are no deeper than the desired depth. The set of commits starts at the client's wants.
 The server writes _shallow_ lines for each commit whose parents will not be sent as a result. The server writes an _unshallow_ line for each commit which the client has indicated is shallow, but is no longer shallow at the currently requested depth (that is, its parents will now be sent). The server MUST NOT mark as unshallow anything which the client has not indicated was shallow.
 Now the client will send a list of the obj-ids it has using _have_ lines, so the server can make a packfile that only contains the objects that the client needs. In multi_ack mode, the canonical implementation will send up to 32 of these at a time, then will send a flush-pkt. The canonical implementation will skip ahead and send the next 32 immediately, so that there is always a block of 32 "in-flight on the wire" at a time.
 ```
@@ -401,7 +401,7 @@ In multi_ack_detailed mode:
 
 Without either multi_ack or multi_ack_detailed:
   * upload-pack sends "ACK obj-id" on the first common object it finds. After that it says nothing until the client gives it a "done".
-  * upload-pack sends "NAK" on a flush-pkt if no common object has been found yet. If one has been found, and thus an ACK was already sent, it’s silent on the flush-pkt.
+  * upload-pack sends "NAK" on a flush-pkt if no common object has been found yet. If one has been found, and thus an ACK was already sent, it's silent on the flush-pkt.
 
 
 After the client has gotten enough ACK responses that it can determine that the server has enough information to send an efficient packfile (in the canonical implementation, this is determined when it has received enough ACKs that it can color everything left in the --date-order queue as common with the server, or the --date-order queue is empty), or the client determines that it wants to give up (in the canonical implementation, this is determined when the client sends 256 _have_ lines without getting any of them ACKed by the server - meaning there is nothing in common and the server should just send all of its objects), then the client will send a _done_ command. The _done_ command signals to the server that the client is ready to receive its packfile data.
@@ -517,21 +517,21 @@ If the receiving end does not support delete-refs, the sending end MUST NOT ask 
 If the receiving end does not support push-cert, the sending end MUST NOT send a push-cert command. When a push-cert command is sent, command-list MUST NOT be sent; the commands recorded in the push certificate is used instead.
 The packfile MUST NOT be sent if the only command used is _delete_.
 A packfile MUST be sent if either create or update command is used, even if the server already has all the necessary objects. In this case the client MUST send an empty packfile. The only time this is likely to happen is if the client is creating a new branch or a tag that points to an existing obj-id.
-The server will receive the packfile, unpack it, then validate each reference that is being updated that it hasn’t changed while the request was being processed (the obj-id is still the same as the old-id), and it will run any update hooks to make sure that the update is acceptable. If all of that is fine, the server will then update the references.
+The server will receive the packfile, unpack it, then validate each reference that is being updated that it hasn't changed while the request was being processed (the obj-id is still the same as the old-id), and it will run any update hooks to make sure that the update is acceptable. If all of that is fine, the server will then update the references.
 ##  [](https://git-scm.com/docs/gitprotocol-pack#_push_certificate)Push Certificate
 A push certificate begins with a set of header lines. After the header and an empty line, the protocol commands follow, one per line. Note that the trailing LF in push-cert PKT-LINEs is _not_ optional; it must be present.
-Currently, the following header fields are defined: 
+Currently, the following header fields are defined:
 
-[](https://git-scm.com/docs/gitprotocol-pack#Documentation/gitprotocol-pack.txt-pusherident)`pusher` ident 
-    
-Identify the GPG key in "Human Readable Name <email@address>" format. 
+[](https://git-scm.com/docs/gitprotocol-pack#Documentation/gitprotocol-pack.txt-pusherident)`pusher` ident
 
-[](https://git-scm.com/docs/gitprotocol-pack#Documentation/gitprotocol-pack.txt-pusheeurl)`pushee` url 
-    
-The repository URL (anonymized, if the URL contains authentication material) the user who ran `git` `push` intended to push into. 
+Identify the GPG key in "Human Readable Name <email@address>" format.
 
-[](https://git-scm.com/docs/gitprotocol-pack#Documentation/gitprotocol-pack.txt-noncenonce)`nonce` nonce 
-    
+[](https://git-scm.com/docs/gitprotocol-pack#Documentation/gitprotocol-pack.txt-pusheeurl)`pushee` url
+
+The repository URL (anonymized, if the URL contains authentication material) the user who ran `git` `push` intended to push into.
+
+[](https://git-scm.com/docs/gitprotocol-pack#Documentation/gitprotocol-pack.txt-noncenonce)`nonce` nonce
+
 The _nonce_ string the receiving repository asked the pushing user to include in the certificate, to prevent replay attacks.
 The GPG signature lines are a detached signature for the contents recorded in the push certificate before the signature block begins. The detached signature is used to certify that the commands were given by the pusher, who must be the signer.
 ##  [](https://git-scm.com/docs/gitprotocol-pack#_report_status)Report Status
@@ -602,6 +602,6 @@ An example client/server communication might look like this:
 ##  [](https://git-scm.com/docs/gitprotocol-pack#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitprotocol-pack
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

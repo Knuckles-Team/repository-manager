@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/gitformat-index#_name)
     * [SYNOPSIS](https://git-scm.com/docs/gitformat-index#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/gitformat-index#_description)
@@ -35,8 +35,8 @@
 Localized versions of **gitformat-index** manual
   1. [English ](https://git-scm.com/docs/gitformat-index)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/gitformat-index)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -531,7 +531,7 @@ The extension consists of:
 ```
 
   * Hash of the shared index file. The shared index file path is $GIT_DIR/sharedindex.<hash>. If all bits are zero, the index does not require a shared index file.
-  * An ewah-encoded delete bitmap, each bit represents an entry in the shared index. If a bit is set, its corresponding entry in the shared index will be removed from the final index. Note, because a delete operation changes index entry positions, but we do need original positions in replace phase, it’s best to just mark entries for removal, then do a mass deletion after replacement.
+  * An ewah-encoded delete bitmap, each bit represents an entry in the shared index. If a bit is set, its corresponding entry in the shared index will be removed from the final index. Note, because a delete operation changes index entry positions, but we do need original positions in replace phase, it's best to just mark entries for removal, then do a mass deletion after replacement.
   * An ewah-encoded replace bitmap, each bit represents an entry in the shared index. If a bit is set, its corresponding entry in the shared index will be replaced with an entry in this index file. All replaced entries are stored in sorted order in this index. The first "1" bit in the replace bitmap corresponds to the first index entry, the second "1" bit to the second entry and so on. Replaced entries may have empty path names to save space.
 ```
 The remaining index entries after replaced ones will be added to the
@@ -655,6 +655,6 @@ this extension.
 ##  [](https://git-scm.com/docs/gitformat-index#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### gitformat-index
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)

@@ -16,7 +16,7 @@
   * [Community](https://git-scm.com/community)
 
 
-  * Table of Contents 
+  * Table of Contents
     * [NAME](https://git-scm.com/docs/git-cvsserver#_name)
     * [SYNOPSIS](https://git-scm.com/docs/git-cvsserver#_synopsis)
     * [DESCRIPTION](https://git-scm.com/docs/git-cvsserver#_description)
@@ -40,8 +40,8 @@ Localized versions of **git-cvsserver** manual
   4. [українська мова ](https://git-scm.com/docs/git-cvsserver/uk)
   5. [简体中文 ](https://git-scm.com/docs/git-cvsserver/zh_HANS-CN)
 
-Want to read in your language or fix typos?  
-[You can help translate this page](https://github.com/jnavila/git-manpages-l10n). 
+Want to read in your language or fix typos?
+[You can help translate this page](https://github.com/jnavila/git-manpages-l10n).
 [Topics ▾](https://git-scm.com/docs/git-cvsserver)
 ### Setup and Config
   * [ git ](https://git-scm.com/docs/git)
@@ -239,39 +239,39 @@ This application is a CVS emulation layer for Git.
 It is highly functional. However, not all methods are implemented, and for those methods that are implemented, not all switches are implemented.
 Testing has been done using both the CLI CVS client, and the Eclipse CVS plugin. Most functionality works fine with both of these clients.
 ##  [](https://git-scm.com/docs/git-cvsserver#_options)OPTIONS
-All these options obviously only make sense if enforced by the server side. They have been implemented to resemble the [git-daemon[1]](https://git-scm.com/docs/git-daemon) options as closely as possible. 
+All these options obviously only make sense if enforced by the server side. They have been implemented to resemble the [git-daemon[1]](https://git-scm.com/docs/git-daemon) options as closely as possible.
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt---base-pathpath)--base-path <path> 
-    
-Prepend _path_ to requested CVSROOT 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt---base-pathpath)--base-path <path>
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt---strict-paths)--strict-paths 
-    
-Don’t allow recursing into subdirectories 
+Prepend _path_ to requested CVSROOT
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt---export-all)--export-all 
-    
-Don’t check for `gitcvs.enabled` in config. You also have to specify a list of allowed directories (see below) if you want to use this option. 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt---strict-paths)--strict-paths
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt--V)-V 
+Don't allow recursing into subdirectories
 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt---export-all)--export-all
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt---version)--version 
-    
-Print version information and exit 
+Don't check for `gitcvs.enabled` in config. You also have to specify a list of allowed directories (see below) if you want to use this option.
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt--h)-h 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt--V)-V
 
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt--H)-H 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt---version)--version
+
+Print version information and exit
+
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt--h)-h
 
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt---help)--help 
-    
-Print usage information and exit 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt--H)-H
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-directory)<directory> 
-    
+
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt---help)--help
+
+Print usage information and exit
+
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-directory)<directory>
+
 The remaining arguments provide a list of directories. If no directories are given, then all are allowed. Repositories within these directories still require the `gitcvs.enabled` config option, unless `--export-all` is specified.
 ##  [](https://git-scm.com/docs/git-cvsserver#_limitations)LIMITATIONS
 CVS clients cannot tag, branch or perform Git merges.
@@ -313,7 +313,7 @@ Note: Newer CVS versions (>= 1.12.11) also support specifying CVS_SERVER directl
    cvs -d ":ext;CVS_SERVER=git cvsserver:user@server/path/repo.git" co <HEAD_name>
 ```
 
-This has the advantage that it will be saved in your _CVS/Root_ files and you don’t need to worry about always setting the correct environment variable. SSH users restricted to _git-shell_ don’t need to override the default with CVS_SERVER (and shouldn’t) as _git-shell_ understands `cvs` to mean _git-cvsserver_ and pretends that the other end runs the real _cvs_ better.
+This has the advantage that it will be saved in your _CVS/Root_ files and you don't need to worry about always setting the correct environment variable. SSH users restricted to _git-shell_ don't need to override the default with CVS_SERVER (and shouldn't) as _git-shell_ understands `cvs` to mean _git-cvsserver_ and pretends that the other end runs the real _cvs_ better.
   2. For each repo that you want accessible from CVS you need to edit config in the repo and add the following section.
 ```
    [gitcvs]
@@ -333,7 +333,7 @@ All configuration variables can also be overridden for a specific method of acce
         enabled=1
 ```
 
-  3. If you didn’t specify the CVSROOT/CVS_SERVER directly in the checkout command, automatically saving it in your _CVS/Root_ files, then you need to set them explicitly in your environment. CVSROOT should be set as per normal, but the directory should point at the appropriate Git repo. As above, for SSH clients _not_ restricted to _git-shell_ , CVS_SERVER should be set to _git-cvsserver_.
+  3. If you didn't specify the CVSROOT/CVS_SERVER directly in the checkout command, automatically saving it in your _CVS/Root_ files, then you need to set them explicitly in your environment. CVSROOT should be set as per normal, but the directory should point at the appropriate Git repo. As above, for SSH clients _not_ restricted to _git-shell_ , CVS_SERVER should be set to _git-cvsserver_.
 ```
    export CVSROOT=:ext:user@server:/var/git/project.git
    export CVS_SERVER="git cvsserver"
@@ -355,59 +355,59 @@ By default it uses SQLite databases in the Git directory, named `gitcvs.`_< modu
 The database cannot be reliably regenerated in a consistent form after the branch it is tracking has changed. Example: For merged branches, _git-cvsserver_ only tracks one branch of development, and after a _git merge_ an incrementally updated database may track a different branch than a database regenerated from scratch, causing inconsistent CVS revision numbers. `git-cvsserver` has no way of knowing which branch it would have picked if it had been run incrementally pre-merge. So if you have to fully or partially (from old backup) regenerate the database, you should be suspicious of pre-existing CVS sandboxes.
 You can configure the database backend with the following configuration variables:
 ###  [](https://git-scm.com/docs/git-cvsserver#_configuring_database_backend)Configuring database backend
-_git-cvsserver_ uses the Perl DBI module. Please also read its documentation if changing these variables, especially about _DBI- >connect()_. 
+_git-cvsserver_ uses the Perl DBI module. Please also read its documentation if changing these variables, especially about _DBI- >connect()_.
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-gitcvsdbName)gitcvs.dbName 
-    
-Database name. The exact meaning depends on the selected database driver, for SQLite this is a filename. Supports variable substitution (see below). May not contain semicolons (_;_). Default: _%Ggitcvs.%m.sqlite_ 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-gitcvsdbName)gitcvs.dbName
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-gitcvsdbDriver)gitcvs.dbDriver 
-    
-Used DBI driver. You can specify any available driver for this here, but it might not work. cvsserver is tested with _DBD::SQLite_ , reported to work with _DBD::Pg_ , and reported **not** to work with _DBD::mysql_. Please regard this as an experimental feature. May not contain colons (`:`). Default: _SQLite_ 
+Database name. The exact meaning depends on the selected database driver, for SQLite this is a filename. Supports variable substitution (see below). May not contain semicolons (_;_). Default: _%Ggitcvs.%m.sqlite_
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-gitcvsdbuser)gitcvs.dbuser 
-    
-Database user. Only useful if setting `dbDriver`, since SQLite has no concept of database users. Supports variable substitution (see below). 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-gitcvsdbDriver)gitcvs.dbDriver
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-gitcvsdbPass)gitcvs.dbPass 
-    
-Database password. Only useful if setting `dbDriver`, since SQLite has no concept of database passwords. 
+Used DBI driver. You can specify any available driver for this here, but it might not work. cvsserver is tested with _DBD::SQLite_ , reported to work with _DBD::Pg_ , and reported **not** to work with _DBD::mysql_. Please regard this as an experimental feature. May not contain colons (`:`). Default: _SQLite_
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-gitcvsdbTableNamePrefix)gitcvs.dbTableNamePrefix 
-    
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-gitcvsdbuser)gitcvs.dbuser
+
+Database user. Only useful if setting `dbDriver`, since SQLite has no concept of database users. Supports variable substitution (see below).
+
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-gitcvsdbPass)gitcvs.dbPass
+
+Database password. Only useful if setting `dbDriver`, since SQLite has no concept of database passwords.
+
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-gitcvsdbTableNamePrefix)gitcvs.dbTableNamePrefix
+
 Database table name prefix. Supports variable substitution (see below). Any non-alphabetic characters will be replaced with underscores.
 All variables can also be set per access method, see [above](https://git-scm.com/docs/git-cvsserver#configaccessmethod).
 ####  [](https://git-scm.com/docs/git-cvsserver#_variable_substitution)Variable substitution
-In `dbDriver` and `dbUser` you can use the following variables: 
+In `dbDriver` and `dbUser` you can use the following variables:
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-G)%G 
-    
-Git directory name 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-G)%G
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-g)%g 
-    
-Git directory name, where all characters except for alphanumeric ones, `.`, and `-` are replaced with `_` (this should make it easier to use the directory name in a filename if wanted) 
+Git directory name
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-m)%m 
-    
-CVS module/Git head name 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-g)%g
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-a)%a 
-    
-access method (one of "ext" or "pserver") 
+Git directory name, where all characters except for alphanumeric ones, `.`, and `-` are replaced with `_` (this should make it easier to use the directory name in a filename if wanted)
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-u)%u 
-    
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-m)%m
+
+CVS module/Git head name
+
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-a)%a
+
+access method (one of "ext" or "pserver")
+
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-u)%u
+
 Name of the user running _git-cvsserver_. If no name can be determined, the numeric uid is used.
 ##  [](https://git-scm.com/docs/git-cvsserver#_environment)ENVIRONMENT
-These variables obviate the need for command-line options in some circumstances, allowing easier restricted usage through git-shell. 
+These variables obviate the need for command-line options in some circumstances, allowing easier restricted usage through git-shell.
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-GITCVSSERVERBASEPATH)GIT_CVSSERVER_BASE_PATH 
-    
-This variable replaces the argument to --base-path. 
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-GITCVSSERVERBASEPATH)GIT_CVSSERVER_BASE_PATH
 
-[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-GITCVSSERVERROOT)GIT_CVSSERVER_ROOT 
-    
+This variable replaces the argument to --base-path.
+
+[](https://git-scm.com/docs/git-cvsserver#Documentation/git-cvsserver.txt-GITCVSSERVERROOT)GIT_CVSSERVER_ROOT
+
 This variable specifies a single directory, replacing the _< directory>_... argument list. The repository still requires the `gitcvs.enabled` config option, unless `--export-all` is specified.
 When these environment variables are set, the corresponding command-line arguments may not be used.
 ##  [](https://git-scm.com/docs/git-cvsserver#_eclipse_cvs_client_notes)ECLIPSE CVS CLIENT NOTES
@@ -430,8 +430,8 @@ Alternatively, you can just use the non-standard extssh protocol that Eclipse of
 ##  [](https://git-scm.com/docs/git-cvsserver#_operations_supported)OPERATIONS SUPPORTED
 All the operations required for normal use are supported, including checkout, diff, status, update, log, add, remove, commit.
 Most CVS command arguments that read CVS tags or revision numbers (typically -r) work, and also support any git refspec (tag, branch, commit ID, etc). However, CVS revision numbers for non-default branches are not well emulated, and cvs log does not show tags or branches at all. (Non-main-branch CVS revision numbers superficially resemble CVS revision numbers, but they actually encode a git commit ID directly, rather than represent the number of revisions since the branch point.)
-Note that there are two ways to checkout a particular branch. As described elsewhere on this page, the "module" parameter of cvs checkout is interpreted as a branch name, and it becomes the main branch. It remains the main branch for a given sandbox even if you temporarily make another branch sticky with cvs update -r. Alternatively, the -r argument can indicate some other branch to actually checkout, even though the module is still the "main" branch. Tradeoffs (as currently implemented): Each new "module" creates a new database on disk with a history for the given module, and after the database is created, operations against that main branch are fast. Or alternatively, -r doesn’t take any extra disk space, but may be significantly slower for many operations, like cvs update.
-If you want to refer to a git refspec that has characters that are not allowed by CVS, you have two options. First, it may just work to supply the git refspec directly to the appropriate CVS -r argument; some CVS clients don’t seem to do much sanity checking of the argument. Second, if that fails, you can use a special character escape mechanism that only uses characters that are valid in CVS tags. A sequence of 4 or 5 characters of the form (underscore (`"_"`), dash (`"-"`), one or two characters, and dash (`"-"`)) can encode various characters based on the one or two letters: `"s"` for slash (`"/"`), `"p"` for period (`"."`), `"u"` for underscore (`"_"`), or two hexadecimal digits for any byte value at all (typically an ASCII number, or perhaps a part of a UTF-8 encoded character).
+Note that there are two ways to checkout a particular branch. As described elsewhere on this page, the "module" parameter of cvs checkout is interpreted as a branch name, and it becomes the main branch. It remains the main branch for a given sandbox even if you temporarily make another branch sticky with cvs update -r. Alternatively, the -r argument can indicate some other branch to actually checkout, even though the module is still the "main" branch. Tradeoffs (as currently implemented): Each new "module" creates a new database on disk with a history for the given module, and after the database is created, operations against that main branch are fast. Or alternatively, -r doesn't take any extra disk space, but may be significantly slower for many operations, like cvs update.
+If you want to refer to a git refspec that has characters that are not allowed by CVS, you have two options. First, it may just work to supply the git refspec directly to the appropriate CVS -r argument; some CVS clients don't seem to do much sanity checking of the argument. Second, if that fails, you can use a special character escape mechanism that only uses characters that are valid in CVS tags. A sequence of 4 or 5 characters of the form (underscore (`"_"`), dash (`"-"`), one or two characters, and dash (`"-"`)) can encode various characters based on the one or two letters: `"s"` for slash (`"/"`), `"p"` for period (`"."`), `"u"` for underscore (`"_"`), or two hexadecimal digits for any byte value at all (typically an ASCII number, or perhaps a part of a UTF-8 encoded character).
 Legacy monitoring operations are not supported (edit, watch and related). Exports and tagging (tags and branches) are not supported at this stage.
 ###  [](https://git-scm.com/docs/git-cvsserver#_crlf_line_ending_conversions)CRLF Line Ending Conversions
 By default the server leaves the `-k` mode blank for all files, which causes the CVS client to treat them as a text files, subject to end-of-line conversion on some platforms.
@@ -443,6 +443,6 @@ _git-cvsserver_ depends on DBD::SQLite.
 ##  [](https://git-scm.com/docs/git-cvsserver#_git)GIT
 Part of the [git[1]](https://git-scm.com/docs/git) suite
 ### cvsserver
-[About this site](https://git-scm.com/site)  
-Patches, suggestions, and comments are welcome. 
+[About this site](https://git-scm.com/site)
+Patches, suggestions, and comments are welcome.
 Git is a member of [Software Freedom Conservancy](https://git-scm.com/sfc)
