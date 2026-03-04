@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 # coding: utf-8
+from dotenv import load_dotenv, find_dotenv
+from agent_utilities.base_utilities import to_boolean
 import os
 import sys
 
-__version__ = "1.3.24"
+__version__ = "1.3.25"
 
 from typing import Optional, Dict, List, Union, Any
 from pydantic import Field
@@ -23,7 +25,7 @@ import logging
 
 from eunomia_mcp.middleware import EunomiaMcpMiddleware
 from fastmcp.utilities.logging import get_logger
-from agent_utilities.base_utilities import to_integer, to_boolean
+from agent_utilities.base_utilities import to_integer
 from repository_manager.repository_manager import Git
 from repository_manager.models import GitResult, ReadmeResult
 from agent_utilities.base_utilities import get_library_file_path
@@ -64,11 +66,12 @@ async def execute_bash_command(command: str) -> Dict[str, Any]:
         return {"status": 500, "error": str(e)}
 
 
-def register_tools(mcp: FastMCP):
-    @mcp.custom_route("/health", methods=["GET"])
+def register_misc_tools(mcp: FastMCP):
     async def health_check(request: Request) -> JSONResponse:
         return JSONResponse({"status": "OK"})
 
+
+def register_git_operations_tools(mcp: FastMCP):
     @mcp.tool(
         annotations={
             "title": "Execute Git Command",
@@ -224,16 +227,6 @@ def register_tools(mcp: FastMCP):
         },
         tags={"git_operations"},
     )
-    @mcp.tool(
-        annotations={
-            "title": "Clone Single Git Project",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
-        tags={"git_operations"},
-    )
     async def clone_project(
         url: str = Field(description="The repository URL to clone."),
         path: Optional[str] = Field(
@@ -344,16 +337,6 @@ def register_tools(mcp: FastMCP):
         },
         tags={"git_operations"},
     )
-    @mcp.tool(
-        annotations={
-            "title": "Pull Single Git Project",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
-        tags={"git_operations"},
-    )
     async def pull_project(
         path: str = Field(description="The path of the project directory to pull."),
         threads: Optional[int] = Field(
@@ -403,16 +386,6 @@ def register_tools(mcp: FastMCP):
         },
         tags={"git_operations"},
     )
-    @mcp.tool(
-        annotations={
-            "title": "Pull Multiple Git Projects",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
-        tags={"git_operations"},
-    )
     async def pull_projects(
         path: Optional[str] = Field(
             description="The workspace containing the projects to pull. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
@@ -452,6 +425,86 @@ def register_tools(mcp: FastMCP):
 
     @mcp.tool(
         annotations={
+            "title": "Create Project",
+            "description": "Create a new project directory and initialize it as a git repository.",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+        },
+        tags={"git_operations"},
+    )
+    async def create_project(
+        path: str = Field(description="The path for the new project directory."),
+    ) -> GitResult:
+        """
+        Create a new project directory at the specified path and initialize it as a git repository.
+        Use this to start a new project managed by git.
+        """
+        try:
+            # Init Git with base path or current directory, actual creation uses absolute path logic
+            git = Git(
+                path=os.getcwd(),
+                is_mcp_server=True,
+            )
+
+            response = git.create_project(path=path)
+            return response
+        except Exception as e:
+            logger.error(f"Error in create_project: {e}")
+            raise
+
+    @mcp.tool(
+        annotations={
+            "title": "Bump Version",
+            "description": "Bump the version of the project using bump2version.",
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+        },
+        tags={"git_operations"},
+    )
+    async def bump_version(
+        part: str = Field(
+            description="The part of the version to bump (major, minor, patch)."
+        ),
+        allow_dirty: bool = Field(
+            description="Whether to allow dirty working directory.", default=True
+        ),
+        path: Optional[str] = Field(
+            description="The path to the project directory. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
+            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
+        ),
+    ) -> GitResult:
+        """
+        Bumps the version of the project using bump2version.
+        Automatically commits and tags the new version.
+        """
+        try:
+            target_dir = path
+            if not target_dir:
+                target_dir = (
+                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
+                )
+
+            git = Git(
+                path=target_dir,
+                is_mcp_server=True,
+            )
+
+            response = git.bump_version(
+                part=part,
+                allow_dirty=allow_dirty,
+                path=path,
+            )
+            return response
+        except Exception as e:
+            logger.error(f"Error in bump_version: {e}")
+            raise
+
+
+def register_file_operations_tools(mcp: FastMCP):
+    @mcp.tool(
+        annotations={
             "title": "Get Project README",
             "readOnlyHint": True,
             "destructiveHint": False,
@@ -487,35 +540,6 @@ def register_tools(mcp: FastMCP):
         except Exception as e:
             logger.error(f"Error in get_project_readme: {e}")
             raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Run Command",
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": False,
-            "openWorldHint": True,
-        },
-        tags={"system_operations"},
-    )
-    async def run_command(
-        command: str = Field(description="The command to run"),
-        ctx: Context = Field(
-            description="MCP context for progress reporting.", default=None
-        ),
-    ) -> Dict[str, Any]:
-        """
-        Executes a bash command on the local system.
-        Use with caution. Returns exit code, stdout, and stderr.
-        """
-        if ctx:
-            await ctx.report_progress(progress=0, total=100)
-
-        result = await execute_bash_command(command)
-
-        if ctx:
-            await ctx.report_progress(progress=100, total=100)
-        return result
 
     @mcp.tool(
         annotations={
@@ -580,36 +604,6 @@ def register_tools(mcp: FastMCP):
 
         except Exception as e:
             logger.error(f"Error in text_editor: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Create Project",
-            "description": "Create a new project directory and initialize it as a git repository.",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-        },
-        tags={"git_operations"},
-    )
-    async def create_project(
-        path: str = Field(description="The path for the new project directory."),
-    ) -> GitResult:
-        """
-        Create a new project directory at the specified path and initialize it as a git repository.
-        Use this to start a new project managed by git.
-        """
-        try:
-            # Init Git with base path or current directory, actual creation uses absolute path logic
-            git = Git(
-                path=os.getcwd(),
-                is_mcp_server=True,
-            )
-
-            response = git.create_project(path=path)
-            return response
-        except Exception as e:
-            logger.error(f"Error in create_project: {e}")
             raise
 
     @mcp.tool(
@@ -703,64 +697,6 @@ def register_tools(mcp: FastMCP):
             logger.error(f"Error in rename_directory: {e}")
             raise
 
-    @mcp.tool(
-        annotations={
-            "title": "Bump Version",
-            "description": "Bump the version of the project using bump2version.",
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": False,
-        },
-        tags={"git_operations"},
-    )
-    async def bump_version(
-        part: str = Field(
-            description="The part of the version to bump (major, minor, patch)."
-        ),
-        allow_dirty: bool = Field(
-            description="Whether to allow dirty working directory.", default=True
-        ),
-        path: Optional[str] = Field(
-            description="The path to the project directory. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-    ) -> GitResult:
-        """
-        Bumps the version of the project using bump2version.
-        Automatically commits and tags the new version.
-        """
-        try:
-            target_dir = path
-            if not target_dir:
-                target_dir = (
-                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
-                )
-
-            git = Git(
-                path=target_dir,
-                is_mcp_server=True,
-            )
-
-            response = git.bump_version(
-                part=part,
-                allow_dirty=allow_dirty,
-                path=path,
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Error in bump_version: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Search Codebase",
-            "description": "Search the codebase using ripgrep.",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
-        tags={"git_operations", "search"},
-    )
     @mcp.tool(
         annotations={
             "title": "Search Codebase",
@@ -935,7 +871,39 @@ def register_tools(mcp: FastMCP):
             raise
 
 
+def register_system_operations_tools(mcp: FastMCP):
+    @mcp.tool(
+        annotations={
+            "title": "Run Command",
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": True,
+        },
+        tags={"system_operations"},
+    )
+    async def run_command(
+        command: str = Field(description="The command to run"),
+        ctx: Context = Field(
+            description="MCP context for progress reporting.", default=None
+        ),
+    ) -> Dict[str, Any]:
+        """
+        Executes a bash command on the local system.
+        Use with caution. Returns exit code, stdout, and stderr.
+        """
+        if ctx:
+            await ctx.report_progress(progress=0, total=100)
+
+        result = await execute_bash_command(command)
+
+        if ctx:
+            await ctx.report_progress(progress=100, total=100)
+        return result
+
+
 def mcp_server():
+    load_dotenv(find_dotenv())
     print(f"Repository Manager MCP v{__version__}")
     parser = create_mcp_parser()
 
@@ -1239,7 +1207,20 @@ def mcp_server():
             sys.exit(1)
 
     mcp = FastMCP(name="GitRepositoryManager", auth=auth)
-    register_tools(mcp)
+    DEFAULT_MISCTOOL = to_boolean(os.getenv("MISCTOOL", "True"))
+    if DEFAULT_MISCTOOL:
+        register_misc_tools(mcp)
+    DEFAULT_GIT_OPERATIONSTOOL = to_boolean(os.getenv("GIT_OPERATIONSTOOL", "True"))
+    if DEFAULT_GIT_OPERATIONSTOOL:
+        register_git_operations_tools(mcp)
+    DEFAULT_FILE_OPERATIONSTOOL = to_boolean(os.getenv("FILE_OPERATIONSTOOL", "True"))
+    if DEFAULT_FILE_OPERATIONSTOOL:
+        register_file_operations_tools(mcp)
+    DEFAULT_SYSTEM_OPERATIONSTOOL = to_boolean(
+        os.getenv("SYSTEM_OPERATIONSTOOL", "True")
+    )
+    if DEFAULT_SYSTEM_OPERATIONSTOOL:
+        register_system_operations_tools(mcp)
 
     for mw in middlewares:
         mcp.add_middleware(mw)
