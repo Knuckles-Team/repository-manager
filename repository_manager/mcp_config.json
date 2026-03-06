@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "repository-manager": {
-      "url": "${MCP_URL:-http://repository-manager-mcp:8017/mcp}",
-      "timeout": 300000
-    }
-  }
-}
