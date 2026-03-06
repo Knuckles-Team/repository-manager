@@ -13,14 +13,12 @@ import sys
 import argparse
 import logging
 
-__version__ = "1.3.25"
+__version__ = "1.3.26"
 import concurrent.futures
 import datetime
 from typing import List
 from agent_utilities.base_utilities import get_library_file_path
-from repository_manager import (
-    to_boolean,
-)
+from agent_utilities.base_utilities import to_boolean
 from repository_manager.models import GitResult, GitError, GitMetadata, ReadmeResult
 
 DEFAULT_PROJECTS_FILE = os.getenv(
