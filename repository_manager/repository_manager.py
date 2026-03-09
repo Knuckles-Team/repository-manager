@@ -14,7 +14,7 @@ import argparse
 import logging
 import json
 
-__version__ = "1.3.35"
+__version__ = "1.3.36"
 import concurrent.futures
 import datetime
 from pathlib import Path
@@ -44,7 +44,10 @@ DEFAULT_MAINTENANCE_CONFIG = {
             "phase": 1,
             "project": "universal-skills",
             "updates": [
-                {"target": "agent-utilities/pyproject.toml", "package": "universal-skills"}
+                {
+                    "target": "agent-utilities/pyproject.toml",
+                    "package": "universal-skills",
+                }
             ],
         },
         {
@@ -501,6 +504,7 @@ class Git:
         self,
         run: bool = True,
         autoupdate: bool = False,
+        projects: List[str] = None,
     ) -> List[GitResult]:
         """
         Execute pre-commit commands for all projects in parallel.
@@ -513,12 +517,24 @@ class Git:
             if not os.path.exists(expanded_path):
                 return []
 
-            project_dirs = [
-                os.path.join(expanded_path, d)
-                for d in os.listdir(expanded_path)
-                if os.path.isdir(os.path.join(expanded_path, d))
-                and os.path.exists(os.path.join(expanded_path, d, ".pre-commit-config.yaml"))
-            ]
+            if projects is None:
+                project_dirs = [
+                    os.path.join(expanded_path, d)
+                    for d in os.listdir(expanded_path)
+                    if os.path.isdir(os.path.join(expanded_path, d))
+                    and os.path.exists(
+                        os.path.join(expanded_path, d, ".pre-commit-config.yaml")
+                    )
+                ]
+            else:
+                project_dirs = [
+                    os.path.join(expanded_path, p)
+                    for p in projects
+                    if os.path.isdir(os.path.join(expanded_path, p))
+                    and os.path.exists(
+                        os.path.join(expanded_path, p, ".pre-commit-config.yaml")
+                    )
+                ]
 
             if not project_dirs:
                 return []
@@ -1149,7 +1165,7 @@ class Git:
 
         content = target_file.read_text()
         pattern = rf'("{package_name}(?:\[.*?\])?>=)\d+\.\d+\.\d+'
-        replacement = rf'\g<1>{new_version}'
+        replacement = rf"\g<1>{new_version}"
 
         new_content, count = re.subn(pattern, replacement, content)
         if count > 0:
@@ -1179,8 +1195,27 @@ class Git:
 
         # 1. Pre-commit Phase
         if not skip_pre_commit:
+            projects_to_check = None
+            if config:
+                projects_to_check = []
+                has_bulk = False
+                for phase in config.get("phases", []):
+                    if phase.get("bulk_bump"):
+                        has_bulk = True
+                        break
+                    if phase.get("project"):
+                        projects_to_check.append(phase.get("project"))
+                if has_bulk:
+                    projects_to_check = None
+                elif projects_to_check:
+                    self.logger.info(
+                        f"--- Targeting pre-commits for: {', '.join(projects_to_check)} ---"
+                    )
+
             self.logger.info("--- Running Pre-commits in Parallel ---")
-            results = self.pre_commit_projects(run=True, autoupdate=True)
+            results = self.pre_commit_projects(
+                run=True, autoupdate=True, projects=projects_to_check
+            )
             failed = [r for r in results if r.status == "error"]
             if failed:
                 self.logger.error(f"Pre-commit failed in {len(failed)} projects.")
@@ -1197,7 +1232,7 @@ class Git:
                 if not project_dir.exists():
                     self.logger.warning(f"Project directory not found: {project_dir}")
                     return None
-                
+
                 cmd = f"bump2version {part} --allow-dirty --list"
                 if dry_run:
                     cmd += " --dry-run --verbose"
@@ -1220,7 +1255,9 @@ class Git:
         for phase in config.get("phases", []):
             phase_num = phase.get("phase")
             if phase_num < start_phase:
-                self.logger.info(f"\n--- Skipping Phase {phase_num} ({phase.get('name')}) ---")
+                self.logger.info(
+                    f"\n--- Skipping Phase {phase_num} ({phase.get('name')}) ---"
+                )
                 continue
 
             if phase.get("bulk_bump"):
@@ -1680,16 +1717,19 @@ def repository_manager() -> None:
         "--pre-commit", action="store_true", help="Run parallel pre-commit checks"
     )
     parser.add_argument(
-        "--bump", type=str, choices=["patch", "minor", "major"], help="Bump version for all projects"
+        "--bump",
+        type=str,
+        choices=["patch", "minor", "major"],
+        help="Bump version for all projects",
     )
     parser.add_argument(
         "--phase", type=int, default=1, help="Starting phase for maintenance (1-5)"
     )
+    parser.add_argument("--dry-run", action="store_true", help="Perform a dry run")
     parser.add_argument(
-        "--dry-run", action="store_true", help="Perform a dry run"
-    )
-    parser.add_argument(
-        "--skip-pre-commit", action="store_true", help="Skip pre-commit phase in maintenance"
+        "--skip-pre-commit",
+        action="store_true",
+        help="Skip pre-commit phase in maintenance",
     )
     parser.add_argument(
         "--config", type=str, help="Path to a JSON configuration file for maintenance"
@@ -1759,7 +1799,7 @@ def repository_manager() -> None:
             start_phase=args.phase,
             dry_run=args.dry_run,
             skip_pre_commit=args.skip_pre_commit,
-            config=config
+            config=config,
         )
 
 
