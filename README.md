@@ -21,7 +21,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.3.34*
+*Version: 1.3.35*
 
 ## Overview
 
@@ -117,6 +117,12 @@ sequenceDiagram
 | -p         | --pull           | Pull projects in parent directory      |
 | -r         | --repositories   | Comma separated Git URLs               |
 | -t         | --threads        | Number of parallel threads - Default 4 |
+| -m         | --maintain       | Run phased maintenance workflow        |
+|            | --pre-commit     | Run parallel pre-commit checks         |
+|            | --bump           | Bulk version bump (patch, minor, major)|
+|            | --phase          | Start maintenance at Phase N (1-5)     |
+|            | --dry-run        | Preview changes without applying them  |
+|            | --skip-pre-commit| Skip pre-commit phase in maintenance   |
 
 ```bash
 repository-manager \
@@ -202,6 +208,37 @@ This will:
 ### Default Repository List
 
 The agent will automatically load the `repositories-list.txt` file included in the package as the default project list if no `PROJECTS_FILE` environment variable is set. This ensures the agent always has a list of repositories to work with.
+
+### Maintenance Workflows
+
+`repository-manager` supports specialized maintenance workflows for managing interdependent package ecosystems.
+
+#### Parallel Pre-commits
+Run `pre-commit` checks across all repositories in parallel. This is significantly faster than sequential runs and simplifies fleet-wide health checks.
+
+```bash
+repository-manager --pre-commit
+```
+
+#### Phased Bumping
+When packages depend on each other, they often need to be bumped in a specific sequence. The `--maintain` flag implements this 5-stage process:
+
+1.  **Skills**: Update core skill packages.
+2.  **Graphs**: Update AI graph/template repositories.
+3.  **UI**: Update frontend components.
+4.  **Utilities**: Update the central utility library (`agent-utilities`) and propagate skill/graph versions.
+5.  **Fleet**: Propagate the new utility version to all other packages and bump their versions.
+
+```bash
+# Full maintenance run
+repository-manager --maintain
+
+# Skip verify phase (pre-commit) if already done
+repository-manager --maintain --skip-pre-commit
+
+# Resume from a specific phase
+repository-manager --maintain --phase 4
+```
 
 
 ### Using as an MCP Server

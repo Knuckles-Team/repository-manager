@@ -12,18 +12,23 @@ import re
 import sys
 import argparse
 import logging
+import json
 
-__version__ = "1.3.34"
+__version__ = "1.3.35"
 import concurrent.futures
 import datetime
+from pathlib import Path
 from typing import List
 from agent_utilities.base_utilities import get_library_file_path
 from agent_utilities.base_utilities import to_boolean
 from repository_manager.models import GitResult, GitError, GitMetadata, ReadmeResult
 
-DEFAULT_PROJECTS_FILE = os.getenv(
-    "PROJECTS_FILE", get_library_file_path(file="repositories-list.txt")
-)
+DEFAULT_PROJECTS_FILE = os.getenv("PROJECTS_FILE")
+if not DEFAULT_PROJECTS_FILE:
+    try:
+        DEFAULT_PROJECTS_FILE = get_library_file_path(file="repositories-list.txt")
+    except Exception:
+        DEFAULT_PROJECTS_FILE = "repositories-list.txt"
 DEFAULT_REPOSITORY_MANAGER_THREADS = os.getenv("REPOSITORY_MANAGER_THREADS", 12)
 DEFAULT_REPOSITORY_MANAGER_DEFAULT_BRANCH = to_boolean(
     os.getenv("REPOSITORY_MANAGER_DEFAULT_BRANCH", "False")
@@ -31,6 +36,57 @@ DEFAULT_REPOSITORY_MANAGER_DEFAULT_BRANCH = to_boolean(
 DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.getenv(
     "REPOSITORY_MANAGER_WORKSPACE", os.path.normpath("/workspace")
 )
+
+DEFAULT_MAINTENANCE_CONFIG = {
+    "phases": [
+        {
+            "name": "universal-skills",
+            "phase": 1,
+            "project": "universal-skills",
+            "updates": [
+                {"target": "agent-utilities/pyproject.toml", "package": "universal-skills"}
+            ],
+        },
+        {
+            "name": "skill-graphs",
+            "phase": 2,
+            "project": "skill-graphs",
+            "updates": [
+                {"target": "agent-utilities/pyproject.toml", "package": "skill-graphs"}
+            ],
+        },
+        {
+            "name": "agent-webui",
+            "phase": 3,
+            "project": "agent-webui",
+            "updates": [
+                {"target": "agent-utilities/pyproject.toml", "package": "agent-webui"}
+            ],
+        },
+        {
+            "name": "agent-utilities",
+            "phase": 4,
+            "project": "agent-utilities",
+            "updates": [
+                {
+                    "target_pattern": "*",
+                    "exclude": [
+                        "universal-skills",
+                        "agent-utilities",
+                        "agent-webui",
+                    ],
+                    "package": "agent-utilities",
+                }
+            ],
+        },
+        {
+            "name": "Rest of packages",
+            "phase": 5,
+            "bulk_bump": True,
+            "exclude": ["universal-skills", "agent-utilities", "agent-webui"],
+        },
+    ]
+}
 
 
 def setup_logging(is_mcp_server=False, log_file="repository_manager_mcp.log"):
@@ -432,8 +488,74 @@ class Git:
 
         full_command = " && ".join(commands)
 
+        env = os.environ.copy()
+        if "SKIP" in env:
+            env["SKIP"] += ",no-commit-to-branch"
+        else:
+            env["SKIP"] = "no-commit-to-branch"
+
         result = self.git_action(command=full_command, path=target_path)
         return result
+
+    def pre_commit_projects(
+        self,
+        run: bool = True,
+        autoupdate: bool = False,
+    ) -> List[GitResult]:
+        """
+        Execute pre-commit commands for all projects in parallel.
+
+        Returns:
+            List[GitResult]: A list of GitResult objects.
+        """
+        try:
+            expanded_path = os.path.expanduser(self.path)
+            if not os.path.exists(expanded_path):
+                return []
+
+            project_dirs = [
+                os.path.join(expanded_path, d)
+                for d in os.listdir(expanded_path)
+                if os.path.isdir(os.path.join(expanded_path, d))
+                and os.path.exists(os.path.join(expanded_path, d, ".pre-commit-config.yaml"))
+            ]
+
+            if not project_dirs:
+                return []
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.threads
+            ) as executor:
+                futures = {
+                    executor.submit(self.pre_commit, run, autoupdate, d): d
+                    for d in project_dirs
+                }
+                results = []
+                for future in concurrent.futures.as_completed(futures):
+                    results.append(future.result())
+
+            return results
+
+        except Exception as e:
+            self.logger.error(f"Parallel pre-commit failed: {str(e)}")
+            return [
+                GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message=f"Parallel pre-commit failed: {str(e)}", code=-1
+                    ),
+                    metadata=GitMetadata(
+                        command="pre_commit_projects",
+                        workspace=self.path,
+                        return_code=-1,
+                        timestamp=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
+                        + "Z",
+                    ),
+                )
+            ]
 
     def read_project_list_file(self, file: str = None):
         if file and not os.path.exists(file):
@@ -1017,6 +1139,128 @@ class Git:
                 ),
             )
 
+    def update_dependency(
+        self, file_path: str, package_name: str, new_version: str, dry_run: bool = False
+    ) -> bool:
+        """Updates the version of a package in a pyproject.toml's dependencies."""
+        target_file = Path(self._resolve_path(file_path))
+        if not target_file.exists():
+            return False
+
+        content = target_file.read_text()
+        pattern = rf'("{package_name}(?:\[.*?\])?>=)\d+\.\d+\.\d+'
+        replacement = rf'\g<1>{new_version}'
+
+        new_content, count = re.subn(pattern, replacement, content)
+        if count > 0:
+            if not dry_run:
+                target_file.write_text(new_content)
+            self.logger.info(
+                f"{'[DRY RUN] Would update' if dry_run else 'Updated'} {package_name} to >={new_version} in {target_file}"
+            )
+            return True
+        return False
+
+    def maintain_projects(
+        self,
+        part: str = "patch",
+        start_phase: int = 1,
+        dry_run: bool = False,
+        skip_pre_commit: bool = False,
+        config: dict = None,
+    ) -> None:
+        """
+        Execute the phased maintenance workflow: pre-commits + phased bumping.
+        """
+        if config is None:
+            config = DEFAULT_MAINTENANCE_CONFIG
+
+        workspace_path = Path(self.path)
+
+        # 1. Pre-commit Phase
+        if not skip_pre_commit:
+            self.logger.info("--- Running Pre-commits in Parallel ---")
+            results = self.pre_commit_projects(run=True, autoupdate=True)
+            failed = [r for r in results if r.status == "error"]
+            if failed:
+                self.logger.error(f"Pre-commit failed in {len(failed)} projects.")
+            else:
+                self.logger.info("All pre-commit checks passed.")
+
+        # 2. Phased Bumping & Updates
+        successes = []
+
+        def run_step_bump(project_name, phase_num):
+            if start_phase <= phase_num:
+                self.logger.info(f"\n--- Phase {phase_num}: {project_name} ---")
+                project_dir = workspace_path / project_name
+                if not project_dir.exists():
+                    self.logger.warning(f"Project directory not found: {project_dir}")
+                    return None
+                
+                cmd = f"bump2version {part} --allow-dirty --list"
+                if dry_run:
+                    cmd += " --dry-run --verbose"
+
+                result = self.git_action(cmd, path=str(project_dir))
+                if result.status == "success":
+                    match = re.search(r"new_version=(.*)", result.data)
+                    new_version = match.group(1).strip() if match else None
+                    if new_version:
+                        successes.append(f"{project_name}: {new_version}")
+                        return new_version
+                self.logger.error(f"Phase {phase_num} failed for {project_name}")
+                return None
+            else:
+                self.logger.info(
+                    f"\n--- Skipping Phase {phase_num} ({project_name}) ---"
+                )
+                return None
+
+        for phase in config.get("phases", []):
+            phase_num = phase.get("phase")
+            if phase_num < start_phase:
+                self.logger.info(f"\n--- Skipping Phase {phase_num} ({phase.get('name')}) ---")
+                continue
+
+            if phase.get("bulk_bump"):
+                self.logger.info(f"\n--- Phase {phase_num}: Bulk Bumping ---")
+                exclude = phase.get("exclude", [])
+                for d in workspace_path.iterdir():
+                    if d.is_dir() and d.name not in exclude:
+                        if (d / ".bumpversion.cfg").exists():
+                            res = self.bump_version(part, allow_dirty=True, path=str(d))
+                            if res.status == "success":
+                                successes.append(f"{d.name} bumped")
+                continue
+
+            project_name = phase.get("project")
+            new_version = run_step_bump(project_name, phase_num)
+
+            if new_version:
+                for update in phase.get("updates", []):
+                    pkg = update.get("package")
+                    if "target" in update:
+                        self.update_dependency(
+                            update["target"], pkg, new_version, dry_run
+                        )
+                    elif "target_pattern" in update:
+                        exclude = update.get("exclude", [])
+                        for d in workspace_path.iterdir():
+                            if d.is_dir() and d.name not in exclude:
+                                pyproject = d / "pyproject.toml"
+                                if pyproject.exists():
+                                    self.update_dependency(
+                                        str(pyproject), pkg, new_version, dry_run
+                                    )
+
+        self.logger.info("\n" + "=" * 40)
+        self.logger.info("           MAINTENANCE SUMMARY")
+        self.logger.info("=" * 40)
+        for s in successes:
+            self.logger.info(f"  - {s}")
+        self.logger.info("=" * 40)
+
     def search_codebase(
         self,
         query: str,
@@ -1424,11 +1668,31 @@ def repository_manager() -> None:
         "-r", "--repositories", type=str, help="Comma-separated list of repositories"
     )
     parser.add_argument(
-        "-t",
         "--threads",
         type=int,
         help="Number of threads for parallel operations",
         default=DEFAULT_REPOSITORY_MANAGER_THREADS,
+    )
+    parser.add_argument(
+        "-m", "--maintain", action="store_true", help="Run phased maintenance workflow"
+    )
+    parser.add_argument(
+        "--pre-commit", action="store_true", help="Run parallel pre-commit checks"
+    )
+    parser.add_argument(
+        "--bump", type=str, choices=["patch", "minor", "major"], help="Bump version for all projects"
+    )
+    parser.add_argument(
+        "--phase", type=int, default=1, help="Starting phase for maintenance (1-5)"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Perform a dry run"
+    )
+    parser.add_argument(
+        "--skip-pre-commit", action="store_true", help="Skip pre-commit phase in maintenance"
+    )
+    parser.add_argument(
+        "--config", type=str, help="Path to a JSON configuration file for maintenance"
     )
 
     parser.add_argument("--help", action="store_true", help="Show usage")
@@ -1473,6 +1737,30 @@ def repository_manager() -> None:
         git.clone_projects()
     if pull_flag:
         git.pull_projects()
+    if args.pre_commit:
+        git.pre_commit_projects(run=True, autoupdate=True)
+    if args.bump:
+        git.logger.info(f"Bumping version ({args.bump}) for all projects...")
+        for d in Path(git.path).iterdir():
+            if d.is_dir() and (d / ".bumpversion.cfg").exists():
+                git.bump_version(args.bump, allow_dirty=True, path=str(d))
+    if args.maintain:
+        config = None
+        if args.config:
+            try:
+                with open(args.config, "r") as f:
+                    config = json.load(f)
+            except Exception as e:
+                logger.error(f"Failed to load config from {args.config}: {e}")
+                sys.exit(1)
+
+        git.maintain_projects(
+            part=args.bump if args.bump else "patch",
+            start_phase=args.phase,
+            dry_run=args.dry_run,
+            skip_pre_commit=args.skip_pre_commit,
+            config=config
+        )
 
 
 if __name__ == "__main__":
