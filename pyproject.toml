@@ -33,11 +33,14 @@ all = [
 
 [project.scripts]
 repository-manager = "repository_manager.repository_manager:repository_manager"
-repository-manager-mcp = "repository_manager.mcp:mcp_server"
-repository-manager-agent = "repository_manager.agent:agent_server"
+repository-manager-mcp = "repository_manager.mcp_server:mcp_server"
+repository-manager-agent = "repository_manager.agent_server:agent_server"
 
 [tool.setuptools.package-data]
 repository_manager = ["mcp_config.json", "repositories-list.txt"]
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.setuptools]
+include-package-data = true
