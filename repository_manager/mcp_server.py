@@ -28,7 +28,7 @@ from agent_utilities.mcp_utilities import (
 logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = get_logger("SearXNGMCPServer")
+logger = get_logger("RepositoryManagerServer")
 
 
 async def execute_bash_command(command: str) -> Dict[str, Any]:
