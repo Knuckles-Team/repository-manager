@@ -5,7 +5,7 @@ from agent_utilities.base_utilities import to_boolean
 import os
 import sys
 
-__version__ = "1.3.38"
+__version__ = "1.3.39"
 
 from typing import Optional, Dict, List, Any
 from pydantic import Field
