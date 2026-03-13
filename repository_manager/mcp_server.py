@@ -5,20 +5,19 @@ from agent_utilities.base_utilities import to_boolean
 import os
 import sys
 
-__version__ = "1.3.39"
+__version__ = "1.3.40"
 
-from typing import Optional, Dict, List, Any
+from typing import Optional, List
 from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from fastmcp import FastMCP, Context
-import subprocess
+from fastmcp import FastMCP
 import logging
 
 from fastmcp.utilities.logging import get_logger
 from agent_utilities.base_utilities import to_integer
 from repository_manager.repository_manager import Git
-from repository_manager.models import GitResult, ReadmeResult
+from repository_manager.models import GitResult
 from agent_utilities.base_utilities import get_library_file_path
 from agent_utilities.mcp_utilities import (
     create_mcp_server,
@@ -29,28 +28,6 @@ logging.basicConfig(
     level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = get_logger("RepositoryManagerServer")
-
-
-async def execute_bash_command(command: str) -> Dict[str, Any]:
-    """
-    Core logic for executing a bash command.
-    Used by MCP tool and skills.
-    """
-    logger.debug(f"Executing bash command: {command}")
-    try:
-        result = subprocess.run(
-            command, shell=True, capture_output=True, text=True, check=False
-        )
-        output = result.stdout
-        if result.stderr:
-            output += f"\nSTDERR:\n{result.stderr}"
-        return {
-            "status": 200 if result.returncode == 0 else 500,
-            "output": output,
-            "return_code": result.returncode,
-        }
-    except Exception as e:
-        return {"status": 500, "error": str(e)}
 
 
 def register_misc_tools(mcp: FastMCP):
@@ -492,200 +469,6 @@ def register_git_operations_tools(mcp: FastMCP):
 def register_file_operations_tools(mcp: FastMCP):
     @mcp.tool(
         annotations={
-            "title": "Get Project README",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
-        tags={"file_operations"},
-    )
-    async def get_project_readme(
-        path: Optional[str] = Field(
-            description="The path to the project or directory. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-    ) -> ReadmeResult:
-        """
-        Retrieves the content of the README.md file for a project or directory.
-        Use this to quickly get an overview of a project.
-        """
-        logger.debug(f"Getting README for path: {path}")
-        try:
-            target_dir = path
-            if not target_dir:
-                target_dir = (
-                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
-                )
-
-            git = Git(
-                path=target_dir,
-                is_mcp_server=True,
-            )
-            response = git.get_readme(path=path)
-            return response
-        except Exception as e:
-            logger.error(f"Error in get_project_readme: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Text Editor",
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": False,
-            "openWorldHint": True,
-        },
-        tags={"file_operations"},
-    )
-    async def text_editor(
-        command: str = Field(
-            description="The command to execute: view, create, str_replace, insert, undo_edit."
-        ),
-        path: str = Field(
-            description="Standardized file path relative to the project."
-        ),
-        file_text: Optional[str] = Field(
-            description="The content to write to the file (for create command).",
-            default=None,
-        ),
-        view_range: Optional[List[int]] = Field(
-            description="The range of lines to view (for view command).", default=None
-        ),
-        old_str: Optional[str] = Field(
-            description="The string to replace (for str_replace command).", default=None
-        ),
-        new_str: Optional[str] = Field(
-            description="The new string (for str_replace and insert commands).",
-            default=None,
-        ),
-        insert_line: Optional[int] = Field(
-            description="The line number to insert at (for insert command).",
-            default=None,
-        ),
-    ) -> GitResult:
-        """
-        A versatile file system editor tool.
-        Supports viewing, creating, replacing text, and inserting text in files.
-        """
-        logger.debug(f"Executing text_editor with command: {command}, path: {path}")
-
-        try:
-            # We don't necessarily need to init Git with a specific path if path is absolute
-            # But the underlying method uses self._resolve_path.
-            git = Git(
-                path=os.getcwd(),  # Default to CWD, let resolve_path handle the provided path
-                is_mcp_server=True,
-            )
-
-            response = git.text_editor(
-                command=command,
-                path=path,
-                file_text=file_text,
-                view_range=view_range,
-                old_str=old_str,
-                new_str=new_str,
-                insert_line=insert_line,
-            )
-            return response
-
-        except Exception as e:
-            logger.error(f"Error in text_editor: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Create Directory",
-            "description": "Create a new directory at the specified path.",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-        },
-        tags={"file_operations"},
-    )
-    async def create_directory(
-        path: str = Field(
-            description="The path where the directory should be created."
-        ),
-    ) -> GitResult:
-        """
-        Create a new directory at the specified path.
-        """
-        try:
-            git = Git(
-                path=os.getcwd(),
-                is_mcp_server=True,
-            )
-
-            response = git.create_directory(path=path)
-            return response
-        except Exception as e:
-            logger.error(f"Error in create_directory: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Delete Directory",
-            "description": "Delete a directory at the specified path.",
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": False,
-        },
-        tags={"file_operations"},
-    )
-    async def delete_directory(
-        path: str = Field(description="The path of the directory to delete."),
-    ) -> GitResult:
-        """
-        Recursively delete a directory at the specified path.
-        Use with caution as this action is destructive.
-        """
-        try:
-            git = Git(
-                path=os.getcwd(),
-                is_mcp_server=True,
-            )
-
-            response = git.delete_directory(path=path)
-            return response
-        except Exception as e:
-            logger.error(f"Error in delete_directory: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Rename Directory",
-            "description": "Rename/Move a directory or file.",
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": False,
-        },
-        tags={"file_operations"},
-    )
-    async def rename_directory(
-        old_path: str = Field(description="The current path."),
-        new_path: str = Field(description="The new path."),
-    ) -> GitResult:
-        """
-        Rename or move a directory or file from old_path to new_path.
-        """
-        try:
-            git = Git(
-                path=os.getcwd(),
-                is_mcp_server=True,
-            )
-
-            response = git.rename_directory(
-                old_path=old_path,
-                new_path=new_path,
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Error in rename_directory: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
             "title": "Search Codebase",
             "description": "Search the codebase using ripgrep.",
             "readOnlyHint": True,
@@ -734,160 +517,6 @@ def register_file_operations_tools(mcp: FastMCP):
             logger.error(f"Error in search_codebase: {e}")
             raise
 
-    @mcp.tool(
-        annotations={
-            "title": "Find Files",
-            "description": "Find files using find.",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
-        tags={"file_operations"},
-    )
-    async def find_files(
-        name_pattern: str = Field(
-            description="The name pattern to search for (e.g., '*.py')."
-        ),
-        path: Optional[str] = Field(
-            description="The path to search in (absolute or relative to CWD). Defaults to CWD or workspace.",
-            default=None,
-        ),
-    ) -> GitResult:
-        """
-        Find files in the codebase matching a name pattern.
-        """
-        try:
-            target_dir = path
-            if not target_dir:
-                target_dir = (
-                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
-                )
-
-            git = Git(
-                path=target_dir,
-                is_mcp_server=True,
-            )
-
-            response = git.find_files(
-                name_pattern=name_pattern,
-                path=path,
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Error in find_files: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Read File",
-            "description": "Read a file from the codebase.",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
-        tags={"file_operations"},
-    )
-    async def read_file(
-        path: str = Field(
-            description="The path to the file to read (absolute or relative to CWD)."
-        ),
-        start_line: Optional[int] = Field(
-            description="The starting line number (1-indexed).", default=None
-        ),
-        end_line: Optional[int] = Field(
-            description="The ending line number (1-indexed).", default=None
-        ),
-    ) -> GitResult:
-        """
-        Reads the content of a file, optionally within a specific line range.
-        use this to inspect code or configuration files.
-        """
-        try:
-            git = Git(
-                path=os.getcwd(),
-                is_mcp_server=True,
-            )
-
-            response = git.read_file(
-                path=path,
-                start_line=start_line,
-                end_line=end_line,
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Error in read_file: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Replace In File",
-            "description": "Replace a block of text in a file.",
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": False,
-        },
-        tags={"file_operations"},
-    )
-    async def replace_in_file(
-        path: str = Field(
-            description="The path to the file to modify (absolute or relative to CWD)."
-        ),
-        target_content: str = Field(description="The exact content to be replaced."),
-        replacement_content: str = Field(
-            description="The new content to replace with."
-        ),
-    ) -> GitResult:
-        """
-        Replaces a specific block of text in a file with new content.
-        Ensure target_content matches exactly, including whitespace.
-        """
-        try:
-            git = Git(
-                path=os.getcwd(),
-                is_mcp_server=True,
-            )
-
-            response = git.replace_in_file(
-                path=path,
-                target_content=target_content,
-                replacement_content=replacement_content,
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Error in replace_in_file: {e}")
-            raise
-
-
-def register_system_operations_tools(mcp: FastMCP):
-    @mcp.tool(
-        annotations={
-            "title": "Run Command",
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": False,
-            "openWorldHint": True,
-        },
-        tags={"system_operations"},
-    )
-    async def run_command(
-        command: str = Field(description="The command to run"),
-        ctx: Context = Field(
-            description="MCP context for progress reporting.", default=None
-        ),
-    ) -> Dict[str, Any]:
-        """
-        Executes a bash command on the local system.
-        Use with caution. Returns exit code, stdout, and stderr.
-        """
-        if ctx:
-            await ctx.report_progress(progress=0, total=100)
-
-        result = await execute_bash_command(command)
-
-        if ctx:
-            await ctx.report_progress(progress=100, total=100)
-        return result
-
 
 def mcp_server():
     load_dotenv(find_dotenv())
@@ -910,8 +539,6 @@ def mcp_server():
     DEFAULT_SYSTEM_OPERATIONSTOOL = to_boolean(
         os.getenv("SYSTEM_OPERATIONSTOOL", "True")
     )
-    if DEFAULT_SYSTEM_OPERATIONSTOOL:
-        register_system_operations_tools(mcp)
 
     for mw in middlewares:
         mcp.add_middleware(mw)
