@@ -5,7 +5,7 @@ from agent_utilities.base_utilities import to_boolean
 import os
 import sys
 
-__version__ = "1.3.40"
+__version__ = "1.3.41"
 
 from typing import Optional, List
 from pydantic import Field
@@ -536,9 +536,6 @@ def mcp_server():
     DEFAULT_FILE_OPERATIONSTOOL = to_boolean(os.getenv("FILE_OPERATIONSTOOL", "True"))
     if DEFAULT_FILE_OPERATIONSTOOL:
         register_file_operations_tools(mcp)
-    DEFAULT_SYSTEM_OPERATIONSTOOL = to_boolean(
-        os.getenv("SYSTEM_OPERATIONSTOOL", "True")
-    )
 
     for mw in middlewares:
         mcp.add_middleware(mw)
