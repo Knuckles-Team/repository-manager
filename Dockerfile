@@ -58,7 +58,7 @@ RUN apt-get update \
     && apt-get install -y ripgrep tree fd-find git curl nano ca-certificates \
     && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
-    && uv pip install --system --upgrade --verbose --no-cache --break-system-packages --prerelease=allow repository-manager[all]>=1.3.41 mem0-mcp-server
+    && uv pip install --system --upgrade --verbose --no-cache --break-system-packages --prerelease=allow repository-manager[all]>=1.3.42 mem0-mcp-server
 
 WORKDIR /workspace
 
