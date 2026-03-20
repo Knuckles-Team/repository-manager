@@ -14,7 +14,7 @@ import argparse
 import logging
 import json
 
-__version__ = "1.3.44"
+__version__ = "1.3.45"
 import concurrent.futures
 import datetime
 from pathlib import Path
