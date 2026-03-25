@@ -21,30 +21,54 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.3.45*
+*Version: 1.3.46*
 
 ## Overview
 
-A Ralph Wiggum inspired coding agent and repository manager!
+- **Pydantic Graph Architecture**: 19 specialized domain nodes (Git, File, Workspace, and 15+ integrated engineering skills) for intelligent, granular task routing.
+- **Declarative Workspace**: Manage your entire ecosystem via `workspace.yml`, validated by strict Pydantic V2 models.
+- **Idempotent Synchronization**: One-click setup that intelligently clones missing repositories and pulls existing ones into their correct hierarchical paths.
+- **Workspace Visualization**:
+    - **ASCII Tree**: Generate beautiful folder structures directly in the CLI or via MCP.
+    - **Mermaid Diagrams**: Export your workspace model as a visual graph for documentation.
+- **Integrated Skills**: Native support for `agent-builder`, `mcp-builder`, `web-search`, and more, coupled with expert documentation for `FastMCP`, `Pydantic AI`, and `Docker`.
 
-This powerful agent can manage your repositories in bulk, implement new features using Ralph Wiggum methodology, run git commands, create and edit code in multiple projects, and query your code base!
+1. **Nodes**: Specialized agents for high-context domains (e.g., `GitOpsNode`, `KnowledgeNode`).
+2. **Router**: Automatically directs intent based on tool tags (`git_operations`, `workspace_management`, etc.).
+3. **Engine**: The core `WorkspaceManager` processes the `workspace.yml` model to maintain state.
 
-Run all Git supported tasks using Git Actions command
+## 🛠️ Usage
 
-Run as an MCP Server for Agentic AI with an A2A/AG-UI/Web Server!
+### Workspace Configuration (`workspace.yml`)
+Define your world in a single file:
+
+```yaml
+name: "My Workspace"
+path: "./workspace"
+repositories:
+  - url: "https://github.com/org/repo-core.git"
+subdirectories:
+  agents:
+    repositories:
+      - url: "https://github.com/org/agent-1.git"
+maintenance:
+  phases:
+    - name: "Phase 1: Core"
+      phase: 1
+      project: "repo-core"
+```
 
 ## MCP
 
 AI Prompt:
 ```text
-Clone all the git projects located in the file "/home/genius/Development/repositories-list/repositories.txt" to my "/home/genius/Development" workspace.
-Afterwards, pull all the projects located in the "/home/genius/Development" repository workspace.
+Setup my workspace using the workspace.yml configuration. Also, install and validate all projects in the workspace.
 ```
 
 AI Response:
 ```text
-All projects in "/home/genius/Development/repositories-list/repositories.txt" have been cloned to "/home/genius/Development"
-and all projects in "/home/genius/Development" and been pulled from the repositories. Let me know if you need any further actions! 🚀.
+Workspace setup complete: Missing repositories have been cloned and existing ones updated.
+Bulk operations finished: All projects installed and validated (agent/mcp) across the workspace.
 ```
 
 This repository is actively maintained - Contributions are welcome!
@@ -107,22 +131,29 @@ sequenceDiagram
 
 ### CLI
 
-| Short Flag | Long Flag        | Description                            |
-|------------|------------------|----------------------------------------|
-| -h         | --help           | See Usage                              |
-| -b         | --default-branch | Checkout default branch                |
-| -c         | --clone          | Clone projects specified               |
-| -w         | --workspace      | Workspace to clone/pull projects       |
-| -f         | --file           | File with repository links             |
-| -p         | --pull           | Pull projects in parent directory      |
-| -r         | --repositories   | Comma separated Git URLs               |
-| -t         | --threads        | Number of parallel threads - Default 4 |
-| -m         | --maintain       | Run phased maintenance workflow        |
-|            | --pre-commit     | Run parallel pre-commit checks         |
-|            | --bump           | Bulk version bump (patch, minor, major)|
-|            | --phase          | Start maintenance at Phase N (1-5)     |
-|            | --dry-run        | Preview changes without applying them  |
-|            | --skip-pre-commit| Skip pre-commit phase in maintenance   |
+| Short Flag | Long Flag        | Description                                  |
+|------------|------------------|----------------------------------------------|
+| -h         | --help           | See Usage                                    |
+| -b         | --default-branch | Checkout default branch                      |
+| -c         | --clone          | Clone projects specified in workspace file   |
+| -p         | --pull           | Pull all projects in workspace               |
+| -w         | --workspace      | Specify the workspace root directory         |
+| -f         | --file           | Specify the workspace YAML file (Default)    |
+| -r         | --repositories   | Comma separated Git URLs (Override)          |
+| -t         | --threads        | Number of parallel threads (Default: 12)     |
+| -m         | --maintain       | Run phased maintenance workflow              |
+|            | --pre-commit     | Run parallel pre-commit checks               |
+|            | --bump           | Bulk version bump (patch, minor, major)      |
+|            | --phase          | Start maintenance at Phase N (1-5)           |
+|            | --dry-run        | Preview changes without applying them        |
+|            | --skip-pre-commit| Skip pre-commit phase in maintenance         |
+|            | --install        | [NEW] Bulk install all Python projects       |
+|            | --build          | [NEW] Bulk build all Python projects         |
+|            | --validate       | [NEW] Bulk validate all agent/MCP servers    |
+|            | --type           | Validation filter: agent, mcp, or all        |
+|            | --tree           | [NEW] Generate ASCII workspace tree          |
+|            | --mermaid        | [NEW] Generate Mermaid workspace diagram     |
+|            | --setup          | [NEW] Sync workspace from YAML config        |
 
 ```bash
 repository-manager \
@@ -205,9 +236,9 @@ This will:
 1.  Configure `mcp_config.json` to include the `python-sandbox` server.
 2.  Enable the `Python Sandbox` skill, allowing the agent to run scripts for calculation, testing, or logic verification.
 
-### Default Repository List
+### Default Workspace Model
 
-The agent will automatically load the `repositories-list.txt` file included in the package as the default project list if no `PROJECTS_FILE` environment variable is set. This ensures the agent always has a list of repositories to work with.
+The manager automatically discovers `workspace.yml` in the current directory or via the `WORKSPACE_YML` environment variable. This file serves as the strict single source of truth for the entire environment hierarchy, encompassing repositories, subdirectories, and maintenance policies.
 
 ### Maintenance Workflows
 
@@ -423,7 +454,7 @@ docker-compose up -d
 ## Install Python Package
 
 ```bash
-python -m pip install --upgrade repository-manager
+pip install repository-manager
 ```
 
 or

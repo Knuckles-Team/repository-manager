@@ -1,551 +1,257 @@
 #!/usr/bin/env python
 # coding: utf-8
 from dotenv import load_dotenv, find_dotenv
-from agent_utilities.base_utilities import to_boolean
 import os
 import sys
-
-__version__ = "1.3.45"
-
-from typing import Optional, List
+from typing import Any, Optional, List, Dict
 from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from fastmcp import FastMCP
-import logging
-
 from fastmcp.utilities.logging import get_logger
-from agent_utilities.base_utilities import to_integer
-from repository_manager.repository_manager import Git
-from repository_manager.models import GitResult
-from agent_utilities.base_utilities import get_library_file_path
-from agent_utilities.mcp_utilities import (
-    create_mcp_server,
-    config,
-)
 
-logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+from repository_manager.repository_manager import Git
+from repository_manager.models import GitResult, WorkspaceConfig
+from agent_utilities.base_utilities import to_boolean, to_integer
+from agent_utilities.mcp_utilities import create_mcp_server
+
+__version__ = "1.3.46"
+
+# Configuration
+DEFAULT_WORKSPACE = os.environ.get("REPOSITORY_MANAGER_WORKSPACE", "/workspace")
+DEFAULT_THREADS = to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "12"))
+DEFAULT_WORKSPACE_YML = os.environ.get("WORKSPACE_YML", "workspace.yml")
+
 logger = get_logger("RepositoryManagerServer")
 
 
+def get_git_instance(path: Optional[str] = None, threads: Optional[int] = None) -> Git:
+    """Helper to get a Git instance with workpace YAML loaded."""
+    workspace_path = path or DEFAULT_WORKSPACE
+    git = Git(path=workspace_path, threads=threads or DEFAULT_THREADS)
+
+    # Auto-load workspace.yml if it exists
+    yml_path = os.path.join(workspace_path, DEFAULT_WORKSPACE_YML)
+    if os.path.exists(yml_path):
+        git.load_projects_from_yaml(yml_path)
+
+    return git
+
+
 def register_misc_tools(mcp: FastMCP):
+    """Register miscellaneous tools like health check."""
+
     async def health_check(request: Request) -> JSONResponse:
         return JSONResponse({"status": "OK"})
 
 
 def register_git_operations_tools(mcp: FastMCP):
-    @mcp.tool(
-        annotations={
-            "title": "Execute Git Command",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-            "openWorldHint": False,
-        },
-        tags={"git_operations"},
-    )
+    @mcp.tool(tags={"git_operations"})
     async def git_action(
         command: str = Field(
-            description="The Git command to execute (e.g., 'git pull', 'git clone <repository_url>')"
+            description="The Git command to execute (e.g., 'git status')"
         ),
-        path: Optional[str] = Field(
-            description="The path to execute the command in. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", "/workspace"),
-        ),
-        threads: Optional[int] = Field(
-            description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-            default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
-        ),
-        set_to_default_branch: Optional[bool] = Field(
-            description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
-            default=to_boolean(
-                os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", False)
-            ),
-        ),
+        path: Optional[str] = Field(description="Path to execute in.", default=None),
     ) -> GitResult:
-        """
-        Executes an arbitrary Git command in the specified path.
-        Use this tool for any git operation not covered by specialized tools.
-        """
-        logger.debug(f"Executing git_action with command: {command}, path: {path}")
-        try:
-            git = Git(
-                path=path,
-                threads=threads,
-                set_to_default_branch=set_to_default_branch,
-                capture_output=True,
-                is_mcp_server=True,
-            )
-            response = git.git_action(command=command, path=path)
-            return response
-        except Exception as e:
-            logger.error(f"Error in git_action: {e}")
-            raise
+        """Executes an arbitrary Git command."""
+        git = get_git_instance(path=path)
+        return git.git_action(command=command, path=path)
 
-    @mcp.tool(
-        annotations={
-            "title": "List Git Projects",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
-        tags={"git_operations"},
-    )
-    async def list_projects(
-        projects_file: Optional[str] = Field(
-            description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-            default=os.environ.get(
-                "PROJECTS_FILE", get_library_file_path(file="repositories-list.txt")
-            ),
-        ),
-        path: Optional[str] = Field(
-            description="The parent workspace containing the projects. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-    ) -> List[str]:
-        """
-        Lists all Git repositories found in the specified workspace path or defined in the projects file.
-        Use this to discover available projects before performing operations.
-        """
-        logger.debug(f"Listing projects from file: {projects_file} and path: {path}")
-        try:
-            git = Git(
-                path=path,
-                projects=None,
-                is_mcp_server=True,
-            )
+    @mcp.tool(tags={"git_operations"})
+    async def get_workspace_projects() -> List[str]:
+        """Lists all project URLs defined in the workspace configuration."""
+        git = get_git_instance()
+        return list(git.project_map.keys())
 
-            if projects_file and os.path.exists(projects_file):
-                git.read_project_list_file(file=projects_file)
-
-            if path and os.path.exists(path):
-                try:
-                    for item in os.listdir(path):
-                        if os.path.isdir(os.path.join(path, item)) and os.path.exists(
-                            os.path.join(path, item, ".git")
-                        ):
-                            git.projects.append(item)
-                except Exception:
-                    pass
-
-            return list(dict.fromkeys(git.projects))
-
-        except Exception as e:
-            logger.error(f"Error in list_projects: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Run Pre-Commit",
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": False,
-            "openWorldHint": False,
-        },
-        tags={"git_operations"},
-    )
-    async def run_pre_commit(
-        run: bool = Field(description="Run 'pre-commit run --all-files'", default=True),
-        autoupdate: bool = Field(
-            description="Run 'pre-commit autoupdate'", default=False
-        ),
-        path: Optional[str] = Field(
-            description="The path to run pre-commit in (e.g., path/to/project). Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-    ) -> GitResult:
-        """
-        Runs pre-commit hooks and/or autoupdate on a repository.
-        Enhances code quality by running configured hooks.
-        """
-        logger.debug(
-            f"Running pre-commit: run={run}, autoupdate={autoupdate}, path={path}"
-        )
-        try:
-            target_dir = path
-            if not target_dir:
-                target_dir = os.getcwd()
-
-            git = Git(
-                path=target_dir,
-                is_mcp_server=True,
-            )
-
-            response = git.pre_commit(run=run, autoupdate=autoupdate, path=target_dir)
-            return response
-
-        except Exception as e:
-            logger.error(f"Error in run_pre_commit: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Clone Single Git Project",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
-        tags={"git_operations"},
-    )
-    async def clone_project(
-        url: str = Field(description="The repository URL to clone."),
-        path: Optional[str] = Field(
-            description="The path to clone the project into. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-        threads: Optional[int] = Field(
-            description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-            default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
-        ),
-        set_to_default_branch: Optional[bool] = Field(
-            description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
-            default=to_boolean(
-                os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)
-            ),
-        ),
-    ) -> GitResult:
-        """
-        Clones a single Git repository from the provided URL to the specified path.
-        """
-        logger.debug(f"Cloning project: {url}, path: {path}")
-        try:
-            if not url:
-                raise ValueError("url must not be empty")
-            git = Git(
-                path=path,
-                threads=threads,
-                set_to_default_branch=set_to_default_branch,
-                capture_output=True,
-                is_mcp_server=True,
-            )
-            response = git.clone_project(url=url)
-            return response
-        except Exception as e:
-            logger.error(f"Error in clone_project: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Clone Multiple Git Projects",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
-        tags={"git_operations"},
-    )
+    @mcp.tool(tags={"git_operations"})
     async def clone_projects(
         projects: Optional[List[str]] = Field(
-            description="List of repository URLs to clone.", default=None
+            description="Optional list of URLs to clone.", default=None
         ),
-        projects_file: Optional[str] = Field(
-            description="Path to a file containing a list of repository URLs. Defaults to PROJECTS_FILE env variable.",
-            default=os.environ.get(
-                "PROJECTS_FILE", get_library_file_path(file="repositories-list.txt")
-            ),
-        ),
-        path: Optional[str] = Field(
-            description="The path to clone projects into. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-        threads: Optional[int] = Field(
-            description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-            default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
-        ),
-        set_to_default_branch: Optional[bool] = Field(
-            description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
-            default=to_boolean(
-                os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)
-            ),
-        ),
+        threads: Optional[int] = Field(description="Parallel workers.", default=None),
     ) -> List[GitResult]:
-        """
-        Clones multiple Git repository URLs in parallel to the specified workspace path.
-        Can use a list of URLs or a file containing URLs.
-        """
-        logger.debug(f"Cloning projects to path: {path}")
-        try:
-            if not projects and not projects_file:
-                raise ValueError("Either projects or projects_file must be provided")
-            if projects_file and not os.path.exists(projects_file):
-                raise FileNotFoundError(f"Projects file not found: {projects_file}")
-            if path and not os.path.exists(path):
-                raise FileNotFoundError(f"Repository path not found: {path}")
-            git = Git(
-                path=path,
-                projects=projects,
-                threads=threads,
-                set_to_default_branch=set_to_default_branch,
-                capture_output=True,
-                is_mcp_server=True,
-            )
-            if projects_file:
-                git.read_project_list_file(file=projects_file)
-            response = git.clone_projects()
-            return response
-        except Exception as e:
-            logger.error(f"Error in clone_projects: {e}")
-            raise
+        """Clones repositories. Defaults to all in workspace.yml if none provided."""
+        git = get_git_instance(threads=threads)
+        results = git.clone_projects()
+        return git.generate_markdown_summary("Clone", results)
 
-    @mcp.tool(
-        annotations={
-            "title": "Pull Single Git Project",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
-        tags={"git_operations"},
-    )
-    async def pull_project(
-        path: str = Field(description="The path of the project directory to pull."),
-        threads: Optional[int] = Field(
-            description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-            default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
-        ),
-        set_to_default_branch: Optional[bool] = Field(
-            description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
-            default=to_boolean(
-                os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)
-            ),
-        ),
-    ) -> GitResult:
-        """
-        Performs a 'git pull' on the repository at the specified path.
-        Useful for updating a specific project to the latest commit.
-        """
-        logger.debug(f"Pulling project: path: {path}")
-        try:
-            if not path:
-                raise ValueError("path must not be empty")
-            git = Git(
-                path=path,  # Use path as base or let Git manage?
-                threads=threads,
-                set_to_default_branch=set_to_default_branch,
-                capture_output=True,
-                is_mcp_server=True,
-            )
-            # We want to pull specific project. Git initialized with path might assume path is the workspace.
-            # But pull_project in Git takes 'path' (the project path).
-            # If we call git.pull_project(path=path), it uses self._resolve_path(path).
-            # So if we init Git(path=os.path.dirname(path)) it might be cleaner, but Git defaults to self.path.
-            # If we init Git() (default), then pass absolute path, it should work.
-            response = git.pull_project(path=path)
-            return response
-        except Exception as e:
-            logger.error(f"Error in pull_project: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Pull Multiple Git Projects",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": True,
-            "openWorldHint": False,
-        },
-        tags={"git_operations"},
-    )
+    @mcp.tool(tags={"git_operations"})
     async def pull_projects(
-        path: Optional[str] = Field(
-            description="The workspace containing the projects to pull. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
-        threads: Optional[int] = Field(
-            description="Number of threads for parallel processing. Defaults to REPOSITORY_MANAGER_THREADS env variable.",
-            default=to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "6")),
-        ),
-        set_to_default_branch: Optional[bool] = Field(
-            description="Whether to checkout the default branch. Defaults to REPOSITORY_MANAGER_DEFAULT_BRANCH env variable.",
-            default=to_boolean(
-                os.environ.get("REPOSITORY_MANAGER_DEFAULT_BRANCH", None)
-            ),
-        ),
+        threads: Optional[int] = Field(description="Parallel workers.", default=None),
     ) -> List[GitResult]:
-        """
-        Pulls updates for all Git projects within the specified workspace path in parallel.
-        Useful for bulk updating multiple repositories at once.
-        """
-        logger.debug(f"Pulling projects from path: {path}")
-        try:
-            if path and not os.path.exists(path):
-                raise FileNotFoundError(f"Repository path not found: {path}")
-            git = Git(
-                path=path,
-                threads=threads,
-                set_to_default_branch=set_to_default_branch,
-                capture_output=True,
-                is_mcp_server=True,
-            )
-            response = git.pull_projects()
-            return response
-        except Exception as e:
-            logger.error(f"Error in pull_projects: {e}")
-            raise
+        """Pulls updates for all projects in the workspace."""
+        git = get_git_instance(threads=threads)
+        results = git.pull_projects()
+        return git.generate_markdown_summary("Pull", results)
 
-    @mcp.tool(
-        annotations={
-            "title": "Create Project",
-            "description": "Create a new project directory and initialize it as a git repository.",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "idempotentHint": False,
-        },
-        tags={"git_operations"},
-    )
-    async def create_project(
-        path: str = Field(description="The path for the new project directory."),
+
+def register_workspace_management_tools(mcp: FastMCP):
+    @mcp.tool(tags={"workspace_management"})
+    async def setup_workspace(
+        yml_path: str = Field(description="Path to the workspace.yml file."),
     ) -> GitResult:
-        """
-        Create a new project directory at the specified path and initialize it as a git repository.
-        Use this to start a new project managed by git.
-        """
+        """Sets up the entire workspace, clones repos, and organizes subdirectories."""
+        git = get_git_instance()
+        return git.setup_from_yaml(yml_path)
+
+    @mcp.tool(tags={"workspace_management"})
+    async def install_projects(
+        threads: Optional[int] = Field(description="Parallel workers.", default=None),
+        extra: str = Field(description="Install group (e.g. 'all').", default="all"),
+    ) -> List[GitResult]:
+        """Bulk installs Python projects defined in the workspace."""
+        git = get_git_instance(threads=threads)
+        results = git.install_projects(extra=extra)
+        return git.generate_markdown_summary("Installation", results)
+
+    @mcp.tool(tags={"workspace_management"})
+    async def build_projects(
+        threads: Optional[int] = Field(description="Parallel workers.", default=None),
+    ) -> List[GitResult]:
+        """Bulk builds Python projects defined in the workspace."""
+        git = get_git_instance(threads=threads)
+        results = git.build_projects()
+        return git.generate_markdown_summary("Build", results)
+
+    @mcp.tool(tags={"workspace_management"})
+    async def validate_projects(
+        type: str = Field(
+            description="Validation type: 'agent', 'mcp', or 'all'.", default="all"
+        ),
+        threads: Optional[int] = Field(description="Parallel workers.", default=None),
+    ) -> List[GitResult]:
+        """Bulk validates agent/MCP servers in the workspace."""
+        git = get_git_instance(threads=threads)
+        results = git.validate_projects(type=type)
+        return git.generate_markdown_summary("Validation", results)
+
+    @mcp.tool(tags={"workspace_management"})
+    async def generate_workspace_template(
+        target_path: str = Field(description="Path where to save the template."),
+        use_default: bool = Field(
+            description="Use the pre-filled package template.", default=True
+        ),
+    ) -> GitResult:
+        """Generates a new workspace.yml template."""
+        git = Git()
+        return git.generate_workspace_template(
+            target_path=target_path, use_default=use_default
+        )
+
+    @mcp.tool(tags={"workspace_management"})
+    async def save_workspace_config(
+        yaml_path: str = Field(description="Target YAML path."),
+        config_dict: Dict[str, Any] = Field(
+            description="Dictionary representation of WorkspaceConfig."
+        ),
+    ) -> GitResult:
+        """Saves a WorkspaceConfig to YAML. Useful for programmatically updating the workspace."""
         try:
-            # Init Git with base path or current directory, actual creation uses absolute path logic
-            git = Git(
-                path=os.getcwd(),
-                is_mcp_server=True,
+            config = WorkspaceConfig(**config_dict)
+            git = Git()
+            return git.save_workspace_config(yaml_path=yaml_path, config=config)
+        except Exception as e:
+            return GitResult(
+                status="error", data="", error={"message": str(e), "code": 1}
             )
 
-            response = git.create_project(path=path)
-            return response
-        except Exception as e:
-            logger.error(f"Error in create_project: {e}")
-            raise
-
-    @mcp.tool(
-        annotations={
-            "title": "Bump Version",
-            "description": "Bump the version of the project using bump2version.",
-            "readOnlyHint": False,
-            "destructiveHint": True,
-            "idempotentHint": False,
-        },
-        tags={"git_operations"},
-    )
-    async def bump_version(
+    @mcp.tool(tags={"workspace_management"})
+    async def maintain_workspace(
         part: str = Field(
-            description="The part of the version to bump (major, minor, patch)."
+            description="Version part to bump (major, minor, patch).", default="patch"
         ),
-        allow_dirty: bool = Field(
-            description="Whether to allow dirty working directory.", default=True
-        ),
-        path: Optional[str] = Field(
-            description="The path to the project directory. Defaults to REPOSITORY_MANAGER_WORKSPACE env variable.",
-            default=os.environ.get("REPOSITORY_MANAGER_WORKSPACE", None),
-        ),
+        phase: int = Field(description="Starting phase number.", default=1),
+        dry_run: bool = Field(description="Perform a dry run.", default=False),
+    ) -> List[GitResult]:
+        """Runs the maintenance lifecycle across all projects in the workspace."""
+        git = get_git_instance()
+        results = git.maintain_projects(part=part, start_phase=phase, dry_run=dry_run)
+        return git.generate_markdown_summary("Maintenance", results)
+
+
+def register_visualization_tools(mcp: FastMCP):
+    @mcp.tool(tags={"visualization"})
+    async def get_workspace_tree(
+        yml_path: Optional[str] = Field(
+            description="Path to workspace.yml.", default=None
+        )
+    ) -> str:
+        """Generates an ASCII tree of the workspace structure."""
+        git = get_git_instance()
+        path = yml_path or os.path.join(git.path, DEFAULT_WORKSPACE_YML)
+        return git.generate_workspace_tree(path)
+
+    @mcp.tool(tags={"visualization"})
+    async def get_workspace_mermaid(
+        yml_path: Optional[str] = Field(
+            description="Path to workspace.yml.", default=None
+        )
+    ) -> str:
+        """Generates a Mermaid diagram of the workspace structure."""
+        git = get_git_instance()
+        path = yml_path or os.path.join(git.path, DEFAULT_WORKSPACE_YML)
+        return git.generate_workspace_mermaid(path)
+
+    @mcp.tool(tags={"visualization"})
+    async def generate_agents_documentation(
+        target_path: Optional[str] = Field(
+            description="Target path for AGENTS.md.", default=None
+        )
     ) -> GitResult:
-        """
-        Bumps the version of the project using bump2version.
-        Automatically commits and tags the new version.
-        """
-        try:
-            target_dir = path
-            if not target_dir:
-                target_dir = (
-                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
-                )
-
-            git = Git(
-                path=target_dir,
-                is_mcp_server=True,
-            )
-
-            response = git.bump_version(
-                part=part,
-                allow_dirty=allow_dirty,
-                path=path,
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Error in bump_version: {e}")
-            raise
+        """Generates an AGENTS.md catalog of discovered projects."""
+        git = get_git_instance()
+        return git.generate_agents_md(target_path=target_path)
 
 
-def register_file_operations_tools(mcp: FastMCP):
-    @mcp.tool(
-        annotations={
-            "title": "Search Codebase",
-            "description": "Search the codebase using ripgrep.",
-            "readOnlyHint": True,
-            "destructiveHint": False,
-            "idempotentHint": True,
-        },
-        tags={"file_operations"},
-    )
-    async def search_codebase(
-        query: str = Field(description="The regex pattern to search for."),
-        path: Optional[str] = Field(
-            description="The path to search in (absolute or relative to CWD). Defaults to CWD or workspace.",
-            default=None,
-        ),
-        glob_pattern: Optional[str] = Field(
-            description="Glob pattern to filter files (e.g., '*.py').", default=None
-        ),
-        case_sensitive: bool = Field(
-            description="Whether the search should be case sensitive.", default=False
-        ),
-    ) -> GitResult:
-        """
-        Search for a regex pattern in the codebase using ripgrep.
-        Supports filtering by glob pattern and case sensitivity.
-        """
-        try:
-            target_dir = path
-            if not target_dir:
-                target_dir = (
-                    os.environ.get("REPOSITORY_MANAGER_WORKSPACE") or os.getcwd()
-                )
-
-            git = Git(
-                path=target_dir,
-                is_mcp_server=True,
-            )
-
-            response = git.search_codebase(
-                query=query,
-                path=path,
-                glob_pattern=glob_pattern,
-                case_sensitive=case_sensitive,
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Error in search_codebase: {e}")
-            raise
+def register_prompts(mcp: FastMCP):
+    """Register workspace management prompts."""
+    # Placeholder for future prompts
+    pass
 
 
-def mcp_server():
+def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
+    """Initialize the MCP instance, args, and middlewares."""
     load_dotenv(find_dotenv())
 
     args, mcp, middlewares = create_mcp_server(
-        name="GitRepositoryManager",
+        name="RepositoryManager",
         version=__version__,
-        instructions="Git Repository Manager MCP Server — Create, clone, pull, search, and manage git repositories and files.",
+        instructions="Expert tool for managing hierarchical Git workspaces, engineering bulk operations, and documentation.",
     )
 
-    DEFAULT_MISCTOOL = to_boolean(os.getenv("MISCTOOL", "True"))
-    if DEFAULT_MISCTOOL:
+    registered_tags = []
+    if to_boolean(os.getenv("MISCTOOL", "True")):
         register_misc_tools(mcp)
-    DEFAULT_GIT_OPERATIONSTOOL = to_boolean(os.getenv("GIT_OPERATIONSTOOL", "True"))
-    if DEFAULT_GIT_OPERATIONSTOOL:
+        registered_tags.append("misc")
+
+    if to_boolean(os.getenv("GIT_OPERATIONSTOOL", "True")):
         register_git_operations_tools(mcp)
-    DEFAULT_FILE_OPERATIONSTOOL = to_boolean(os.getenv("FILE_OPERATIONSTOOL", "True"))
-    if DEFAULT_FILE_OPERATIONSTOOL:
-        register_file_operations_tools(mcp)
+        registered_tags.append("git_operations")
+
+    if to_boolean(os.getenv("WORKSPACE_MANAGEMENTTOOL", "True")):
+        register_workspace_management_tools(mcp)
+        registered_tags.append("workspace_management")
+
+    if to_boolean(os.getenv("VISUALIZATIONTOOL", "True")):
+        register_visualization_tools(mcp)
+        registered_tags.append("visualization")
+
+    register_prompts(mcp)
+    registered_tags.append("prompts")
 
     for mw in middlewares:
         mcp.add_middleware(mw)
 
-    print(f"Repository Manager MCP v{__version__}")
-    print("\nStarting Git MCP Server")
-    print(f"  Transport: {args.transport.upper()}")
-    print(f"  Auth: {args.auth_type}")
-    print(f"  Delegation: {'ON' if config['enable_delegation'] else 'OFF'}")
-    print(f"  Eunomia: {args.eunomia_type}")
+    return mcp, args, middlewares, registered_tags
+
+
+def mcp_server() -> None:
+    mcp, args, middlewares, registered_tags = get_mcp_instance()
+    print(f"{args.name or 'repository-manager'} MCP v{__version__}", file=sys.stderr)
+    print("\nStarting MCP Server", file=sys.stderr)
+    print(f"  Transport: {args.transport.upper()}", file=sys.stderr)
+    print(f"  Auth: {args.auth_type}", file=sys.stderr)
+    print(f"  Dynamic Tags Loaded: {len(set(registered_tags))}", file=sys.stderr)
 
     if args.transport == "stdio":
         mcp.run(transport="stdio")

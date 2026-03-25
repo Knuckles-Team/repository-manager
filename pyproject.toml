@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repository-manager"
-version = "1.3.45"
+version = "1.3.46"
 description = "Manage your git projects"
 readme = "README.md"
 authors = [{ name = "Audel Rouhi", email = "knucklessg1@gmail.com" }]
@@ -37,7 +37,7 @@ repository-manager-mcp = "repository_manager.mcp_server:mcp_server"
 repository-manager-agent = "repository_manager.agent_server:agent_server"
 
 [tool.setuptools.package-data]
-repository_manager = ["mcp_config.json", "repositories-list.txt"]
+repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "agent_data/*", "agent_data/**/*"]
 
 [tool.setuptools.packages.find]
 where = ["."]
