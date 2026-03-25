@@ -53,3 +53,11 @@ repos:
         exclude: "tests/"
       - id: fix-ligatures
         exclude: "tests/"
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: bash -c "PYTHONPATH=. pytest tests/test_repository_manager.py"
+        language: system
+        pass_filenames: false
+        always_run: true

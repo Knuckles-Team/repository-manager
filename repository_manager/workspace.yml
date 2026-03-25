@@ -1,0 +1,92 @@
+# Repository Workspace Configuration
+# This file defines the directory structure and repositories for the agent ecosystem.
+
+name: "Agent Packages Workspace"
+path: "../../../.."
+description: "Main development environment for the agent-packages ecosystem."
+
+subdirectories:
+  agent-packages:
+    description: "Core utility packages, shared libraries, and agent implementations."
+    repositories:
+      - url: "https://github.com/Knuckles-Team/agent-utilities.git"
+        description: "Shared utility functions, base classes, and server common code."
+      - url: "https://github.com/Knuckles-Team/agent-webui.git"
+        description: "Standard web UI component library for agents."
+    subdirectories:
+      skills:
+        description: "Agent capabilities, skill graphs, and tool definitions."
+        repositories:
+          - url: "https://github.com/Knuckles-Team/universal-skills.git"
+            description: "Central repository for agent skills and capabilities."
+          - url: "https://github.com/Knuckles-Team/skill-graphs.git"
+            description: "Tool for generating and managing skill graph definitions."
+      agents:
+        description: "Collection of specialized agent implementations, MCP servers, API Wrappers/Core Python Tools."
+        repositories:
+          - url: "https://github.com/Knuckles-Team/media-downloader.git"
+          - url: "https://github.com/Knuckles-Team/genius-agent.git"
+          - url: "https://github.com/Knuckles-Team/repository-manager.git"
+          - url: "https://github.com/Knuckles-Team/systems-manager.git"
+          - url: "https://github.com/Knuckles-Team/gitlab-api.git"
+          - url: "https://github.com/Knuckles-Team/servicenow-api.git"
+          - url: "https://github.com/Knuckles-Team/tunnel-manager.git"
+          - url: "https://github.com/Knuckles-Team/container-manager-mcp.git"
+          - url: "https://github.com/Knuckles-Team/audio-transcriber.git"
+          - url: "https://github.com/Knuckles-Team/vector-mcp.git"
+          - url: "https://github.com/Knuckles-Team/archivebox-api.git"
+          - url: "https://github.com/Knuckles-Team/documentdb-mcp.git"
+          - url: "https://github.com/Knuckles-Team/ansible-tower-mcp.git"
+          - url: "https://github.com/Knuckles-Team/searxng-mcp.git"
+          - url: "https://github.com/Knuckles-Team/mealie-mcp.git"
+          - url: "https://github.com/Knuckles-Team/nextcloud-agent.git"
+          - url: "https://github.com/Knuckles-Team/microsoft-agent.git"
+          - url: "https://github.com/Knuckles-Team/jellyfin-mcp.git"
+          - url: "https://github.com/Knuckles-Team/github-agent.git"
+          - url: "https://github.com/Knuckles-Team/arr-mcp.git"
+          - url: "https://github.com/Knuckles-Team/adguard-home-agent.git"
+          - url: "https://github.com/Knuckles-Team/plane-agent.git"
+          - url: "https://github.com/Knuckles-Team/wger-agent.git"
+          - url: "https://github.com/Knuckles-Team/leanix-agent.git"
+          - url: "https://github.com/Knuckles-Team/portainer-agent.git"
+          - url: "https://github.com/Knuckles-Team/stirlingpdf-agent.git"
+
+maintenance:
+  description: "Phased update sequence for the agent ecosystem."
+  phases:
+    - name: "Phase 1: universal-skills"
+      phase: 1
+      project: "universal-skills"
+      updates:
+        - target: "agent-packages/agent-utilities/pyproject.toml"
+          package: "universal-skills"
+    - name: "Phase 2: skill-graphs"
+      phase: 2
+      project: "skill-graphs"
+      updates:
+        - target: "agent-packages/agent-utilities/pyproject.toml"
+          package: "skill-graphs"
+    - name: "Phase 3: agent-webui"
+      phase: 3
+      project: "agent-webui"
+      updates:
+        - target: "agent-packages/agent-utilities/pyproject.toml"
+          package: "agent-webui"
+    - name: "Phase 4: agent-utilities"
+      phase: 4
+      project: "agent-utilities"
+      updates:
+        - target_pattern: "*"
+          exclude:
+            - "universal-skills"
+            - "agent-utilities"
+            - "agent-webui"
+          package: "agent-utilities"
+    - name: "Phase 5: Bulk Bump"
+      phase: 5
+      bulk_bump: True
+      exclude:
+        - "universal-skills"
+        - "agent-utilities"
+        - "agent-webui"
+        - "skill-graphs"
