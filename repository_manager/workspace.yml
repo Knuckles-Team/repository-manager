@@ -5,6 +5,10 @@ name: "Agent Packages Workspace"
 path: "../../../.."
 description: "Main development environment for the agent-packages ecosystem."
 
+repositories:
+  - url: "https://github.com/Knuckles-Team/pipelines.git"
+    description: "GitHub Actions pipelines for the agent ecosystem."
+
 subdirectories:
   agent-packages:
     description: "Core utility packages, shared libraries, and agent implementations."

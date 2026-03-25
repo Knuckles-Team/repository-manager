@@ -13,7 +13,7 @@ import sys
 import argparse
 import json
 
-__version__ = "1.3.46"
+__version__ = "1.3.47"
 import concurrent.futures
 import datetime
 import yaml
@@ -243,9 +243,9 @@ class Git:
             futures = []
             results = []
             for url, path in self.project_map.items():
-                if not os.path.exists(os.path.join(path, "pyproject.toml")) and not os.path.exists(
-                    os.path.join(path, "setup.py")
-                ):
+                if not os.path.exists(
+                    os.path.join(path, "pyproject.toml")
+                ) and not os.path.exists(os.path.join(path, "setup.py")):
                     results.append(
                         GitResult(
                             status="skipped",
@@ -266,7 +266,9 @@ class Git:
                 cmd = f"pip install -e '.[{extra}]'"
                 futures.append(executor.submit(self.git_action, cmd, path=path))
 
-            results.extend([f.result() for f in concurrent.futures.as_completed(futures)])
+            results.extend(
+                [f.result() for f in concurrent.futures.as_completed(futures)]
+            )
 
             # Print summary
             successes = [r for r in results if r.status == "success"]
@@ -372,19 +374,23 @@ class Git:
 
                 # Skip logic for pipelines (Non-Python)
                 if pkg_name == "pipelines":
-                    agent_targets.append({
-                        "name": pkg_name,
-                        "path": path,
-                        "skip_reason": "Skipped (Not a Python project)"
-                    })
+                    agent_targets.append(
+                        {
+                            "name": pkg_name,
+                            "path": path,
+                            "skip_reason": "Skipped (Not a Python project)",
+                        }
+                    )
                     continue
 
                 if not is_agent_suite:
-                    agent_targets.append({
-                        "name": pkg_name,
-                        "path": path,
-                        "skip_reason": "Skipped (Not an Agent project)"
-                    })
+                    agent_targets.append(
+                        {
+                            "name": pkg_name,
+                            "path": path,
+                            "skip_reason": "Skipped (Not an Agent project)",
+                        }
+                    )
                     continue
 
                 # Filter targets by type if type is a target filter
@@ -423,7 +429,11 @@ class Git:
                             )
                         )
                     else:
-                        reason = "Skipped (Not a Python project)" if repo_name == "pipelines" else "Skipped (Missing .bumpversion.cfg)"
+                        reason = (
+                            "Skipped (Not a Python project)"
+                            if repo_name == "pipelines"
+                            else "Skipped (Missing .bumpversion.cfg)"
+                        )
                         bump_results.append(
                             GitResult(
                                 status="skipped",
@@ -444,60 +454,160 @@ class Git:
             # Phase 3: Fast Checks (Help, Static Patterns)
             fast_futures = []
             skip_ts = datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z"
-            
+
             for target in agent_targets:
                 if "skip_reason" in target:
                     reason = target["skip_reason"]
                     # Add skips to results for each category in Phase 3
                     if run_all or type in ["mcp", "all"]:
-                        results.append(GitResult(status="skipped", data=reason, metadata=GitMetadata(command="mcp_server --help", workspace=target["path"], return_code=0, timestamp=skip_ts)))
+                        results.append(
+                            GitResult(
+                                status="skipped",
+                                data=reason,
+                                metadata=GitMetadata(
+                                    command="mcp_server --help",
+                                    workspace=target["path"],
+                                    return_code=0,
+                                    timestamp=skip_ts,
+                                ),
+                            )
+                        )
                     if run_all or type in ["agent", "all"]:
-                        results.append(GitResult(status="skipped", data=reason, metadata=GitMetadata(command="agent_server --help", workspace=target["path"], return_code=0, timestamp=skip_ts)))
+                        results.append(
+                            GitResult(
+                                status="skipped",
+                                data=reason,
+                                metadata=GitMetadata(
+                                    command="agent_server --help",
+                                    workspace=target["path"],
+                                    return_code=0,
+                                    timestamp=skip_ts,
+                                ),
+                            )
+                        )
                     if run_all or type in ["static-analysis", "all"]:
-                        results.append(GitResult(status="skipped", data=reason, metadata=GitMetadata(command="static_check", workspace=target["path"], return_code=0, timestamp=skip_ts)))
+                        results.append(
+                            GitResult(
+                                status="skipped",
+                                data=reason,
+                                metadata=GitMetadata(
+                                    command="static_check",
+                                    workspace=target["path"],
+                                    return_code=0,
+                                    timestamp=skip_ts,
+                                ),
+                            )
+                        )
                     continue
 
                 # MCP Help
                 if (run_all or type == "mcp") and target.get("is_mcp"):
                     cmd = f"python3 -m {target['pkg']}.mcp_server --help"
-                    fast_futures.append(executor.submit(self._check_help, cmd, path=target["path"]))
+                    fast_futures.append(
+                        executor.submit(self._check_help, cmd, path=target["path"])
+                    )
                 elif run_all or type == "mcp":
                     # For agents that are NOT MCP, they are skipped in MCP help check
-                    results.append(GitResult(status="skipped", data="Skipped (Not an MCP server)", metadata=GitMetadata(command="mcp_server --help", workspace=target["path"], return_code=0, timestamp=skip_ts)))
+                    results.append(
+                        GitResult(
+                            status="skipped",
+                            data="Skipped (Not an MCP server)",
+                            metadata=GitMetadata(
+                                command="mcp_server --help",
+                                workspace=target["path"],
+                                return_code=0,
+                                timestamp=skip_ts,
+                            ),
+                        )
+                    )
 
                 # Agent Help
                 if (run_all or type == "agent") and target.get("file"):
                     cmd = f"python3 -m {target['pkg']}.{target['file']} --help"
-                    fast_futures.append(executor.submit(self._check_help, cmd, path=target["path"]))
+                    fast_futures.append(
+                        executor.submit(self._check_help, cmd, path=target["path"])
+                    )
                 elif run_all or type == "agent":
                     # For agents that are only MCP (no server.py), they are skipped in Agent help check
-                    results.append(GitResult(status="skipped", data="Skipped (MCP-only server)", metadata=GitMetadata(command="agent_server --help", workspace=target["path"], return_code=0, timestamp=skip_ts)))
+                    results.append(
+                        GitResult(
+                            status="skipped",
+                            data="Skipped (MCP-only server)",
+                            metadata=GitMetadata(
+                                command="agent_server --help",
+                                workspace=target["path"],
+                                return_code=0,
+                                timestamp=skip_ts,
+                            ),
+                        )
+                    )
 
                 # Static Compliance
                 if run_all or type == "static-analysis":
                     if target.get("file"):
-                        fast_futures.append(executor.submit(self._check_agent_static, target))
+                        fast_futures.append(
+                            executor.submit(self._check_agent_static, target)
+                        )
                     else:
-                        results.append(GitResult(status="skipped", data="Skipped (No server.py for static check)", metadata=GitMetadata(command="static_check", workspace=target["path"], return_code=0, timestamp=skip_ts)))
+                        results.append(
+                            GitResult(
+                                status="skipped",
+                                data="Skipped (No server.py for static check)",
+                                metadata=GitMetadata(
+                                    command="static_check",
+                                    workspace=target["path"],
+                                    return_code=0,
+                                    timestamp=skip_ts,
+                                ),
+                            )
+                        )
 
             # Collect thread results
-            results.extend([f.result() for f in concurrent.futures.as_completed(fast_futures)])
+            results.extend(
+                [f.result() for f in concurrent.futures.as_completed(fast_futures)]
+            )
 
             # Phase 4: Heavy Checks (Runtime & Web UI Startup)
             if run_all or type == "runtime-validation":
                 heavy_futures = []
                 for idx, target in enumerate(agent_targets):
                     if "skip_reason" in target:
-                        results.append(GitResult(status="skipped", data=target["skip_reason"], metadata=GitMetadata(command="runtime_check", workspace=target["path"], return_code=0, timestamp=skip_ts)))
+                        results.append(
+                            GitResult(
+                                status="skipped",
+                                data=target["skip_reason"],
+                                metadata=GitMetadata(
+                                    command="runtime_check",
+                                    workspace=target["path"],
+                                    return_code=0,
+                                    timestamp=skip_ts,
+                                ),
+                            )
+                        )
                         continue
-                    
+
                     if target.get("file"):
                         port = 9000 + (idx % 3000)
-                        heavy_futures.append(executor.submit(self._check_agent_runtime, target, port))
+                        heavy_futures.append(
+                            executor.submit(self._check_agent_runtime, target, port)
+                        )
                     else:
-                        results.append(GitResult(status="skipped", data="Skipped (No server.py for runtime check)", metadata=GitMetadata(command="runtime_check", workspace=target["path"], return_code=0, timestamp=skip_ts)))
-                
-                results.extend([f.result() for f in concurrent.futures.as_completed(heavy_futures)])
+                        results.append(
+                            GitResult(
+                                status="skipped",
+                                data="Skipped (No server.py for runtime check)",
+                                metadata=GitMetadata(
+                                    command="runtime_check",
+                                    workspace=target["path"],
+                                    return_code=0,
+                                    timestamp=skip_ts,
+                                ),
+                            )
+                        )
+
+                results.extend(
+                    [f.result() for f in concurrent.futures.as_completed(heavy_futures)]
+                )
 
             # Print summary
             successes = [r for r in results if r.status == "success"]
@@ -518,22 +628,61 @@ class Git:
 
             # Group results by category
             categories = {
-                "Ecosystem Installation": [r for r in results if r.metadata.command and "pip install" in r.metadata.command],
-                "Version Metadata Sync (Dry Run)": [r for r in results if r.metadata.command and "bump2version" in r.metadata.command],
-                "Agent Standards Compliance": [r for r in results if r.metadata.command and "static_check" in r.metadata.command],
-                "MCP Help Check": [r for r in results if r.metadata.command and "mcp_server" in r.metadata.command and "--help" in r.metadata.command],
-                "Agent Help Check": [r for r in results if r.metadata.command and ("agent_server" in r.metadata.command or "server" in r.metadata.command) and "--help" in r.metadata.command and "mcp_server" not in r.metadata.command],
-                "Agent Runtime & Web UI": [r for r in results if r.metadata.command and ("runtime_check" in r.metadata.command or "--web" in r.metadata.command)],
+                "Ecosystem Installation": [
+                    r
+                    for r in results
+                    if r.metadata.command and "pip install" in r.metadata.command
+                ],
+                "Version Metadata Sync (Dry Run)": [
+                    r
+                    for r in results
+                    if r.metadata.command and "bump2version" in r.metadata.command
+                ],
+                "Agent Standards Compliance": [
+                    r
+                    for r in results
+                    if r.metadata.command and "static_check" in r.metadata.command
+                ],
+                "MCP Help Check": [
+                    r
+                    for r in results
+                    if r.metadata.command
+                    and "mcp_server" in r.metadata.command
+                    and "--help" in r.metadata.command
+                ],
+                "Agent Help Check": [
+                    r
+                    for r in results
+                    if r.metadata.command
+                    and (
+                        "agent_server" in r.metadata.command
+                        or "server" in r.metadata.command
+                    )
+                    and "--help" in r.metadata.command
+                    and "mcp_server" not in r.metadata.command
+                ],
+                "Agent Runtime & Web UI": [
+                    r
+                    for r in results
+                    if r.metadata.command
+                    and (
+                        "runtime_check" in r.metadata.command
+                        or "--web" in r.metadata.command
+                    )
+                ],
             }
             # Catch-all for anything else
             known_ids = set()
             for cat_list in categories.values():
-                for r in cat_list: known_ids.add(id(r))
-            
+                for r in cat_list:
+                    known_ids.add(id(r))
+
             other = [r for r in results if id(r) not in known_ids]
             if other:
                 for r in other:
-                    logger.debug(f"Uncategorized result: {r.metadata.workspace} - cmd: {r.metadata.command}")
+                    logger.debug(
+                        f"Uncategorized result: {r.metadata.workspace} - cmd: {r.metadata.command}"
+                    )
                 categories["Additional Operational Checks"] = other
 
             # Generate and export markdown report
@@ -1828,7 +1977,8 @@ class Git:
                     command="bump_version",
                     workspace=target_dir,
                     return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
                 ),
             )
 
