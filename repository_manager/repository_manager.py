@@ -13,7 +13,7 @@ import sys
 import argparse
 import json
 
-__version__ = "1.3.52"
+__version__ = "1.3.53"
 import concurrent.futures
 import datetime
 import yaml
