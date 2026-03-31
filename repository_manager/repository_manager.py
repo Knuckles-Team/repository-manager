@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# coding: utf-8
+
 
 """
 A command-line tool for managing Git repositories, supporting cloning and pulling
@@ -13,7 +13,7 @@ import sys
 import argparse
 import json
 
-__version__ = "1.3.47"
+__version__ = "1.3.48"
 import concurrent.futures
 import datetime
 import yaml
@@ -50,25 +50,22 @@ logger = get_logger("RepositoryManager")
 def get_packaged_file_path(package: str, file: str) -> str:
     """Robustly find a file in a package using importlib.resources."""
     try:
-        # Try importlib first for installed packages
+
         path = files(package).joinpath(file)
         if path.exists():
             return str(path)
     except Exception:
         pass
 
-    # Fallback to local file discovery for development/editable mode
-    # Assuming the caller package is where the file should be
     local_path = os.path.join(os.path.dirname(__file__), file)
     if os.path.exists(local_path):
         return local_path
 
-    # Final fallback for generic files
     return get_library_file_path(file=file)
 
 
 DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.path.abspath(
-    os.path.expanduser(os.getenv("REPOSITORY_MANAGER_WORKSPACE", "."))
+    os.path.expanduser(os.getenv("REPOSITORY_MANAGER_WORKSPACE", "~/Workspace"))
 )
 DEFAULT_WORKSPACE_YML = os.getenv(
     "WORKSPACE_YML", get_packaged_file_path("repository_manager", "workspace.yml")
@@ -99,12 +96,12 @@ class Git:
             except Exception:
                 pass
 
-        self.project_map = {}  # Map of {url: local_path} from YAML
+        self.project_map = {}
         self.config = None
         self.threads = threads or DEFAULT_REPOSITORY_MANAGER_THREADS
         self.set_to_default_branch = set_to_default_branch
         self.capture_output = capture_output
-        self.maximum_threads = 36  # Kept this as it's used in set_threads
+        self.maximum_threads = 36
         if threads:
             self.set_threads(threads=threads)
 
@@ -118,7 +115,6 @@ class Git:
                 error=GitError(message=f"YAML not found: {abs_yaml_path}", code=1),
             )
 
-        # 1. Load configuration
         if not self.load_projects_from_yaml(abs_yaml_path):
             return GitResult(
                 status="error",
@@ -126,14 +122,12 @@ class Git:
                 error=GitError(message="Failed to load YAML", code=1),
             )
 
-        # 2. Ensure directory structure exists
         logger.info(f"Creating workspace structure at {self.path}...")
         os.makedirs(self.path, exist_ok=True)
 
         for _, project_path in self.project_map.items():
             os.makedirs(os.path.dirname(project_path), exist_ok=True)
 
-        # 3. Perform initial clone
         logger.info("Performing initial clone of all repositories...")
         self.clone_projects()
 
@@ -243,15 +237,18 @@ class Git:
             futures = []
             results = []
             for url, path in self.project_map.items():
-                if not os.path.exists(
+                is_python = os.path.exists(
                     os.path.join(path, "pyproject.toml")
-                ) and not os.path.exists(os.path.join(path, "setup.py")):
+                ) or os.path.exists(os.path.join(path, "setup.py"))
+                is_node = os.path.exists(os.path.join(path, "package.json"))
+
+                if not is_python and not is_node:
                     results.append(
                         GitResult(
                             status="skipped",
-                            data="Skipped (Not a Python project)",
+                            data="Skipped (Not a Python or Node project)",
                             metadata=GitMetadata(
-                                command="pip install",
+                                command="install",
                                 workspace=path,
                                 return_code=0,
                                 timestamp=datetime.datetime.now(
@@ -263,14 +260,19 @@ class Git:
                     )
                     continue
 
-                cmd = f"pip install -e '.[{extra}]'"
-                futures.append(executor.submit(self.git_action, cmd, path=path))
+                if is_node:
+
+                    cmd = "npm install"
+                    futures.append(executor.submit(self.git_action, cmd, path=path))
+
+                if is_python:
+                    cmd = f"pip install -e '.[{extra}]'"
+                    futures.append(executor.submit(self.git_action, cmd, path=path))
 
             results.extend(
                 [f.result() for f in concurrent.futures.as_completed(futures)]
             )
 
-            # Print summary
             successes = [r for r in results if r.status == "success"]
             failures = [r for r in results if r.status == "error"]
 
@@ -286,7 +288,6 @@ class Git:
                     print(f"- {pkg}: {r.error.message if r.error else r.data}")
             print("=" * 50 + "\n")
 
-            # Generate and export markdown report
             report_md = "# INSTALLATION SUMMARY\n"
             report_md += (
                 f"**Time:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
@@ -312,7 +313,7 @@ class Git:
             return results
 
     def build_projects(self, threads: int = None) -> List[GitResult]:
-        """Bulk builds Python projects in the workspace."""
+        """Bulk builds Python and Node.js projects in the workspace."""
         threads = threads or self.threads
         if not self.project_map:
             logger.warning("No projects to build.")
@@ -324,7 +325,10 @@ class Git:
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
             futures = []
             for url, path in self.project_map.items():
-                cmd = "python3 -m build"
+                if os.path.exists(os.path.join(path, "package.json")):
+                    cmd = "npm install && npm run build"
+                else:
+                    cmd = "python3 -m build"
                 futures.append(executor.submit(self.git_action, cmd, path=path))
             return [f.result() for f in concurrent.futures.as_completed(futures)]
 
@@ -346,7 +350,6 @@ class Git:
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
             futures = []
 
-            # Map of internal package metadata for agents
             agent_targets = []
             for url, path in self.project_map.items():
                 pkg_name = url.split("/")[-1].replace(".git", "")
@@ -363,16 +366,12 @@ class Git:
                 agent_file = None
                 if os.path.exists(os.path.join(pkg_dir, "agent_server.py")):
                     agent_file = "agent_server"
-                elif os.path.exists(os.path.join(pkg_dir, "server.py")):
-                    agent_file = "server"
 
                 is_mcp = os.path.exists(os.path.join(pkg_dir, "mcp_server.py"))
                 is_graph = os.path.exists(os.path.join(pkg_dir, "graph_config.py"))
 
-                # Determine if this project belongs to the agent validation suite
                 is_agent_suite = is_mcp or agent_file or is_graph
 
-                # Skip logic for pipelines (Non-Python)
                 if pkg_name == "pipelines":
                     agent_targets.append(
                         {
@@ -393,7 +392,6 @@ class Git:
                     )
                     continue
 
-                # Filter targets by type if type is a target filter
                 if type == "flat" and (is_graph or not agent_file):
                     continue
                 if type == "graph" and not is_graph:
@@ -411,15 +409,13 @@ class Git:
                     }
                 )
 
-            # Phase 1: Ecosystem Installation Check
             if run_all or type == "installation" or type == "all":
                 install_results = self.install_projects(report=False)
                 results.extend(install_results)
 
-            # Phase 2: Version Metadata Sync Dry-Run
             if run_all or type == "version-sync" or type == "all":
                 bump_results = []
-                # Use project_map to ensure ALL repositories are checked for versioning
+
                 for url, path in self.project_map.items():
                     repo_name = Path(path).name
                     if (Path(path) / ".bumpversion.cfg").exists():
@@ -451,14 +447,13 @@ class Git:
                         )
                 results.extend(bump_results)
 
-            # Phase 3: Fast Checks (Help, Static Patterns)
             fast_futures = []
             skip_ts = datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z"
 
             for target in agent_targets:
                 if "skip_reason" in target:
                     reason = target["skip_reason"]
-                    # Add skips to results for each category in Phase 3
+
                     if run_all or type in ["mcp", "all"]:
                         results.append(
                             GitResult(
@@ -500,14 +495,13 @@ class Git:
                         )
                     continue
 
-                # MCP Help
                 if (run_all or type == "mcp") and target.get("is_mcp"):
                     cmd = f"python3 -m {target['pkg']}.mcp_server --help"
                     fast_futures.append(
                         executor.submit(self._check_help, cmd, path=target["path"])
                     )
                 elif run_all or type == "mcp":
-                    # For agents that are NOT MCP, they are skipped in MCP help check
+
                     results.append(
                         GitResult(
                             status="skipped",
@@ -521,14 +515,13 @@ class Git:
                         )
                     )
 
-                # Agent Help
                 if (run_all or type == "agent") and target.get("file"):
                     cmd = f"python3 -m {target['pkg']}.{target['file']} --help"
                     fast_futures.append(
                         executor.submit(self._check_help, cmd, path=target["path"])
                     )
                 elif run_all or type == "agent":
-                    # For agents that are only MCP (no server.py), they are skipped in Agent help check
+
                     results.append(
                         GitResult(
                             status="skipped",
@@ -542,7 +535,6 @@ class Git:
                         )
                     )
 
-                # Static Compliance
                 if run_all or type == "static-analysis":
                     if target.get("file"):
                         fast_futures.append(
@@ -562,12 +554,10 @@ class Git:
                             )
                         )
 
-            # Collect thread results
             results.extend(
                 [f.result() for f in concurrent.futures.as_completed(fast_futures)]
             )
 
-            # Phase 4: Heavy Checks (Runtime & Web UI Startup)
             if run_all or type == "runtime-validation":
                 heavy_futures = []
                 for idx, target in enumerate(agent_targets):
@@ -609,7 +599,29 @@ class Git:
                     [f.result() for f in concurrent.futures.as_completed(heavy_futures)]
                 )
 
-            # Print summary
+            if run_all or type == "all":
+                web_targets = [
+                    t
+                    for t in agent_targets
+                    if os.path.exists(os.path.join(t["path"], "package.json"))
+                ]
+                if web_targets:
+                    logger.info(
+                        f"Validating Web UI builds for {len(web_targets)} projects..."
+                    )
+                    build_futures = []
+                    for target in web_targets:
+                        cmd = "npm run build"
+                        build_futures.append(
+                            executor.submit(self.git_action, cmd, path=target["path"])
+                        )
+                    results.extend(
+                        [
+                            f.result()
+                            for f in concurrent.futures.as_completed(build_futures)
+                        ]
+                    )
+
             successes = [r for r in results if r.status == "success"]
             failures = [r for r in results if r.status == "error"]
             skipped = [r for r in results if r.status == "skipped"]
@@ -626,7 +638,6 @@ class Git:
                     print(f"- {pkg}: {r.error.message if r.error else r.data}")
             print("=" * 50 + "\n")
 
-            # Group results by category
             categories = {
                 "Ecosystem Installation": [
                     r
@@ -671,7 +682,7 @@ class Git:
                     )
                 ],
             }
-            # Catch-all for anything else
+
             known_ids = set()
             for cat_list in categories.values():
                 for r in cat_list:
@@ -685,7 +696,6 @@ class Git:
                     )
                 categories["Additional Operational Checks"] = other
 
-            # Generate and export markdown report
             report_md = "# VALIDATION SUMMARY\n"
             report_md += (
                 f"**Time:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
@@ -756,7 +766,7 @@ class Git:
         """Helper to run a --help command and return a standardized result."""
         result = self.git_action(command=command, path=path, quiet=True)
         if result.status == "success":
-            # Override data for concise reporting if successful
+
             result.data = "--help loaded successfully"
         return result
 
@@ -852,6 +862,8 @@ class Git:
         if "LLM_MODEL_ID" not in env:
             env["LLM_MODEL_ID"] = "dummy"
 
+        env["VALIDATION_MODE"] = "True"
+
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -864,6 +876,7 @@ class Git:
             )
 
             start_time = datetime.datetime.now()
+            startup_time = start_time
             success = False
             error_msg = ""
             full_logs = ""
@@ -878,17 +891,43 @@ class Git:
                             "Uvicorn running on" in line
                             or "Application startup complete" in line
                             or "Starting server on" in line
-                        ):
+                        ) and not success:
                             success = True
-                            break
-                        if (
-                            "ERROR" in line.upper()
-                            or "CRITICAL" in line.upper()
-                            or "Traceback" in line
-                        ):
-                            error_msg = line.strip()
+                            logger.debug(
+                                f"Startup signal detected for {target['name']}, waiting for settle..."
+                            )
 
-                if success or proc.poll() is not None:
+                            startup_time = datetime.datetime.now()
+
+                        is_error = (
+                            "ERROR -" in line.upper()
+                            or "ERROR:" in line.upper()
+                            or "CRITICAL -" in line.upper()
+                            or "CRITICAL:" in line.upper()
+                            or "TRACEBACK" in line.upper()
+                            or "IMPORTERROR" in line.upper()
+                            or "NAMEERROR" in line.upper()
+                            or "APPLICATION STARTUP FAILED" in line.upper()
+                        )
+                        if is_error:
+                            error_msg = line.strip()
+                            success = False
+                            logger.error(
+                                f"Startup error detected for {target['name']}: {error_msg}"
+                            )
+                            break
+
+                if proc.poll() is not None:
+
+                    success = False
+                    if not error_msg:
+                        error_msg = f"Process exited with code {proc.returncode}"
+                    break
+
+                if (
+                    success
+                    and (datetime.datetime.now() - startup_time).total_seconds() >= 3
+                ):
                     break
 
             try:
@@ -938,14 +977,15 @@ class Git:
     def generate_markdown_summary(action: str, results: List[GitResult]) -> str:
         """Generates a beautiful markdown summary of bulk operation results."""
         successes = [r for r in results if r.status == "success"]
-        failures = [r for r in results if r.status != "success"]
+        failures = [r for r in results if r.status == "error"]
+        skips = [r for r in results if r.status == "skipped"]
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         md = [
             f"# {action.upper()} Summary",
             f"**Time:** {timestamp}  ",
-            f"**Total:** {len(results)} | **Success:** {len(successes)} ✅ | **Failure:** {len(failures)} ❌",
+            f"**Total:** {len(results)} | **Success:** {len(successes)} ✅ | **Failure:** {len(failures)} ❌ | **Skipped:** {len(skips)} ⏭️",
             "",
         ]
 
@@ -953,12 +993,12 @@ class Git:
             md.append("## Successes ✅")
             for r in successes:
                 name = os.path.basename(r.metadata.workspace)
-                # Keep engineering tasks concise, allow data for maintenance/bumps
+
                 msg = r.data or "Success"
                 if action.lower() in ["installation", "build", "validation"]:
                     msg = "Success"
                 elif msg.count("\n") > 2:
-                    # If it's verbose but doesn't look like a version bump, hide it
+
                     if "new_version=" not in msg and "current_version=" not in msg:
                         msg = "Success"
 
@@ -978,6 +1018,21 @@ class Git:
                     md.append("**Output:**")
                     md.append(f"```text\n{r.data}\n```")
                 md.append("---")
+            md.append("")
+
+        if skips:
+            md.append("## Skipped ⏭️")
+            reasons = {}
+            for r in skips:
+                reason = r.data or "No reason provided"
+                if reason not in reasons:
+                    reasons[reason] = []
+                reasons[reason].append(os.path.basename(r.metadata.workspace))
+
+            for reason, projects in sorted(reasons.items()):
+                project_list = ", ".join(sorted(list(set(projects))))
+                md.append(f"- **{reason}**: {project_list}")
+            md.append("")
 
         return "\n".join(md)
 
@@ -1052,12 +1107,11 @@ class Git:
             if not os.path.exists(expanded_path):
                 os.makedirs(expanded_path, exist_ok=True)
 
-            # Determine project targets strictly from project_map
             targets = []
             if self.project_map:
                 for url, path in self.project_map.items():
                     targets.append((url, path))
-            elif projects:  # Explicit override
+            elif projects:
                 for url in projects:
                     name = url.split("/")[-1].replace(".git", "")
                     targets.append((url, os.path.join(expanded_path, name)))
@@ -1127,13 +1181,10 @@ class Git:
                 ),
             )
 
-        # Ensure the parent directory exists
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
 
         command = f"git clone {url} {target_path}"
-        result = self.git_action(
-            command, path=os.path.dirname(target_path)
-        )  # Execute in parent dir
+        result = self.git_action(command, path=os.path.dirname(target_path))
         logger.info(f"Cloning {url} to {target_path}: {result.status}")
         return result
 
@@ -1312,14 +1363,10 @@ class Git:
 
         result = self.git_action(command=full_command, path=target_path, env=env)
 
-        # Handle "safe" failures: no-commit-to-branch
         if result.status == "error" and result.error:
             msg = result.error.message.lower()
             if "don't commit to branch" in msg or "no-commit-to-branch" in msg:
-                # If there are NO other failures (Failed strings followed by something other than no-commit-to-branch)
-                # This is a bit tricky to parse perfectly, but we can check if it's the only 'Failed' hook.
-                # Most pre-commit outputs look like: 'hook-name..........Failed'
-                # Let's check for other 'Failed' lines.
+
                 other_failures = False
                 lines = (result.error.message + "\n" + result.data).splitlines()
                 for line in lines:
@@ -1445,7 +1492,6 @@ class Git:
         logger.info(f"Installing project at {target_path} with {command}")
         result = self.git_action(command=command, path=target_path)
 
-        # Cleanup
         for d in ["build", "dist"]:
             shutil.rmtree(os.path.join(target_path, d), ignore_errors=True)
         for egg_info in Path(target_path).glob("*.egg-info"):
@@ -2045,7 +2091,6 @@ class Git:
         exclude = exclude or []
         results = []
 
-        # Use project_map to find all actual project directories
         for url, path in self.project_map.items():
             name = url.split("/")[-1].replace(".git", "")
             if name in exclude:
@@ -2136,7 +2181,6 @@ class Git:
                 logger.error("No maintenance configuration found.")
                 return []
 
-        # 1. Pre-commit Phase
         if not skip_pre_commit:
             projects_to_check = None
             if config:
@@ -2156,7 +2200,6 @@ class Git:
             )
             all_results.extend(pc_results)
 
-        # 2. Phased Bumping & Updates
         def run_step_bump(project_name, phase_num):
             if start_phase <= phase_num:
                 project_dir = None
@@ -2175,15 +2218,18 @@ class Git:
                     allow_dirty=True,
                     path=str(project_dir),
                     dry_run=dry_run,
-                    verbose=dry_run,
+                    verbose=dry_run or not dry_run,
                 )
                 all_results.append(result)
 
                 if result.status == "success":
-                    if dry_run:
-                        match = re.search(r"new_version=(.*)", result.data)
-                        return match.group(1).strip() if match else "dry-run-success"
-                    return "success"
+
+                    match = re.search(r"new_version=(.*)", result.data)
+                    if match:
+                        return match.group(1).strip()
+
+                    match = re.search(r"current_version=(.*)", result.data)
+                    return match.group(1).strip() if match else "success"
                 return None
             return None
 
@@ -2266,7 +2312,6 @@ class Git:
                 ),
             )
 
-        # Try ripgrep first
         rg_cmd = ["rg", "--json", "-n", "--column"]
         if not case_sensitive:
             rg_cmd.append("-i")
@@ -2281,10 +2326,9 @@ class Git:
 
         try:
             result = subprocess.run(rg_cmd, capture_output=True, text=True)
-            # If rg is found but returns error code (e.g. no matches is usually 1, but internal error is >1)
-            # rg exit code 1 means no matches found, which is not an "error" for us.
+
             if result.returncode > 1:
-                # Check if it was because rg is not installed
+
                 pass
 
             return GitResult(
@@ -2300,7 +2344,7 @@ class Git:
                 ),
             )
         except FileNotFoundError:
-            # Fallback to grep
+
             logger.warning("ripgrep not found, falling back to grep")
             grep_cmd = ["grep", "-rnI"]
             if not case_sensitive:
@@ -2518,21 +2562,23 @@ class Git:
 
             self.config = WorkspaceConfig(**data)
 
-            # Resolve workspace root strictly relative to the YAML file
             yaml_config_path = self.config.path
+            is_default_yaml = yaml_path == DEFAULT_WORKSPACE_YML
+
             if os.path.isabs(yaml_config_path):
                 self.path = os.path.abspath(yaml_config_path)
+            elif is_default_yaml:
+
+                logger.info("Using packaged workspace.yml, preserving default path.")
             else:
                 self.path = os.path.abspath(os.path.join(yaml_dir, yaml_config_path))
 
             logger.info(f"Workspace root resolved to: {self.path}")
 
-            # Collect all URLs and paths recursively using the new model-driven approach
             self.project_map = self._parse_subdirectories(
                 self.config.subdirectories, self.path
             )
 
-            # Add top-level repositories
             for repo in self.config.repositories:
                 repo_name = repo.url.split("/")[-1].replace(".git", "")
                 self.project_map[repo.url] = os.path.join(self.path, repo_name)
@@ -2550,12 +2596,10 @@ class Git:
         for name, data in subdirs.items():
             new_path = os.path.join(current_path, name)
 
-            # Repositories in this subdirectory
             for repo in data.repositories:
                 repo_name = repo.url.split("/")[-1].replace(".git", "")
                 project_map[repo.url] = os.path.join(new_path, repo_name)
 
-            # Nested subdirectories
             if data.subdirectories:
                 project_map.update(
                     self._parse_subdirectories(data.subdirectories, new_path)
@@ -2585,7 +2629,7 @@ class Git:
                         files("repository_manager") / "workspace.yml"
                     ).read_text()
                 except Exception:
-                    # Fallback to a minimal template if package-data fails
+
                     template_content = "name: My Workspace\npath: .\ndescription: New workspace\nsubdirectories: {}\n"
             else:
                 template_content = "name: My Workspace\npath: .\ndescription: New workspace\nsubdirectories:\n  agents:\n    description: Agent repositories\n    repositories: []\n"
@@ -2658,22 +2702,18 @@ class Git:
             target_path = target_path or os.path.join(self.path, "AGENTS.md")
             target_path = os.path.abspath(os.path.expanduser(target_path))
 
-            # 1. Discover Agents and Metadata
             rows = []
             for url, project_path in self.get_project_map().items():
                 pkg_name = url.split("/")[-1].replace(".git", "")
                 pkg_name_underscore = pkg_name.replace("-", "_")
 
-                # Check if directory exists
                 if not os.path.exists(project_path):
                     rows.append(f"| `{pkg_name}` | (Not Cloned) |")
                     continue
 
-                # Discovery Logic for Agent Type
                 is_graph = False
                 is_agent = False
 
-                # Check for graph_config.py or agent_server.py in multi-level search paths
                 search_paths = [
                     Path(project_path),
                     Path(project_path) / pkg_name,
@@ -2690,7 +2730,6 @@ class Git:
                     ).exists():
                         is_agent = True
 
-                # Default to Library if no agent markers found
                 if not is_agent:
                     agent_type = "Library"
                 else:
@@ -2701,7 +2740,6 @@ class Git:
             rows.sort()
             catalog_table = "\n".join(rows)
 
-            # 2. Read Template
             template_content = ""
             try:
                 from importlib.resources import files
@@ -2712,7 +2750,6 @@ class Git:
             except Exception:
                 template_content = "# Agent Catalog\n\n| Agent Package | Type |\n|:--------------|:-----|\n<!-- AGENT_CATALOG_PLACEHOLDER -->\n"
 
-            # 3. Inject Catalog
             if "<!-- AGENT_CATALOG_PLACEHOLDER -->" in template_content:
                 final_content = template_content.replace(
                     "<!-- AGENT_CATALOG_PLACEHOLDER -->", catalog_table
@@ -2774,10 +2811,9 @@ class Git:
 
         paths = []
 
-        # 1. Universal Skills
         if get_universal_skills_path:
             try:
-                # Use importlib.resources to be robust
+
                 from importlib.resources import files
 
                 base = files("universal_skills") / "skills"
@@ -2787,7 +2823,7 @@ class Git:
                         paths.append(str(skill_path))
             except Exception as e:
                 logger.warning(f"Could not load universal skills via importlib: {e}")
-                # Fallback to scanning get_universal_skills_path()
+
                 all_universal = get_universal_skills_path()
                 paths.extend(
                     [
@@ -2797,7 +2833,6 @@ class Git:
                     ]
                 )
 
-        # 2. Skill Graphs
         if get_skill_graphs_path:
             try:
                 from importlib.resources import files
@@ -2809,7 +2844,7 @@ class Git:
                         paths.append(str(graph_path))
             except Exception as e:
                 logger.warning(f"Could not load skill graphs via importlib: {e}")
-                # Fallback
+
                 all_graphs = get_skill_graphs_path(default_enabled=True)
                 paths.extend(
                     [p for p in all_graphs if os.path.basename(p) in required_graphs]
@@ -2919,7 +2954,7 @@ class Git:
             )
 
 
-def repository_manager() -> None:
+def main() -> None:
     """
     Main entry point for the Repository Manager CLI.
     Supports workspace management, Git bulk operations, and maintenance.
@@ -2943,8 +2978,6 @@ Examples:
   """,
     )
 
-    # --- Argument Groups ---
-
     group_general = parser.add_argument_group("General Options")
     group_general.add_argument(
         "-v", "--version", action="version", version=f"%(prog)s {__version__}"
@@ -2955,6 +2988,13 @@ Examples:
         type=str,
         help="Path to workspace.yml file (Standard Source).",
         default=DEFAULT_WORKSPACE_YML,
+    )
+    group_general.add_argument(
+        "-w",
+        "--workspace",
+        type=str,
+        help="Path to the workspace root directory (default: ~/Workspace).",
+        default=DEFAULT_REPOSITORY_MANAGER_WORKSPACE,
     )
     group_general.add_argument(
         "-t",
@@ -2970,7 +3010,6 @@ Examples:
         help="Comma-separated list of repository names to filter operations.",
     )
 
-    # Workspace Management
     group_workspace = parser.add_argument_group("Workspace Management")
     group_workspace.add_argument(
         "--setup",
@@ -2996,7 +3035,6 @@ Examples:
         help="Save current in-memory config back to YAML (Updates).",
     )
 
-    # Bulk Git Operations
     group_git = parser.add_argument_group("Git Bulk Operations (Parallelized)")
     group_git.add_argument(
         "--clone",
@@ -3012,7 +3050,6 @@ Examples:
         help="Switch all repos to their default branch (via origin/HEAD).",
     )
 
-    # Maintenance & Quality
     group_maintenance = parser.add_argument_group("Maintenance Lifecycle")
     group_maintenance.add_argument(
         "--install",
@@ -3086,8 +3123,9 @@ Examples:
 
     args = parser.parse_args()
 
-    # --- Initialize Git object ---
     git = Git(
+        path=args.workspace,
+        threads=args.threads,
         report_path=args.report,
     )
     clone_flag = args.clone
@@ -3096,14 +3134,12 @@ Examples:
     if args.default_branch:
         git.set_to_default_branch = True
 
-    # 1. Setup Thread Count
     if args.threads:
         git.set_threads(threads=args.threads)
 
-    # 2. Load Project Data from YAML (Default Source)
     if args.file:
         if os.path.exists(args.file):
-            # Try loading as YAML
+
             if not git.load_projects_from_yaml(args.file):
                 logger.warning(f"Could not load {args.file} as a valid Workspace YAML.")
         else:
@@ -3111,11 +3147,9 @@ Examples:
             parser.print_help()
             sys.exit(2)
 
-    # 3. Load from default YAML if no file provided and project_map is empty
     if not git.project_map and os.path.exists(DEFAULT_WORKSPACE_YML):
         git.load_projects_from_yaml(DEFAULT_WORKSPACE_YML)
 
-    # 4. Handle Specific Repository Overrides
     if args.repositories:
         repositories = args.repositories.replace(" ", "").split(",")
         names_to_keep = set(repositories)
@@ -3127,17 +3161,16 @@ Examples:
                     filtered[url] = path
             git.project_map = filtered
         else:
-            # Fallback for manual URLs/Paths
+
             for r in repositories:
-                if "/" in r:  # URL
+                if "/" in r:
                     name = r.split("/")[-1].replace(".git", "")
                     git.project_map[r] = os.path.join(git.path, name)
-                else:  # Name
+                else:
                     git.project_map[os.path.join("https://github.com/", r)] = (
                         os.path.join(git.path, r)
                     )
 
-    # 5. Visualization Flags
     if args.file and os.path.exists(args.file):
         if args.tree:
             print(git.generate_workspace_tree(args.file))
@@ -3153,19 +3186,17 @@ Examples:
             logger.info(f"Setting up workspace from {args.file}...")
             git.load_projects_from_yaml(args.file)
 
-    # 6. Core Git Operations
     if clone_flag:
         git.clone_projects()
     if pull_flag:
         git.pull_projects()
 
-    # 7. Quality & Maintenance Operations
     if args.pre_commit:
         git.pre_commit_projects(run=True, autoupdate=True)
 
     if args.bump:
         logger.info(f"Bumping version ({args.bump}) for all projects projects...")
-        # Get directories from git.project_map to stay in sync with workspace
+
         project_dirs = list(git.project_map.values())
 
         results = []
@@ -3222,4 +3253,4 @@ if __name__ == "__main__":
     """
     Execute the main function when the script is run directly.
     """
-    repository_manager()
+    main()

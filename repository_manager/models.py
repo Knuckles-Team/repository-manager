@@ -1,5 +1,8 @@
+import os
+import datetime
+from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
 
 class GitError(BaseModel):
@@ -65,3 +68,15 @@ class WorkspaceConfig(BaseModel):
     repositories: List[RepositoryConfig] = Field(default_factory=list)
     subdirectories: Dict[str, SubdirectoryConfig] = Field(default_factory=dict)
     maintenance: Optional[MaintenanceConfig] = None
+
+
+                                                                             
+from agent_utilities.models import (
+    Task, 
+    TaskPhase, 
+    TaskList, 
+    TaskStatus, 
+    ProgressLog, 
+    ProgressEntry,
+    SprintContract
+)
