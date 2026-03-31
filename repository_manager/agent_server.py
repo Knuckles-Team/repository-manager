@@ -14,7 +14,7 @@ from agent_utilities import (
 )
 from repository_manager.graph_config import TAG_PROMPTS, TAG_ENV_VARS
 
-__version__ = "1.3.49"
+__version__ = "1.3.50"
 
 logging.basicConfig(
     level=logging.INFO,
