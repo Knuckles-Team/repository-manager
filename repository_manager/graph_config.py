@@ -4,9 +4,9 @@ This file enables graph mode for the repository-manager agent.
 Provides TAG_PROMPTS and TAG_ENV_VARS for create_graph_agent_server().
 """
 
-# ── Tag → System Prompt Mapping ──────────────────────────────────────
+                                                                       
 TAG_PROMPTS: dict[str, str] = {
-    # Core Repository Manager Nodes
+                                   
     "git_operations": (
         "You are a Git Operations specialist. Help users manage repositories, branches, "
         "commits, and other git-level tasks using the available tools."
@@ -22,17 +22,17 @@ TAG_PROMPTS: dict[str, str] = {
     "misc": (
         "You are a Miscellaneous Tools specialist. Handle various system and utility tasks as requested."
     ),
-    # Engineering Nodes (Integrated Skills)
+                                           
     "agent_package_builder": "You are an Agent Package Builder specialist. Help users scaffold and build new agent packages.",
     "mcp_builder": "You are an MCP Builder specialist. Help users create and refine MCP servers.",
     "agent_builder": "You are an Agent Builder specialist. Help users design and implement Pydantic AI agents.",
     "skill_builder": "You are a Skill Builder specialist. Help users create new universal skills.",
     "skill_graph_builder": "You are a Skill Graph Builder specialist. Help users transform documentation into skill graphs.",
     "api_wrapper_builder": "You are an API Wrapper Builder specialist. Help users build standardized API wrappers.",
-    # Research & Search Nodes
+                             
     "web_search": "You are a Web Research specialist. Help users find the latest technical information using web search.",
     "web_crawler": "You are a Web Crawling specialist. Help users extract and synthesize knowledge from online documentation.",
-    # Knowledge Nodes (Skill Graphs)
+                                    
     "docker_docs": "You are a Docker Documentation specialist. Provide expert guidance on Docker and containerization.",
     "fastapi_docs": "You are a FastAPI Documentation specialist. Provide expert guidance on building APIs with FastAPI.",
     "fastmcp_docs": "You are a FastMCP Documentation specialist. Provide expert guidance on the FastMCP framework.",
@@ -40,11 +40,24 @@ TAG_PROMPTS: dict[str, str] = {
     "vercel_docs": "You are a Vercel Documentation specialist. Provide expert guidance on Vercel deployment and serverless.",
     "python_docs": "You are a Python Documentation specialist. Provide expert guidance on Python language and libraries.",
     "pydantic_ai_docs": "You are a Pydantic AI Documentation specialist. Provide expert guidance on the Pydantic AI framework.",
+    
+                                                   
+    "project_planner": (
+        "You are an expert Software Architect and Project Planner. Your goal is to decompose "
+        "a high-level goal into a dependency-aware, phased TaskList. Each phase should be a "
+        "logical milestone. Tasks can often be done in parallel if they don't depend on each other. "
+        "Be specific about test criteria and expected results for each task."
+    ),
+    "project_validator": (
+        "You are an expert QA Engineer. Your goal is to validate the completion of the current "
+        "project phase. Check the task results against the Sprint Contract and run relevant "
+        "tests or repository tools to ensure high-quality standards are met."
+    ),
 }
 
 
-# ── Tag → Environment Variable Mapping ────────────────────────────────
-# These allow per-node configuration of the underlying sub-agents if needed.
+                                                                        
+                                                                            
 TAG_ENV_VARS: dict[str, str] = {
     "git_operations": "GIT_OPS_TOOL",
     "file_operations": "FILE_OPS_TOOL",

@@ -18,7 +18,7 @@ async def main():
             with open(mcp_config, "r") as f:
                 config_data = json.load(f)
 
-            # Create temp file as in agent code
+                                               
             import tempfile
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as temp_config:
                 json.dump(config_data, temp_config)
@@ -27,16 +27,15 @@ async def main():
             print(f"Temp config created at: {temp_config_path}")
 
             try:
-                # Load tools
-                # Note: load_mcp_servers is synchronous but might use asyncio internally?
-                # It returns a list of Tool objects.
-                # Actually, looking at pydantic_ai docs/code, load_mcp_servers returns a list of tools.
-                # But it might need an event loop running? It usually starts a client.
-                # Let's see if we need to run it in a context manager?
-                # The agent code calls `load_mcp_servers(temp_config_path)`.
+                            
+                                                                                         
+                                                    
+                                                                                      
+                                                                      
+                                                                            
 
-                # Check pydantic_ai version/implementation.
-                # Assuming it works as in agent code.
+                                                           
+                                                     
                 tools = load_mcp_servers(temp_config_path)
                 print(f"Loaded {len(tools)} tools:")
                 for tool in tools:

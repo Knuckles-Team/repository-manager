@@ -1,4 +1,4 @@
-from repository_manager.agent_server import agent_server
+from repository_manager.repository_manager import main
 
 if __name__ == "__main__":
-    agent_server()
+    main()

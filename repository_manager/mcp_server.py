@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# coding: utf-8
+
 from dotenv import load_dotenv, find_dotenv
 import os
 import sys
@@ -11,13 +11,18 @@ from fastmcp import FastMCP
 from fastmcp.utilities.logging import get_logger
 
 from repository_manager.repository_manager import Git
-from repository_manager.models import GitResult, WorkspaceConfig
+from repository_manager.models import (
+    GitResult,
+    WorkspaceConfig,
+    TaskList,
+    TaskStatus,
+)
 from agent_utilities.base_utilities import to_boolean, to_integer
 from agent_utilities.mcp_utilities import create_mcp_server
 
-__version__ = "1.3.47"
+__version__ = "1.3.48"
 
-# Configuration
+
 DEFAULT_WORKSPACE = os.environ.get("REPOSITORY_MANAGER_WORKSPACE", "/workspace")
 DEFAULT_THREADS = to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "12"))
 DEFAULT_WORKSPACE_YML = os.environ.get("WORKSPACE_YML", "workspace.yml")
@@ -30,7 +35,6 @@ def get_git_instance(path: Optional[str] = None, threads: Optional[int] = None) 
     workspace_path = path or DEFAULT_WORKSPACE
     git = Git(path=workspace_path, threads=threads or DEFAULT_THREADS)
 
-    # Auto-load workspace.yml if it exists
     yml_path = os.path.join(workspace_path, DEFAULT_WORKSPACE_YML)
     if os.path.exists(yml_path):
         git.load_projects_from_yaml(yml_path)
@@ -83,6 +87,88 @@ def register_git_operations_tools(mcp: FastMCP):
         git = get_git_instance(threads=threads)
         results = git.pull_projects()
         return git.generate_markdown_summary("Pull", results)
+
+
+def register_workspace_management_tools(mcp: FastMCP):
+    @mcp.tool(tags={"workspace_management"})
+    async def setup_workspace(
+        yml_path: str = Field(description="Path to the workspace.yml file."),
+    ) -> GitResult:
+        """Sets up the entire workspace, clones repos, and organizes subdirectories."""
+        git = get_git_instance()
+        return git.setup_from_yaml(yml_path)
+
+    @mcp.tool(tags={"workspace_management"})
+    async def install_projects(
+        threads: Optional[int] = Field(description="Parallel workers.", default=None),
+        extra: str = Field(description="Install group (e.g. 'all').", default="all"),
+    ) -> List[GitResult]:
+        """Runs install scripts for all cloned repositories."""
+        git = get_git_instance(threads=threads)
+        results = git.install_projects(extra=extra)
+        return git.generate_markdown_summary("Install", results)
+
+
+def register_project_management_tools(mcp: FastMCP):
+    """Register tools for the autonomous project harness."""
+
+    @mcp.tool(tags={"project_management"})
+    async def get_project_status(
+        path: Optional[str] = Field(description="Project root path.", default=None)
+    ) -> Dict[str, Any]:
+        """Reads the current project state from tasks.json and progress.json."""
+        root = path or DEFAULT_WORKSPACE
+        status = {}
+
+        for filename, key in [("tasks.json", "tasks"), ("progress.json", "progress")]:
+            fpath = os.path.join(root, filename)
+            if os.path.exists(fpath):
+                try:
+                    with open(fpath, "r") as f:
+                        status[key] = json.load(f)
+                except Exception as e:
+                    status[key] = f"Error reading {filename}: {e}"
+            else:
+                status[key] = "Not found"
+        return status
+
+    @mcp.tool(tags={"project_management"})
+    async def update_task_status(
+        task_id: str,
+        status: str,
+        result: Optional[str] = None,
+        path: Optional[str] = Field(description="Project root path.", default=None),
+    ) -> str:
+        """Updates the status and result of a specific task in tasks.json."""
+        root = path or DEFAULT_WORKSPACE
+        fpath = os.path.join(root, "tasks.json")
+        if not os.path.exists(fpath):
+            return "Error: tasks.json not found."
+
+        try:
+            with open(fpath, "r") as f:
+                task_list = TaskList.model_validate_json(f.read())
+
+            found = False
+            for phase in task_list.phases:
+                for task in phase.tasks:
+                    if task.id == task_id:
+                        task.status = TaskStatus(status)
+                        if result:
+                            task.result = result
+                        found = True
+                        break
+                if found:
+                    break
+
+            if not found:
+                return f"Error: Task {task_id} not found."
+
+            with open(fpath, "w") as f:
+                f.write(task_list.model_dump_json(indent=2))
+            return f"Task {task_id} updated to {status}."
+        except Exception as e:
+            return f"Error updating task: {e}"
 
 
 def register_workspace_management_tools(mcp: FastMCP):
@@ -204,9 +290,17 @@ def register_visualization_tools(mcp: FastMCP):
 
 
 def register_prompts(mcp: FastMCP):
-    """Register workspace management prompts."""
-    # Placeholder for future prompts
-    pass
+    @mcp.prompt
+    def validate_repositories() -> str:
+        """
+        Generates a prompt for validating projects and fixing errors
+        """
+        return (
+            "I have several agents I have built in my agent-packages. "
+            "Please validate and generate a report under Workspace/validation_report.md. "
+            "Can we create a plan to resolve all those errors found for all projects? "
+            "Once we resolve all errors, let's re-run and validate all issues were resolved"
+        )
 
 
 def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
@@ -230,6 +324,8 @@ def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
 
     if to_boolean(os.getenv("WORKSPACE_MANAGEMENTTOOL", "True")):
         register_workspace_management_tools(mcp)
+        register_project_management_tools(mcp)
+        register_misc_tools(mcp)
         registered_tags.append("workspace_management")
 
     if to_boolean(os.getenv("VISUALIZATIONTOOL", "True")):

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "repository": {
+      "command": "repository-mcp",
+      "args": ["--transport", "stdio"],
+      "env": {
+        "REPOSITORY_URL": "${REPOSITORY_URL:-http://localhost:8080}",
+        "REPOSITORY_TOKEN": "${REPOSITORY_TOKEN}"
+      }
+    }
+  }
+}

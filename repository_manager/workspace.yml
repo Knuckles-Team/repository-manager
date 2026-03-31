@@ -54,6 +54,13 @@ subdirectories:
           - url: "https://github.com/Knuckles-Team/leanix-agent.git"
           - url: "https://github.com/Knuckles-Team/portainer-agent.git"
           - url: "https://github.com/Knuckles-Team/stirlingpdf-agent.git"
+          - url: "https://github.com/Knuckles-Team/home-assistant-agent.git"
+          - url: "https://github.com/Knuckles-Team/postiz-agent.git"
+          - url: "https://github.com/Knuckles-Team/uptime-kuma-agent.git"
+          - url: "https://github.com/Knuckles-Team/owncast-agent.git"
+          - url: "https://github.com/Knuckles-Team/qbittorrent-agent.git"
+          - url: "https://github.com/Knuckles-Team/atlassian-agent.git"
+          - url: "https://github.com/Knuckles-Team/langfuse-agent.git"
 
 maintenance:
   description: "Phased update sequence for the agent ecosystem."
