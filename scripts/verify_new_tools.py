@@ -4,7 +4,7 @@ import sys
 import logging
 from repository_manager.repository_manager import Git
 
-               
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Verification")
 
@@ -16,7 +16,7 @@ def verify_tools():
 
     print(f"Workspace: {workspace}")
 
-                                        
+
     test_file = "test_verification.txt"
     test_path = os.path.join(workspace, test_file)
     with open(test_path, "w") as f:
@@ -24,7 +24,7 @@ def verify_tools():
     print(f"Created test file: {test_path}")
 
     try:
-                                                    
+
         print("\n--- Testing search_codebase (absolute path) ---")
         search_result = git.search_codebase(query="Search me", path=workspace)
         if search_result.status == "success" and "Search me" in search_result.data:
@@ -32,8 +32,8 @@ def verify_tools():
         else:
             print(f"FAIL: search_codebase (absolute) failed. Result: {search_result}")
 
-                                                               
-                                                                                                  
+
+
         cwd_original = os.getcwd()
         os.chdir(workspace)
         print("\n--- Testing search_codebase (CWD default) ---")
@@ -46,7 +46,7 @@ def verify_tools():
         finally:
             os.chdir(cwd_original)
 
-                            
+
         print("\n--- Testing find_files ---")
         find_result = git.find_files(name_pattern="test_verification.txt", path=workspace)
         if find_result.status == "success" and "test_verification.txt" in find_result.data:
@@ -54,23 +54,23 @@ def verify_tools():
         else:
             print(f"FAIL: find_files failed. Result: {find_result}")
 
-                                              
+
         print("\n--- Testing read_file (relative) ---")
-                                                                       
-                                                                                
-                                                                                            
+
+
+
         read_result = git.read_file(path=test_path, start_line=1, end_line=2)
         if read_result.status == "success" and "Hello World" in read_result.data:
             print("PASS: read_file read correctly.")
         else:
             print(f"FAIL: read_file failed. Result: {read_result}")
 
-                                 
+
         print("\n--- Testing replace_in_file ---")
         replace_result = git.replace_in_file(path=test_path, target_content="Line 4: Replace me.", replacement_content="Line 4: Replaced successfully.")
         if replace_result.status == "success":
             print("PASS: replace_in_file reported success.")
-                            
+
             with open(test_path, "r") as f:
                 content = f.read()
             if "Line 4: Replaced successfully." in content:
@@ -81,7 +81,7 @@ def verify_tools():
             print(f"FAIL: replace_in_file failed. Result: {replace_result}")
 
     finally:
-                 
+
         if os.path.exists(test_path):
             os.remove(test_path)
             print(f"\nCleaned up test file: {test_path}")

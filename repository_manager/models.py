@@ -1,8 +1,5 @@
-import os
-import datetime
-from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 
 
 class GitError(BaseModel):
@@ -70,13 +67,3 @@ class WorkspaceConfig(BaseModel):
     maintenance: Optional[MaintenanceConfig] = None
 
 
-                                                                             
-from agent_utilities.models import (
-    Task, 
-    TaskPhase, 
-    TaskList, 
-    TaskStatus, 
-    ProgressLog, 
-    ProgressEntry,
-    SprintContract
-)

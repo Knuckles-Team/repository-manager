@@ -1,19 +1,4 @@
-import os
 from repository_manager.repository_manager import Git
-
-                                         
-                                                                                         
-                                 
-                                                                                                          
-                                                            
-
-                          
-       
-                   
-             
-                    
-
-                                              
 
 workspace_yml = "/home/genius/Workspace/agent-packages/agents/repository-manager/repository_manager/workspace.yml"
 git = Git(path="/home/genius/Workspace")
@@ -26,5 +11,5 @@ summary = git.generate_markdown_summary("Validation", results)
 with open("report_final.md", "w") as f:
     f.write(summary)
 
-                           
+
 print(summary)

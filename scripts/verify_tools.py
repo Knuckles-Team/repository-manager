@@ -18,7 +18,7 @@ async def main():
             with open(mcp_config, "r") as f:
                 config_data = json.load(f)
 
-                                               
+
             import tempfile
             with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as temp_config:
                 json.dump(config_data, temp_config)
@@ -27,15 +27,15 @@ async def main():
             print(f"Temp config created at: {temp_config_path}")
 
             try:
-                            
-                                                                                         
-                                                    
-                                                                                      
-                                                                      
-                                                                            
 
-                                                           
-                                                     
+
+
+
+
+
+
+
+
                 tools = load_mcp_servers(temp_config_path)
                 print(f"Loaded {len(tools)} tools:")
                 for tool in tools:
