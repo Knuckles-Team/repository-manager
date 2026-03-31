@@ -20,7 +20,7 @@ from repository_manager.models import (
 from agent_utilities.base_utilities import to_boolean, to_integer
 from agent_utilities.mcp_utilities import create_mcp_server
 
-__version__ = "1.3.51"
+__version__ = "1.3.52"
 
 
 DEFAULT_WORKSPACE = os.environ.get("REPOSITORY_MANAGER_WORKSPACE", "/workspace")
