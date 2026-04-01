@@ -65,5 +65,3 @@ class WorkspaceConfig(BaseModel):
     repositories: List[RepositoryConfig] = Field(default_factory=list)
     subdirectories: Dict[str, SubdirectoryConfig] = Field(default_factory=dict)
     maintenance: Optional[MaintenanceConfig] = None
-
-

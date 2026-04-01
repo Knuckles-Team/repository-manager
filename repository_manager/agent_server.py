@@ -1,6 +1,7 @@
 #!/usr/bin/python
 
 import os
+from pathlib import Path
 import logging
 
 import sys
@@ -11,6 +12,7 @@ from agent_utilities import (
     create_graph_agent_server,
     initialize_workspace,
     load_identity,
+    get_workspace_path,
 )
 from repository_manager.graph_config import TAG_PROMPTS, TAG_ENV_VARS
 
@@ -42,7 +44,6 @@ DEFAULT_AGENT_SYSTEM_PROMPT = os.getenv(
 def agent_template(mcp_url: str = None, mcp_config: str = None, **kwargs):
 
     effective_mcp_config = mcp_config or os.getenv("MCP_CONFIG") or "mcp_config.json"
-    effective_mcp_url = mcp_url or os.getenv("MCP_URL")
 
     mcp_toolsets = []
     if effective_mcp_config:
@@ -52,20 +53,12 @@ def agent_template(mcp_url: str = None, mcp_config: str = None, **kwargs):
 
             config_path = effective_mcp_config
             if not os.path.isabs(config_path) and "/" not in config_path:
-                from importlib.resources import files, as_file
-
-                try:
-
-                    pkg_res = files("repository_manager") / config_path
-                    if pkg_res.is_file():
-                        with as_file(pkg_res) as path:
-                            config_path = str(path)
-                except Exception:
-                    pass
-
-                if not os.path.isabs(config_path):
-                    from agent_utilities import get_workspace_path
-
+                # Check package-relative path first (for robust orchestration)
+                pkg_config = Path(__file__).parent / config_path
+                if pkg_config.exists():
+                    config_path = str(pkg_config)
+                else:
+                    # Fallback to workspace
                     ws_config = get_workspace_path(config_path)
                     if ws_config.exists():
                         config_path = str(ws_config)
@@ -80,7 +73,7 @@ def agent_template(mcp_url: str = None, mcp_config: str = None, **kwargs):
                 f"repository-manager: Failed to load MCP config {effective_mcp_config}: {e}"
             )
 
-    return graph
+    return None
 
 
 def agent_server():
