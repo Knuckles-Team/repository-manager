@@ -18,7 +18,7 @@ from agent_utilities.graph_orchestration import (
     ProjectDeps,
     BaseProjectInitializerNode,
 )
-from repository_manager.models import (
+from agent_utilities.models import (
     TaskList,
     Task,
     TaskStatus,

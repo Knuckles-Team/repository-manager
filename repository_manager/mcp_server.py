@@ -2,6 +2,7 @@
 
 from dotenv import load_dotenv, find_dotenv
 import os
+import json
 import sys
 from typing import Any, Optional, List, Dict
 from pydantic import Field
@@ -14,6 +15,8 @@ from repository_manager.repository_manager import Git
 from repository_manager.models import (
     GitResult,
     WorkspaceConfig,
+)
+from agent_utilities.models import (
     TaskList,
     TaskStatus,
 )
@@ -87,26 +90,6 @@ def register_git_operations_tools(mcp: FastMCP):
         git = get_git_instance(threads=threads)
         results = git.pull_projects()
         return git.generate_markdown_summary("Pull", results)
-
-
-def register_workspace_management_tools(mcp: FastMCP):
-    @mcp.tool(tags={"workspace_management"})
-    async def setup_workspace(
-        yml_path: str = Field(description="Path to the workspace.yml file."),
-    ) -> GitResult:
-        """Sets up the entire workspace, clones repos, and organizes subdirectories."""
-        git = get_git_instance()
-        return git.setup_from_yaml(yml_path)
-
-    @mcp.tool(tags={"workspace_management"})
-    async def install_projects(
-        threads: Optional[int] = Field(description="Parallel workers.", default=None),
-        extra: str = Field(description="Install group (e.g. 'all').", default="all"),
-    ) -> List[GitResult]:
-        """Runs install scripts for all cloned repositories."""
-        git = get_git_instance(threads=threads)
-        results = git.install_projects(extra=extra)
-        return git.generate_markdown_summary("Install", results)
 
 
 def register_project_management_tools(mcp: FastMCP):

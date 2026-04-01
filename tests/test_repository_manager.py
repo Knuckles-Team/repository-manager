@@ -10,7 +10,7 @@ from repository_manager.models import (
     RepositoryConfig,
     SubdirectoryConfig,
 )
-from repository_manager.repository_manager import WorkspaceManager, Git
+from repository_manager.repository_manager import Git
 
 def get_mock_metadata(command="test"):
     return GitMetadata(
@@ -87,7 +87,7 @@ def test_setup_from_yaml(mock_pull, mock_git, sample_workspace_yml):
         metadata=get_mock_metadata("pull")
     )
 
-    wm = WorkspaceManager(git_instance=Git(path=str(workspace_dir)))
+    wm = Git(path=str(workspace_dir))
     result = wm.setup_from_yaml(str(yml_path))
 
     assert result.status == "success"

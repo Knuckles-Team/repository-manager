@@ -128,8 +128,13 @@ class Git:
         for _, project_path in self.project_map.items():
             os.makedirs(os.path.dirname(project_path), exist_ok=True)
 
-        logger.info("Performing initial clone of all repositories...")
-        self.clone_projects()
+        logger.info("Syncing repositories (Clone/Pull)...")
+        results = []
+        for url, project_path in self.project_map.items():
+            if os.path.exists(project_path):
+                results.append(self.pull_project(project_path))
+            else:
+                results.append(self.clone_repository(url, project_path))
 
         return GitResult(
             status="success",
@@ -230,13 +235,57 @@ class Git:
             logger.warning("No projects to install.")
             return []
 
+        CORE_PROJECTS = [
+            "universal-skills",
+            "skill-graphs",
+            "agent-webui",
+            "agent-utilities",
+        ]
+
         logger.info(
             f"Installing {len(self.project_map)} projects in parallel ({threads} threads)..."
         )
+        results = []
+        futures = []
+
+        # 1. Sequential Install for Core Projects (to avoid versioning race conditions)
+        core_paths = []
+        other_paths = []
+
+        for url, path in self.project_map.items():
+            pkg_name = path.split("/")[-1]
+            if pkg_name in CORE_PROJECTS:
+                core_paths.append(path)
+            else:
+                other_paths.append(path)
+
+        # Sort core_paths based on CORE_PROJECTS order
+        core_paths.sort(
+            key=lambda p: (
+                CORE_PROJECTS.index(p.split("/")[-1])
+                if p.split("/")[-1] in CORE_PROJECTS
+                else 999
+            )
+        )
+
+        logger.info(f"Installing {len(core_paths)} core projects sequentially...")
+        for path in core_paths:
+            is_python = os.path.exists(
+                os.path.join(path, "pyproject.toml")
+            ) or os.path.exists(os.path.join(path, "setup.py"))
+            is_node = os.path.exists(os.path.join(path, "package.json"))
+
+            if is_node:
+                results.append(self.git_action("npm install", path=path))
+            if is_python:
+                results.append(
+                    self.git_action(f"pip install -e '.[{extra}]'", path=path)
+                )
+
+        # 2. Parallel Install for the rest
+        logger.info(f"Installing {len(other_paths)} remaining projects in parallel...")
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = []
-            results = []
-            for url, path in self.project_map.items():
+            for path in other_paths:
                 is_python = os.path.exists(
                     os.path.join(path, "pyproject.toml")
                 ) or os.path.exists(os.path.join(path, "setup.py"))
@@ -261,13 +310,15 @@ class Git:
                     continue
 
                 if is_node:
-
-                    cmd = "npm install"
-                    futures.append(executor.submit(self.git_action, cmd, path=path))
-
+                    futures.append(
+                        executor.submit(self.git_action, "npm install", path=path)
+                    )
                 if is_python:
-                    cmd = f"pip install -e '.[{extra}]'"
-                    futures.append(executor.submit(self.git_action, cmd, path=path))
+                    futures.append(
+                        executor.submit(
+                            self.git_action, f"pip install -e '.[{extra}]'", path=path
+                        )
+                    )
 
             results.extend(
                 [f.result() for f in concurrent.futures.as_completed(futures)]
@@ -348,7 +399,6 @@ class Git:
         run_all = type in ["all", "flat", "graph"]
         results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = []
 
             agent_targets = []
             for url, path in self.project_map.items():
@@ -622,6 +672,15 @@ class Git:
                         ]
                     )
 
+            # 7. Pre-commit Standard Compliance (Dry Run)
+            if run_all or type == "all" or type == "pre-commit":
+                logger.info(
+                    f"Checking pre-commit compliance for {len(self.project_map)} projects..."
+                )
+                pc_results = self.pre_commit_projects(run=True, autoupdate=False)
+                # Filter to only include pre-commit results in this category
+                results.extend(pc_results)
+
             successes = [r for r in results if r.status == "success"]
             failures = [r for r in results if r.status == "error"]
             skipped = [r for r in results if r.status == "skipped"]
@@ -680,6 +739,11 @@ class Git:
                         "runtime_check" in r.metadata.command
                         or "--web" in r.metadata.command
                     )
+                ],
+                "Pre-commit Standard Compliance": [
+                    r
+                    for r in results
+                    if r.metadata.command and "pre-commit run" in r.metadata.command
                 ],
             }
 
@@ -741,8 +805,6 @@ class Git:
                 self._export_report(report_md, "validation_report.md")
 
             return results
-
-        return result
 
     def _export_report(self, markdown_content: str, default_name: str) -> None:
         """Exports markdown content to a file if reporting is enabled."""
@@ -936,7 +998,7 @@ class Git:
                 else:
                     proc.terminate()
                 proc.wait(timeout=3)
-            except:
+            except Exception:
                 pass
 
             metadata = GitMetadata(
@@ -1095,7 +1157,7 @@ class Git:
 
         return result
 
-    def clone_projects(self) -> List[GitResult]:
+    def clone_projects(self, projects: List[str] = None) -> List[GitResult]:
         """
         Clone all specified Git projects in parallel using multiple threads.
 
@@ -2273,6 +2335,8 @@ class Git:
 
         return all_results
 
+    maintain_projects = phased_bumpversion
+
     def search_codebase(
         self,
         query: str,
@@ -2562,14 +2626,19 @@ class Git:
 
             self.config = WorkspaceConfig(**data)
 
-            yaml_config_path = self.config.path
+            yaml_config_path = os.path.expanduser(self.config.path)
             is_default_yaml = yaml_path == DEFAULT_WORKSPACE_YML
 
             if os.path.isabs(yaml_config_path):
                 self.path = os.path.abspath(yaml_config_path)
             elif is_default_yaml:
 
-                logger.info("Using packaged workspace.yml, preserving default path.")
+                self.path = os.path.abspath(
+                    os.path.expanduser(DEFAULT_REPOSITORY_MANAGER_WORKSPACE)
+                )
+                logger.info(
+                    f"Using packaged workspace.yml, preserving default path: {self.path}"
+                )
             else:
                 self.path = os.path.abspath(os.path.join(yaml_dir, yaml_config_path))
 
@@ -3118,7 +3187,7 @@ Examples:
     group_maintenance.add_argument(
         "--config",
         type=str,
-        help="Path to an overriden maintenance JSON/YAML configuration. Use with --maintain.",
+        help="Path to an overridden maintenance JSON/YAML configuration. Use with --maintain.",
     )
 
     args = parser.parse_args()
