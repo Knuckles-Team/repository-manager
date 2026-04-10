@@ -32,7 +32,7 @@ all = [
     "repository-manager[agent]>=1.3.14"]
 
 [project.scripts]
-repository-mcp = "repository_manager.mcp_server:mcp_server"
+repository-manager-mcp = "repository_manager.mcp_server:mcp_server"
 
 [tool.setuptools.package-data]
 repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "agent_data/*", "agent_data/**/*"]

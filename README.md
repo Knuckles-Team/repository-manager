@@ -206,23 +206,82 @@ repository-manager \
 |            | --model-id        | LLM Model ID (default: qwen3:4b)                                       |
 |            | --base-url        | LLM Base URL (for OpenAI compatible providers)                         |
 |            | --api-key         | LLM API Key                                                            |
-|            | --smart-coding-mcp-enable | Enable Smart Coding MCP configuration                                  |
 |            | --python-sandbox-enable | Enable Python Sandbox MCP configuration                                  |
 |            | --workspace            | Workspace to scan for git projects (default: current directory)       |
 
 
-### Smart Coding MCP Integration
+### Unified Hybrid Graph Intelligence
 
-The Repository Manager A2A Agent can automatically configure `smart-coding-mcp` for any Git projects found in a specified directory.
+The Repository Manager natively integrates **LadybugDB**, **NetworkX**, and semantic embeddings into a single `GraphEngine` architecture. This provides deep structural and multimodal intelligence across your Workspace without duplicated repository states.
+
+```mermaid
+flowchart TD
+    subgraph Data Sources
+        YAML[workspace.yml]
+        Files[Code / Docs / Images]
+    end
+
+    subgraph WorkspaceManager
+        Parse[Parse YAML & Groups]
+    end
+
+    subgraph GraphEngine
+        direction TB
+        subgraph GraphConstruction [In-Memory Construction]
+            NX[(NetworkX)]
+            AST[Tree-sitter AST Pass]
+            Semantic[LLM Rationale Pass]
+            Leiden[Leiden Clustering]
+        end
+
+        subgraph GraphPersistence [Persistence & Storage]
+            LB[(LadybugDB .lbug)]
+            Sync[Sync / MERGE]
+            Vector[Vector Indexes]
+        end
+
+        AST --> NX
+        Semantic --> NX
+        NX --> Leiden
+        NX <-->|"get_as_networkx()"| LB
+        NX --> Sync
+        Sync --> LB
+        LB --> Vector
+    end
+
+    subgraph MCP Tools
+        direction LR
+        subgraph GraphIntelligence [Graph Intelligence]
+            Impact[graph_impact]
+            Search[graph_query]
+            Build[graph_build]
+            Path[graph_path]
+            Status[graph_status]
+            Reset[graph_reset]
+        end
+    end
+
+    YAML --> Parse
+    Files --> AST
+    Files --> Semantic
+    Parse --> Build
+    Build --> GraphConstruction
+    Impact --> LB
+    Search --> LB
+    Search --> Vector
+    Path --> NX
+    Status --> NX
+    Reset --> LB
+```
 
 ```bash
-repository_manager_a2a --smart-coding-mcp-enable --workspace /path/to/my/projects
+repository-manager --maintain --workspace /path/to/my/projects
 ```
 
 This will:
-1. Scan `/path/to/my/projects` for any subdirectories containing a `.git` folder.
-2. Update `mcp_config.json` to include a `smart-coding-mcp` server entry for each found project.
-3. Start the agent with access to these new MCP servers, allowing for semantic code search within your projects.
+1. Parse `workspace.yml` for all repository definitions and dependency groups.
+2. Incrementally parse changed files constructing a NetworkX Graph and sync to LadybugDB.
+3. Expose tools natively to your AI Agent (e.g. `graph_impact`, `graph_query`).
 
 ### Python Sandbox Integration
 

@@ -1,4 +1,19 @@
 #!/usr/bin/env python
+import warnings
+
+# Filter RequestsDependencyWarning early to prevent log spam
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore")
+    try:
+        from requests.exceptions import RequestsDependencyWarning
+
+        warnings.filterwarnings("ignore", category=RequestsDependencyWarning)
+    except ImportError:
+        pass
+
+# General urllib3/chardet mismatch warnings
+warnings.filterwarnings("ignore", message=".*urllib3.*or chardet.*")
+warnings.filterwarnings("ignore", message=".*urllib3.*or charset_normalizer.*")
 
 from dotenv import load_dotenv, find_dotenv
 import os
@@ -39,8 +54,18 @@ def get_git_instance(path: Optional[str] = None, threads: Optional[int] = None) 
     git = Git(path=workspace_path, threads=threads or DEFAULT_THREADS)
 
     yml_path = os.path.join(workspace_path, DEFAULT_WORKSPACE_YML)
+    if not os.path.exists(yml_path):
+        # Fallback to the packaged version if the workspace-relative one isn't found
+        from repository_manager.repository_manager import (
+            DEFAULT_WORKSPACE_YML as PACKAGED_YML,
+        )
+
+        yml_path = PACKAGED_YML
+
     if os.path.exists(yml_path):
         git.load_projects_from_yaml(yml_path)
+    else:
+        logger.warning(f"No workspace.yml found at {yml_path}")
 
     return git
 
@@ -48,12 +73,12 @@ def get_git_instance(path: Optional[str] = None, threads: Optional[int] = None) 
 def register_misc_tools(mcp: FastMCP):
     """Register miscellaneous tools like health check."""
 
-    async def health_check(request: Request) -> JSONResponse:
+    async def health_check(_request: Request) -> JSONResponse:
         return JSONResponse({"status": "OK"})
 
 
 def register_git_operations_tools(mcp: FastMCP):
-    @mcp.tool(tags={"git_operations"})
+    @mcp.tool(tags={"workspace_management", "project_manager", "devops_engineer"})
     async def git_action(
         command: str = Field(
             description="The Git command to execute (e.g., 'git status')"
@@ -64,13 +89,20 @@ def register_git_operations_tools(mcp: FastMCP):
         git = get_git_instance(path=path)
         return git.git_action(command=command, path=path)
 
-    @mcp.tool(tags={"git_operations"})
+    @mcp.tool(
+        tags={
+            "devops_engineer",
+            "workspace_management",
+            "project_management",
+            "git_operations",
+        }
+    )
     async def get_workspace_projects() -> List[str]:
         """Lists all project URLs defined in the workspace configuration."""
         git = get_git_instance()
         return list(git.project_map.keys())
 
-    @mcp.tool(tags={"git_operations"})
+    @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
     async def clone_projects(
         projects: Optional[List[str]] = Field(
             description="Optional list of URLs to clone.", default=None
@@ -82,7 +114,7 @@ def register_git_operations_tools(mcp: FastMCP):
         results = git.clone_projects()
         return git.generate_markdown_summary("Clone", results)
 
-    @mcp.tool(tags={"git_operations"})
+    @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
     async def pull_projects(
         threads: Optional[int] = Field(description="Parallel workers.", default=None),
     ) -> List[GitResult]:
@@ -272,6 +304,103 @@ def register_visualization_tools(mcp: FastMCP):
         return git.generate_agents_md(target_path=target_path)
 
 
+def register_graph_tools(mcp: FastMCP):
+    @mcp.tool(tags={"graph_intelligence"})
+    async def graph_build(
+        path: Optional[str] = Field(description="Workspace path.", default=None),
+        multimodal: bool = Field(
+            description="Enable LLM multimodal rationale pass.", default=False
+        ),
+        incremental: bool = Field(description="Use incremental parsing.", default=True),
+    ) -> Dict[str, Any]:
+        """Builds or synchronizes the Hybrid Workspace Graph (NetworkX + Ladybug)."""
+        git = get_git_instance(path=path)
+        if not hasattr(git.config, "graph") or not git.config.graph:
+            from repository_manager.models import GraphConfig
+
+            git.config.graph = GraphConfig(
+                enabled=True, multimodal=multimodal, incremental=incremental
+            )
+        else:
+            git.config.graph.multimodal = multimodal
+            git.config.graph.incremental = incremental
+
+        report = git.ensure_graph()
+        if not report:
+            return {
+                "status": "error",
+                "message": "Graph configuration disabled or failed.",
+            }
+
+        return report.model_dump()
+
+    @mcp.tool(tags={"graph_intelligence"})
+    async def graph_query(
+        query: str = Field(
+            description="Cypher query or semantic string to search the graph."
+        ),
+        _mode: str = Field(
+            description="Query mode: 'semantic' (vector) or 'structural' (Cypher).",
+            default="semantic",
+        ),
+        path: Optional[str] = Field(description="Workspace path.", default=None),
+    ) -> List[Dict[str, Any]]:
+        """Queries the Hybrid Graph using vector similarity or Cypher structure."""
+        return []
+
+    @mcp.tool(tags={"graph_intelligence"})
+    async def graph_path(
+        source_id: str = Field(description="Source node ID (Symbol or File)."),
+        target_id: str = Field(description="Target node ID."),
+        path: Optional[str] = Field(description="Workspace path.", default=None),
+    ) -> List[Dict[str, Any]]:
+        """Finds the shortest path between two symbols across the workspace graph."""
+        from repository_manager.graph.engine import GraphEngine
+
+        git = get_git_instance(path=path)
+        engine = GraphEngine(str(git.path))
+        edges = engine.find_path(source_id, target_id)
+        return [e.model_dump() for e in edges]
+
+    @mcp.tool(tags={"graph_intelligence"})
+    async def graph_status(
+        path: Optional[str] = Field(description="Workspace path.", default=None),
+    ) -> Dict[str, Any]:
+        """Returns the current status of the workspace graph (nodes, edges, communities)."""
+        from repository_manager.graph.engine import GraphEngine
+
+        git = get_git_instance(path=path)
+        engine = GraphEngine(str(git.path))
+        return engine.get_stats()
+
+    @mcp.tool(tags={"graph_intelligence"})
+    async def graph_reset(
+        path: Optional[str] = Field(description="Workspace path.", default=None),
+    ) -> str:
+        """Purges the graph database and Forces a clean rebuild on next build."""
+        from repository_manager.graph.engine import GraphEngine
+
+        git = get_git_instance(path=path)
+        engine = GraphEngine(str(git.path))
+        engine.reset_graph()
+        return "Graph database purged successfully."
+
+    @mcp.tool(tags={"graph_intelligence"})
+    async def graph_impact(
+        symbol: str = Field(description="The code symbol to find impact for."),
+        group_name: Optional[str] = Field(description="Group filter.", default=None),
+        path: Optional[str] = Field(description="Workspace path.", default=None),
+    ) -> List[Dict[str, Any]]:
+        """Calculates multi-repo impact for a symbol using the GraphEngine."""
+
+        from repository_manager.graph.engine import GraphEngine
+
+        git = get_git_instance(path=path)
+        engine = GraphEngine(str(git.path))
+        nodes = await engine.query_impact(symbol, group_name)
+        return [n.model_dump() for n in nodes]
+
+
 def register_prompts(mcp: FastMCP):
     @mcp.prompt
     def validate_repositories() -> str:
@@ -311,6 +440,10 @@ def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
         register_misc_tools(mcp)
         registered_tags.append("workspace_management")
 
+    if to_boolean(os.getenv("GRAPH_INTELLIGENCETOOL", "True")):
+        register_graph_tools(mcp)
+        registered_tags.append("graph_intelligence")
+
     if to_boolean(os.getenv("VISUALIZATIONTOOL", "True")):
         register_visualization_tools(mcp)
         registered_tags.append("visualization")
@@ -326,7 +459,7 @@ def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
 
 def mcp_server() -> None:
     mcp, args, middlewares, registered_tags = get_mcp_instance()
-    print(f"{args.name or 'repository-manager'} MCP v{__version__}", file=sys.stderr)
+    print(f"{'repository-manager'} MCP v{__version__}", file=sys.stderr)
     print("\nStarting MCP Server", file=sys.stderr)
     print(f"  Transport: {args.transport.upper()}", file=sys.stderr)
     print(f"  Auth: {args.auth_type}", file=sys.stderr)

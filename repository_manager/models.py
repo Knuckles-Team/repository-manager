@@ -58,6 +58,13 @@ class MaintenanceConfig(BaseModel):
     phases: List[MaintenancePhase] = Field(default_factory=list)
 
 
+class GraphConfig(BaseModel):
+    enabled: bool = True
+    multimodal: bool = False
+    incremental: bool = True
+    groups: List[Dict] = Field(default_factory=list)
+
+
 class WorkspaceConfig(BaseModel):
     name: str
     path: str
@@ -65,3 +72,4 @@ class WorkspaceConfig(BaseModel):
     repositories: List[RepositoryConfig] = Field(default_factory=list)
     subdirectories: Dict[str, SubdirectoryConfig] = Field(default_factory=dict)
     maintenance: Optional[MaintenanceConfig] = None
+    graph: Optional[GraphConfig] = None
