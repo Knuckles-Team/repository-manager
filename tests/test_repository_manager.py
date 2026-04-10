@@ -55,9 +55,9 @@ def test_actual_workspace_config_parsing(real_workspace_data):
     assert "agent-packages" in config.subdirectories
     assert len(config.maintenance.phases) > 0
 
-    phase4 = next((p for p in config.maintenance.phases if p.phase == 4), None)
-    assert phase4 is not None
-    assert phase4.updates[0].target_pattern == "*"
+    phase5 = next((p for p in config.maintenance.phases if p.phase == 5), None)
+    assert phase5 is not None
+    assert phase5.updates[0].target_pattern == "*"
 
 def test_workspace_config_parsing(sample_workspace_yml):
     yml_path, _ = sample_workspace_yml

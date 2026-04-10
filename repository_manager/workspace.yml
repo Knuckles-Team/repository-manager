@@ -17,6 +17,8 @@ subdirectories:
         description: "Shared utility functions, base classes, and server common code."
       - url: "https://github.com/Knuckles-Team/agent-webui.git"
         description: "Standard web UI component library for agents."
+      - url: "https://github.com/Knuckles-Team/agent-terminal-ui.git"
+        description: "Standard terminal UI component library for agents."
     subdirectories:
       skills:
         description: "Agent capabilities, skill graphs, and tool definitions."
@@ -83,8 +85,14 @@ maintenance:
       updates:
         - target: "agent-packages/agent-utilities/pyproject.toml"
           package: "agent-webui"
-    - name: "Phase 4: agent-utilities"
+    - name: "Phase 4: agent-terminal-ui"
       phase: 4
+      project: "agent-terminal-ui"
+      updates:
+        - target: "agent-packages/agent-utilities/pyproject.toml"
+          package: "agent-terminal-ui"
+    - name: "Phase 5: agent-utilities"
+      phase: 5
       project: "agent-utilities"
       updates:
         - target_pattern: "*"
@@ -92,12 +100,20 @@ maintenance:
             - "universal-skills"
             - "agent-utilities"
             - "agent-webui"
+            - "agent-terminal-ui"
           package: "agent-utilities"
-    - name: "Phase 5: Bulk Bump"
-      phase: 5
+    - name: "Phase 6: Bulk Bump"
+      phase: 6
       bulk_bump: True
       exclude:
         - "universal-skills"
         - "agent-utilities"
         - "agent-webui"
+        - "agent-terminal-ui"
         - "skill-graphs"
+
+graph:
+  enabled: true
+  multimodal: true
+  incremental: true
+  groups: []

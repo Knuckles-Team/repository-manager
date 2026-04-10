@@ -21,7 +21,7 @@ import shutil
 import select
 import signal
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 from agent_utilities.base_utilities import get_library_file_path
 from agent_utilities.base_utilities import to_boolean
 
@@ -40,6 +40,7 @@ from repository_manager.models import (
     WorkspaceConfig,
     SubdirectoryConfig,
 )
+from repository_manager.graph.models import GraphReport
 
 from importlib.resources import files
 from agent_utilities.base_utilities import get_logger
@@ -64,15 +65,27 @@ def get_packaged_file_path(package: str, file: str) -> str:
     return get_library_file_path(file=file)
 
 
+# Robust environment variable retrieval with empty string fallbacks
+_raw_workspace = os.getenv("REPOSITORY_MANAGER_WORKSPACE", "")
 DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.path.abspath(
-    os.path.expanduser(os.getenv("REPOSITORY_MANAGER_WORKSPACE", "~/Workspace"))
+    os.path.expanduser(_raw_workspace if _raw_workspace else "~/Workspace")
 )
-DEFAULT_WORKSPACE_YML = os.getenv(
-    "WORKSPACE_YML", get_packaged_file_path("repository_manager", "workspace.yml")
+
+_raw_yml = os.getenv("WORKSPACE_YML", "")
+DEFAULT_WORKSPACE_YML = (
+    _raw_yml
+    if _raw_yml
+    else get_packaged_file_path("repository_manager", "workspace.yml")
 )
-DEFAULT_REPOSITORY_MANAGER_THREADS = int(os.getenv("REPOSITORY_MANAGER_THREADS", "12"))
+
+_raw_threads = os.getenv("REPOSITORY_MANAGER_THREADS", "")
+DEFAULT_REPOSITORY_MANAGER_THREADS = int(
+    _raw_threads if _raw_threads and _raw_threads.isdigit() else "12"
+)
+
+_raw_branch = os.getenv("REPOSITORY_MANAGER_DEFAULT_BRANCH", "")
 DEFAULT_REPOSITORY_MANAGER_DEFAULT_BRANCH = to_boolean(
-    os.getenv("REPOSITORY_MANAGER_DEFAULT_BRANCH", "False")
+    _raw_branch if _raw_branch else "False"
 )
 
 
@@ -846,8 +859,6 @@ class Git:
                 content = f.read()
 
             missing = []
-            if "def agent_template" not in content:
-                missing.append("agent_template")
             if "warnings.filterwarnings" not in content:
                 missing.append("warning_filter")
             if "file=sys.stderr" not in content:
@@ -3022,6 +3033,42 @@ class Git:
                 ),
             )
 
+    def ensure_graph(self) -> Optional["GraphReport"]:
+        """
+        Incrementally builds or updates the Hybrid Graph for the workspace.
+        """
+        import asyncio
+        from repository_manager.graph.engine import GraphEngine
+
+        if (
+            not hasattr(self, "config")
+            or not self.config
+            or not self.config.graph
+            or not getattr(self.config.graph, "enabled", False)
+        ):
+            logger.info("Hybrid Graph is disabled in workspace config.")
+            return None
+
+        logger.info("Initiating Hybrid Graph build/sync process...")
+        engine = GraphEngine(self.path)
+
+        # Build graph synchronously or asynchronously based on engine implementation
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        report = loop.run_until_complete(
+            engine.build_from_workspace(
+                self.config,
+                multimodal=getattr(self.config.graph, "multimodal", False),
+                incremental=getattr(self.config.graph, "incremental", True),
+            )
+        )
+        logger.info("Hybrid Graph build process complete.")
+        return report
+
 
 def main() -> None:
     """
@@ -3299,6 +3346,13 @@ Examples:
             config=config,
         )
         summary = git.generate_markdown_summary("Phased Maintenance Bump", results)
+
+        # Invoke Graph Indexing as part of the unified intelligence pipeline
+        logger.info("Starting structural graph update phase...")
+        graph_report = git.ensure_graph()
+        if graph_report:
+            summary += f"\n\n## Hybrid Graph Execution\n\nNodes Processed: {graph_report.nodes_processed}\nEdges Processed: {graph_report.edges_processed}\n"
+
         print(summary)
         git._export_report(summary, "maintenance_report.md")
 
