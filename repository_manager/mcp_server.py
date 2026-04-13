@@ -98,9 +98,12 @@ def register_git_operations_tools(mcp: FastMCP):
         }
     )
     async def get_workspace_projects() -> List[str]:
-        """Lists all project URLs defined in the workspace configuration."""
+        """Returns a list of project URLs defined in the workspace."""
+        logger.info("[LAYER:MCP] get_workspace_projects called.")
         git = get_git_instance()
-        return list(git.project_map.keys())
+        projects = list(git.project_map.keys())
+        logger.info(f"[LAYER:MCP] get_workspace_projects complete. Found {len(projects)} projects.")
+        return projects
 
     @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
     async def clone_projects(
