@@ -203,7 +203,7 @@ repository-manager \
 |            | --port            | Port to bind the server to (default: 9000)                             |
 |            | --reload          | Enable auto-reload                                                     |
 |            | --provider        | LLM Provider: 'openai', 'anthropic', 'google', 'huggingface'           |
-|            | --model-id        | LLM Model ID (default: qwen3:4b)                                       |
+|            | --model-id        | LLM Model ID (default: google/gemma-4-31b)                                       |
 |            | --base-url        | LLM Base URL (for OpenAI compatible providers)                         |
 |            | --api-key         | LLM API Key                                                            |
 |            | --python-sandbox-enable | Enable Python Sandbox MCP configuration                                  |
@@ -502,7 +502,7 @@ docker-compose up -d
 |            | --port            | Port to bind the server to (default: 9000)                             |
 |            | --reload          | Enable auto-reload                                                     |
 |            | --provider        | LLM Provider: 'openai', 'anthropic', 'google', 'huggingface'           |
-|            | --model-id        | LLM Model ID (default: qwen3:4b)                                       |
+|            | --model-id        | LLM Model ID (default: google/gemma-4-31b)                                       |
 |            | --base-url        | LLM Base URL (for OpenAI compatible providers)                         |
 |            | --api-key         | LLM API Key                                                            |
 |            | --api-key         | LLM API Key                                                            |

@@ -20,7 +20,7 @@ async def main():
     try:
         agent = create_agent(
             provider="openai",
-            model_id=os.getenv("MODEL_ID", "nvidia/nemotron-3-super"),
+            model_id=os.getenv("MODEL_ID", "google/gemma-4-31b"),
             base_url=os.getenv(
                 "LLM_BASE_URL", "http://host.docker.internal:1234/v1"
             ),
