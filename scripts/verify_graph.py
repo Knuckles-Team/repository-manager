@@ -48,7 +48,7 @@ async def test(prompt: str = None):
         prompt = 'List all projects in the workspace.'
 
     ground_truth = get_ground_truth()
-    
+
     server_process = None
     # Check if anything is on port
     try:
@@ -72,7 +72,7 @@ async def test(prompt: str = None):
             return
 
     captured_projects = []
-    
+
     async with httpx.AsyncClient(timeout=600) as client:
         payload = {
             'query': prompt,
@@ -90,13 +90,13 @@ async def test(prompt: str = None):
                     if line.startswith('data: '):
                         try:
                             raw_data = json.loads(line[6:])
-                            
+
                             # DEBUG: Print ALL events
                             # print(f"  [DEBUG EVENT] {raw_data.get('type') or raw_data.get('event')}")
-                            
+
                             data = raw_data
                             name = None
-                            
+
                             if data.get('type') == 'data-graph-event':
                                 data = data.get('data', {})
                                 name = data.get('event')
@@ -143,19 +143,19 @@ async def test(prompt: str = None):
     print("\n" + "="*40)
     print("PARITY CHECK")
     print("="*40)
-    
+
     if not captured_projects:
         print("❌ FAILED: No projects captured from tool execution.")
     else:
         # Compare sets
         ground_set = set(ground_truth)
         captured_set = set(captured_projects)
-        
+
         matches = ground_set == captured_set
-        
+
         print(f"Ground Truth Count: {len(ground_set)}")
         print(f"Captured Count:     {len(captured_set)}")
-        
+
         if matches:
             print("\n✅ Integration Validated: Tool output exactly matches ground truth.")
         else:

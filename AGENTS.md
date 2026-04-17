@@ -427,6 +427,9 @@ pip install -e .[all] # Install with all optional extras
 - `agent_utilities/a2a.py` → Agent-to-Agent communication utilities
 - `agent_utilities/prompts/` → Prompt templates (one `.md` per specialist role)
 - `agent_utilities/agent_data/` → Workspace data files (IDENTITY.md, MEMORY.md, NODE_AGENTS.md, etc.)
+- `repository_manager/graph/` → **Hybrid Workspace Graph Engine** (NetworkX + LadybugDB)
+  - `graph/engine.py` → Multi-faceted Search Engine (Semantic Vector + Structural Cypher)
+  - `graph/schema.py` → Unified graph schema for workspace symbols and cross-repo dependencies
 
 ## Code Style & Conventions
 
@@ -617,22 +620,6 @@ When adding new utility modules to the agent_utilities package:
 - Follow semantic versioning for dependencies when possible
 
 ## Recent Changes
-- **Parallel AnyIO Lifespan Initialization**: Refactored `server.py` to use `anyio.create_task_group()` and `anyio.Event` for parallel MCP server initialization, ensuring structured concurrency compliance and resolving cancel-scope task boundary errors.
-- **Asynchronous Tool Execution**: Standardized MCP tool execution paths in specialists (e.g., `repository-manager`) to be fully `await`able, removing blocking calls that caused event loop hangs.
-- **Router Fallback Simplification**: Removed hardcoded, keyword-based specialist fallbacks in favor of robust, LLM-driven planning and formal state machine transitions.
-- **Unified result storage**: All execution paths (`_execute_specialized_step`, `_execute_dynamic_mcp_agent`, `_execute_domain_logic`, A2A) now write to both `results_registry` (read by dispatcher/verifier) and `results` (backward compat). Fixes the `"dispatcher"` return bug.
-- **Router `res.output`**: Fixed `res.data` → `res.output` in `router_step` for pydantic-ai `AgentRunResult` API.
-- **Multi-strategy agent matching**: `expert_executor_step` now matches node IDs against agent `tag`, `name`, and fuzzy substrings — so approximate LLM-generated node IDs like `expert_portainer` route to `portainer-agent` correctly.
-- **Registry fallback routing**: When `tag_prompts` is empty (e.g. not all env vars set), `router_step` falls back to querying the MCP registry directly for static keyword routing.
-- **Per-server resilient MCP loading**: `builder.py` now loads each MCP server from `mcp_config.json` individually using `MCPServerStdio`. Servers with undefined env vars are **skipped gracefully** with a `⚠️ Skipping 'server-name' — env var/config error: VAR_NAME` warning instead of aborting the entire toolset load.
-- **Sequential MCP connect with clear failure reporting**: `runner.py` now connects to MCP servers one-by-one (no `asyncio.wait_for` wrapper — avoids anyio cancel-scope cross-task `RuntimeError`). Any failed server is reported with `❌ MCP server 'server-name' FAILED to connect: <reason>` and a final summary of all failed servers is printed before graph execution begins.
-- **Fixed `on_enter_specialist` call signature**: `prompt_name=` kwarg corrected to `agent_name=` in executor.py.
-- **Fixed broken `list_files`/`get_git_status` imports**: Removed non-existent `list_files` from `researcher_step`; `get_git_status` is now imported from `agent_utilities.tools.git_tools`.
-- **Fixed `stirlingpdf-agent-mcp` → `stirlingpdf-mcp`**: Corrected MCP server command name in `mcp_config.json`.
-- **Router LLM empty step_info fix**: When `tag_prompts` is empty, the LLM router now also pulls available specialist tags from the MCP registry, preventing hallucinated node IDs like `researcher_portainer`.
-- **Parallel MCP connect restored**: `runner.py` uses `asyncio.gather` with per-server `await stack.enter_async_context()` (no inner `asyncio.wait_for`). This is both parallel AND anyio-safe (avoids the cancel-scope cross-task `RuntimeError` that the old `asyncio.wait_for` wrapper caused).
-- **Integration test suite**: `tests/test_graph_flow_integration.py` in `genius-agent` validates MCP config structure, registry sync, graph topology, result type integrity, and end-to-end Portainer stack listing (600s timeout accounts for router LLM + tool call + verifier LLM).
-- **Added `agent_factory.py`** for CLI agent creation with argparse.
-- Enhanced MCP server connection handling with loopback guards.
-- Improved tool filtering and tag-based access control.
-- Added OpenTelemetry tracing support.
+- **Consolidated Architecture**: Centralized core repo logic into the `Git` class (`repository_manager.py`), refactoring `mcp_server.py` into a thin client.
+- **Enhanced Hybrid Graph Intelligence**: Implemented a multi-faceted graph search defaulting to `hybrid` mode, which merges structural NetworkX data with semantic vector results for higher precision.
+- **Modernized Documentation**: Updated `README.md` and `AGENTS.md` to reflect the streamlined CLI toolset and hybrid search capabilities.

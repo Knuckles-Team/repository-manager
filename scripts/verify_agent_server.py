@@ -44,7 +44,7 @@ async def test_chat_stream(query: str):
         "context": [],
         "forwardedProps": {}
     }
-    
+
     found_output = False
     print("Reading stream chunks:")
     async with httpx.AsyncClient(timeout=300.0) as client:
@@ -53,7 +53,7 @@ async def test_chat_stream(query: str):
                 if response.status_code != 200:
                     print(f"❌ Chat request failed with status {response.status_code}")
                     return False
-                
+
                 async for line in response.aiter_lines():
                     if line:
                         # Print every line if it contains data
@@ -92,9 +92,9 @@ async def test_acp_integration():
             if resp.status_code == 404:
                 print("⚠️  ACP might be mounted at a different path or not enabled.")
                 return False
-            
+
             print(f"✅ ACP probe returned status {resp.status_code}")
-            
+
             # Additional session tests could go here if the protocol is known
             # For now, just verifying the endpoint is alive is a good start.
             return True
@@ -107,13 +107,13 @@ def start_server():
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     env["ENABLE_ACP"] = "True"
-    
+
     # Ensure current directory is in PYTHONPATH
     env["PYTHONPATH"] = f".:{env.get('PYTHONPATH', '')}"
-    
+
     cmd = [sys.executable, AGENT_SERVER_PATH, "--web", "--port", str(PORT)]
     print(f"Starting server: {' '.join(cmd)}")
-    
+
     log_file = open("server.log", "w")
     process = subprocess.Popen(
         cmd,
@@ -123,7 +123,7 @@ def start_server():
         text=True,
         bufsize=1
     )
-    
+
     return process, log_file
 
 def tail_log():
@@ -142,7 +142,7 @@ def tail_log():
 async def compare_tool_results():
     """Compare direct tool execution with agent chat response."""
     print("\n--- Comparing Direct Tool Execution vs Agent Chat ---")
-    
+
     # 1. Get direct result
     from repository_manager.mcp_server import get_git_instance
     try:
@@ -156,7 +156,7 @@ async def compare_tool_results():
     # 2. Get agent result via chat
     query = "get_workspace_projects"
     print(f"Querying agent: '{query}'")
-    
+
     chat_output = ""
     url = f"{BASE_URL}/ag-ui"
     payload = {
@@ -169,7 +169,7 @@ async def compare_tool_results():
         "context": [],
         "forwardedProps": {}
     }
-    
+
     print("Reading stream chunks:")
     async with httpx.AsyncClient(timeout=600.0) as client:
         try:
@@ -177,7 +177,7 @@ async def compare_tool_results():
                 if response.status_code != 200:
                     print(f"❌ Chat request failed with status {response.status_code}")
                     return False
-                
+
                 async for line in response.aiter_lines():
                     if line:
                         print(f"  [STREAM] {line}")
@@ -220,22 +220,22 @@ async def compare_tool_results():
 
 async def main():
     process, log_file = start_server()
-    
+
     import threading
     t = threading.Thread(target=tail_log, daemon=True)
     t.start()
-    
+
     try:
         if await check_health():
             # Test 1: Chat integration (Most critical)
             chat_success = await test_chat_stream("Can you get the projects in the workspace?")
-            
+
             # Test 2: ACP integration
             acp_success = await test_acp_integration()
-            
+
             # Test 3: Tool comparison
             comp_success = await compare_tool_results()
-            
+
             if chat_success and acp_success and comp_success:
                 print("\n✨ ALL TESTS PASSED! ✨")
                 sys.exit(0)
@@ -248,7 +248,7 @@ async def main():
         else:
             print("❌ Server failed to start or become healthy.")
             sys.exit(1)
-            
+
     finally:
         print("\n--- Test Suite Summary ---")
         print(f"Terminating server (PID {process.pid})...")

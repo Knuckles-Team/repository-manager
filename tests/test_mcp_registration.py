@@ -1,7 +1,7 @@
 import os
 import pytest
 from fastmcp import FastMCP
-from repository_manager.repository_manager_mcp import register_tools
+from repository_manager.mcp_server import get_mcp_instance
 
 
 def test_mcp_tools_registration():
@@ -14,6 +14,8 @@ def test_mcp_tools_registration():
     mcp = FastMCP("TestRepoManager")
 
     try:
-        register_tools(mcp)
+        mcp, args, middlewares, tags = get_mcp_instance()
+        assert mcp is not None
+        assert "git_operations" in tags
     except Exception as e:
         pytest.fail(f"Failed to register MCP tools: {e}")
