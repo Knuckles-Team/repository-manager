@@ -13,7 +13,7 @@ import sys
 import argparse
 import json
 
-__version__ = "1.3.53"
+__version__ = "1.3.54"
 import concurrent.futures
 import datetime
 import yaml
@@ -21,7 +21,7 @@ import shutil
 import select
 import signal
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from agent_utilities.base_utilities import get_library_file_path
 from agent_utilities.base_utilities import to_boolean
 
@@ -117,6 +117,14 @@ class Git:
         self.maximum_threads = 36
         if threads:
             self.set_threads(threads=threads)
+
+    def _get_package_manager(self, path: str) -> str:
+        """Determines the appropriate package manager for a given path."""
+        if os.path.exists(os.path.join(path, "pnpm-lock.yaml")):
+            return "pnpm"
+        if os.path.exists(os.path.join(path, "yarn.lock")):
+            return "yarn"
+        return "npm"
 
     def setup_from_yaml(self, yaml_path: str) -> GitResult:
         """Sets up the workspace structure from a YAML file."""
@@ -224,6 +232,60 @@ class Git:
             for url, p in self.project_map.items()
         }
 
+    def get_workspace_projects(self) -> List[str]:
+        """Returns a list of project basenames (e.g. 'genius-agent') defined in the workspace."""
+        return [os.path.basename(p) for p in self.project_map.values()]
+
+    async def graph_query(
+        self, query: str, mode: str = "hybrid", path: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Queries the Hybrid Graph using vector similarity or Cypher structure."""
+        from repository_manager.graph.engine import GraphEngine
+
+        root = self._resolve_path(path)
+        engine = GraphEngine(root)
+        # Note: We assume the graph was already synchronized via ensure_graph
+        return await engine.query(query, mode=mode)
+
+    def graph_path(
+        self, source_id: str, target_id: str, path: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Finds the shortest path between two symbols across the workspace graph."""
+        from repository_manager.graph.engine import GraphEngine
+
+        root = self._resolve_path(path)
+        engine = GraphEngine(root)
+        edges = engine.find_path(source_id, target_id)
+        return [e.model_dump() for e in edges]
+
+    def graph_status(self, path: Optional[str] = None) -> Dict[str, Any]:
+        """Returns the current status of the workspace graph."""
+        from repository_manager.graph.engine import GraphEngine
+
+        root = self._resolve_path(path)
+        engine = GraphEngine(root)
+        return engine.get_stats()
+
+    def graph_reset(self, path: Optional[str] = None) -> str:
+        """Purges the graph database and Forces a clean rebuild on next build."""
+        from repository_manager.graph.engine import GraphEngine
+
+        root = self._resolve_path(path)
+        engine = GraphEngine(root)
+        engine.reset_graph()
+        return "Graph database purged successfully."
+
+    async def graph_impact(
+        self, symbol: str, group_name: Optional[str] = None, path: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Calculates multi-repo impact for a symbol using the GraphEngine."""
+        from repository_manager.graph.engine import GraphEngine
+
+        root = self._resolve_path(path)
+        engine = GraphEngine(root)
+        nodes = await engine.query_impact(symbol, group_name)
+        return [n.model_dump() for n in nodes]
+
     def _resolve_path(self, path: str = None) -> str:
         """
         Resolve the path to an absolute path.
@@ -289,7 +351,8 @@ class Git:
             is_node = os.path.exists(os.path.join(path, "package.json"))
 
             if is_node:
-                results.append(self.git_action("npm install", path=path))
+                pm = self._get_package_manager(path)
+                results.append(self.git_action(f"{pm} install", path=path))
             if is_python:
                 results.append(
                     self.git_action(f"pip install -e '.[{extra}]'", path=path)
@@ -323,8 +386,9 @@ class Git:
                     continue
 
                 if is_node:
+                    pm = self._get_package_manager(path)
                     futures.append(
-                        executor.submit(self.git_action, "npm install", path=path)
+                        executor.submit(self.git_action, f"{pm} install", path=path)
                     )
                 if is_python:
                     futures.append(
@@ -390,7 +454,8 @@ class Git:
             futures = []
             for url, path in self.project_map.items():
                 if os.path.exists(os.path.join(path, "package.json")):
-                    cmd = "npm install && npm run build"
+                    pm = self._get_package_manager(path)
+                    cmd = f"{pm} install && {pm} run build"
                 else:
                     cmd = "python3 -m build"
                 futures.append(executor.submit(self.git_action, cmd, path=path))
@@ -1604,196 +1669,6 @@ class Git:
             logger.error(f"Error reading README: {e}")
             return ReadmeResult(content="", path=readme_path)
 
-    def text_editor(
-        self,
-        command: str,
-        path: str,
-        file_text: str = None,
-        view_range: list = None,
-        old_str: str = None,
-        new_str: str = None,
-        insert_line: int = None,
-    ) -> GitResult:
-        """
-        FileSystem Editor Tool
-        """
-        target_path = self._resolve_path(path)
-
-        meta = GitMetadata(
-            command=command,
-            workspace=target_path,
-            return_code=0,
-            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
-        )
-
-        if command == "view":
-            if not os.path.exists(target_path):
-                meta.return_code = 1
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message=f"File not found: {target_path}", code=1),
-                    metadata=meta,
-                )
-            try:
-                with open(target_path, "r") as f:
-                    content = f.read()
-                    if view_range:
-                        lines = content.splitlines()
-                        start = view_range[0] - 1
-                        end = view_range[1]
-                        if start < 0:
-                            start = 0
-                        if end > len(lines):
-                            end = len(lines)
-                        content = "\n".join(lines[start:end])
-                return GitResult(
-                    status="success", data=content, error=None, metadata=meta
-                )
-            except Exception as e:
-                meta.return_code = 1
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message=str(e), code=1),
-                    metadata=meta,
-                )
-
-        elif command == "create":
-            if os.path.exists(target_path):
-                meta.return_code = 1
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message=f"File already exists: {target_path}", code=1
-                    ),
-                    metadata=meta,
-                )
-            try:
-                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                with open(target_path, "w") as f:
-                    f.write(file_text if file_text else "")
-                return GitResult(
-                    status="success",
-                    data=f"File created: {target_path}",
-                    error=None,
-                    metadata=meta,
-                )
-            except Exception as e:
-                meta.return_code = 1
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message=str(e), code=1),
-                    metadata=meta,
-                )
-
-        elif command == "str_replace":
-            if not os.path.exists(target_path):
-                meta.return_code = 1
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message=f"File not found: {target_path}", code=1),
-                    metadata=meta,
-                )
-            try:
-                with open(target_path, "r") as f:
-                    content = f.read()
-
-                if content.count(old_str) > 1:
-                    meta.return_code = 1
-                    return GitResult(
-                        status="error",
-                        data="",
-                        error=GitError(
-                            message=f"Multiple occurrences of '{old_str}' found.",
-                            code=1,
-                        ),
-                        metadata=meta,
-                    )
-                if old_str not in content:
-                    meta.return_code = 1
-                    return GitResult(
-                        status="error",
-                        data="",
-                        error=GitError(
-                            message=f"'{old_str}' not found in file.", code=1
-                        ),
-                        metadata=meta,
-                    )
-
-                new_content = content.replace(old_str, new_str)
-                with open(target_path, "w") as f:
-                    f.write(new_content)
-                return GitResult(
-                    status="success",
-                    data=f"File updated: {target_path}",
-                    error=None,
-                    metadata=meta,
-                )
-            except Exception as e:
-                meta.return_code = 1
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message=str(e), code=1),
-                    metadata=meta,
-                )
-
-        elif command == "insert":
-            if not os.path.exists(target_path):
-                meta.return_code = 1
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message=f"File not found: {target_path}", code=1),
-                    metadata=meta,
-                )
-            try:
-                with open(target_path, "r") as f:
-                    lines = f.readlines()
-
-                if insert_line < 0 or insert_line > len(lines) + 1:
-                    meta.return_code = 1
-                    return GitResult(
-                        status="error",
-                        data="",
-                        error=GitError(
-                            message=f"Invalid line number: {insert_line}", code=1
-                        ),
-                        metadata=meta,
-                    )
-
-                if new_str:
-                    lines.insert(insert_line - 1, new_str + "\n")
-
-                with open(target_path, "w") as f:
-                    f.writelines(lines)
-                return GitResult(
-                    status="success",
-                    data=f"File updated: {target_path}",
-                    error=None,
-                    metadata=meta,
-                )
-            except Exception as e:
-                meta.return_code = 1
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message=str(e), code=1),
-                    metadata=meta,
-                )
-
-        meta.return_code = 1
-        return GitResult(
-            status="error",
-            data="",
-            error=GitError(message=f"Unknown command: {command}", code=1),
-            metadata=meta,
-        )
-
     def create_project(self, path: str) -> GitResult:
         """
         Create a new project directory and initialize it as a git repository.
@@ -1841,220 +1716,6 @@ class Git:
                 metadata=GitMetadata(
                     command="create_project",
                     workspace=target_path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-    def create_directory(self, path: str) -> GitResult:
-        """
-        Create a new directory at the specified path.
-
-        Args:
-            path (str): The path where the directory should be created.
-
-        Returns:
-            GitResult: Result of the operation.
-        """
-        target_path = self._resolve_path(path)
-
-        if os.path.exists(target_path):
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=f"Directory already exists: {target_path}", code=1
-                ),
-                metadata=GitMetadata(
-                    command="create_directory",
-                    workspace=target_path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        try:
-            os.makedirs(target_path, exist_ok=True)
-            logger.info(f"Created directory: {target_path}")
-            return GitResult(
-                status="success",
-                data=f"Created directory: {target_path}",
-                error=None,
-                metadata=GitMetadata(
-                    command="create_directory",
-                    workspace=target_path,
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-        except Exception as e:
-            logger.error(f"Failed to create directory {target_path}: {e}")
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=str(e), code=1),
-                metadata=GitMetadata(
-                    command="create_directory",
-                    workspace=target_path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-    def delete_directory(self, path: str) -> GitResult:
-        """
-        Delete a directory or file at the specified path.
-
-        Args:
-            path (str): The path of the directory or file to delete.
-
-        Returns:
-            GitResult: Result of the operation.
-        """
-        import shutil
-
-        target_path = self._resolve_path(path)
-
-        if target_path == self.path:
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message="Cannot delete the workspace root directory.", code=1
-                ),
-                metadata=GitMetadata(
-                    command="delete_directory",
-                    workspace=target_path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        if not os.path.exists(target_path):
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=f"Directory/File not found: {target_path}", code=1
-                ),
-                metadata=GitMetadata(
-                    command="delete_directory",
-                    workspace=target_path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        try:
-            if os.path.isfile(target_path) or os.path.islink(target_path):
-                os.remove(target_path)
-            else:
-                shutil.rmtree(target_path)
-
-            logger.info(f"Deleted directory/file: {target_path}")
-            return GitResult(
-                status="success",
-                data=f"Deleted: {target_path}",
-                error=None,
-                metadata=GitMetadata(
-                    command="delete_directory",
-                    workspace=target_path,
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-        except Exception as e:
-            logger.error(f"Failed to delete {target_path}: {e}")
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=str(e), code=1),
-                metadata=GitMetadata(
-                    command="delete_directory",
-                    workspace=target_path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-    def rename_directory(self, old_path: str, new_path: str) -> GitResult:
-        """
-        Rename/Move a directory or file.
-
-        Args:
-            old_path (str): The current path.
-            new_path (str): The new path.
-
-        Returns:
-            GitResult: Result of the operation.
-        """
-        abs_old_path = self._resolve_path(old_path)
-        abs_new_path = self._resolve_path(new_path)
-
-        if not os.path.exists(abs_old_path):
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=f"Source path not found: {abs_old_path}", code=1
-                ),
-                metadata=GitMetadata(
-                    command="rename_directory",
-                    workspace=abs_old_path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        if os.path.exists(abs_new_path):
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=f"Destination path already exists: {abs_new_path}", code=1
-                ),
-                metadata=GitMetadata(
-                    command="rename_directory",
-                    workspace=abs_new_path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        try:
-            os.renames(abs_old_path, abs_new_path)
-            logger.info(f"Renamed {abs_old_path} to {abs_new_path}")
-            return GitResult(
-                status="success",
-                data=f"Renamed {abs_old_path} to {abs_new_path}",
-                error=None,
-                metadata=GitMetadata(
-                    command="rename_directory",
-                    workspace=abs_old_path,
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-        except Exception as e:
-            logger.error(f"Failed to rename {abs_old_path} to {abs_new_path}: {e}")
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=str(e), code=1),
-                metadata=GitMetadata(
-                    command="rename_directory",
-                    workspace=abs_old_path,
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -2347,274 +2008,6 @@ class Git:
         return all_results
 
     maintain_projects = phased_bumpversion
-
-    def search_codebase(
-        self,
-        query: str,
-        path: str = None,
-        glob_pattern: str = None,
-        case_sensitive: bool = False,
-    ) -> GitResult:
-        """
-        Search the codebase using ripgrep.
-
-        Args:
-            query (str): The regex pattern to search for.
-            path (str, optional): The path to search in (absolute or relative to CWD).
-                                  Defaults to self.workspace or CWD.
-            glob_pattern (str, optional): Glob pattern to filter files (e.g., '*.py').
-            case_sensitive (bool): Whether the search should be case sensitive.
-
-        Returns:
-            GitResult: The result of the search operation.
-        """
-        if not path:
-            path = self.workspace if self.workspace else os.getcwd()
-
-        path = os.path.abspath(os.path.expanduser(path))
-
-        if not os.path.exists(path):
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=f"Path not found: {path}", code=1),
-                metadata=GitMetadata(
-                    command="search_codebase",
-                    workspace=path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        rg_cmd = ["rg", "--json", "-n", "--column"]
-        if not case_sensitive:
-            rg_cmd.append("-i")
-        if glob_pattern:
-            rg_cmd.append("-g")
-            rg_cmd.append(glob_pattern)
-
-        rg_cmd.append(query)
-        rg_cmd.append(path)
-
-        command_str = " ".join(rg_cmd)
-
-        try:
-            result = subprocess.run(rg_cmd, capture_output=True, text=True)
-
-            if result.returncode > 1:
-
-                pass
-
-            return GitResult(
-                status="success",
-                data=result.stdout,
-                error=None,
-                metadata=GitMetadata(
-                    command=command_str,
-                    workspace=path,
-                    return_code=result.returncode,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-        except FileNotFoundError:
-
-            logger.warning("ripgrep not found, falling back to grep")
-            grep_cmd = ["grep", "-rnI"]
-            if not case_sensitive:
-                grep_cmd.append("-i")
-            if glob_pattern:
-                grep_cmd.append(f"--include={glob_pattern}")
-
-            grep_cmd.append(query)
-            grep_cmd.append(path)
-
-            command_str = " ".join(grep_cmd)
-
-            try:
-                result = subprocess.run(grep_cmd, capture_output=True, text=True)
-                return GitResult(
-                    status="success",
-                    data=result.stdout,
-                    error=None,
-                    metadata=GitMetadata(
-                        command=command_str,
-                        workspace=path,
-                        return_code=result.returncode,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
-                    ),
-                )
-            except Exception as e:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message=f"Both ripgrep and grep failed: {str(e)}", code=1
-                    ),
-                    metadata=GitMetadata(
-                        command=command_str,
-                        workspace=path,
-                        return_code=1,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
-                    ),
-                )
-        except Exception as e:
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=str(e), code=1),
-                metadata=GitMetadata(
-                    command=command_str,
-                    workspace=path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-    def find_files(self, name_pattern: str, path: str = None) -> GitResult:
-        """
-        Find files using find.
-
-        Args:
-            name_pattern (str): The name pattern to search for (e.g., '*.py').
-            path (str, optional): The path to search in (absolute or relative to CWD).
-                                  Defaults to self.workspace or CWD.
-
-        Returns:
-            GitResult: The result of the find operation.
-        """
-        if not path:
-            path = self.workspace if self.workspace else os.getcwd()
-
-        path = os.path.abspath(os.path.expanduser(path))
-
-        if not os.path.exists(path):
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=f"Path not found: {path}", code=1),
-                metadata=GitMetadata(
-                    command="find_files",
-                    workspace=path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        cmd = ["find", path, "-name", name_pattern]
-        command_str = " ".join(cmd)
-
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            return GitResult(
-                status="success",
-                data=result.stdout,
-                error=None,
-                metadata=GitMetadata(
-                    command=command_str,
-                    workspace=path,
-                    return_code=result.returncode,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-        except Exception as e:
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=str(e), code=1),
-                metadata=GitMetadata(
-                    command=command_str,
-                    workspace=path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-    def read_file(
-        self, path: str, start_line: int = None, end_line: int = None
-    ) -> GitResult:
-        """
-        Read a file with optional line range.
-
-        Args:
-            path (str): The path to the file to read (absolute or relative to CWD).
-            start_line (int, optional): The starting line number (1-indexed).
-            end_line (int, optional): The ending line number (1-indexed).
-
-        Returns:
-            GitResult: The content of the file.
-        """
-        path = os.path.abspath(os.path.expanduser(path))
-
-        if not os.path.exists(path):
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=f"File not found: {path}", code=1),
-                metadata=GitMetadata(
-                    command="read_file",
-                    workspace=path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        try:
-            with open(path, "r") as f:
-                lines = f.readlines()
-
-            total_lines = len(lines)
-
-            if start_line is None:
-                start_line = 1
-            if end_line is None:
-                end_line = total_lines
-
-            if start_line < 1:
-                start_line = 1
-            if end_line > total_lines:
-                end_line = total_lines
-
-            selected_lines = lines[start_line - 1 : end_line]
-            content = "".join(selected_lines)
-
-            return GitResult(
-                status="success",
-                data=content,
-                error=None,
-                metadata=GitMetadata(
-                    command=f"read_file {path} {start_line}-{end_line}",
-                    workspace=path,
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-        except Exception as e:
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=str(e), code=1),
-                metadata=GitMetadata(
-                    command="read_file",
-                    workspace=path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
 
     def load_projects_from_yaml(self, yaml_path: str) -> bool:
         """
@@ -2932,107 +2325,6 @@ class Git:
 
         return list(set(paths))
 
-    def replace_in_file(
-        self, path: str, target_content: str, replacement_content: str
-    ) -> GitResult:
-        """
-        Replace a block of text in a file.
-
-        Args:
-            path (str): The path to the file to modify (absolute or relative to CWD).
-            target_content (str): The exact content to be replaced.
-            replacement_content (str): The new content to replace with.
-
-        Returns:
-            GitResult: Result of the operation.
-        """
-        path = os.path.abspath(os.path.expanduser(path))
-
-        if not os.path.exists(path):
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=f"File not found: {path}", code=1),
-                metadata=GitMetadata(
-                    command="replace_in_file",
-                    workspace=path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        try:
-            with open(path, "r") as f:
-                content = f.read()
-
-            if content.count(target_content) == 0:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message="Target content not found in file.", code=1),
-                    metadata=GitMetadata(
-                        command="replace_in_file",
-                        workspace=path,
-                        return_code=1,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
-                    ),
-                )
-
-            if content.count(target_content) > 1:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message="Multiple occurrences of target content found. Please be more specific.",
-                        code=1,
-                    ),
-                    metadata=GitMetadata(
-                        command="replace_in_file",
-                        workspace=path,
-                        return_code=1,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
-                    ),
-                )
-
-            new_content = content.replace(target_content, replacement_content)
-
-            with open(path, "w") as f:
-                f.write(new_content)
-
-            return GitResult(
-                status="success",
-                data=f"Successfully updated {path}",
-                error=None,
-                metadata=GitMetadata(
-                    command="replace_in_file",
-                    workspace=path,
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        except Exception as e:
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(message=str(e), code=1),
-                metadata=GitMetadata(
-                    command="replace_in_file",
-                    workspace=path,
-                    return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
     def ensure_graph(self) -> Optional["GraphReport"]:
         """
         Incrementally builds or updates the Hybrid Graph for the workspace.
@@ -3237,6 +2529,38 @@ Examples:
         help="Path to an overridden maintenance JSON/YAML configuration. Use with --maintain.",
     )
 
+    group_graph = parser.add_argument_group("Graph Intelligence (Hybrid Search)")
+    group_graph.add_argument(
+        "--graph-query",
+        type=str,
+        help="Query the Hybrid Graph using vector similarity or Cypher structure.",
+    )
+    group_graph.add_argument(
+        "--graph-mode",
+        choices=["semantic", "structural", "hybrid"],
+        default="hybrid",
+        help="Search mode for graph-query (default: hybrid).",
+    )
+    group_graph.add_argument(
+        "--graph-path",
+        nargs=2,
+        metavar=("SOURCE", "TARGET"),
+        help="Find the shortest path between two symbols across the workspace graph.",
+    )
+    group_graph.add_argument(
+        "--graph-status", action="store_true", help="Show current graph metrics."
+    )
+    group_graph.add_argument(
+        "--graph-reset",
+        action="store_true",
+        help="Purge the graph database and force a clean rebuild.",
+    )
+    group_graph.add_argument(
+        "--graph-impact",
+        type=str,
+        help="Calculate multi-repo impact for a symbol.",
+    )
+
     args = parser.parse_args()
 
     git = Git(
@@ -3370,6 +2694,25 @@ Examples:
 
     if args.validate:
         git.validate_projects(type=args.type)
+
+    # Graph Operations
+    if args.graph_status:
+        print(json.dumps(git.graph_status(), indent=2))
+    if args.graph_reset:
+        print(git.graph_reset())
+    if args.graph_query:
+        import asyncio
+
+        res = asyncio.run(git.graph_query(args.graph_query, mode=args.graph_mode))
+        print(json.dumps(res, indent=2))
+    if args.graph_path:
+        res = git.graph_path(args.graph_path[0], args.graph_path[1])
+        print(json.dumps(res, indent=2))
+    if args.graph_impact:
+        import asyncio
+
+        res = asyncio.run(git.graph_impact(args.graph_impact))
+        print(json.dumps(res, indent=2))
 
 
 if __name__ == "__main__":

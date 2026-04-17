@@ -21,7 +21,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.3.53*
+*Version: 1.3.54*
 
 ## Overview
 
@@ -147,13 +147,19 @@ sequenceDiagram
 |            | --phase          | Start maintenance at Phase N (1-5)           |
 |            | --dry-run        | Preview changes without applying them        |
 |            | --skip-pre-commit| Skip pre-commit phase in maintenance         |
-|            | --install        | [NEW] Bulk install all Python projects       |
-|            | --build          | [NEW] Bulk build all Python projects         |
-|            | --validate       | [NEW] Bulk validate all agent/MCP servers    |
+|            | --install        | Bulk install all Python projects       |
+|            | --build          | Bulk build all Python projects         |
+|            | --validate       | Bulk validate all agent/MCP servers    |
 |            | --type           | Validation filter: agent, mcp, or all        |
-|            | --tree           | [NEW] Generate ASCII workspace tree          |
-|            | --mermaid        | [NEW] Generate Mermaid workspace diagram     |
-|            | --setup          | [NEW] Sync workspace from YAML config        |
+|            | --tree           | Generate ASCII workspace tree          |
+|            | --mermaid        | Generate Mermaid workspace diagram     |
+|            | --setup          | Sync workspace from YAML config        |
+|            | --graph-query    | Query Hybrid Graph (semantic, structural, or hybrid) |
+|            | --graph-mode     | Graph query mode (semantic, structural, or hybrid)       |
+|            | --graph-path     | Find path between two symbols          |
+|            | --graph-status   | Show current graph metrics             |
+|            | --graph-reset    | Purge graph database                   |
+|            | --graph-impact   | Calculate multi-repo impact            |
 
 ```bash
 repository-manager \
@@ -210,9 +216,7 @@ repository-manager \
 |            | --workspace            | Workspace to scan for git projects (default: current directory)       |
 
 
-### Unified Hybrid Graph Intelligence
-
-The Repository Manager natively integrates **LadybugDB**, **NetworkX**, and semantic embeddings into a single `GraphEngine` architecture. This provides deep structural and multimodal intelligence across your Workspace without duplicated repository states.
+The Repository Manager natively integrates **LadybugDB**, **NetworkX**, and semantic embeddings into a single `GraphEngine` architecture. This provides deep structural and multimodal intelligence across your Workspace. The system defaults to **Hybrid Search**, which merges semantic concepts (vector) with structural relationships (Cypher) for maximum precision.
 
 ```mermaid
 flowchart TD
