@@ -32,6 +32,26 @@
     - **ASCII Tree**: Generate beautiful folder structures directly in the CLI or via MCP.
     - **Mermaid Diagrams**: Export your workspace model as a visual graph for documentation.
 - **Integrated Skills**: Native support for `agent-builder`, `mcp-builder`, `web-search`, and more, coupled with expert documentation for `FastMCP`, `Pydantic AI`, and `Docker`.
+- **Hybrid Graph Intelligence**: A 10-phase topological pipeline that unifies NetworkX in-memory analysis with LadybugDB Cypher persistence for cross-repository symbol mapping.
+
+## 🧠 Graph Intelligence
+
+The Repository Manager implements a sophisticated 10-phase pipeline to map and analyze your workspace. This system combines **NetworkX** (for topological algorithms) and **LadybugDB** (for persistent Cypher queries and hybrid search).
+
+### The 10-Phase Intelligence Pipeline
+
+| Phase | Name | Purpose |
+| :--- | :--- | :--- |
+| **1** | **Scan** | Performs the initial directory walk, respecting `.gitignore`, to identify all source code files. |
+| **2** | **Parse** | AST parsing (tree-sitter) to extract high-level symbols (Classes, Functions) and raw import statements. |
+| **3** | **Resolve** | Resolves raw import strings into actual graph edges between `File` and `Symbol` nodes (handling absolute and relative paths). |
+| **4** | **MRO** | Calculates Method Resolution Order and inheritance hierarchies across the entire workspace. |
+| **5** | **Reference** | Builds the call graph by identifying where specific symbols are referenced or invoked. |
+| **6** | **Communities** | Clusters nodes into tightly-coupled modules using topological algorithms like Leiden or Louvain. |
+| **7** | **Centrality** | Runs PageRank/Betweenness analysis to identify critical path "God Objects" and high-traffic modules. |
+| **8** | **Project** | Maps file groups to logical project/repository nodes based on manifest files (`pyproject.toml`, `package.json`). |
+| **9** | **Embedding** | Generates semantic vector embeddings for code snippets and documentation to enable high-fidelity vector search. |
+| **10** | **Sync** | Finalizes the build by projecting the in-memory NetworkX graph into the persistent LadybugDB Cypher store. |
 
 1. **Nodes**: Specialized agents for high-context domains (e.g., `GitOpsNode`, `KnowledgeNode`).
 2. **Router**: Automatically directs intent based on tool tags (`git_operations`, `workspace_management`, etc.).
@@ -334,6 +354,24 @@ repository-manager --maintain --skip-pre-commit
 repository-manager --maintain --phase 4
 ```
 
+### Graph Intelligence CLI Examples
+
+The `GraphEngine` can be queried directly via the CLI to gain insights into your workspace architecture.
+
+| Feature | Command | Description |
+|---------|---------|-------------|
+| **Status** | `repository-manager --graph-status` | Show node/edge counts and database connectivity. |
+| **Reset** | `repository-manager --graph-reset` | Purge the graph and force a full rebuild on next maintenance. |
+| **Query** | `repository-manager --graph-query "GitResult" --graph-mode semantic` | Search for concepts or symbols across the fleet. |
+| **Impact**| `repository-manager --graph-impact "WorkspaceConfig"` | Identify all downstream nodes affected by a symbol change. |
+| **Path**  | `repository-manager --graph-path "GitResult" "mcp_server"` | Trace the shortest dependency path between two symbols. |
+| **Cypher**| `repository-manager --graph-query "MATCH (n) RETURN n LIMIT 5" --graph-mode structural` | Execute raw Cypher queries on LadybugDB. |
+
+#### Example: Running an Impact Analysis
+```bash
+repository-manager --graph-impact "GitResult" --file workspace.yml
+```
+This will return a JSON list of all nodes across all repositories that are topologically dependent on the `GitResult` model.
 
 ### Using as an MCP Server
 

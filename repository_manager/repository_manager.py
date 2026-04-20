@@ -40,7 +40,6 @@ from repository_manager.models import (
     WorkspaceConfig,
     SubdirectoryConfig,
 )
-from repository_manager.graph.models import GraphReport
 
 from importlib.resources import files
 from agent_utilities.base_utilities import get_logger
@@ -80,7 +79,7 @@ DEFAULT_WORKSPACE_YML = (
 
 _raw_threads = os.getenv("REPOSITORY_MANAGER_THREADS", "")
 DEFAULT_REPOSITORY_MANAGER_THREADS = int(
-    _raw_threads if _raw_threads and _raw_threads.isdigit() else "12"
+    _raw_threads if _raw_threads and _raw_threads.isdigit() else "24"
 )
 
 _raw_branch = os.getenv("REPOSITORY_MANAGER_DEFAULT_BRANCH", "")
@@ -236,55 +235,102 @@ class Git:
         """Returns a list of project basenames (e.g. 'genius-agent') defined in the workspace."""
         return [os.path.basename(p) for p in self.project_map.values()]
 
+    async def _get_intelligence_engine(self, path: Optional[str] = None) -> Any:
+        """Helper to get a graph engine, reusing an active one if available."""
+        from agent_utilities.knowledge_graph.engine import RegistryGraphEngine as Engine
+
+        active = Engine.get_active()
+        if active:
+            return active
+
+        from agent_utilities.knowledge_graph.pipeline import IntelligencePipeline
+        from agent_utilities.models.knowledge_graph import PipelineConfig
+
+        root = self._resolve_path(path)
+        config = PipelineConfig(workspace_path=root)
+        pipeline = IntelligencePipeline(config)
+        await pipeline.run()
+        return Engine(pipeline.graph)
+
+    def _get_intelligence_engine_sync(self, path: Optional[str] = None) -> Any:
+        """Synchronous version of _get_intelligence_engine."""
+        import asyncio
+
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        if loop.is_running():
+            # If loop is already running, we can't run_until_complete.
+            # We try to get the active engine or create one without a full pipeline run if possible.
+            from agent_utilities.knowledge_graph.engine import (
+                RegistryGraphEngine as Engine,
+            )
+
+            active = Engine.get_active()
+            if active:
+                return active
+            # Fallback: create an empty engine (better than crashing)
+            import networkx as nx
+
+            return Engine(nx.MultiDiGraph())
+
+        return loop.run_until_complete(self._get_intelligence_engine(path))
+
     async def graph_query(
         self, query: str, mode: str = "hybrid", path: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Queries the Hybrid Graph using vector similarity or Cypher structure."""
-        from repository_manager.graph.engine import GraphEngine
+        engine = await self._get_intelligence_engine(path)
 
-        root = self._resolve_path(path)
-        engine = GraphEngine(root)
-        # Note: We assume the graph was already synchronized via ensure_graph
-        return await engine.query(query, mode=mode)
+        if mode == "structural":
+            return engine.query_cypher(query)
+        return engine.search_hybrid(query)
 
     def graph_path(
         self, source_id: str, target_id: str, path: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+    ) -> List[str]:
         """Finds the shortest path between two symbols across the workspace graph."""
-        from repository_manager.graph.engine import GraphEngine
-
-        root = self._resolve_path(path)
-        engine = GraphEngine(root)
-        edges = engine.find_path(source_id, target_id)
-        return [e.model_dump() for e in edges]
+        engine = self._get_intelligence_engine_sync(path)
+        return engine.find_path(source_id, target_id)
 
     def graph_status(self, path: Optional[str] = None) -> Dict[str, Any]:
         """Returns the current status of the workspace graph."""
-        from repository_manager.graph.engine import GraphEngine
-
-        root = self._resolve_path(path)
-        engine = GraphEngine(root)
-        return engine.get_stats()
+        engine = self._get_intelligence_engine_sync(path)
+        # Re-run pipeline to get fresh metadata if needed?
+        # For now, we return what we have.
+        metadata = {
+            "nodes": engine.graph.number_of_nodes(),
+            "edges": engine.graph.number_of_edges(),
+        }
+        return metadata
 
     def graph_reset(self, path: Optional[str] = None) -> str:
         """Purges the graph database and Forces a clean rebuild on next build."""
-        from repository_manager.graph.engine import GraphEngine
-
         root = self._resolve_path(path)
-        engine = GraphEngine(root)
-        engine.reset_graph()
+        repo_graph_dir = os.path.join(root, ".repo_graph")
+        if os.path.exists(repo_graph_dir):
+            import shutil
+
+            shutil.rmtree(repo_graph_dir)
+
+        # Also check for ladybug db
+        ladybug_db = os.path.join(root, ".ladybug")
+        if os.path.exists(ladybug_db):
+            import shutil
+
+            shutil.rmtree(ladybug_db)
+
         return "Graph database purged successfully."
 
     async def graph_impact(
         self, symbol: str, group_name: Optional[str] = None, path: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Calculates multi-repo impact for a symbol using the GraphEngine."""
-        from repository_manager.graph.engine import GraphEngine
-
-        root = self._resolve_path(path)
-        engine = GraphEngine(root)
-        nodes = await engine.query_impact(symbol, group_name)
-        return [n.model_dump() for n in nodes]
+        engine = await self._get_intelligence_engine(path)
+        return engine.query_impact(symbol)
 
     def _resolve_path(self, path: str = None) -> str:
         """
@@ -355,7 +401,10 @@ class Git:
                 results.append(self.git_action(f"{pm} install", path=path))
             if is_python:
                 results.append(
-                    self.git_action(f"pip install -e '.[{extra}]'", path=path)
+                    self.git_action(
+                        f"pip install --break-system-packages -e '.[{extra}]'",
+                        path=path,
+                    )
                 )
 
         # 2. Parallel Install for the rest
@@ -393,7 +442,9 @@ class Git:
                 if is_python:
                     futures.append(
                         executor.submit(
-                            self.git_action, f"pip install -e '.[{extra}]'", path=path
+                            self.git_action,
+                            f"pip install --break-system-packages -e '.[{extra}]'",
+                            path=path,
                         )
                     )
 
@@ -1190,6 +1241,12 @@ class Git:
         """
         target_path = self._resolve_path(path)
 
+        # Ensure ~/.local/bin is in PATH for tools like bump2version
+        current_env = env if env else os.environ.copy()
+        local_bin = os.path.expanduser("~/.local/bin")
+        if local_bin not in current_env.get("PATH", ""):
+            current_env["PATH"] = f"{local_bin}:{current_env.get('PATH', '')}"
+
         pipe = subprocess.Popen(
             command,
             shell=True,
@@ -1198,7 +1255,7 @@ class Git:
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True,
-            env=env if env else os.environ,
+            env=current_env,
         )
         out, err = pipe.communicate()
         return_code = pipe.wait()
@@ -1424,7 +1481,7 @@ class Git:
             threads (int): The number of threads.
 
         Notes:
-            If the input is invalid, defaults 12
+            If the input is invalid, defaults 24
         """
         try:
             if 0 < threads <= self.maximum_threads:
@@ -1625,7 +1682,7 @@ class Git:
                 pass
 
         install_target = f".[{extra}]" if has_all_extra else "."
-        command = f"pip install -e {install_target}"
+        command = f"pip install --break-system-packages -e {install_target}"
 
         logger.info(f"Installing project at {target_path} with {command}")
         result = self.git_action(command=command, path=target_path)
@@ -2325,13 +2382,10 @@ class Git:
 
         return list(set(paths))
 
-    def ensure_graph(self) -> Optional["GraphReport"]:
+    def ensure_graph(self) -> Optional[Any]:
         """
         Incrementally builds or updates the Hybrid Graph for the workspace.
         """
-        import asyncio
-        from repository_manager.graph.engine import GraphEngine
-
         if (
             not hasattr(self, "config")
             or not self.config
@@ -2342,24 +2396,16 @@ class Git:
             return None
 
         logger.info("Initiating Hybrid Graph build/sync process...")
-        engine = GraphEngine(self.path)
 
-        # Build graph synchronously or asynchronously based on engine implementation
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        # This will reuse active engine if available, or run pipeline
+        engine = self._get_intelligence_engine_sync()
 
-        report = loop.run_until_complete(
-            engine.build_from_workspace(
-                self.config,
-                multimodal=getattr(self.config.graph, "multimodal", False),
-                incremental=getattr(self.config.graph, "incremental", True),
-            )
-        )
         logger.info("Hybrid Graph build process complete.")
-        return report
+        # Return summary
+        return {
+            "nodes": engine.graph.number_of_nodes(),
+            "edges": engine.graph.number_of_edges(),
+        }
 
 
 def main() -> None:
@@ -2408,7 +2454,7 @@ Examples:
         "-t",
         "--threads",
         type=int,
-        help="Parallel thread count (default: 12).",
+        help="Parallel thread count (default: 24).",
         default=DEFAULT_REPOSITORY_MANAGER_THREADS,
     )
     group_general.add_argument(
@@ -2462,7 +2508,7 @@ Examples:
     group_maintenance.add_argument(
         "--install",
         action="store_true",
-        help="Run 'pip install -e .' for all projects.",
+        help="Run 'pip install --break-system-packages -e .' for all projects.",
     )
     group_maintenance.add_argument(
         "--build", action="store_true", help="Run 'python -m build' for all projects."
@@ -2527,6 +2573,11 @@ Examples:
         "--config",
         type=str,
         help="Path to an overridden maintenance JSON/YAML configuration. Use with --maintain.",
+    )
+    group_maintenance.add_argument(
+        "--break-system-packages",
+        action="store_true",
+        help="Include --break-system-packages in pip install commands.",
     )
 
     group_graph = parser.add_argument_group("Graph Intelligence (Hybrid Search)")
