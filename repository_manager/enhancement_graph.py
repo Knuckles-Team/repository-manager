@@ -19,7 +19,7 @@ from agent_utilities.graph_orchestration import (
     BaseProjectInitializerNode,
 )
 from agent_utilities.models import (
-    TaskList,
+    Tasks,
     Task,
     TaskStatus,
     ProgressEntry,
@@ -67,29 +67,30 @@ class InitializerNode(BaseProjectInitializerNode):
 @dataclass
 class PlannerNode(_RouterNodeBase):
     """
-    Decomposes the high-level enhancement request into a structured TaskList.
+    Decomposes the high-level enhancement request into a structured Tasks model.
     Uses an LLM to generate the plan and presents it for approval.
     """
 
     async def run(self, ctx: Any) -> "ParallelCodingNode | End[dict]":
-        if ctx.state.task_list.phases and not ctx.state.human_approval_required:
+        if ctx.state.task_list.tasks and not ctx.state.human_approval_required:
             logger.info(
                 "Planner: Task list already exists and is approved. Proceeding."
             )
             return ParallelCodingNode()
 
-        logger.info("Planner: Decomposing request into TaskList...")
+        logger.info("Planner: Decomposing request into Tasks...")
 
         from pydantic_ai import Agent
 
         planner_agent = Agent(
             model=ctx.deps.agent_model,
-            result_type=TaskList,
+            result_type=Tasks,
             system_prompt=(
                 "You are an expert Software Architect and Project Planner. "
-                "Your goal is to decompose a high-level goal into a dependency-aware, phased TaskList for a repository enhancement. "
-                "Each phase should be a logical milestone. "
-                "Tasks within a phase can often be done in parallel if they don't depend on each other. "
+                "Your goal is to decompose a high-level goal into a dependency-aware, structured Tasks model for a repository enhancement. "
+                "Each task should be granular and actionable. "
+                "Identify dependencies using 'depends_on' field. "
+                "Tasks can be executed in parallel if they don't depend on each other. "
                 "Be specific about test criteria and expected results for each task."
             ),
         )
@@ -127,27 +128,29 @@ class PlannerNode(_RouterNodeBase):
 @dataclass
 class ParallelCodingNode(_RouterNodeBase):
     """
-    Spawns multiple CodingNodes in parallel to handle tasks in the current phase.
+    Spawns multiple CodingNodes in parallel to handle reachable tasks.
     """
 
     async def run(self, ctx: Any) -> "ValidatorNode":
-        phase_idx = ctx.state.task_list.current_phase_index
-        if phase_idx >= len(ctx.state.task_list.phases):
+        from agent_utilities.sdd import SDDManager
+
+        sdd_manager = SDDManager(workspace_path=ctx.deps.workspace_path)
+
+        # Get parallel opportunities (batches of independent pending tasks)
+        groups = sdd_manager.get_parallel_opportunities(ctx.state.task_list)
+        if not groups:
             return ValidatorNode()
 
-        current_phase = ctx.state.task_list.phases[phase_idx]
-        pending_tasks = [
-            t for t in current_phase.tasks if t.status == TaskStatus.PENDING
+        # Execute the first batch
+        execution_batch_ids = groups[0][: ctx.deps.max_parallel_agents]
+        execution_batch = [
+            t for t in ctx.state.task_list.tasks if t.id in execution_batch_ids
         ]
 
-        if not pending_tasks:
-            return ValidatorNode()
-
-        execution_batch = pending_tasks[: ctx.deps.max_parallel_agents]
         ctx.state.current_batch_ids = [t.id for t in execution_batch]
 
         logger.info(
-            f"ParallelCoding: Starting {len(execution_batch)} tasks in phase '{current_phase.name}'"
+            f"ParallelCoding: Starting {len(execution_batch)} tasks in parallel"
         )
 
         tasks = [self.execute_task_subagent(ctx, task) for task in execution_batch]
@@ -199,29 +202,35 @@ class ParallelCodingNode(_RouterNodeBase):
 @dataclass
 class ValidatorNode(_RouterNodeBase):
     """
-    Runs validation tools and checks results against the SprintContract.
+    Runs validation tools and checks results.
     """
 
     async def run(self, ctx: Any) -> "ParallelCodingNode | PlannerNode | End[dict]":
-        logger.info("Validator: Running phase validation...")
-
-        phase_idx = ctx.state.task_list.current_phase_index
-        current_phase = ctx.state.task_list.phases[phase_idx]
+        logger.info("Validator: Running project validation...")
 
         all_complete = all(
-            t.status == TaskStatus.COMPLETED for t in current_phase.tasks
+            t.status == TaskStatus.COMPLETED for t in ctx.state.task_list.tasks
         )
 
         if all_complete:
-            ctx.state.task_list.current_phase_index += 1
-            if ctx.state.task_list.current_phase_index >= len(
-                ctx.state.task_list.phases
-            ):
-                return End({"status": "success", "results": ctx.state.results})
-            else:
-                return ParallelCodingNode()
+            return End({"status": "success", "results": ctx.state.results})
 
-        return End({"status": "partial_success", "results": ctx.state.results})
+        # Check if we still have reachable tasks
+        from agent_utilities.sdd import SDDManager
+
+        sdd_manager = SDDManager(workspace_path=ctx.deps.workspace_path)
+        groups = sdd_manager.get_parallel_opportunities(ctx.state.task_list)
+
+        if groups:
+            return ParallelCodingNode()
+
+        return End(
+            {
+                "status": "partial_success",
+                "message": "No more reachable tasks",
+                "results": ctx.state.results,
+            }
+        )
 
 
 @dataclass

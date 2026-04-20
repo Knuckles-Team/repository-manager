@@ -283,6 +283,73 @@ graph TB
     style RemotePeers fill:#f5d0ef,stroke:#d6b656,stroke-weight:1px
 ```
 
+## Unified Hybrid Graph Architecture
+
+The Repository Manager leverages a powerful 12-phase topological DAG pipeline (inspired by GitNexus) implemented in Python, paired with NetworkX for in-memory graph algorithms and LadybugDB for persistent Cypher search.
+
+```mermaid
+graph TD
+    subgraph Ingestion_Pipeline [10-Phase Intelligence Pipeline]
+        direction LR
+        Scan[1. Scan] --> Parse[2. Parse]
+        Parse --> Resolve[3. Resolve]
+        Resolve --> MRO[4. MRO]
+        MRO --> Ref[5. Reference]
+        Ref --> Comm[6. Communities]
+        Comm --> Cent[7. Centrality]
+        Cent --> Proj[8. Project]
+        Proj --> Emb[9. Embedding]
+        Emb --> Sync[10. Sync]
+    end
+
+    subgraph Memory_Layer [In-Memory Graph]
+        direction TB
+        NX[(NetworkX MultiDiGraph)]
+        NX -- "Graph Algorithms" --> NX
+    end
+
+    subgraph Persistence_Layer [Persistent Graph Storage]
+        direction TB
+        LDB[(LadybugDB)]
+        LDB -- "Cypher & Vectors" --> LDB
+    end
+
+    subgraph Query_Layer [MCP / CLI Interface]
+        direction LR
+        Q_Impact[graph_impact]
+        Q_Query[graph_query]
+        Q_Path[graph_path]
+    end
+
+    Ingestion_Pipeline -- "Mutates" --> Memory_Layer
+    Memory_Layer -- "Syncs To" --> Persistence_Layer
+    Query_Layer -- "Query" --> Persistence_Layer
+    Query_Layer -- "Fallback" --> Memory_Layer
+
+    %% Styling
+    style Ingestion_Pipeline fill:#dae8fe,stroke:#6c8ebf,stroke-width:2px
+    style Memory_Layer fill:#d5e8d4,stroke:#82b366,stroke-width:2px
+    style Persistence_Layer fill:#f8cecc,stroke:#b85450,stroke-width:2px
+    style Query_Layer fill:#e1d5e7,stroke:#9673a6,stroke-width:2px
+```
+
+### 10-Phase Intelligence Pipeline
+
+To provide robust cross-repository intelligence, the graph is built using a sequential, topological DAG pipeline. Each phase adds a layer of intelligence:
+
+| Phase | Name | Purpose |
+|-------|------|---------|
+| 1 | **Scan** | Walks the filesystem, respects `.gitignore`, and identifies all code files. |
+| 2 | **Parse** | AST parsing (tree-sitter) to extract symbols (Classes, Functions, Imports). |
+| 3 | **Resolve** | Maps raw import strings to actual `File` or `Symbol` nodes across the workspace. |
+| 4 | **MRO** | Resolves Method Resolution Order and inheritance chains for OO structures. |
+| 5 | **Reference** | Builds the call graph by identifying where symbols are invoked. |
+| 6 | **Communities** | Clusters nodes into tightly-coupled modules using the Leiden/Louvain algorithms. |
+| 7 | **Centrality** | Calculates PageRank/Betweenness to identify critical path "God Objects". |
+| 8 | **Project** | Groups files into logical projects based on `pyproject.toml` or `package.json`. |
+| 9 | **Embedding** | Generates semantic vector embeddings for all symbols and file content. |
+| 10 | **Sync** | Finalizes the build by projecting the NetworkX graph into LadybugDB (Cypher). |
+
 ## Hierarchical State Machine (HSM) Architecture
 
 The graph orchestration system is a **Hierarchical State Machine**. It follows the same formal model used in robotics,
