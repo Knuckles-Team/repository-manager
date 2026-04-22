@@ -2,11 +2,11 @@ import pytest
 import os
 import networkx as nx
 from pathlib import Path
-from repository_manager.graph.pipeline.types import PipelineContext
-from repository_manager.graph.pipeline.models import PipelineConfig, PhaseResult
-from repository_manager.graph.pipeline.phases.scan import execute_scan
-from repository_manager.graph.pipeline.phases.parse import execute_parse
-from repository_manager.graph.pipeline.phases.resolve import execute_resolve
+from agent_utilities.knowledge_graph.pipeline.types import PipelineContext
+from agent_utilities.models.knowledge_graph import PipelineConfig, PhaseResult
+from agent_utilities.knowledge_graph.pipeline.phases.scan import execute_scan
+from agent_utilities.knowledge_graph.pipeline.phases.parse import execute_parse
+from agent_utilities.knowledge_graph.pipeline.phases.resolve import execute_resolve
 
 @pytest.mark.asyncio
 async def test_scan_and_parse_integration(tmp_path):
@@ -31,8 +31,8 @@ async def test_scan_and_parse_integration(tmp_path):
     assert parse_output["symbols_extracted"] >= 2
     # Verify nodes in graph
     nodes = list(ctx.nx_graph.nodes())
-    assert any("Symbol:MyClass" in n for n in nodes)
-    assert any("Symbol:my_func" in n for n in nodes)
+    assert any("symbol:MyClass" in n for n in nodes)
+    assert any("symbol:my_func" in n for n in nodes)
 
 @pytest.mark.asyncio
 async def test_resolve_imports(tmp_path):
@@ -59,4 +59,4 @@ async def test_resolve_imports(tmp_path):
     assert resolve_output["resolved_dependencies"] >= 1
     # Verify edge exists between file a and file b
     edges = list(ctx.nx_graph.edges(data=True))
-    assert any(d.get("type") == "DEPENDS_ON" for u, v, d in edges)
+    assert any(d.get("type") == "depends_on" for u, v, d in edges)

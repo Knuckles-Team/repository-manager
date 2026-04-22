@@ -53,6 +53,7 @@ def test_actual_workspace_config_parsing(real_workspace_data):
     config = WorkspaceConfig(**real_workspace_data)
     assert config.name == "Agent Packages Workspace"
     assert "agent-packages" in config.subdirectories
+    assert config.maintenance is not None
     assert len(config.maintenance.phases) > 0
 
     phase5 = next((p for p in config.maintenance.phases if p.phase == 5), None)
@@ -68,6 +69,7 @@ def test_workspace_config_parsing(sample_workspace_yml):
     assert config.name == "Agent Packages Workspace"
 
     assert "agent-packages" in config.subdirectories
+    assert config.maintenance is not None
     assert config.maintenance.phases[0].name == "Phase 1: universal-skills"
 
 @patch("repository_manager.repository_manager.Git.git_action")
@@ -124,7 +126,9 @@ def test_maintenance_config_loading(sample_workspace_yml):
             git.maintain_projects(dry_run=True, start_phase=100)
 
             assert hasattr(git, "config")
+            assert git.config is not None
             assert git.config.name == "Agent Packages Workspace"
+            assert git.config.maintenance is not None
             assert git.config.maintenance.phases[0].phase == 1
 
 def test_git_init_with_default_workspace():

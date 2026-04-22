@@ -42,7 +42,7 @@ async def wait_for_server(url: str, timeout: int = 30):
         await asyncio.sleep(1)
     return False
 
-async def test(prompt: str = None):
+async def test(prompt: str | None = None):
     if not prompt:
         # SIMPLER PROMPT
         prompt = 'List all projects in the workspace.'

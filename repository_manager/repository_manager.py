@@ -6,43 +6,45 @@ A command-line tool for managing Git repositories, supporting cloning and pullin
 multiple repositories in parallel using Python's multiprocessing capabilities.
 """
 
-import subprocess
-import os
-import re
-import sys
 import argparse
 import json
+import os
+import re
+import subprocess
+import sys
 
 __version__ = "1.3.55"
 import concurrent.futures
 import datetime
-import yaml
-import shutil
 import select
+import shutil
 import signal
 from pathlib import Path
-from typing import List, Dict, Optional, Any
-from agent_utilities.base_utilities import get_library_file_path
-from agent_utilities.base_utilities import to_boolean
+from typing import Any
+
+import yaml
+from agent_utilities.base_utilities import get_library_file_path, to_boolean
 
 try:
-    from universal_skills.skill_utilities import get_universal_skills_path
     from skill_graphs.skill_graph_utilities import get_skill_graphs_path
+    from universal_skills.skill_utilities import get_universal_skills_path
 except ImportError:
     get_universal_skills_path = None
     get_skill_graphs_path = None
 
+from importlib.resources import files
+
+from agent_utilities.base_utilities import get_logger
+
 from repository_manager.models import (
-    GitResult,
     GitError,
     GitMetadata,
+    GitResult,
+    MaintenanceConfig,
     ReadmeResult,
-    WorkspaceConfig,
     SubdirectoryConfig,
+    WorkspaceConfig,
 )
-
-from importlib.resources import files
-from agent_utilities.base_utilities import get_logger
 
 logger = get_logger("RepositoryManager")
 
@@ -50,9 +52,8 @@ logger = get_logger("RepositoryManager")
 def get_packaged_file_path(package: str, file: str) -> str:
     """Robustly find a file in a package using importlib.resources."""
     try:
-
         path = files(package).joinpath(file)
-        if path.exists():
+        if path.is_file():
             return str(path)
     except Exception:
         pass
@@ -79,7 +80,7 @@ DEFAULT_WORKSPACE_YML = (
 
 _raw_threads = os.getenv("REPOSITORY_MANAGER_THREADS", "")
 DEFAULT_REPOSITORY_MANAGER_THREADS = int(
-    _raw_threads if _raw_threads and _raw_threads.isdigit() else "24"
+    _raw_threads if _raw_threads and _raw_threads.isdigit() else "15"
 )
 
 _raw_branch = os.getenv("REPOSITORY_MANAGER_DEFAULT_BRANCH", "")
@@ -93,11 +94,11 @@ class Git:
 
     def __init__(
         self,
-        path: str = None,
-        threads: int = None,
+        path: str | None = None,
+        threads: int | None = None,
         set_to_default_branch: bool = False,
         capture_output: bool = False,
-        report_path: str = None,
+        report_path: str | None = None,
     ):
         """Initialize the Git class with default settings."""
         self.path = path or DEFAULT_REPOSITORY_MANAGER_WORKSPACE
@@ -108,8 +109,8 @@ class Git:
             except Exception:
                 pass
 
-        self.project_map = {}
-        self.config = None
+        self.project_map: dict[str, str] = {}
+        self.config: WorkspaceConfig | None = None
         self.threads = threads or DEFAULT_REPOSITORY_MANAGER_THREADS
         self.set_to_default_branch = set_to_default_branch
         self.capture_output = capture_output
@@ -168,7 +169,7 @@ class Git:
             ),
         )
 
-    def generate_workspace_tree(self, yaml_path: str = None) -> str:
+    def generate_workspace_tree(self, yaml_path: str | None = None) -> str:
         """Generates an ASCII tree of the workspace defined in YAML."""
         if yaml_path:
             self.load_projects_from_yaml(yaml_path)
@@ -191,7 +192,7 @@ class Git:
         _build_tree(self.config.subdirectories)
         return "\n".join(lines)
 
-    def generate_workspace_mermaid(self, yaml_path: str = None) -> str:
+    def generate_workspace_mermaid(self, yaml_path: str | None = None) -> str:
         """Generates a Mermaid diagram of the workspace defined in YAML."""
         if yaml_path:
             self.load_projects_from_yaml(yaml_path)
@@ -215,13 +216,13 @@ class Git:
         _build_mermaid(self.config.subdirectories, "Root")
         return "\n".join(lines)
 
-    def generate_agents_md(self, target_path: str = None) -> GitResult:
+    def generate_agents_md(self, target_path: str | None = None) -> GitResult:
         """
         Generates/Updates the AGENTS.md catalog in the workspace root.
         """
         return self.generate_agents_documentation(target_path)
 
-    def get_project_map(self) -> Dict[str, str]:
+    def get_project_map(self) -> dict[str, str]:
         """
         Returns the mapping of repository URLs to their local project paths.
         Ensures paths are absolute and expanded.
@@ -231,11 +232,11 @@ class Git:
             for url, p in self.project_map.items()
         }
 
-    def get_workspace_projects(self) -> List[str]:
+    def get_workspace_projects(self) -> list[str]:
         """Returns a list of project basenames (e.g. 'genius-agent') defined in the workspace."""
         return [os.path.basename(p) for p in self.project_map.values()]
 
-    async def _get_intelligence_engine(self, path: Optional[str] = None) -> Any:
+    async def _get_intelligence_engine(self, path: str | None = None) -> Any:
         """Helper to get a graph engine, reusing an active one if available."""
         from agent_utilities.knowledge_graph.engine import RegistryGraphEngine as Engine
 
@@ -252,7 +253,7 @@ class Git:
         await pipeline.run()
         return Engine(pipeline.graph)
 
-    def _get_intelligence_engine_sync(self, path: Optional[str] = None) -> Any:
+    def _get_intelligence_engine_sync(self, path: str | None = None) -> Any:
         """Synchronous version of _get_intelligence_engine."""
         import asyncio
 
@@ -280,8 +281,8 @@ class Git:
         return loop.run_until_complete(self._get_intelligence_engine(path))
 
     async def graph_query(
-        self, query: str, mode: str = "hybrid", path: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        self, query: str, mode: str = "hybrid", path: str | None = None
+    ) -> list[dict[str, Any]]:
         """Queries the Hybrid Graph using vector similarity or Cypher structure."""
         engine = await self._get_intelligence_engine(path)
 
@@ -290,13 +291,13 @@ class Git:
         return engine.search_hybrid(query)
 
     def graph_path(
-        self, source_id: str, target_id: str, path: Optional[str] = None
-    ) -> List[str]:
+        self, source_id: str, target_id: str, path: str | None = None
+    ) -> list[str]:
         """Finds the shortest path between two symbols across the workspace graph."""
         engine = self._get_intelligence_engine_sync(path)
         return engine.find_path(source_id, target_id)
 
-    def graph_status(self, path: Optional[str] = None) -> Dict[str, Any]:
+    def graph_status(self, path: str | None = None) -> dict[str, Any]:
         """Returns the current status of the workspace graph."""
         engine = self._get_intelligence_engine_sync(path)
         # Re-run pipeline to get fresh metadata if needed?
@@ -307,7 +308,7 @@ class Git:
         }
         return metadata
 
-    def graph_reset(self, path: Optional[str] = None) -> str:
+    def graph_reset(self, path: str | None = None) -> str:
         """Purges the graph database and Forces a clean rebuild on next build."""
         root = self._resolve_path(path)
         repo_graph_dir = os.path.join(root, ".repo_graph")
@@ -326,13 +327,13 @@ class Git:
         return "Graph database purged successfully."
 
     async def graph_impact(
-        self, symbol: str, group_name: Optional[str] = None, path: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        self, symbol: str, group_name: str | None = None, path: str | None = None
+    ) -> list[dict[str, Any]]:
         """Calculates multi-repo impact for a symbol using the GraphEngine."""
         engine = await self._get_intelligence_engine(path)
         return engine.query_impact(symbol)
 
-    def _resolve_path(self, path: str = None) -> str:
+    def _resolve_path(self, path: str | None = None) -> str:
         """
         Resolve the path to an absolute path.
         If path is None, returns self.path.
@@ -348,8 +349,8 @@ class Git:
         return os.path.abspath(os.path.join(self.path, path))
 
     def install_projects(
-        self, extra: str = "all", threads: int = None, report: bool = True
-    ) -> List[GitResult]:
+        self, extra: str = "all", threads: int | None = None, report: bool = True
+    ) -> list[GitResult]:
         """Bulk installs Python projects in the workspace."""
         threads = threads or self.threads
         if not self.project_map:
@@ -455,18 +456,6 @@ class Git:
             successes = [r for r in results if r.status == "success"]
             failures = [r for r in results if r.status == "error"]
 
-            print("\n" + "=" * 50)
-            print("INSTALLATION SUMMARY")
-            print(
-                f"Total: {len(results)} | Success: {len(successes)} ✅ | Failure: {len(failures)} ❌"
-            )
-            if failures:
-                print("\nFailures:")
-                for r in failures:
-                    pkg = r.metadata.workspace.split("/")[-1]
-                    print(f"- {pkg}: {r.error.message if r.error else r.data}")
-            print("=" * 50 + "\n")
-
             report_md = "# INSTALLATION SUMMARY\n"
             report_md += (
                 f"**Time:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
@@ -476,13 +465,18 @@ class Git:
             if successes:
                 report_md += "## Successes ✅\n"
                 for r in successes:
-                    pkg = r.metadata.workspace.split("/")[-1]
+                    pkg = "unknown"
+                    if r.metadata:
+                        pkg = r.metadata.workspace.split("/")[-1]
                     report_md += f"- **{pkg}**: Installation success\n"
 
             if failures:
+                reasons: dict[str, list[str]] = {}
                 report_md += "\n## Failures ❌\n"
                 for r in failures:
-                    pkg = r.metadata.workspace.split("/")[-1]
+                    pkg = "unknown"
+                    if r.metadata:
+                        pkg = r.metadata.workspace.split("/")[-1]
                     error_msg = r.error.message if r.error else r.data
                     report_md += f"- **{pkg}**: {error_msg}\n"
 
@@ -491,7 +485,7 @@ class Git:
 
             return results
 
-    def build_projects(self, threads: int = None) -> List[GitResult]:
+    def build_projects(self, threads: int | None = None) -> list[GitResult]:
         """Bulk builds Python and Node.js projects in the workspace."""
         threads = threads or self.threads
         if not self.project_map:
@@ -513,8 +507,8 @@ class Git:
             return [f.result() for f in concurrent.futures.as_completed(futures)]
 
     def validate_projects(
-        self, type: str = "all", threads: int = None
-    ) -> List[GitResult]:
+        self, type: str = "all", threads: int | None = None
+    ) -> list[GitResult]:
         """Bulk validates agent/MCP servers using various modes (help, static, runtime)."""
         threads = threads or self.threads
         if not self.project_map:
@@ -528,7 +522,6 @@ class Git:
         run_all = type in ["all", "flat", "graph"]
         results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-
             agent_targets = []
             for url, path in self.project_map.items():
                 pkg_name = url.split("/")[-1].replace(".git", "")
@@ -582,9 +575,9 @@ class Git:
                         "pkg": pkg_underscore,
                         "path": path,
                         "pkg_dir": pkg_dir,
-                        "file": agent_file,
-                        "is_mcp": is_mcp,
-                        "is_graph": is_graph,
+                        "file": agent_file or "",
+                        "is_mcp": str(is_mcp),
+                        "is_graph": str(is_graph),
                     }
                 )
 
@@ -680,7 +673,6 @@ class Git:
                         executor.submit(self._check_help, cmd, path=target["path"])
                     )
                 elif run_all or type == "mcp":
-
                     results.append(
                         GitResult(
                             status="skipped",
@@ -700,7 +692,6 @@ class Git:
                         executor.submit(self._check_help, cmd, path=target["path"])
                     )
                 elif run_all or type == "agent":
-
                     results.append(
                         GitResult(
                             status="skipped",
@@ -821,38 +812,49 @@ class Git:
             )
             if failures:
                 print("\nFailures:")
-                for r in failures:
-                    pkg = r.metadata.workspace.split("/")[-1]
-                    print(f"- {pkg}: {r.error.message if r.error else r.data}")
+                for r in results:
+                    pkg = "unknown"
+                    if r.metadata:
+                        pkg = r.metadata.workspace.split("/")[-1]
+                    error_msg = r.error.message if r.error else r.data
+                    print(f"- {pkg}: {error_msg}")
             print("=" * 50 + "\n")
 
             categories = {
                 "Ecosystem Installation": [
                     r
                     for r in results
-                    if r.metadata.command and "pip install" in r.metadata.command
+                    if r.metadata
+                    and r.metadata.command
+                    and "pip install" in r.metadata.command
                 ],
                 "Version Metadata Sync (Dry Run)": [
                     r
                     for r in results
-                    if r.metadata.command and "bump2version" in r.metadata.command
+                    if r.metadata
+                    and r.metadata.command
+                    and "bump2version" in r.metadata.command
                 ],
                 "Agent Standards Compliance": [
                     r
                     for r in results
-                    if r.metadata.command and "static_check" in r.metadata.command
+                    if r.metadata
+                    and r.metadata.command
+                    and "static_check" in r.metadata.command
                 ],
                 "MCP Help Check": [
                     r
                     for r in results
-                    if r.metadata.command
+                    if r.metadata
+                    and r.metadata.command
                     and "mcp_server" in r.metadata.command
                     and "--help" in r.metadata.command
                 ],
                 "Agent Help Check": [
                     r
                     for r in results
-                    if r.metadata.command
+                    if r.metadata
+                    and r.metadata.command
                     and (
                         "agent_server" in r.metadata.command
                         or "server" in r.metadata.command
@@ -863,7 +865,8 @@ class Git:
                 "Agent Runtime & Web UI": [
                     r
                     for r in results
-                    if r.metadata.command
+                    if r.metadata
+                    and r.metadata.command
                     and (
                         "runtime_check" in r.metadata.command
                         or "--web" in r.metadata.command
@@ -872,22 +875,21 @@ class Git:
                 "Pre-commit Standard Compliance": [
                     r
                     for r in results
-                    if r.metadata.command and "pre-commit run" in r.metadata.command
+                    if r.metadata
+                    and r.metadata.command
+                    and "pre-commit run" in r.metadata.command
                 ],
             }
 
             known_ids = set()
             for cat_list in categories.values():
                 for r in cat_list:
-                    known_ids.add(id(r))
+                    if r.metadata:
+                        known_ids.add(id(r))
 
-            other = [r for r in results if id(r) not in known_ids]
-            if other:
-                for r in other:
-                    logger.debug(
-                        f"Uncategorized result: {r.metadata.workspace} - cmd: {r.metadata.command}"
-                    )
-                categories["Additional Operational Checks"] = other
+            uncategorized = [r for r in results if id(r) not in known_ids]
+            if uncategorized:
+                categories["Additional Operational Checks"] = uncategorized
 
             report_md = "# VALIDATION SUMMARY\n"
             report_md += (
@@ -909,14 +911,22 @@ class Git:
                 if cat_successes:
                     report_md += "#### Successes ✅\n"
                     for r in cat_successes:
-                        pkg = r.metadata.workspace.split("/")[-1]
+                        pkg = (
+                            r.metadata.workspace.split("/")[-1]
+                            if r.metadata
+                            else "unknown"
+                        )
                         report_md += f"- **{pkg}**: Success\n"
                     report_md += "\n"
 
                 if cat_failures:
                     report_md += "#### Failures ❌\n"
                     for r in cat_failures:
-                        pkg = r.metadata.workspace.split("/")[-1]
+                        pkg = (
+                            r.metadata.workspace.split("/")[-1]
+                            if r.metadata
+                            else "unknown"
+                        )
                         error_msg = r.error.message if r.error else r.data
                         report_md += f"- **{pkg}**: {error_msg}\n"
                         if r.data and r.data != error_msg:
@@ -926,7 +936,11 @@ class Git:
                 if cat_skipped:
                     report_md += "#### Skipped ⏭️\n"
                     for r in cat_skipped:
-                        pkg = r.metadata.workspace.split("/")[-1]
+                        pkg = (
+                            r.metadata.workspace.split("/")[-1]
+                            if r.metadata
+                            else "unknown"
+                        )
                         report_md += f"- **{pkg}**: {r.data or 'Skipped'}\n"
                     report_md += "\n"
 
@@ -957,11 +971,10 @@ class Git:
         """Helper to run a --help command and return a standardized result."""
         result = self.git_action(command=command, path=path, quiet=True)
         if result.status == "success":
-
             result.data = "--help loaded successfully"
         return result
 
-    def _check_agent_static(self, target: Dict[str, str]) -> GitResult:
+    def _check_agent_static(self, target: dict[str, str]) -> GitResult:
         """Internal helper to perform static analysis for agents checking for standards compliance."""
         pkg_underscore = target["pkg"]
         pkg_dir = target["pkg_dir"]
@@ -971,7 +984,7 @@ class Git:
         agent_file = os.path.join(pkg_dir, f"{agent_file_name}.py")
 
         try:
-            with open(agent_file, "r") as f:
+            with open(agent_file) as f:
                 content = f.read()
 
             missing = []
@@ -1010,7 +1023,7 @@ class Git:
                 ),
             )
 
-    def _check_agent_runtime(self, target: Dict[str, str], port: int) -> GitResult:
+    def _check_agent_runtime(self, target: dict[str, str], port: int) -> GitResult:
         """Internal helper to test a single agent's runtime startup with Web UI."""
         pkg_underscore = target["pkg"]
         agent_file = target["file"]
@@ -1107,7 +1120,6 @@ class Git:
                             break
 
                 if proc.poll() is not None:
-
                     success = False
                     if not error_msg:
                         error_msg = f"Process exited with code {proc.returncode}"
@@ -1163,7 +1175,7 @@ class Git:
             )
 
     @staticmethod
-    def generate_markdown_summary(action: str, results: List[GitResult]) -> str:
+    def generate_markdown_summary(action: str, results: list[GitResult]) -> str:
         """Generates a beautiful markdown summary of bulk operation results."""
         successes = [r for r in results if r.status == "success"]
         failures = [r for r in results if r.status == "error"]
@@ -1181,13 +1193,14 @@ class Git:
         if successes:
             md.append("## Successes ✅")
             for r in successes:
-                name = os.path.basename(r.metadata.workspace)
+                name = (
+                    os.path.basename(r.metadata.workspace) if r.metadata else "unknown"
+                )
 
                 msg = r.data or "Success"
                 if action.lower() in ["installation", "build", "validation"]:
                     msg = "Success"
                 elif msg.count("\n") > 2:
-
                     if "new_version=" not in msg and "current_version=" not in msg:
                         msg = "Success"
 
@@ -1197,10 +1210,13 @@ class Git:
         if failures:
             md.append("## Failures ❌")
             for r in failures:
-                name = os.path.basename(r.metadata.workspace)
+                name = (
+                    os.path.basename(r.metadata.workspace) if r.metadata else "unknown"
+                )
                 err_msg = r.error.message if r.error else "Unknown error"
                 md.append(f"### ⚠️ {name}")
-                md.append(f"**Command:** `{r.metadata.command}`")
+                if r.metadata:
+                    md.append(f"**Command:** `{r.metadata.command}`")
                 md.append("**Error:**")
                 md.append(f"```text\n{err_msg}\n```")
                 if r.data:
@@ -1211,12 +1227,14 @@ class Git:
 
         if skips:
             md.append("## Skipped ⏭️")
-            reasons = {}
+            reasons: dict[str, list[str]] = {}
             for r in skips:
                 reason = r.data or "No reason provided"
                 if reason not in reasons:
                     reasons[reason] = []
-                reasons[reason].append(os.path.basename(r.metadata.workspace))
+                reasons[reason].append(
+                    os.path.basename(r.metadata.workspace) if r.metadata else "unknown"
+                )
 
             for reason, projects in sorted(reasons.items()):
                 project_list = ", ".join(sorted(list(set(projects))))
@@ -1226,7 +1244,11 @@ class Git:
         return "\n".join(md)
 
     def git_action(
-        self, command: str, path: str = None, quiet: bool = False, env: dict = None
+        self,
+        command: str,
+        path: str | None = None,
+        quiet: bool = False,
+        env: dict | None = None,
     ) -> GitResult:
         """
         Execute a Git command in the specified directory.
@@ -1284,13 +1306,14 @@ class Git:
         )
 
         if result.status == "error":
-            logger.error(f"Command failed: {command}\nError: {result.error.message}")
+            err_msg = result.error.message if result.error else "Unknown error"
+            logger.error(f"Command failed: {command}\nError: {err_msg}")
         elif not quiet:
             logger.info(f"Command: {command}\nOutput: {result.data}")
 
         return result
 
-    def clone_projects(self, projects: List[str] = None) -> List[GitResult]:
+    def clone_projects(self, projects: list[str] | None = None) -> list[GitResult]:
         """
         Clone all specified Git projects in parallel using multiple threads.
 
@@ -1383,7 +1406,7 @@ class Git:
         logger.info(f"Cloning {url} to {target_path}: {result.status}")
         return result
 
-    def pull_projects(self, project_dirs: List[str] = None) -> List[GitResult]:
+    def pull_projects(self, project_dirs: list[str] | None = None) -> list[GitResult]:
         """
         Pull updates for multiple projects in parallel.
         """
@@ -1406,7 +1429,7 @@ class Git:
         ) as executor:
             return list(executor.map(self.pull_project, project_dirs))
 
-    def pull_project(self, path: str = None) -> GitResult:
+    def pull_project(self, path: str | None = None) -> GitResult:
         """
         Pull updates for a single Git project and optionally checkout the default branch.
 
@@ -1454,7 +1477,10 @@ class Git:
         )
 
         combined_data = "\n".join(
-            [f"[{r.metadata.command}]: {r.data}" for r in results]
+            [
+                f"[{r.metadata.command if r.metadata else 'unknown'}]: {r.data}"
+                for r in results
+            ]
         )
 
         combined_error = next((r.error for r in results if r.error), None)
@@ -1481,7 +1507,7 @@ class Git:
             threads (int): The number of threads.
 
         Notes:
-            If the input is invalid, defaults 24
+            If the input is invalid, defaults 15
         """
         try:
             if 0 < threads <= self.maximum_threads:
@@ -1501,7 +1527,7 @@ class Git:
         self,
         run: bool = True,
         autoupdate: bool = False,
-        path: str = None,
+        path: str | None = None,
     ) -> GitResult:
         """
         Execute pre-commit commands in the specified path.
@@ -1561,7 +1587,6 @@ class Git:
         if result.status == "error" and result.error:
             msg = result.error.message.lower()
             if "don't commit to branch" in msg or "no-commit-to-branch" in msg:
-
                 other_failures = False
                 lines = (result.error.message + "\n" + result.data).splitlines()
                 for line in lines:
@@ -1588,8 +1613,8 @@ class Git:
         self,
         run: bool = True,
         autoupdate: bool = False,
-        projects: List[str] = None,
-    ) -> List[GitResult]:
+        projects: list[str] | None = None,
+    ) -> list[GitResult]:
         """
         Execute pre-commit commands for all projects in parallel.
 
@@ -1661,7 +1686,7 @@ class Git:
                 )
             ]
 
-    def install_project(self, path: str = None, extra: str = "all") -> GitResult:
+    def install_project(self, path: str | None = None, extra: str = "all") -> GitResult:
         """
         Install a Python project using pip install -e .[extra].
         """
@@ -1671,7 +1696,7 @@ class Git:
         pyproject = os.path.join(target_path, "pyproject.toml")
         if os.path.exists(pyproject):
             try:
-                with open(pyproject, "r") as f:
+                with open(pyproject) as f:
                     content = f.read()
                 if (
                     "[project.optional-dependencies]" in content
@@ -1694,7 +1719,7 @@ class Git:
 
         return result
 
-    def get_readme(self, path: str = None) -> ReadmeResult:
+    def get_readme(self, path: str | None = None) -> ReadmeResult:
         """
         Get the content and path of the README.md file in the specified path.
 
@@ -1719,7 +1744,7 @@ class Git:
             return ReadmeResult(content="", path="")
 
         try:
-            with open(readme_path, "r", encoding="utf-8") as f:
+            with open(readme_path, encoding="utf-8") as f:
                 content = f.read()
             return ReadmeResult(content=content, path=readme_path)
         except Exception as e:
@@ -1783,7 +1808,7 @@ class Git:
         self,
         part: str,
         allow_dirty: bool = False,
-        path: str = None,
+        path: str | None = None,
         dry_run: bool = False,
         verbose: bool = False,
     ) -> GitResult:
@@ -1875,9 +1900,9 @@ class Git:
         self,
         part: str,
         dry_run: bool = False,
-        exclude: List[str] = None,
+        exclude: list[str] | None = None,
         verbose: bool = False,
-    ) -> List[GitResult]:
+    ) -> list[GitResult]:
         """Bumps the version for all projects in the workspace in parallel."""
         exclude = exclude or []
         results = []
@@ -1944,13 +1969,14 @@ class Git:
         start_phase: int = 1,
         dry_run: bool = False,
         skip_pre_commit: bool = False,
-        config: dict = None,
-    ) -> List[GitResult]:
+        config: dict | None = None,
+    ) -> list[GitResult]:
         """
         Execute the phased bumpversion workflow: pre-commits + phased bumping.
         """
         all_results = []
         if config is None:
+            config_model: MaintenanceConfig | None = None
             if hasattr(self, "config") and self.config and self.config.maintenance:
                 config_model = self.config.maintenance
             else:
@@ -1959,21 +1985,24 @@ class Git:
                     yml_path = os.path.join(self.path, yml_path)
 
                 if os.path.exists(yml_path):
-                    if self.load_projects_from_yaml(yml_path):
+                    if self.load_projects_from_yaml(yml_path) and self.config:
                         config_model = self.config.maintenance
                     else:
                         config_model = None
                 else:
                     config_model = None
 
+            maintenance_cfg = None
             if config_model:
-                config = config_model.model_dump()
+                maintenance_cfg = config_model.model_dump()
             else:
                 logger.error("No maintenance configuration found.")
                 return []
 
+            config = maintenance_cfg
+
         if not skip_pre_commit:
-            projects_to_check = None
+            projects_to_check: list[Any] | None = None
             if config:
                 projects_to_check = []
                 has_bulk = False
@@ -2014,7 +2043,6 @@ class Git:
                 all_results.append(result)
 
                 if result.status == "success":
-
                     match = re.search(r"new_version=(.*)", result.data)
                     if match:
                         return match.group(1).strip()
@@ -2079,7 +2107,7 @@ class Git:
             return False
 
         try:
-            with open(abs_yaml_path, "r") as f:
+            with open(abs_yaml_path) as f:
                 data = yaml.safe_load(f)
 
             if not data:
@@ -2093,7 +2121,6 @@ class Git:
             if os.path.isabs(yaml_config_path):
                 self.path = os.path.abspath(yaml_config_path)
             elif is_default_yaml:
-
                 self.path = os.path.abspath(
                     os.path.expanduser(DEFAULT_REPOSITORY_MANAGER_WORKSPACE)
                 )
@@ -2119,8 +2146,8 @@ class Git:
             return False
 
     def _parse_subdirectories(
-        self, subdirs: Dict[str, SubdirectoryConfig], current_path: str
-    ) -> Dict[str, str]:
+        self, subdirs: dict[str, SubdirectoryConfig], current_path: str
+    ) -> dict[str, str]:
         """Helper to recursively parse subdirectories and collect repository paths."""
         project_map = {}
         for name, data in subdirs.items():
@@ -2159,7 +2186,6 @@ class Git:
                         files("repository_manager") / "workspace.yml"
                     ).read_text()
                 except Exception:
-
                     template_content = "name: My Workspace\npath: .\ndescription: New workspace\nsubdirectories: {}\n"
             else:
                 template_content = "name: My Workspace\npath: .\ndescription: New workspace\nsubdirectories:\n  agents:\n    description: Agent repositories\n    repositories: []\n"
@@ -2185,7 +2211,7 @@ class Git:
             )
 
     def save_workspace_config(
-        self, yaml_path: str, config: WorkspaceConfig = None
+        self, yaml_path: str, config: WorkspaceConfig | None = None
     ) -> GitResult:
         """
         Saves the current or provided WorkspaceConfig to a YAML file.
@@ -2223,7 +2249,9 @@ class Git:
                 status="error", data="", error=GitError(message=str(e), code=1)
             )
 
-    def generate_agents_documentation(self, target_path: str = None) -> GitResult:
+    def generate_agents_documentation(
+        self, target_path: str | None = None
+    ) -> GitResult:
         """
         Generates an AGENTS.md catalog by discovering agent types and main files.
         Uses a robust multi-level path discovery to identify Graph vs Flat agents.
@@ -2315,7 +2343,7 @@ class Git:
                 status="error", data="", error=GitError(message=str(e), code=1)
             )
 
-    def get_consolidated_skill_paths(self) -> List[str]:
+    def get_consolidated_skill_paths(self) -> list[str]:
         """
         Returns absolute paths to the 15 specific building and documentation skills.
         """
@@ -2343,13 +2371,12 @@ class Git:
 
         if get_universal_skills_path:
             try:
-
                 from importlib.resources import files
 
                 base = files("universal_skills") / "skills"
                 for skill in required_universal:
                     skill_path = base / skill
-                    if skill_path.joinpath("SKILL.md").exists():
+                    if skill_path.joinpath("SKILL.md").is_file():
                         paths.append(str(skill_path))
             except Exception as e:
                 logger.warning(f"Could not load universal skills via importlib: {e}")
@@ -2370,7 +2397,7 @@ class Git:
                 base = files("skill_graphs") / "skill_graphs"
                 for graph in required_graphs:
                     graph_path = base / graph
-                    if graph_path.joinpath("SKILL.md").exists():
+                    if graph_path.joinpath("SKILL.md").is_file():
                         paths.append(str(graph_path))
             except Exception as e:
                 logger.warning(f"Could not load skill graphs via importlib: {e}")
@@ -2382,7 +2409,7 @@ class Git:
 
         return list(set(paths))
 
-    def ensure_graph(self) -> Optional[Any]:
+    def ensure_graph(self) -> Any | None:
         """
         Incrementally builds or updates the Hybrid Graph for the workspace.
         """
@@ -2454,7 +2481,7 @@ Examples:
         "-t",
         "--threads",
         type=int,
-        help="Parallel thread count (default: 24).",
+        help="Parallel thread count (default: 15).",
         default=DEFAULT_REPOSITORY_MANAGER_THREADS,
     )
     group_general.add_argument(
@@ -2630,7 +2657,6 @@ Examples:
 
     if args.file:
         if os.path.exists(args.file):
-
             if not git.load_projects_from_yaml(args.file):
                 logger.warning(f"Could not load {args.file} as a valid Workspace YAML.")
         else:
@@ -2652,7 +2678,6 @@ Examples:
                     filtered[url] = path
             git.project_map = filtered
         else:
-
             for r in repositories:
                 if "/" in r:
                     name = r.split("/")[-1].replace(".git", "")
@@ -2707,7 +2732,7 @@ Examples:
         config = None
         if args.config:
             try:
-                with open(args.config, "r") as f:
+                with open(args.config) as f:
                     config = json.load(f)
             except Exception as e:
                 logger.error(f"Failed to load config from {args.config}: {e}")
@@ -2757,13 +2782,13 @@ Examples:
         res = asyncio.run(git.graph_query(args.graph_query, mode=args.graph_mode))
         print(json.dumps(res, indent=2))
     if args.graph_path:
-        res = git.graph_path(args.graph_path[0], args.graph_path[1])
-        print(json.dumps(res, indent=2))
+        path_res = git.graph_path(args.graph_path[0], args.graph_path[1])
+        print(json.dumps(path_res, indent=2))
     if args.graph_impact:
         import asyncio
 
-        res = asyncio.run(git.graph_impact(args.graph_impact))
-        print(json.dumps(res, indent=2))
+        impact_res = asyncio.run(git.graph_impact(args.graph_impact))
+        print(json.dumps(impact_res, indent=2))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,173 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.3, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/genius/Workspace/agent-packages/agents/repository-manager
+configfile: pytest.ini
+plugins: logfire-4.32.1, asyncio-1.3.0, cov-7.1.0, hypothesis-6.152.1, langsmith-0.7.32, anyio-4.13.0, typeguard-4.4.2
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/test_agent_integration.py 
+DEBUG: Starting server: /usr/bin/python3 -m repository_manager.agent_server --port 9888 --debug
+DEBUG: Logs at /home/genius/Workspace/agent-packages/agents/repository-manager/server_integration.log
+E
+
+==================================== ERRORS ====================================
+___________ ERROR at setup of test_get_workspace_projects_via_graph ____________
+
+    @pytest.fixture(scope="module")
+    def agent_server():
+        """Starts the agent server as a subprocess for integration testing."""
+        # Ensure port is clear
+        os.system(f"fuser -k {PORT}/tcp > /dev/null 2>&1")
+    
+        env = os.environ.copy()
+        # Explicitly inject the known-good local LLM config
+        env["LLM_BASE_URL"] = "http://10.0.0.18:1234/v1"
+        env["LLM_API_KEY"] = "EMPTY"
+        env["PYTHONPATH"] = PROJECT_ROOT
+    
+        log_path = os.path.join(PROJECT_ROOT, "server_integration.log")
+        log_file = open(log_path, "w")
+    
+        cmd = [sys.executable, "-m", "repository_manager.agent_server", "--port", str(PORT), "--debug"]
+        print(f"\nDEBUG: Starting server: {' '.join(cmd)}")
+        print(f"DEBUG: Logs at {log_path}")
+    
+        process = subprocess.Popen(
+            cmd,
+            cwd=PROJECT_ROOT,
+            env=env,
+            stdout=log_file,
+            stderr=log_file,
+            preexec_fn=os.setsid
+        )
+    
+        # Wait for server to be healthy
+        max_retries = 30
+        for i in range(max_retries):
+            try:
+                resp = httpx.get(f"{BASE_URL}/health", timeout=1.0)
+                if resp.status_code == 200:
+                    print(f"Server is healthy after {i} seconds.")
+                    break
+            except Exception:
+                pass
+    
+            if process.poll() is not None:
+                log_file.close()
+                with open(log_path, "r") as f:
+                    logs = f.read()
+>               pytest.fail(f"Server failed to start with exit code {process.returncode}\nLogs:\n{logs}")
+E               Failed: Server failed to start with exit code 1
+E               Logs:
+E               <frozen runpy>:128: RuntimeWarning: 'repository_manager.agent_server' found in sys.modules after import of package 'repository_manager', but prior to execution of 'repository_manager.agent_server'; this may result in unpredictable behaviour
+E               Agent v1.3.55
+E               2026-04-21 23:40:27,936 - __main__ - DEBUG - Debug mode enabled
+E               2026-04-21 23:40:27,936 - agent_utilities.server - DEBUG - Graph Agent: No external MCP URL provided.
+E               2026-04-21 23:40:27,937 - agent_utilities.workspace - DEBUG - get_agent_workspace: Tier 1 SUCCESS (Override): /home/genius/Workspace/agent-packages/agents/repository-manager/repository_manager/agent_data
+E               2026-04-21 23:40:27,937 - agent_utilities.server - INFO - Ingesting MCP tools from /home/genius/Workspace/agent-packages/agents/repository-manager/repository_manager/agent_data/mcp_config.json to Knowledge Graph...
+E               2026-04-21 23:40:27,937 - asyncio - DEBUG - Using selector: EpollSelector
+E               2026-04-21 23:40:27,937 - agent_utilities.mcp_utilities - DEBUG - MCP Config: Resolved command 'repository-manager-mcp' to '/home/genius/.local/bin/repository-manager-mcp'
+E               2026-04-21 23:40:27,938 - agent_utilities.mcp_utilities - DEBUG - MCP Config: Loaded server 'repository-manager'
+E               repository-manager MCP v1.3.55
+E               
+E               Starting MCP Server
+E                 Transport: STDIO
+E                 Auth: none
+E                 Dynamic Tags Loaded: 5
+E               
+E               
+E               ╭──────────────────────────────────────────────────────────────────────────────╮
+E               │                                                                              │
+E               │                                                                              │
+E               │                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+E               │                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+E               │                                                                              │
+E               │                                                                              │
+E               │                                                                              │
+E               │                                FastMCP 3.2.4                                 │
+E               │                            https://gofastmcp.com                             │
+E               │                                                                              │
+E               │                  🖥  Server:      RepositoryManager, 3.2.4                    │
+E               │                  🚀 Deploy free: https://horizon.prefect.io                  │
+E               │                                                                              │
+E               ╰──────────────────────────────────────────────────────────────────────────────╯
+E               
+E               
+E               [04/21/26 23:40:29] INFO     Starting MCP server                transport.py:209
+E                                            'RepositoryManager' with transport                 
+E                                            'stdio'                                            
+E                                   INFO     event=request_start                  logging.py:122
+E                                            method=initialize source=client                    
+E                                   INFO     event=request_success                logging.py:122
+E                                            method=initialize source=client                    
+E                                            duration_ms=0.39                                   
+E                                   INFO     Request initialize completed in 2.60ms timing.py:47
+E               2026-04-21 23:40:29,905 - mcp.server.lowlevel.server - INFO - Processing request of type ListToolsRequest
+E                                   INFO     event=request_start                  logging.py:122
+E                                            method=tools/list source=client                    
+E                                   INFO     event=request_success                logging.py:122
+E                                            method=tools/list source=client                    
+E                                            duration_ms=1.37                                   
+E                                   INFO     Request tools/list completed in 3.42ms timing.py:47
+E               2026-04-21 23:40:30,396 - agent_utilities.mcp_agent_manager - INFO - Tool scoring complete: 20 tools, avg relevance 70/100
+E               2026-04-21 23:40:30,397 - agent_utilities.workspace - DEBUG - get_agent_workspace: Tier 1 SUCCESS (Override): /home/genius/Workspace/agent-packages/agents/repository-manager/repository_manager/agent_data
+E               Traceback (most recent call last):
+E                 File "<frozen runpy>", line 198, in _run_module_as_main
+E                 File "<frozen runpy>", line 88, in _run_code
+E                 File "/home/genius/Workspace/agent-packages/agents/repository-manager/repository_manager/agent_server.py", line 80, in <module>
+E                   agent_server()
+E                   ~~~~~~~~~~~~^^
+E                 File "/home/genius/Workspace/agent-packages/agents/repository-manager/repository_manager/agent_server.py", line 56, in agent_server
+E                   create_graph_agent_server(
+E                   ~~~~~~~~~~~~~~~~~~~~~~~~~^
+E                       mcp_url=args.mcp_url,
+E                       ^^^^^^^^^^^^^^^^^^^^^
+E                   ...<17 lines>...
+E                       debug=args.debug,
+E                       ^^^^^^^^^^^^^^^^^
+E                   )
+E                   ^
+E                 File "/home/genius/Workspace/agent-packages/agent-utilities/agent_utilities/server.py", line 1480, in create_graph_agent_server
+E                   asyncio.run(sync_mcp_agents(config_path=_mcp_cfg_path))
+E                   ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E                 File "/usr/lib/python3.13/asyncio/runners.py", line 195, in run
+E                   return runner.run(main)
+E                          ~~~~~~~~~~^^^^^^
+E                 File "/usr/lib/python3.13/asyncio/runners.py", line 118, in run
+E                   return self._loop.run_until_complete(task)
+E                          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+E                 File "/usr/lib/python3.13/asyncio/base_events.py", line 719, in run_until_complete
+E                   return future.result()
+E                          ~~~~~~~~~~~~~^^
+E                 File "/home/genius/Workspace/agent-packages/agent-utilities/agent_utilities/mcp_agent_manager.py", line 527, in sync_mcp_agents
+E                   engine = IntelligenceGraphEngine(graph=nx.MultiDiGraph(), db_path=db_path)
+E                 File "/home/genius/Workspace/agent-packages/agent-utilities/agent_utilities/knowledge_graph/engine.py", line 75, in __init__
+E                   self.backend = create_backend(db_path=db_path)
+E                                  ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+E                 File "/home/genius/Workspace/agent-packages/agent-utilities/agent_utilities/knowledge_graph/backends/__init__.py", line 101, in create_backend
+E                   backend = LadybugBackend(resolved_path)
+E                 File "/home/genius/Workspace/agent-packages/agent-utilities/agent_utilities/knowledge_graph/backends/ladybug_backend.py", line 55, in __init__
+E                   raise e
+E                 File "/home/genius/Workspace/agent-packages/agent-utilities/agent_utilities/knowledge_graph/backends/ladybug_backend.py", line 43, in __init__
+E                   self.db = ladybug.Database(db_path if db_path != ":memory:" else None)
+E                             ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E                 File "/home/genius/.local/lib/python3.13/site-packages/ladybug/database.py", line 117, in __init__
+E                   self.init_database()
+E                   ~~~~~~~~~~~~~~~~~~^^
+E                 File "/home/genius/.local/lib/python3.13/site-packages/ladybug/database.py", line 168, in init_database
+E                   self._database = _lbug.Database(  # type: ignore[union-attr]
+E                                    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E                       self.database_path,
+E                       ^^^^^^^^^^^^^^^^^^^
+E                   ...<8 lines>...
+E                       self.enable_checksums,
+E                       ^^^^^^^^^^^^^^^^^^^^^^
+E                   )
+E                   ^
+E               RuntimeError: Runtime exception: Corrupted wal file. Read out invalid WAL record type.
+
+tests/test_agent_integration.py:60: Failed
+=========================== short test summary info ============================
+ERROR tests/test_agent_integration.py::test_get_workspace_projects_via_graph
+=============================== 1 error in 5.17s ===============================

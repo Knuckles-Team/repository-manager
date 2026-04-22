@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 from unittest.mock import MagicMock
 from agent_utilities.graph.runner import run_graph_stream
 
@@ -15,7 +16,7 @@ async def test_stream():
 
     graph.run = mock_run
 
-    config = {"tag_prompts": {}, "mcp_toolsets": []}
+    config: dict[str, Any] = {"tag_prompts": {}, "mcp_toolsets": []}
 
     print("Starting stream...")
     async for line in run_graph_stream(graph, config, "test query"):

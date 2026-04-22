@@ -15,23 +15,24 @@ with warnings.catch_warnings():
 warnings.filterwarnings("ignore", message=".*urllib3.*or chardet.*")
 warnings.filterwarnings("ignore", message=".*urllib3.*or charset_normalizer.*")
 
-from dotenv import load_dotenv, find_dotenv
 import os
 import sys
-from typing import Any, Optional, List, Dict
+from typing import Any
+
+from agent_utilities.base_utilities import to_boolean, to_integer
+from agent_utilities.mcp_utilities import create_mcp_server
+from dotenv import find_dotenv, load_dotenv
+from fastmcp import FastMCP
+from fastmcp.utilities.logging import get_logger
 from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from fastmcp import FastMCP
-from fastmcp.utilities.logging import get_logger
 
-from repository_manager.repository_manager import Git
 from repository_manager.models import (
     GitResult,
     WorkspaceConfig,
 )
-from agent_utilities.base_utilities import to_boolean, to_integer
-from agent_utilities.mcp_utilities import create_mcp_server
+from repository_manager.repository_manager import Git
 
 __version__ = "1.3.55"
 
@@ -43,7 +44,7 @@ DEFAULT_WORKSPACE_YML = os.environ.get("WORKSPACE_YML", "workspace.yml")
 logger = get_logger("RepositoryManagerServer")
 
 
-def get_git_instance(path: Optional[str] = None, threads: Optional[int] = None) -> Git:
+def get_git_instance(path: str | None = None, threads: int | None = None) -> Git:
     """Helper to get a Git instance with workpace YAML loaded."""
     workspace_path = path or DEFAULT_WORKSPACE
     git = Git(path=workspace_path, threads=threads or DEFAULT_THREADS)
@@ -78,7 +79,7 @@ def register_git_operations_tools(mcp: FastMCP):
         command: str = Field(
             description="The Git command to execute (e.g., 'git status')"
         ),
-        path: Optional[str] = Field(description="Path to execute in.", default=None),
+        path: str | None = Field(description="Path to execute in.", default=None),
     ) -> GitResult:
         """Executes an arbitrary Git command."""
         git = get_git_instance(path=path)
@@ -92,14 +93,14 @@ def register_git_operations_tools(mcp: FastMCP):
             "git_operations",
         }
     )
-    async def get_workspace_projects() -> List[str]:
+    async def get_workspace_projects() -> list[str]:
         """Returns a list of project URLs defined in the workspace."""
         git = get_git_instance()
         return git.get_workspace_projects()
 
     @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
     async def clone_projects(
-        threads: Optional[int] = Field(description="Parallel workers.", default=None),
+        threads: int | None = Field(description="Parallel workers.", default=None),
     ) -> str:
         """Clones repositories. Defaults to all in workspace.yml."""
         git = get_git_instance(threads=threads)
@@ -108,7 +109,7 @@ def register_git_operations_tools(mcp: FastMCP):
 
     @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
     async def pull_projects(
-        threads: Optional[int] = Field(description="Parallel workers.", default=None),
+        threads: int | None = Field(description="Parallel workers.", default=None),
     ) -> str:
         """Pulls updates for all projects in the workspace."""
         git = get_git_instance(threads=threads)
@@ -133,7 +134,7 @@ def register_project_management_tools(mcp: FastMCP):
 
     @mcp.tool(tags={"workspace_management"})
     async def install_projects(
-        threads: Optional[int] = Field(description="Parallel workers.", default=None),
+        threads: int | None = Field(description="Parallel workers.", default=None),
         extra: str = Field(description="Install group (e.g. 'all').", default="all"),
     ) -> str:
         """Bulk installs Python projects defined in the workspace."""
@@ -143,7 +144,7 @@ def register_project_management_tools(mcp: FastMCP):
 
     @mcp.tool(tags={"workspace_management"})
     async def build_projects(
-        threads: Optional[int] = Field(description="Parallel workers.", default=None),
+        threads: int | None = Field(description="Parallel workers.", default=None),
     ) -> str:
         """Bulk builds Python projects defined in the workspace."""
         git = get_git_instance(threads=threads)
@@ -155,7 +156,7 @@ def register_project_management_tools(mcp: FastMCP):
         type: str = Field(
             description="Validation type: 'agent', 'mcp', or 'all'.", default="all"
         ),
-        threads: Optional[int] = Field(description="Parallel workers.", default=None),
+        threads: int | None = Field(description="Parallel workers.", default=None),
     ) -> str:
         """Bulk validates agent/MCP servers in the workspace."""
         git = get_git_instance(threads=threads)
@@ -178,7 +179,7 @@ def register_project_management_tools(mcp: FastMCP):
     @mcp.tool(tags={"workspace_management"})
     async def save_workspace_config(
         yaml_path: str = Field(description="Target YAML path."),
-        config_dict: Dict[str, Any] = Field(
+        config_dict: dict[str, Any] = Field(
             description="Dictionary representation of WorkspaceConfig."
         ),
     ) -> GitResult:
@@ -188,8 +189,10 @@ def register_project_management_tools(mcp: FastMCP):
             git = get_git_instance()
             return git.save_workspace_config(yaml_path=yaml_path, config=config)
         except Exception as e:
+            from repository_manager.models import GitError
+
             return GitResult(
-                status="error", data="", error={"message": str(e), "code": 1}
+                status="error", data="", error=GitError(message=str(e), code=1)
             )
 
     @mcp.tool(tags={"workspace_management"})
@@ -209,9 +212,9 @@ def register_project_management_tools(mcp: FastMCP):
 def register_visualization_tools(mcp: FastMCP):
     @mcp.tool(tags={"visualization"})
     async def get_workspace_tree(
-        yml_path: Optional[str] = Field(
+        yml_path: str | None = Field(
             description="Path to workspace.yml.", default=None
-        )
+        ),
     ) -> str:
         """Generates an ASCII tree of the workspace structure."""
         git = get_git_instance()
@@ -220,9 +223,9 @@ def register_visualization_tools(mcp: FastMCP):
 
     @mcp.tool(tags={"visualization"})
     async def get_workspace_mermaid(
-        yml_path: Optional[str] = Field(
+        yml_path: str | None = Field(
             description="Path to workspace.yml.", default=None
-        )
+        ),
     ) -> str:
         """Generates a Mermaid diagram of the workspace structure."""
         git = get_git_instance()
@@ -231,9 +234,9 @@ def register_visualization_tools(mcp: FastMCP):
 
     @mcp.tool(tags={"visualization"})
     async def generate_agents_documentation(
-        target_path: Optional[str] = Field(
+        target_path: str | None = Field(
             description="Target path for AGENTS.md.", default=None
-        )
+        ),
     ) -> GitResult:
         """Generates an AGENTS.md catalog of discovered projects."""
         git = get_git_instance()
@@ -243,12 +246,12 @@ def register_visualization_tools(mcp: FastMCP):
 def register_graph_tools(mcp: FastMCP):
     @mcp.tool(tags={"graph_intelligence"})
     async def graph_build(
-        path: Optional[str] = Field(description="Workspace path.", default=None),
+        path: str | None = Field(description="Workspace path.", default=None),
         multimodal: bool = Field(
             description="Enable LLM multimodal rationale pass.", default=False
         ),
         incremental: bool = Field(description="Use incremental parsing.", default=True),
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Builds or synchronizes the Hybrid Workspace Graph (NetworkX + Ladybug)."""
         git = get_git_instance(path=path)
         if hasattr(git, "config") and git.config:
@@ -280,8 +283,8 @@ def register_graph_tools(mcp: FastMCP):
             description="Query mode: 'semantic' (vector), 'structural' (Cypher), or 'hybrid'.",
             default="hybrid",
         ),
-        path: Optional[str] = Field(description="Workspace path.", default=None),
-    ) -> List[Dict[str, Any]]:
+        path: str | None = Field(description="Workspace path.", default=None),
+    ) -> list[dict[str, Any]]:
         """Queries the Hybrid Graph using vector similarity or Cypher structure."""
         git = get_git_instance(path=path)
         return await git.graph_query(query, mode=mode, path=path)
@@ -290,23 +293,23 @@ def register_graph_tools(mcp: FastMCP):
     async def graph_path(
         source_id: str = Field(description="Source node ID (Symbol or File)."),
         target_id: str = Field(description="Target node ID."),
-        path: Optional[str] = Field(description="Workspace path.", default=None),
-    ) -> List[Dict[str, Any]]:
+        path: str | None = Field(description="Workspace path.", default=None),
+    ) -> list[str]:
         """Finds the shortest path between two symbols across the workspace graph."""
         git = get_git_instance(path=path)
         return git.graph_path(source_id, target_id, path=path)
 
     @mcp.tool(tags={"graph_intelligence"})
     async def graph_status(
-        path: Optional[str] = Field(description="Workspace path.", default=None),
-    ) -> Dict[str, Any]:
+        path: str | None = Field(description="Workspace path.", default=None),
+    ) -> dict[str, Any]:
         """Returns the current status of the workspace graph."""
         git = get_git_instance(path=path)
         return git.graph_status(path=path)
 
     @mcp.tool(tags={"graph_intelligence"})
     async def graph_reset(
-        path: Optional[str] = Field(description="Workspace path.", default=None),
+        path: str | None = Field(description="Workspace path.", default=None),
     ) -> str:
         """Purges the graph database and forces a clean rebuild."""
         git = get_git_instance(path=path)
@@ -315,9 +318,9 @@ def register_graph_tools(mcp: FastMCP):
     @mcp.tool(tags={"graph_intelligence"})
     async def graph_impact(
         symbol: str = Field(description="The code symbol to find impact for."),
-        group_name: Optional[str] = Field(description="Group filter.", default=None),
-        path: Optional[str] = Field(description="Workspace path.", default=None),
-    ) -> List[Dict[str, Any]]:
+        group_name: str | None = Field(description="Group filter.", default=None),
+        path: str | None = Field(description="Workspace path.", default=None),
+    ) -> list[dict[str, Any]]:
         """Calculates multi-repo impact for a symbol using the GraphEngine."""
         git = get_git_instance(path=path)
         return await git.graph_impact(symbol, group_name=group_name, path=path)
