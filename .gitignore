@@ -137,3 +137,4 @@ dmypy.json
 /development/
 /mcp/
 **/agent_data/chats/
+/repository_manager/knowledge_graph.db
