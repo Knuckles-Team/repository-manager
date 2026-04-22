@@ -1,5 +1,4 @@
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict
 
 
 class GitError(BaseModel):
@@ -17,8 +16,8 @@ class GitMetadata(BaseModel):
 class GitResult(BaseModel):
     status: str
     data: str
-    error: Optional[GitError] = None
-    metadata: Optional[GitMetadata] = None
+    error: GitError | None = None
+    metadata: GitMetadata | None = None
 
 
 class ReadmeResult(BaseModel):
@@ -28,48 +27,48 @@ class ReadmeResult(BaseModel):
 
 class RepositoryConfig(BaseModel):
     url: str
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class SubdirectoryConfig(BaseModel):
-    description: Optional[str] = None
-    repositories: List[RepositoryConfig] = Field(default_factory=list)
-    subdirectories: Dict[str, "SubdirectoryConfig"] = Field(default_factory=dict)
+    description: str | None = None
+    repositories: list[RepositoryConfig] = Field(default_factory=list)
+    subdirectories: dict[str, "SubdirectoryConfig"] = Field(default_factory=dict)
 
 
 class MaintenanceUpdate(BaseModel):
-    target: Optional[str] = None
-    target_pattern: Optional[str] = None
+    target: str | None = None
+    target_pattern: str | None = None
     package: str
-    exclude: List[str] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)
 
 
 class MaintenancePhase(BaseModel):
     name: str
     phase: int
-    project: Optional[str] = None
+    project: str | None = None
     bulk_bump: bool = False
-    updates: List[MaintenanceUpdate] = Field(default_factory=list)
-    exclude: List[str] = Field(default_factory=list)
+    updates: list[MaintenanceUpdate] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)
 
 
 class MaintenanceConfig(BaseModel):
-    description: Optional[str] = None
-    phases: List[MaintenancePhase] = Field(default_factory=list)
+    description: str | None = None
+    phases: list[MaintenancePhase] = Field(default_factory=list)
 
 
 class GraphConfig(BaseModel):
     enabled: bool = True
     multimodal: bool = False
     incremental: bool = True
-    groups: List[Dict] = Field(default_factory=list)
+    groups: list[dict] = Field(default_factory=list)
 
 
 class WorkspaceConfig(BaseModel):
     name: str
     path: str
-    description: Optional[str] = None
-    repositories: List[RepositoryConfig] = Field(default_factory=list)
-    subdirectories: Dict[str, SubdirectoryConfig] = Field(default_factory=dict)
-    maintenance: Optional[MaintenanceConfig] = None
-    graph: Optional[GraphConfig] = None
+    description: str | None = None
+    repositories: list[RepositoryConfig] = Field(default_factory=list)
+    subdirectories: dict[str, SubdirectoryConfig] = Field(default_factory=dict)
+    maintenance: MaintenanceConfig | None = None
+    graph: GraphConfig | None = None

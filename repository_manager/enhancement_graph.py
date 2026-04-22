@@ -2,28 +2,27 @@
 
 from __future__ import annotations
 
-import os
-import logging
 import asyncio
-from typing import Any, Optional
+import logging
+import os
 from dataclasses import dataclass
-
-from pydantic_graph import End, Graph
+from typing import Any
 
 from agent_utilities.graph_orchestration import (
+    BaseProjectInitializerNode,
     DomainNode,
+    ProjectDeps,
+    ProjectState,
     RouterNode,
     _RouterNodeBase,
-    ProjectState,
-    ProjectDeps,
-    BaseProjectInitializerNode,
 )
 from agent_utilities.models import (
-    Tasks,
-    Task,
-    TaskStatus,
     ProgressEntry,
+    Task,
+    Tasks,
+    TaskStatus,
 )
+from pydantic_graph import End, Graph
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +34,7 @@ class EnhancementState(ProjectState):
     inheriting the long-running harness from agent-utilities.
     """
 
-    last_git_commit: Optional[str] = None
+    last_git_commit: str | None = None
 
 
 @dataclass
@@ -53,7 +52,7 @@ class InitializerNode(BaseProjectInitializerNode):
     Specialized initializer for repository enhancements.
     """
 
-    async def run(self, ctx: Any) -> "PlannerNode | WorkspaceManagerNode | RouterNode":
+    async def run(self, ctx: Any) -> PlannerNode | WorkspaceManagerNode | RouterNode:
 
         await super().run(ctx)
 
@@ -71,7 +70,7 @@ class PlannerNode(_RouterNodeBase):
     Uses an LLM to generate the plan and presents it for approval.
     """
 
-    async def run(self, ctx: Any) -> "ParallelCodingNode | End[dict]":
+    async def run(self, ctx: Any) -> ParallelCodingNode | End[dict]:
         if ctx.state.task_list.tasks and not ctx.state.human_approval_required:
             logger.info(
                 "Planner: Task list already exists and is approved. Proceeding."
@@ -98,7 +97,7 @@ class PlannerNode(_RouterNodeBase):
         repo_info = f"Repository path: {ctx.state.project_root}\n"
         readme_path = os.path.join(ctx.state.project_root, "README.md")
         if os.path.exists(readme_path):
-            with open(readme_path, "r") as f:
+            with open(readme_path) as f:
                 repo_info += f"README Context:\n{f.read()[:1000]}\n"
 
         prompt = f"Goal: {ctx.state.query}\n\n{repo_info}"
@@ -131,7 +130,7 @@ class ParallelCodingNode(_RouterNodeBase):
     Spawns multiple CodingNodes in parallel to handle reachable tasks.
     """
 
-    async def run(self, ctx: Any) -> "ValidatorNode":
+    async def run(self, ctx: Any) -> ValidatorNode:
         from agent_utilities.sdd import SDDManager
 
         sdd_manager = SDDManager(workspace_path=ctx.deps.workspace_path)
@@ -205,7 +204,7 @@ class ValidatorNode(_RouterNodeBase):
     Runs validation tools and checks results.
     """
 
-    async def run(self, ctx: Any) -> "ParallelCodingNode | PlannerNode | End[dict]":
+    async def run(self, ctx: Any) -> ParallelCodingNode | PlannerNode | End[dict]:
         logger.info("Validator: Running project validation...")
 
         all_complete = all(
@@ -239,7 +238,7 @@ class WorkspaceManagerNode(_RouterNodeBase):
     Conversational node for building and updating workspace.yml.
     """
 
-    async def run(self, ctx: Any) -> "End[dict]":
+    async def run(self, ctx: Any) -> End[dict]:
         logger.info("WorkspaceManager: Handling workspace configuration.")
 
         return End({"status": "workspace_updated", "results": ctx.state.results})

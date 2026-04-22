@@ -1,6 +1,6 @@
-from repository_manager.repository_manager import Git
-
 import os
+
+from repository_manager.repository_manager import Git
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = SCRIPT_DIR

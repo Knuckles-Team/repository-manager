@@ -1,0 +1,510 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.3, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/genius/Workspace/agent-packages/agents/repository-manager
+configfile: pytest.ini
+plugins: logfire-4.32.1, asyncio-1.3.0, cov-7.1.0, hypothesis-6.152.1, langsmith-0.7.32, anyio-4.13.0, typeguard-4.4.2
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/test_agent_integration.py Cleaning up corrupted WAL file: /home/genius/Workspace/agent-packages/agents/repository-manager/repository_manager/knowledge_graph.db.wal
+Cleaning up old DB file: /home/genius/Workspace/agent-packages/agents/repository-manager/repository_manager/knowledge_graph.db
+
+DEBUG: Starting server: /usr/bin/python3 -m repository_manager.agent_server --port 9888 --debug
+DEBUG: Logs at /home/genius/Workspace/agent-packages/agents/repository-manager/server_integration.log
+Server is healthy after 8 seconds.
+Sending query to http://localhost:9888/stream: List all projects in the workspace.
+STREAM: data: {"type": "data-graph-event", "data": {"event": "graph_start", "timestamp": 1776861208.9542773, "run_id": "43506e68ed85413684471486da922cb5", "query": "List all projects in the workspace.", "topology": "basic"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'graph_start', 'timestamp': 1776861208.9542773, 'run_id': '43506e68ed85413684471486da922cb5', 'query': 'List all projects in the workspace.', 'topology': 'basic'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861209.2639935, "node_id": "usage_guard"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861209.2639935, 'node_id': 'usage_guard'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861213.185324, "node_id": "router"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861213.185324, 'node_id': 'router'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "routing_started", "timestamp": 1776861213.1853783, "query": "List all projects in the workspace."}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'routing_started', 'timestamp': 1776861213.1853783, 'query': 'List all projects in the workspace.'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861230.3076882, "node_id": "memory_selection"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861230.3076882, 'node_id': 'memory_selection'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861236.9973943, "node_id": "memory_selection", "next_node": "dispatcher"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861236.9973943, 'node_id': 'memory_selection', 'next_node': 'dispatcher'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.0217438, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.0217438, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.021777, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.021777, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.0227818, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.0227818, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.0451853, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.0451853, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.049785, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.049785, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.0498147, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.0498147, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.05068, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.05068, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.0725405, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.0725405, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.0842552, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.0842552, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.0842829, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.0842829, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.0890062, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.0890062, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.1154606, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.1154606, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.1293237, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.1293237, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.1293666, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.1293666, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.1321342, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.1321342, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.1586175, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.1586175, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.1683269, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.1683269, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.1683545, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.1683545, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.170241, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.170241, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.1961393, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.1961393, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.2056832, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.2056832, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.2057126, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.2057126, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.2078636, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.2078636, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.2299376, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.2299376, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.2390952, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.2390952, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.2391462, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.2391462, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.2421503, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.2421503, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.2664616, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.2664616, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.2750146, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.2750146, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.2750425, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.2750425, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.2766523, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.2766523, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.299814, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.299814, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.3084798, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.3084798, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.308512, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.308512, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.310181, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.310181, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.3302853, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.3302853, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.339166, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.339166, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.3391936, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.3391936, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.3409114, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.3409114, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.3609138, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.3609138, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.3697197, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.3697197, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.3697479, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.3697479, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.3715727, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.3715727, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.392959, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.392959, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.4014874, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.4014874, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.401516, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.401516, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.4031453, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.4031453, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.4219706, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.4219706, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.430586, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.430586, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.4306138, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.4306138, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.432278, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.432278, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.4525046, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.4525046, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.4608488, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.4608488, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.4608727, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.4608727, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.4624019, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.4624019, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.4851377, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.4851377, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.4967527, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.4967527, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.496798, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.496798, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.4992714, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.4992714, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.5198443, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.5198443, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.5285556, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.5285556, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.5285892, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.5285892, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.5302417, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.5302417, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.5516045, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.5516045, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.5601177, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.5601177, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.560144, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.560144, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.5617461, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.5617461, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.587184, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.587184, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.599634, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.599634, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.5997, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.5997, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.6013627, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.6013627, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.6223779, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.6223779, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.63076, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.63076, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.6307857, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.6307857, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.632396, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.632396, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.6568906, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.6568906, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.6698883, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.6698883, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.669931, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.669931, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.6723294, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.6723294, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.6959872, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.6959872, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.7050269, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.7050269, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.705055, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.705055, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.7067018, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.7067018, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.7287958, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.7287958, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.7383223, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.7383223, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.7383487, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.7383487, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.739983, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.739983, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.7619946, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.7619946, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.770821, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.770821, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.7708495, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.7708495, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.772467, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.772467, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.7969465, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.7969465, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.8063395, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.8063395, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.8063695, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.8063695, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.8081012, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.8081012, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.829739, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.829739, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.838644, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.838644, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.8386712, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.8386712, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.840323, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.840323, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.859482, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.859482, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.8687403, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.8687403, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.8687682, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.8687682, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.8704944, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.8704944, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.895799, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.895799, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.904204, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.904204, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.9042313, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.9042313, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.9056726, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.9056726, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.9275734, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.9275734, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.9368231, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.9368231, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.9368494, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.9368494, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.93848, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.93848, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.957792, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.957792, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.9664845, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.9664845, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.96651, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.96651, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.9681458, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.9681458, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.986669, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.986669, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861237.9953573, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861237.9953573, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861237.995386, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861237.995386, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861237.9970112, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861237.9970112, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.0150645, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.0150645, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.0237112, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.0237112, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.0237675, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.0237675, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.0254931, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.0254931, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.044106, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.044106, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.0528858, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.0528858, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.0529127, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.0529127, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.0545118, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.0545118, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.0777595, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.0777595, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.0869567, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.0869567, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.086986, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.086986, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.0886855, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.0886855, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.1099737, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.1099737, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.1196566, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.1196566, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.1196902, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.1196902, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.1214006, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.1214006, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.1416988, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.1416988, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.1514034, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.1514034, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.1514354, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.1514354, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.1531563, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.1531563, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.1769996, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.1769996, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.1861928, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.1861928, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.18622, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.18622, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.1878479, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.1878479, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.21354, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.21354, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.2271495, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.2271495, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.2271812, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.2271812, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.2290747, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.2290747, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.2537484, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.2537484, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.2621522, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.2621522, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.2621803, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.2621803, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.2637467, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.2637467, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.2857075, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.2857075, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.2943413, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.2943413, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.2943692, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.2943692, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.2959905, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.2959905, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.3191004, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.3191004, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.32753, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.32753, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.327556, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.327556, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.329133, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.329133, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.3473039, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.3473039, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.3557408, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.3557408, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.3557692, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.3557692, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.3573396, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.3573396, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.3779728, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.3779728, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.3871052, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.3871052, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.3871322, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.3871322, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.388852, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.388852, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.4082687, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.4082687, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.4171689, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.4171689, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.4171937, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.4171937, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.4188738, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.4188738, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.4393585, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.4393585, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.4484565, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.4484565, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.4484842, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.4484842, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.4501693, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.4501693, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.4708748, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.4708748, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.629534, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.629534, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.6295736, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.6295736, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.6312726, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.6312726, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.6533968, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.6533968, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.6619623, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.6619623, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.6619897, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.6619897, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.66362, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.66362, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.6829667, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.6829667, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.692266, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.692266, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.6922944, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.6922944, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.6940303, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.6940303, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.71555, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.71555, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.7250834, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.7250834, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.725108, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.725108, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.7268038, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.7268038, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.7522185, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.7522185, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.7609851, "node_id": "verifier", "attempt": 1}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.7609851, 'node_id': 'verifier', 'attempt': 1}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.7610104, "node_id": "verifier", "next_node": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.7610104, 'node_id': 'verifier', 'next_node': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.7626245, "attempt": 0, "feedback": ""}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.7626245, 'attempt': 0, 'feedback': ''}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "graph_force_terminated", "timestamp": 1776861238.7843564, "reason": "max_node_transitions_exceeded", "transitions": 51}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'graph_force_terminated', 'timestamp': 1776861238.7843564, 'reason': 'max_node_transitions_exceeded', 'transitions': 51}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.7845685, "node_id": "synthesizer"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.7845685, 'node_id': 'synthesizer'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_start", "timestamp": 1776861238.7927155, "node_id": "error_recovery"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_start', 'timestamp': 1776861238.7927155, 'node_id': 'error_recovery'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "error_recovery_replan", "timestamp": 1776861238.7928, "attempt": 1, "error": "error_recovery"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'error_recovery_replan', 'timestamp': 1776861238.7928, 'attempt': 1, 'error': 'error_recovery'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "node_complete", "timestamp": 1776861238.792818, "node_id": "error_recovery", "next_node": "planner"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'node_complete', 'timestamp': 1776861238.792818, 'node_id': 'error_recovery', 'next_node': 'planner'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "replanning_started", "timestamp": 1776861238.7944148, "attempt": 0, "feedback": "Previous execution failed with error: error_recovery. Please devise a different strategy to satisfy the query."}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'replanning_started', 'timestamp': 1776861238.7944148, 'attempt': 0, 'feedback': 'Previous execution failed with error: error_recovery. Please devise a different strategy to satisfy the query.'}}
+STREAM: data: {"type": "data-graph-event", "data": {"event": "graph_complete", "timestamp": 1776861238.83278, "run_id": "43506e68ed85413684471486da922cb5", "status": "success"}}
+DEBUG: Received event: {'type': 'data-graph-event', 'data': {'event': 'graph_complete', 'timestamp': 1776861238.83278, 'run_id': '43506e68ed85413684471486da922cb5', 'status': 'success'}}
+STREAM: data: {"type": "final_output", "content": "planner"}
+DEBUG: Received event: {'type': 'final_output', 'content': 'planner'}
+F
+Shutting down Agent Server...
+
+
+=================================== FAILURES ===================================
+____________________ test_get_workspace_projects_via_graph _____________________
+
+agent_server = <Popen: returncode: None args: ['/usr/bin/python3', '-m', 'repository_manage...>
+
+    @pytest.mark.asyncio
+    async def test_get_workspace_projects_via_graph(agent_server):
+        """Verifies that the agent server correctly orchestrates a call to get_workspace_projects."""
+        query = "List all projects in the workspace."
+    
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            # We use the /stream endpoint which is designed for high-fidelity graph execution
+            # This endpoint returns an SSE stream with granular events
+            url = f"{BASE_URL}/stream"
+            payload = {
+                "query": query,
+                "mode": "ask",
+                "topology": "basic"
+            }
+    
+            print(f"Sending query to {url}: {query}")
+    
+            graph_started = False
+            tool_called = False
+            final_output_received = False
+    
+            try:
+                async with client.stream("POST", url, json=payload) as response:
+                    assert response.status_code == 200
+    
+                    async for line in response.aiter_lines():
+                        if not line or not line.strip():
+                            continue
+                        print(f"STREAM: {line.strip()}")
+    
+                        if line.startswith("data:"):
+                            try:
+                                data = json.loads(line[5:].strip())
+                                print(f"DEBUG: Received event: {data}")
+                                etype = data.get("type")
+                                event_data = data.get("data", {})
+                                ename = event_data.get("event") if isinstance(event_data, dict) else None
+    
+                                if etype == "data-graph-event":
+                                    if ename == "graph_start":
+                                        graph_started = True
+                                    elif ename in ["expert_tool_call", "tool_call", "node_start"]:
+                                        tname = event_data.get("tool_name") or event_data.get("tool")
+                                        if tname == "get_workspace_projects":
+                                            tool_called = True
+                                    elif ename == "graph_complete":
+                                        # final_output_received is handled by final_output type or by completion
+                                        pass
+    
+                                if etype == "final_output":
+                                    content = data.get("content", "")
+                                    # Even if it just says "planner" (like in the logs), we consider it a success if we reached the end
+                                    final_output_received = True
+                            except Exception as e:
+                                print(f"DEBUG: Error parsing line: {line} - {e}") # NEW
+                                pass
+            except Exception as e:
+                pytest.fail(f"SSE request failed: {e}")
+    
+        assert graph_started, "The graph orchestrator did not start"
+>       assert tool_called, "The graph orchestrator did not call get_workspace_projects"
+E       AssertionError: The graph orchestrator did not call get_workspace_projects
+E       assert False
+
+tests/test_agent_integration.py:152: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_agent_integration.py::test_get_workspace_projects_via_graph
+============================== 1 failed in 38.83s ==============================

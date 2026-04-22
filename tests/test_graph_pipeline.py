@@ -1,9 +1,9 @@
 import pytest
 import asyncio
 import networkx as nx
-from repository_manager.graph.pipeline.runner import PipelineRunner
-from repository_manager.graph.pipeline.types import PipelineContext, PipelinePhase
-from repository_manager.graph.pipeline.models import PipelineConfig, PhaseResult
+from agent_utilities.knowledge_graph.pipeline.runner import PipelineRunner
+from agent_utilities.knowledge_graph.pipeline.types import PipelineContext, PipelinePhase
+from agent_utilities.models.knowledge_graph import PipelineConfig, PhaseResult
 
 @pytest.mark.asyncio
 async def test_pipeline_runner_execution():
