@@ -382,7 +382,10 @@ def register_graph_tools(mcp: FastMCP):
         await ctx_progress(ctx, 0, 100)
         git = get_git_instance(path=path)
         return git.graph_reset(path=path)
+<<<<<<< HEAD
         return git.graph_reset(path=path)
+=======
+>>>>>>> 61af4a3 (Fixed several issues.)
 
     @mcp.tool(tags={"graph_intelligence"})
     async def graph_impact(

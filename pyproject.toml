@@ -18,10 +18,27 @@ email = "knucklessg1@gmail.com"
 text = "MIT"
 
 [project.optional-dependencies]
+<<<<<<< HEAD
 mcp = [ "agent-utilities[mcp]>=0.2.31",]
 agent = [ "agent-utilities[agent,logfire,graph]>=0.2.40", "pre-commit>=4.5.1", "bump2version>=1.0.1",]
 all = [ "repository-manager[agent,mcp]>=1.3.55",]
 test = [ "pytest", "pytest-asyncio",]
+=======
+mcp = [
+    "agent-utilities[mcp]>=0.2.31"]
+
+agent = [
+    "agent-utilities[agent,logfire]>=0.2.31",
+    "pre-commit>=4.5.1",
+    "bump2version>=1.0.1"]
+
+all = [
+    "agent-utilities[agent,logfire]>=0.2.31",
+    "pre-commit>=4.5.1",
+    "bump2version>=1.0.1",
+    "agent-utilities[mcp]>=0.2.31"
+]
+>>>>>>> 61af4a3 (Fixed several issues.)
 
 [project.scripts]
 repository-manager = "repository_manager.repository_manager:main"

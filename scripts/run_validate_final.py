@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import os
 
 from repository_manager.repository_manager import Git
@@ -8,6 +9,12 @@ WORKSPACE_ROOT = os.path.abspath(os.path.join(REPO_ROOT, "..", ".."))
 
 workspace_yml = os.path.join(REPO_ROOT, "repository_manager", "workspace.yml")
 git = Git(path=WORKSPACE_ROOT)
+=======
+from repository_manager.repository_manager import Git
+
+workspace_yml = "/home/genius/Workspace/agent-packages/agents/repository-manager/repository_manager/workspace.yml"
+git = Git(path="/home/genius/Workspace")
+>>>>>>> 61af4a3 (Fixed several issues.)
 git.load_projects_from_yaml(workspace_yml)
 
 print(f"Workspace path: {git.path}")

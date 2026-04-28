@@ -12,6 +12,7 @@ def test_mcp_tools_registration():
     os.environ["REPOSITORY_MANAGER_WORKSPACE"] = "/tmp"
 
     try:
-        register_tools(mcp)
+        # get_mcp_instance internally calls all register_*_tools functions
+        get_mcp_instance()
     except Exception as e:
         pytest.fail(f"Failed to register MCP tools: {e}")
