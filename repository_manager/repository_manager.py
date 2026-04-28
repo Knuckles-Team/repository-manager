@@ -8,17 +8,24 @@ multiple repositories in parallel using Python's multiprocessing capabilities.
 
 import argparse
 import json
+<<<<<<< HEAD
 import argparse
 import json
 import os
 import re
 import subprocess
 import subprocess
+=======
+import os
+import re
+import subprocess
+>>>>>>> 61af4a3 (Fixed several issues.)
 import sys
 import threading
 import time
 from concurrent import futures
 from dataclasses import dataclass
+<<<<<<< HEAD
 import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,6 +34,15 @@ __version__ = "1.3.55"
 
 import concurrent.futures
 import datetime
+=======
+import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+__version__ = "1.3.55"
+
+import concurrent.futures
+>>>>>>> 61af4a3 (Fixed several issues.)
 import select
 import shutil
 import signal
@@ -46,9 +62,22 @@ from importlib.resources import files
 
 from agent_utilities.base_utilities import get_logger
 
+<<<<<<< HEAD
 from importlib.resources import files
 
 from agent_utilities.base_utilities import get_logger
+=======
+from repository_manager.models import (
+    GitError,
+    GitMetadata,
+    GitResult,
+    MaintenanceConfig,
+    ReadmeResult,
+    SubdirectoryConfig,
+    WorkspaceConfig,
+    ValidationReport,
+)
+>>>>>>> 61af4a3 (Fixed several issues.)
 
 from repository_manager.models import (
     GitError,
@@ -135,6 +164,39 @@ class Git:
         self.maximum_threads = 36
         if threads:
             self.set_threads(threads=threads)
+
+        self.debug_log_path = os.path.join(self.path, "repository_manager_debug.log")
+        self.debug_lock = threading.Lock()
+        self.python_exe = self._find_python()
+
+        # Initialize log file
+        with open(self.debug_log_path, "a") as f:
+            f.write(f"\n\n--- NEW SESSION: {datetime.datetime.now().isoformat()} ---\n")
+
+    def _find_python(self) -> str:
+        """Finds the best Python executable to use for validation."""
+        venv_path = os.path.join(self.path, ".venv", "bin", "python3")
+        if os.path.exists(venv_path):
+            return venv_path
+        return sys.executable
+
+    def _get_pip_command(self, extra: str = "all") -> str:
+        """Get the appropriate pip install command, preferring uv if available."""
+        import shutil
+
+        pip_cmd = "pip"
+        if shutil.which("uv"):
+            pip_cmd = "uv pip"
+
+        return f"{pip_cmd} install --break-system-packages -e '.[{extra}]'"
+
+    def _get_package_manager(self, path: str) -> str:
+        """Determines the appropriate package manager for a given path."""
+        if os.path.exists(os.path.join(path, "pnpm-lock.yaml")):
+            return "pnpm"
+        if os.path.exists(os.path.join(path, "yarn.lock")):
+            return "yarn"
+        return "npm"
 
     def setup_from_yaml(self, yaml_path: str) -> GitResult:
         """Sets up the workspace structure from a YAML file."""
@@ -412,7 +474,10 @@ class Git:
                 results.append(self.git_action(f"{pm} install", path=path))
             if is_python:
                 results.append(
-                    self.git_action(f"pip install -e '.[{extra}]'", path=path)
+                    self.git_action(
+                        self._get_pip_command(extra),
+                        path=path,
+                    )
                 )
 
         # 2. Parallel Install for the rest
@@ -450,7 +515,9 @@ class Git:
                 if is_python:
                     futures.append(
                         executor.submit(
-                            self.git_action, f"pip install -e '.[{extra}]'", path=path
+                            self.git_action,
+                            self._get_pip_command(extra),
+                            path=path,
                         )
                     )
 
@@ -512,8 +579,8 @@ class Git:
             return [f.result() for f in concurrent.futures.as_completed(futures)]
 
     def validate_projects(
-        self, type: str = "all", threads: int = None
-    ) -> List[GitResult]:
+        self, type: str = "all", threads: int | None = None
+    ) -> ValidationReport:
         """Bulk validates agent/MCP servers using various modes (help, static, runtime)."""
         threads = threads or self.threads
         if not self.project_map:
@@ -588,7 +655,7 @@ class Git:
                         "pkg": pkg_underscore,
                         "path": path,
                         "pkg_dir": pkg_dir,
-                        "file": agent_file,
+                        "file": agent_file or "",
                         "is_mcp": is_mcp,
                         "is_graph": is_graph,
                     }
@@ -816,109 +883,7 @@ class Git:
                     print(f"- {pkg}: {error_msg}")
             print("=" * 50 + "\n")
 
-            categories = {
-                "Ecosystem Installation": [
-                    r
-                    for r in results
-                    if r.metadata.command and "pip install" in r.metadata.command
-                ],
-                "Version Metadata Sync (Dry Run)": [
-                    r
-                    for r in results
-                    if r.metadata.command and "bump2version" in r.metadata.command
-                ],
-                "Agent Standards Compliance": [
-                    r
-                    for r in results
-                    if r.metadata.command and "static_check" in r.metadata.command
-                ],
-                "MCP Help Check": [
-                    r
-                    for r in results
-                    if r.metadata.command
-                    and "mcp_server" in r.metadata.command
-                    and "--help" in r.metadata.command
-                ],
-                "Agent Help Check": [
-                    r
-                    for r in results
-                    if r.metadata.command
-                    and (
-                        "agent_server" in r.metadata.command
-                        or "server" in r.metadata.command
-                    )
-                    and "--help" in r.metadata.command
-                    and "mcp_server" not in r.metadata.command
-                ],
-                "Agent Runtime & Web UI": [
-                    r
-                    for r in results
-                    if r.metadata.command
-                    and (
-                        "runtime_check" in r.metadata.command
-                        or "--web" in r.metadata.command
-                    )
-                ],
-                "Pre-commit Standard Compliance": [
-                    r
-                    for r in results
-                    if r.metadata.command and "pre-commit run" in r.metadata.command
-                ],
-            }
-
-            known_ids = set()
-            for cat_list in categories.values():
-                for r in cat_list:
-                    known_ids.add(id(r))
-
-            other = [r for r in results if id(r) not in known_ids]
-            if other:
-                for r in other:
-                    logger.debug(
-                        f"Uncategorized result: {r.metadata.workspace} - cmd: {r.metadata.command}"
-                    )
-                categories["Additional Operational Checks"] = other
-
-            report_md = "# VALIDATION SUMMARY\n"
-            report_md += (
-                f"**Time:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
-            )
-            report_md += f"**Total:** {len(results)} | **Success:** {len(successes)} ✅ | **Failure:** {len(failures)} ❌ | **Skipped:** {len(skipped)} ⏭️\n\n"
-
-            for cat_name, cat_results in categories.items():
-                if not cat_results:
-                    continue
-
-                cat_successes = [r for r in cat_results if r.status == "success"]
-                cat_failures = [r for r in cat_results if r.status == "error"]
-                cat_skipped = [r for r in cat_results if r.status == "skipped"]
-
-                report_md += f"## {cat_name}\n"
-                report_md += f"**Success:** {len(cat_successes)} ✅ | **Failure:** {len(cat_failures)} ❌ | **Skipped:** {len(cat_skipped)} ⏭️\n\n"
-
-                if cat_successes:
-                    report_md += "#### Successes ✅\n"
-                    for r in cat_successes:
-                        pkg = r.metadata.workspace.split("/")[-1]
-                        report_md += f"- **{pkg}**: Success\n"
-                    report_md += "\n"
-
-                if cat_failures:
-                    report_md += "#### Failures ❌\n"
-                    for r in cat_failures:
-                        pkg = r.metadata.workspace.split("/")[-1]
-                        error_msg = r.error.message if r.error else r.data
-                        report_md += f"- **{pkg}**: {error_msg}\n"
-                        if r.data and r.data != error_msg:
-                            report_md += f"```text\n{r.data}\n```\n"
-                    report_md += "\n"
-
-                if cat_skipped:
-                    report_md += "#### Skipped ⏭️\n"
-                    for r in cat_skipped:
-                        pkg = r.metadata.workspace.split("/")[-1]
-                        report_md += f"- **{pkg}**: {r.data or 'Skipped'}\n"
-                    report_md += "\n"
+            report = ValidationReport.from_results(results)
 
             if self.report_path:
                 self._export_report(report.to_markdown(), "validation_report.md")
@@ -1173,9 +1138,8 @@ class Git:
                         continue
 
                 if proc.poll() is not None:
-
-                    success = False
-                    if not error_msg:
+                    # If process exited, we are done
+                    if not success:
                         error_msg = f"Process exited with code {proc.returncode}"
                     break
 
@@ -1298,7 +1262,12 @@ class Git:
         return "\n".join(md)
 
     def git_action(
-        self, command: str, path: str = None, quiet: bool = False, env: dict = None
+        self,
+        command: str,
+        path: str | None = None,
+        quiet: bool = False,
+        env: dict | None = None,
+        timeout: int = 1800,
     ) -> GitResult:
         """
         Execute a Git command in the specified directory.
@@ -1313,7 +1282,18 @@ class Git:
         """
         target_path = self._resolve_path(path)
 
-        pipe = subprocess.Popen(
+        # Ensure ~/.local/bin is in PATH for tools like bump2version
+        current_env = env if env else os.environ.copy()
+        local_bin = os.path.expanduser("~/.local/bin")
+        if local_bin not in current_env.get("PATH", ""):
+            current_env["PATH"] = f"{local_bin}:{current_env.get('PATH', '')}"
+
+        # Ensure Python output is unbuffered so we get real-time logs
+        current_env["PYTHONUNBUFFERED"] = "1"
+
+        logger.info(f"Executing: {command} in {target_path}")
+
+        process = subprocess.Popen(
             command,
             shell=True, # nosec B602
             cwd=target_path,
@@ -1321,10 +1301,56 @@ class Git:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             text=True,
-            env=env if env else os.environ,
+            env=current_env,
+            bufsize=1,  # Line buffered
         )
-        out, err = pipe.communicate()
-        return_code = pipe.wait()
+
+        output_lines = []
+        try:
+            # Write start marker
+            with self.debug_lock:
+                with open(self.debug_log_path, "a") as log_file:
+                    log_file.write(
+                        f"\n[{datetime.datetime.now().isoformat()}] Starting: {command}\n"
+                    )
+                    log_file.write(
+                        f"[{datetime.datetime.now().isoformat()}] CWD: {target_path}\n"
+                    )
+                    log_file.flush()
+
+            # Read output line by line as it becomes available
+            if process.stdout:
+                for line in process.stdout:
+                    output_lines.append(line)
+                    with self.debug_lock:
+                        with open(self.debug_log_path, "a") as log_file:
+                            log_file.write(
+                                f"[{datetime.datetime.now().isoformat()}] {line}"
+                            )
+                            log_file.flush()
+
+            # Wait for process to complete, with a safety timeout
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Command timed out: {command}")
+            if hasattr(os, "killpg"):
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                except Exception: # nosec B110
+                    process.kill()
+            else:
+                process.kill()
+
+            with self.debug_lock:
+                with open(self.debug_log_path, "a") as log_file:
+                    log_file.write(
+                        f"[{datetime.datetime.now().isoformat()}] ERROR: Command timed out after {timeout} seconds\n"
+                    )
+                    log_file.flush()
+
+        out = "".join(output_lines)
+        err = ""  # stderr was merged into stdout
+        return_code = process.returncode
 
         metadata = GitMetadata(
             command=command,
@@ -1551,7 +1577,7 @@ class Git:
             threads (int): The number of threads.
 
         Notes:
-            If the input is invalid, defaults 12
+            If the input is invalid, defaults 6
         """
         try:
             if 0 < threads <= self.maximum_threads:
@@ -1799,22 +1825,7 @@ class Git:
         """
         target_path = self._resolve_path(path)
 
-        has_all_extra = False
-        pyproject = os.path.join(target_path, "pyproject.toml")
-        if os.path.exists(pyproject):
-            try:
-                with open(pyproject, "r") as f:
-                    content = f.read()
-                if (
-                    "[project.optional-dependencies]" in content
-                    and f"{extra} =" in content.replace(" ", "")
-                ):
-                    has_all_extra = True
-            except Exception:
-                pass
-
-        install_target = f".[{extra}]" if has_all_extra else "."
-        command = f"pip install -e {install_target}"
+        command = self._get_pip_command(extra)
 
         logger.info(f"Installing project at {target_path} with {command}")
         result = self.git_action(command=command, path=target_path)
@@ -2294,8 +2305,7 @@ class Git:
                     template_content = (
                         files("repository_manager") / "workspace.yml"
                     ).read_text()
-                except Exception:
-
+                except Exception: # nosec B110
                     template_content = "name: My Workspace\npath: .\ndescription: New workspace\nsubdirectories: {}\n"
             else:
                 template_content = "name: My Workspace\npath: .\ndescription: New workspace\nsubdirectories:\n  agents:\n    description: Agent repositories\n    repositories: []\n"
@@ -2591,7 +2601,7 @@ Examples:
         "-t",
         "--threads",
         type=int,
-        help="Parallel thread count (default: 12).",
+        help="Parallel thread count (default: 6).",
         default=DEFAULT_REPOSITORY_MANAGER_THREADS,
     )
     group_general.add_argument(

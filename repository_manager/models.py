@@ -19,8 +19,11 @@ class GitResult(BaseModel):
     data: str
     error: GitError | None = None
     metadata: GitMetadata | None = None
+<<<<<<< HEAD
     error: GitError | None = None
     metadata: GitMetadata | None = None
+=======
+>>>>>>> 61af4a3 (Fixed several issues.)
 
 
 class ReadmeResult(BaseModel):
@@ -31,16 +34,22 @@ class ReadmeResult(BaseModel):
 class RepositoryConfig(BaseModel):
     url: str
     description: str | None = None
+<<<<<<< HEAD
     description: str | None = None
+=======
+>>>>>>> 61af4a3 (Fixed several issues.)
 
 
 class SubdirectoryConfig(BaseModel):
     description: str | None = None
     repositories: list[RepositoryConfig] = Field(default_factory=list)
     subdirectories: dict[str, "SubdirectoryConfig"] = Field(default_factory=dict)
+<<<<<<< HEAD
     description: str | None = None
     repositories: list[RepositoryConfig] = Field(default_factory=list)
     subdirectories: dict[str, "SubdirectoryConfig"] = Field(default_factory=dict)
+=======
+>>>>>>> 61af4a3 (Fixed several issues.)
 
 
 class MaintenanceUpdate(BaseModel):
@@ -54,19 +63,28 @@ class MaintenancePhase(BaseModel):
     name: str
     phase: int
     project: str | None = None
+<<<<<<< HEAD
     project: str | None = None
     bulk_bump: bool = False
     updates: list[MaintenanceUpdate] = Field(default_factory=list)
     exclude: list[str] = Field(default_factory=list)
     updates: list[MaintenanceUpdate] = Field(default_factory=list)
     exclude: list[str] = Field(default_factory=list)
+=======
+    bulk_bump: bool = False
+    updates: list[MaintenanceUpdate] = Field(default_factory=list)
+    exclude: list[str] = Field(default_factory=list)
+>>>>>>> 61af4a3 (Fixed several issues.)
 
 
 class MaintenanceConfig(BaseModel):
     description: str | None = None
     phases: list[MaintenancePhase] = Field(default_factory=list)
+<<<<<<< HEAD
     description: str | None = None
     phases: list[MaintenancePhase] = Field(default_factory=list)
+=======
+>>>>>>> 61af4a3 (Fixed several issues.)
 
 
 class GraphConfig(BaseModel):
