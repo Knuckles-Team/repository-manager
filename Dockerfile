@@ -55,7 +55,7 @@ ENV HOST=${HOST} \
     REPOSITORY_MANAGER_WORKSPACE=${REPOSITORY_MANAGER_WORKSPACE:-/workspace}
 
 RUN apt-get update \
-     && apt-get install -y ripgrep tree fd-find git curl nano ca-certificates \
+     && apt-get install -y default-jre ripgrep tree fd-find git curl nano ca-certificates \
      && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
      && curl -LsSf https://astral.sh/uv/install.sh | sh \
      && curl -sS https://starship.rs/install.sh | sh -s -- --yes \

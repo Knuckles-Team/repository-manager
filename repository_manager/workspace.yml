@@ -2,7 +2,7 @@
 # This file defines the directory structure and repositories for the agent ecosystem.
 
 name: "Agent Packages Workspace"
-path: "~/Workspace"
+path: "/home/apps/workspace"
 description: "Main development environment for the agent-packages ecosystem."
 
 repositories:

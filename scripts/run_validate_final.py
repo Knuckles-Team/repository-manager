@@ -12,10 +12,9 @@ git.load_projects_from_yaml(workspace_yml)
 
 print(f"Workspace path: {git.path}")
 results = git.validate_projects(type="all")
-summary = git.generate_markdown_summary("Validation", results)
+summary = results.to_markdown()
 
 with open("report_final.md", "w") as f:
     f.write(summary)
-
 
 print(summary)

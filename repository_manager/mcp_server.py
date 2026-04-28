@@ -20,9 +20,13 @@ import sys
 from typing import Any
 
 from agent_utilities.base_utilities import to_boolean, to_integer
-from agent_utilities.mcp_utilities import create_mcp_server
+from agent_utilities.mcp_utilities import (
+    create_mcp_server,
+    ctx_confirm_destructive,
+    ctx_progress,
+)
 from dotenv import find_dotenv, load_dotenv
-from fastmcp import FastMCP
+from fastmcp import FastMCP, Context
 from fastmcp.utilities.logging import get_logger
 from pydantic import Field
 from starlette.requests import Request
@@ -31,6 +35,7 @@ from starlette.responses import JSONResponse
 from repository_manager.models import (
     GitResult,
     WorkspaceConfig,
+    ValidationReport,
 )
 from repository_manager.repository_manager import Git
 
@@ -80,6 +85,9 @@ def register_git_operations_tools(mcp: FastMCP):
             description="The Git command to execute (e.g., 'git status')"
         ),
         path: str | None = Field(description="Path to execute in.", default=None),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> GitResult:
         """Executes an arbitrary Git command."""
         git = get_git_instance(path=path)
@@ -93,7 +101,11 @@ def register_git_operations_tools(mcp: FastMCP):
             "git_operations",
         }
     )
-    async def get_workspace_projects() -> list[str]:
+    async def get_workspace_projects(
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
+    ) -> list[str]:
         """Returns a list of project URLs defined in the workspace."""
         git = get_git_instance()
         return git.get_workspace_projects()
@@ -101,6 +113,9 @@ def register_git_operations_tools(mcp: FastMCP):
     @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
     async def clone_projects(
         threads: int | None = Field(description="Parallel workers.", default=None),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> str:
         """Clones repositories. Defaults to all in workspace.yml."""
         git = get_git_instance(threads=threads)
@@ -110,10 +125,15 @@ def register_git_operations_tools(mcp: FastMCP):
     @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
     async def pull_projects(
         threads: int | None = Field(description="Parallel workers.", default=None),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> str:
+        await ctx_progress(ctx, 0, 100)
         """Pulls updates for all projects in the workspace."""
         git = get_git_instance(threads=threads)
         results = git.pull_projects()
+        await ctx_progress(ctx, 100, 100)
         return git.generate_markdown_summary("Pull", results)
 
 
@@ -123,6 +143,9 @@ def register_workspace_management_tools(mcp: FastMCP):
     @mcp.tool(tags={"workspace_management"})
     async def setup_workspace(
         yml_path: str = Field(description="Path to the workspace.yml file."),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> GitResult:
         """Sets up the entire workspace, clones repos, and organizes subdirectories."""
         git = get_git_instance()
@@ -136,6 +159,9 @@ def register_project_management_tools(mcp: FastMCP):
     async def install_projects(
         threads: int | None = Field(description="Parallel workers.", default=None),
         extra: str = Field(description="Install group (e.g. 'all').", default="all"),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> str:
         """Bulk installs Python projects defined in the workspace."""
         git = get_git_instance(threads=threads)
@@ -145,6 +171,9 @@ def register_project_management_tools(mcp: FastMCP):
     @mcp.tool(tags={"workspace_management"})
     async def build_projects(
         threads: int | None = Field(description="Parallel workers.", default=None),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> str:
         """Bulk builds Python projects defined in the workspace."""
         git = get_git_instance(threads=threads)
@@ -157,17 +186,23 @@ def register_project_management_tools(mcp: FastMCP):
             description="Validation type: 'agent', 'mcp', or 'all'.", default="all"
         ),
         threads: int | None = Field(description="Parallel workers.", default=None),
-    ) -> str:
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
+    ) -> ValidationReport:
         """Bulk validates agent/MCP servers in the workspace."""
         git = get_git_instance(threads=threads)
-        results = git.validate_projects(type=type)
-        return git.generate_markdown_summary("Validation", results)
+        report = git.validate_projects(type=type)
+        return report
 
     @mcp.tool(tags={"workspace_management"})
     async def generate_workspace_template(
         target_path: str = Field(description="Path where to save the template."),
         use_default: bool = Field(
             description="Use the pre-filled package template.", default=True
+        ),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
         ),
     ) -> GitResult:
         """Generates a new workspace.yml template."""
@@ -181,6 +216,9 @@ def register_project_management_tools(mcp: FastMCP):
         yaml_path: str = Field(description="Target YAML path."),
         config_dict: dict[str, Any] = Field(
             description="Dictionary representation of WorkspaceConfig."
+        ),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
         ),
     ) -> GitResult:
         """Saves a WorkspaceConfig to YAML."""
@@ -202,6 +240,9 @@ def register_project_management_tools(mcp: FastMCP):
         ),
         phase: int = Field(description="Starting phase number.", default=1),
         dry_run: bool = Field(description="Perform a dry run.", default=False),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> str:
         """Runs the maintenance lifecycle across all projects in the workspace."""
         git = get_git_instance()
@@ -215,6 +256,9 @@ def register_visualization_tools(mcp: FastMCP):
         yml_path: str | None = Field(
             description="Path to workspace.yml.", default=None
         ),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> str:
         """Generates an ASCII tree of the workspace structure."""
         git = get_git_instance()
@@ -226,6 +270,9 @@ def register_visualization_tools(mcp: FastMCP):
         yml_path: str | None = Field(
             description="Path to workspace.yml.", default=None
         ),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> str:
         """Generates a Mermaid diagram of the workspace structure."""
         git = get_git_instance()
@@ -236,6 +283,9 @@ def register_visualization_tools(mcp: FastMCP):
     async def generate_agents_documentation(
         target_path: str | None = Field(
             description="Target path for AGENTS.md.", default=None
+        ),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
         ),
     ) -> GitResult:
         """Generates an AGENTS.md catalog of discovered projects."""
@@ -251,6 +301,9 @@ def register_graph_tools(mcp: FastMCP):
             description="Enable LLM multimodal rationale pass.", default=False
         ),
         incremental: bool = Field(description="Use incremental parsing.", default=True),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> dict[str, Any]:
         """Builds or synchronizes the Hybrid Workspace Graph (NetworkX + Ladybug)."""
         git = get_git_instance(path=path)
@@ -284,6 +337,9 @@ def register_graph_tools(mcp: FastMCP):
             default="hybrid",
         ),
         path: str | None = Field(description="Workspace path.", default=None),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> list[dict[str, Any]]:
         """Queries the Hybrid Graph using vector similarity or Cypher structure."""
         git = get_git_instance(path=path)
@@ -294,6 +350,9 @@ def register_graph_tools(mcp: FastMCP):
         source_id: str = Field(description="Source node ID (Symbol or File)."),
         target_id: str = Field(description="Target node ID."),
         path: str | None = Field(description="Workspace path.", default=None),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> list[str]:
         """Finds the shortest path between two symbols across the workspace graph."""
         git = get_git_instance(path=path)
@@ -302,6 +361,9 @@ def register_graph_tools(mcp: FastMCP):
     @mcp.tool(tags={"graph_intelligence"})
     async def graph_status(
         path: str | None = Field(description="Workspace path.", default=None),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> dict[str, Any]:
         """Returns the current status of the workspace graph."""
         git = get_git_instance(path=path)
@@ -310,9 +372,16 @@ def register_graph_tools(mcp: FastMCP):
     @mcp.tool(tags={"graph_intelligence"})
     async def graph_reset(
         path: str | None = Field(description="Workspace path.", default=None),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> str:
         """Purges the graph database and forces a clean rebuild."""
+        if not await ctx_confirm_destructive(ctx, "graph reset"):
+            return {"status": "cancelled", "message": "Operation cancelled by user"}
+        await ctx_progress(ctx, 0, 100)
         git = get_git_instance(path=path)
+        return git.graph_reset(path=path)
         return git.graph_reset(path=path)
 
     @mcp.tool(tags={"graph_intelligence"})
@@ -320,6 +389,9 @@ def register_graph_tools(mcp: FastMCP):
         symbol: str = Field(description="The code symbol to find impact for."),
         group_name: str | None = Field(description="Group filter.", default=None),
         path: str | None = Field(description="Workspace path.", default=None),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
     ) -> list[dict[str, Any]]:
         """Calculates multi-repo impact for a symbol using the GraphEngine."""
         git = get_git_instance(path=path)
