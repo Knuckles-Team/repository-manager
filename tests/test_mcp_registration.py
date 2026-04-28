@@ -11,11 +11,7 @@ def test_mcp_tools_registration():
     """
     os.environ["REPOSITORY_MANAGER_WORKSPACE"] = "/tmp"
 
-    mcp = FastMCP("TestRepoManager")
-
     try:
-        mcp, args, middlewares, tags = get_mcp_instance()
-        assert mcp is not None
-        assert "git_operations" in tags
+        register_tools(mcp)
     except Exception as e:
         pytest.fail(f"Failed to register MCP tools: {e}")

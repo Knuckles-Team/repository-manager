@@ -15,6 +15,7 @@ git.path = WORKSPACE_ROOT
 
 results = git.validate_projects(type="all")
 summary = git.generate_markdown_summary("Validation", results)
+
 print(summary)
 
 with open("report_fixed.md", "w") as f:

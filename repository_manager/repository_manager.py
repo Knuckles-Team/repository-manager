@@ -8,18 +8,28 @@ multiple repositories in parallel using Python's multiprocessing capabilities.
 
 import argparse
 import json
+import argparse
+import json
 import os
 import re
 import subprocess
+import subprocess
 import sys
+import threading
+import time
+from concurrent import futures
+from dataclasses import dataclass
+import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 __version__ = "1.3.55"
+
 import concurrent.futures
 import datetime
 import select
 import shutil
 import signal
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -36,14 +46,21 @@ from importlib.resources import files
 
 from agent_utilities.base_utilities import get_logger
 
+from importlib.resources import files
+
+from agent_utilities.base_utilities import get_logger
+
 from repository_manager.models import (
     GitError,
     GitMetadata,
     GitResult,
     MaintenanceConfig,
+    GitResult,
+    MaintenanceConfig,
     ReadmeResult,
     SubdirectoryConfig,
     WorkspaceConfig,
+    ValidationReport,
 )
 
 logger = get_logger("RepositoryManager")
@@ -55,7 +72,7 @@ def get_packaged_file_path(package: str, file: str) -> str:
         path = files(package).joinpath(file)
         if path.is_file():
             return str(path)
-    except Exception:
+    except Exception: # nosec B110
         pass
 
     local_path = os.path.join(os.path.dirname(__file__), file)
@@ -68,7 +85,7 @@ def get_packaged_file_path(package: str, file: str) -> str:
 # Robust environment variable retrieval with empty string fallbacks
 _raw_workspace = os.getenv("REPOSITORY_MANAGER_WORKSPACE", "")
 DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.path.abspath(
-    os.path.expanduser(_raw_workspace if _raw_workspace else "~/Workspace")
+    os.path.expanduser(_raw_workspace if _raw_workspace else "/home/apps/workspace")
 )
 
 _raw_yml = os.getenv("WORKSPACE_YML", "")
@@ -80,7 +97,7 @@ DEFAULT_WORKSPACE_YML = (
 
 _raw_threads = os.getenv("REPOSITORY_MANAGER_THREADS", "")
 DEFAULT_REPOSITORY_MANAGER_THREADS = int(
-    _raw_threads if _raw_threads and _raw_threads.isdigit() else "15"
+    _raw_threads if _raw_threads and _raw_threads.isdigit() else "6"
 )
 
 _raw_branch = os.getenv("REPOSITORY_MANAGER_DEFAULT_BRANCH", "")
@@ -101,12 +118,13 @@ class Git:
         report_path: str | None = None,
     ):
         """Initialize the Git class with default settings."""
+        self._explicit_path = path is not None
         self.path = path or DEFAULT_REPOSITORY_MANAGER_WORKSPACE
         self.report_path = report_path
         if not os.path.exists(self.path):
             try:
                 os.makedirs(self.path, exist_ok=True)
-            except Exception:
+            except Exception: # nosec B110
                 pass
 
         self.project_map: dict[str, str] = {}
@@ -117,14 +135,6 @@ class Git:
         self.maximum_threads = 36
         if threads:
             self.set_threads(threads=threads)
-
-    def _get_package_manager(self, path: str) -> str:
-        """Determines the appropriate package manager for a given path."""
-        if os.path.exists(os.path.join(path, "pnpm-lock.yaml")):
-            return "pnpm"
-        if os.path.exists(os.path.join(path, "yarn.lock")):
-            return "yarn"
-        return "npm"
 
     def setup_from_yaml(self, yaml_path: str) -> GitResult:
         """Sets up the workspace structure from a YAML file."""
@@ -402,10 +412,7 @@ class Git:
                 results.append(self.git_action(f"{pm} install", path=path))
             if is_python:
                 results.append(
-                    self.git_action(
-                        f"pip install --break-system-packages -e '.[{extra}]'",
-                        path=path,
-                    )
+                    self.git_action(f"pip install -e '.[{extra}]'", path=path)
                 )
 
         # 2. Parallel Install for the rest
@@ -443,9 +450,7 @@ class Git:
                 if is_python:
                     futures.append(
                         executor.submit(
-                            self.git_action,
-                            f"pip install --break-system-packages -e '.[{extra}]'",
-                            path=path,
+                            self.git_action, f"pip install -e '.[{extra}]'", path=path
                         )
                     )
 
@@ -502,18 +507,18 @@ class Git:
                     pm = self._get_package_manager(path)
                     cmd = f"{pm} install && {pm} run build"
                 else:
-                    cmd = "python3 -m build"
+                    cmd = f"{sys.executable} -m build"
                 futures.append(executor.submit(self.git_action, cmd, path=path))
             return [f.result() for f in concurrent.futures.as_completed(futures)]
 
     def validate_projects(
-        self, type: str = "all", threads: int | None = None
-    ) -> list[GitResult]:
+        self, type: str = "all", threads: int = None
+    ) -> List[GitResult]:
         """Bulk validates agent/MCP servers using various modes (help, static, runtime)."""
         threads = threads or self.threads
         if not self.project_map:
             logger.warning("No projects to validate.")
-            return []
+            return ValidationReport.from_results([])
 
         logger.info(
             f"Validating {len(self.project_map)} projects (mode={type}) in parallel ({threads} threads)..."
@@ -542,7 +547,15 @@ class Git:
                 is_mcp = os.path.exists(os.path.join(pkg_dir, "mcp_server.py"))
                 is_graph = os.path.exists(os.path.join(pkg_dir, "graph_config.py"))
 
-                is_agent_suite = is_mcp or agent_file or is_graph
+                # A project is valid for validation if it's an agent suite OR has a pyproject.toml/tests
+                has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
+                has_tests = os.path.exists(
+                    os.path.join(path, "tests")
+                ) or os.path.exists(os.path.join(path, "test"))
+
+                is_agent_suite = (
+                    is_mcp or agent_file or is_graph or has_pyproject or has_tests
+                )
 
                 if pkg_name == "pipelines":
                     agent_targets.append(
@@ -559,7 +572,7 @@ class Git:
                         {
                             "name": pkg_name,
                             "path": path,
-                            "skip_reason": "Skipped (Not an Agent project)",
+                            "skip_reason": "Skipped (Not a valid Python/Agent project)",
                         }
                     )
                     continue
@@ -575,9 +588,9 @@ class Git:
                         "pkg": pkg_underscore,
                         "path": path,
                         "pkg_dir": pkg_dir,
-                        "file": agent_file or "",
-                        "is_mcp": str(is_mcp),
-                        "is_graph": str(is_graph),
+                        "file": agent_file,
+                        "is_mcp": is_mcp,
+                        "is_graph": is_graph,
                     }
                 )
 
@@ -668,7 +681,7 @@ class Git:
                     continue
 
                 if (run_all or type == "mcp") and target.get("is_mcp"):
-                    cmd = f"python3 -m {target['pkg']}.mcp_server --help"
+                    cmd = f"{self.python_exe} -m {target['pkg']}.mcp_server --help"
                     fast_futures.append(
                         executor.submit(self._check_help, cmd, path=target["path"])
                     )
@@ -687,7 +700,7 @@ class Git:
                     )
 
                 if (run_all or type == "agent") and target.get("file"):
-                    cmd = f"python3 -m {target['pkg']}.{target['file']} --help"
+                    cmd = f"{self.python_exe} -m {target['pkg']}.{target['file']} --help"
                     fast_futures.append(
                         executor.submit(self._check_help, cmd, path=target["path"])
                     )
@@ -769,29 +782,6 @@ class Git:
                     [f.result() for f in concurrent.futures.as_completed(heavy_futures)]
                 )
 
-            if run_all or type == "all":
-                web_targets = [
-                    t
-                    for t in agent_targets
-                    if os.path.exists(os.path.join(t["path"], "package.json"))
-                ]
-                if web_targets:
-                    logger.info(
-                        f"Validating Web UI builds for {len(web_targets)} projects..."
-                    )
-                    build_futures = []
-                    for target in web_targets:
-                        cmd = "npm run build"
-                        build_futures.append(
-                            executor.submit(self.git_action, cmd, path=target["path"])
-                        )
-                    results.extend(
-                        [
-                            f.result()
-                            for f in concurrent.futures.as_completed(build_futures)
-                        ]
-                    )
-
             # 7. Pre-commit Standard Compliance (Dry Run)
             if run_all or type == "all" or type == "pre-commit":
                 logger.info(
@@ -800,6 +790,12 @@ class Git:
                 pc_results = self.pre_commit_projects(run=True, autoupdate=False)
                 # Filter to only include pre-commit results in this category
                 results.extend(pc_results)
+
+            # 8. Pytest and Coverage execution
+            if run_all or type == "all" or type == "test":
+                logger.info(f"Running pytests for {len(agent_targets)} projects...")
+                test_results = self.test_projects(targets=agent_targets)
+                results.extend(test_results)
 
             successes = [r for r in results if r.status == "success"]
             failures = [r for r in results if r.status == "error"]
@@ -824,37 +820,29 @@ class Git:
                 "Ecosystem Installation": [
                     r
                     for r in results
-                    if r.metadata
-                    and r.metadata.command
-                    and "pip install" in r.metadata.command
+                    if r.metadata.command and "pip install" in r.metadata.command
                 ],
                 "Version Metadata Sync (Dry Run)": [
                     r
                     for r in results
-                    if r.metadata
-                    and r.metadata.command
-                    and "bump2version" in r.metadata.command
+                    if r.metadata.command and "bump2version" in r.metadata.command
                 ],
                 "Agent Standards Compliance": [
                     r
                     for r in results
-                    if r.metadata
-                    and r.metadata.command
-                    and "static_check" in r.metadata.command
+                    if r.metadata.command and "static_check" in r.metadata.command
                 ],
                 "MCP Help Check": [
                     r
                     for r in results
-                    if r.metadata
-                    and r.metadata.command
+                    if r.metadata.command
                     and "mcp_server" in r.metadata.command
                     and "--help" in r.metadata.command
                 ],
                 "Agent Help Check": [
                     r
                     for r in results
-                    if r.metadata
-                    and r.metadata.command
+                    if r.metadata.command
                     and (
                         "agent_server" in r.metadata.command
                         or "server" in r.metadata.command
@@ -865,8 +853,7 @@ class Git:
                 "Agent Runtime & Web UI": [
                     r
                     for r in results
-                    if r.metadata
-                    and r.metadata.command
+                    if r.metadata.command
                     and (
                         "runtime_check" in r.metadata.command
                         or "--web" in r.metadata.command
@@ -875,21 +862,22 @@ class Git:
                 "Pre-commit Standard Compliance": [
                     r
                     for r in results
-                    if r.metadata
-                    and r.metadata.command
-                    and "pre-commit run" in r.metadata.command
+                    if r.metadata.command and "pre-commit run" in r.metadata.command
                 ],
             }
 
             known_ids = set()
             for cat_list in categories.values():
                 for r in cat_list:
-                    if r.metadata:
-                        known_ids.add(id(r))
+                    known_ids.add(id(r))
 
-            uncategorized = [r for r in results if id(r) not in known_ids]
-            if uncategorized:
-                categories["Additional Operational Checks"] = uncategorized
+            other = [r for r in results if id(r) not in known_ids]
+            if other:
+                for r in other:
+                    logger.debug(
+                        f"Uncategorized result: {r.metadata.workspace} - cmd: {r.metadata.command}"
+                    )
+                categories["Additional Operational Checks"] = other
 
             report_md = "# VALIDATION SUMMARY\n"
             report_md += (
@@ -911,22 +899,14 @@ class Git:
                 if cat_successes:
                     report_md += "#### Successes ✅\n"
                     for r in cat_successes:
-                        pkg = (
-                            r.metadata.workspace.split("/")[-1]
-                            if r.metadata
-                            else "unknown"
-                        )
+                        pkg = r.metadata.workspace.split("/")[-1]
                         report_md += f"- **{pkg}**: Success\n"
                     report_md += "\n"
 
                 if cat_failures:
                     report_md += "#### Failures ❌\n"
                     for r in cat_failures:
-                        pkg = (
-                            r.metadata.workspace.split("/")[-1]
-                            if r.metadata
-                            else "unknown"
-                        )
+                        pkg = r.metadata.workspace.split("/")[-1]
                         error_msg = r.error.message if r.error else r.data
                         report_md += f"- **{pkg}**: {error_msg}\n"
                         if r.data and r.data != error_msg:
@@ -936,18 +916,14 @@ class Git:
                 if cat_skipped:
                     report_md += "#### Skipped ⏭️\n"
                     for r in cat_skipped:
-                        pkg = (
-                            r.metadata.workspace.split("/")[-1]
-                            if r.metadata
-                            else "unknown"
-                        )
+                        pkg = r.metadata.workspace.split("/")[-1]
                         report_md += f"- **{pkg}**: {r.data or 'Skipped'}\n"
                     report_md += "\n"
 
             if self.report_path:
-                self._export_report(report_md, "validation_report.md")
+                self._export_report(report.to_markdown(), "validation_report.md")
 
-            return results
+            return report
 
     def _export_report(self, markdown_content: str, default_name: str) -> None:
         """Exports markdown content to a file if reporting is enabled."""
@@ -1028,6 +1004,7 @@ class Git:
         pkg_underscore = target["pkg"]
         agent_file = target["file"]
         path = target["path"]
+        pkg_dir = target["pkg_dir"]
 
         if not agent_file:
             return GitResult(
@@ -1067,6 +1044,62 @@ class Git:
         env["VALIDATION_MODE"] = "True"
 
         try:
+            # Environment Cleanup: Remove corrupted WAL files and migrate agent_data
+            pkg_dir = target["pkg_dir"]
+            from pathlib import Path
+            import shutil
+
+            # 1. Migrate and remove agent_data
+            agent_data_dir = Path(pkg_dir) / "agent_data"
+            if agent_data_dir.exists() and agent_data_dir.is_dir():
+                mcp_src = agent_data_dir / "mcp_config.json"
+                mcp_dst = Path(pkg_dir) / "mcp_config.json"
+                if mcp_src.exists():
+                    try:
+                        shutil.copy2(mcp_src, mcp_dst)
+                        logger.info(
+                            f"Migrated mcp_config.json from agent_data for {target['name']}"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to migrate mcp_config.json for {target['name']}: {e}"
+                        )
+
+                try:
+                    shutil.rmtree(agent_data_dir)
+                    logger.info(
+                        f"Removed deprecated agent_data directory for {target['name']}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to remove agent_data directory for {target['name']}: {e}"
+                    )
+
+            # 2. Cleanup dangling WAL/SHM files
+            for pattern in ["*.db-wal", "*.db-shm", "*.wal"]:
+                for p in Path(pkg_dir).glob(pattern):
+                    try:
+                        p.unlink()
+                        logger.info(f"Cleaned up dangling file: {p.name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to remove {p.name}: {e}")
+
+            # 3. Gitignore Maintenance
+            gitignore_path = Path(path) / ".gitignore"
+            if gitignore_path.exists():
+                try:
+                    content = gitignore_path.read_text()
+                    if "knowledge_graph.db*" not in content:
+                        with open(gitignore_path, "a") as f:
+                            f.write(
+                                "\n# Graph Database\nknowledge_graph.db*\n.repo_graph/\n.ladybug/\n"
+                            )
+                        logger.info(f"Updated .gitignore for {target['name']}")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to update .gitignore for {target['name']}: {e}"
+                    )
+
             proc = subprocess.Popen(
                 cmd,
                 cwd=path,
@@ -1083,43 +1116,64 @@ class Git:
             error_msg = ""
             full_logs = ""
 
+            import fcntl
+
+            # Set non-blocking mode on stdout and stderr
+            for pipe in [proc.stdout, proc.stderr]:
+                fd = pipe.fileno()
+                fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+
             while (datetime.datetime.now() - start_time).total_seconds() < 60:
                 rlist, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0.5)
                 for r in rlist:
-                    line = r.readline()
-                    if line:
-                        full_logs += line
-                        if (
-                            "Uvicorn running on" in line
-                            or "Application startup complete" in line
-                            or "Starting server on" in line
-                        ) and not success:
-                            success = True
-                            logger.debug(
-                                f"Startup signal detected for {target['name']}, waiting for settle..."
-                            )
+                    try:
+                        # Read available data without blocking
+                        chunk = r.read(4096)
+                        if not chunk:
+                            continue
 
-                            startup_time = datetime.datetime.now()
+                        full_logs += chunk
+                        # Split by newline and process each line
+                        lines = chunk.splitlines()
+                        for line in lines:
+                            line = line.strip()
+                            if not line:
+                                continue
 
-                        is_error = (
-                            "ERROR -" in line.upper()
-                            or "ERROR:" in line.upper()
-                            or "CRITICAL -" in line.upper()
-                            or "CRITICAL:" in line.upper()
-                            or "TRACEBACK" in line.upper()
-                            or "IMPORTERROR" in line.upper()
-                            or "NAMEERROR" in line.upper()
-                            or "APPLICATION STARTUP FAILED" in line.upper()
-                        )
-                        if is_error:
-                            error_msg = line.strip()
-                            success = False
-                            logger.error(
-                                f"Startup error detected for {target['name']}: {error_msg}"
-                            )
-                            break
+                            logger.debug(f"[{target['name']}] {line}")
+
+                            if (
+                                "Uvicorn running on" in line
+                                or "Application startup complete" in line
+                                or "Starting server on" in line
+                            ):
+                                success = True
+                                startup_time = datetime.datetime.now()
+                                logger.info(
+                                    f"Startup signal detected for {target['name']}, waiting for settle..."
+                                )
+
+                            if (
+                                "ERROR -" in line.upper()
+                                or "ERROR:" in line.upper()
+                                or "CRITICAL -" in line.upper()
+                                or "CRITICAL:" in line.upper()
+                                or "TRACEBACK" in line.upper()
+                                or "IMPORTERROR" in line.upper()
+                                or "NAMEERROR" in line.upper()
+                                or "APPLICATION STARTUP FAILED" in line.upper()
+                            ):
+                                error_msg = line.strip()
+                                logger.error(
+                                    f"Startup error detected for {target['name']}: {error_msg}"
+                                )
+                                # No success, will break via poll() or loop timeout
+                    except (IOError, BlockingIOError):
+                        continue
 
                 if proc.poll() is not None:
+
                     success = False
                     if not error_msg:
                         error_msg = f"Process exited with code {proc.returncode}"
@@ -1137,7 +1191,7 @@ class Git:
                 else:
                     proc.terminate()
                 proc.wait(timeout=3)
-            except Exception:
+            except Exception: # nosec B110
                 pass
 
             metadata = GitMetadata(
@@ -1244,11 +1298,7 @@ class Git:
         return "\n".join(md)
 
     def git_action(
-        self,
-        command: str,
-        path: str | None = None,
-        quiet: bool = False,
-        env: dict | None = None,
+        self, command: str, path: str = None, quiet: bool = False, env: dict = None
     ) -> GitResult:
         """
         Execute a Git command in the specified directory.
@@ -1263,21 +1313,15 @@ class Git:
         """
         target_path = self._resolve_path(path)
 
-        # Ensure ~/.local/bin is in PATH for tools like bump2version
-        current_env = env if env else os.environ.copy()
-        local_bin = os.path.expanduser("~/.local/bin")
-        if local_bin not in current_env.get("PATH", ""):
-            current_env["PATH"] = f"{local_bin}:{current_env.get('PATH', '')}"
-
         pipe = subprocess.Popen(
             command,
-            shell=True,
+            shell=True, # nosec B602
             cwd=target_path,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             text=True,
-            env=current_env,
+            env=env if env else os.environ,
         )
         out, err = pipe.communicate()
         return_code = pipe.wait()
@@ -1507,7 +1551,7 @@ class Git:
             threads (int): The number of threads.
 
         Notes:
-            If the input is invalid, defaults 15
+            If the input is invalid, defaults 12
         """
         try:
             if 0 < threads <= self.maximum_threads:
@@ -1558,7 +1602,7 @@ class Git:
             commands.append("pre-commit autoupdate")
         if run:
             commands.append("git add -A")
-            commands.append("pre-commit run --all-files")
+            commands.append("pre-commit run --all-files --verbose")
 
         if not commands:
             return GitResult(
@@ -1608,6 +1652,69 @@ class Git:
                     )
 
         return result
+
+    def test_projects(self, targets: list[dict[str, str]]) -> list[GitResult]:
+        """
+        Execute pytests with coverage for the specified projects in parallel.
+        """
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            futures = []
+            for target in targets:
+                if "skip_reason" in target:
+                    continue
+
+                path = target["path"]
+                # Try to find tests directory
+                has_tests = os.path.exists(
+                    os.path.join(path, "tests")
+                ) or os.path.exists(os.path.join(path, "test"))
+                if has_tests:
+                    # Detect if we should use uv or standard python
+                    if os.path.exists(os.path.join(path, "uv.lock")):
+                        # Use uv run with test extra if it exists
+                        cmd = "uv run --extra test pytest -v --cov=."
+                    else:
+                        # Fallback to standard pytest
+                        cmd = f"{sys.executable} -m pytest -v --cov=."
+
+                    # Ensure memory safety for ladybug and set validation mode
+                    test_env = os.environ.copy()
+                    test_env["LADYBUG_MAX_DB_SIZE"] = "1073741824"
+                    test_env["VALIDATION_MODE"] = "True"
+                    test_env["KNOWLEDGE_GRAPH_SYNC_BACKGROUND"] = "False"
+
+                    futures.append(
+                        executor.submit(
+                            self.git_action,
+                            cmd,
+                            path=path,
+                            env=test_env,
+                            timeout=600,  # 10 minute timeout for tests
+                        )
+                    )
+                else:
+                    results.append(
+                        GitResult(
+                            status="skipped",
+                            data="No tests directory found",
+                            metadata=GitMetadata(
+                                command="pytest",
+                                workspace=path,
+                                return_code=0,
+                                timestamp=datetime.datetime.now(
+                                    datetime.timezone.utc
+                                ).isoformat()
+                                + "Z",
+                            ),
+                        )
+                    )
+
+            for future in concurrent.futures.as_completed(futures):
+                results.append(future.result())
+        return results
 
     def pre_commit_projects(
         self,
@@ -1696,7 +1803,7 @@ class Git:
         pyproject = os.path.join(target_path, "pyproject.toml")
         if os.path.exists(pyproject):
             try:
-                with open(pyproject) as f:
+                with open(pyproject, "r") as f:
                     content = f.read()
                 if (
                     "[project.optional-dependencies]" in content
@@ -1707,7 +1814,7 @@ class Git:
                 pass
 
         install_target = f".[{extra}]" if has_all_extra else "."
-        command = f"pip install --break-system-packages -e {install_target}"
+        command = f"pip install -e {install_target}"
 
         logger.info(f"Installing project at {target_path} with {command}")
         result = self.git_action(command=command, path=target_path)
@@ -2118,7 +2225,9 @@ class Git:
             yaml_config_path = os.path.expanduser(self.config.path)
             is_default_yaml = yaml_path == DEFAULT_WORKSPACE_YML
 
-            if os.path.isabs(yaml_config_path):
+            if self._explicit_path:
+                logger.info(f"Preserving explicit workspace path: {self.path}")
+            elif os.path.isabs(yaml_config_path):
                 self.path = os.path.abspath(yaml_config_path)
             elif is_default_yaml:
                 self.path = os.path.abspath(
@@ -2186,6 +2295,7 @@ class Git:
                         files("repository_manager") / "workspace.yml"
                     ).read_text()
                 except Exception:
+
                     template_content = "name: My Workspace\npath: .\ndescription: New workspace\nsubdirectories: {}\n"
             else:
                 template_content = "name: My Workspace\npath: .\ndescription: New workspace\nsubdirectories:\n  agents:\n    description: Agent repositories\n    repositories: []\n"
@@ -2305,7 +2415,7 @@ class Git:
                 template_content = (
                     files("repository_manager") / "AGENTS.md"
                 ).read_text()
-            except Exception:
+            except Exception: # nosec B110
                 template_content = "# Agent Catalog\n\n| Agent Package | Type |\n|:--------------|:-----|\n<!-- AGENT_CATALOG_PLACEHOLDER -->\n"
 
             if "<!-- AGENT_CATALOG_PLACEHOLDER -->" in template_content:
@@ -2481,7 +2591,7 @@ Examples:
         "-t",
         "--threads",
         type=int,
-        help="Parallel thread count (default: 15).",
+        help="Parallel thread count (default: 12).",
         default=DEFAULT_REPOSITORY_MANAGER_THREADS,
     )
     group_general.add_argument(
@@ -2555,6 +2665,8 @@ Examples:
             "agent",
             "flat",
             "graph",
+            "test",
+            "pre-commit",
         ],
         default="all",
         help="Filter validation mode or target (default: all).",
@@ -2642,7 +2754,7 @@ Examples:
     args = parser.parse_args()
 
     git = Git(
-        path=args.workspace,
+        path=args.workspace if args.workspace != DEFAULT_REPOSITORY_MANAGER_WORKSPACE else None,
         threads=args.threads,
         report_path=args.report,
     )

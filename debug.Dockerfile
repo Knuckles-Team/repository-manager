@@ -58,13 +58,13 @@ ENV HOST=${HOST} \
 WORKDIR /development
 COPY . /development
 RUN apt-get update \
-     && apt-get install -y ripgrep tree fd-find git curl nano ca-certificates \
-     && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
-     && curl -LsSf https://astral.sh/uv/install.sh | sh \
-     && curl -sS https://starship.rs/install.sh | sh -s -- --yes \
+    && apt-get install -y default-jre ripgrep tree fd-find git curl nano ca-certificates \
+    && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && curl -sS https://starship.rs/install.sh | sh -s -- --yes \
     && mkdir -p /root/.config \
     && echo 'eval "$(starship init bash)"' >> /root/.bashrc \ \
-    uv pip install --system --upgrade --verbose --no-cache --break-system-packages --prerelease=allow .[all] mem0-mcp-server
+uv pip install --system --upgrade --verbose --no-cache --break-system-packages --prerelease=allow .[all] mem0-mcp-server
 
 WORKDIR /workspace
 

@@ -1,5 +1,5 @@
 [build-system]
-requires = [ "setuptools>=80.9.0", "wheel",]
+requires = ["setuptools>=64.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -27,6 +27,9 @@ test = [ "pytest", "pytest-asyncio",]
 repository-manager = "repository_manager.repository_manager:main"
 repository-manager-mcp = "repository_manager.mcp_server:mcp_server"
 repository-manager-agent = "repository_manager.agent_server:agent_server"
+
+[tool.setuptools.package-data]
+repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md"]
 
 [tool.uv]
 managed = true

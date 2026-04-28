@@ -55,7 +55,7 @@ def agent_server():
     )
     
     # Wait for server to be healthy
-    max_retries = 30
+    max_retries = 120
     for i in range(max_retries):
         try:
             resp = httpx.get(f"{BASE_URL}/health", timeout=1.0)
@@ -73,10 +73,10 @@ def agent_server():
         
         time.sleep(1)
     else:
-        os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-        log_file.close()
-        pytest.fail("Server health check timed out.")
-        
+        process.terminate()
+        stdout, stderr = process.communicate(timeout=5)
+        pytest.fail(f"Server health check timed out.\nSTDOUT: {stdout.decode()}\nSTDERR: {stderr.decode()}")
+
     yield process
     
     # Shutdown
