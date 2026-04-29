@@ -15,7 +15,7 @@
   "tools": [
     {
       "id": "graph-flow",
-      "type": "flow", 
+      "type": "flow",
       "description": "Run complex multi-step workflows via Pydantic-Graph"
     }
   ]

@@ -20,7 +20,7 @@ def agent_server():
     """Starts the agent server as a subprocess for integration testing."""
     # 1. Clear Port and Cleanup Corrupted DB WAL Files
     subprocess.run(["fuser", "-k", f"{PORT}/tcp"], stderr=subprocess.DEVNULL)
-    
+
     # Delete corrupted WAL and DB to ensure fresh start
     db_path = AGENT_WORKSPACE / "knowledge_graph.db"
     wal_path = AGENT_WORKSPACE / "knowledge_graph.db.wal"
@@ -37,14 +37,14 @@ def agent_server():
     env["LLM_BASE_URL"] = "http://10.0.0.18:1234/v1"
     env["LLM_API_KEY"] = "EMPTY"
     env["PYTHONPATH"] = PROJECT_ROOT
-    
+
     log_path = os.path.join(PROJECT_ROOT, "server_integration.log")
     log_file = open(log_path, "w")
-    
+
     cmd = [sys.executable, "-m", "repository_manager.agent_server", "--port", str(PORT), "--debug"]
     print(f"\nDEBUG: Starting server: {' '.join(cmd)}")
     print(f"DEBUG: Logs at {log_path}")
-    
+
     process = subprocess.Popen(
         cmd,
         cwd=PROJECT_ROOT,
@@ -53,7 +53,7 @@ def agent_server():
         stderr=log_file,
         preexec_fn=os.setsid
     )
-    
+
     # Wait for server to be healthy
     max_retries = 120
     for i in range(max_retries):
@@ -64,13 +64,13 @@ def agent_server():
                 break
         except Exception:
             pass
-        
+
         if process.poll() is not None:
             log_file.close()
             with open(log_path, "r") as f:
                 logs = f.read()
             pytest.fail(f"Server failed to start with exit code {process.returncode}\nLogs:\n{logs}")
-        
+
         time.sleep(1)
     else:
         process.terminate()
@@ -78,7 +78,7 @@ def agent_server():
         pytest.fail(f"Server health check timed out.\nSTDOUT: {stdout.decode()}\nSTDERR: {stderr.decode()}")
 
     yield process
-    
+
     # Shutdown
     print("\nShutting down Agent Server...")
     try:
