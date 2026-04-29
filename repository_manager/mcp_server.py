@@ -26,7 +26,7 @@ from agent_utilities.mcp_utilities import (
     ctx_progress,
 )
 from dotenv import find_dotenv, load_dotenv
-from fastmcp import FastMCP, Context
+from fastmcp import Context, FastMCP
 from fastmcp.utilities.logging import get_logger
 from pydantic import Field
 from starlette.requests import Request
@@ -34,8 +34,8 @@ from starlette.responses import JSONResponse
 
 from repository_manager.models import (
     GitResult,
-    WorkspaceConfig,
     ValidationReport,
+    WorkspaceConfig,
 )
 from repository_manager.repository_manager import Git
 
@@ -186,13 +186,21 @@ def register_project_management_tools(mcp: FastMCP):
             description="Validation type: 'agent', 'mcp', or 'all'.", default="all"
         ),
         threads: int | None = Field(description="Parallel workers.", default=None),
+        output_dir: str | None = Field(
+            description="Directory to write the validation-reports-<timestamp>/ output. Defaults to the workspace root.",
+            default=None,
+        ),
         ctx: Context = Field(
             description="MCP context for progress reporting", default=None
         ),
     ) -> ValidationReport:
-        """Bulk validates agent/MCP servers in the workspace."""
+        """Bulk validates agent/MCP servers in the workspace.
+
+        Results are written incrementally to a structured directory:
+        ``validation-reports-<timestamp>/<repo-name>-results/<scan-type>.md``
+        """
         git = get_git_instance(threads=threads)
-        report = git.validate_projects(type=type)
+        report = git.validate_projects(type=type, output_dir=output_dir)
         return report
 
     @mcp.tool(tags={"workspace_management"})
@@ -382,10 +390,6 @@ def register_graph_tools(mcp: FastMCP):
         await ctx_progress(ctx, 0, 100)
         git = get_git_instance(path=path)
         return git.graph_reset(path=path)
-<<<<<<< HEAD
-        return git.graph_reset(path=path)
-=======
->>>>>>> 61af4a3 (Fixed several issues.)
 
     @mcp.tool(tags={"graph_intelligence"})
     async def graph_impact(
