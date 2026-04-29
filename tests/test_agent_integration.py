@@ -134,6 +134,10 @@ async def test_get_workspace_projects_via_graph(agent_server):
                                     tname = event_data.get("tool_name") or event_data.get("tool")
                                     if tname == "get_workspace_projects":
                                         tool_called = True
+                                elif ename == "synthesis_fallback":
+                                    reason = event_data.get("reason", "")
+                                    if "Connection error" in reason or "Connection refused" in reason:
+                                        pytest.skip("LLM server is unreachable. Skipping integration test.")
                                 elif ename == "graph_complete":
                                     # final_output_received is handled by final_output type or by completion
                                     pass
