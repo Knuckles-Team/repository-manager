@@ -39,7 +39,7 @@ from repository_manager.models import (
 )
 from repository_manager.repository_manager import Git
 
-__version__ = "1.3.55"
+__version__ = "1.3.56"
 
 
 DEFAULT_WORKSPACE = os.environ.get("REPOSITORY_MANAGER_WORKSPACE", "/workspace")
@@ -135,6 +135,39 @@ def register_git_operations_tools(mcp: FastMCP):
         results = git.pull_projects()
         await ctx_progress(ctx, 100, 100)
         return git.generate_markdown_summary("Pull", results)
+
+    @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
+    async def push_projects(
+        threads: int | None = Field(description="Parallel workers.", default=None),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
+    ) -> str:
+        await ctx_progress(ctx, 0, 100)
+        """Pushes updates and tags for all projects in the workspace."""
+        git = get_git_instance(threads=threads)
+        results = git.push_projects()
+        await ctx_progress(ctx, 100, 100)
+        return git.generate_markdown_summary("Push", results)
+
+    @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
+    async def phased_git_push(
+        phase: int | None = Field(
+            description="The starting phase. Default is 1.", default=1
+        ),
+        target_project: str | None = Field(
+            description="Optional specific project to push.", default=None
+        ),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
+    ) -> str:
+        await ctx_progress(ctx, 0, 100)
+        """Executes a phased git push workflow based on workspace.yml."""
+        git = get_git_instance()
+        results = git.phased_push(start_phase=phase or 1, project_filter=target_project)
+        await ctx_progress(ctx, 100, 100)
+        return git.generate_markdown_summary("Phased Push", results)
 
 
 def register_workspace_management_tools(mcp: FastMCP):
@@ -256,6 +289,18 @@ def register_project_management_tools(mcp: FastMCP):
         git = get_git_instance()
         results = git.maintain_projects(part=part, start_phase=phase, dry_run=dry_run)
         return git.generate_markdown_summary("Maintenance", results)
+
+    @mcp.tool(tags={"workspace_management", "git_operations"})
+    async def push_projects_phased(
+        phase: int = Field(description="Starting phase number.", default=1),
+        ctx: Context = Field(
+            description="MCP context for progress reporting", default=None
+        ),
+    ) -> str:
+        """Executes the phased git push workflow across all projects in the workspace."""
+        git = get_git_instance()
+        results = git.phased_push(start_phase=phase)
+        return git.generate_markdown_summary("Phased Push", results)
 
 
 def register_visualization_tools(mcp: FastMCP):
@@ -386,7 +431,7 @@ def register_graph_tools(mcp: FastMCP):
     ) -> str:
         """Purges the graph database and forces a clean rebuild."""
         if not await ctx_confirm_destructive(ctx, "graph reset"):
-            return {"status": "cancelled", "message": "Operation cancelled by user"}
+            return "Operation cancelled by user"
         await ctx_progress(ctx, 0, 100)
         git = get_git_instance(path=path)
         return git.graph_reset(path=path)

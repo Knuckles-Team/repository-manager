@@ -21,7 +21,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.3.55*
+*Version: 1.3.56*
 
 ## Overview
 
@@ -344,11 +344,17 @@ When packages depend on each other, they often need to be bumped in a specific s
 5.  **Fleet**: Propagate the new utility version to all other packages and bump their versions.
 
 ```bash
-# Full maintenance run
-repository-manager --maintain
+# Full maintenance run (Bump patch -> Pre-commit -> Validate)
+repository-manager --maintain --bump patch
+
+# Dry-run a maintenance bump without committing changes
+repository-manager --maintain --bump patch --dry-run
+
+# Run only the first phase (bumping) and stop
+repository-manager --maintain --bump patch --phase 1 --single-phase
 
 # Skip verify phase (pre-commit) if already done
-repository-manager --maintain --skip-pre-commit
+repository-manager --maintain --bump patch --skip-pre-commit
 
 # Resume from a specific phase
 repository-manager --maintain --phase 4

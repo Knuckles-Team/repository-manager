@@ -24,7 +24,7 @@ repos:
   - id: end-of-file-fixer
   - id: no-commit-to-branch
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.15.11
+  rev: v0.15.12
   hooks:
   - id: ruff-check
     args: ["--fix", "--ignore=E402,B008,E501"]
@@ -32,7 +32,7 @@ repos:
   - id: ruff-format
     exclude: ^(tests/|test/|scripts/|script/)
 - repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v1.15.0
+  rev: v1.20.2
   hooks:
   - id: mypy
     additional_dependencies: [pydantic, types-PyYAML, types-requests,
@@ -52,7 +52,7 @@ repos:
     args: ["-L", "ans,linar,nam,tread,ot,"]
     exclude: (?x)^(repository_manager/skills/git-cli-docs/reference/.*)$
 - repo: https://github.com/PyCQA/bandit
-  rev: 1.8.6
+  rev: 1.9.4
   hooks:
   - id: bandit
     args: ["--skip", "B101,B404,B603"]

@@ -81,50 +81,23 @@ subdirectories:
 maintenance:
   description: "Phased update sequence for the agent ecosystem."
   phases:
-    - name: "Phase 1: universal-skills"
+    - name: "Phase 1: Core Tools and UIs"
       phase: 1
-      project: "universal-skills"
-      updates:
-        - target: "agent-packages/agent-utilities/pyproject.toml"
-          package: "universal-skills"
-    - name: "Phase 2: skill-graphs"
-      phase: 2
-      project: "skill-graphs"
-      updates:
-        - target: "agent-packages/agent-utilities/pyproject.toml"
-          package: "skill-graphs"
-    - name: "Phase 3: agent-webui"
-      phase: 3
-      project: "agent-webui"
-      updates:
-        - target: "agent-packages/agent-utilities/pyproject.toml"
-          package: "agent-webui"
-    - name: "Phase 4: agent-terminal-ui"
-      phase: 4
-      project: "agent-terminal-ui"
-      updates:
-        - target: "agent-packages/agent-utilities/pyproject.toml"
-          package: "agent-terminal-ui"
-    - name: "Phase 5: agent-utilities"
-      phase: 5
-      project: "agent-utilities"
-      updates:
-        - target_pattern: "*"
-          exclude:
-            - "universal-skills"
-            - "agent-utilities"
-            - "agent-webui"
-            - "agent-terminal-ui"
-          package: "agent-utilities"
-    - name: "Phase 6: Bulk Bump"
-      phase: 6
-      bulk_bump: True
-      exclude:
+      projects:
         - "universal-skills"
-        - "agent-utilities"
+        - "skill-graphs"
         - "agent-webui"
         - "agent-terminal-ui"
-        - "skill-graphs"
+      wait_minutes: 10
+    - name: "Phase 2: agent-utilities"
+      phase: 2
+      projects:
+        - "agent-utilities"
+      wait_minutes: 5
+    - name: "Phase 3: Agents"
+      phase: 3
+      bulk_bump: True
+      bulk_push: True
 
 graph:
   enabled: true

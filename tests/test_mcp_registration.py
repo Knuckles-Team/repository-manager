@@ -1,6 +1,7 @@
 import os
+
 import pytest
-from fastmcp import FastMCP
+
 from repository_manager.mcp_server import get_mcp_instance
 
 

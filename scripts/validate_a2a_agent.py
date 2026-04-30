@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 import asyncio
-import httpx
 import json
 import uuid
 
-A2A_URL = (
-    "http://127.0.0.1:9017/a2a/"
-)
+import httpx
+
+A2A_URL = "http://127.0.0.1:9017/a2a/"
 
 
 async def main():
@@ -17,7 +16,6 @@ async def main():
     ]
 
     async with httpx.AsyncClient(timeout=10000.0) as client:
-
         for q in questions:
             print(f"\n\n\nUser: {q}")
             print("--- Sending Request ---")

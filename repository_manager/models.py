@@ -1,6 +1,7 @@
 import datetime
 import logging
 import os
+import re
 
 from pydantic import BaseModel, Field
 
@@ -17,6 +18,12 @@ CATEGORY_SLUG_MAP: dict[str, str] = {
     "Pre-commit Standard Compliance": "pre-commit-results",
     "Additional Operational Checks": "additional-checks",
 }
+
+
+def _sanitize_filename(name: str) -> str:
+    """Sanitize a string to be a valid Windows and cross-platform filename."""
+    # Replace illegal Windows characters with a hyphen
+    return re.sub(r'[<>:"/\\|?*]', "-", name)
 
 
 class GitError(BaseModel):
@@ -65,7 +72,10 @@ class MaintenancePhase(BaseModel):
     name: str
     phase: int
     project: str | None = None
+    projects: list[str] = Field(default_factory=list)
     bulk_bump: bool = False
+    bulk_push: bool = False
+    wait_minutes: int = 0
     updates: list[MaintenanceUpdate] = Field(default_factory=list)
     exclude: list[str] = Field(default_factory=list)
 
@@ -384,7 +394,8 @@ class ValidationReport(BaseModel):
         ] = {}  # project -> list of relative file paths
 
         for project in all_projects:
-            repo_dir_name = f"{project}-results"
+            safe_project = _sanitize_filename(project)
+            repo_dir_name = f"{safe_project}-results"
             repo_dir = os.path.join(report_root, repo_dir_name)
             os.makedirs(repo_dir, exist_ok=True)
 
@@ -405,9 +416,12 @@ class ValidationReport(BaseModel):
                 slug = CATEGORY_SLUG_MAP.get(
                     cat.name, cat.name.lower().replace(" ", "-")
                 )
+                safe_slug = _sanitize_filename(slug)
                 errors = filtered.failure_count
                 warnings = filtered.skipped_count
-                filename = f"{slug}-{errors}-error(s)-{warnings}-warning(s)-{ts}.md"
+                filename = (
+                    f"{safe_slug}-{errors}-error(s)-{warnings}-warning(s)-{ts}.md"
+                )
                 filepath = os.path.join(repo_dir, filename)
 
                 # Write the per-scan file
@@ -474,7 +488,8 @@ class ValidationReport(BaseModel):
                 project, {"success": 0, "failure": 0, "skipped": 0}
             )
             files_list = project_files.get(project, [])
-            repo_dir_name = f"{project}-results"
+            safe_project = _sanitize_filename(project)
+            repo_dir_name = f"{safe_project}-results"
             details_link = f"[📂 {project}-results]({repo_dir_name}/)"
             status_icon = "🔴" if stats["failure"] > 0 else "🟢"
             index_md.append(
@@ -625,15 +640,17 @@ class IncrementalReportWriter:
             self.project_stats[project]["skipped"] += filtered.skipped_count
 
             # Build filename & directory
-            repo_dir_name = f"{project}-results"
+            safe_project = _sanitize_filename(project)
+            repo_dir_name = f"{safe_project}-results"
             repo_dir = os.path.join(self.report_root, repo_dir_name)
             os.makedirs(repo_dir, exist_ok=True)
 
             slug = CATEGORY_SLUG_MAP.get(cat.name, cat.name.lower().replace(" ", "-"))
+            safe_slug = _sanitize_filename(slug)
             errors = filtered.failure_count
             warnings = filtered.skipped_count
             filename = (
-                f"{slug}-{errors}-error(s)-{warnings}-warning(s)-{self.ts_path}.md"
+                f"{safe_slug}-{errors}-error(s)-{warnings}-warning(s)-{self.ts_path}.md"
             )
             filepath = os.path.join(repo_dir, filename)
 
@@ -709,7 +726,8 @@ class IncrementalReportWriter:
             stats = self.project_stats.get(
                 project, {"success": 0, "failure": 0, "skipped": 0}
             )
-            repo_dir_name = f"{project}-results"
+            safe_project = _sanitize_filename(project)
+            repo_dir_name = f"{safe_project}-results"
             details_link = f"[📂 {project}-results]({repo_dir_name}/)"
             status_icon = "🔴" if stats["failure"] > 0 else "🟢"
             index_md.append(

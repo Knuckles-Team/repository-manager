@@ -1,8 +1,10 @@
 import asyncio
 import json
 import os
-from mcp import ClientSession, StdioServerParameters
+
 from mcp.client.stdio import stdio_client
+
+from mcp import ClientSession, StdioServerParameters # type: ignore[attr-defined]
 
 
 async def list_tools():

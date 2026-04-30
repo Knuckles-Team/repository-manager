@@ -1,12 +1,11 @@
-import pytest
-import os
 import networkx as nx
-from pathlib import Path
-from agent_utilities.knowledge_graph.pipeline.types import PipelineContext
-from agent_utilities.models.knowledge_graph import PipelineConfig, PhaseResult
-from agent_utilities.knowledge_graph.pipeline.phases.scan import execute_scan
+import pytest
 from agent_utilities.knowledge_graph.pipeline.phases.parse import execute_parse
 from agent_utilities.knowledge_graph.pipeline.phases.resolve import execute_resolve
+from agent_utilities.knowledge_graph.pipeline.phases.scan import execute_scan
+from agent_utilities.knowledge_graph.pipeline.types import PipelineContext
+from agent_utilities.models.knowledge_graph import PhaseResult, PipelineConfig
+
 
 @pytest.mark.asyncio
 async def test_scan_and_parse_integration(tmp_path):
@@ -15,8 +14,7 @@ async def test_scan_and_parse_integration(tmp_path):
     py_file.write_text("class MyClass:\n    pass\n\ndef my_func():\n    pass")
 
     ctx = PipelineContext(
-        config=PipelineConfig(workspace_path=str(tmp_path)),
-        nx_graph=nx.MultiDiGraph()
+        config=PipelineConfig(workspace_path=str(tmp_path)), nx_graph=nx.MultiDiGraph()
     )
 
     # Run scan
@@ -34,6 +32,7 @@ async def test_scan_and_parse_integration(tmp_path):
     assert any("symbol:MyClass" in n for n in nodes)
     assert any("symbol:my_func" in n for n in nodes)
 
+
 @pytest.mark.asyncio
 async def test_resolve_imports(tmp_path):
     # Create two files, one importing from another
@@ -43,8 +42,7 @@ async def test_resolve_imports(tmp_path):
     file_b.write_text("class MyClass: pass")
 
     ctx = PipelineContext(
-        config=PipelineConfig(workspace_path=str(tmp_path)),
-        nx_graph=nx.MultiDiGraph()
+        config=PipelineConfig(workspace_path=str(tmp_path)), nx_graph=nx.MultiDiGraph()
     )
 
     # Scan & Parse

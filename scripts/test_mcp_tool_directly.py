@@ -8,6 +8,7 @@ sys.path.append(os.getcwd())
 
 from repository_manager.mcp_server import get_git_instance
 
+
 async def main():
     print("Executing get_workspace_projects directly...")
     try:
@@ -19,6 +20,7 @@ async def main():
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
