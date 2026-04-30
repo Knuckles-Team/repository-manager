@@ -64,20 +64,6 @@ subdirectories:
           - url: "https://github.com/Knuckles-Team/vector-mcp.git"
           - url: "https://github.com/Knuckles-Team/wger-agent.git"
 
-  open-source-libraries:
-    description: "Open source libraries which are core dependencies of the system."
-    repositories:
-      - url: "https://github.com/pydantic/pydantic-ai.git"
-        description: "AI Agent Framework, the Pydantic way"
-      - url: "https://github.com/PrefectHQ/fastmcp.git"
-        description: "The fast, Pythonic way to build MCP servers and clients."
-      - url: "https://github.com/vcoderun/acpkit"
-        description: "ACP Kit provides a common adapter for Agent Frameworks."
-      - url: "https://github.com/LadybugDB/ladybug.git"
-        description: "LadybugDB a graph database"
-      - url: "https://github.com/networkx/networkx.git"
-        description: "Network Analysis in Python"
-
 maintenance:
   description: "Phased update sequence for the agent ecosystem."
   phases:
