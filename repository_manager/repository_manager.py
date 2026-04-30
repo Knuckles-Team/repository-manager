@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.3.56"
+__version__ = "1.3.57"
 
 import concurrent.futures
 import select
@@ -2100,7 +2100,7 @@ class Git:
             command += " --dry-run"
         if verbose:
             command += " --verbose"
-        
+
         # Pre-flight check for existing tags
         if not dry_run:
             pre_cmd = f"bump2version {part} --dry-run --list"
@@ -2111,9 +2111,18 @@ class Git:
                 match = re.search(r"new_version=(.*)", pre_result.data)
                 if match:
                     new_version = match.group(1).strip()
-                    tag_check = self.git_action(command=f"git tag -l v{new_version}", path=target_dir, quiet=True)
-                    if tag_check.status == "success" and f"v{new_version}" in tag_check.data:
-                        logger.warning(f"Tag v{new_version} already exists in {target_dir}. Skipping bump.")
+                    tag_check = self.git_action(
+                        command=f"git tag -l v{new_version}",
+                        path=target_dir,
+                        quiet=True,
+                    )
+                    if (
+                        tag_check.status == "success"
+                        and f"v{new_version}" in tag_check.data
+                    ):
+                        logger.warning(
+                            f"Tag v{new_version} already exists in {target_dir}. Skipping bump."
+                        )
                         return GitResult(
                             status="success",
                             data=f"current_version={new_version}\nnew_version={new_version}\n",
@@ -2121,7 +2130,10 @@ class Git:
                                 command="bump_version",
                                 workspace=target_dir,
                                 return_code=0,
-                                timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+                                timestamp=datetime.datetime.now(
+                                    datetime.timezone.utc
+                                ).isoformat()
+                                + "Z",
                             ),
                         )
             command += " --list"
@@ -2222,7 +2234,7 @@ class Git:
         part: str = "patch",
         start_phase: int = 1,
         dry_run: bool = False,
-        skip_pre_commit: bool = False,
+        allow_pre_commit: bool = False,
         config: dict | None = None,
         single_phase: bool = False,
         project_filter: str | None = None,
@@ -2257,7 +2269,7 @@ class Git:
 
             config = maintenance_cfg
 
-        if not skip_pre_commit:
+        if allow_pre_commit:
             projects_to_check: list[Any] | None = None
             if config:
                 projects_to_check = []
@@ -2984,9 +2996,9 @@ Examples:
         help="Perform maintenance operations without committing changes. Use with --maintain.",
     )
     group_maintenance.add_argument(
-        "--skip-pre-commit",
+        "--allow-pre-commit",
         action="store_true",
-        help="Bypass the pre-commit phase during maintenance workflow. Use with --maintain.",
+        help="Execute the pre-commit phase during maintenance workflow. Pre-commits are skipped by default.",
     )
     group_maintenance.add_argument(
         "--config",
@@ -3170,7 +3182,7 @@ Examples:
                 part=args.bump if args.bump else "patch",
                 start_phase=args.phase,
                 dry_run=args.dry_run,
-                skip_pre_commit=args.skip_pre_commit,
+                allow_pre_commit=args.allow_pre_commit,
                 config=config,
                 single_phase=args.single_phase,
                 project_filter=args.project,
@@ -3216,7 +3228,9 @@ Examples:
         logger.info("Starting structural graph update phase...")
         graph_report = git.ensure_graph()
         if graph_report:
-            print(f"\nHybrid Graph Execution Complete\nNodes Processed: {graph_report.get('nodes', 0)}\nEdges Processed: {graph_report.get('edges', 0)}\n")
+            print(
+                f"\nHybrid Graph Execution Complete\nNodes Processed: {graph_report.get('nodes', 0)}\nEdges Processed: {graph_report.get('edges', 0)}\n"
+            )
         else:
             print("Graph update returned no results or is disabled.")
     if args.graph_query:
