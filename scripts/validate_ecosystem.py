@@ -1,6 +1,7 @@
 import asyncio
-import os
 import logging
+import os
+
 from repository_manager.repository_manager import Git
 
 # Setup logging

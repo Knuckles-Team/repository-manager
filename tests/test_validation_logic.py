@@ -1,9 +1,9 @@
-import os
-import shutil
-from pathlib import Path
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
+
 from repository_manager.repository_manager import Git
+
 
 @pytest.fixture
 def temp_workspace(tmp_path):
@@ -32,6 +32,7 @@ def temp_workspace(tmp_path):
 
     return workspace, agent_dir, pkg_dir
 
+
 def test_mcp_migration_and_cleanup(temp_workspace):
     workspace, agent_dir, pkg_dir = temp_workspace
 
@@ -42,7 +43,7 @@ def test_mcp_migration_and_cleanup(temp_workspace):
         "pkg": "test_agent",
         "path": str(agent_dir),
         "pkg_dir": str(pkg_dir),
-        "file": "agent_server"
+        "file": "agent_server",
     }
 
     # Mock subprocess.Popen to avoid actually running a server
@@ -58,6 +59,7 @@ def test_mcp_migration_and_cleanup(temp_workspace):
         with patch("select.select", return_value=([], [], [])):
             with patch("datetime.datetime") as mock_dt:
                 import datetime
+
                 now = datetime.datetime.now()
                 # Mock time to exit loop immediately
                 mock_dt.now.side_effect = [now, now + datetime.timedelta(seconds=70)]
@@ -70,10 +72,13 @@ def test_mcp_migration_and_cleanup(temp_workspace):
 
     # Check if mcp_config.json was migrated
     assert (pkg_dir / "mcp_config.json").exists()
-    assert (pkg_dir / "mcp_config.json").read_text() == '{"mcpServers": {"test": "config"}}'
+    assert (
+        pkg_dir / "mcp_config.json"
+    ).read_text() == '{"mcpServers": {"test": "config"}}'
 
     # Check if agent_data was removed
     assert not (pkg_dir / "agent_data").exists()
+
 
 def test_boolean_serialization_logic(temp_workspace):
     workspace, agent_dir, pkg_dir = temp_workspace
@@ -87,10 +92,7 @@ def test_boolean_serialization_logic(temp_workspace):
     (other_agent / "pyproject.toml").touch()
 
     git = Git(path=str(workspace))
-    git.project_map = {
-        "url1": str(agent_dir),
-        "url2": str(other_agent)
-    }
+    git.project_map = {"url1": str(agent_dir), "url2": str(other_agent)}
 
     # We want to check if validate_projects builds the target dict correctly
     # We'll mock the internal calls to avoid actually running validation
@@ -102,11 +104,10 @@ def test_boolean_serialization_logic(temp_workspace):
 
                 # Check the calls to executor.submit
                 # One should have is_mcp=True, other False (as booleans, not strings)
-                submitted_targets = []
                 for call in mock_executor.return_value.__enter__.return_value.submit.call_args_list:
                     if "_check_help" in str(call):
-                         # The target is passed as an argument to _check_help
-                         pass
+                        # The target is passed as an argument to _check_help
+                        pass
 
                 # Actually, let's just check the agent_targets list before it's used
                 # We can do this by patching the executor and looking at the loop

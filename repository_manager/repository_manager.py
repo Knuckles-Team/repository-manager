@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.3.55"
+__version__ = "1.3.56"
 
 import concurrent.futures
 import select
@@ -404,7 +404,7 @@ class Git:
         core_paths = []
         other_paths = []
 
-        for url, path in self.project_map.items():
+        for _url, path in self.project_map.items():
             pkg_name = path.split("/")[-1]
             if pkg_name in CORE_PROJECTS:
                 core_paths.append(path)
@@ -501,7 +501,6 @@ class Git:
                     report_md += f"- **{pkg}**: Installation success\n"
 
             if failures:
-                reasons: dict[str, list[str]] = {}
                 report_md += "\n## Failures ❌\n"
                 for r in failures:
                     pkg = "unknown"
@@ -527,7 +526,7 @@ class Git:
         )
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
             futures = []
-            for url, path in self.project_map.items():
+            for _url, path in self.project_map.items():
                 if os.path.exists(os.path.join(path, "package.json")):
                     pm = self._get_package_manager(path)
                     cmd = f"{pm} install && {pm} run build"
@@ -629,8 +628,8 @@ class Git:
                         "path": path,
                         "pkg_dir": pkg_dir,
                         "file": agent_file or "",
-                        "is_mcp": is_mcp,
-                        "is_graph": is_graph,
+                        "is_mcp": is_mcp,  # type: ignore
+                        "is_graph": is_graph,  # type: ignore
                     }
                 )
 
@@ -645,7 +644,7 @@ class Git:
             if run_all or type == "version-sync":
                 bump_results = []
 
-                for url, path in self.project_map.items():
+                for _url, path in self.project_map.items():
                     # Ensure pre-run cleanup of artifacts
                     self.cleanup_artifacts(path)
 
@@ -1115,7 +1114,7 @@ class Git:
 
             # Set non-blocking mode on stdout and stderr
             for pipe in [proc.stdout, proc.stderr]:
-                fd = pipe.fileno()
+                fd = pipe.fileno()  # type: ignore
                 fl = fcntl.fcntl(fd, fcntl.F_GETFL)
                 fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
@@ -1451,16 +1450,16 @@ class Git:
                 try:
                     shutil.rmtree(p)
                     logger.debug(f"Cleaned up directory: {p}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to clean up directory {p}: {e}")
             elif p.is_file():
                 for pat in patterns_to_remove:
                     if p.match(pat):
                         try:
                             p.unlink()
                             logger.debug(f"Cleaned up file: {p}")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.debug(f"Failed to clean up file {p}: {e}")
                         break
 
     def clone_projects(self, projects: list[str] | None = None) -> list[GitResult]:
@@ -1648,6 +1647,37 @@ class Git:
             error=combined_error,
             metadata=metadata,
         )
+
+    def push_projects(self, project_dirs: list[str] | None = None) -> list[GitResult]:
+        """
+        Push updates for multiple projects in parallel.
+        """
+        if project_dirs is None:
+            if self.project_map:
+                project_dirs = list(self.project_map.values())
+            else:
+                logger.warning("No projects found in project_map to push.")
+                return []
+
+        if not project_dirs:
+            logger.warning("No projects found to push.")
+            return []
+
+        logger.info(
+            f"Pushing {len(project_dirs)} projects in parallel using {self.threads} threads..."
+        )
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            return list(executor.map(self.push_project, project_dirs))
+
+    def push_project(self, path: str | None = None) -> GitResult:
+        """
+        Push updates and tags for a single Git project.
+        """
+        target_path = self._resolve_path(path)
+        logger.info(f"Pushing latest changes and tags for {target_path}")
+        return self.git_action(command="git push --follow-tags", path=target_path)
 
     def set_threads(self, threads: int) -> None:
         """
@@ -2171,6 +2201,8 @@ class Git:
         dry_run: bool = False,
         skip_pre_commit: bool = False,
         config: dict | None = None,
+        single_phase: bool = False,
+        project_filter: str | None = None,
     ) -> list[GitResult]:
         """
         Execute the phased bumpversion workflow: pre-commits + phased bumping.
@@ -2211,6 +2243,7 @@ class Git:
                     if phase.get("bulk_bump"):
                         has_bulk = True
                         break
+                    projects_to_check.extend(phase.get("projects", []))
                     if phase.get("project"):
                         projects_to_check.append(phase.get("project"))
                 if has_bulk:
@@ -2253,47 +2286,163 @@ class Git:
                 return None
             return None
 
+        processed_projects: set[str] = set()
+
         for phase in config.get("phases", []):
             phase_num = phase.get("phase")
             if phase_num < start_phase:
                 continue
 
-            if phase.get("bulk_bump"):
-                exclude = phase.get("exclude", [])
+            projects = phase.get("projects", [])
+            if phase.get("project"):
+                projects.append(phase.get("project"))
+
+            if project_filter:
+                projects = [p for p in projects if p == project_filter]
+
+                # Also apply project filter to bulk operations if applicable
+                if not projects and phase.get("bulk_bump"):
+                    if project_filter not in processed_projects:
+                        projects = [project_filter]
+
+            if not projects and not phase.get("bulk_bump"):
+                continue
+
+            if phase.get("bulk_bump") and not project_filter:
                 bulk_results = self.bulk_bump(
-                    part=part, dry_run=dry_run, exclude=exclude
+                    part=part, dry_run=dry_run, exclude=list(processed_projects)
                 )
                 all_results.extend(bulk_results)
                 continue
 
-            project_name = phase.get("project")
-            new_version = run_step_bump(project_name, phase_num)
+            for project_name in projects:
+                processed_projects.add(project_name)
+                new_version = run_step_bump(project_name, phase_num)
 
-            if new_version:
-                for update in phase.get("updates", []):
-                    pkg = update.get("package")
-                    if "target" in update:
-                        res = self.update_dependency(
-                            update["target"], pkg, new_version, dry_run
-                        )
-                        if isinstance(res, GitResult):
-                            all_results.append(res)
-                    elif "target_pattern" in update:
-                        exclude = update.get("exclude", [])
-                        for url, path in self.project_map.items():
-                            name = url.split("/")[-1].replace(".git", "")
-                            if name not in exclude:
-                                pyproject = Path(path) / "pyproject.toml"
-                                if pyproject.exists():
-                                    res = self.update_dependency(
-                                        str(pyproject), pkg, new_version, dry_run
+                if new_version:
+                    for _, path in self.project_map.items():
+                        pyproject = Path(path) / "pyproject.toml"
+                        if pyproject.exists():
+                            is_updated = self.update_dependency(
+                                str(pyproject), project_name, new_version, dry_run
+                            )
+                            if is_updated:
+                                all_results.append(
+                                    GitResult(
+                                        status="success",
+                                        data=f"Updated {project_name} to {new_version} in pyproject.toml",
+                                        metadata=GitMetadata(
+                                            command="update_dependency",
+                                            workspace=str(path),
+                                            return_code=0,
+                                            timestamp=datetime.datetime.now(
+                                                datetime.timezone.utc
+                                            ).isoformat()
+                                            + "Z",
+                                        ),
                                     )
-                                    if isinstance(res, GitResult):
-                                        all_results.append(res)
+                                )
 
         return all_results
 
     maintain_projects = phased_bumpversion
+
+    def phased_push(
+        self,
+        start_phase: int = 1,
+        config: dict | None = None,
+        single_phase: bool = False,
+        project_filter: str | None = None,
+    ) -> list[GitResult]:
+        """
+        Execute the phased git push workflow.
+        """
+        import time
+
+        all_results = []
+        if config is None:
+            config_model: MaintenanceConfig | None = None
+            if hasattr(self, "config") and self.config and self.config.maintenance:
+                config_model = self.config.maintenance
+            else:
+                yml_path = os.environ.get("WORKSPACE_YML") or "workspace.yml"
+                if not os.path.isabs(yml_path):
+                    yml_path = os.path.join(self.path, yml_path)
+
+                if os.path.exists(yml_path):
+                    if self.load_projects_from_yaml(yml_path) and self.config:
+                        config_model = self.config.maintenance
+                    else:
+                        config_model = None
+                else:
+                    config_model = None
+
+            if config_model:
+                config = config_model.model_dump()
+            else:
+                logger.error("No maintenance configuration found.")
+                return []
+
+        processed_projects = set()
+
+        for phase in config.get("phases", []):
+            phase_num = phase.get("phase")
+            if phase_num < start_phase:
+                continue
+
+            projects_to_push = []
+
+            projects = phase.get("projects", [])
+            if phase.get("project"):
+                projects.append(phase.get("project"))
+
+            if project_filter:
+                projects = [p for p in projects if p == project_filter]
+                if not projects and phase.get("bulk_push"):
+                    if project_filter not in processed_projects:
+                        projects = [project_filter]
+
+            if phase.get("bulk_push") and not project_filter:
+                for url, path in self.project_map.items():
+                    name = url.split("/")[-1].replace(".git", "")
+                    if name not in processed_projects:
+                        projects_to_push.append(path)
+            else:
+                for project_name in projects:
+                    processed_projects.add(project_name)
+                    for url, p_path in self.project_map.items():
+                        if url.endswith(f"/{project_name}.git") or url.endswith(
+                            f"/{project_name}"
+                        ):
+                            projects_to_push.append(p_path)
+                            break
+
+            if not projects_to_push:
+                continue
+
+            phase_name = phase.get("name", f"Phase {phase_num}")
+            logger.info(
+                f"Starting {phase_name} push for {len(projects_to_push)} projects..."
+            )
+
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.threads
+            ) as executor:
+                futures = []
+                for p_path in projects_to_push:
+                    futures.append(executor.submit(self.push_project, path=p_path))
+
+                for future in concurrent.futures.as_completed(futures):
+                    all_results.append(future.result())
+
+            wait_minutes = phase.get("wait_minutes", 0)
+            if wait_minutes > 0:
+                logger.info(
+                    f"Phase {phase_num} complete. Waiting {wait_minutes} minutes before proceeding..."
+                )
+                time.sleep(wait_minutes * 60)
+
+        return all_results
 
     def load_projects_from_yaml(self, yaml_path: str) -> bool:
         """
@@ -2775,6 +2924,11 @@ Examples:
         help="Execute phased maintenance (Bump -> Pre-commit -> Verify).",
     )
     group_maintenance.add_argument(
+        "--push",
+        action="store_true",
+        help="Execute phased push.",
+    )
+    group_maintenance.add_argument(
         "--bump",
         choices=["patch", "minor", "major"],
         help="Version bump part (major/minor/patch). Use with --maintain or standalone.",
@@ -2789,7 +2943,17 @@ Examples:
         "--phase",
         type=int,
         default=1,
-        help="Starting phase for maintenance lifecycle (1-5).",
+        help="Starting phase for maintenance lifecycle (1-3).",
+    )
+    group_maintenance.add_argument(
+        "--single-phase",
+        action="store_true",
+        help="Only execute the specified phase, do not proceed to subsequent phases.",
+    )
+    group_maintenance.add_argument(
+        "--project",
+        type=str,
+        help="Only execute maintenance operations for a specific project.",
     )
     group_maintenance.add_argument(
         "--dry-run",
@@ -2917,52 +3081,6 @@ Examples:
     if args.pre_commit:
         git.pre_commit_projects(run=True, autoupdate=True)
 
-    if args.bump:
-        logger.info(f"Bumping version ({args.bump}) for all projects projects...")
-
-        project_dirs = list(git.project_map.values())
-
-        results = []
-        for d in project_dirs:
-            if (Path(d) / ".bumpversion.cfg").exists():
-                results.append(
-                    git.bump_version(
-                        args.bump, allow_dirty=True, path=d, dry_run=args.dry_run
-                    )
-                )
-
-        summary = git.generate_markdown_summary("Bulk Version Bump", results)
-        print(summary)
-        git._export_report(summary, "version_bump_report.md")
-
-    if args.maintain:
-        config = None
-        if args.config:
-            try:
-                with open(args.config) as f:
-                    config = json.load(f)
-            except Exception as e:
-                logger.error(f"Failed to load config from {args.config}: {e}")
-                sys.exit(1)
-
-        results = git.phased_bumpversion(
-            part=args.bump if args.bump else "patch",
-            start_phase=args.phase,
-            dry_run=args.dry_run,
-            skip_pre_commit=args.skip_pre_commit,
-            config=config,
-        )
-        summary = git.generate_markdown_summary("Phased Maintenance Bump", results)
-
-        # Invoke Graph Indexing as part of the unified intelligence pipeline
-        logger.info("Starting structural graph update phase...")
-        graph_report = git.ensure_graph()
-        if graph_report:
-            summary += f"\n\n## Hybrid Graph Execution\n\nNodes Processed: {graph_report.nodes_processed}\nEdges Processed: {graph_report.edges_processed}\n"
-
-        print(summary)
-        git._export_report(summary, "maintenance_report.md")
-
     if args.install:
         results = git.install_projects()
         summary = git.generate_markdown_summary("Installation", results)
@@ -2975,8 +3093,97 @@ Examples:
         print(summary)
         git._export_report(summary, "build_report.md")
 
+    has_errors = False
+
     if args.validate:
-        git.validate_projects(type=args.type)
+        report = git.validate_projects(type=args.type)
+        if report and report.failure_count > 0:
+            has_errors = True
+            logger.error("Validation failed with errors. Check the report for details.")
+
+    if args.bump and not args.maintain:
+        if has_errors and (args.push or args.bump):
+            logger.error("Skipping bump due to preceding validation errors.")
+            has_errors = True
+        else:
+            logger.info(f"Bumping version ({args.bump}) for all projects...")
+            project_dirs = list(git.project_map.values())
+            results = []
+            for d in project_dirs:
+                if (Path(d) / ".bumpversion.cfg").exists():
+                    res = git.bump_version(
+                        args.bump, allow_dirty=True, path=d, dry_run=args.dry_run
+                    )
+                    results.append(res)
+                    if res.status == "error":
+                        has_errors = True
+
+            summary = git.generate_markdown_summary("Bulk Version Bump", results)
+            print(summary)
+            git._export_report(summary, "version_bump_report.md")
+
+    if args.maintain:
+        if has_errors and (args.push or args.maintain):
+            logger.error(
+                "Skipping maintenance bump due to preceding validation errors."
+            )
+            has_errors = True
+        else:
+            config = None
+            if args.config:
+                try:
+                    with open(args.config) as f:
+                        config = json.load(f)
+                except Exception as e:
+                    logger.error(f"Failed to load config from {args.config}: {e}")
+                    sys.exit(1)
+
+            results = git.phased_bumpversion(
+                part=args.bump if args.bump else "patch",
+                start_phase=args.phase,
+                dry_run=args.dry_run,
+                skip_pre_commit=args.skip_pre_commit,
+                config=config,
+                single_phase=args.single_phase,
+                project_filter=args.project,
+            )
+
+            for res in results:
+                if res.status == "error":
+                    has_errors = True
+
+            summary = git.generate_markdown_summary("Phased Maintenance Bump", results)
+
+            # Invoke Graph Indexing as part of the unified intelligence pipeline
+            logger.info("Starting structural graph update phase...")
+            graph_report = git.ensure_graph()
+            if graph_report:
+                summary += f"\n\n## Hybrid Graph Execution\n\nNodes Processed: {graph_report.nodes_processed}\nEdges Processed: {graph_report.edges_processed}\n"
+
+            print(summary)
+            git._export_report(summary, "maintenance_report.md")
+
+    if args.push:
+        if has_errors:
+            logger.error("Skipping push due to preceding validation or bump errors.")
+        else:
+            config = None
+            if args.config:
+                try:
+                    with open(args.config) as f:
+                        config = json.load(f)
+                except Exception as e:
+                    logger.error(f"Failed to load config from {args.config}: {e}")
+                    sys.exit(1)
+            push_results = git.phased_push(
+                start_phase=args.phase,
+                config=config,
+                single_phase=args.single_phase,
+                project_filter=args.project,
+            )
+            summary = git.generate_markdown_summary("Phased Push", push_results)
+            print(summary)
+            git._export_report(summary, "push_report.md")
 
     # Graph Operations
     if args.graph_status:
@@ -2986,8 +3193,8 @@ Examples:
     if args.graph_query:
         import asyncio
 
-        res = asyncio.run(git.graph_query(args.graph_query, mode=args.graph_mode))
-        print(json.dumps(res, indent=2))
+        query_res = asyncio.run(git.graph_query(args.graph_query, mode=args.graph_mode))
+        print(json.dumps(query_res, indent=2))
     if args.graph_path:
         path_res = git.graph_path(args.graph_path[0], args.graph_path[1])
         print(json.dumps(path_res, indent=2))

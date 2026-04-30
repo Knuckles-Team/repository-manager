@@ -1,9 +1,12 @@
-import pytest
-import asyncio
 import networkx as nx
+import pytest
 from agent_utilities.knowledge_graph.pipeline.runner import PipelineRunner
-from agent_utilities.knowledge_graph.pipeline.types import PipelineContext, PipelinePhase
-from agent_utilities.models.knowledge_graph import PipelineConfig, PhaseResult
+from agent_utilities.knowledge_graph.pipeline.types import (
+    PipelineContext,
+    PipelinePhase,
+)
+from agent_utilities.models.knowledge_graph import PipelineConfig
+
 
 @pytest.mark.asyncio
 async def test_pipeline_runner_execution():
@@ -20,8 +23,7 @@ async def test_pipeline_runner_execution():
 
     runner = PipelineRunner([p1, p2])
     ctx = PipelineContext(
-        config=PipelineConfig(workspace_path="."),
-        nx_graph=nx.MultiDiGraph()
+        config=PipelineConfig(workspace_path="."), nx_graph=nx.MultiDiGraph()
     )
 
     results = await runner.run(ctx)
@@ -29,6 +31,7 @@ async def test_pipeline_runner_execution():
     assert results["p1"].output == "step1"
     assert results["p2"].output == "step2"
     assert results["p2"].success is True
+
 
 @pytest.mark.asyncio
 async def test_pipeline_runner_failure():
@@ -38,8 +41,7 @@ async def test_pipeline_runner_failure():
     p1 = PipelinePhase(name="fail", deps=[], execute_fn=fail_fn)
     runner = PipelineRunner([p1])
     ctx = PipelineContext(
-        config=PipelineConfig(workspace_path="."),
-        nx_graph=nx.MultiDiGraph()
+        config=PipelineConfig(workspace_path="."), nx_graph=nx.MultiDiGraph()
     )
 
     with pytest.raises(ValueError, match="Intentional failure"):
@@ -47,6 +49,7 @@ async def test_pipeline_runner_failure():
 
     assert ctx.results["fail"].success is False
     assert "Intentional failure" in ctx.results["fail"].error
+
 
 @pytest.mark.asyncio
 async def test_topological_sort():

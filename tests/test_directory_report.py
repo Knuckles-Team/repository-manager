@@ -15,10 +15,10 @@ from repository_manager.models import (
     ValidationReport,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def sample_results() -> list[GitResult]:
@@ -124,7 +124,11 @@ class TestValidationCategory:
             failure_count=1,
             skipped_count=1,
             successes=[ProjectResult(project="alpha", message="Success")],
-            failures=[ProjectResult(project="beta", message="Error occurred", output="traceback...")],
+            failures=[
+                ProjectResult(
+                    project="beta", message="Error occurred", output="traceback..."
+                )
+            ],
             skipped=[ProjectResult(project="gamma", message="Skipped (reason)")],
         )
         md = cat.to_markdown()
@@ -276,9 +280,7 @@ class TestIncrementalReportWriter:
         assert cat.success_count == 1
 
         # Check files were written
-        repo_dir = os.path.join(
-            writer.report_root, "test-agent-results"
-        )
+        repo_dir = os.path.join(writer.report_root, "test-agent-results")
         assert os.path.isdir(repo_dir)
         files = os.listdir(repo_dir)
         assert len(files) == 1

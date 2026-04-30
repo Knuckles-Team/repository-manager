@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 import asyncio
-import sys
-from repository_manager.repository_manager_agent import stream_chat, chat, node_chat
-
 import os
+import sys
+
+from repository_manager.repository_manager_agent import chat, node_chat, stream_chat
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -21,9 +21,7 @@ async def main():
         agent = create_agent(
             provider="openai",
             model_id=os.getenv("MODEL_ID", "nvidia/nemotron-3-super"),
-            base_url=os.getenv(
-                "LLM_BASE_URL", "http://host.docker.internal:1234/v1"
-            ),
+            base_url=os.getenv("LLM_BASE_URL", "http://host.docker.internal:1234/v1"),
             api_key=os.getenv("LLM_API_KEY", "llama"),
             mcp_url=os.getenv("MCP_URL", "http://localhost:8007/mcp"),
             mcp_config=None,
