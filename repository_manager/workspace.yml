@@ -88,12 +88,12 @@ maintenance:
         - "skill-graphs"
         - "agent-webui"
         - "agent-terminal-ui"
-      wait_minutes: 10
+      wait_minutes: 6
     - name: "Phase 2: agent-utilities"
       phase: 2
       projects:
         - "agent-utilities"
-      wait_minutes: 5
+      wait_minutes: 3
     - name: "Phase 3: Agents"
       phase: 3
       bulk_bump: True
