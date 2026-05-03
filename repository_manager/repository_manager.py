@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"
 
 import concurrent.futures
 import select
@@ -1114,13 +1114,19 @@ class Git:
 
             # Set non-blocking mode on stdout and stderr
             for pipe in [proc.stdout, proc.stderr]:
+                if pipe is None:
+                    continue
                 fd = pipe.fileno()  # type: ignore
                 fl = fcntl.fcntl(fd, fcntl.F_GETFL)
                 fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
             while (datetime.datetime.now() - start_time).total_seconds() < 60:
-                rlist, _, _ = select.select([proc.stdout, proc.stderr], [], [], 0.5)
+                rlist, _, _ = select.select(
+                    [p for p in [proc.stdout, proc.stderr] if p], [], [], 0.5
+                )
                 for r in rlist:
+                    if r is None:
+                        continue
                     try:
                         # Read available data without blocking
                         chunk = r.read(4096)
@@ -1741,7 +1747,9 @@ class Git:
             commands.append("pre-commit autoupdate")
         if run:
             commands.append("git add -A")
-            commands.append("pre-commit run --all-files --verbose")
+            commands.append(
+                "SKIP=no-commit-to-branch pre-commit run --all-files --verbose"
+            )
 
         if not commands:
             return GitResult(
@@ -3192,6 +3200,7 @@ Examples:
                 if res.status == "error":
                     has_errors = True
 
+            git.ensure_graph()
             summary = git.generate_markdown_summary("Phased Maintenance Bump", results)
 
             print(summary)

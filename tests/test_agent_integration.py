@@ -104,6 +104,7 @@ def agent_server():
 
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_get_workspace_projects_via_graph(agent_server):
     """Verifies that the agent server correctly orchestrates a call to get_workspace_projects."""
     query = "List all projects in the workspace."
