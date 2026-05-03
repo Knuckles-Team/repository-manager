@@ -61,7 +61,7 @@ RUN apt-get update \
      && curl -sS https://starship.rs/install.sh | sh -s -- --yes \
     && mkdir -p /root/.config \
     && echo 'eval "$(starship init bash)"' >> /root/.bashrc \ \
-    uv pip install --system --upgrade --verbose --no-cache --break-system-packages --prerelease=allow repository-manager[all]>=1.6.0 mem0-mcp-server
+    uv pip install --system --upgrade --verbose --no-cache --break-system-packages --prerelease=allow repository-manager[all]>=1.7.0 mem0-mcp-server
 
 WORKDIR /workspace
 
