@@ -2101,7 +2101,7 @@ class Git:
                 ),
             )
 
-        command = f"SKIP=no-commit-to-branch bump2version {part}"
+        command = f"SKIP=no-commit-to-branch,uv-lock bump2version {part}"
         if allow_dirty:
             command += " --allow-dirty"
         if dry_run:
