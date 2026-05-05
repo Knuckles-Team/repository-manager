@@ -55,6 +55,7 @@ subdirectories:
           - url: "https://github.com/Knuckles-Team/postiz-agent.git"
           - url: "https://github.com/Knuckles-Team/qbittorrent-agent.git"
           - url: "https://github.com/Knuckles-Team/repository-manager.git"
+          - url: "https://github.com/Knuckles-Team/scholarx.git"
           - url: "https://github.com/Knuckles-Team/searxng-mcp.git"
           - url: "https://github.com/Knuckles-Team/servicenow-api.git"
           - url: "https://github.com/Knuckles-Team/stirlingpdf-agent.git"
