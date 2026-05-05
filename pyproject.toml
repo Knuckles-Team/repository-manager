@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repository-manager"
-version = "1.8.0"
+version = "1.9.0"
 description = "Manage your git projects"
 readme = "README.md"
 classifiers = [ "Development Status :: 5 - Production/Stable", "License :: Public Domain", "Environment :: Console", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3",]
@@ -55,6 +55,11 @@ target-version = "py310"
 python_version = "3.10"
 ignore_missing_imports = true
 check_untyped_defs = true
+
+[dependency-groups]
+dev = [
+    "pytest-timeout>=2.4.0",
+]
 
 [tool.ruff.lint]
 select = [ "E", "F", "I", "UP", "B",]
