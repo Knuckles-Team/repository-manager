@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.10.0"
+__version__ = "1.11.0"
 
 import concurrent.futures
 import select
@@ -381,138 +381,87 @@ class Git:
     def install_projects(
         self, extra: str = "all", threads: int | None = None, report: bool = True
     ) -> list[GitResult]:
-        """Bulk installs Python projects in the workspace."""
+        """Bulk installs Python and Node projects in the workspace."""
         threads = threads or self.threads
         if not self.project_map:
             logger.warning("No projects to install.")
             return []
 
-        CORE_PROJECTS = [
-            "universal-skills",
-            "skill-graphs",
-            "agent-webui",
-            "agent-utilities",
-        ]
-
-        logger.info(
-            f"Installing {len(self.project_map)} projects in parallel ({threads} threads)..."
-        )
+        logger.info("Installing ecosystem using native uv workspace sync...")
         results = []
-        futures = []
 
-        # 1. Sequential Install for Core Projects (to avoid versioning race conditions)
-        core_paths = []
-        other_paths = []
+        import datetime
+        import shutil
 
-        for _url, path in self.project_map.items():
-            pkg_name = path.split("/")[-1]
-            if pkg_name in CORE_PROJECTS:
-                core_paths.append(path)
-            else:
-                other_paths.append(path)
+        # 1. Sync Python Ecosystem natively using uv workspace
+        if shutil.which("uv"):
+            cmd = "uv sync --all-packages"
+            # execute at base_path where it will find the workspace pyproject.toml
+            res = self.git_action(cmd, path=self.path)
 
-        # Sort core_paths based on CORE_PROJECTS order
-        core_paths.sort(
-            key=lambda p: (
-                CORE_PROJECTS.index(p.split("/")[-1])
-                if p.split("/")[-1] in CORE_PROJECTS
-                else 999
-            )
-        )
-
-        logger.info(f"Installing {len(core_paths)} core projects sequentially...")
-        for path in core_paths:
-            is_python = os.path.exists(
-                os.path.join(path, "pyproject.toml")
-            ) or os.path.exists(os.path.join(path, "setup.py"))
-            is_node = os.path.exists(os.path.join(path, "package.json"))
-
-            if is_node:
-                pm = self._get_package_manager(path)
-                results.append(self.git_action(f"{pm} install", path=path))
-            if is_python:
-                results.append(
-                    self.git_action(
-                        self._get_pip_command(extra),
-                        path=path,
-                    )
-                )
-
-        # 2. Parallel Install for the rest
-        logger.info(f"Installing {len(other_paths)} remaining projects in parallel...")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-            for path in other_paths:
+            # Generate parity reporting for each Python project
+            for _url, path in self.project_map.items():
                 is_python = os.path.exists(
                     os.path.join(path, "pyproject.toml")
                 ) or os.path.exists(os.path.join(path, "setup.py"))
-                is_node = os.path.exists(os.path.join(path, "package.json"))
-
-                if not is_python and not is_node:
-                    results.append(
-                        GitResult(
-                            status="skipped",
-                            data="Skipped (Not a Python or Node project)",
-                            metadata=GitMetadata(
-                                command="install",
-                                workspace=path,
-                                return_code=0,
-                                timestamp=datetime.datetime.now(
-                                    datetime.timezone.utc
-                                ).isoformat()
-                                + "Z",
-                            ),
-                        )
-                    )
+                if not is_python:
                     continue
 
-                if is_node:
-                    pm = self._get_package_manager(path)
-                    futures.append(
-                        executor.submit(self.git_action, f"{pm} install", path=path)
-                    )
-                if is_python:
-                    futures.append(
-                        executor.submit(
-                            self.git_action,
-                            self._get_pip_command(extra),
-                            path=path,
-                        )
-                    )
+                pkg_result = GitResult(
+                    status=res.status,
+                    data=res.data,
+                    error=res.error,
+                    metadata=GitMetadata(
+                        command="install",
+                        workspace=path,
+                        return_code=res.metadata.return_code if res.metadata else 0,
+                        timestamp=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
+                        + "Z",
+                    ),
+                )
+                results.append(pkg_result)
+        else:
+            logger.warning("uv not found. Native workspace sync requires uv.")
 
-            results.extend(
-                [f.result() for f in concurrent.futures.as_completed(futures)]
-            )
+        # 2. Install Node Ecosystem sequentially
+        for _url, path in self.project_map.items():
+            is_node = os.path.exists(os.path.join(path, "package.json"))
+            if is_node:
+                pm = self._get_package_manager(path)
+                results.append(self.git_action(f"{pm} install", path=path))
 
-            successes = [r for r in results if r.status == "success"]
-            failures = [r for r in results if r.status == "error"]
+        successes = [r for r in results if r.status == "success"]
+        failures = [r for r in results if r.status == "error"]
 
-            report_md = "# INSTALLATION SUMMARY\n"
-            report_md += (
-                f"**Time:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
-            )
-            report_md += f"**Total:** {len(results)} | **Success:** {len(successes)} ✅ | **Failure:** {len(failures)} ❌\n\n"
+        report_md = "# INSTALLATION SUMMARY\n"
+        report_md += (
+            f"**Time:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
+        )
+        report_md += f"**Total:** {len(results)} | **Success:** {len(successes)} ✅ | **Failure:** {len(failures)} ❌\n\n"
 
-            if successes:
-                report_md += "## Successes ✅\n"
-                for r in successes:
-                    pkg = "unknown"
-                    if r.metadata:
-                        pkg = r.metadata.workspace.split("/")[-1]
-                    report_md += f"- **{pkg}**: Installation success\n"
+        if successes:
+            report_md += "## Successes ✅\n"
+            for r in successes:
+                pkg = "unknown"
+                if r.metadata:
+                    pkg = r.metadata.workspace.split("/")[-1]
+                report_md += f"- **{pkg}**: Installation success\n"
 
-            if failures:
-                report_md += "\n## Failures ❌\n"
-                for r in failures:
-                    pkg = "unknown"
-                    if r.metadata:
-                        pkg = r.metadata.workspace.split("/")[-1]
-                    error_msg = r.error.message if r.error else r.data
-                    report_md += f"- **{pkg}**: {error_msg}\n"
+        if failures:
+            report_md += "\n## Failures ❌\n"
+            for r in failures:
+                pkg = "unknown"
+                if r.metadata:
+                    pkg = r.metadata.workspace.split("/")[-1]
+                error_msg = r.error.message if r.error else r.data
+                report_md += f"- **{pkg}**: {error_msg}\n"
 
-            if self.report_path and report:
-                self._export_report(report_md, "install_report.md")
+        if self.report_path and report:
+            self._export_report(report_md, "install_report.md")
 
-            return results
+        return results
 
     def build_projects(self, threads: int | None = None) -> list[GitResult]:
         """Bulk builds Python and Node.js projects in the workspace."""
