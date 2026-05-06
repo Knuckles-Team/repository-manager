@@ -75,7 +75,7 @@ maintenance:
         - "skill-graphs"
         - "agent-webui"
         - "agent-terminal-ui"
-      wait_minutes: 6
+      wait_minutes: 12
     - name: "Phase 2: agent-utilities"
       phase: 2
       projects:
