@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.11.0"
+__version__ = "1.11.1"
 
 import concurrent.futures
 import select
@@ -430,7 +430,11 @@ class Git:
             is_node = os.path.exists(os.path.join(path, "package.json"))
             if is_node:
                 pm = self._get_package_manager(path)
-                results.append(self.git_action(f"{pm} install", path=path))
+                res = self.git_action(f"{pm} install", path=path)
+                if pm == "pnpm" and "Ignored build scripts:" in res.data:
+                    res.status = "error"
+                    res.data = f"pnpm install succeeded but ignored build scripts:\n{res.data}\nPlease add allowed dependencies to package.json."
+                results.append(res)
 
         successes = [r for r in results if r.status == "success"]
         failures = [r for r in results if r.status == "error"]
@@ -2109,14 +2113,16 @@ class Git:
                     if os.path.exists(uv_lock_path):
                         self.git_action(command="uv lock", path=target_dir, quiet=True)
                         status_check = self.git_action(
-                            command="git status --porcelain uv.lock",
+                            command="git status --porcelain pyproject.toml uv.lock",
                             path=target_dir,
                             quiet=True,
                         )
                         if status_check.data.strip():
                             # Commit the lockfile update into the bump commit
                             self.git_action(
-                                command="git add uv.lock", path=target_dir, quiet=True
+                                command="git add pyproject.toml uv.lock",
+                                path=target_dir,
+                                quiet=True,
                             )
                             self.git_action(
                                 command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit",
@@ -3182,7 +3188,6 @@ Examples:
                 if res.status == "error":
                     has_errors = True
 
-            git.ensure_graph()
             summary = git.generate_markdown_summary("Phased Maintenance Bump", results)
 
             print(summary)

@@ -58,11 +58,10 @@ def test_cli_graph_path(mock_git, mock_sys_argv):
         mock_git.graph_path.assert_called_once_with("Source", "Target")
 
 
-def test_cli_maintain_calls_ensure_graph(mock_git, mock_sys_argv):
+def test_cli_maintain_calls_bumpversion(mock_git, mock_sys_argv):
     with mock_sys_argv(["--maintain", "--dry-run"]):
         main()
         mock_git.phased_bumpversion.assert_called_once()
-        mock_git.ensure_graph.assert_called_once()
 
 
 def test_cli_clone(mock_git, mock_sys_argv):
