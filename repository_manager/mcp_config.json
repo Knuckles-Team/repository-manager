@@ -1,10 +1,10 @@
 {
   "mcpServers": {
     "repository-manager": {
-      "command": "repository-manager-mcp",
+      "command": "uv",
       "args": [
-        "--transport",
-        "stdio"
+        "run",
+        "repository-manager-mcp"
       ],
       "env": {
         "FILE_OPERATIONSTOOL": "${ FILE_OPERATIONSTOOL:-True }",
@@ -15,7 +15,15 @@
         "REPOSITORY_MANAGER_WORKSPACE": "secret://REPOSITORY_MANAGER_WORKSPACE",
         "VISUALIZATIONTOOL": "${ VISUALIZATIONTOOL:-True }",
         "WORKSPACE_MANAGEMENTTOOL": "${ WORKSPACE_MANAGEMENTTOOL:-True }",
-        "WORKSPACE_YML": "secret://WORKSPACE_YML"
+        "WORKSPACE_YML": "secret://WORKSPACE_YML",
+        "AGENT_DESCRIPTION": "<YOUR_AGENT_DESCRIPTION>",
+        "AGENT_SYSTEM_PROMPT": "<YOUR_AGENT_SYSTEM_PROMPT>",
+        "DEFAULT_AGENT_NAME": "<YOUR_DEFAULT_AGENT_NAME>",
+        "LLM_API_KEY": "<YOUR_LLM_API_KEY>",
+        "LLM_BASE_URL": "<YOUR_LLM_BASE_URL>",
+        "MCP_URL": "<YOUR_MCP_URL>",
+        "MODEL_ID": "<YOUR_MODEL_ID>",
+        "REPOSITORY_MANAGER_DEFAULT_BRANCH": "<YOUR_REPOSITORY_MANAGER_DEFAULT_BRANCH>"
       }
     }
   }

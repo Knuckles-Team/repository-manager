@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.9.0"
+__version__ = "1.10.0"
 
 import concurrent.futures
 import select
@@ -2101,7 +2101,9 @@ class Git:
                 ),
             )
 
-        command = f"SKIP=no-commit-to-branch,uv-lock bump2version {part}"
+        command = (
+            f"SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build bump2version {part}"
+        )
         if allow_dirty:
             command += " --allow-dirty"
         if dry_run:
@@ -2151,6 +2153,37 @@ class Git:
 
             if result.status == "success":
                 logger.info(f"Bumped version ({part}) in {target_dir}")
+
+                if not dry_run:
+                    # Synchronize uv.lock after pyproject.toml version bump
+                    uv_lock_path = os.path.join(target_dir, "uv.lock")
+                    if os.path.exists(uv_lock_path):
+                        self.git_action(command="uv lock", path=target_dir, quiet=True)
+                        status_check = self.git_action(
+                            command="git status --porcelain uv.lock",
+                            path=target_dir,
+                            quiet=True,
+                        )
+                        if status_check.data.strip():
+                            # Commit the lockfile update into the bump commit
+                            self.git_action(
+                                command="git add uv.lock", path=target_dir, quiet=True
+                            )
+                            self.git_action(
+                                command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit",
+                                path=target_dir,
+                                quiet=True,
+                            )
+
+                            # Move the tag to point to the newly amended commit
+                            match = re.search(r"new_version=(.*)", result.data)
+                            if match:
+                                new_version = match.group(1).strip()
+                                self.git_action(
+                                    command=f"git tag -f v{new_version}",
+                                    path=target_dir,
+                                    quiet=True,
+                                )
             else:
                 logger.error(f"Failed to bump version in {target_dir}: {result.error}")
 

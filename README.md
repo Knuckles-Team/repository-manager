@@ -21,7 +21,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 1.9.0*
+*Version: 1.10.0*
 
 ## Overview
 
@@ -577,3 +577,80 @@ uv pip install --upgrade repository-manager
 
 ![GitHub followers](https://img.shields.io/github/followers/Knucklessg1)
 ![GitHub User's stars](https://img.shields.io/github/stars/Knucklessg1)
+
+
+## MCP Configuration Examples
+
+### 1. Standard IO (stdio) Deployment
+
+```json
+{
+  "mcpServers": {
+    "repository-manager": {
+      "command": "uv",
+      "args": [
+        "run",
+        "repository-manager-mcp"
+      ],
+      "env": {
+        "AGENT_DESCRIPTION": "<YOUR_AGENT_DESCRIPTION>",
+        "AGENT_SYSTEM_PROMPT": "<YOUR_AGENT_SYSTEM_PROMPT>",
+        "DEFAULT_AGENT_NAME": "<YOUR_DEFAULT_AGENT_NAME>",
+        "GIT_OPERATIONSTOOL": "True",
+        "GRAPH_INTELLIGENCETOOL": "True",
+        "LLM_API_KEY": "<YOUR_LLM_API_KEY>",
+        "LLM_BASE_URL": "<YOUR_LLM_BASE_URL>",
+        "MCP_URL": "<YOUR_MCP_URL>",
+        "MISCTOOL": "True",
+        "MODEL_ID": "<YOUR_MODEL_ID>",
+        "REPOSITORY_MANAGER_DEFAULT_BRANCH": "<YOUR_REPOSITORY_MANAGER_DEFAULT_BRANCH>",
+        "REPOSITORY_MANAGER_THREADS": "<YOUR_REPOSITORY_MANAGER_THREADS>",
+        "REPOSITORY_MANAGER_WORKSPACE": "<YOUR_REPOSITORY_MANAGER_WORKSPACE>",
+        "VISUALIZATIONTOOL": "True",
+        "WORKSPACE_MANAGEMENTTOOL": "True",
+        "WORKSPACE_YML": "<YOUR_WORKSPACE_YML>"
+      }
+    }
+  }
+}
+```
+
+### 2. Streamable HTTP (SSE) Deployment
+
+```json
+{
+  "mcpServers": {
+    "repository-manager": {
+      "command": "uv",
+      "args": [
+        "run",
+        "repository-manager-mcp",
+        "--transport",
+        "http",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000"
+      ],
+      "env": {
+        "AGENT_DESCRIPTION": "<YOUR_AGENT_DESCRIPTION>",
+        "AGENT_SYSTEM_PROMPT": "<YOUR_AGENT_SYSTEM_PROMPT>",
+        "DEFAULT_AGENT_NAME": "<YOUR_DEFAULT_AGENT_NAME>",
+        "GIT_OPERATIONSTOOL": "True",
+        "GRAPH_INTELLIGENCETOOL": "True",
+        "LLM_API_KEY": "<YOUR_LLM_API_KEY>",
+        "LLM_BASE_URL": "<YOUR_LLM_BASE_URL>",
+        "MCP_URL": "<YOUR_MCP_URL>",
+        "MISCTOOL": "True",
+        "MODEL_ID": "<YOUR_MODEL_ID>",
+        "REPOSITORY_MANAGER_DEFAULT_BRANCH": "<YOUR_REPOSITORY_MANAGER_DEFAULT_BRANCH>",
+        "REPOSITORY_MANAGER_THREADS": "<YOUR_REPOSITORY_MANAGER_THREADS>",
+        "REPOSITORY_MANAGER_WORKSPACE": "<YOUR_REPOSITORY_MANAGER_WORKSPACE>",
+        "VISUALIZATIONTOOL": "True",
+        "WORKSPACE_MANAGEMENTTOOL": "True",
+        "WORKSPACE_YML": "<YOUR_WORKSPACE_YML>"
+      }
+    }
+  }
+}
+```
