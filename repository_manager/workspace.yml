@@ -37,6 +37,7 @@ subdirectories:
           - url: "https://github.com/Knuckles-Team/atlassian-agent.git"
           - url: "https://github.com/Knuckles-Team/audio-transcriber.git"
           - url: "https://github.com/Knuckles-Team/container-manager-mcp.git"
+          - url: "https://github.com/Knuckles-Team/data-science-mcp.git"
           - url: "https://github.com/Knuckles-Team/documentdb-mcp.git"
           - url: "https://github.com/Knuckles-Team/genius-agent.git"
           - url: "https://github.com/Knuckles-Team/github-agent.git"
