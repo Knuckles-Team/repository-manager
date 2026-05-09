@@ -1,1 +1,1 @@
-fastmcp>=2.13.0.2
+agent-utilities[mcp]>=0.6.2
