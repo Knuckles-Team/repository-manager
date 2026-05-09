@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.12.0"
+__version__ = "1.13.0"
 
 import concurrent.futures
 import select
@@ -1391,34 +1391,40 @@ class Git:
             ".coverage",
         ]
 
-        dir_patterns_to_remove = [
+        dir_patterns_to_remove = {
             ".pytest_cache",
             "htmlcov",
             "agent_data",
-        ]
+        }
 
-        def should_ignore(p: Path) -> bool:
-            return any(part in [".venv", "node_modules", ".git"] for part in p.parts)
+        ignored_dirs = {".venv", "node_modules", ".git"}
 
-        # Recursively search for files
-        for p in dir_path.rglob("*"):
-            if should_ignore(p):
-                continue
+        # Use os.walk with top-down pruning to avoid iterating massive directories
+        for dirpath, dirnames, filenames in os.walk(target_dir, topdown=True):
+            # Prune ignored directories in-place (prevents os.walk from descending)
+            dirnames[:] = [d for d in dirnames if d not in ignored_dirs]
 
-            if p.is_dir() and p.name in dir_patterns_to_remove:
-                try:
-                    shutil.rmtree(p)
-                    logger.debug(f"Cleaned up directory: {p}")
-                except Exception as e:
-                    logger.debug(f"Failed to clean up directory {p}: {e}")
-            elif p.is_file():
+            # Check for directory-level cleanup targets
+            for d in list(dirnames):
+                if d in dir_patterns_to_remove:
+                    full_path = os.path.join(dirpath, d)
+                    try:
+                        shutil.rmtree(full_path)
+                        logger.debug(f"Cleaned up directory: {full_path}")
+                    except Exception as e:
+                        logger.debug(f"Failed to clean up directory {full_path}: {e}")
+                    dirnames.remove(d)
+
+            # Check for file-level cleanup targets
+            for f in filenames:
+                file_path = Path(os.path.join(dirpath, f))
                 for pat in patterns_to_remove:
-                    if p.match(pat):
+                    if file_path.match(pat):
                         try:
-                            p.unlink()
-                            logger.debug(f"Cleaned up file: {p}")
+                            file_path.unlink()
+                            logger.debug(f"Cleaned up file: {file_path}")
                         except Exception as e:
-                            logger.debug(f"Failed to clean up file {p}: {e}")
+                            logger.debug(f"Failed to clean up file {file_path}: {e}")
                         break
 
     def clone_projects(self, projects: list[str] | None = None) -> list[GitResult]:
