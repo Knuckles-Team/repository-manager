@@ -33,6 +33,13 @@ all = [
     "agent-utilities[mcp]>=0.9.0"
 ]
 
+test = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-timeout"
+]
+
 [project.scripts]
 repository-manager = "repository_manager.repository_manager:main"
 repository-manager-mcp = "repository_manager.mcp_server:mcp_server"
@@ -43,6 +50,9 @@ repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md"]
 
 [tool.uv]
 managed = true
+
+[tool.uv.sources]
+universal-skills = { workspace = true }
 
 [tool.setuptools]
 include-package-data = true
@@ -59,6 +69,7 @@ check_untyped_defs = true
 [dependency-groups]
 dev = [
     "pytest-timeout>=2.4.0",
+    "universal-skills",
 ]
 
 [tool.ruff.lint]
@@ -68,3 +79,6 @@ ignore = [ "E402", "E501", "B008",]
 
 [tool.setuptools.packages.find]
 where = [ ".",]
+
+[tool.vulture]
+ignore_names = ["request", "config"]

@@ -17,6 +17,7 @@ CATEGORY_SLUG_MAP: dict[str, str] = {
     "Agent Runtime & Web UI": "agent-runtime",
     "Pre-commit Standard Compliance": "pre-commit-results",
     "Additional Operational Checks": "additional-checks",
+    "Coverage Report": "coverage-report",
 }
 
 
@@ -24,6 +25,92 @@ def _sanitize_filename(name: str) -> str:
     """Sanitize a string to be a valid Windows and cross-platform filename."""
     # Replace illegal Windows characters with a hyphen
     return re.sub(r'[<>:"/\\|?*]', "-", name)
+
+
+def _build_next_command_block(
+    failed_projects: list[str],
+    validated_repositories: list[str] | None = None,
+) -> list[str]:
+    """Build the 'Next Validation Command' markdown block for index.md.
+
+    Three states:
+    1. Failures exist → generate command targeting only failed repos.
+    2. No failures, targeted run → suggest full-sweep regression test.
+    3. No failures, full run → all clear, no further action.
+
+    Args:
+        failed_projects: Sorted list of project names that had failures.
+        validated_repositories: The list of repos explicitly targeted, or ``None``
+            if all repos were validated.
+
+    Returns:
+        List of markdown lines to extend into the index.
+    """
+    lines: list[str] = []
+    output_dir = "/home/apps/workspace/reports"
+
+    if failed_projects:
+        repos_csv = ",".join(failed_projects)
+        lines.extend(
+            [
+                "---",
+                "",
+                "## 🔄 Next Validation Command",
+                "> [!IMPORTANT]",
+                "> **Execute this command to continue the validation loop after fixing the failures above.**",
+                "",
+                f"**Action:** Re-validate the {len(failed_projects)} {'repository' if len(failed_projects) == 1 else 'repositories'} that failed.",
+                "",
+                "Use the `rm_projects` MCP tool with these parameters:",
+                '- `type`: `"all"`',
+                f'- `repositories`: `"{repos_csv}"`',
+                f'- `output_dir`: `"{output_dir}"`',
+                "",
+                "---",
+                "",
+            ]
+        )
+    elif validated_repositories is not None:
+        # Targeted run with 0 failures → suggest full regression sweep
+        lines.extend(
+            [
+                "---",
+                "",
+                "## ✅ Targeted Validation Passed — Run Full Regression Sweep",
+                "",
+                "> [!IMPORTANT]",
+                "> **All targeted repositories passed. Execute this command to run a full regression test across ALL repositories.**",
+                "",
+                "**Action:** Run a full validation sweep to ensure no cross-dependency regressions.",
+                "",
+                "Use the `rm_projects` MCP tool with these parameters:",
+                '- `action`: `"validate"`',
+                '- `type`: `"all"`',
+                f'- `output_dir`: `"{output_dir}"`',
+                "",
+                "*Do NOT pass the `repositories` parameter — this must validate all projects.*",
+                "",
+                "---",
+                "",
+            ]
+        )
+    else:
+        # Full run with 0 failures → all clear
+        lines.extend(
+            [
+                "---",
+                "",
+                "## ✅ All Repositories Passed — Validation Complete",
+                "",
+                "> [!TIP]",
+                "> **No further validation is required.** All repositories passed the full validation sweep with 0 errors.",
+                "",
+                "---",
+                "",
+            ]
+        )
+
+    return lines
 
 
 class GitError(BaseModel):
@@ -249,6 +336,13 @@ class ValidationReport(BaseModel):
                 and r.metadata.command
                 and "pre-commit run" in r.metadata.command
             ],
+            "Coverage Report": [
+                r
+                for r in results
+                if r.metadata
+                and r.metadata.command
+                and "coverage report" in r.metadata.command
+            ],
         }
 
         known_ids = set()
@@ -279,7 +373,9 @@ class ValidationReport(BaseModel):
 
                 if r.status == "success":
                     cat.successes.append(
-                        ProjectResult(project=pkg, message="Success", command=cmd)
+                        ProjectResult(
+                            project=pkg, message="Success", output=r.data, command=cmd
+                        )
                     )
                 elif r.status == "error":
                     error_msg = (
@@ -320,6 +416,8 @@ class ValidationReport(BaseModel):
                 md.append("#### Successes ✅")
                 for r in cat.successes:
                     md.append(f"- **{r.project}**: {r.message}")
+                    if r.output and "coverage" in (r.command or "").lower():
+                        md.append(f"\n{r.output}\n")
                 md.append("")
 
             if cat.failures:
@@ -359,7 +457,11 @@ class ValidationReport(BaseModel):
             # Fallback: use current time if parsing fails
             return datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-    def to_directory_report(self, output_dir: str) -> str:
+    def to_directory_report(
+        self,
+        output_dir: str,
+        validated_repositories: list[str] | None = None,
+    ) -> str:
         """Write the validation report as a directory structure with per-repo, per-scan files.
 
         Directory layout::
@@ -374,6 +476,9 @@ class ValidationReport(BaseModel):
         Args:
             output_dir: The parent directory under which the ``validation-reports-<ts>/``
                 folder will be created.
+            validated_repositories: If provided, the list of repository names that were
+                explicitly targeted for validation. ``None`` means all repositories
+                were validated.
 
         Returns:
             The absolute path to the created report directory.
@@ -436,6 +541,8 @@ class ValidationReport(BaseModel):
                     scan_md.append("## Successes ✅")
                     for r in filtered.successes:
                         scan_md.append(f"- **{r.project}**: {r.message}")
+                        if r.output and "coverage" in (r.command or "").lower():
+                            scan_md.append(f"\n{r.output}\n")
                     scan_md.append("")
 
                 if filtered.failures:
@@ -460,17 +567,31 @@ class ValidationReport(BaseModel):
                 except Exception as e:
                     logger.error(f"Failed to write report file {filepath}: {e}")
 
+        # Identify failed projects for the next-command block
+        failed_projects = sorted(
+            p for p, s in project_stats.items() if s["failure"] > 0
+        )
+
         # --- Index file ---
         index_md = [
             "# 📋 Validation Report",
             f"**Time:** {self.timestamp}  ",
             f"**Total Checks:** {self.total} | **Success:** {self.success_count} ✅ | **Failure:** {self.failure_count} ❌ | **Skipped:** {self.skipped_count} ⏭️",
             "",
-            "## Category Summary",
-            "",
-            "| Category | ✅ Pass | ❌ Fail | ⏭️ Skip |",
-            "|---|---|---|---|",
         ]
+
+        # --- Next Validation Command block ---
+        index_md.extend(
+            _build_next_command_block(
+                failed_projects=failed_projects,
+                validated_repositories=validated_repositories,
+            )
+        )
+
+        index_md.append("## Category Summary")
+        index_md.append("")
+        index_md.append("| Category | ✅ Pass | ❌ Fail | ⏭️ Skip |")
+        index_md.append("|---|---|---|---|")
 
         for cat in self.categories:
             index_md.append(
@@ -544,7 +665,12 @@ class IncrementalReportWriter:
         report_path = writer.finalize()
     """
 
-    def __init__(self, output_dir: str, timestamp: str | None = None):
+    def __init__(
+        self,
+        output_dir: str,
+        timestamp: str | None = None,
+        validated_repositories: list[str] | None = None,
+    ):
         self.timestamp = timestamp or datetime.datetime.now().strftime(
             "%Y-%m-%d %H:%M:%S"
         )
@@ -558,6 +684,9 @@ class IncrementalReportWriter:
             output_dir, f"validation-reports-{self.ts_path}"
         )
         os.makedirs(self.report_root, exist_ok=True)
+
+        # Track whether this run was targeted or full-sweep
+        self.validated_repositories = validated_repositories
 
         # Accumulated state
         self.categories: list[ValidationCategory] = []
@@ -590,7 +719,9 @@ class IncrementalReportWriter:
 
             if r.status == "success":
                 cat.successes.append(
-                    ProjectResult(project=pkg, message="Success", command=cmd)
+                    ProjectResult(
+                        project=pkg, message="Success", output=r.data, command=cmd
+                    )
                 )
             elif r.status == "error":
                 error_msg = r.error.message if r.error else (r.data or "Unknown error")
@@ -666,6 +797,8 @@ class IncrementalReportWriter:
                 scan_md.append("## Successes ✅")
                 for r in filtered.successes:
                     scan_md.append(f"- **{r.project}**: {r.message}")
+                    if r.output and "coverage" in (r.command or "").lower():
+                        scan_md.append(f"\n{r.output}\n")
                 scan_md.append("")
 
             if filtered.failures:
@@ -700,16 +833,30 @@ class IncrementalReportWriter:
 
         all_projects = sorted(self.project_stats.keys())
 
+        # Identify failed projects for the next-command block
+        failed_projects = sorted(
+            p for p, s in self.project_stats.items() if s["failure"] > 0
+        )
+
         index_md = [
             "# 📋 Validation Report",
             f"**Time:** {self.timestamp}  ",
             f"**Total Checks:** {total} | **Success:** {success_total} ✅ | **Failure:** {failure_total} ❌ | **Skipped:** {skipped_total} ⏭️",
             "",
-            "## Category Summary",
-            "",
-            "| Category | ✅ Pass | ❌ Fail | ⏭️ Skip |",
-            "|---|---|---|---|",
         ]
+
+        # --- Next Validation Command block ---
+        index_md.extend(
+            _build_next_command_block(
+                failed_projects=failed_projects,
+                validated_repositories=self.validated_repositories,
+            )
+        )
+
+        index_md.append("## Category Summary")
+        index_md.append("")
+        index_md.append("| Category | ✅ Pass | ❌ Fail | ⏭️ Skip |")
+        index_md.append("|---|---|---|---|")
 
         for cat in self.categories:
             index_md.append(

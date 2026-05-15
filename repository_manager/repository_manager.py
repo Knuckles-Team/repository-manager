@@ -20,6 +20,7 @@ from typing import Any
 __version__ = "1.14.0"
 
 import concurrent.futures
+import multiprocessing
 import select
 import shutil
 import signal
@@ -199,59 +200,6 @@ class Git:
             ),
         )
 
-    def generate_workspace_tree(self, yaml_path: str | None = None) -> str:
-        """Generates an ASCII tree of the workspace defined in YAML."""
-        if yaml_path:
-            self.load_projects_from_yaml(yaml_path)
-
-        if not hasattr(self, "config") or not self.config:
-            return "No workspace configuration loaded."
-
-        lines = [f"Workspace: {self.config.name}", f"Root: {self.path}", ""]
-
-        def _build_tree(subdirs, indent=""):
-            for name, data in subdirs.items():
-                lines.append(f"{indent}├── {name}/")
-                new_indent = indent + "│   "
-                for repo in data.repositories:
-                    repo_name = repo.url.split("/")[-1].replace(".git", "")
-                    lines.append(f"{new_indent}└── {repo_name} ({repo.url})")
-                if data.subdirectories:
-                    _build_tree(data.subdirectories, new_indent)
-
-        _build_tree(self.config.subdirectories)
-        return "\n".join(lines)
-
-    def generate_workspace_mermaid(self, yaml_path: str | None = None) -> str:
-        """Generates a Mermaid diagram of the workspace defined in YAML."""
-        if yaml_path:
-            self.load_projects_from_yaml(yaml_path)
-
-        if not hasattr(self, "config") or not self.config:
-            return "No workspace configuration loaded."
-
-        lines = ["graph TD", f'    Root["{self.config.name}"]']
-
-        def _build_mermaid(subdirs, parent_node):
-            for name, data in subdirs.items():
-                node_id = name.replace("-", "_")
-                lines.append(f'    {parent_node} --> {node_id}["{name}/"]')
-                for repo in data.repositories:
-                    repo_name = repo.url.split("/")[-1].replace(".git", "")
-                    repo_id = repo_name.replace("-", "_")
-                    lines.append(f'    {node_id} --> {repo_id}["{repo_name}"]')
-                if data.subdirectories:
-                    _build_mermaid(data.subdirectories, node_id)
-
-        _build_mermaid(self.config.subdirectories, "Root")
-        return "\n".join(lines)
-
-    def generate_agents_md(self, target_path: str | None = None) -> GitResult:
-        """
-        Generates/Updates the AGENTS.md catalog in the workspace root.
-        """
-        return self.generate_agents_documentation(target_path)
-
     def get_project_map(self) -> dict[str, str]:
         """
         Returns the mapping of repository URLs to their local project paths.
@@ -265,103 +213,6 @@ class Git:
     def get_workspace_projects(self) -> list[str]:
         """Returns a list of project basenames (e.g. 'genius-agent') defined in the workspace."""
         return [os.path.basename(p) for p in self.project_map.values()]
-
-    async def _get_intelligence_engine(self, path: str | None = None) -> Any:
-        """Helper to get a graph engine, reusing an active one if available."""
-        from agent_utilities.knowledge_graph.engine import RegistryGraphEngine as Engine
-
-        active = Engine.get_active()
-        if active:
-            return active
-
-        from agent_utilities.knowledge_graph.pipeline import IntelligencePipeline
-        from agent_utilities.models.knowledge_graph import PipelineConfig
-
-        root = self._resolve_path(path)
-        config = PipelineConfig(workspace_path=root)
-        pipeline = IntelligencePipeline(config)
-        await pipeline.run()
-        return Engine(pipeline.graph)
-
-    def _get_intelligence_engine_sync(self, path: str | None = None) -> Any:
-        """Synchronous version of _get_intelligence_engine."""
-        import asyncio
-
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        if loop.is_running():
-            # If loop is already running, we can't run_until_complete.
-            # We try to get the active engine or create one without a full pipeline run if possible.
-            from agent_utilities.knowledge_graph.engine import (
-                RegistryGraphEngine as Engine,
-            )
-
-            active = Engine.get_active()
-            if active:
-                return active
-            # Fallback: create an empty engine (better than crashing)
-            import networkx as nx
-
-            return Engine(nx.MultiDiGraph())
-
-        return loop.run_until_complete(self._get_intelligence_engine(path))
-
-    async def graph_query(
-        self, query: str, mode: str = "hybrid", path: str | None = None
-    ) -> list[dict[str, Any]]:
-        """Queries the Hybrid Graph using vector similarity or Cypher structure."""
-        engine = await self._get_intelligence_engine(path)
-
-        if mode == "structural":
-            return engine.query_cypher(query)
-        return engine.search_hybrid(query)
-
-    def graph_path(
-        self, source_id: str, target_id: str, path: str | None = None
-    ) -> list[str]:
-        """Finds the shortest path between two symbols across the workspace graph."""
-        engine = self._get_intelligence_engine_sync(path)
-        return engine.find_path(source_id, target_id)
-
-    def graph_status(self, path: str | None = None) -> dict[str, Any]:
-        """Returns the current status of the workspace graph."""
-        engine = self._get_intelligence_engine_sync(path)
-        # Re-run pipeline to get fresh metadata if needed?
-        # For now, we return what we have.
-        metadata = {
-            "nodes": engine.graph.number_of_nodes(),
-            "edges": engine.graph.number_of_edges(),
-        }
-        return metadata
-
-    def graph_reset(self, path: str | None = None) -> str:
-        """Purges the graph database and Forces a clean rebuild on next build."""
-        root = self._resolve_path(path)
-        repo_graph_dir = os.path.join(root, ".repo_graph")
-        if os.path.exists(repo_graph_dir):
-            import shutil
-
-            shutil.rmtree(repo_graph_dir)
-
-        # Also check for ladybug db
-        ladybug_db = os.path.join(root, ".ladybug")
-        if os.path.exists(ladybug_db):
-            import shutil
-
-            shutil.rmtree(ladybug_db)
-
-        return "Graph database purged successfully."
-
-    async def graph_impact(
-        self, symbol: str, group_name: str | None = None, path: str | None = None
-    ) -> list[dict[str, Any]]:
-        """Calculates multi-repo impact for a symbol using the GraphEngine."""
-        engine = await self._get_intelligence_engine(path)
-        return engine.query_impact(symbol)
 
     def _resolve_path(self, path: str | None = None) -> str:
         """
@@ -397,7 +248,7 @@ class Git:
         if shutil.which("uv"):
             cmd = "uv sync --all-packages"
             # execute at base_path where it will find the workspace pyproject.toml
-            res = self.git_action(cmd, path=self.path)
+            res = self.git_action(cmd, path=self.path, timeout=300)
 
             # Generate parity reporting for each Python project
             for _url, path in self.project_map.items():
@@ -435,6 +286,26 @@ class Git:
                     res.status = "error"
                     res.data = f"pnpm install succeeded but ignored build scripts:\n{res.data}\nPlease add allowed dependencies to package.json."
                 results.append(res)
+
+            is_python = os.path.exists(
+                os.path.join(path, "pyproject.toml")
+            ) or os.path.exists(os.path.join(path, "setup.py"))
+            if not is_python and not is_node:
+                results.append(
+                    GitResult(
+                        status="skipped",
+                        data="Skipped (Not a Python or Node project)",
+                        metadata=GitMetadata(
+                            command="install",
+                            workspace=path,
+                            return_code=0,
+                            timestamp=datetime.datetime.now(
+                                datetime.timezone.utc
+                            ).isoformat()
+                            + "Z",
+                        ),
+                    )
+                )
 
         successes = [r for r in results if r.status == "success"]
         failures = [r for r in results if r.status == "error"]
@@ -488,11 +359,31 @@ class Git:
                 futures.append(executor.submit(self.git_action, cmd, path=path))
             return [f.result() for f in concurrent.futures.as_completed(futures)]
 
+    @staticmethod
+    def _cpu_aware_threads(max_cpu_pct: float = 20.0) -> int:
+        """Calculate thread count to stay under *max_cpu_pct* CPU utilisation.
+
+        For subprocess-heavy workloads each thread drives an external process,
+        so we approximate 1 thread ≈ 1 core of load.  Targeting 20% of
+        available cores keeps background validation from starving the IDE and
+        MCP server.
+        """
+        try:
+            cores = len(os.sched_getaffinity(0))
+        except AttributeError:
+            cores = multiprocessing.cpu_count() or 4
+        target = max(1, int(cores * max_cpu_pct / 100.0))
+        return target
+
     def validate_projects(
         self,
         type: str = "all",
         threads: int | None = None,
         output_dir: str | None = None,
+        generate_report: bool = True,
+        validated_repositories: list[str] | None = None,
+        coverage: bool = False,
+        progress: dict | None = None,
     ) -> ValidationReport:
         """Bulk validates agent/MCP servers using various modes (help, static, runtime).
 
@@ -500,8 +391,15 @@ class Git:
         to a ``validation-reports-<timestamp>/`` directory structure under that path.
         Each scan phase writes its per-repo files immediately upon completion so
         results are available before the full run finishes.
+
+        Args:
+            coverage: When True, collect pytest coverage data (``--cov=.``).
+                Defaults to False for faster validation runs.
+            progress: Optional mutable dict for live progress reporting.
+                Updated in-place with current_phase, per-phase repo counts,
+                and overall progress percentage.
         """
-        threads = threads or self.threads
+        threads = threads or self._cpu_aware_threads()
         if not self.project_map:
             logger.warning("No projects to validate.")
             return ValidationReport.from_results([])
@@ -510,13 +408,78 @@ class Git:
             f"Validating {len(self.project_map)} projects (mode={type}) in parallel ({threads} threads)..."
         )
 
-        # Initialize incremental report writer if output directory is specified
-        report_output = output_dir or (self.path if self.report_path else None)
-        writer = (
-            IncrementalReportWriter(output_dir=report_output) if report_output else None
-        )
-
+        # --- Progress helpers (no-op when progress is None) ---
         run_all = type in ["all", "flat", "graph"]
+
+        expected_phases = []
+        if run_all or type == "installation":
+            expected_phases.append("Ecosystem Installation")
+        if run_all or type == "pre-commit":
+            expected_phases.append("Pre-commit Compliance")
+        if run_all or type == "version-sync":
+            expected_phases.append("Version Metadata Sync")
+        if run_all or type in ["static-analysis", "mcp", "agent"]:
+            expected_phases.append("Standards & Help Checks")
+        if run_all or type == "runtime-validation":
+            expected_phases.append("Runtime Validation")
+
+        total_phases = max(1, len(expected_phases))
+        completed_phases = 0
+
+        def _phase_start(name: str, total: int = 0) -> None:
+            nonlocal completed_phases
+            if progress is not None:
+                progress["current_phase"] = name
+                progress["progress"] = int(completed_phases / total_phases * 100)
+                if "phases" not in progress:
+                    progress["phases"] = {}
+                if name not in progress["phases"]:
+                    progress["phases"][name] = {
+                        "status": "running",
+                        "total": total,
+                        "processed": 0,
+                        "completed": 0,
+                        "success": 0,
+                        "failed": 0,
+                        "skipped": 0,
+                        "repos": {},
+                    }
+                else:
+                    progress["phases"][name]["status"] = "running"
+                    if total > 0:
+                        progress["phases"][name]["total"] = total
+
+        def _phase_repo(name: str, repo: str, status: str) -> None:
+            if progress is not None and name in progress.get("phases", {}):
+                p = progress["phases"][name]
+                p["repos"][repo] = status
+                p["processed"] = len(p["repos"])
+                p["completed"] = p["processed"]  # Backwards compatibility
+                p["success"] = sum(1 for s in p["repos"].values() if s == "success")
+                p["failed"] = sum(1 for s in p["repos"].values() if s == "error")
+                p["skipped"] = sum(
+                    1 for s in p["repos"].values() if s in ("skipped", "skip")
+                )
+
+        def _phase_end(name: str) -> None:
+            nonlocal completed_phases
+            completed_phases += 1
+            if progress is not None and name in progress.get("phases", {}):
+                progress["phases"][name]["status"] = "completed"
+                progress["progress"] = int(completed_phases / total_phases * 100)
+
+        # Initialize incremental report writer if output directory is specified or generate_report is true
+        report_output = output_dir or (
+            os.path.join(self.path, "reports") if generate_report else None
+        )
+        writer = (
+            IncrementalReportWriter(
+                output_dir=report_output,
+                validated_repositories=validated_repositories,
+            )
+            if report_output
+            else None
+        )
         results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
             agent_targets = []
@@ -586,15 +549,85 @@ class Git:
                     }
                 )
 
+            # Pre-populate progress phases as pending
+            if progress is not None:
+                if "phases" not in progress:
+                    progress["phases"] = {}
+                for phase_name in expected_phases:
+                    phase_total = len(self.project_map)
+                    if phase_name in [
+                        "Standards & Help Checks",
+                        "Runtime Validation",
+                    ]:
+                        phase_total = len(agent_targets)
+
+                    if phase_name not in progress["phases"]:
+                        progress["phases"][phase_name] = {
+                            "status": "pending",
+                            "total": phase_total,
+                            "processed": 0,
+                            "completed": 0,
+                            "success": 0,
+                            "failed": 0,
+                            "skipped": 0,
+                            "repos": {},
+                        }
+
             # --- Phase 1: Ecosystem Installation ---
             if run_all or type == "installation":
+                _phase_start("Ecosystem Installation", len(self.project_map))
                 install_results = self.install_projects(report=False)
+                for r in install_results:
+                    repo = Path(r.metadata.workspace).name if r.metadata else "unknown"
+                    _phase_repo("Ecosystem Installation", repo, r.status)
                 results.extend(install_results)
+                _phase_end("Ecosystem Installation")
                 if writer:
                     writer.write_phase("Ecosystem Installation", install_results)
 
-            # --- Phase 2: Version Metadata Sync ---
+            # --- Phase 2: Pre-commit Standard Compliance ---
+            if run_all or type == "pre-commit":
+                _phase_start("Pre-commit Compliance", len(self.project_map))
+                logger.info(
+                    f"Checking pre-commit compliance for {len(self.project_map)} projects..."
+                )
+
+                pc_results = []
+                pc_futures = {}
+                skip_ts = datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z"
+
+                for _url, path in self.project_map.items():
+                    repo_name = Path(path).name
+                    if os.path.exists(os.path.join(path, ".pre-commit-config.yaml")):
+                        fut = executor.submit(self.pre_commit, True, False, path)
+                        pc_futures[fut] = repo_name
+                    else:
+                        r = GitResult(
+                            status="skipped",
+                            data="Skipped (No .pre-commit-config.yaml)",
+                            metadata=GitMetadata(
+                                command="pre_commit",
+                                workspace=path,
+                                return_code=0,
+                                timestamp=skip_ts,
+                            ),
+                        )
+                        pc_results.append(r)
+                        _phase_repo("Pre-commit Compliance", repo_name, "skipped")
+
+                for f in concurrent.futures.as_completed(pc_futures):
+                    r = f.result()
+                    pc_results.append(r)
+                    _phase_repo("Pre-commit Compliance", pc_futures[f], r.status)
+
+                _phase_end("Pre-commit Compliance")
+                results.extend(pc_results)
+                if writer:
+                    writer.write_phase("Pre-commit Standard Compliance", pc_results)
+
+            # --- Phase 3: Version Metadata Sync ---
             if run_all or type == "version-sync":
+                _phase_start("Version Metadata Sync", len(self.project_map))
                 bump_results = []
 
                 for _url, path in self.project_map.items():
@@ -603,11 +636,11 @@ class Git:
 
                     repo_name = Path(path).name
                     if (Path(path) / ".bumpversion.cfg").exists():
-                        bump_results.append(
-                            self.bump_version(
-                                "patch", allow_dirty=True, path=path, dry_run=True
-                            )
+                        res = self.bump_version(
+                            "patch", allow_dirty=True, path=path, dry_run=True
                         )
+                        bump_results.append(res)
+                        _phase_repo("Version Metadata Sync", repo_name, res.status)
                     else:
                         reason = (
                             "Skipped (Not a Python project)"
@@ -629,25 +662,28 @@ class Git:
                                 ),
                             )
                         )
+                        _phase_repo("Version Metadata Sync", repo_name, "skipped")
+                _phase_end("Version Metadata Sync")
                 results.extend(bump_results)
                 if writer:
                     writer.write_phase("Version Metadata Sync (Dry Run)", bump_results)
 
-            # --- Phase 3: Agent Standards, MCP Help, Agent Help (parallel fast checks) ---
+            # --- Phase 4: Agent Standards, MCP Help, Agent Help (parallel fast checks) ---
+            _phase_start("Standards & Help Checks", len(agent_targets))
             # Collect skip results and futures separately by category
             static_results: list[GitResult] = []
             mcp_help_results: list[GitResult] = []
             agent_help_results: list[GitResult] = []
-            fast_futures_static: list[concurrent.futures.Future] = []
-            fast_futures_mcp: list[concurrent.futures.Future] = []
-            fast_futures_agent: list[concurrent.futures.Future] = []
+            fast_futures_static: dict[concurrent.futures.Future, str] = {}
+            fast_futures_mcp: dict[concurrent.futures.Future, str] = {}
+            fast_futures_agent: dict[concurrent.futures.Future, str] = {}
             skip_ts = datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z"
 
             for target in agent_targets:
                 if "skip_reason" in target:
                     reason = target["skip_reason"]
 
-                    if type == "mcp":
+                    if run_all or type == "mcp":
                         mcp_help_results.append(
                             GitResult(
                                 status="skipped",
@@ -660,7 +696,7 @@ class Git:
                                 ),
                             )
                         )
-                    if type == "agent":
+                    if run_all or type == "agent":
                         agent_help_results.append(
                             GitResult(
                                 status="skipped",
@@ -673,7 +709,7 @@ class Git:
                                 ),
                             )
                         )
-                    if type == "static-analysis":
+                    if run_all or type == "static-analysis":
                         static_results.append(
                             GitResult(
                                 status="skipped",
@@ -688,12 +724,11 @@ class Git:
                         )
                     continue
 
-                if type == "mcp" and target.get("is_mcp"):
+                if (run_all or type == "mcp") and target.get("is_mcp"):
                     cmd = f"{self.python_exe} -m {target['pkg']}.mcp_server --help"
-                    fast_futures_mcp.append(
-                        executor.submit(self._check_help, cmd, path=target["path"])
-                    )
-                elif type == "mcp":
+                    fut = executor.submit(self._check_help, cmd, path=target["path"])
+                    fast_futures_mcp[fut] = target["name"]
+                elif run_all or type == "mcp":
                     mcp_help_results.append(
                         GitResult(
                             status="skipped",
@@ -707,14 +742,13 @@ class Git:
                         )
                     )
 
-                if type == "agent" and target.get("file"):
+                if (run_all or type == "agent") and target.get("file"):
                     cmd = (
                         f"{self.python_exe} -m {target['pkg']}.{target['file']} --help"
                     )
-                    fast_futures_agent.append(
-                        executor.submit(self._check_help, cmd, path=target["path"])
-                    )
-                elif type == "agent":
+                    fut = executor.submit(self._check_help, cmd, path=target["path"])
+                    fast_futures_agent[fut] = target["name"]
+                elif run_all or type == "agent":
                     agent_help_results.append(
                         GitResult(
                             status="skipped",
@@ -728,11 +762,10 @@ class Git:
                         )
                     )
 
-                if type == "static-analysis":
+                if run_all or type == "static-analysis":
                     if target.get("file"):
-                        fast_futures_static.append(
-                            executor.submit(self._check_agent_static, target)
-                        )
+                        fut = executor.submit(self._check_agent_static, target)
+                        fast_futures_static[fut] = target["name"]
                     else:
                         static_results.append(
                             GitResult(
@@ -748,40 +781,40 @@ class Git:
                         )
 
             # Collect fast futures by category and write reports incrementally
-            static_results.extend(
-                [
-                    f.result()
-                    for f in concurrent.futures.as_completed(fast_futures_static)
-                ]
-            )
+            for f in concurrent.futures.as_completed(fast_futures_static):
+                r = f.result()
+                static_results.append(r)
+                _phase_repo("Standards & Help Checks", fast_futures_static[f], r.status)
             if static_results:
                 results.extend(static_results)
                 if writer:
                     writer.write_phase("Agent Standards Compliance", static_results)
 
-            mcp_help_results.extend(
-                [f.result() for f in concurrent.futures.as_completed(fast_futures_mcp)]
-            )
+            for f in concurrent.futures.as_completed(fast_futures_mcp):
+                r = f.result()
+                mcp_help_results.append(r)
+                _phase_repo("Standards & Help Checks", fast_futures_mcp[f], r.status)
             if mcp_help_results:
                 results.extend(mcp_help_results)
                 if writer:
                     writer.write_phase("MCP Help Check", mcp_help_results)
 
-            agent_help_results.extend(
-                [
-                    f.result()
-                    for f in concurrent.futures.as_completed(fast_futures_agent)
-                ]
-            )
+            for f in concurrent.futures.as_completed(fast_futures_agent):
+                r = f.result()
+                agent_help_results.append(r)
+                _phase_repo("Standards & Help Checks", fast_futures_agent[f], r.status)
             if agent_help_results:
                 results.extend(agent_help_results)
                 if writer:
                     writer.write_phase("Agent Help Check", agent_help_results)
 
-            # --- Phase 4: Runtime Validation ---
-            if type == "runtime-validation":
+            _phase_end("Standards & Help Checks")
+
+            # --- Phase 5: Runtime Validation ---
+            if run_all or type == "runtime-validation":
+                _phase_start("Runtime Validation", len(agent_targets))
                 runtime_results: list[GitResult] = []
-                heavy_futures = []
+                heavy_futures: dict[concurrent.futures.Future, str] = {}
                 for idx, target in enumerate(agent_targets):
                     if "skip_reason" in target:
                         runtime_results.append(
@@ -796,13 +829,13 @@ class Git:
                                 ),
                             )
                         )
+                        _phase_repo("Runtime Validation", target["name"], "skipped")
                         continue
 
                     if target.get("file"):
                         port = 9000 + (idx % 3000)
-                        heavy_futures.append(
-                            executor.submit(self._check_agent_runtime, target, port)
-                        )
+                        fut = executor.submit(self._check_agent_runtime, target, port)
+                        heavy_futures[fut] = target["name"]
                     else:
                         runtime_results.append(
                             GitResult(
@@ -816,57 +849,42 @@ class Git:
                                 ),
                             )
                         )
+                        _phase_repo("Runtime Validation", target["name"], "skipped")
 
-                runtime_results.extend(
-                    [f.result() for f in concurrent.futures.as_completed(heavy_futures)]
-                )
+                for f in concurrent.futures.as_completed(heavy_futures):
+                    r = f.result()
+                    runtime_results.append(r)
+                    _phase_repo("Runtime Validation", heavy_futures[f], r.status)
+                _phase_end("Runtime Validation")
                 results.extend(runtime_results)
                 if writer:
                     writer.write_phase("Agent Runtime & Web UI", runtime_results)
-
-            # --- Phase 5: Pre-commit Standard Compliance ---
-            if run_all or type == "pre-commit":
-                logger.info(
-                    f"Checking pre-commit compliance for {len(self.project_map)} projects..."
-                )
-                pc_results = self.pre_commit_projects(run=True, autoupdate=False)
-                results.extend(pc_results)
-                if writer:
-                    writer.write_phase("Pre-commit Standard Compliance", pc_results)
-
-            # --- Phase 6: Pytest and Coverage ---
-            if type == "test":
-                logger.info(f"Running pytests for {len(agent_targets)} projects...")
-                test_results = self.test_projects(targets=agent_targets)
-                results.extend(test_results)
-                if writer:
-                    writer.write_phase("Additional Operational Checks", test_results)
 
             # --- Console summary ---
             successes = [r for r in results if r.status == "success"]
             failures = [r for r in results if r.status == "error"]
             skipped = [r for r in results if r.status == "skipped"]
 
-            print("\n" + "=" * 50)
-            print("VALIDATION SUMMARY")
-            print(
+            logger.info("\n" + "=" * 50)
+            logger.info("VALIDATION SUMMARY")
+            logger.info(
                 f"Total: {len(results)} | Success: {len(successes)} ✅ | Failure: {len(failures)} ❌ | Skipped: {len(skipped)} ⏭️"
             )
             if failures:
-                print("\nFailures:")
+                logger.info("\nFailures:")
                 for r in failures:
                     pkg = "unknown"
                     if r.metadata:
                         pkg = r.metadata.workspace.split("/")[-1]
                     error_msg = r.error.message if r.error else r.data
-                    print(f"- {pkg}: {error_msg}")
-            print("=" * 50 + "\n")
+                    logger.info(f"- {pkg}: {error_msg}")
+            logger.info("=" * 50 + "\n")
 
             # Finalize directory report (writes index.md)
             report_dir = None
             if writer:
                 report_dir = writer.finalize()
-                print(f"📋 Report directory: {report_dir}")
+                logger.info(f"📋 Report directory: {report_dir}")
 
             report = ValidationReport.from_results(results)
 
@@ -892,7 +910,7 @@ class Git:
 
     def _check_help(self, command: str, path: str) -> GitResult:
         """Helper to run a --help command and return a standardized result."""
-        result = self.git_action(command=command, path=path, quiet=True)
+        result = self.git_action(command=command, path=path, quiet=True, timeout=60)
         if result.status == "success":
             result.data = "--help loaded successfully"
         return result
@@ -1140,11 +1158,19 @@ class Git:
             try:
                 if os.name != "nt":
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        logger.warning(
+                            f"[{target['name']}] Ignored SIGTERM. Sending SIGKILL."
+                        )
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        proc.wait(timeout=3)
                 else:
                     proc.terminate()
-                proc.wait(timeout=3)
-            except Exception:  # nosec B110
-                pass
+                    proc.wait(timeout=3)
+            except Exception as ex:  # nosec B110
+                logger.error(f"Failed to kill process for {target['name']}: {ex}")
 
             metadata = GitMetadata(
                 command=" ".join(cmd),
@@ -1291,6 +1317,7 @@ class Git:
             text=True,
             env=current_env,
             bufsize=1,  # Line buffered
+            start_new_session=True,  # Isolate process group so killpg only kills the command
         )
 
         output_lines = []
@@ -1307,27 +1334,46 @@ class Git:
                     log_file.flush()
 
             # Read output line by line as it becomes available
-            if process.stdout:
-                for line in process.stdout:
-                    output_lines.append(line)
-                    with self.debug_lock:
-                        with open(self.debug_log_path, "a") as log_file:
-                            log_file.write(
-                                f"[{datetime.datetime.now().isoformat()}] {line}"
-                            )
-                            log_file.flush()
+            def _read_output():
+                if process.stdout:
+                    for line in process.stdout:
+                        output_lines.append(line)
+                        with self.debug_lock:
+                            with open(self.debug_log_path, "a") as log_file:
+                                log_file.write(
+                                    f"[{datetime.datetime.now().isoformat()}] {line}"
+                                )
+                                log_file.flush()
+
+            reader_thread = threading.Thread(target=_read_output, daemon=True)
+            reader_thread.start()
 
             # Wait for process to complete, with a safety timeout
+            process.wait(timeout=timeout)
+            reader_thread.join(timeout=1.0)
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             logger.warning(f"Command timed out: {command}")
             if hasattr(os, "killpg"):
                 try:
                     os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                        process.wait(timeout=5)
                 except Exception:  # nosec B110
                     process.kill()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
             else:
                 process.kill()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
 
             with self.debug_lock:
                 with open(self.debug_log_path, "a") as log_file:
@@ -1732,7 +1778,9 @@ class Git:
         else:
             env["SKIP"] = "no-commit-to-branch"
 
-        result = self.git_action(command=full_command, path=target_path, env=env)
+        result = self.git_action(
+            command=full_command, path=target_path, env=env, timeout=180
+        )
 
         if result.status == "error" and result.error:
             msg = result.error.message.lower()
@@ -1759,48 +1807,88 @@ class Git:
 
         return result
 
-    def test_projects(self, targets: list[dict[str, str]]) -> list[GitResult]:
+    def _run_project_test_and_coverage(
+        self, cmd: str, path: str, env: dict, timeout: int
+    ) -> list[GitResult]:
+        results = []
+        res = self.git_action(cmd, path=path, env=env, timeout=timeout)
+        results.append(res)
+
+        # # Only try coverage if we succeeded or if coverage data exists
+        # cov_file_path = env.get("COVERAGE_FILE")
+        # if cov_file_path and os.path.exists(cov_file_path):
+        #     cov_cmd = (
+        #         "uv run -q coverage report --format=markdown"
+        #         if "uv run" in cmd
+        #         else f"{sys.executable} -m coverage report --format=markdown"
+        #     )
+        #     cov_res = self.git_action(cov_cmd, path=path, env=env, quiet=True)
+        #     if cov_res.metadata:
+        #         cov_res.metadata.command = "coverage report"
+        #     if cov_res.status == "success":
+        #         results.append(cov_res)
+
+        return results
+
+    def test_projects(
+        self,
+        targets: list[dict[str, str]],
+        coverage: bool = False,
+        progress_phase: str | None = None,
+        progress_dict: dict | None = None,
+    ) -> list[GitResult]:
         """
-        Execute pytests with coverage for the specified projects in parallel.
+        Execute pytests for the specified projects in parallel.
+
+        Args:
+            coverage: When True, append ``--cov=.`` and set COVERAGE_FILE.
+            progress_phase: Phase name for live progress updates.
+            progress_dict: Shared mutable dict for live progress reporting.
         """
         results = []
+        thread_count = self._cpu_aware_threads()
         with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.threads
+            max_workers=thread_count
         ) as executor:
-            futures = []
+            future_to_repo: dict[concurrent.futures.Future, str] = {}
             for target in targets:
                 if "skip_reason" in target:
                     continue
 
                 path = target["path"]
+                repo_name = target.get("name", os.path.basename(path))
                 # Try to find tests directory
                 has_tests = os.path.exists(
                     os.path.join(path, "tests")
                 ) or os.path.exists(os.path.join(path, "test"))
                 if has_tests:
+                    cov_flag = " --cov=." if coverage else ""
                     # Detect if we should use uv or standard python
                     if os.path.exists(os.path.join(path, "uv.lock")):
-                        # Use uv run with test extra if it exists
-                        cmd = "uv run --extra test pytest -v --cov=."
+                        cmd = f"uv run --extra test pytest -v --timeout=120{cov_flag}"
                     else:
-                        # Fallback to standard pytest
-                        cmd = f"{sys.executable} -m pytest -v --cov=."
+                        cmd = f"{sys.executable} -m pytest -v --timeout=120{cov_flag}"
 
                     # Ensure memory safety for ladybug and set validation mode
                     test_env = os.environ.copy()
                     test_env["LADYBUG_MAX_DB_SIZE"] = "1073741824"
                     test_env["VALIDATION_MODE"] = "True"
                     test_env["KNOWLEDGE_GRAPH_SYNC_BACKGROUND"] = "False"
-
-                    futures.append(
-                        executor.submit(
-                            self.git_action,
-                            cmd,
-                            path=path,
-                            env=test_env,
-                            timeout=600,  # 10 minute timeout for tests
+                    test_env["GRAPH_DB_PATH"] = ":memory:"
+                    if coverage:
+                        test_env["COVERAGE_FILE"] = os.path.join(
+                            os.path.abspath(self.path),
+                            f".coverage.{os.path.basename(path)}",
                         )
+
+                    fut = executor.submit(
+                        self._run_project_test_and_coverage,
+                        cmd,
+                        path,
+                        test_env,
+                        600,  # 10 minute timeout for tests
                     )
+                    future_to_repo[fut] = repo_name
                 else:
                     results.append(
                         GitResult(
@@ -1817,9 +1905,39 @@ class Git:
                             ),
                         )
                     )
+                    if progress_dict and progress_phase:
+                        phases = progress_dict.get("phases", {})
+                        if progress_phase in phases:
+                            phases[progress_phase]["repos"][repo_name] = "skipped"
+                            phases[progress_phase]["completed"] = len(
+                                phases[progress_phase]["repos"]
+                            )
 
-            for future in concurrent.futures.as_completed(futures):
-                results.append(future.result())
+            for future in concurrent.futures.as_completed(future_to_repo):
+                repo_name = future_to_repo[future]
+                res_list = future.result()
+                # Determine aggregate status for the repo
+                status = "success"
+                if isinstance(res_list, list):
+                    results.extend(res_list)
+                    if any(r.status == "error" for r in res_list):
+                        status = "error"
+                else:
+                    results.append(res_list)
+                    status = res_list.status
+                # Update live progress
+                if progress_dict and progress_phase:
+                    phases = progress_dict.get("phases", {})
+                    if progress_phase in phases:
+                        phases[progress_phase]["repos"][repo_name] = status
+                        phases[progress_phase]["completed"] = len(
+                            phases[progress_phase]["repos"]
+                        )
+                        phases[progress_phase]["failed"] = sum(
+                            1
+                            for s in phases[progress_phase]["repos"].values()
+                            if s == "error"
+                        )
         return results
 
     def pre_commit_projects(
@@ -2638,100 +2756,6 @@ class Git:
                 status="error", data="", error=GitError(message=str(e), code=1)
             )
 
-    def generate_agents_documentation(
-        self, target_path: str | None = None
-    ) -> GitResult:
-        """
-        Generates an AGENTS.md catalog by discovering agent types and main files.
-        Uses a robust multi-level path discovery to identify Graph vs Flat agents.
-        """
-        try:
-            target_path = target_path or os.path.join(self.path, "AGENTS.md")
-            target_path = os.path.abspath(os.path.expanduser(target_path))
-
-            rows = []
-            for url, project_path in self.get_project_map().items():
-                pkg_name = url.split("/")[-1].replace(".git", "")
-                pkg_name_underscore = pkg_name.replace("-", "_")
-
-                if not os.path.exists(project_path):
-                    rows.append(f"| `{pkg_name}` | (Not Cloned) |")
-                    continue
-
-                is_graph = False
-                is_agent = False
-
-                search_paths = [
-                    Path(project_path),
-                    Path(project_path) / pkg_name,
-                    Path(project_path) / pkg_name_underscore,
-                ]
-
-                for sp in search_paths:
-                    if (sp / "graph_config.py").exists():
-                        is_graph = True
-                        is_agent = True
-                        break
-                    if (sp / "agent_server.py").exists() or (
-                        sp / "mcp_server.py"
-                    ).exists():
-                        is_agent = True
-
-                if not is_agent:
-                    agent_type = "Library"
-                else:
-                    agent_type = "Graph" if is_graph else "Flat"
-
-                rows.append(f"| `{pkg_name}` | {agent_type} |")
-
-            rows.sort()
-            catalog_table = "\n".join(rows)
-
-            template_content = ""
-            try:
-                from importlib.resources import files
-
-                template_content = (
-                    files("repository_manager") / "AGENTS.md"
-                ).read_text()
-            except Exception:  # nosec B110
-                template_content = "# Agent Catalog\n\n| Agent Package | Type |\n|:--------------|:-----|\n<!-- AGENT_CATALOG_PLACEHOLDER -->\n"
-
-            if "<!-- AGENT_CATALOG_PLACEHOLDER -->" in template_content:
-                final_content = template_content.replace(
-                    "<!-- AGENT_CATALOG_PLACEHOLDER -->", catalog_table
-                )
-            else:
-                logger.warning(
-                    "Placeholder <!-- AGENT_CATALOG_PLACEHOLDER --> not found in template. Appending catalog."
-                )
-                final_content = (
-                    template_content
-                    + "\n\n## Dynamic Catalog\n\n| Agent Package | Type |\n|:--------------|:-----|\n"
-                    + catalog_table
-                )
-
-            with open(target_path, "w") as f:
-                f.write(final_content)
-
-            return GitResult(
-                status="success",
-                data=f"Agents documentation generated at {target_path}",
-                metadata=GitMetadata(
-                    command="generate_agents_md",
-                    workspace=target_path,
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to generate AGENTS.md: {e}")
-            return GitResult(
-                status="error", data="", error=GitError(message=str(e), code=1)
-            )
-
     def get_consolidated_skill_paths(self) -> list[str]:
         """
         Returns absolute paths to the 15 specific building and documentation skills.
@@ -2798,31 +2822,6 @@ class Git:
 
         return list(set(paths))
 
-    def ensure_graph(self) -> Any | None:
-        """
-        Incrementally builds or updates the Hybrid Graph for the workspace.
-        """
-        if (
-            not hasattr(self, "config")
-            or not self.config
-            or not self.config.graph
-            or not getattr(self.config.graph, "enabled", False)
-        ):
-            logger.info("Hybrid Graph is disabled in workspace config.")
-            return None
-
-        logger.info("Initiating Hybrid Graph build/sync process...")
-
-        # This will reuse active engine if available, or run pipeline
-        engine = self._get_intelligence_engine_sync()
-
-        logger.info("Hybrid Graph build process complete.")
-        # Return summary
-        return {
-            "nodes": engine.graph.number_of_nodes(),
-            "edges": engine.graph.number_of_edges(),
-        }
-
 
 def main() -> None:
     """
@@ -2836,9 +2835,6 @@ def main() -> None:
 Examples:
   # Standard setup (clones all missing repos in parallel)
   repository-manager --clone
-
-  # Generate documentation catalog
-  repository-manager --agents-md
 
   # Maintenance workflow (Bump patch version everywhere)
   repository-manager --maintain --bump patch
@@ -2886,19 +2882,7 @@ Examples:
         action="store_true",
         help="Initialize workspace: directory structure & clones missing repos.",
     )
-    group_workspace.add_argument(
-        "--tree",
-        action="store_true",
-        help="Visualize workspace hierarchy as ASCII tree.",
-    )
-    group_workspace.add_argument(
-        "--mermaid", action="store_true", help="Generate Mermaid graph of workspace."
-    )
-    group_workspace.add_argument(
-        "--agents-md",
-        action="store_true",
-        help="Generate AGENTS.md catalog of discovered agents.",
-    )
+
     group_workspace.add_argument(
         "--save",
         action="store_true",
@@ -2933,6 +2917,11 @@ Examples:
         "--validate",
         action="store_true",
         help="Run comprehensive pre-release validation.",
+    )
+    group_maintenance.add_argument(
+        "--no-report",
+        action="store_true",
+        help="Do not automatically generate the validation report directory.",
     )
     group_maintenance.add_argument(
         "--type",
@@ -3013,43 +3002,6 @@ Examples:
         help="Include --break-system-packages in pip install commands.",
     )
 
-    group_graph = parser.add_argument_group("Graph Intelligence (Hybrid Search)")
-    group_graph.add_argument(
-        "--graph-query",
-        type=str,
-        help="Query the Hybrid Graph using vector similarity or Cypher structure.",
-    )
-    group_graph.add_argument(
-        "--graph-mode",
-        choices=["semantic", "structural", "hybrid"],
-        default="hybrid",
-        help="Search mode for graph-query (default: hybrid).",
-    )
-    group_graph.add_argument(
-        "--graph-path",
-        nargs=2,
-        metavar=("SOURCE", "TARGET"),
-        help="Find the shortest path between two symbols across the workspace graph.",
-    )
-    group_graph.add_argument(
-        "--graph-status", action="store_true", help="Show current graph metrics."
-    )
-    group_graph.add_argument(
-        "--graph-reset",
-        action="store_true",
-        help="Purge the graph database and force a clean rebuild.",
-    )
-    group_graph.add_argument(
-        "--graph-update",
-        action="store_true",
-        help="Incrementally update the Hybrid Graph with latest structural changes.",
-    )
-    group_graph.add_argument(
-        "--graph-impact",
-        type=str,
-        help="Calculate multi-repo impact for a symbol.",
-    )
-
     args = parser.parse_args()
 
     git = Git(
@@ -3101,16 +3053,6 @@ Examples:
                     )
 
     if args.file and os.path.exists(args.file):
-        if args.tree:
-            print(git.generate_workspace_tree(args.file))
-            sys.exit(0)
-        if args.mermaid:
-            print(git.generate_workspace_mermaid(args.file))
-            sys.exit(0)
-        if args.agents_md:
-            logger.info(f"Generating AGENTS.md catalog in {git.path}...")
-            git.generate_agents_md()
-            sys.exit(0)
         if args.setup:
             logger.info(f"Setting up workspace from {args.file}...")
             git.load_projects_from_yaml(args.file)
@@ -3126,19 +3068,21 @@ Examples:
     if args.install:
         results = git.install_projects()
         summary = git.generate_markdown_summary("Installation", results)
-        print(summary)
+        logger.info(summary)
         git._export_report(summary, "install_report.md")
 
     if args.build:
         results = git.build_projects()
         summary = git.generate_markdown_summary("Build", results)
-        print(summary)
+        logger.info(summary)
         git._export_report(summary, "build_report.md")
 
     has_errors = False
 
     if args.validate:
-        report = git.validate_projects(type=args.type)
+        report = git.validate_projects(
+            type=args.type, generate_report=not args.no_report
+        )
         if report and report.failure_count > 0:
             has_errors = True
             logger.error("Validation failed with errors. Check the report for details.")
@@ -3161,7 +3105,7 @@ Examples:
                         has_errors = True
 
             summary = git.generate_markdown_summary("Bulk Version Bump", results)
-            print(summary)
+            logger.info(summary)
             git._export_report(summary, "version_bump_report.md")
 
     if args.maintain:
@@ -3196,7 +3140,7 @@ Examples:
 
             summary = git.generate_markdown_summary("Phased Maintenance Bump", results)
 
-            print(summary)
+            logger.info(summary)
             git._export_report(summary, "maintenance_report.md")
 
     if args.push:
@@ -3218,36 +3162,8 @@ Examples:
                 project_filter=args.project,
             )
             summary = git.generate_markdown_summary("Phased Push", push_results)
-            print(summary)
+            logger.info(summary)
             git._export_report(summary, "push_report.md")
-
-    # Graph Operations
-    if args.graph_status:
-        print(json.dumps(git.graph_status(), indent=2))
-    if args.graph_reset:
-        print(git.graph_reset())
-    if args.graph_update:
-        logger.info("Starting structural graph update phase...")
-        graph_report = git.ensure_graph()
-        if graph_report:
-            print(
-                f"\nHybrid Graph Execution Complete\nNodes Processed: {graph_report.get('nodes', 0)}\nEdges Processed: {graph_report.get('edges', 0)}\n"
-            )
-        else:
-            print("Graph update returned no results or is disabled.")
-    if args.graph_query:
-        import asyncio
-
-        query_res = asyncio.run(git.graph_query(args.graph_query, mode=args.graph_mode))
-        print(json.dumps(query_res, indent=2))
-    if args.graph_path:
-        path_res = git.graph_path(args.graph_path[0], args.graph_path[1])
-        print(json.dumps(path_res, indent=2))
-    if args.graph_impact:
-        import asyncio
-
-        impact_res = asyncio.run(git.graph_impact(args.graph_impact))
-        print(json.dumps(impact_res, indent=2))
 
 
 if __name__ == "__main__":

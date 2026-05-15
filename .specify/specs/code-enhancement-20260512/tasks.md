@@ -1,0 +1,79 @@
+# Tasks: Code Enhancement: repository-manager
+
+Generated: 2026-05-12T14:14:41.025586+00:00
+Skipped informational: 5
+
+- [ ] [P] **T001** [Dependency Audit] Minor update: pre-commit 4.5.1 (constraint — not installed) -> 4.6.0
+  - Priority: P3-Low | Effort: Small
+- [ ] [P] **T002** [Codebase Optimization] 3 functions exceed 200 lines (actionable refactoring targets): main (424L), vali
+  - Priority: P2-Medium | Effort: Large
+- [ ] [P] **T003** [Codebase Optimization] Monolithic: repository_manager.py (3257L) — 9 functions with high complexity (wo
+  - Priority: P1-High | Effort: Large
+- [ ] [P] **T004** [Codebase Optimization] Monolithic: models.py (767L) — 3 functions with high complexity (worst: Validati
+  - Priority: P1-High | Effort: Large
+- [ ] [P] **T005** [Codebase Optimization] Needs attention: mcp_server.py (511L) — Low cohesion: 11 distinct concepts in on
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T006** [Codebase Optimization] 17 functions with nesting depth >4
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T007** [Security Analysis] 30 HIGH severity vulnerabilities found
+  - Priority: P1-High | Effort: Medium
+- [ ] [P] **T008** [Test Coverage] 25 potential doc-test drift items
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T009** [Documentation & Governance] README.md missing sections: installation
+  - Priority: P2-Medium | Effort: Small
+- [ ] [P] **T010** [Documentation & Governance] README missing: MCP tools mapping table with descriptions
+  - Priority: P2-Medium | Effort: Small
+- [ ] [P] **T011** [Documentation & Governance] README missing: Has a Table of Contents
+  - Priority: P2-Medium | Effort: Small
+- [ ] [P] **T012** [Documentation & Governance] README missing: References /docs directory material
+  - Priority: P2-Medium | Effort: Small
+- [ ] [P] **T013** [Documentation & Governance] README missing: Has MCP tools mapping table with descriptions
+  - Priority: P2-Medium | Effort: Small
+- [ ] [P] **T014** [Documentation & Governance] 39 broken file references in documentation
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T015** [Architecture & Design Patterns] SRP: 15 modules exceed 500 lines (god modules)
+  - Priority: P2-Medium | Effort: Large
+- [ ] [P] **T016** [Architecture & Design Patterns] SRP: 5 classes have >15 methods
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T017** [Architecture & Design Patterns] No discernible layer architecture (no domain/service/adapter separation)
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T018** [Architecture & Design Patterns] Low dependency injection ratio: 7%
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T019** [Architecture & Design Patterns] 30 Python files at top level — consider package organization
+  - Priority: P2-Medium | Effort: Large
+- [ ] [P] **T020** [Concept Traceability] Low traceability ratio: 0% concepts fully traced
+  - Priority: P4-Enhancement | Effort: Medium
+- [ ] [P] **T021** [Concept Traceability] 45 test functions missing concept markers
+  - Priority: P4-Enhancement | Effort: Small
+- [ ] [P] **T022** [Concept Traceability] 95 significant functions (>10 lines) missing concept markers in docstrings
+  - Priority: P4-Enhancement | Effort: Small
+- [ ] [P] **T023** [Linting & Formatting] Total lint findings: 2 (high/error: 0, medium/warning: 2, low: 0)
+  - Priority: P4-Enhancement | Effort: Medium
+- [ ] [P] **T024** [Pre-Commit Compliance] 1 hook(s) may be outdated: ruff-pre-commit
+  - Priority: P2-Medium | Effort: Small
+- [ ] [P] **T025** [Test Execution] FAILED: tests/test_graph_phases.py::test_scan_and_parse_integration
+  - Priority: P4-Enhancement | Effort: Medium
+- [ ] [P] **T026** [Directory Organization] 4 rogue/throwaway scripts detected (fix_*, validate_*, patch_*, etc.): scripts/d
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T027** [Changelog Audit] CHANGELOG.md exists but could not be parsed — check format compliance
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T028** [Changelog Audit] No changelog entries within the last 30 days
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T029** [Changelog Audit] keepachangelog not installed — pip install 'universal-skills[code-enhancer]'
+  - Priority: P3-Low | Effort: Small
+- [ ] [P] **T030** [Pytest Quality] Test directory lacks subdirectory organization (consider unit/, integration/, e2
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T031** [Pytest Quality] Missing conftest.py for shared fixtures
+  - Priority: P3-Low | Effort: Small
+- [ ] [P] **T032** [Pytest Quality] No @pytest.mark.parametrize usage — consider data-driven tests
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T033** [Pytest Quality] No shared fixtures in conftest.py
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T034** [Pytest Quality] 2 tests have no assertions
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T035** [Environment Variables] Partial env var documentation: 51% coverage
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T036** [Environment Variables] Undocumented env vars: ENABLE_OTEL, EUNOMIA_REMOTE_URL, GRAPH_ROUTER_TIMEOUT, GR
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T037** [Environment Variables] 9 Python env vars not in .env.example: GIT_OPERATIONSTOOL, GRAPH_INTELLIGENCETOO
+  - Priority: P2-Medium | Effort: Medium

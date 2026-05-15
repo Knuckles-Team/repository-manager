@@ -69,21 +69,26 @@ subdirectories:
 maintenance:
   description: "Phased update sequence for the agent ecosystem."
   phases:
-    - name: "Phase 1: Core Tools and UIs"
+    - name: "Phase 1: GitHub Pipelines"
       phase: 1
+      projects:
+        - "pipelines"
+      wait_minutes: 6
+    - name: "Phase 2: Core Tools and UIs"
+      phase: 2
       projects:
         - "universal-skills"
         - "skill-graphs"
         - "agent-webui"
         - "agent-terminal-ui"
       wait_minutes: 12
-    - name: "Phase 2: agent-utilities"
-      phase: 2
+    - name: "Phase 3: agent-utilities"
+      phase: 3
       projects:
         - "agent-utilities"
-      wait_minutes: 3
-    - name: "Phase 3: Agents"
-      phase: 3
+      wait_minutes: 6
+    - name: "Phase 4: Agents"
+      phase: 4
       bulk_bump: True
       bulk_push: True
 

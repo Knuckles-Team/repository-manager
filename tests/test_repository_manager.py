@@ -59,8 +59,8 @@ def test_actual_workspace_config_parsing(real_workspace_data):
 
     phase3 = next((p for p in config.maintenance.phases if p.phase == 3), None)
     assert phase3 is not None
-    assert phase3.bulk_bump is True
-    assert phase3.bulk_push is True
+    assert phase3.bulk_bump is False
+    assert phase3.bulk_push is False
 
 
 def test_workspace_config_parsing(sample_workspace_yml):
@@ -73,7 +73,7 @@ def test_workspace_config_parsing(sample_workspace_yml):
 
     assert "agent-packages" in config.subdirectories
     assert config.maintenance is not None
-    assert config.maintenance.phases[0].name == "Phase 1: Core Tools and UIs"
+    assert config.maintenance.phases[0].name == "Phase 1: GitHub Pipelines"
 
 
 @patch("repository_manager.repository_manager.Git.git_action")

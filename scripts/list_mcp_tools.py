@@ -4,7 +4,7 @@ import os
 
 from mcp.client.stdio import stdio_client
 
-from mcp import ClientSession, StdioServerParameters # type: ignore[attr-defined]
+from mcp import ClientSession, StdioServerParameters  # type: ignore[attr-defined]
 
 
 async def list_tools():
