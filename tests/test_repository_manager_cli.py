@@ -21,43 +21,6 @@ def mock_sys_argv():
     return _mock_argv
 
 
-def test_cli_graph_status(mock_git, mock_sys_argv):
-    mock_git.graph_status.return_value = {"nodes": 0}
-    with mock_sys_argv(["--graph-status"]):
-        main()
-        mock_git.graph_status.assert_called_once()
-
-
-def test_cli_graph_reset(mock_git, mock_sys_argv):
-    mock_git.graph_reset.return_value = "Reset"
-    with mock_sys_argv(["--graph-reset"]):
-        main()
-        mock_git.graph_reset.assert_called_once()
-
-
-def test_cli_graph_query(mock_git, mock_sys_argv):
-    with mock_sys_argv(["--graph-query", "GitResult", "--graph-mode", "semantic"]):
-        with patch("asyncio.run") as mock_run:
-            mock_run.return_value = [{"id": "test"}]
-            main()
-            mock_run.assert_called_once()
-
-
-def test_cli_graph_impact(mock_git, mock_sys_argv):
-    with mock_sys_argv(["--graph-impact", "WorkspaceConfig"]):
-        with patch("asyncio.run") as mock_run:
-            mock_run.return_value = [{"id": "test"}]
-            main()
-            mock_run.assert_called_once()
-
-
-def test_cli_graph_path(mock_git, mock_sys_argv):
-    mock_git.graph_path.return_value = []
-    with mock_sys_argv(["--graph-path", "Source", "Target"]):
-        main()
-        mock_git.graph_path.assert_called_once_with("Source", "Target")
-
-
 def test_cli_maintain_calls_bumpversion(mock_git, mock_sys_argv):
     with mock_sys_argv(["--maintain", "--dry-run"]):
         main()

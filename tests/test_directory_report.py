@@ -431,6 +431,7 @@ class TestCategorySlugMap:
             "Agent Runtime & Web UI",
             "Pre-commit Standard Compliance",
             "Additional Operational Checks",
+            "Coverage Report",
         }
         assert expected == set(CATEGORY_SLUG_MAP.keys())
 
@@ -440,6 +441,201 @@ class TestCategorySlugMap:
             assert "\\" not in slug
             assert " " not in slug
             assert slug == slug.lower()
+
+
+# ---------------------------------------------------------------------------
+# Next Validation Command block tests
+# ---------------------------------------------------------------------------
+
+
+class TestNextCommandBlockIncrementalWriter:
+    """Tests for the self-generating next-command block in IncrementalReportWriter.finalize()."""
+
+    def test_finalize_generates_next_command_for_failures(self, tmp_path):
+        writer = IncrementalReportWriter(
+            output_dir=str(tmp_path), timestamp="2026-04-28 12:00:00"
+        )
+
+        # One success, one failure
+        writer.write_phase(
+            "Pre-commit Standard Compliance",
+            [
+                GitResult(
+                    status="success",
+                    data="OK",
+                    metadata=GitMetadata(
+                        command="pre-commit run",
+                        workspace="/workspace/agents/good-agent",
+                        return_code=0,
+                        timestamp="",
+                    ),
+                ),
+                GitResult(
+                    status="error",
+                    data="ruff failed",
+                    error=GitError(message="Pre-commit failed", code=1),
+                    metadata=GitMetadata(
+                        command="pre-commit run",
+                        workspace="/workspace/agents/bad-agent",
+                        return_code=1,
+                        timestamp="",
+                    ),
+                ),
+            ],
+        )
+
+        report_dir = writer.finalize()
+
+        with open(os.path.join(report_dir, "index.md")) as f:
+            content = f.read()
+
+        assert "## 🔄 Next Validation Command" in content
+        assert "bad-agent" in content
+        assert "rm_projects" in content
+        assert "validate" in content
+
+    def test_finalize_generates_full_sweep_when_targeted_and_clean(self, tmp_path):
+        writer = IncrementalReportWriter(
+            output_dir=str(tmp_path),
+            timestamp="2026-04-28 12:00:00",
+            validated_repositories=["my-agent"],
+        )
+
+        writer.write_phase(
+            "Pre-commit Standard Compliance",
+            [
+                GitResult(
+                    status="success",
+                    data="OK",
+                    metadata=GitMetadata(
+                        command="pre-commit run",
+                        workspace="/workspace/agents/my-agent",
+                        return_code=0,
+                        timestamp="",
+                    ),
+                ),
+            ],
+        )
+
+        report_dir = writer.finalize()
+
+        with open(os.path.join(report_dir, "index.md")) as f:
+            content = f.read()
+
+        assert "Targeted Validation Passed" in content
+        assert "Run Full Regression Sweep" in content
+        assert "Do NOT pass the `repositories` parameter" in content
+        # Should NOT have the "Next Validation Command" retry block
+        assert "🔄 Next Validation Command" not in content
+
+    def test_finalize_generates_all_clear_when_full_and_clean(self, tmp_path):
+        writer = IncrementalReportWriter(
+            output_dir=str(tmp_path),
+            timestamp="2026-04-28 12:00:00",
+            validated_repositories=None,  # Full run
+        )
+
+        writer.write_phase(
+            "Pre-commit Standard Compliance",
+            [
+                GitResult(
+                    status="success",
+                    data="OK",
+                    metadata=GitMetadata(
+                        command="pre-commit run",
+                        workspace="/workspace/agents/my-agent",
+                        return_code=0,
+                        timestamp="",
+                    ),
+                ),
+            ],
+        )
+
+        report_dir = writer.finalize()
+
+        with open(os.path.join(report_dir, "index.md")) as f:
+            content = f.read()
+
+        assert "All Repositories Passed" in content
+        assert "Validation Complete" in content
+        # Should NOT have retry or full-sweep blocks
+        assert "🔄 Next Validation Command" not in content
+        assert "Run Full Regression Sweep" not in content
+
+
+class TestNextCommandBlockDirectoryReport:
+    """Tests for the self-generating next-command block in ValidationReport.to_directory_report()."""
+
+    def test_directory_report_generates_next_command_for_failures(
+        self, sample_report, tmp_path
+    ):
+        report_dir = sample_report.to_directory_report(str(tmp_path))
+
+        with open(os.path.join(report_dir, "index.md")) as f:
+            content = f.read()
+
+        # sample_report has failures in gamma-agent and beta-agent
+        assert "🔄 Next Validation Command" in content
+        assert "rm_projects" in content
+
+    def test_directory_report_generates_full_sweep_when_targeted_and_clean(
+        self, tmp_path
+    ):
+        # Create a report with only successes
+        report = ValidationReport(
+            timestamp="2026-04-28 12:00:00",
+            total=1,
+            success_count=1,
+            failure_count=0,
+            skipped_count=0,
+            categories=[
+                ValidationCategory(
+                    name="Ecosystem Installation",
+                    total=1,
+                    success_count=1,
+                    successes=[
+                        ProjectResult(project="my-agent", message="Success")
+                    ],
+                ),
+            ],
+        )
+        report_dir = report.to_directory_report(
+            str(tmp_path), validated_repositories=["my-agent"]
+        )
+
+        with open(os.path.join(report_dir, "index.md")) as f:
+            content = f.read()
+
+        assert "Targeted Validation Passed" in content
+        assert "Run Full Regression Sweep" in content
+
+    def test_directory_report_generates_all_clear_when_full_and_clean(self, tmp_path):
+        report = ValidationReport(
+            timestamp="2026-04-28 12:00:00",
+            total=1,
+            success_count=1,
+            failure_count=0,
+            skipped_count=0,
+            categories=[
+                ValidationCategory(
+                    name="Ecosystem Installation",
+                    total=1,
+                    success_count=1,
+                    successes=[
+                        ProjectResult(project="my-agent", message="Success")
+                    ],
+                ),
+            ],
+        )
+        report_dir = report.to_directory_report(
+            str(tmp_path), validated_repositories=None
+        )
+
+        with open(os.path.join(report_dir, "index.md")) as f:
+            content = f.read()
+
+        assert "All Repositories Passed" in content
+        assert "Validation Complete" in content
 
 
 # ---------------------------------------------------------------------------

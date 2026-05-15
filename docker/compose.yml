@@ -3,13 +3,13 @@ services:
   repository-manager-agent:
     # image: docker.io/knucklessg1/repository-manager:latest
     build:
-      context: . # Debug
-      dockerfile: debug.Dockerfile
+      context: .. # Debug
+      dockerfile: docker/debug.Dockerfile
     container_name: repository-manager-agent
     hostname: repository-manager-agent
     command: [ "repository-manager-agent" ]
     volumes:
-      - ./mcp/workspace:/workspace:rw
+      - ../mcp/workspace:/workspace:rw
     working_dir: /workspace
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -20,7 +20,7 @@ services:
         max-file: "3"
     restart: always
     env_file:
-      - .env
+      - ../.env
     environment:
       - "PYTHONUNBUFFERED=1"
       - "HOST=0.0.0.0"

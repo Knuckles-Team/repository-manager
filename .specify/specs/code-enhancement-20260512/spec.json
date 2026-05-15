@@ -1,0 +1,257 @@
+{
+  "feature_id": "code-enhancement-20260512",
+  "title": "Code Enhancement: repository-manager",
+  "created": "2026-05-12T14:14:41.025586+00:00",
+  "overview": "Automated code enhancement review for repository-manager. Covers 17 analysis domains.",
+  "user_stories": [
+    {
+      "role": "developer",
+      "action": "address Project Analysis findings (grade: D, score: 69)",
+      "value": "improve project project analysis from D to at least B (80+)"
+    },
+    {
+      "role": "developer",
+      "action": "address Codebase Optimization findings (grade: F, score: 56)",
+      "value": "improve project codebase optimization from F to at least B (80+)"
+    },
+    {
+      "role": "developer",
+      "action": "address Security Analysis findings (grade: F, score: 0)",
+      "value": "improve project security analysis from F to at least B (80+)"
+    },
+    {
+      "role": "developer",
+      "action": "address Test Coverage findings (grade: C, score: 75)",
+      "value": "improve project test coverage from C to at least B (80+)"
+    },
+    {
+      "role": "developer",
+      "action": "address Documentation & Governance findings (grade: C, score: 77)",
+      "value": "improve project documentation & governance from C to at least B (80+)"
+    },
+    {
+      "role": "developer",
+      "action": "address Architecture & Design Patterns findings (grade: F, score: 55)",
+      "value": "improve project architecture & design patterns from F to at least B (80+)"
+    },
+    {
+      "role": "developer",
+      "action": "address Concept Traceability findings (grade: F, score: 30)",
+      "value": "improve project concept traceability from F to at least B (80+)"
+    },
+    {
+      "role": "developer",
+      "action": "address Changelog Audit findings (grade: C, score: 75)",
+      "value": "improve project changelog audit from C to at least B (80+)"
+    },
+    {
+      "role": "developer",
+      "action": "address Environment Variables findings (grade: C, score: 75)",
+      "value": "improve project environment variables from C to at least B (80+)"
+    }
+  ],
+  "functional_requirements": [
+    {
+      "id": "FR-001",
+      "description": "Minor update: pre-commit 4.5.1 (constraint \u2014 not installed) -> 4.6.0",
+      "testable": true
+    },
+    {
+      "id": "FR-002",
+      "description": "3 functions exceed 200 lines (actionable refactoring targets): main (424L), validate_projects (383L), _check_agent_runtime (233L)",
+      "testable": true
+    },
+    {
+      "id": "FR-003",
+      "description": "Monolithic: repository_manager.py (3257L) \u2014 9 functions with high complexity (worst: main at 424L, CC=55); God class: Git (53 methods) \u2014 consider mixins/composition",
+      "testable": true
+    },
+    {
+      "id": "FR-004",
+      "description": "Monolithic: models.py (767L) \u2014 3 functions with high complexity (worst: ValidationReport.to_directory_report at 168L, CC=18); Low cohesion: 20 distinct concepts in one file",
+      "testable": true
+    },
+    {
+      "id": "FR-005",
+      "description": "Needs attention: mcp_server.py (511L) \u2014 Low cohesion: 11 distinct concepts in one file",
+      "testable": true
+    },
+    {
+      "id": "FR-006",
+      "description": "17 functions with nesting depth >4",
+      "testable": true
+    },
+    {
+      "id": "FR-007",
+      "description": "30 HIGH severity vulnerabilities found",
+      "testable": true
+    },
+    {
+      "id": "FR-008",
+      "description": "25 potential doc-test drift items",
+      "testable": true
+    },
+    {
+      "id": "FR-009",
+      "description": "README.md missing sections: installation",
+      "testable": true
+    },
+    {
+      "id": "FR-010",
+      "description": "README missing: MCP tools mapping table with descriptions",
+      "testable": true
+    },
+    {
+      "id": "FR-011",
+      "description": "README missing: Has a Table of Contents",
+      "testable": true
+    },
+    {
+      "id": "FR-012",
+      "description": "README missing: References /docs directory material",
+      "testable": true
+    },
+    {
+      "id": "FR-013",
+      "description": "README missing: Has MCP tools mapping table with descriptions",
+      "testable": true
+    },
+    {
+      "id": "FR-014",
+      "description": "39 broken file references in documentation",
+      "testable": true
+    },
+    {
+      "id": "FR-015",
+      "description": "SRP: 15 modules exceed 500 lines (god modules)",
+      "testable": true
+    },
+    {
+      "id": "FR-016",
+      "description": "SRP: 5 classes have >15 methods",
+      "testable": true
+    },
+    {
+      "id": "FR-017",
+      "description": "No discernible layer architecture (no domain/service/adapter separation)",
+      "testable": true
+    },
+    {
+      "id": "FR-018",
+      "description": "Low dependency injection ratio: 7%",
+      "testable": true
+    },
+    {
+      "id": "FR-019",
+      "description": "30 Python files at top level \u2014 consider package organization",
+      "testable": true
+    },
+    {
+      "id": "FR-020",
+      "description": "Low traceability ratio: 0% concepts fully traced",
+      "testable": true
+    },
+    {
+      "id": "FR-021",
+      "description": "45 test functions missing concept markers",
+      "testable": true
+    },
+    {
+      "id": "FR-022",
+      "description": "95 significant functions (>10 lines) missing concept markers in docstrings",
+      "testable": true
+    },
+    {
+      "id": "FR-023",
+      "description": "Total lint findings: 2 (high/error: 0, medium/warning: 2, low: 0)",
+      "testable": true
+    },
+    {
+      "id": "FR-024",
+      "description": "1 hook(s) may be outdated: ruff-pre-commit",
+      "testable": true
+    },
+    {
+      "id": "FR-025",
+      "description": "FAILED: tests/test_graph_phases.py::test_scan_and_parse_integration",
+      "testable": true
+    },
+    {
+      "id": "FR-026",
+      "description": "4 rogue/throwaway scripts detected (fix_*, validate_*, patch_*, etc.): scripts/debug_map.py, scripts/validate_agent.py, scripts/validate_ecosystem.py, scripts/validate_a2a_agent.py",
+      "testable": true
+    },
+    {
+      "id": "FR-027",
+      "description": "CHANGELOG.md exists but could not be parsed \u2014 check format compliance",
+      "testable": true
+    },
+    {
+      "id": "FR-028",
+      "description": "No changelog entries within the last 30 days",
+      "testable": true
+    },
+    {
+      "id": "FR-029",
+      "description": "keepachangelog not installed \u2014 pip install 'universal-skills[code-enhancer]'",
+      "testable": true
+    },
+    {
+      "id": "FR-030",
+      "description": "Test directory lacks subdirectory organization (consider unit/, integration/, e2e/)",
+      "testable": true
+    },
+    {
+      "id": "FR-031",
+      "description": "Missing conftest.py for shared fixtures",
+      "testable": true
+    },
+    {
+      "id": "FR-032",
+      "description": "No @pytest.mark.parametrize usage \u2014 consider data-driven tests",
+      "testable": true
+    },
+    {
+      "id": "FR-033",
+      "description": "No shared fixtures in conftest.py",
+      "testable": true
+    },
+    {
+      "id": "FR-034",
+      "description": "2 tests have no assertions",
+      "testable": true
+    },
+    {
+      "id": "FR-035",
+      "description": "Partial env var documentation: 51% coverage",
+      "testable": true
+    },
+    {
+      "id": "FR-036",
+      "description": "Undocumented env vars: ENABLE_OTEL, EUNOMIA_REMOTE_URL, GRAPH_ROUTER_TIMEOUT, GRAPH_VERIFIER_TIMEOUT, LLM_AGENT_MODEL, LLM_ROUTER_MODEL, OAUTH_BASE_URL, OAUTH_UPSTREAM_AUTH_ENDPOINT, OAUTH_UPSTREAM_CLIENT_ID, OAUTH_UPSTREAM_CLIENT_SECRET",
+      "testable": true
+    },
+    {
+      "id": "FR-037",
+      "description": "9 Python env vars not in .env.example: GIT_OPERATIONSTOOL, GRAPH_INTELLIGENCETOOL, MCP_URL, MISCTOOL, REPOSITORY_MANAGER_DEFAULT_BRANCH",
+      "testable": true
+    }
+  ],
+  "success_criteria": [
+    {
+      "metric": "Overall GPA",
+      "current": 2.29,
+      "target": 3.0
+    },
+    {
+      "metric": "Domains at B or above",
+      "current": 8,
+      "target": 17
+    },
+    {
+      "metric": "Actionable findings",
+      "current": 37,
+      "target": 0
+    }
+  ]
+}

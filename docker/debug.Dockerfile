@@ -47,24 +47,28 @@ ENV HOST=${HOST} \
     EUNOMIA_POLICY_FILE=${EUNOMIA_POLICY_FILE} \
     EUNOMIA_REMOTE_URL=${EUNOMIA_REMOTE_URL} \
     PYTHONUNBUFFERED=1 \
-    DENO_INSTALL="/root/.deno" \
-    PATH="/root/.local/bin:/usr/local/bin:$DENO_INSTALL/bin:${PATH}" \
+    DENO_INSTALL="/root/.deno"
+
+ENV PATH="/root/.local/bin:/usr/local/bin:$DENO_INSTALL/bin:${PATH}" \
     UV_HTTP_TIMEOUT=3600 \
     UV_SYSTEM_PYTHON=1 \
     UV_COMPILE_BYTECODE=1 \
     REPOSITORY_MANAGER_WORKSPACE=${REPOSITORY_MANAGER_WORKSPACE:-/workspace}
 
+
+WORKDIR /development
+COPY . /development
 RUN apt-get update \
-     && apt-get install -y default-jre ripgrep tree fd-find git curl nano ca-certificates \
-     && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
-     && curl -LsSf https://astral.sh/uv/install.sh | sh \
-     && curl -sS https://starship.rs/install.sh | sh -s -- --yes \
+    && apt-get install -y default-jre ripgrep tree fd-find git curl nano ca-certificates \
+    && mkdir -p ${REPOSITORY_MANAGER_WORKSPACE} \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && curl -sS https://starship.rs/install.sh | sh -s -- --yes \
     && mkdir -p /root/.config \
-    && echo 'eval "$(starship init bash)"' >> /root/.bashrc \ \
-    uv pip install --system --upgrade --verbose --no-cache --break-system-packages --prerelease=allow repository-manager[all]>=1.14.0 mem0-mcp-server
+    && echo 'eval "$(starship init bash)"' >> /root/.bashrc \
+    && uv pip install --system --upgrade --verbose --no-cache --break-system-packages --prerelease=allow .[all] mem0-mcp-server
 
 WORKDIR /workspace
 
-COPY starship.toml /root/.config/starship.toml
+COPY docker/starship.toml /root/.config/starship.toml
 
 CMD ["repository-manager-mcp"]

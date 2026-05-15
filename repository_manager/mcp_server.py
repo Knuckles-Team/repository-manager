@@ -17,13 +17,15 @@ warnings.filterwarnings("ignore", message=".*urllib3.*or charset_normalizer.*")
 
 import os
 import sys
+import threading
+import uuid
+from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any
 
 from agent_utilities.base_utilities import to_boolean, to_integer
 from agent_utilities.mcp_utilities import (
     create_mcp_server,
-    ctx_confirm_destructive,
-    ctx_progress,
 )
 from dotenv import find_dotenv, load_dotenv
 from fastmcp import Context, FastMCP
@@ -48,6 +50,123 @@ DEFAULT_WORKSPACE_YML = os.environ.get("WORKSPACE_YML", "workspace.yml")
 
 logger = get_logger("RepositoryManagerServer")
 
+# ---------------------------------------------------------------------------
+# Unified Background Job Queue
+# ---------------------------------------------------------------------------
+
+_jobs: dict[str, dict[str, Any]] = {}
+_jobs_lock = threading.Lock()
+
+
+def _submit_job(
+    action: str,
+    func: Callable,
+    *args: Any,
+    _extra_job_data: dict | None = None,
+    **kwargs: Any,
+) -> dict[str, str]:
+    """Submit a function to run in the background.
+
+    Returns a dict with ``status``, ``job_id``, and a human-readable
+    ``message`` explaining how to poll for results.
+    """
+    job_id = str(uuid.uuid4())[:8]
+    now = datetime.now(timezone.utc).isoformat() + "Z"
+
+    job_entry: dict[str, Any] = {
+        "status": "running",
+        "action": action,
+        "started_at": now,
+        "completed_at": None,
+        "result": None,
+        "error": None,
+    }
+    if _extra_job_data:
+        job_entry.update(_extra_job_data)
+
+    with _jobs_lock:
+        _jobs[job_id] = job_entry
+
+    def _run() -> None:
+        try:
+            result = func(*args, **kwargs)
+            with _jobs_lock:
+                _jobs[job_id]["status"] = "completed"
+                _jobs[job_id]["result"] = result
+                _jobs[job_id]["completed_at"] = (
+                    datetime.now(timezone.utc).isoformat() + "Z"
+                )
+        except Exception as e:
+            with _jobs_lock:
+                _jobs[job_id]["status"] = "failed"
+                _jobs[job_id]["error"] = str(e)
+                _jobs[job_id]["completed_at"] = (
+                    datetime.now(timezone.utc).isoformat() + "Z"
+                )
+
+    thread = threading.Thread(target=_run, daemon=True, name=f"{action}-{job_id}")
+    thread.start()
+
+    return {
+        "status": "submitted",
+        "job_id": job_id,
+        "message": (
+            f"Job '{job_id}' ({action}) submitted. "
+            f"Poll with the corresponding tool's status action using job_id='{job_id}'."
+        ),
+    }
+
+
+def _get_job_status(job_id: str | None = None) -> dict[str, Any]:
+    """Get the status of a specific job, or list all jobs."""
+    if not job_id:
+        with _jobs_lock:
+            if not _jobs:
+                return {"status": "empty", "message": "No background jobs found."}
+            return {
+                "jobs": {
+                    jid: {
+                        "status": j["status"],
+                        "action": j["action"],
+                        "started_at": j["started_at"],
+                        "completed_at": j["completed_at"],
+                    }
+                    for jid, j in _jobs.items()
+                }
+            }
+
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return {"status": "error", "message": f"Job '{job_id}' not found."}
+
+        response: dict[str, Any] = {
+            "job_id": job_id,
+            "status": job["status"],
+            "action": job["action"],
+            "started_at": job["started_at"],
+            "completed_at": job["completed_at"],
+        }
+
+        # Include live progress details if available
+        if "progress_detail" in job:
+            pd = job["progress_detail"]
+            response["current_phase"] = pd.get("current_phase", "")
+            response["progress"] = pd.get("progress", 0)
+            response["phases"] = pd.get("phases", {})
+
+        if job["status"] == "completed" and job["result"] is not None:
+            response["result"] = job["result"]
+        elif job["status"] == "failed":
+            response["error"] = job["error"]
+
+        return response
+
+
+# ---------------------------------------------------------------------------
+# Git instance factory
+# ---------------------------------------------------------------------------
+
 
 def get_git_instance(path: str | None = None, threads: int | None = None) -> Git:
     """Helper to get a Git instance with workpace YAML loaded."""
@@ -71,383 +190,269 @@ def get_git_instance(path: str | None = None, threads: int | None = None) -> Git
     return git
 
 
+# ---------------------------------------------------------------------------
+# MCP Tool Registration
+# ---------------------------------------------------------------------------
+
+
 def register_misc_tools(mcp: FastMCP):
     """Register miscellaneous tools like health check."""
 
-    async def health_check(_request: Request) -> JSONResponse:
+    async def health_check(request: Request) -> JSONResponse:
         return JSONResponse({"status": "OK"})
 
 
 def register_git_operations_tools(mcp: FastMCP):
-    @mcp.tool(tags={"workspace_management", "project_manager", "devops_engineer"})
-    async def git_action(
-        command: str = Field(
-            description="The Git command to execute (e.g., 'git status')"
-        ),
-        path: str | None = Field(description="Path to execute in.", default=None),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> GitResult:
-        """Executes an arbitrary Git command."""
-        git = get_git_instance(path=path)
-        return git.git_action(command=command, path=path)
-
     @mcp.tool(
         tags={
-            "devops_engineer",
             "workspace_management",
-            "project_management",
+            "project_manager",
+            "devops_engineer",
             "git_operations",
         }
     )
-    async def get_workspace_projects(
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
+    async def rm_git(
+        action: str = Field(
+            description="Action: 'raw', 'clone', 'pull', 'push', 'phased_push'"
         ),
-    ) -> list[str]:
-        """Returns a list of project URLs defined in the workspace."""
-        git = get_git_instance()
-        return git.get_workspace_projects()
-
-    @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
-    async def clone_projects(
-        threads: int | None = Field(description="Parallel workers.", default=None),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
+        command: str | None = Field(
+            description="The Git command to execute for 'raw' action (e.g., 'git status')",
+            default=None,
         ),
-    ) -> str:
-        """Clones repositories. Defaults to all in workspace.yml."""
-        git = get_git_instance(threads=threads)
-        results = git.clone_projects()
-        return git.generate_markdown_summary("Clone", results)
-
-    @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
-    async def pull_projects(
-        threads: int | None = Field(description="Parallel workers.", default=None),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
+        path: str | None = Field(description="Path to execute in.", default=None),
+        threads: int | None = Field(
+            description="Parallel workers for bulk operations.", default=None
         ),
-    ) -> str:
-        await ctx_progress(ctx, 0, 100)
-        """Pulls updates for all projects in the workspace."""
-        git = get_git_instance(threads=threads)
-        results = git.pull_projects()
-        await ctx_progress(ctx, 100, 100)
-        return git.generate_markdown_summary("Pull", results)
-
-    @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
-    async def push_projects(
-        threads: int | None = Field(description="Parallel workers.", default=None),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> str:
-        await ctx_progress(ctx, 0, 100)
-        """Pushes updates and tags for all projects in the workspace."""
-        git = get_git_instance(threads=threads)
-        results = git.push_projects()
-        await ctx_progress(ctx, 100, 100)
-        return git.generate_markdown_summary("Push", results)
-
-    @mcp.tool(tags={"git_operations", "project_manager", "devops_engineer"})
-    async def phased_git_push(
         phase: int | None = Field(
-            description="The starting phase. Default is 1.", default=1
+            description="Starting phase number for 'phased_push'. Default 1.", default=1
         ),
         target_project: str | None = Field(
-            description="Optional specific project to push.", default=None
+            description="Optional specific project to push for 'phased_push'.",
+            default=None,
         ),
-        ctx: Context = Field(
+        ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
         ),
-    ) -> str:
-        await ctx_progress(ctx, 0, 100)
-        """Executes a phased git push workflow based on workspace.yml."""
-        git = get_git_instance()
-        results = git.phased_push(start_phase=phase or 1, project_filter=target_project)
-        await ctx_progress(ctx, 100, 100)
-        return git.generate_markdown_summary("Phased Push", results)
+    ) -> GitResult | str | dict:
+        """Bulk Git operations and arbitrary command execution."""
+        from repository_manager.models import GitError
+
+        git = get_git_instance(path=path, threads=threads)
+
+        if action == "raw":
+            if not command:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message="command is required for 'raw' action", code=1
+                    ),
+                )
+            return git.git_action(command=command, path=path)
+
+        if action == "clone":
+            return _submit_job("clone", git.clone_projects)
+
+        if action == "pull":
+            return _submit_job("pull", git.pull_projects)
+
+        if action == "push":
+            return _submit_job("push", git.push_projects)
+
+        if action == "phased_push":
+            return _submit_job(
+                "phased_push",
+                git.phased_push,
+                start_phase=phase or 1,
+                project_filter=target_project,
+            )
+
+        return f"Error: Unknown action '{action}'"
 
 
 def register_workspace_management_tools(mcp: FastMCP):
     """Register tools for core workspace setup and organization."""
 
     @mcp.tool(tags={"workspace_management"})
-    async def setup_workspace(
-        yml_path: str = Field(description="Path to the workspace.yml file."),
-        ctx: Context = Field(
+    async def rm_workspace(
+        action: str = Field(
+            description="Action: 'list', 'setup', 'template', 'save', 'maintain'"
+        ),
+        yml_path: str | None = Field(
+            description="Path to workspace.yml (for 'setup', 'template', 'save').",
+            default=None,
+        ),
+        config_dict: dict[str, Any] | None = Field(
+            description="Dictionary representation of WorkspaceConfig (for 'save').",
+            default=None,
+        ),
+        part: str = Field(
+            description="Version part to bump for 'maintain' (major, minor, patch).",
+            default="patch",
+        ),
+        phase: int = Field(
+            description="Starting phase number for 'maintain'.", default=1
+        ),
+        dry_run: bool = Field(
+            description="Perform a dry run for 'maintain'.", default=False
+        ),
+        use_default: bool = Field(
+            description="Use the pre-filled package template for 'template'.",
+            default=True,
+        ),
+        ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
         ),
-    ) -> GitResult:
-        """Sets up the entire workspace, clones repos, and organizes subdirectories."""
+    ) -> list[str] | str | GitResult | dict:
+        """Core workspace organization, configuration, and maintenance."""
+        from repository_manager.models import GitError
+
         git = get_git_instance()
-        return git.setup_from_yaml(yml_path)
+
+        if action == "list":
+            return git.get_workspace_projects()
+
+        if action == "setup":
+            if not yml_path:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message="yml_path required for 'setup'", code=1),
+                )
+            return git.setup_from_yaml(yml_path)
+
+        if action == "template":
+            if not yml_path:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message="yml_path required for 'template'", code=1),
+                )
+            return git.generate_workspace_template(
+                target_path=yml_path, use_default=use_default
+            )
+
+        if action == "save":
+            if not yml_path or not config_dict:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message="yml_path and config_dict required for 'save'", code=1
+                    ),
+                )
+            try:
+                config = WorkspaceConfig(**config_dict)
+                return git.save_workspace_config(yaml_path=yml_path, config=config)
+            except Exception as e:
+                return GitResult(
+                    status="error", data="", error=GitError(message=str(e), code=1)
+                )
+
+        if action == "maintain":
+            return _submit_job(
+                "maintain",
+                git.maintain_projects,
+                part=part,
+                start_phase=phase,
+                dry_run=dry_run,
+            )
+
+        return f"Error: Unknown action '{action}'"
 
 
 def register_project_management_tools(mcp: FastMCP):
     """Register tools for the autonomous project harness."""
 
-    @mcp.tool(tags={"workspace_management"})
-    async def install_projects(
-        threads: int | None = Field(description="Parallel workers.", default=None),
-        extra: str = Field(description="Install group (e.g. 'all').", default="all"),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
+    @mcp.tool(tags={"workspace_management", "project_manager"})
+    async def rm_projects(
+        action: str = Field(
+            description="Action: 'install', 'build', 'validate', 'validate_status'"
         ),
-    ) -> str:
-        """Bulk installs Python projects defined in the workspace."""
-        git = get_git_instance(threads=threads)
-        results = git.install_projects(extra=extra)
-        return git.generate_markdown_summary("Installation", results)
-
-    @mcp.tool(tags={"workspace_management"})
-    async def build_projects(
         threads: int | None = Field(description="Parallel workers.", default=None),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
+        extra: str = Field(
+            description="Install group (e.g. 'all') for 'install'.", default="all"
         ),
-    ) -> str:
-        """Bulk builds Python projects defined in the workspace."""
-        git = get_git_instance(threads=threads)
-        results = git.build_projects()
-        return git.generate_markdown_summary("Build", results)
-
-    @mcp.tool(tags={"workspace_management"})
-    async def validate_projects(
         type: str = Field(
-            description="Validation type: 'agent', 'mcp', or 'all'.", default="all"
+            description="Validation type: 'agent', 'mcp', or 'all' for 'validate'.",
+            default="all",
         ),
-        threads: int | None = Field(description="Parallel workers.", default=None),
         output_dir: str | None = Field(
-            description="Directory to write the validation-reports-<timestamp>/ output. Defaults to the workspace root.",
+            description="Directory to write the validation-reports for 'validate'.",
             default=None,
         ),
-        ctx: Context = Field(
+        generate_report: bool = Field(
+            description="Generate validation report directory for 'validate'. Default True.",
+            default=True,
+        ),
+        repositories: str | None = Field(
+            description="Comma-separated list of specific repositories to target.",
+            default=None,
+        ),
+        coverage: bool = Field(
+            description="Collect pytest coverage data. Default False (opt-in for speed).",
+            default=False,
+        ),
+        job_id: str | None = Field(
+            description="Job ID to check status for 'validate_status' action.",
+            default=None,
+        ),
+        ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
         ),
-    ) -> ValidationReport:
-        """Bulk validates agent/MCP servers in the workspace.
+    ) -> str | ValidationReport | dict:
+        """Bulk install, build, and validate Python projects.
 
-        Results are written incrementally to a structured directory:
-        ``validation-reports-<timestamp>/<repo-name>-results/<scan-type>.md``
+        The 'validate' action submits validation as a background job and returns
+        a job_id immediately.  Use 'validate_status' with that job_id to poll
+        progress and retrieve results once complete.
         """
         git = get_git_instance(threads=threads)
-        report = git.validate_projects(type=type, output_dir=output_dir)
-        return report
 
-    @mcp.tool(tags={"workspace_management"})
-    async def generate_workspace_template(
-        target_path: str = Field(description="Path where to save the template."),
-        use_default: bool = Field(
-            description="Use the pre-filled package template.", default=True
-        ),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> GitResult:
-        """Generates a new workspace.yml template."""
-        git = get_git_instance()
-        return git.generate_workspace_template(
-            target_path=target_path, use_default=use_default
-        )
+        if repositories:
+            repo_list = repositories.replace(" ", "").split(",")
+            names_to_keep = set(repo_list)
+            if git.project_map:
+                filtered = {}
+                for url, path in git.project_map.items():
+                    name = url.split("/")[-1].replace(".git", "")
+                    if name in names_to_keep:
+                        filtered[url] = path
+                git.project_map = filtered
 
-    @mcp.tool(tags={"workspace_management"})
-    async def save_workspace_config(
-        yaml_path: str = Field(description="Target YAML path."),
-        config_dict: dict[str, Any] = Field(
-            description="Dictionary representation of WorkspaceConfig."
-        ),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> GitResult:
-        """Saves a WorkspaceConfig to YAML."""
-        try:
-            config = WorkspaceConfig(**config_dict)
-            git = get_git_instance()
-            return git.save_workspace_config(yaml_path=yaml_path, config=config)
-        except Exception as e:
-            from repository_manager.models import GitError
+        if action == "install":
+            return _submit_job("install", git.install_projects, extra=extra)
 
-            return GitResult(
-                status="error", data="", error=GitError(message=str(e), code=1)
+        if action == "build":
+            return _submit_job("build", git.build_projects)
+
+        if action == "validate":
+            repo_list_for_writer = (
+                repositories.replace(" ", "").split(",") if repositories else None
+            )
+            # Shared progress dict — updated by validate_projects(), read by status poller
+            progress = {"current_phase": "Initializing", "progress": 0, "phases": {}}
+            return _submit_job(
+                "validate",
+                git.validate_projects,
+                type=type,
+                output_dir=output_dir,
+                generate_report=generate_report,
+                validated_repositories=repo_list_for_writer,
+                coverage=coverage,
+                progress=progress,
+                _extra_job_data={"progress_detail": progress},
             )
 
-    @mcp.tool(tags={"workspace_management"})
-    async def maintain_workspace(
-        part: str = Field(
-            description="Version part to bump (major, minor, patch).", default="patch"
-        ),
-        phase: int = Field(description="Starting phase number.", default=1),
-        dry_run: bool = Field(description="Perform a dry run.", default=False),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> str:
-        """Runs the maintenance lifecycle across all projects in the workspace."""
-        git = get_git_instance()
-        results = git.maintain_projects(part=part, start_phase=phase, dry_run=dry_run)
-        return git.generate_markdown_summary("Maintenance", results)
+        if action == "validate_status":
+            return _get_job_status(job_id)
 
-    @mcp.tool(tags={"workspace_management", "git_operations"})
-    async def push_projects_phased(
-        phase: int = Field(description="Starting phase number.", default=1),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> str:
-        """Executes the phased git push workflow across all projects in the workspace."""
-        git = get_git_instance()
-        results = git.phased_push(start_phase=phase)
-        return git.generate_markdown_summary("Phased Push", results)
+        return f"Error: Unknown action '{action}'"
 
 
-def register_visualization_tools(mcp: FastMCP):
-    @mcp.tool(tags={"visualization"})
-    async def get_workspace_tree(
-        yml_path: str | None = Field(
-            description="Path to workspace.yml.", default=None
-        ),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> str:
-        """Generates an ASCII tree of the workspace structure."""
-        git = get_git_instance()
-        path = yml_path or os.path.join(git.path, DEFAULT_WORKSPACE_YML)
-        return git.generate_workspace_tree(path)
-
-    @mcp.tool(tags={"visualization"})
-    async def get_workspace_mermaid(
-        yml_path: str | None = Field(
-            description="Path to workspace.yml.", default=None
-        ),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> str:
-        """Generates a Mermaid diagram of the workspace structure."""
-        git = get_git_instance()
-        path = yml_path or os.path.join(git.path, DEFAULT_WORKSPACE_YML)
-        return git.generate_workspace_mermaid(path)
-
-    @mcp.tool(tags={"visualization"})
-    async def generate_agents_documentation(
-        target_path: str | None = Field(
-            description="Target path for AGENTS.md.", default=None
-        ),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> GitResult:
-        """Generates an AGENTS.md catalog of discovered projects."""
-        git = get_git_instance()
-        return git.generate_agents_md(target_path=target_path)
-
-
-def register_graph_tools(mcp: FastMCP):
-    @mcp.tool(tags={"graph_intelligence"})
-    async def graph_build(
-        path: str | None = Field(description="Workspace path.", default=None),
-        multimodal: bool = Field(
-            description="Enable LLM multimodal rationale pass.", default=False
-        ),
-        incremental: bool = Field(description="Use incremental parsing.", default=True),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> dict[str, Any]:
-        """Builds or synchronizes the Hybrid Workspace Graph (NetworkX + Ladybug)."""
-        git = get_git_instance(path=path)
-        if hasattr(git, "config") and git.config:
-            if not git.config.graph:
-                from repository_manager.models import GraphConfig
-
-                git.config.graph = GraphConfig(
-                    enabled=True, multimodal=multimodal, incremental=incremental
-                )
-            else:
-                git.config.graph.multimodal = multimodal
-                git.config.graph.incremental = incremental
-
-        report = git.ensure_graph()
-        if not report:
-            return {
-                "status": "error",
-                "message": "Graph configuration disabled or failed.",
-            }
-
-        return report.model_dump()
-
-    @mcp.tool(tags={"graph_intelligence"})
-    async def graph_query(
-        query: str = Field(
-            description="Cypher query or semantic string to search the graph."
-        ),
-        mode: str = Field(
-            description="Query mode: 'semantic' (vector), 'structural' (Cypher), or 'hybrid'.",
-            default="hybrid",
-        ),
-        path: str | None = Field(description="Workspace path.", default=None),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> list[dict[str, Any]]:
-        """Queries the Hybrid Graph using vector similarity or Cypher structure."""
-        git = get_git_instance(path=path)
-        return await git.graph_query(query, mode=mode, path=path)
-
-    @mcp.tool(tags={"graph_intelligence"})
-    async def graph_path(
-        source_id: str = Field(description="Source node ID (Symbol or File)."),
-        target_id: str = Field(description="Target node ID."),
-        path: str | None = Field(description="Workspace path.", default=None),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> list[str]:
-        """Finds the shortest path between two symbols across the workspace graph."""
-        git = get_git_instance(path=path)
-        return git.graph_path(source_id, target_id, path=path)
-
-    @mcp.tool(tags={"graph_intelligence"})
-    async def graph_status(
-        path: str | None = Field(description="Workspace path.", default=None),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> dict[str, Any]:
-        """Returns the current status of the workspace graph."""
-        git = get_git_instance(path=path)
-        return git.graph_status(path=path)
-
-    @mcp.tool(tags={"graph_intelligence"})
-    async def graph_reset(
-        path: str | None = Field(description="Workspace path.", default=None),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> str:
-        """Purges the graph database and forces a clean rebuild."""
-        if not await ctx_confirm_destructive(ctx, "graph reset"):
-            return "Operation cancelled by user"
-        await ctx_progress(ctx, 0, 100)
-        git = get_git_instance(path=path)
-        return git.graph_reset(path=path)
-
-    @mcp.tool(tags={"graph_intelligence"})
-    async def graph_impact(
-        symbol: str = Field(description="The code symbol to find impact for."),
-        group_name: str | None = Field(description="Group filter.", default=None),
-        path: str | None = Field(description="Workspace path.", default=None),
-        ctx: Context = Field(
-            description="MCP context for progress reporting", default=None
-        ),
-    ) -> list[dict[str, Any]]:
-        """Calculates multi-repo impact for a symbol using the GraphEngine."""
-        git = get_git_instance(path=path)
-        return await git.graph_impact(symbol, group_name=group_name, path=path)
+# ---------------------------------------------------------------------------
+# Server bootstrap
+# ---------------------------------------------------------------------------
 
 
 def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
@@ -473,14 +478,6 @@ def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
         register_workspace_management_tools(mcp)
         register_project_management_tools(mcp)
         registered_tags.append("workspace_management")
-
-    if to_boolean(os.getenv("GRAPH_INTELLIGENCETOOL", "True")):
-        register_graph_tools(mcp)
-        registered_tags.append("graph_intelligence")
-
-    if to_boolean(os.getenv("VISUALIZATIONTOOL", "True")):
-        register_visualization_tools(mcp)
-        registered_tags.append("visualization")
 
     for mw in middlewares:
         mcp.add_middleware(mw)
