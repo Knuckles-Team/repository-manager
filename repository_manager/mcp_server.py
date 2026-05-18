@@ -171,7 +171,7 @@ def _get_job_status(job_id: str | None = None) -> dict[str, Any]:
 def get_git_instance(path: str | None = None, threads: int | None = None) -> Git:
     """Helper to get a Git instance with workpace YAML loaded."""
     workspace_path = path or DEFAULT_WORKSPACE
-    git = Git(path=workspace_path, threads=threads or DEFAULT_THREADS)
+    git = Git(path=workspace_path, threads=threads)
 
     yml_path = os.path.join(workspace_path, DEFAULT_WORKSPACE_YML)
     if not os.path.exists(yml_path):
@@ -216,19 +216,19 @@ def register_git_operations_tools(mcp: FastMCP):
             description="Action: 'raw', 'clone', 'pull', 'push', 'phased_push'"
         ),
         command: str | None = Field(
-            description="The Git command to execute for 'raw' action (e.g., 'git status')",
             default=None,
+            description="The Git command to execute for 'raw' action (e.g., 'git status')",
         ),
-        path: str | None = Field(description="Path to execute in.", default=None),
+        path: str | None = Field(default=None, description="Path to execute in."),
         threads: int | None = Field(
-            description="Parallel workers for bulk operations.", default=None
+            default=None, description="Parallel workers for bulk operations."
         ),
         phase: int | None = Field(
-            description="Starting phase number for 'phased_push'. Default 1.", default=1
+            default=1, description="Starting phase number for 'phased_push'. Default 1."
         ),
         target_project: str | None = Field(
-            description="Optional specific project to push for 'phased_push'.",
             default=None,
+            description="Optional specific project to push for 'phased_push'.",
         ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
@@ -279,26 +279,26 @@ def register_workspace_management_tools(mcp: FastMCP):
             description="Action: 'list', 'setup', 'template', 'save', 'maintain'"
         ),
         yml_path: str | None = Field(
-            description="Path to workspace.yml (for 'setup', 'template', 'save').",
             default=None,
+            description="Path to workspace.yml (for 'setup', 'template', 'save').",
         ),
         config_dict: dict[str, Any] | None = Field(
-            description="Dictionary representation of WorkspaceConfig (for 'save').",
             default=None,
+            description="Dictionary representation of WorkspaceConfig (for 'save').",
         ),
         part: str = Field(
-            description="Version part to bump for 'maintain' (major, minor, patch).",
             default="patch",
+            description="Version part to bump for 'maintain' (major, minor, patch).",
         ),
         phase: int = Field(
-            description="Starting phase number for 'maintain'.", default=1
+            default=1, description="Starting phase number for 'maintain'."
         ),
         dry_run: bool = Field(
-            description="Perform a dry run for 'maintain'.", default=False
+            default=False, description="Perform a dry run for 'maintain'."
         ),
         use_default: bool = Field(
-            description="Use the pre-filled package template for 'template'.",
             default=True,
+            description="Use the pre-filled package template for 'template'.",
         ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
@@ -369,33 +369,33 @@ def register_project_management_tools(mcp: FastMCP):
         action: str = Field(
             description="Action: 'install', 'build', 'validate', 'validate_status'"
         ),
-        threads: int | None = Field(description="Parallel workers.", default=None),
+        threads: int | None = Field(default=None, description="Parallel workers."),
         extra: str = Field(
-            description="Install group (e.g. 'all') for 'install'.", default="all"
+            default="all", description="Install group (e.g. 'all') for 'install'."
         ),
         type: str = Field(
-            description="Validation type: 'agent', 'mcp', or 'all' for 'validate'.",
             default="all",
+            description="Validation type: 'agent', 'mcp', or 'all' for 'validate'.",
         ),
         output_dir: str | None = Field(
-            description="Directory to write the validation-reports for 'validate'.",
             default=None,
+            description="Directory to write the validation-reports for 'validate'.",
         ),
         generate_report: bool = Field(
-            description="Generate validation report directory for 'validate'. Default True.",
             default=True,
+            description="Generate validation report directory for 'validate'. Default True.",
         ),
         repositories: str | None = Field(
-            description="Comma-separated list of specific repositories to target.",
             default=None,
+            description="Comma-separated list of specific repositories to target.",
         ),
         coverage: bool = Field(
-            description="Collect pytest coverage data. Default False (opt-in for speed).",
             default=False,
+            description="Collect pytest coverage data. Default False (opt-in for speed).",
         ),
         job_id: str | None = Field(
-            description="Job ID to check status for 'validate_status' action.",
             default=None,
+            description="Job ID to check status for 'validate_status' action.",
         ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None

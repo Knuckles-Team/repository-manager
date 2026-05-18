@@ -21,7 +21,6 @@ __version__ = "1.14.0"
 
 import concurrent.futures
 import multiprocessing
-import select
 import shutil
 import signal
 
@@ -117,7 +116,7 @@ class Git:
 
         self.project_map: dict[str, str] = {}
         self.config: WorkspaceConfig | None = None
-        self.threads = threads or DEFAULT_REPOSITORY_MANAGER_THREADS
+        self.threads = threads or self._cpu_aware_threads()
         self.set_to_default_branch = set_to_default_branch
         self.capture_output = capture_output
         self.maximum_threads = 36
@@ -233,7 +232,7 @@ class Git:
         self, extra: str = "all", threads: int | None = None, report: bool = True
     ) -> list[GitResult]:
         """Bulk installs Python and Node projects in the workspace."""
-        threads = threads or self.threads
+        threads = threads or self._cpu_aware_threads()
         if not self.project_map:
             logger.warning("No projects to install.")
             return []
@@ -340,7 +339,7 @@ class Git:
 
     def build_projects(self, threads: int | None = None) -> list[GitResult]:
         """Bulk builds Python and Node.js projects in the workspace."""
-        threads = threads or self.threads
+        threads = threads or self._cpu_aware_threads()
         if not self.project_map:
             logger.warning("No projects to build.")
             return []
@@ -416,12 +415,6 @@ class Git:
             expected_phases.append("Ecosystem Installation")
         if run_all or type == "pre-commit":
             expected_phases.append("Pre-commit Compliance")
-        if run_all or type == "version-sync":
-            expected_phases.append("Version Metadata Sync")
-        if run_all or type in ["static-analysis", "mcp", "agent"]:
-            expected_phases.append("Standards & Help Checks")
-        if run_all or type == "runtime-validation":
-            expected_phases.append("Runtime Validation")
 
         total_phases = max(1, len(expected_phases))
         completed_phases = 0
@@ -482,84 +475,12 @@ class Git:
         )
         results = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-            agent_targets = []
-            for url, path in self.project_map.items():
-                pkg_name = url.split("/")[-1].replace(".git", "")
-                pkg_underscore = pkg_name.replace("-", "_")
-
-                pkg_dir = os.path.join(path, pkg_underscore)
-                if not os.path.exists(pkg_dir):
-                    for sub in ["src", "agent"]:
-                        candidate = os.path.join(path, sub, pkg_underscore)
-                        if os.path.exists(candidate):
-                            pkg_dir = candidate
-                            break
-
-                agent_file = None
-                if os.path.exists(os.path.join(pkg_dir, "agent_server.py")):
-                    agent_file = "agent_server"
-
-                is_mcp = os.path.exists(os.path.join(pkg_dir, "mcp_server.py"))
-                is_graph = os.path.exists(os.path.join(pkg_dir, "graph_config.py"))
-
-                # A project is valid for validation if it's an agent suite OR has a pyproject.toml/tests
-                has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
-                has_tests = os.path.exists(
-                    os.path.join(path, "tests")
-                ) or os.path.exists(os.path.join(path, "test"))
-
-                is_agent_suite = (
-                    is_mcp or agent_file or is_graph or has_pyproject or has_tests
-                )
-
-                if pkg_name == "pipelines":
-                    agent_targets.append(
-                        {
-                            "name": pkg_name,
-                            "path": path,
-                            "skip_reason": "Skipped (Not a Python project)",
-                        }
-                    )
-                    continue
-
-                if not is_agent_suite:
-                    agent_targets.append(
-                        {
-                            "name": pkg_name,
-                            "path": path,
-                            "skip_reason": "Skipped (Not a valid Python/Agent project)",
-                        }
-                    )
-                    continue
-
-                if type == "flat" and (is_graph or not agent_file):
-                    continue
-                if type == "graph" and not is_graph:
-                    continue
-
-                agent_targets.append(
-                    {
-                        "name": pkg_name,
-                        "pkg": pkg_underscore,
-                        "path": path,
-                        "pkg_dir": pkg_dir,
-                        "file": agent_file or "",
-                        "is_mcp": is_mcp,  # type: ignore
-                        "is_graph": is_graph,  # type: ignore
-                    }
-                )
-
             # Pre-populate progress phases as pending
             if progress is not None:
                 if "phases" not in progress:
                     progress["phases"] = {}
                 for phase_name in expected_phases:
                     phase_total = len(self.project_map)
-                    if phase_name in [
-                        "Standards & Help Checks",
-                        "Runtime Validation",
-                    ]:
-                        phase_total = len(agent_targets)
 
                     if phase_name not in progress["phases"]:
                         progress["phases"][phase_name] = {
@@ -625,241 +546,6 @@ class Git:
                 if writer:
                     writer.write_phase("Pre-commit Standard Compliance", pc_results)
 
-            # --- Phase 3: Version Metadata Sync ---
-            if run_all or type == "version-sync":
-                _phase_start("Version Metadata Sync", len(self.project_map))
-                bump_results = []
-
-                for _url, path in self.project_map.items():
-                    # Ensure pre-run cleanup of artifacts
-                    self.cleanup_artifacts(path)
-
-                    repo_name = Path(path).name
-                    if (Path(path) / ".bumpversion.cfg").exists():
-                        res = self.bump_version(
-                            "patch", allow_dirty=True, path=path, dry_run=True
-                        )
-                        bump_results.append(res)
-                        _phase_repo("Version Metadata Sync", repo_name, res.status)
-                    else:
-                        reason = (
-                            "Skipped (Not a Python project)"
-                            if repo_name == "pipelines"
-                            else "Skipped (Missing .bumpversion.cfg)"
-                        )
-                        bump_results.append(
-                            GitResult(
-                                status="skipped",
-                                data=reason,
-                                metadata=GitMetadata(
-                                    command="bump2version",
-                                    workspace=path,
-                                    return_code=0,
-                                    timestamp=datetime.datetime.now(
-                                        datetime.timezone.utc
-                                    ).isoformat()
-                                    + "Z",
-                                ),
-                            )
-                        )
-                        _phase_repo("Version Metadata Sync", repo_name, "skipped")
-                _phase_end("Version Metadata Sync")
-                results.extend(bump_results)
-                if writer:
-                    writer.write_phase("Version Metadata Sync (Dry Run)", bump_results)
-
-            # --- Phase 4: Agent Standards, MCP Help, Agent Help (parallel fast checks) ---
-            _phase_start("Standards & Help Checks", len(agent_targets))
-            # Collect skip results and futures separately by category
-            static_results: list[GitResult] = []
-            mcp_help_results: list[GitResult] = []
-            agent_help_results: list[GitResult] = []
-            fast_futures_static: dict[concurrent.futures.Future, str] = {}
-            fast_futures_mcp: dict[concurrent.futures.Future, str] = {}
-            fast_futures_agent: dict[concurrent.futures.Future, str] = {}
-            skip_ts = datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z"
-
-            for target in agent_targets:
-                if "skip_reason" in target:
-                    reason = target["skip_reason"]
-
-                    if run_all or type == "mcp":
-                        mcp_help_results.append(
-                            GitResult(
-                                status="skipped",
-                                data=reason,
-                                metadata=GitMetadata(
-                                    command="mcp_server --help",
-                                    workspace=target["path"],
-                                    return_code=0,
-                                    timestamp=skip_ts,
-                                ),
-                            )
-                        )
-                    if run_all or type == "agent":
-                        agent_help_results.append(
-                            GitResult(
-                                status="skipped",
-                                data=reason,
-                                metadata=GitMetadata(
-                                    command="agent_server --help",
-                                    workspace=target["path"],
-                                    return_code=0,
-                                    timestamp=skip_ts,
-                                ),
-                            )
-                        )
-                    if run_all or type == "static-analysis":
-                        static_results.append(
-                            GitResult(
-                                status="skipped",
-                                data=reason,
-                                metadata=GitMetadata(
-                                    command="static_check",
-                                    workspace=target["path"],
-                                    return_code=0,
-                                    timestamp=skip_ts,
-                                ),
-                            )
-                        )
-                    continue
-
-                if (run_all or type == "mcp") and target.get("is_mcp"):
-                    cmd = f"{self.python_exe} -m {target['pkg']}.mcp_server --help"
-                    fut = executor.submit(self._check_help, cmd, path=target["path"])
-                    fast_futures_mcp[fut] = target["name"]
-                elif run_all or type == "mcp":
-                    mcp_help_results.append(
-                        GitResult(
-                            status="skipped",
-                            data="Skipped (Not an MCP server)",
-                            metadata=GitMetadata(
-                                command="mcp_server --help",
-                                workspace=target["path"],
-                                return_code=0,
-                                timestamp=skip_ts,
-                            ),
-                        )
-                    )
-
-                if (run_all or type == "agent") and target.get("file"):
-                    cmd = (
-                        f"{self.python_exe} -m {target['pkg']}.{target['file']} --help"
-                    )
-                    fut = executor.submit(self._check_help, cmd, path=target["path"])
-                    fast_futures_agent[fut] = target["name"]
-                elif run_all or type == "agent":
-                    agent_help_results.append(
-                        GitResult(
-                            status="skipped",
-                            data="Skipped (MCP-only server)",
-                            metadata=GitMetadata(
-                                command="agent_server --help",
-                                workspace=target["path"],
-                                return_code=0,
-                                timestamp=skip_ts,
-                            ),
-                        )
-                    )
-
-                if run_all or type == "static-analysis":
-                    if target.get("file"):
-                        fut = executor.submit(self._check_agent_static, target)
-                        fast_futures_static[fut] = target["name"]
-                    else:
-                        static_results.append(
-                            GitResult(
-                                status="skipped",
-                                data="Skipped (No server.py for static check)",
-                                metadata=GitMetadata(
-                                    command="static_check",
-                                    workspace=target["path"],
-                                    return_code=0,
-                                    timestamp=skip_ts,
-                                ),
-                            )
-                        )
-
-            # Collect fast futures by category and write reports incrementally
-            for f in concurrent.futures.as_completed(fast_futures_static):
-                r = f.result()
-                static_results.append(r)
-                _phase_repo("Standards & Help Checks", fast_futures_static[f], r.status)
-            if static_results:
-                results.extend(static_results)
-                if writer:
-                    writer.write_phase("Agent Standards Compliance", static_results)
-
-            for f in concurrent.futures.as_completed(fast_futures_mcp):
-                r = f.result()
-                mcp_help_results.append(r)
-                _phase_repo("Standards & Help Checks", fast_futures_mcp[f], r.status)
-            if mcp_help_results:
-                results.extend(mcp_help_results)
-                if writer:
-                    writer.write_phase("MCP Help Check", mcp_help_results)
-
-            for f in concurrent.futures.as_completed(fast_futures_agent):
-                r = f.result()
-                agent_help_results.append(r)
-                _phase_repo("Standards & Help Checks", fast_futures_agent[f], r.status)
-            if agent_help_results:
-                results.extend(agent_help_results)
-                if writer:
-                    writer.write_phase("Agent Help Check", agent_help_results)
-
-            _phase_end("Standards & Help Checks")
-
-            # --- Phase 5: Runtime Validation ---
-            if run_all or type == "runtime-validation":
-                _phase_start("Runtime Validation", len(agent_targets))
-                runtime_results: list[GitResult] = []
-                heavy_futures: dict[concurrent.futures.Future, str] = {}
-                for idx, target in enumerate(agent_targets):
-                    if "skip_reason" in target:
-                        runtime_results.append(
-                            GitResult(
-                                status="skipped",
-                                data=target["skip_reason"],
-                                metadata=GitMetadata(
-                                    command="runtime_check",
-                                    workspace=target["path"],
-                                    return_code=0,
-                                    timestamp=skip_ts,
-                                ),
-                            )
-                        )
-                        _phase_repo("Runtime Validation", target["name"], "skipped")
-                        continue
-
-                    if target.get("file"):
-                        port = 9000 + (idx % 3000)
-                        fut = executor.submit(self._check_agent_runtime, target, port)
-                        heavy_futures[fut] = target["name"]
-                    else:
-                        runtime_results.append(
-                            GitResult(
-                                status="skipped",
-                                data="Skipped (No server.py for runtime check)",
-                                metadata=GitMetadata(
-                                    command="runtime_check",
-                                    workspace=target["path"],
-                                    return_code=0,
-                                    timestamp=skip_ts,
-                                ),
-                            )
-                        )
-                        _phase_repo("Runtime Validation", target["name"], "skipped")
-
-                for f in concurrent.futures.as_completed(heavy_futures):
-                    r = f.result()
-                    runtime_results.append(r)
-                    _phase_repo("Runtime Validation", heavy_futures[f], r.status)
-                _phase_end("Runtime Validation")
-                results.extend(runtime_results)
-                if writer:
-                    writer.write_phase("Agent Runtime & Web UI", runtime_results)
-
             # --- Console summary ---
             successes = [r for r in results if r.status == "success"]
             failures = [r for r in results if r.status == "error"]
@@ -907,304 +593,6 @@ class Git:
             logger.info(f"Report exported to: {report_file}")
         except Exception as e:
             logger.error(f"Failed to export report to {report_file}: {e}")
-
-    def _check_help(self, command: str, path: str) -> GitResult:
-        """Helper to run a --help command and return a standardized result."""
-        result = self.git_action(command=command, path=path, quiet=True, timeout=60)
-        if result.status == "success":
-            result.data = "--help loaded successfully"
-        return result
-
-    def _check_agent_static(self, target: dict[str, str]) -> GitResult:
-        """Internal helper to perform static analysis for agents checking for standards compliance."""
-        pkg_underscore = target["pkg"]
-        pkg_dir = target["pkg_dir"]
-        path = target["path"]
-
-        agent_file_name = target["file"]
-        agent_file = os.path.join(pkg_dir, f"{agent_file_name}.py")
-
-        try:
-            with open(agent_file) as f:
-                content = f.read()
-
-            missing = []
-            if "warnings.filterwarnings" not in content:
-                missing.append("warning_filter")
-            if "file=sys.stderr" not in content:
-                missing.append("stderr_print")
-
-            metadata = GitMetadata(
-                command=f"static_check {agent_file}",
-                workspace=path,
-                return_code=0 if not missing else 1,
-                timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                + "Z",
-            )
-
-            if not missing:
-                return GitResult(
-                    status="success", data="Static patterns verified", metadata=metadata
-                )
-            else:
-                return GitResult(
-                    status="error",
-                    data=f"Missing patterns: {', '.join(missing)}",
-                    error=GitError(message="Static validation failed", code=1),
-                    metadata=metadata,
-                )
-        except Exception as e:
-            logger.error(f"Failed static check for {pkg_underscore}: {e}")
-            return GitResult(
-                status="error",
-                data=str(e),
-                error=GitError(message=f"Crash during static check: {e}", code=1),
-                metadata=GitMetadata(
-                    command="static_check", workspace=path, return_code=1, timestamp=""
-                ),
-            )
-
-    def _check_agent_runtime(self, target: dict[str, str], port: int) -> GitResult:
-        """Internal helper to test a single agent's runtime startup with Web UI."""
-        pkg_underscore = target["pkg"]
-        agent_file = target["file"]
-        path = target["path"]
-        pkg_dir = target["pkg_dir"]
-
-        if not agent_file:
-            return GitResult(
-                status="skipped",
-                data=f"No agent server found for {target['name']}",
-                metadata=GitMetadata(
-                    command="runtime_check",
-                    workspace=path,
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
-                ),
-            )
-
-        cmd = [
-            sys.executable,
-            "-m",
-            f"{pkg_underscore}.{agent_file}",
-            "--web",
-            "--port",
-            str(port),
-        ]
-
-        env = os.environ.copy()
-        for key in [
-            "LLM_API_KEY",
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "GEMINI_API_KEY",
-            "GROQ_API_KEY",
-        ]:
-            if key not in env:
-                env[key] = "dummy"
-        if "LLM_MODEL_ID" not in env:
-            env["LLM_MODEL_ID"] = "dummy"
-
-        env["VALIDATION_MODE"] = "True"
-
-        try:
-            # Environment Cleanup: Remove corrupted WAL files and migrate agent_data
-            pkg_dir = target["pkg_dir"]
-            import shutil
-            from pathlib import Path
-
-            # 1. Migrate and remove agent_data
-            agent_data_dir = Path(pkg_dir) / "agent_data"
-            if agent_data_dir.exists() and agent_data_dir.is_dir():
-                mcp_src = agent_data_dir / "mcp_config.json"
-                mcp_dst = Path(pkg_dir) / "mcp_config.json"
-                if mcp_src.exists():
-                    try:
-                        shutil.copy2(mcp_src, mcp_dst)
-                        logger.info(
-                            f"Migrated mcp_config.json from agent_data for {target['name']}"
-                        )
-                    except Exception as e:
-                        logger.error(
-                            f"Failed to migrate mcp_config.json for {target['name']}: {e}"
-                        )
-
-                try:
-                    shutil.rmtree(agent_data_dir)
-                    logger.info(
-                        f"Removed deprecated agent_data directory for {target['name']}"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to remove agent_data directory for {target['name']}: {e}"
-                    )
-
-            # 2. Cleanup dangling WAL/SHM files
-            for pattern in ["*.db-wal", "*.db-shm", "*.wal"]:
-                for p in Path(pkg_dir).glob(pattern):
-                    try:
-                        p.unlink()
-                        logger.info(f"Cleaned up dangling file: {p.name}")
-                    except Exception as e:
-                        logger.warning(f"Failed to remove {p.name}: {e}")
-
-            # 3. Gitignore Maintenance
-            gitignore_path = Path(path) / ".gitignore"
-            if gitignore_path.exists():
-                try:
-                    content = gitignore_path.read_text()
-                    if "knowledge_graph.db*" not in content:
-                        with open(gitignore_path, "a") as f:
-                            f.write(
-                                "\n# Graph Database\nknowledge_graph.db*\n.repo_graph/\n.ladybug/\n"
-                            )
-                        logger.info(f"Updated .gitignore for {target['name']}")
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to update .gitignore for {target['name']}: {e}"
-                    )
-
-            proc = subprocess.Popen(
-                cmd,
-                cwd=path,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                preexec_fn=os.setsid if os.name != "nt" else None,
-            )
-
-            start_time = datetime.datetime.now()
-            startup_time = start_time
-            success = False
-            error_msg = ""
-            full_logs = ""
-
-            import fcntl
-
-            # Set non-blocking mode on stdout and stderr
-            for pipe in [proc.stdout, proc.stderr]:
-                if pipe is None:
-                    continue
-                fd = pipe.fileno()  # type: ignore
-                fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-                fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-
-            while (datetime.datetime.now() - start_time).total_seconds() < 60:
-                rlist, _, _ = select.select(
-                    [p for p in [proc.stdout, proc.stderr] if p], [], [], 0.5
-                )
-                for r in rlist:
-                    if r is None:
-                        continue
-                    try:
-                        # Read available data without blocking
-                        chunk = r.read(4096)
-                        if not chunk:
-                            continue
-
-                        full_logs += chunk
-                        # Split by newline and process each line
-                        lines = chunk.splitlines()
-                        for line in lines:
-                            line = line.strip()
-                            if not line:
-                                continue
-
-                            logger.debug(f"[{target['name']}] {line}")
-
-                            if (
-                                "Uvicorn running on" in line
-                                or "Application startup complete" in line
-                                or "Starting server on" in line
-                            ):
-                                success = True
-                                startup_time = datetime.datetime.now()
-                                logger.info(
-                                    f"Startup signal detected for {target['name']}, waiting for settle..."
-                                )
-
-                            if (
-                                "ERROR -" in line.upper()
-                                or "ERROR:" in line.upper()
-                                or "CRITICAL -" in line.upper()
-                                or "CRITICAL:" in line.upper()
-                                or "TRACEBACK" in line.upper()
-                                or "IMPORTERROR" in line.upper()
-                                or "NAMEERROR" in line.upper()
-                                or "APPLICATION STARTUP FAILED" in line.upper()
-                            ):
-                                error_msg = line.strip()
-                                logger.error(
-                                    f"Startup error detected for {target['name']}: {error_msg}"
-                                )
-                                # No success, will break via poll() or loop timeout
-                    except (OSError, BlockingIOError):
-                        continue
-
-                if proc.poll() is not None:
-                    # If process exited, we are done
-                    if not success:
-                        error_msg = f"Process exited with code {proc.returncode}"
-                    break
-
-                if (
-                    success
-                    and (datetime.datetime.now() - startup_time).total_seconds() >= 3
-                ):
-                    break
-
-            try:
-                if os.name != "nt":
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    try:
-                        proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        logger.warning(
-                            f"[{target['name']}] Ignored SIGTERM. Sending SIGKILL."
-                        )
-                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                        proc.wait(timeout=3)
-                else:
-                    proc.terminate()
-                    proc.wait(timeout=3)
-            except Exception as ex:  # nosec B110
-                logger.error(f"Failed to kill process for {target['name']}: {ex}")
-
-            metadata = GitMetadata(
-                command=" ".join(cmd),
-                workspace=path,
-                return_code=0 if success else (proc.returncode or 1),
-                timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                + "Z",
-            )
-
-            if success:
-                return GitResult(
-                    status="success",
-                    data=f"Web UI started successfully on port {port}",
-                    metadata=metadata,
-                )
-            else:
-                if not error_msg:
-                    error_msg = "Timeout (60s): No startup signal detected"
-                return GitResult(
-                    status="error",
-                    data=full_logs[-1000:],
-                    error=GitError(message=error_msg, code=metadata.return_code),
-                    metadata=metadata,
-                )
-
-        except Exception as e:
-            return GitResult(
-                status="error",
-                data=str(e),
-                error=GitError(message=f"Crash during runtime check: {e}", code=1),
-                metadata=GitMetadata(
-                    command=" ".join(cmd), workspace=path, return_code=1, timestamp=""
-                ),
-            )
 
     @staticmethod
     def generate_markdown_summary(action: str, results: list[GitResult]) -> str:
@@ -1779,7 +1167,7 @@ class Git:
             env["SKIP"] = "no-commit-to-branch"
 
         result = self.git_action(
-            command=full_command, path=target_path, env=env, timeout=180
+            command=full_command, path=target_path, env=env, timeout=600
         )
 
         if result.status == "error" and result.error:
