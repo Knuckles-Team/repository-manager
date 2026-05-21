@@ -255,6 +255,378 @@ class ValidationCategory(BaseModel):
         )
 
 
+def _filter_pre_commit_output(output: str) -> str:
+    """
+    Parse the pre-commit stdout and only return output for hooks that 'Failed'.
+    Strips out hooks that 'Passed' and their verbose outputs (like nosec warnings).
+    """
+    if not output:
+        return output
+
+    import re
+
+    lines = output.split("\n")
+    filtered_lines = []
+
+    current_block: list[str] = []
+    keep_block = True  # Keep everything before the first hook
+
+    for line in lines:
+        match = re.search(r"\.{5,}(Passed|Failed|Skipped)", line)
+        if match:
+            if keep_block and current_block:
+                filtered_lines.extend(current_block)
+            current_block = []
+
+            status = match.group(1)
+            keep_block = status == "Failed"
+            current_block.append(line)
+        else:
+            current_block.append(line)
+
+    if keep_block and current_block:
+        filtered_lines.extend(current_block)
+
+    return "\n".join(filtered_lines).strip()
+
+
+# ---------------------------------------------------------------------------
+# Patterns used by _extract_error_lines to classify output lines
+# ---------------------------------------------------------------------------
+_HOOK_STATUS_RE = re.compile(r"^(.+?)\.{5,}(Passed|Failed|Skipped)\s*$")
+_EXIT_CODE_RE = re.compile(r"^-\s*exit code:\s*\d+")
+_FILES_MODIFIED_RE = re.compile(r"^-\s*files were modified by this hook")
+_FIXING_RE = re.compile(r"^Fixing\s+")
+_ERROR_LINE_RE = re.compile(r"error[:|\[]", re.IGNORECASE)
+_FOUND_ERRORS_RE = re.compile(r"^Found \d+ errors?", re.IGNORECASE)
+_PYTEST_FAILED_RE = re.compile(r"^FAILED\s+")
+_PYTEST_SHORT_SUMMARY_RE = re.compile(r"^=+\s*(FAILURES|short test summary)")
+_PYTEST_RESULT_LINE_RE = re.compile(r"^=+\s*(\d+\s+failed.*|.*\d+\s+error.*)\s*=+\s*$")
+_RUFF_DIAG_RE = re.compile(r"^\s*[A-Z]\d{3,4}\s+")
+_BANDIT_ISSUE_RE = re.compile(r"^>{1,2}\s*Issue:\s*\[B\d+")
+_BANDIT_LOCATION_RE = re.compile(r"^\s*Location:\s*\./")
+_BANDIT_SEVERITY_RE = re.compile(r"^\s*Severity:\s+(Low|Medium|High)")
+_VULTURE_UNUSED_RE = re.compile(
+    r"unused (variable|function|import|class|method|attribute|property)"
+)
+
+
+# Lines to unconditionally drop from summaries
+_NOISE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"^\[tester\]\s+WARNING\s+nosec"),
+    re.compile(r"^\[main\]\s+INFO"),
+    re.compile(r"^\[manager\]\s+WARNING"),
+    re.compile(r"^Working\.\.\.\s+[━░▓█]"),
+    re.compile(r"^Run started:"),
+    re.compile(r"^Test results:\s*$"),
+    re.compile(r"^\s*No issues identified"),
+    re.compile(r"^Code scanned:"),
+    re.compile(r"^\s*Total lines of code:"),
+    re.compile(r"^\s*Total lines skipped"),
+    re.compile(r"^\s*Total potential issues skipped"),
+    re.compile(r"^Run metrics:"),
+    re.compile(r"^\s*Total issues \(by"),
+    re.compile(r"^\s*Undefined:\s*\d+"),
+    re.compile(r"^\s*Low:\s*\d+"),
+    re.compile(r"^\s*Medium:\s*\d+"),
+    re.compile(r"^\s*High:\s*\d+"),
+    re.compile(r"^Files skipped"),
+    re.compile(r"^platform linux --"),
+    re.compile(r"^cachedir:"),
+    re.compile(r"^hypothesis profile"),
+    re.compile(r"^rootdir:"),
+    re.compile(r"^configfile:"),
+    re.compile(r"^testpaths:"),
+    re.compile(r"^plugins:"),
+    re.compile(r"^timeout:"),
+    re.compile(r"^timeout method:"),
+    re.compile(r"^timeout func_only:"),
+    re.compile(r"^asyncio:"),
+    re.compile(r"^collecting \.\.\.\s"),
+    re.compile(r"^collected \d+ items"),
+    re.compile(r"PASSED\s*$"),
+    re.compile(r"^\s*\^+\s*$"),  # ruff caret underlines
+    re.compile(r"^-\s*hook id:"),
+    re.compile(r"^-\s*duration:"),
+    re.compile(r"^\s*\d+ files? left unchanged"),
+    re.compile(r"^No notebooks found"),
+    re.compile(r"^Resolved \d+ packages"),
+    re.compile(r"^Summary:\s*.*\d+ valid"),  # mermaid-validate summary
+    re.compile(r"^=+ test session starts =+"),
+    re.compile(r"^=+ warnings summary =+"),
+    re.compile(r"^-- Docs:"),
+    re.compile(r"^\s*warnings\.warn\("),
+    re.compile(r"PydanticDeprecatedSince"),
+    re.compile(r"^\s*$"),  # blank lines
+    re.compile(r"^Env:\s+http"),  # TestModel env lines
+    re.compile(r"^Model:\s+TestModel"),
+    re.compile(r"^All checks passed"),
+    re.compile(r"^Agent v\d+"),
+    re.compile(r"^\s*\|$"),  # ruff context pipe-only lines
+    re.compile(r"^\s*\d+\s*\|"),  # ruff source context lines (e.g. " 82 | ...")
+    re.compile(r"^\s*Success: no issues found"),
+    re.compile(r"^SyntaxWarning:"),
+    re.compile(r"^\s*s_\w+ = extract_section"),
+]
+
+
+def _extract_error_lines(output: str) -> list[str]:
+    """Extract only actionable error lines from pre-commit / validation output.
+
+    Parses the raw stdout and returns a compact list of lines containing only:
+    - Failed hook headers (hook name + "Failed")
+    - Exit codes and "files were modified" notices
+    - Actual error messages (mypy ``error:``, ruff diagnostics, etc.)
+    - ``Found N errors`` summary lines
+    - ``FAILED`` pytest test names and result summaries
+    - ``Fixing <file>`` lines (collapsed into a single summary)
+
+    Everything else (passed hooks, bandit info, pytest PASSED lines, progress
+    bars, session boilerplate, caret underlines, etc.) is dropped.
+
+    Returns:
+        A list of stripped, non-empty strings — one per actionable line.
+    """
+    if not output:
+        return []
+
+    raw_lines = output.split("\n")
+    result: list[str] = []
+    in_failed_block = False
+    fixing_files: list[str] = []
+
+    def _flush_fixing() -> None:
+        """Collapse accumulated 'Fixing ...' lines into a compact summary."""
+        if not fixing_files:
+            return
+        if len(fixing_files) <= 3:
+            for ff in fixing_files:
+                result.append(f"  Fixing {ff}")
+        else:
+            result.append(
+                f"  Fixing {len(fixing_files)} files: "
+                f"{fixing_files[0]}, {fixing_files[1]}, ... {fixing_files[-1]}"
+            )
+        fixing_files.clear()
+
+    for line in raw_lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        # --- Hook boundary detection ---
+        hook_match = _HOOK_STATUS_RE.match(stripped)
+        if hook_match:
+            _flush_fixing()
+            status = hook_match.group(2)
+            if status == "Failed":
+                in_failed_block = True
+                hook_name = hook_match.group(1).strip().rstrip(".")
+                result.append(f"- **{hook_name}** — Failed")
+            else:
+                in_failed_block = False
+            continue
+
+        # Only process lines inside a Failed block
+        if not in_failed_block:
+            continue
+
+        # --- Drop noise lines ---
+        if any(pat.search(stripped) for pat in _NOISE_PATTERNS):
+            continue
+
+        # --- Keep: exit code ---
+        if _EXIT_CODE_RE.match(stripped):
+            result.append(f"  {stripped}")
+            continue
+
+        # --- Keep: files were modified ---
+        if _FILES_MODIFIED_RE.match(stripped):
+            result.append(f"  {stripped}")
+            continue
+
+        # --- Keep: Fixing <file> (accumulate) ---
+        fix_match = _FIXING_RE.match(stripped)
+        if fix_match:
+            # Extract just the filename
+            fname = stripped.replace("Fixing ", "").strip()
+            fixing_files.append(fname)
+            continue
+
+        # --- Keep: error lines (mypy, ruff, general) ---
+        if _ERROR_LINE_RE.search(stripped):
+            result.append(f"  {stripped}")
+            continue
+
+        # --- Keep: ruff diagnostic header (e.g. "B904 Within an...") ---
+        if _RUFF_DIAG_RE.match(stripped):
+            result.append(f"  {stripped}")
+            continue
+
+        # --- Keep: "Found N errors" summary ---
+        if _FOUND_ERRORS_RE.match(stripped):
+            result.append(f"  {stripped}")
+            continue
+
+        # --- Keep: FAILED test names ---
+        if _PYTEST_FAILED_RE.match(stripped):
+            result.append(f"  {stripped}")
+            continue
+
+        # --- Keep: pytest result summary line (e.g. "= 6 failed, 2287 passed =") ---
+        if _PYTEST_RESULT_LINE_RE.match(stripped):
+            # Clean up the '=' borders
+            clean = stripped.strip("= ").strip()
+            result.append(f"  {clean}")
+            continue
+
+        # --- Keep: pytest short test summary header ---
+        if _PYTEST_SHORT_SUMMARY_RE.match(stripped):
+            continue  # Skip the header itself, FAILED lines follow
+
+        # --- Keep: ruff arrow lines (e.g. "--> arr_mcp/mcp_server.py:84:9") ---
+        if stripped.startswith("-->"):
+            result.append(f"  {stripped}")
+            continue
+
+        # --- Keep: bandit issue lines (e.g. ">> Issue: [B311:blacklist]") ---
+        if _BANDIT_ISSUE_RE.match(stripped):
+            result.append(f"  {stripped}")
+            continue
+
+        # --- Keep: bandit Location and Severity ---
+        if _BANDIT_LOCATION_RE.match(stripped):
+            result.append(f"  {stripped}")
+            continue
+        if _BANDIT_SEVERITY_RE.match(stripped):
+            result.append(f"  {stripped}")
+            continue
+
+        # --- Keep: vulture unused variable/function/etc. ---
+        if _VULTURE_UNUSED_RE.search(stripped):
+            result.append(f"  {stripped}")
+            continue
+
+    _flush_fixing()
+    return result
+
+
+def _build_summary_md(
+    timestamp: str,
+    total: int,
+    success_count: int,
+    failure_count: int,
+    categories: list["ValidationCategory"],
+    failed_projects: list[str],
+    validated_repositories: list[str] | None = None,
+    skipped_count: int = 0,
+) -> list[str]:
+    """Build a condensed, LLM-actionable summary.md with only errors.
+
+    The summary is designed to let an LLM one-shot understand all failures,
+    plan fixes, apply them, and re-validate — all without reading the full
+    per-repo detail files.
+
+    Args:
+        timestamp: Human-readable timestamp for the report header.
+        total: Total number of checks executed.
+        success_count: Number of checks that passed.
+        failure_count: Number of checks that failed.
+        categories: All ValidationCategory objects from the run.
+        failed_projects: Sorted list of project names with failures.
+        validated_repositories: List of explicitly targeted repos, or None for all.
+        skipped_count: Number of checks that were skipped.
+
+    Returns:
+        List of markdown lines for summary.md.
+    """
+    MAX_LINES_PER_REPO = 60
+
+    summary_md = [
+        "# 📋 Validation Report",
+        f"**Time:** {timestamp}  ",
+        f"**Total Checks:** {total} | **Success:** {success_count} ✅ "
+        f"| **Failure:** {failure_count} ❌ | **Skipped:** {skipped_count} ⏭️",
+        "",
+    ]
+
+    # --- Next Validation Command (top of file for immediate agent action) ---
+    summary_md.extend(
+        _build_next_command_block(
+            failed_projects=failed_projects,
+            validated_repositories=validated_repositories,
+        )
+    )
+
+    summary_md.append("## ❌ Failures by Repository")
+    summary_md.append("")
+
+    if failed_projects:
+        for project in failed_projects:
+            safe_project = _sanitize_filename(project)
+            repo_dir = f"{safe_project}-results"
+            summary_md.append(f"### ❌ {project}")
+            summary_md.append(f"> 📂 Full logs: [{repo_dir}/]({repo_dir}/)")
+            summary_md.append("")
+
+            repo_line_count = 0
+            truncated = False
+
+            for cat in categories:
+                if truncated:
+                    break
+                filtered = cat.for_project(project)
+                if filtered.failure_count == 0:
+                    continue
+
+                summary_md.append(f"**{cat.name}**")
+                repo_line_count += 1
+
+                for failure in filtered.failures:
+                    if truncated:
+                        break
+
+                    # Extract actionable error lines from output.
+                    # When r.error is None, the entire raw stdout ends up in
+                    # failure.message (not failure.output) because
+                    # output = None when message == data.  Always try both —
+                    # _extract_error_lines handles content without hooks
+                    # gracefully (returns []).
+                    raw = failure.output or failure.message or ""
+                    error_lines = _extract_error_lines(raw)
+
+                    if not error_lines:
+                        # No structured output — just show the message
+                        summary_md.append(f"- {failure.message}")
+                        repo_line_count += 1
+                    else:
+                        # Add error lines with truncation
+                        remaining = MAX_LINES_PER_REPO - repo_line_count
+                        if len(error_lines) > remaining:
+                            error_lines = error_lines[:remaining]
+                            truncated = True
+
+                        for eline in error_lines:
+                            summary_md.append(eline)
+                            repo_line_count += 1
+
+                        if truncated:
+                            _slug = CATEGORY_SLUG_MAP.get(
+                                cat.name, cat.name.lower().replace(" ", "-")
+                            )
+                            summary_md.append(
+                                f"> ℹ️ ...truncated at {MAX_LINES_PER_REPO} lines. "
+                                f"See full output: [{repo_dir}/]({repo_dir}/)"
+                            )
+
+            summary_md.append("")
+    else:
+        summary_md.append("🎉 No failures found across any repository!")
+        summary_md.append("")
+
+    return summary_md
+
+
 class ValidationReport(BaseModel):
     timestamp: str
     total: int = 0
@@ -382,6 +754,8 @@ class ValidationReport(BaseModel):
                         r.error.message if r.error else (r.data or "Unknown error")
                     )
                     output = r.data if r.data and r.data != error_msg else None
+                    if output and cmd and ("pre_commit" in cmd or "pre-commit" in cmd):
+                        output = _filter_pre_commit_output(output)
                     cat.failures.append(
                         ProjectResult(
                             project=pkg, message=error_msg, output=output, command=cmd
@@ -646,6 +1020,24 @@ class ValidationReport(BaseModel):
         except Exception as e:
             logger.error(f"Failed to write index file {index_path}: {e}")
 
+        # --- Summary file ---
+        summary_md = _build_summary_md(
+            timestamp=self.timestamp,
+            total=self.total,
+            success_count=self.success_count,
+            failure_count=self.failure_count,
+            categories=self.categories,
+            failed_projects=failed_projects,
+            validated_repositories=validated_repositories,
+            skipped_count=self.skipped_count,
+        )
+        summary_path = os.path.join(report_root, "summary.md")
+        try:
+            with open(summary_path, "w") as f:
+                f.write("\n".join(summary_md))
+        except Exception as e:
+            logger.error(f"Failed to write summary file {summary_path}: {e}")
+
         logger.info(f"Validation report written to: {report_root}")
         return report_root
 
@@ -726,6 +1118,8 @@ class IncrementalReportWriter:
             elif r.status == "error":
                 error_msg = r.error.message if r.error else (r.data or "Unknown error")
                 output = r.data if r.data and r.data != error_msg else None
+                if output and cmd and ("pre_commit" in cmd or "pre-commit" in cmd):
+                    output = _filter_pre_commit_output(output)
                 cat.failures.append(
                     ProjectResult(
                         project=pkg, message=error_msg, output=output, command=cmd
@@ -909,6 +1303,29 @@ class IncrementalReportWriter:
                 f.write("\n".join(index_md))
         except Exception as e:
             logger.error(f"Failed to write index file {index_path}: {e}")
+
+        # --- Summary file ---
+        total = sum(c.total for c in self.categories)
+        success_total = sum(c.success_count for c in self.categories)
+        failure_total = sum(c.failure_count for c in self.categories)
+        skipped_total = sum(c.skipped_count for c in self.categories)
+
+        summary_md = _build_summary_md(
+            timestamp=self.timestamp,
+            total=total,
+            success_count=success_total,
+            failure_count=failure_total,
+            categories=self.categories,
+            failed_projects=failed_projects,
+            validated_repositories=self.validated_repositories,
+            skipped_count=skipped_total,
+        )
+        summary_path = os.path.join(self.report_root, "summary.md")
+        try:
+            with open(summary_path, "w") as f:
+                f.write("\n".join(summary_md))
+        except Exception as e:
+            logger.error(f"Failed to write summary file {summary_path}: {e}")
 
         logger.info(f"Validation report finalized at: {self.report_root}")
         return self.report_root
