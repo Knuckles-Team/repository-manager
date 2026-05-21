@@ -593,9 +593,7 @@ class TestNextCommandBlockDirectoryReport:
                     name="Ecosystem Installation",
                     total=1,
                     success_count=1,
-                    successes=[
-                        ProjectResult(project="my-agent", message="Success")
-                    ],
+                    successes=[ProjectResult(project="my-agent", message="Success")],
                 ),
             ],
         )
@@ -621,9 +619,7 @@ class TestNextCommandBlockDirectoryReport:
                     name="Ecosystem Installation",
                     total=1,
                     success_count=1,
-                    successes=[
-                        ProjectResult(project="my-agent", message="Success")
-                    ],
+                    successes=[ProjectResult(project="my-agent", message="Success")],
                 ),
             ],
         )

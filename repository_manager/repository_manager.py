@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.15.0"
+__version__ = "1.15.1"
 
 import concurrent.futures
 import multiprocessing
@@ -116,10 +116,10 @@ class Git:
 
         self.project_map: dict[str, str] = {}
         self.config: WorkspaceConfig | None = None
-        self.threads = threads or self._cpu_aware_threads()
         self.set_to_default_branch = set_to_default_branch
         self.capture_output = capture_output
-        self.maximum_threads = 36
+        self.maximum_threads = self._cpu_aware_threads(20.0)
+        self.threads = min(threads or self.maximum_threads, self.maximum_threads)
         if threads:
             self.set_threads(threads=threads)
 
@@ -232,7 +232,8 @@ class Git:
         self, extra: str = "all", threads: int | None = None, report: bool = True
     ) -> list[GitResult]:
         """Bulk installs Python and Node projects in the workspace."""
-        threads = threads or self._cpu_aware_threads()
+        effective_threads = threads if threads is not None else self.threads
+        threads = min(effective_threads, self._cpu_aware_threads(20.0))
         if not self.project_map:
             logger.warning("No projects to install.")
             return []
@@ -339,7 +340,8 @@ class Git:
 
     def build_projects(self, threads: int | None = None) -> list[GitResult]:
         """Bulk builds Python and Node.js projects in the workspace."""
-        threads = threads or self._cpu_aware_threads()
+        effective_threads = threads if threads is not None else self.threads
+        threads = min(effective_threads, self._cpu_aware_threads(20.0))
         if not self.project_map:
             logger.warning("No projects to build.")
             return []
@@ -398,7 +400,8 @@ class Git:
                 Updated in-place with current_phase, per-phase repo counts,
                 and overall progress percentage.
         """
-        threads = threads or self._cpu_aware_threads()
+        effective_threads = threads if threads is not None else self.threads
+        threads = min(effective_threads, self._cpu_aware_threads(20.0))
         if not self.project_map:
             logger.warning("No projects to validate.")
             return ValidationReport.from_results([])
@@ -662,6 +665,84 @@ class Git:
             md.append("")
 
         return "\n".join(md)
+
+    def remediate_projects(self, repositories: list[str] | None = None) -> dict:
+        """Automatically remediate common validation failures in target projects."""
+
+        if not self.project_map:
+            self.get_project_map()
+
+        target_repos = repositories or []
+        if not target_repos:
+            # Gather all if none specified
+            for url in self.project_map.keys():
+                target_repos.append(url.split("/")[-1].replace(".git", ""))
+
+        results: dict[str, list[str]] = {"success": [], "errors": []}
+
+        for repo_name in target_repos:
+            repo_path = None
+            for url, path in self.project_map.items():
+                if url.endswith(repo_name) or url.endswith(repo_name + ".git"):
+                    repo_path = path
+                    break
+
+            if not repo_path or not os.path.exists(repo_path):
+                results["errors"].append(f"{repo_name}: path not found")
+                continue
+
+            try:
+                # 1. Sync bumpversion in Dockerfile
+                cfg_path = os.path.join(repo_path, ".bumpversion.cfg")
+                docker_path = os.path.join(repo_path, "docker", "Dockerfile")
+                if os.path.exists(cfg_path) and os.path.exists(docker_path):
+                    with open(cfg_path) as f:
+                        cfg_content = f.read()
+                    import re
+
+                    m = re.search(r"search = ([a-zA-Z0-9_-]+)>=([0-9\.]+)", cfg_content)
+                    if m:
+                        pkg_name = m.group(1)
+                        version = m.group(2)
+                        with open(docker_path) as df:
+                            d_content = df.read()
+
+                        # Replace something like github-agent>=0.10.0 with github-agent>=0.11.0
+                        d_content_new = re.sub(
+                            rf"{pkg_name}>=[0-9\.]+",
+                            f"{pkg_name}>={version}",
+                            d_content,
+                        )
+                        if d_content_new != d_content:
+                            with open(docker_path, "w") as df:
+                                df.write(d_content_new)
+                            results["success"].append(
+                                f"{repo_name}: Fixed Dockerfile version to {version}"
+                            )
+
+                # 2. Run EOF fixer via pre-commit if possible
+                import subprocess
+
+                subprocess.run(  # nosec B607 — uv/pre-commit are workspace-managed tools
+                    [
+                        "uv",
+                        "run",
+                        "pre-commit",
+                        "run",
+                        "end-of-file-fixer",
+                        "--all-files",
+                    ],
+                    cwd=repo_path,
+                    capture_output=True,
+                )
+                subprocess.run(  # nosec B607 — uv/ruff are workspace-managed tools
+                    ["uv", "run", "ruff", "format"], cwd=repo_path, capture_output=True
+                )
+
+            except Exception as e:
+                results["errors"].append(f"{repo_name}: {str(e)}")
+
+        return results
 
     def git_action(
         self,

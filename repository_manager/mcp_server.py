@@ -1,6 +1,10 @@
 #!/usr/bin/env python
 import warnings
 
+from fastmcp import Context, FastMCP
+from fastmcp.utilities.logging import get_logger
+from pydantic import Field
+
 # Filter RequestsDependencyWarning early to prevent log spam
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
@@ -28,9 +32,6 @@ from agent_utilities.mcp_utilities import (
     create_mcp_server,
 )
 from dotenv import find_dotenv, load_dotenv
-from fastmcp import Context, FastMCP
-from fastmcp.utilities.logging import get_logger
-from pydantic import Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -41,10 +42,13 @@ from repository_manager.models import (
 )
 from repository_manager.repository_manager import Git
 
-__version__ = "1.15.0"
+__version__ = "1.15.1"
 
 
-DEFAULT_WORKSPACE = os.environ.get("REPOSITORY_MANAGER_WORKSPACE", "/workspace")
+DEFAULT_WORKSPACE = os.environ.get(
+    "REPOSITORY_MANAGER_WORKSPACE",
+    os.environ.get("WORKSPACE_PATH", "/home/apps/workspace"),
+)
 DEFAULT_THREADS = to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "12"))
 DEFAULT_WORKSPACE_YML = os.environ.get("WORKSPACE_YML", "workspace.yml")
 
@@ -156,7 +160,17 @@ def _get_job_status(job_id: str | None = None) -> dict[str, Any]:
             response["phases"] = pd.get("phases", {})
 
         if job["status"] == "completed" and job["result"] is not None:
-            response["result"] = job["result"]
+            if hasattr(job["result"], "model_dump"):
+                try:
+                    ts = job["result"]._format_timestamp_for_path()
+                    summary_path = f"/home/apps/workspace/reports/validation-reports-{ts}/summary.md"
+                    response["result"] = (
+                        f"Validation completed. Check summary report at: {summary_path}"
+                    )
+                except Exception:
+                    response["result"] = "Validation completed."
+            else:
+                response["result"] = str(job["result"])
         elif job["status"] == "failed":
             response["error"] = job["error"]
 
@@ -276,7 +290,7 @@ def register_workspace_management_tools(mcp: FastMCP):
     @mcp.tool(tags={"workspace_management"})
     async def rm_workspace(
         action: str = Field(
-            description="Action: 'list', 'setup', 'template', 'save', 'maintain'"
+            description="Action: 'list', 'setup', 'template', 'save', 'maintain', 'remediate'"
         ),
         yml_path: str | None = Field(
             default=None,
@@ -299,6 +313,10 @@ def register_workspace_management_tools(mcp: FastMCP):
         use_default: bool = Field(
             default=True,
             description="Use the pre-filled package template for 'template'.",
+        ),
+        repositories: str | None = Field(
+            default=None,
+            description="Comma-separated list of specific repositories to target for 'remediate'.",
         ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
@@ -357,6 +375,13 @@ def register_workspace_management_tools(mcp: FastMCP):
                 start_phase=phase,
                 dry_run=dry_run,
             )
+
+        if action == "remediate":
+            repos = []
+            if repositories:
+                repos = [r.strip() for r in repositories.split(",")]
+            res = git.remediate_projects(repos)
+            return f"Remediation complete. \nSuccess: {res['success']}\nErrors: {res['errors']}"
 
         return f"Error: Unknown action '{action}'"
 
