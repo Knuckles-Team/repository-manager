@@ -42,7 +42,7 @@ from repository_manager.models import (
 )
 from repository_manager.repository_manager import Git
 
-__version__ = "1.17.0"
+__version__ = "1.18.0"
 
 
 DEFAULT_WORKSPACE = os.environ.get(
@@ -159,6 +159,30 @@ def _get_job_status(job_id: str | None = None) -> dict[str, Any]:
             response["progress"] = pd.get("progress", 0)
             response["phases"] = pd.get("phases", {})
 
+            completed_projects = set()
+            active_projects = set()
+            remaining_projects = set()
+
+            for phase_data in pd.get("phases", {}).values():
+                repos_dict = phase_data.get("repos") or phase_data.get("details") or {}
+                for repo_name, status in repos_dict.items():
+                    if status in ("success", "failed", "error", "skipped", "skip"):
+                        completed_projects.add(repo_name)
+                    elif status == "running":
+                        active_projects.add(repo_name)
+                    elif status == "pending":
+                        remaining_projects.add(repo_name)
+
+            # Resolve overlaps across phases (completed > active > pending)
+            for p in completed_projects | active_projects:
+                remaining_projects.discard(p)
+            for p in completed_projects:
+                active_projects.discard(p)
+
+            response["completed_projects"] = sorted(list(completed_projects))
+            response["active_projects"] = sorted(list(active_projects))
+            response["remaining_projects"] = sorted(list(remaining_projects))
+
         if job["status"] == "completed" and job["result"] is not None:
             if hasattr(job["result"], "model_dump"):
                 try:
@@ -274,11 +298,18 @@ def register_git_operations_tools(mcp: FastMCP):
             return _submit_job("push", git.push_projects)
 
         if action == "phased_push":
+            progress = {
+                "current_phase": "Initializing Pushes",
+                "progress": 0,
+                "phases": {},
+            }
             return _submit_job(
                 "phased_push",
                 git.phased_push,
                 start_phase=phase or 1,
                 project_filter=target_project,
+                progress=progress,
+                _extra_job_data={"progress_detail": progress},
             )
 
         return f"Error: Unknown action '{action}'"
@@ -371,12 +402,19 @@ def register_workspace_management_tools(mcp: FastMCP):
                 )
 
         if action == "maintain":
+            progress = {
+                "current_phase": "Initializing Bumps",
+                "progress": 0,
+                "phases": {},
+            }
             return _submit_job(
                 "maintain",
                 git.maintain_projects,
                 part=part,
                 start_phase=phase,
                 dry_run=dry_run,
+                progress=progress,
+                _extra_job_data={"progress_detail": progress},
             )
 
         if action == "remediate":

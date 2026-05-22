@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.17.0"
+__version__ = "1.18.0"
 
 import concurrent.futures
 import multiprocessing
@@ -126,6 +126,12 @@ class Git:
         self.debug_log_path = os.path.join(self.path, "repository_manager_debug.log")
         self.debug_lock = threading.Lock()
         self.python_exe = self._find_python()
+
+        self.progress: dict[str, Any] = {
+            "current_phase": "Idle",
+            "progress": 0,
+            "phases": {},
+        }
 
         # Initialize log file
         with open(self.debug_log_path, "a") as f:
@@ -428,6 +434,9 @@ class Git:
             logger.warning("No projects to validate.")
             return ValidationReport.from_results([])
 
+        if progress is None:
+            progress = self.progress
+
         logger.info(
             f"Validating {len(self.project_map)} projects (mode={type}) in parallel ({threads} threads)..."
         )
@@ -460,7 +469,10 @@ class Git:
                         "success": 0,
                         "failed": 0,
                         "skipped": 0,
-                        "repos": {},
+                        "repos": {
+                            Path(path).name: "pending"
+                            for path in self.project_map.values()
+                        },
                     }
                 else:
                     progress["phases"][name]["status"] = "running"
@@ -471,10 +483,16 @@ class Git:
             if progress is not None and name in progress.get("phases", {}):
                 p = progress["phases"][name]
                 p["repos"][repo] = status
-                p["processed"] = len(p["repos"])
+                p["processed"] = sum(
+                    1
+                    for s in p["repos"].values()
+                    if s in ("success", "error", "skipped", "skip", "failed")
+                )
                 p["completed"] = p["processed"]  # Backwards compatibility
                 p["success"] = sum(1 for s in p["repos"].values() if s == "success")
-                p["failed"] = sum(1 for s in p["repos"].values() if s == "error")
+                p["failed"] = sum(
+                    1 for s in p["repos"].values() if s in ("error", "failed")
+                )
                 p["skipped"] = sum(
                     1 for s in p["repos"].values() if s in ("skipped", "skip")
                 )
@@ -516,12 +534,18 @@ class Git:
                             "success": 0,
                             "failed": 0,
                             "skipped": 0,
-                            "repos": {},
+                            "repos": {
+                                Path(path).name: "pending"
+                                for path in self.project_map.values()
+                            },
                         }
 
             # --- Phase 1: Ecosystem Installation ---
             if run_all or type == "installation":
                 _phase_start("Ecosystem Installation", len(self.project_map))
+                for _url, path in self.project_map.items():
+                    repo = Path(path).name
+                    _phase_repo("Ecosystem Installation", repo, "running")
                 install_results = self.install_projects(report=False)
                 for r in install_results:
                     repo = Path(r.metadata.workspace).name if r.metadata else "unknown"
@@ -545,6 +569,7 @@ class Git:
                 for _url, path in self.project_map.items():
                     repo_name = Path(path).name
                     if os.path.exists(os.path.join(path, ".pre-commit-config.yaml")):
+                        _phase_repo("Pre-commit Compliance", repo_name, "running")
                         fut = executor.submit(self.pre_commit, True, False, path)
                         pc_futures[fut] = repo_name
                     else:
@@ -1851,10 +1876,14 @@ class Git:
         config: dict | None = None,
         single_phase: bool = False,
         project_filter: str | None = None,
+        progress: dict | None = None,
     ) -> list[GitResult]:
         """
         Execute the phased bumpversion workflow: pre-commits + phased bumping.
         """
+        if progress is None:
+            progress = self.progress
+
         all_results = []
         if config is None:
             config_model: MaintenanceConfig | None = None
@@ -1934,38 +1963,104 @@ class Git:
                 return None
             return None
 
+        # Pre-expand phases & projects for progress tracking
         processed_projects: set[str] = set()
+        phase_list = []
+        total_projects = 0
 
         for phase in config.get("phases", []):
             phase_num = phase.get("phase")
             if phase_num < start_phase:
                 continue
 
-            projects = phase.get("projects", [])
+            projects = phase.get("projects", [])[:]
             if phase.get("project"):
                 projects.append(phase.get("project"))
 
             if project_filter:
                 projects = [p for p in projects if p == project_filter]
 
-                # Also apply project filter to bulk operations if applicable
-                if not projects and phase.get("bulk_bump"):
-                    if project_filter not in processed_projects:
-                        projects = [project_filter]
-
-            if not projects and not phase.get("bulk_bump"):
-                continue
+            # Also apply project filter to bulk operations if applicable
+            if not projects and phase.get("bulk_bump"):
+                if project_filter not in processed_projects:
+                    projects = [project_filter]
 
             if phase.get("bulk_bump") and not project_filter:
-                bulk_results = self.bulk_bump(
-                    part=part, dry_run=dry_run, exclude=list(processed_projects)
-                )
-                all_results.extend(bulk_results)
+                bulk_projects = []
+                for url, _ in self.project_map.items():
+                    name = url.split("/")[-1].replace(".git", "")
+                    if name not in processed_projects and name not in projects:
+                        bulk_projects.append(name)
+                projects.extend(bulk_projects)
+
+            if not projects:
                 continue
 
+            phase_name = phase.get("name", f"Phase {phase_num}")
+            phase_list.append(
+                {
+                    "phase_num": phase_num,
+                    "name": phase_name,
+                    "projects": projects,
+                }
+            )
+            total_projects += len(projects)
+
+        if progress is not None:
+            progress["current_phase"] = "Initializing Bumps"
+            progress["progress"] = 0
+            progress["phases"] = {}
+            for p_info in phase_list:
+                progress["phases"][p_info["name"]] = {
+                    "status": "pending",
+                    "total": len(p_info["projects"]),
+                    "processed": 0,
+                    "completed": 0,
+                    "success": 0,
+                    "failed": 0,
+                    "details": {proj: "pending" for proj in p_info["projects"]},
+                    "repos": {proj: "pending" for proj in p_info["projects"]},
+                }
+
+        processed_count = 0
+        for p_info in phase_list:
+            phase_name = p_info["name"]
+            phase_num = p_info["phase_num"]
+            projects = p_info["projects"]
+
+            if progress is not None:
+                progress["current_phase"] = f"{phase_name} in progress"
+                progress["phases"][phase_name]["status"] = "running"
+
             for project_name in projects:
+                if progress is not None:
+                    progress["phases"][phase_name]["details"][project_name] = "running"
+                    progress["phases"][phase_name]["repos"][project_name] = "running"
+
                 processed_projects.add(project_name)
+                logger.info(
+                    f"Bumping version for project: {project_name} in {phase_name}..."
+                )
                 new_version = run_step_bump(project_name, phase_num)
+
+                status_str = "success" if new_version else "failed"
+
+                if progress is not None:
+                    progress["phases"][phase_name]["details"][project_name] = status_str
+                    progress["phases"][phase_name]["repos"][project_name] = status_str
+                    progress["phases"][phase_name]["processed"] += 1
+                    progress["phases"][phase_name]["completed"] += 1
+                    if status_str == "success":
+                        progress["phases"][phase_name]["success"] += 1
+                    else:
+                        progress["phases"][phase_name]["failed"] += 1
+
+                    processed_count += 1
+                    progress["progress"] = int((processed_count / total_projects) * 100)
+                    logger.info(
+                        f"[{processed_count}/{total_projects}] ({progress['progress']}%) "
+                        f"Completed bump for {project_name}: {status_str}"
+                    )
 
                 if new_version:
                     for _, path in self.project_map.items():
@@ -1991,6 +2086,13 @@ class Git:
                                     )
                                 )
 
+            if progress is not None:
+                progress["phases"][phase_name]["status"] = "completed"
+
+        if progress is not None:
+            progress["current_phase"] = "Bumps Completed"
+            progress["progress"] = 100
+
         return all_results
 
     maintain_projects = phased_bumpversion
@@ -2001,11 +2103,15 @@ class Git:
         config: dict | None = None,
         single_phase: bool = False,
         project_filter: str | None = None,
+        progress: dict | None = None,
     ) -> list[GitResult]:
         """
         Execute the phased git push workflow.
         """
         import time
+
+        if progress is None:
+            progress = self.progress
 
         all_results = []
         if config is None:
@@ -2032,6 +2138,8 @@ class Git:
                 return []
 
         processed_projects = set()
+        phase_list = []
+        total_projects = 0
 
         for phase in config.get("phases", []):
             phase_num = phase.get("phase")
@@ -2040,7 +2148,7 @@ class Git:
 
             projects_to_push = []
 
-            projects = phase.get("projects", [])
+            projects = phase.get("projects", [])[:]
             if phase.get("project"):
                 projects.append(phase.get("project"))
 
@@ -2054,7 +2162,7 @@ class Git:
                 for url, path in self.project_map.items():
                     name = url.split("/")[-1].replace(".git", "")
                     if name not in processed_projects:
-                        projects_to_push.append(path)
+                        projects_to_push.append((name, path))
             else:
                 for project_name in projects:
                     processed_projects.add(project_name)
@@ -2062,13 +2170,55 @@ class Git:
                         if url.endswith(f"/{project_name}.git") or url.endswith(
                             f"/{project_name}"
                         ):
-                            projects_to_push.append(p_path)
+                            projects_to_push.append((project_name, p_path))
                             break
 
             if not projects_to_push:
                 continue
 
             phase_name = phase.get("name", f"Phase {phase_num}")
+            phase_list.append(
+                {
+                    "phase_num": phase_num,
+                    "name": phase_name,
+                    "projects_to_push": projects_to_push,
+                    "wait_minutes": phase.get("wait_minutes", 0),
+                }
+            )
+            total_projects += len(projects_to_push)
+
+        if progress is not None:
+            progress["current_phase"] = "Initializing Pushes"
+            progress["progress"] = 0
+            progress["phases"] = {}
+            for p_info in phase_list:
+                progress["phases"][p_info["name"]] = {
+                    "status": "pending",
+                    "total": len(p_info["projects_to_push"]),
+                    "processed": 0,
+                    "completed": 0,
+                    "success": 0,
+                    "failed": 0,
+                    "details": {
+                        proj: "pending" for proj, _ in p_info["projects_to_push"]
+                    },
+                    "repos": {
+                        proj: "pending" for proj, _ in p_info["projects_to_push"]
+                    },
+                }
+
+        processed_count = 0
+
+        for p_info in phase_list:
+            phase_name = p_info["name"]
+            phase_num = p_info["phase_num"]
+            projects_to_push = p_info["projects_to_push"]
+            wait_minutes = p_info["wait_minutes"]
+
+            if progress is not None:
+                progress["current_phase"] = f"{phase_name} in progress"
+                progress["phases"][phase_name]["status"] = "running"
+
             logger.info(
                 f"Starting {phase_name} push for {len(projects_to_push)} projects..."
             )
@@ -2076,19 +2226,67 @@ class Git:
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.threads
             ) as executor:
-                futures = []
-                for p_path in projects_to_push:
-                    futures.append(executor.submit(self.push_project, path=p_path))
+                future_to_proj = {}
+                for proj_name, p_path in projects_to_push:
+                    if progress is not None:
+                        progress["phases"][phase_name]["details"][proj_name] = "running"
+                        progress["phases"][phase_name]["repos"][proj_name] = "running"
+                    future = executor.submit(self.push_project, path=p_path)
+                    future_to_proj[future] = proj_name
 
-                for future in concurrent.futures.as_completed(futures):
-                    all_results.append(future.result())
+                for future in concurrent.futures.as_completed(future_to_proj):
+                    proj_name = future_to_proj[future]
+                    try:
+                        res = future.result()
+                        all_results.append(res)
+                        status_str = "success" if res.status == "success" else "failed"
+                    except Exception as e:
+                        all_results.append(
+                            GitResult(
+                                status="error",
+                                data="",
+                                error=GitError(message=str(e), code=1),
+                            )
+                        )
+                        status_str = "failed"
 
-            wait_minutes = phase.get("wait_minutes", 0)
+                    if progress is not None:
+                        progress["phases"][phase_name]["details"][proj_name] = (
+                            status_str
+                        )
+                        progress["phases"][phase_name]["repos"][proj_name] = status_str
+                        progress["phases"][phase_name]["processed"] += 1
+                        progress["phases"][phase_name]["completed"] += 1
+                        if status_str == "success":
+                            progress["phases"][phase_name]["success"] += 1
+                        else:
+                            progress["phases"][phase_name]["failed"] += 1
+
+                        processed_count += 1
+                        progress["progress"] = int(
+                            (processed_count / total_projects) * 100
+                        )
+                        logger.info(
+                            f"[{processed_count}/{total_projects}] ({progress['progress']}%) "
+                            f"Completed push for {proj_name}: {status_str}"
+                        )
+
+            if progress is not None:
+                progress["phases"][phase_name]["status"] = "completed"
+
             if wait_minutes > 0:
                 logger.info(
                     f"Phase {phase_num} complete. Waiting {wait_minutes} minutes before proceeding..."
                 )
+                if progress is not None:
+                    progress["current_phase"] = (
+                        f"Waiting {wait_minutes} min after {phase_name}"
+                    )
                 time.sleep(wait_minutes * 60)
+
+        if progress is not None:
+            progress["current_phase"] = "Pushes Completed"
+            progress["progress"] = 100
 
         return all_results
 
