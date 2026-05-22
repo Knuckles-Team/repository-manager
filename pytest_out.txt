@@ -1,0 +1,42 @@
+============================= test session starts ==============================
+platform linux -- Python 3.14.4, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/apps/workspace/agent-packages/agents/repository-manager
+configfile: pytest.ini
+plugins: typeguard-4.4.4
+collected 0 items / 1 error
+
+==================================== ERRORS ====================================
+______________ ERROR collecting tests/test_repository_manager.py _______________
+ImportError while importing test module '/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_repository_manager.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/test_repository_manager.py:8: in <module>
+    from repository_manager.models import (
+repository_manager/__init__.py:31: in <module>
+    module = importlib.import_module(module_name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.14/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+repository_manager/repository_manager.py:28: in <module>
+    from agent_utilities.base_utilities import get_library_file_path, to_boolean
+E   ModuleNotFoundError: No module named 'agent_utilities'
+=============================== warnings summary ===============================
+../../../../../genius/.local/lib/python3.14/site-packages/_pytest/config/__init__.py:1434
+  /home/genius/.local/lib/python3.14/site-packages/_pytest/config/__init__.py:1434: PytestConfigWarning: Unknown config option: asyncio_mode
+
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+../../../../../genius/.local/lib/python3.14/site-packages/_pytest/config/__init__.py:1434
+  /home/genius/.local/lib/python3.14/site-packages/_pytest/config/__init__.py:1434: PytestConfigWarning: Unknown config option: timeout
+
+    self._warn_or_fail_if_strict(f"Unknown config option: {key}\n")
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+ERROR tests/test_repository_manager.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+========================= 2 warnings, 1 error in 0.55s =========================

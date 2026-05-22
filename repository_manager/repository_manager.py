@@ -213,6 +213,28 @@ class Git:
         """Returns a list of project basenames (e.g. 'genius-agent') defined in the workspace."""
         return [os.path.basename(p) for p in self.project_map.values()]
 
+    def list_branches(self) -> dict[str, str]:
+        """Returns a dictionary mapping project basenames to their current active git branch."""
+        branches: dict[str, str] = {}
+        if not self.project_map:
+            return branches
+
+        for _url, path in self.project_map.items():
+            repo_name = os.path.basename(path)
+            if not os.path.exists(os.path.join(path, ".git")):
+                branches[repo_name] = "not-cloned"
+                continue
+
+            res = self.git_action(
+                "git rev-parse --abbrev-ref HEAD", path=path, quiet=True
+            )
+            if res.status == "success" and res.data:
+                branches[repo_name] = res.data.strip()
+            else:
+                branches[repo_name] = "unknown"
+
+        return branches
+
     def _resolve_path(self, path: str | None = None) -> str:
         """
         Resolve the path to an absolute path.
@@ -504,10 +526,10 @@ class Git:
                 for r in install_results:
                     repo = Path(r.metadata.workspace).name if r.metadata else "unknown"
                     _phase_repo("Ecosystem Installation", repo, r.status)
+                    if writer:
+                        writer.write_incremental_result("Ecosystem Installation", r)
                 results.extend(install_results)
                 _phase_end("Ecosystem Installation")
-                if writer:
-                    writer.write_phase("Ecosystem Installation", install_results)
 
             # --- Phase 2: Pre-commit Standard Compliance ---
             if run_all or type == "pre-commit":
@@ -543,11 +565,13 @@ class Git:
                     r = f.result()
                     pc_results.append(r)
                     _phase_repo("Pre-commit Compliance", pc_futures[f], r.status)
+                    if writer:
+                        writer.write_incremental_result(
+                            "Pre-commit Standard Compliance", r
+                        )
 
                 _phase_end("Pre-commit Compliance")
                 results.extend(pc_results)
-                if writer:
-                    writer.write_phase("Pre-commit Standard Compliance", pc_results)
 
             # --- Console summary ---
             successes = [r for r in results if r.status == "success"]
@@ -2358,6 +2382,12 @@ Examples:
         help="Save current in-memory config back to YAML (Updates).",
     )
 
+    group_workspace.add_argument(
+        "--branches",
+        action="store_true",
+        help="List the active git branch for all projects.",
+    )
+
     group_git = parser.add_argument_group("Git Bulk Operations (Parallelized)")
     group_git.add_argument(
         "--clone",
@@ -2530,6 +2560,12 @@ Examples:
         git.clone_projects()
     if pull_flag:
         git.pull_projects()
+
+    if args.branches:
+        branches = git.list_branches()
+        logger.info("\n--- Workspace Branches ---")
+        for proj, branch in sorted(branches.items()):
+            logger.info(f"{proj:<30} | {branch}")
 
     if args.pre_commit:
         git.pre_commit_projects(run=True, autoupdate=True)

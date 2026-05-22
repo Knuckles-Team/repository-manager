@@ -290,7 +290,7 @@ def register_workspace_management_tools(mcp: FastMCP):
     @mcp.tool(tags={"workspace_management"})
     async def rm_workspace(
         action: str = Field(
-            description="Action: 'list', 'setup', 'template', 'save', 'maintain', 'remediate'"
+            description="Action: 'list', 'list_branches', 'setup', 'template', 'save', 'maintain', 'remediate'"
         ),
         yml_path: str | None = Field(
             default=None,
@@ -329,6 +329,9 @@ def register_workspace_management_tools(mcp: FastMCP):
 
         if action == "list":
             return git.get_workspace_projects()
+
+        if action == "list_branches":
+            return git.list_branches()
 
         if action == "setup":
             if not yml_path:
