@@ -46,6 +46,7 @@ subdirectories:
           - url: "https://github.com/Knuckles-Team/jellyfin-mcp.git"
           - url: "https://github.com/Knuckles-Team/langfuse-agent.git"
           - url: "https://github.com/Knuckles-Team/leanix-agent.git"
+          - url: "https://github.com/Knuckles-Team/listmonk-api.git"
           - url: "https://github.com/Knuckles-Team/mealie-mcp.git"
           - url: "https://github.com/Knuckles-Team/media-downloader.git"
           - url: "https://github.com/Knuckles-Team/microsoft-agent.git"

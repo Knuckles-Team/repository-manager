@@ -79,12 +79,12 @@ Configure your IDE's `mcp.json` to launch the MCP server via `uvx`:
       "env": {
         "REPO_MANAGER_URL": "your_repo_manager_url_here",
         "REPO_MANAGER_USERNAME": "your_repo_manager_username_here",
+        "REPO_MANAGER_PASSWORD": "your_repo_manager_password_here",
         "REPOSITORY_MANAGER_WORKSPACE": "your_repository_manager_workspace_here",
         "LLM_ROUTER_MODEL": "your_llm_router_model_here",
         "LLM_AGENT_MODEL": "your_llm_agent_model_here",
         "GRAPH_ROUTER_TIMEOUT": "your_graph_router_timeout_here",
-        "GRAPH_VERIFIER_TIMEOUT": "your_graph_verifier_timeout_here",
-        "REPO_MANAGER_PASSWORD": "your_repo_manager_password_here"
+        "GRAPH_VERIFIER_TIMEOUT": "your_graph_verifier_timeout_here"
       }
     }
   }
@@ -92,37 +92,7 @@ Configure your IDE's `mcp.json` to launch the MCP server via `uvx`:
 ```
 
 #### Streamable-HTTP Transport (Recommended for production deployments)
-Configure your client's `mcp.json` to launch the Streamable-HTTP server via `uvx` with explicit host and port definition:
-
-```json
-{
-  "mcpServers": {
-    "repository-manager": {
-      "command": "uvx",
-      "args": [
-        "--from",
-        "repository-manager",
-        "repository-manager-mcp"
-      ],
-      "env": {
-        "TRANSPORT": "streamable-http",
-        "HOST": "0.0.0.0",
-        "PORT": "8000",
-        "REPO_MANAGER_URL": "your_repo_manager_url_here",
-        "REPO_MANAGER_USERNAME": "your_repo_manager_username_here",
-        "REPOSITORY_MANAGER_WORKSPACE": "your_repository_manager_workspace_here",
-        "LLM_ROUTER_MODEL": "your_llm_router_model_here",
-        "LLM_AGENT_MODEL": "your_llm_agent_model_here",
-        "GRAPH_ROUTER_TIMEOUT": "your_graph_router_timeout_here",
-        "GRAPH_VERIFIER_TIMEOUT": "your_graph_verifier_timeout_here",
-        "REPO_MANAGER_PASSWORD": "your_repo_manager_password_here"
-      }
-    }
-  }
-}
-```
-
-Alternatively, connect to a pre-deployed remote or local Streamable-HTTP instance:
+To run the server as a long-running Streamable-HTTP service:
 
 ```json
 {
@@ -144,12 +114,12 @@ docker run -d \
   -e PORT=8000 \
   -e REPO_MANAGER_URL="your_value" \
   -e REPO_MANAGER_USERNAME="your_value" \
+  -e REPO_MANAGER_PASSWORD="your_value" \
   -e REPOSITORY_MANAGER_WORKSPACE="your_value" \
   -e LLM_ROUTER_MODEL="your_value" \
   -e LLM_AGENT_MODEL="your_value" \
   -e GRAPH_ROUTER_TIMEOUT="your_value" \
   -e GRAPH_VERIFIER_TIMEOUT="your_value" \
-  -e REPO_MANAGER_PASSWORD="your_value" \
   knucklessg1/repository-manager:latest
 ```
 
@@ -166,12 +136,12 @@ To start the interactive command-line agent:
 # Set credentials
 export REPO_MANAGER_URL="your_value"
 export REPO_MANAGER_USERNAME="your_value"
+export REPO_MANAGER_PASSWORD="your_value"
 export REPOSITORY_MANAGER_WORKSPACE="your_value"
 export LLM_ROUTER_MODEL="your_value"
 export LLM_AGENT_MODEL="your_value"
 export GRAPH_ROUTER_TIMEOUT="your_value"
 export GRAPH_VERIFIER_TIMEOUT="your_value"
-export REPO_MANAGER_PASSWORD="your_value"
 
 # Run the agent server
 repository-manager-agent --provider openai --model-id gpt-4o

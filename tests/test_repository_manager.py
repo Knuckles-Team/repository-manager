@@ -134,3 +134,26 @@ def test_git_init_with_default_workspace():
     )
 
     assert git.path == DEFAULT_REPOSITORY_MANAGER_WORKSPACE
+
+
+@patch("repository_manager.repository_manager.Git.git_action")
+def test_list_branches(mock_git_action, sample_workspace_yml):
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+
+    mock_git_action.return_value = GitResult(
+        status="success", data="main\n", metadata=get_mock_metadata("rev-parse")
+    )
+
+    # Without project map
+    assert git.list_branches() == {}
+
+    # With project map
+    git.load_projects_from_yaml(str(yml_path))
+
+    with patch("os.path.exists", return_value=True):
+        branches = git.list_branches()
+
+    # Check that known projects are in the branch output
+    assert "pipelines" in branches
+    assert branches["pipelines"] == "main"

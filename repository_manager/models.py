@@ -1134,6 +1134,127 @@ class IncrementalReportWriter:
         self._write_category_files(cat)
         return cat
 
+    def write_incremental_result(self, category_name: str, result: GitResult) -> None:
+        """Add a single result to a category and immediately write/update its report file."""
+        cat = next((c for c in self.categories if c.name == category_name), None)
+        if not cat:
+            cat = ValidationCategory(
+                name=category_name,
+                total=0,
+                success_count=0,
+                failure_count=0,
+                skipped_count=0,
+            )
+            self.categories.append(cat)
+
+        cat.total += 1
+        pkg = result.metadata.workspace.split("/")[-1] if result.metadata else "unknown"
+        cmd = result.metadata.command if result.metadata else None
+
+        if result.status == "success":
+            cat.success_count += 1
+            cat.successes.append(
+                ProjectResult(
+                    project=pkg, message="Success", output=result.data, command=cmd
+                )
+            )
+        elif result.status == "error":
+            cat.failure_count += 1
+            error_msg = (
+                result.error.message
+                if result.error
+                else (result.data or "Unknown error")
+            )
+            output = result.data if result.data and result.data != error_msg else None
+            if output and cmd and ("pre_commit" in cmd or "pre-commit" in cmd):
+                output = _filter_pre_commit_output(output)
+            cat.failures.append(
+                ProjectResult(
+                    project=pkg, message=error_msg, output=output, command=cmd
+                )
+            )
+        elif result.status == "skipped":
+            cat.skipped_count += 1
+            cat.skipped.append(
+                ProjectResult(
+                    project=pkg, message=result.data or "Skipped", command=cmd
+                )
+            )
+
+        # Update global project stats
+        if pkg not in self.project_stats:
+            self.project_stats[pkg] = {
+                "success": 0,
+                "failure": 0,
+                "skipped": 0,
+            }
+        if pkg not in self.project_files:
+            self.project_files[pkg] = []
+
+        if result.status == "success":
+            self.project_stats[pkg]["success"] += 1
+        elif result.status == "error":
+            self.project_stats[pkg]["failure"] += 1
+        elif result.status == "skipped":
+            self.project_stats[pkg]["skipped"] += 1
+
+        # Write the per-scan file for this project
+        filtered = cat.for_project(pkg)
+        if filtered.total == 0:
+            return
+
+        safe_project = _sanitize_filename(pkg)
+        repo_dir_name = f"{safe_project}-results"
+        repo_dir = os.path.join(self.report_root, repo_dir_name)
+        os.makedirs(repo_dir, exist_ok=True)
+
+        slug = CATEGORY_SLUG_MAP.get(cat.name, cat.name.lower().replace(" ", "-"))
+        safe_slug = _sanitize_filename(slug)
+        errors = filtered.failure_count
+        warnings = filtered.skipped_count
+        filename = (
+            f"{safe_slug}-{errors}-error(s)-{warnings}-warning(s)-{self.ts_path}.md"
+        )
+        filepath = os.path.join(repo_dir, filename)
+
+        scan_md = [
+            f"# {pkg} — {cat.name}",
+            f"**Time:** {self.timestamp}  ",
+            f"**Success:** {filtered.success_count} ✅ | **Failure:** {filtered.failure_count} ❌ | **Skipped:** {filtered.skipped_count} ⏭️",
+            "",
+        ]
+
+        if filtered.successes:
+            scan_md.append("## Successes ✅")
+            for r in filtered.successes:
+                scan_md.append(f"- **{r.project}**: {r.message}")
+                if r.output and "coverage" in (r.command or "").lower():
+                    scan_md.append(f"\n{r.output}\n")
+            scan_md.append("")
+
+        if filtered.failures:
+            scan_md.append("## Failures ❌")
+            for r in filtered.failures:
+                scan_md.append(f"- **{r.project}**: {r.message}")
+                if r.output:
+                    scan_md.append(f"```text\n{r.output}\n```")
+            scan_md.append("")
+
+        if filtered.skipped:
+            scan_md.append("## Skipped ⏭️")
+            for r in filtered.skipped:
+                scan_md.append(f"- **{r.project}**: {r.message}")
+            scan_md.append("")
+
+        try:
+            with open(filepath, "w") as f:
+                f.write("\n".join(scan_md))
+            rel_path = os.path.join(repo_dir_name, filename)
+            if rel_path not in self.project_files[pkg]:
+                self.project_files[pkg].append(rel_path)
+        except Exception as e:
+            logger.error(f"Failed to write report file {filepath}: {e}")
+
     def _write_category_files(self, cat: ValidationCategory) -> None:
         """Write per-repo files for a single category immediately."""
         all_projects_in_cat: set[str] = set()

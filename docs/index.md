@@ -173,6 +173,7 @@ sequenceDiagram
 |            | --type           | Validation filter: agent, mcp, or all        |
 |            | --tree           | Generate ASCII workspace tree          |
 |            | --mermaid        | Generate Mermaid workspace diagram     |
+|            | --branches       | List active branches across workspace  |
 |            | --setup          | Sync workspace from YAML config        |
 |            | --graph-query    | Query Hybrid Graph (semantic, structural, or hybrid) |
 |            | --graph-mode     | Graph query mode (semantic, structural, or hybrid)       |
