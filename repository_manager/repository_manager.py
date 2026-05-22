@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.16.0"
+__version__ = "1.17.0"
 
 import concurrent.futures
 import multiprocessing
