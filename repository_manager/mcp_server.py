@@ -42,7 +42,7 @@ from repository_manager.models import (
 )
 from repository_manager.repository_manager import Git
 
-__version__ = "1.16.0"
+__version__ = "1.17.0"
 
 
 DEFAULT_WORKSPACE = os.environ.get(
