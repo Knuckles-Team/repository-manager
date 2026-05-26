@@ -44,7 +44,6 @@ from repository_manager.repository_manager import Git
 
 __version__ = "1.18.0"
 
-
 DEFAULT_WORKSPACE = os.environ.get(
     "REPOSITORY_MANAGER_WORKSPACE",
     os.environ.get("WORKSPACE_PATH", "/home/apps/workspace"),
@@ -212,18 +211,22 @@ def get_git_instance(path: str | None = None, threads: int | None = None) -> Git
     git = Git(path=workspace_path, threads=threads)
 
     yml_path = os.path.join(workspace_path, DEFAULT_WORKSPACE_YML)
-    if not os.path.exists(yml_path):
-        # Fallback to the packaged version if the workspace-relative one isn't found
-        from repository_manager.repository_manager import (
-            DEFAULT_WORKSPACE_YML as PACKAGED_YML,
-        )
-
-        yml_path = PACKAGED_YML
-
     if os.path.exists(yml_path):
         git.load_projects_from_yaml(yml_path)
     else:
-        logger.warning(f"No workspace.yml found at {yml_path}")
+        if path is not None:
+            # If path was explicitly specified but workspace.yml is missing, discover projects
+            git.discover_projects()
+        else:
+            # Fallback to the packaged version if the workspace-relative one isn't found
+            from repository_manager.repository_manager import (
+                DEFAULT_WORKSPACE_YML as PACKAGED_YML,
+            )
+
+            if os.path.exists(PACKAGED_YML):
+                git.load_projects_from_yaml(PACKAGED_YML)
+            else:
+                git.discover_projects()
 
     return git
 
@@ -251,7 +254,7 @@ def register_git_operations_tools(mcp: FastMCP):
     )
     async def rm_git(
         action: str = Field(
-            description="Action: 'raw', 'clone', 'pull', 'push', 'phased_push'"
+            description="Action: 'raw', 'clone', 'pull', 'push', 'phased_push', 'add', 'commit'"
         ),
         command: str | None = Field(
             default=None,
@@ -267,6 +270,14 @@ def register_git_operations_tools(mcp: FastMCP):
         target_project: str | None = Field(
             default=None,
             description="Optional specific project to push for 'phased_push'.",
+        ),
+        projects: str | None = Field(
+            default=None,
+            description="Optional comma-separated list of repository URLs to clone or directory names/paths to pull/push/add/commit.",
+        ),
+        message: str | None = Field(
+            default=None,
+            description="Commit message for 'commit' action.",
         ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
@@ -289,13 +300,76 @@ def register_git_operations_tools(mcp: FastMCP):
             return git.git_action(command=command, path=path)
 
         if action == "clone":
-            return _submit_job("clone", git.clone_projects)
+            urls = None
+            if projects:
+                urls = [url.strip() for url in projects.split(",") if url.strip()]
+            return _submit_job("clone", git.clone_projects, projects=urls)
 
         if action == "pull":
-            return _submit_job("pull", git.pull_projects)
+            dirs = None
+            if projects:
+                dirs = []
+                for p in projects.split(","):
+                    p = p.strip()
+                    if not p:
+                        continue
+                    if os.path.isabs(p):
+                        dirs.append(p)
+                    else:
+                        dirs.append(os.path.abspath(os.path.join(git.path, p)))
+            return _submit_job("pull", git.pull_projects, project_dirs=dirs)
 
         if action == "push":
-            return _submit_job("push", git.push_projects)
+            dirs = None
+            if projects:
+                dirs = []
+                for p in projects.split(","):
+                    p = p.strip()
+                    if not p:
+                        continue
+                    if os.path.isabs(p):
+                        dirs.append(p)
+                    else:
+                        dirs.append(os.path.abspath(os.path.join(git.path, p)))
+            return _submit_job("push", git.push_projects, project_dirs=dirs)
+
+        if action == "add":
+            dirs = None
+            if projects:
+                dirs = []
+                for p in projects.split(","):
+                    p = p.strip()
+                    if not p:
+                        continue
+                    if os.path.isabs(p):
+                        dirs.append(p)
+                    else:
+                        dirs.append(os.path.abspath(os.path.join(git.path, p)))
+            return _submit_job("add", git.add_projects, project_dirs=dirs)
+
+        if action == "commit":
+            if not message:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message="message is required for 'commit' action", code=1
+                    ),
+                )
+            dirs = None
+            if projects:
+                dirs = []
+                for p in projects.split(","):
+                    p = p.strip()
+                    if not p:
+                        continue
+                    if os.path.isabs(p):
+                        dirs.append(p)
+                    else:
+                        dirs.append(os.path.abspath(os.path.join(git.path, p)))
+            return _submit_job(
+                "commit", git.commit_projects, message=message, project_dirs=dirs
+            )
 
         if action == "phased_push":
             progress = {
@@ -493,6 +567,17 @@ def register_project_management_tools(mcp: FastMCP):
             return _submit_job("build", git.build_projects)
 
         if action == "validate":
+            with _jobs_lock:
+                for existing_id, existing_job in _jobs.items():
+                    if (
+                        existing_job["action"] == "validate"
+                        and existing_job["status"] == "running"
+                    ):
+                        return {
+                            "status": "error",
+                            "message": f"There is already another validation job in the queue with job_id '{existing_id}'.",
+                        }
+
             repo_list_for_writer = (
                 repositories.replace(" ", "").split(",") if repositories else None
             )

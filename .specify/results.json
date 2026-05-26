@@ -1,0 +1,2582 @@
+[
+  {
+    "domain": "Project Analysis",
+    "score": 74,
+    "grade": "C",
+    "findings": [
+      "Detected ecosystem marker: agent-utilities \u2192 Agent-Utilities Ecosystem",
+      "Protocol support: MCP"
+    ],
+    "justifications": [
+      {
+        "criterion": "has_pyproject",
+        "points": 10,
+        "evidence": "pyproject.toml and requirements.txt",
+        "reasoning": "Both pyproject.toml and requirements.txt exist, fulfilling mandatory Python project requirements"
+      },
+      {
+        "criterion": "project_type_detected",
+        "points": 10,
+        "evidence": "Agent-Utilities Ecosystem",
+        "reasoning": "Identified 1 ecosystem marker(s) in dependencies"
+      },
+      {
+        "criterion": "externalized_prompts",
+        "points": 0,
+        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager",
+        "reasoning": "No prompts/ directory found. Prompts may be hardcoded in source."
+      },
+      {
+        "criterion": "observability",
+        "points": 0,
+        "evidence": "dependency list",
+        "reasoning": "No observability tools (logfire, sentry, opentelemetry) found"
+      },
+      {
+        "criterion": "testing_suite",
+        "points": 10,
+        "evidence": "tests dir: True, pytest dep: True",
+        "reasoning": "Tests directory exists, pytest in dependencies"
+      },
+      {
+        "criterion": "agents_md",
+        "points": 10,
+        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager/AGENTS.md (39110 bytes)",
+        "reasoning": "AGENTS.md exists with comprehensive content"
+      },
+      {
+        "criterion": "pre_commit_hooks",
+        "points": 10,
+        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager/.pre-commit-config.yaml",
+        "reasoning": "Pre-commit configuration found for automated code quality checks"
+      },
+      {
+        "criterion": "gitignore",
+        "points": 10,
+        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager/.gitignore",
+        "reasoning": ".gitignore exists to prevent committing build artifacts and secrets"
+      },
+      {
+        "criterion": "env_template",
+        "points": 10,
+        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager/.env.example",
+        "reasoning": "Environment template exists for onboarding and secret management"
+      },
+      {
+        "criterion": "protocol_support",
+        "points": 4,
+        "evidence": "MCP",
+        "reasoning": "1 communication protocol(s) detected"
+      }
+    ],
+    "details": {
+      "has_pyproject": true,
+      "has_requirements": true,
+      "dep_count": 8,
+      "project_types": [
+        "Agent-Utilities Ecosystem"
+      ],
+      "has_agent_skills": false
+    }
+  },
+  {
+    "domain": "Dependency Audit",
+    "score": 97,
+    "grade": "A",
+    "findings": [
+      "Minor update: pre-commit 4.5.1 (constraint \u2014 not installed) -> 4.6.0"
+    ],
+    "justifications": [
+      {
+        "criterion": "dependency_freshness",
+        "points": 97,
+        "evidence": "source=/home/apps/workspace/agent-packages/agents/repository-manager/pyproject.toml total=8 major=0 minor=1 patch=0 not_installed=2",
+        "reasoning": "Audited 8 deps (6 installed, 2 constraint-only). 0 major, 1 minor, 0 patch updates."
+      }
+    ],
+    "packages": {
+      "pytest-asyncio": {
+        "current": "1.3.0",
+        "constraint": "Any",
+        "installed": "1.3.0",
+        "latest": "1.3.0",
+        "status": "up-to-date",
+        "version_source": "installed",
+        "summary": "Pytest support for asyncio"
+      },
+      "bump2version": {
+        "current": "1.0.1",
+        "constraint": "1.0.1",
+        "installed": null,
+        "latest": "1.0.1",
+        "status": "up-to-date",
+        "version_source": "constraint",
+        "summary": "Version-bump your software with a single command!"
+      },
+      "pytest-xdist": {
+        "current": "3.8.0",
+        "constraint": "3.6.0",
+        "installed": "3.8.0",
+        "latest": "3.8.0",
+        "status": "up-to-date",
+        "version_source": "installed",
+        "summary": "pytest xdist plugin for distributed testing, most importantly across multiple CPUs"
+      },
+      "pytest-timeout": {
+        "current": "2.4.0",
+        "constraint": "Any",
+        "installed": "2.4.0",
+        "latest": "2.4.0",
+        "status": "up-to-date",
+        "version_source": "installed",
+        "summary": "pytest plugin to abort hanging tests"
+      },
+      "agent-utilities": {
+        "current": "0.16.0",
+        "constraint": "0.16.0",
+        "installed": "0.16.0",
+        "latest": "0.16.0",
+        "status": "up-to-date",
+        "version_source": "installed",
+        "summary": "Agent Utilities for Pydantic AI Agents"
+      },
+      "pytest-cov": {
+        "current": "7.1.0",
+        "constraint": "Any",
+        "installed": "7.1.0",
+        "latest": "7.1.0",
+        "status": "up-to-date",
+        "version_source": "installed",
+        "summary": "Pytest plugin for measuring coverage."
+      },
+      "pre-commit": {
+        "current": "4.5.1",
+        "constraint": "4.5.1",
+        "installed": null,
+        "latest": "4.6.0",
+        "status": "minor",
+        "version_source": "constraint",
+        "summary": "A framework for managing and maintaining multi-language pre-commit hooks."
+      },
+      "pytest": {
+        "current": "9.0.3",
+        "constraint": "Any",
+        "installed": "9.0.3",
+        "latest": "9.0.3",
+        "status": "up-to-date",
+        "version_source": "installed",
+        "summary": "pytest: simple powerful testing with Python"
+      }
+    }
+  },
+  {
+    "domain": "Codebase Optimization",
+    "score": 45,
+    "grade": "F",
+    "findings": [
+      "Moderate avg cyclomatic complexity: 7.5",
+      "4 functions exceed 200 lines (actionable refactoring targets): validate_projects (453L), main (353L), phased_bumpversion (230L), to_directory_report (209L)",
+      "Monolithic: mcp_server.py (574L) \u2014 1 functions with high complexity (worst: _get_job_status at 78L, CC=20); Low cohesion: 11 distinct concepts in one file",
+      "Monolithic: repository_manager.py (3142L) \u2014 11 functions with high complexity (worst: Git.validate_projects at 453L, CC=70); God class: Git (42 methods) \u2014 consider mixins/composition",
+      "Monolithic: models.py (1452L) \u2014 7 functions with high complexity (worst: ValidationReport.to_directory_report at 209L, CC=23); Low cohesion: 30 distinct concepts in one file",
+      "18 functions with nesting depth >4"
+    ],
+    "justifications": [
+      {
+        "criterion": "code_quality",
+        "points": 45,
+        "evidence": "{\"file_count\": 29, \"total_lines\": 8111, \"function_count\": 178, \"avg_complexity\": 7.46, \"max_complexity\": 70, \"avg_function_length\": 42.1, \"max_function_length\": 453, \"max_nesting_depth\": 15, \"duplication_ratio\": 0.021, \"long_functions\": 44, \"complex_functions\": 34, \"deep_nesting_functions\": 18, \"parse_errors\": 0, \"structural_issues\": 3, \"truly_monolithic\": 3}",
+        "reasoning": "Analyzed 29 files, 178 functions. Avg CC=7.5, max length=453, duplication=2.1%, 3 structural issues (3 monolithic)."
+      }
+    ],
+    "metrics": {
+      "file_count": 29,
+      "total_lines": 8111,
+      "function_count": 178,
+      "avg_complexity": 7.46,
+      "max_complexity": 70,
+      "avg_function_length": 42.1,
+      "max_function_length": 453,
+      "max_nesting_depth": 15,
+      "duplication_ratio": 0.021,
+      "long_functions": 44,
+      "complex_functions": 34,
+      "deep_nesting_functions": 18,
+      "parse_errors": 0,
+      "structural_issues": 3,
+      "truly_monolithic": 3
+    },
+    "top_complex": [
+      {
+        "name": "validate_projects",
+        "line": 407,
+        "length": 453,
+        "complexity": 70,
+        "nesting_depth": 7,
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+      },
+      {
+        "name": "phased_bumpversion",
+        "line": 2130,
+        "length": 230,
+        "complexity": 56,
+        "nesting_depth": 6,
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+      },
+      {
+        "name": "from_results",
+        "line": 639,
+        "length": 135,
+        "complexity": 54,
+        "nesting_depth": 5,
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/models.py"
+      },
+      {
+        "name": "main",
+        "line": 2783,
+        "length": 353,
+        "complexity": 47,
+        "nesting_depth": 5,
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+      },
+      {
+        "name": "phased_push",
+        "line": 2363,
+        "length": 195,
+        "complexity": 45,
+        "nesting_depth": 5,
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+      }
+    ],
+    "top_long": [
+      {
+        "name": "validate_projects",
+        "line": 407,
+        "length": 453,
+        "complexity": 70,
+        "nesting_depth": 7,
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+      },
+      {
+        "name": "main",
+        "line": 2783,
+        "length": 353,
+        "complexity": 47,
+        "nesting_depth": 5,
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+      },
+      {
+        "name": "phased_bumpversion",
+        "line": 2130,
+        "length": 230,
+        "complexity": 56,
+        "nesting_depth": 6,
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+      },
+      {
+        "name": "to_directory_report",
+        "line": 834,
+        "length": 209,
+        "complexity": 23,
+        "nesting_depth": 5,
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/models.py"
+      },
+      {
+        "name": "phased_push",
+        "line": 2363,
+        "length": 195,
+        "complexity": 45,
+        "nesting_depth": 5,
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+      }
+    ],
+    "structural_issues": [
+      {
+        "file": "mcp_server.py",
+        "path": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "lines": 574,
+        "issues": [
+          "1 functions with high complexity (worst: _get_job_status at 78L, CC=20)",
+          "Low cohesion: 11 distinct concepts in one file"
+        ],
+        "func_issues": [
+          {
+            "name": "_get_job_status",
+            "lines": 78,
+            "complexity": 20,
+            "nesting": 7
+          }
+        ],
+        "classification": "monolithic"
+      },
+      {
+        "file": "repository_manager.py",
+        "path": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
+        "lines": 3142,
+        "issues": [
+          "11 functions with high complexity (worst: Git.validate_projects at 453L, CC=70)",
+          "God class: Git (42 methods) \u2014 consider mixins/composition"
+        ],
+        "func_issues": [
+          {
+            "name": "main",
+            "lines": 353,
+            "complexity": 47,
+            "nesting": 5
+          },
+          {
+            "name": "Git.install_projects",
+            "lines": 109,
+            "complexity": 23,
+            "nesting": 3
+          },
+          {
+            "name": "Git.validate_projects",
+            "lines": 453,
+            "complexity": 70,
+            "nesting": 7
+          },
+          {
+            "name": "Git.generate_markdown_summary",
+            "lines": 67,
+            "complexity": 20,
+            "nesting": 5
+          },
+          {
+            "name": "Git.remediate_projects",
+            "lines": 77,
+            "complexity": 16,
+            "nesting": 6
+          }
+        ],
+        "classification": "monolithic"
+      },
+      {
+        "file": "models.py",
+        "path": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/models.py",
+        "lines": 1452,
+        "issues": [
+          "7 functions with high complexity (worst: ValidationReport.to_directory_report at 209L, CC=23)",
+          "Low cohesion: 30 distinct concepts in one file"
+        ],
+        "func_issues": [
+          {
+            "name": "_extract_error_lines",
+            "lines": 139,
+            "complexity": 26,
+            "nesting": 3
+          },
+          {
+            "name": "_build_summary_md",
+            "lines": 114,
+            "complexity": 14,
+            "nesting": 6
+          },
+          {
+            "name": "ValidationReport.from_results",
+            "lines": 135,
+            "complexity": 54,
+            "nesting": 5
+          },
+          {
+            "name": "ValidationReport.to_directory_report",
+            "lines": 209,
+            "complexity": 23,
+            "nesting": 5
+          },
+          {
+            "name": "IncrementalReportWriter.write_incremental_result",
+            "lines": 120,
+            "complexity": 31,
+            "nesting": 3
+          }
+        ],
+        "classification": "monolithic"
+      }
+    ],
+    "flat_directories": []
+  },
+  {
+    "domain": "Security Analysis",
+    "score": 55,
+    "grade": "F",
+    "findings": [
+      "3 HIGH severity vulnerabilities found"
+    ],
+    "justifications": [
+      {
+        "criterion": "security_posture",
+        "points": 55,
+        "evidence": "high=3 med=0 low=0 attack_surface={\"subprocess_calls\": 16, \"file_io_calls\": 65, \"network_endpoints\": 0, \"eval_exec_usage\": 0, \"sql_usage\": 0}",
+        "reasoning": "Scanned 29 files. Found 3 security findings. High: -45pts, Med: -0pts, Low: -0pts."
+      }
+    ],
+    "vulnerabilities": [
+      {
+        "cwe": "CWE-78",
+        "name": "OS Command Injection",
+        "severity": "High",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "line": 123,
+        "detail": "Dangerous call: subprocess.Popen()"
+      },
+      {
+        "cwe": "CWE-78",
+        "name": "OS Command Injection",
+        "severity": "High",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_agent_integration.py",
+        "line": 57,
+        "detail": "Dangerous call: subprocess.Popen()"
+      },
+      {
+        "cwe": "CWE-78",
+        "name": "OS Command Injection",
+        "severity": "High",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
+        "line": 1061,
+        "detail": "Dangerous call: subprocess.Popen()"
+      }
+    ],
+    "attack_surface": {
+      "subprocess_calls": 16,
+      "file_io_calls": 65,
+      "network_endpoints": 0,
+      "eval_exec_usage": 0,
+      "sql_usage": 0
+    }
+  },
+  {
+    "domain": "Test Coverage",
+    "score": 75,
+    "grade": "C",
+    "findings": [
+      "Test suite lacks intent diversity (only one type)",
+      "17 potential doc-test drift items"
+    ],
+    "justifications": [
+      {
+        "criterion": "test_coverage_quality",
+        "points": 75,
+        "evidence": "{\"test_file_count\": 11, \"test_count\": 54, \"source_file_count\": 29, \"test_to_source_ratio\": 1.86, \"intent_distribution\": {\"unit\": 54}, \"tests_without_assertions\": 2, \"concept_traced_tests\": 0, \"drift_items\": 17}",
+        "reasoning": "54 tests across 11 files. Ratio: 1.86. Intent: {'unit': 54}. 2 without assertions, 17 drift items."
+      }
+    ],
+    "metrics": {
+      "test_file_count": 11,
+      "test_count": 54,
+      "source_file_count": 29,
+      "test_to_source_ratio": 1.86,
+      "intent_distribution": {
+        "unit": 54
+      },
+      "tests_without_assertions": 2,
+      "concept_traced_tests": 0,
+      "drift_items": 17
+    },
+    "tests": [
+      {
+        "name": "test_phased_push",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "line": 25,
+        "length": 22,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_phased_push_single_project",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "line": 50,
+        "length": 21,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_push_projects",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "line": 73,
+        "length": 8,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_get_workspace_projects_via_graph",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_agent_integration.py",
+        "line": 108,
+        "length": 86,
+        "intent": "unit",
+        "markers": [
+          "asyncio",
+          "integration"
+        ],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_mcp_tools_registration",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_registration.py",
+        "line": 8,
+        "length": 12,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": false
+      },
+      {
+        "name": "test_background_job_lifecycle",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 18,
+        "length": 36,
+        "intent": "unit",
+        "markers": [
+          "anyio"
+        ],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_get_job_status_variations",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 55,
+        "length": 75,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_get_git_instance_fallbacks",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 131,
+        "length": 5,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_mcp_rm_git_tool",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 138,
+        "length": 101,
+        "intent": "unit",
+        "markers": [
+          "anyio"
+        ],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_mcp_rm_workspace_tool",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 241,
+        "length": 182,
+        "intent": "unit",
+        "markers": [
+          "anyio"
+        ],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_mcp_rm_projects_tool",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 425,
+        "length": 101,
+        "intent": "unit",
+        "markers": [
+          "anyio"
+        ],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_mcp_server_cli_execution",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 527,
+        "length": 41,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_dynamic_attributes_and_imports",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "line": 7,
+        "length": 33,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_dynamic_attributes_import_failure",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "line": 41,
+        "length": 22,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_main_entrypoint",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "line": 64,
+        "length": 9,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_pipeline_runner_execution",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "line": 13,
+        "length": 25,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_pipeline_runner_failure",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "line": 40,
+        "length": 18,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_topological_sort",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "line": 60,
+        "length": 8,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_to_markdown_renders_sections",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 119,
+        "length": 22,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_for_project_filters_correctly",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 142,
+        "length": 18,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_for_project_returns_empty_when_no_match",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 161,
+        "length": 10,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_creates_directory_structure",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 179,
+        "length": 6,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_creates_per_repo_directories",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 186,
+        "length": 7,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_per_scan_files_have_correct_format",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 194,
+        "length": 12,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_index_contains_summary_table",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 207,
+        "length": 12,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_index_contains_repo_links",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 220,
+        "length": 10,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_handles_empty_results",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 231,
+        "length": 11,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_timestamp_format_in_dirname",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 243,
+        "length": 8,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_write_phase_creates_files",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 259,
+        "length": 29,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      },
+      {
+        "name": "test_write_phase_incremental_accumulation",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 289,
+        "length": 48,
+        "intent": "unit",
+        "markers": [],
+        "concept_id": "",
+        "has_assertions": true
+      }
+    ],
+    "drift": [
+      {
+        "type": "untested_feature",
+        "source": "README.md",
+        "feature": "cli or api | mcp | agent",
+        "detail": "Feature heading in README has no corresponding test"
+      },
+      {
+        "type": "untested_feature",
+        "source": "README.md",
+        "feature": "overview",
+        "detail": "Feature heading in README has no corresponding test"
+      },
+      {
+        "type": "untested_feature",
+        "source": "README.md",
+        "feature": "key features",
+        "detail": "Feature heading in README has no corresponding test"
+      },
+      {
+        "type": "untested_feature",
+        "source": "README.md",
+        "feature": "cli or api",
+        "detail": "Feature heading in README has no corresponding test"
+      },
+      {
+        "type": "untested_feature",
+        "source": "README.md",
+        "feature": "mcp",
+        "detail": "Feature heading in README has no corresponding test"
+      },
+      {
+        "type": "untested_feature",
+        "source": "README.md",
+        "feature": "mcp configuration examples",
+        "detail": "Feature heading in README has no corresponding test"
+      },
+      {
+        "type": "untested_feature",
+        "source": "README.md",
+        "feature": "stdio transport (recommended for local ides e.g., cursor, claude desktop)",
+        "detail": "Feature heading in README has no corresponding test"
+      },
+      {
+        "type": "untested_feature",
+        "source": "README.md",
+        "feature": "streamable-http transport (recommended for production deployments)",
+        "detail": "Feature heading in README has no corresponding test"
+      },
+      {
+        "type": "untested_feature",
+        "source": "README.md",
+        "feature": "agent",
+        "detail": "Feature heading in README has no corresponding test"
+      },
+      {
+        "type": "untested_feature",
+        "source": "README.md",
+        "feature": "running the agent cli",
+        "detail": "Feature heading in README has no corresponding test"
+      }
+    ]
+  },
+  {
+    "domain": "Documentation & Governance",
+    "score": 82,
+    "grade": "B",
+    "findings": [
+      "README.md missing sections: usage|quick start",
+      "2 broken internal links in README.md",
+      "README missing: Has a Table of Contents",
+      "README missing: Has usage examples with code blocks",
+      "39 broken file references in documentation"
+    ],
+    "justifications": [
+      {
+        "criterion": "documentation_quality",
+        "points": 82,
+        "evidence": "{\"README.md\": {\"exists\": true, \"missing\": [\"usage|quick start\"]}, \"AGENTS.md\": {\"exists\": true, \"missing\": []}, \"STANDARDS.md\": {\"exists\": false, \"missing\": []}, \"CONTRIBUTING.md\": {\"exists\": false, \"missing\": []}, \"CHANGELOG.md\": {\"exists\": true, \"missing\": []}, \"LICENSE\": {\"exists\": true, \"missing\": []}, \"docs/\": {\"exists\": true, \"missing\": []}}",
+        "reasoning": "Audited 6 standard docs + docs/ directory. 39 broken references, 5 docs present. README industry grade: B (81.2%)."
+      }
+    ],
+    "doc_results": {
+      "README.md": {
+        "exists": true,
+        "size": 11191,
+        "headings": [
+          "Repository Manager",
+          "CLI or API | MCP | Agent",
+          "Overview",
+          "Key Features",
+          "CLI or API",
+          "MCP",
+          "Available MCP Tools",
+          "MCP Configuration Examples",
+          "stdio Transport (Recommended for local IDEs e.g., Cursor, Claude Desktop)",
+          "Streamable-HTTP Transport (Recommended for production deployments)",
+          "Agent",
+          "Running the Agent CLI",
+          "Set credentials",
+          "Run the agent server",
+          "Docker Compose Orchestration",
+          "Security & Governance",
+          "Access Control & Policy Enforcement",
+          "Runtime Security Grid",
+          "Installation",
+          "Using uv (highly recommended)"
+        ],
+        "missing_sections": [
+          "usage|quick start"
+        ],
+        "heading_count": 23,
+        "stale": false,
+        "last_modified": "2026-05-22 08:19:47 -0500",
+        "category": "project_overview"
+      },
+      "AGENTS.md": {
+        "exists": true,
+        "size": 38948,
+        "headings": [
+          "Repository Manager Agent Documentation",
+          "Tech Stack & Architecture",
+          "Package Relationships",
+          "Validation & Diagnostics",
+          "End-to-End Specialist Validation",
+          "From the repository-manager root",
+          "Integration Test Suite",
+          "Core Architecture Diagram",
+          "MCP Loading & Registry Architecture",
+          "Graph Orchestration Architecture",
+          "Unified Hybrid Graph Architecture",
+          "10-Phase Intelligence Pipeline",
+          "Hierarchical State Machine (HSM) Architecture",
+          "HSM Level Mapping",
+          "Maintaining the Specialist Registry (`NODE_SKILL_MAP`)",
+          "Concept Mapping",
+          "HSM Design Principals for Future Growth",
+          "Behavior Tree (BT) Concepts",
+          "Commands (run these exactly)",
+          "Development & Quality"
+        ],
+        "missing_sections": [],
+        "heading_count": 46,
+        "stale": false,
+        "last_modified": "2026-05-09 17:38:34 -0500",
+        "category": "agentic_metadata"
+      },
+      "STANDARDS.md": {
+        "exists": false,
+        "missing_sections": [],
+        "size": 0,
+        "headings": [],
+        "stale": true,
+        "last_modified": "unknown",
+        "category": "standards"
+      },
+      "CONTRIBUTING.md": {
+        "exists": false,
+        "missing_sections": [],
+        "size": 0,
+        "headings": [],
+        "stale": true,
+        "last_modified": "unknown",
+        "category": "contributing"
+      },
+      "CHANGELOG.md": {
+        "exists": true,
+        "size": 365,
+        "headings": [
+          "Changelog",
+          "[Unreleased]",
+          "Added",
+          "Changed",
+          "Fixed",
+          "[1.3.55] - 2026-04-29",
+          "Added"
+        ],
+        "missing_sections": [],
+        "heading_count": 7,
+        "stale": false,
+        "last_modified": "2026-04-30 01:12:45 -0500",
+        "category": "changelog"
+      },
+      "LICENSE": {
+        "exists": true,
+        "size": 1060,
+        "headings": [],
+        "missing_sections": [],
+        "heading_count": 0,
+        "stale": false,
+        "last_modified": "2024-05-09 03:45:39 -0500",
+        "category": "license"
+      },
+      "docs/": {
+        "exists": true,
+        "file_count": 5,
+        "files": [
+          "docs/legacy_readme.md",
+          "docs/overview.md",
+          "docs/phased_push.md",
+          "docs/phased_maintenance.md",
+          "docs/index.md"
+        ]
+      }
+    },
+    "drift": [
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "NODE_AGENTS.md",
+        "detail": "Referenced file 'NODE_AGENTS.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "A2A_AGENTS.md",
+        "detail": "Referenced file 'A2A_AGENTS.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "IDENTITY.md",
+        "detail": "Referenced file 'IDENTITY.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "MEMORY.md",
+        "detail": "Referenced file 'MEMORY.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/graph/config_helpers.py",
+        "detail": "Referenced file 'agent_utilities/graph/config_helpers.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "_template.md",
+        "detail": "Referenced file '_template.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "IDENTITY.md",
+        "detail": "Referenced file 'IDENTITY.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/agent_utilities.py",
+        "detail": "Referenced file 'agent_utilities/agent_utilities.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/agent_factory.py",
+        "detail": "Referenced file 'agent_utilities/agent_factory.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/mcp_utilities.py",
+        "detail": "Referenced file 'agent_utilities/mcp_utilities.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/base_utilities.py",
+        "detail": "Referenced file 'agent_utilities/base_utilities.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/embedding_utilities.py",
+        "detail": "Referenced file 'agent_utilities/embedding_utilities.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/api_utilities.py",
+        "detail": "Referenced file 'agent_utilities/api_utilities.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/chat_persistence.py",
+        "detail": "Referenced file 'agent_utilities/chat_persistence.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/custom_observability.py",
+        "detail": "Referenced file 'agent_utilities/custom_observability.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "graph/hsm.py",
+        "detail": "Referenced file 'graph/hsm.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "graph/config_helpers.py",
+        "detail": "Referenced file 'graph/config_helpers.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/model_factory.py",
+        "detail": "Referenced file 'agent_utilities/model_factory.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/middlewares.py",
+        "detail": "Referenced file 'agent_utilities/middlewares.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/prompt_builder.py",
+        "detail": "Referenced file 'agent_utilities/prompt_builder.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/tool_filtering.py",
+        "detail": "Referenced file 'agent_utilities/tool_filtering.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/tool_guard.py",
+        "detail": "Referenced file 'agent_utilities/tool_guard.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/workspace.py",
+        "detail": "Referenced file 'agent_utilities/workspace.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities/a2a.py",
+        "detail": "Referenced file 'agent_utilities/a2a.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "pathlib.Path",
+        "detail": "Referenced file 'pathlib.Path' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "IDENTITY.md",
+        "detail": "Referenced file 'IDENTITY.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "MEMORY.md",
+        "detail": "Referenced file 'MEMORY.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "Part.tsx",
+        "detail": "Referenced file 'Part.tsx' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_utilities.py",
+        "detail": "Referenced file 'agent_utilities.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "agent_factory.py",
+        "detail": "Referenced file 'agent_factory.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "mcp_utilities.py",
+        "detail": "Referenced file 'mcp_utilities.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "graph_orchestration.py",
+        "detail": "Referenced file 'graph_orchestration.py' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "IDENTITY.md",
+        "detail": "Referenced file 'IDENTITY.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "MEMORY.md",
+        "detail": "Referenced file 'MEMORY.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "USER.md",
+        "detail": "Referenced file 'USER.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "A2A_AGENTS.md",
+        "detail": "Referenced file 'A2A_AGENTS.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "CRON.md",
+        "detail": "Referenced file 'CRON.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "CRON_LOG.md",
+        "detail": "Referenced file 'CRON_LOG.md' not found in project"
+      },
+      {
+        "type": "broken_reference",
+        "doc": "AGENTS.md",
+        "reference": "HEARTBEAT.md",
+        "detail": "Referenced file 'HEARTBEAT.md' not found in project"
+      },
+      {
+        "type": "info",
+        "doc": "README.md",
+        "reference": "repository-manager[all], repository-manager[all]",
+        "detail": "README references 2 install commands"
+      }
+    ],
+    "readme_grade": {
+      "score": 26,
+      "max_score": 32,
+      "percentage": 81.2,
+      "grade": "B",
+      "criteria": {
+        "has_title": true,
+        "has_badges": true,
+        "has_description": true,
+        "has_toc": false,
+        "has_installation": true,
+        "has_usage": false,
+        "has_api_docs": true,
+        "has_architecture": true,
+        "has_contributing": true,
+        "has_license": false,
+        "has_code_blocks": true,
+        "has_docs_refs": true,
+        "no_broken_links": false,
+        "reasonable_length": true,
+        "has_cli_api_details": true,
+        "has_mcp_configs": true,
+        "has_agent_configs": true,
+        "has_env_var_docs": true,
+        "has_mcp_tool_table": true,
+        "has_deployment_docs": true
+      },
+      "findings": [
+        "2 broken internal links in README.md",
+        "README missing: Has a Table of Contents",
+        "README missing: Has usage examples with code blocks"
+      ]
+    }
+  },
+  {
+    "domain": "Architecture & Design Patterns",
+    "score": 65,
+    "grade": "D",
+    "findings": [
+      "SRP: 5 modules exceed 500 lines (god modules)",
+      "SRP: 1 classes have >15 methods",
+      "No discernible layer architecture (no domain/service/adapter separation)",
+      "Low dependency injection ratio: 8%"
+    ],
+    "justifications": [
+      {
+        "criterion": "architecture_quality",
+        "points": 65,
+        "evidence": "{\"layers\": 0, \"di_ratio\": 0.08, \"solid_violations\": 2}",
+        "reasoning": "Analyzed 29 files. 0/5 architecture layers present, DI ratio: 8%, 2 SOLID violations."
+      }
+    ],
+    "analysis": {
+      "solid_findings": [
+        {
+          "principle": "SRP",
+          "status": "violation",
+          "detail": "5 modules exceed 500 lines (god modules)",
+          "items": [
+            {
+              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+              "lines": 567
+            },
+            {
+              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+              "lines": 647
+            },
+            {
+              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+              "lines": 574
+            },
+            {
+              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
+              "lines": 3142
+            },
+            {
+              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/models.py",
+              "lines": 1452
+            }
+          ]
+        },
+        {
+          "principle": "SRP",
+          "status": "violation",
+          "detail": "1 classes have >15 methods",
+          "items": [
+            {
+              "class": "Git",
+              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
+              "method_count": 42
+            }
+          ]
+        }
+      ],
+      "layer_architecture": {
+        "has_domain_layer": false,
+        "has_adapter_layer": false,
+        "has_port_interfaces": false,
+        "has_service_layer": false,
+        "has_model_layer": false
+      },
+      "dependency_injection": {
+        "total_classes": 24,
+        "di_classes": 2,
+        "di_ratio": 0.08
+      },
+      "event_driven": {
+        "event_classes": 0,
+        "callback_patterns": 0,
+        "observer_patterns": 0,
+        "signal_patterns": 8
+      },
+      "file_count": 29
+    }
+  },
+  {
+    "domain": "Concept Traceability",
+    "score": 30,
+    "grade": "F",
+    "findings": [
+      "Low traceability ratio: 0% concepts fully traced",
+      "54 test functions missing concept markers",
+      "67 significant functions (>10 lines) missing concept markers in docstrings"
+    ],
+    "justifications": [
+      {
+        "criterion": "concept_traceability",
+        "points": 30,
+        "evidence": "{\"total_concepts\": 5, \"well_traced\": 0, \"orphans\": 5, \"drift\": 0, \"code_concepts\": 0, \"doc_concepts\": 7, \"test_concepts\": 0, \"decorator_concepts\": 0, \"tests_missing_markers\": 54, \"functions_missing_docstrings\": 67, \"registry_concepts\": 0, \"unimplemented_concepts\": 0}",
+        "reasoning": "5 unique concepts found. 0 fully traced (code+docs+tests), 5 orphans, 0 drifted. 54 tests without concept markers. 67 functions without concept docstrings."
+      }
+    ],
+    "metrics": {
+      "total_concepts": 5,
+      "well_traced": 0,
+      "orphans": 5,
+      "drift": 0,
+      "code_concepts": 0,
+      "doc_concepts": 7,
+      "test_concepts": 0,
+      "decorator_concepts": 0,
+      "tests_missing_markers": 54,
+      "functions_missing_docstrings": 67,
+      "registry_concepts": 0,
+      "unimplemented_concepts": 0
+    },
+    "concept_map": {
+      "OS-5.4": {
+        "code": 0,
+        "docs": 2,
+        "test": 0,
+        "test_decorator": 0,
+        "test_docstring": 0
+      },
+      "OS-5.1": {
+        "code": 0,
+        "docs": 1,
+        "test": 0,
+        "test_decorator": 0,
+        "test_docstring": 0
+      },
+      "OS-5.3": {
+        "code": 0,
+        "docs": 2,
+        "test": 0,
+        "test_decorator": 0,
+        "test_docstring": 0
+      },
+      "ORCH-1.4": {
+        "code": 0,
+        "docs": 1,
+        "test": 0,
+        "test_decorator": 0,
+        "test_docstring": 0
+      },
+      "OS-5.2": {
+        "code": 0,
+        "docs": 1,
+        "test": 0,
+        "test_decorator": 0,
+        "test_docstring": 0
+      }
+    },
+    "orphans": [
+      {
+        "concept_id": "OS-5.4",
+        "present_in": [
+          "docs"
+        ],
+        "missing_from": [
+          "code",
+          "test"
+        ]
+      },
+      {
+        "concept_id": "OS-5.1",
+        "present_in": [
+          "docs"
+        ],
+        "missing_from": [
+          "code",
+          "test"
+        ]
+      },
+      {
+        "concept_id": "OS-5.3",
+        "present_in": [
+          "docs"
+        ],
+        "missing_from": [
+          "code",
+          "test"
+        ]
+      },
+      {
+        "concept_id": "ORCH-1.4",
+        "present_in": [
+          "docs"
+        ],
+        "missing_from": [
+          "code",
+          "test"
+        ]
+      },
+      {
+        "concept_id": "OS-5.2",
+        "present_in": [
+          "docs"
+        ],
+        "missing_from": [
+          "code",
+          "test"
+        ]
+      }
+    ],
+    "drift": [],
+    "tests_missing_markers": [
+      {
+        "test_name": "test_phased_push",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "line": 25
+      },
+      {
+        "test_name": "test_phased_push_single_project",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "line": 50
+      },
+      {
+        "test_name": "test_push_projects",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "line": 73
+      },
+      {
+        "test_name": "test_get_workspace_projects_via_graph",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_agent_integration.py",
+        "line": 108
+      },
+      {
+        "test_name": "test_mcp_tools_registration",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_registration.py",
+        "line": 8
+      },
+      {
+        "test_name": "test_background_job_lifecycle",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 18
+      },
+      {
+        "test_name": "test_get_job_status_variations",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 55
+      },
+      {
+        "test_name": "test_get_git_instance_fallbacks",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 131
+      },
+      {
+        "test_name": "test_mcp_rm_git_tool",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 138
+      },
+      {
+        "test_name": "test_mcp_rm_workspace_tool",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 241
+      },
+      {
+        "test_name": "test_mcp_rm_projects_tool",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 425
+      },
+      {
+        "test_name": "test_mcp_server_cli_execution",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "line": 527
+      },
+      {
+        "test_name": "test_dynamic_attributes_and_imports",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "line": 7
+      },
+      {
+        "test_name": "test_dynamic_attributes_import_failure",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "line": 41
+      },
+      {
+        "test_name": "test_main_entrypoint",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "line": 64
+      },
+      {
+        "test_name": "test_pipeline_runner_execution",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "line": 13
+      },
+      {
+        "test_name": "test_pipeline_runner_failure",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "line": 40
+      },
+      {
+        "test_name": "test_topological_sort",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "line": 60
+      },
+      {
+        "test_name": "test_to_markdown_renders_sections",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 119
+      },
+      {
+        "test_name": "test_for_project_filters_correctly",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "line": 142
+      }
+    ],
+    "functions_missing_docstrings": [
+      {
+        "function": "run_enhancer",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/run_single_enhancer.py",
+        "line": 14,
+        "length": 92
+      },
+      {
+        "function": "check_health",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "line": 17,
+        "length": 17
+      },
+      {
+        "function": "test_chat_stream",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "line": 36,
+        "length": 48
+      },
+      {
+        "function": "test_acp_integration",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "line": 86,
+        "length": 22
+      },
+      {
+        "function": "start_server",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "line": 110,
+        "length": 18
+      },
+      {
+        "function": "tail_log",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "line": 130,
+        "length": 12
+      },
+      {
+        "function": "compare_tool_results",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "line": 144,
+        "length": 79
+      },
+      {
+        "function": "main",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "line": 225,
+        "length": 46
+      },
+      {
+        "function": "main",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/validate_agent.py",
+        "line": 18,
+        "length": 39
+      },
+      {
+        "function": "list_tools",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/list_mcp_tools.py",
+        "line": 10,
+        "length": 16
+      },
+      {
+        "function": "main",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/validate_ecosystem.py",
+        "line": 12,
+        "length": 34
+      },
+      {
+        "function": "main",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/validate_a2a_agent.py",
+        "line": 11,
+        "length": 125
+      },
+      {
+        "function": "main",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_tools.py",
+        "line": 13,
+        "length": 33
+      },
+      {
+        "function": "get_git_instance",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "line": 209,
+        "length": 20
+      },
+      {
+        "function": "register_git_operations_tools",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "line": 243,
+        "length": 73
+      },
+      {
+        "function": "register_workspace_management_tools",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "line": 318,
+        "length": 110
+      },
+      {
+        "function": "register_project_management_tools",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "line": 430,
+        "length": 87
+      },
+      {
+        "function": "get_mcp_instance",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "line": 524,
+        "length": 28
+      },
+      {
+        "function": "mcp_server",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "line": 554,
+        "length": 17
+      },
+      {
+        "function": "rm_git",
+        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "line": 252,
+        "length": 64
+      }
+    ],
+    "unimplemented_concepts": []
+  },
+  {
+    "domain": "Linting & Formatting",
+    "score": 100,
+    "grade": "A",
+    "findings": [
+      "Total lint findings: 0 (high/error: 0, medium/warning: 0, low: 0)"
+    ],
+    "justifications": [
+      {
+        "criterion": "lint_compliance",
+        "points": 100,
+        "evidence": "ruff=0, bandit=0, mypy=0",
+        "reasoning": "0 total findings across 3 tools. High/error: -0pts, Med/warning: -0pts, Low: -0pt."
+      }
+    ],
+    "tool_results": {
+      "ruff": {
+        "available": true,
+        "finding_count": 0,
+        "returncode": 1
+      },
+      "bandit": {
+        "available": true,
+        "finding_count": 0,
+        "returncode": 1
+      },
+      "mypy": {
+        "available": true,
+        "finding_count": 0,
+        "returncode": 1
+      }
+    },
+    "all_findings": []
+  },
+  {
+    "domain": "Pre-Commit Compliance",
+    "score": 82,
+    "grade": "B",
+    "findings": [
+      "3/25 pre-commit hooks failed: don't commit to branch, mypy, bandit",
+      "1 hook(s) may be outdated: ruff-pre-commit",
+      "Pytest hooks skipped (handled by CE-016 Test Execution): local-pytest, pytest"
+    ],
+    "justifications": [
+      {
+        "criterion": "precommit_compliance",
+        "points": 82,
+        "evidence": "{\"total_hooks\": 25, \"passed\": 21, \"failed\": 3, \"skipped\": 1, \"outdated_hooks\": 1, \"pytest_hooks_skipped\": 2, \"exit_code\": 1}",
+        "reasoning": "Ran pre-commit with 25 hooks: 21 passed, 3 failed, 1 skipped. 1 potentially outdated. 2 pytest hooks deferred to CE-016."
+      }
+    ],
+    "hook_results": [
+      {
+        "hook": "check for added large files",
+        "status": "passed"
+      },
+      {
+        "hook": "check python ast",
+        "status": "passed"
+      },
+      {
+        "hook": "check yaml",
+        "status": "passed"
+      },
+      {
+        "hook": "check toml",
+        "status": "passed"
+      },
+      {
+        "hook": "check json",
+        "status": "passed"
+      },
+      {
+        "hook": "fix utf-8 byte order marker",
+        "status": "passed"
+      },
+      {
+        "hook": "check for merge conflicts",
+        "status": "passed"
+      },
+      {
+        "hook": "detect private key",
+        "status": "passed"
+      },
+      {
+        "hook": "trim trailing whitespace",
+        "status": "passed"
+      },
+      {
+        "hook": "fix end of files",
+        "status": "passed"
+      },
+      {
+        "hook": "don't commit to branch",
+        "status": "failed"
+      },
+      {
+        "hook": "ruff check",
+        "status": "passed"
+      },
+      {
+        "hook": "ruff format",
+        "status": "passed"
+      },
+      {
+        "hook": "mypy",
+        "status": "failed"
+      },
+      {
+        "hook": "vulture",
+        "status": "passed"
+      },
+      {
+        "hook": "codespell",
+        "status": "passed"
+      },
+      {
+        "hook": "bandit",
+        "status": "failed"
+      },
+      {
+        "hook": "nbqa-ruff",
+        "status": "passed"
+      },
+      {
+        "hook": "mermaid-validate",
+        "status": "passed"
+      },
+      {
+        "hook": "check agent standards",
+        "status": "passed"
+      },
+      {
+        "hook": "check cli help",
+        "status": "passed"
+      },
+      {
+        "hook": "validate bumpversion config",
+        "status": "passed"
+      },
+      {
+        "hook": "pytest",
+        "status": "skipped"
+      },
+      {
+        "hook": "Hadolint",
+        "status": "passed"
+      },
+      {
+        "hook": "Validate docker compose files",
+        "status": "passed"
+      }
+    ],
+    "pytest_hooks_skipped": [
+      "local-pytest",
+      "pytest"
+    ],
+    "outdated_hooks": [
+      {
+        "repo": "https://github.com/astral-sh/ruff-pre-commit",
+        "current_rev": "v0.15.12",
+        "issue": "Pre-1.0 version \u2014 check for updates"
+      }
+    ],
+    "metrics": {
+      "total_hooks": 25,
+      "passed": 21,
+      "failed": 3,
+      "skipped": 1,
+      "outdated_hooks": 1,
+      "pytest_hooks_skipped": 2,
+      "exit_code": 1
+    }
+  },
+  {
+    "domain": "Test Execution",
+    "score": 100,
+    "grade": "A",
+    "findings": [],
+    "justifications": [
+      {
+        "criterion": "test_execution",
+        "points": 100,
+        "evidence": "{\"frameworks_detected\": 1, \"total_passed\": 53, \"total_failed\": 0, \"total_errors\": 0, \"pass_rate\": 1.0, \"timeout\": 300}",
+        "reasoning": "Executed 1 framework(s). 53 passed, 0 failed, 0 errors. Pass rate: 100%."
+      }
+    ],
+    "framework_results": [
+      {
+        "language": "python",
+        "framework": "pytest",
+        "command": [
+          "/home/apps/workspace/.venv/bin/python3",
+          "-m",
+          "pytest",
+          "--tb=line",
+          "-q",
+          "--timeout=300",
+          "--no-header"
+        ],
+        "status": "passed",
+        "exit_code": 0,
+        "parsed": {
+          "passed": 53,
+          "failed": 0,
+          "errors": 0,
+          "warnings": 0,
+          "skipped": 0,
+          "failures": []
+        }
+      }
+    ],
+    "metrics": {
+      "frameworks_detected": 1,
+      "total_passed": 53,
+      "total_failed": 0,
+      "total_errors": 0,
+      "pass_rate": 1.0,
+      "timeout": 300
+    }
+  },
+  {
+    "domain": "Directory Organization",
+    "score": 88,
+    "grade": "B",
+    "findings": [
+      "4 rogue/throwaway scripts detected (fix_*, validate_*, patch_*, etc.): scripts/debug_map.py, scripts/validate_agent.py, scripts/validate_ecosystem.py, scripts/validate_a2a_agent.py"
+    ],
+    "justifications": [
+      {
+        "criterion": "directory_organization",
+        "points": 88,
+        "evidence": "{\"total_source_files\": 64, \"total_directories\": 11, \"max_depth\": 3, \"avg_depth\": 1.2, \"crowded_dirs_20plus\": 0, \"severely_crowded_40plus\": 0, \"monolithic_dirs\": 0, \"empty_dirs\": 2, \"avg_files_per_dir\": 5.8, \"rogue_scripts\": 4}",
+        "reasoning": "64 files across 11 directories. Max depth: 3, avg files/dir: 5.8. 0 crowded, 0 severely crowded, 0 monolithic, 4 rogue scripts."
+      }
+    ],
+    "metrics": {
+      "total_source_files": 64,
+      "total_directories": 11,
+      "max_depth": 3,
+      "avg_depth": 1.2,
+      "crowded_dirs_20plus": 0,
+      "severely_crowded_40plus": 0,
+      "monolithic_dirs": 0,
+      "empty_dirs": 2,
+      "avg_files_per_dir": 5.8,
+      "rogue_scripts": 4
+    },
+    "crowded_dirs": [],
+    "monolithic_dirs": [],
+    "suggestions": [],
+    "rogue_scripts": [
+      {
+        "file": "scripts/debug_map.py",
+        "prefix": "debug",
+        "recommendation": "Remove or integrate into project modules"
+      },
+      {
+        "file": "scripts/validate_agent.py",
+        "prefix": "validate",
+        "recommendation": "Remove or integrate into project modules"
+      },
+      {
+        "file": "scripts/validate_ecosystem.py",
+        "prefix": "validate",
+        "recommendation": "Remove or integrate into project modules"
+      },
+      {
+        "file": "scripts/validate_a2a_agent.py",
+        "prefix": "validate",
+        "recommendation": "Remove or integrate into project modules"
+      }
+    ]
+  },
+  {
+    "domain": "Version Sync Analysis",
+    "score": 100,
+    "grade": "A",
+    "findings": [
+      "All version '1.18.0' declarations appear to be tracked correctly."
+    ],
+    "justifications": [
+      {
+        "criterion": "bumpversion_exists",
+        "points": 20,
+        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager/.bumpversion.cfg",
+        "reasoning": ".bumpversion.cfg found"
+      },
+      {
+        "criterion": "current_version_defined",
+        "points": 20,
+        "evidence": "1.18.0",
+        "reasoning": "Current version tracked is 1.18.0"
+      },
+      {
+        "criterion": "files_tracked",
+        "points": 20,
+        "evidence": "6 files tracked",
+        "reasoning": "Found 6 files tracked in .bumpversion.cfg"
+      },
+      {
+        "criterion": "version_drift_check",
+        "points": 40,
+        "evidence": "0 drifted files",
+        "reasoning": "No version drift detected in codebase files"
+      }
+    ],
+    "details": {
+      "tracked_files": [
+        "pyproject.toml",
+        "README.md",
+        "docker/Dockerfile",
+        "repository_manager/agent_server.py",
+        "repository_manager/mcp_server.py",
+        "repository_manager/repository_manager.py"
+      ],
+      "drifted_files": []
+    }
+  },
+  {
+    "domain": "Changelog Audit",
+    "score": 75,
+    "grade": "C",
+    "findings": [
+      "CHANGELOG.md exists but could not be parsed \u2014 check format compliance",
+      "No changelog entries within the last 30 days",
+      "keepachangelog not installed \u2014 pip install 'universal-skills[code-enhancer]'"
+    ],
+    "justifications": [
+      {
+        "criterion": "changelog_quality",
+        "points": 75,
+        "evidence": "{\"exists\": true, \"parseable\": false, \"version_count\": 0, \"has_drift\": false, \"dep_deltas_found\": 0}",
+        "reasoning": "CHANGELOG.md exists. 0 versions tracked. 0 dependency changelogs analyzed."
+      }
+    ],
+    "format_validation": {
+      "exists": true,
+      "parseable": false,
+      "has_unreleased": false,
+      "version_count": 0,
+      "uses_semver": true,
+      "valid_categories": true,
+      "has_dates": true,
+      "has_header": true,
+      "issues": [
+        "keepachangelog not installed \u2014 pip install 'universal-skills[code-enhancer]'"
+      ]
+    },
+    "version_drift": {
+      "has_drift": false,
+      "changelog_version": null,
+      "pyproject_version": "1.18.0"
+    },
+    "dependency_deltas": {}
+  },
+  {
+    "domain": "Pytest Quality",
+    "score": 71,
+    "grade": "C",
+    "findings": [
+      "2 test files exceed 500 lines \u2014 split into focused modules",
+      "Test directory lacks subdirectory organization (consider unit/, integration/, e2e/)",
+      "Missing conftest.py for shared fixtures",
+      "No @pytest.mark.parametrize usage \u2014 consider data-driven tests",
+      "No shared fixtures in conftest.py",
+      "2 tests have no assertions",
+      "3 tests exceed 100 lines \u2014 likely doing too much per test"
+    ],
+    "justifications": [
+      {
+        "criterion": "pytest_quality",
+        "points": 71,
+        "evidence": "{\"test_files\": 11, \"total_tests\": 54, \"descriptive_name_ratio\": 0.98, \"generic_names\": 0, \"fixture_usage_ratio\": 0.61, \"parametrize_users\": 0, \"conftest_fixtures\": 0, \"no_assertion_tests\": 2, \"weak_assertion_tests\": 3, \"duplicate_groups\": 0, \"large_files\": 2, \"over_mocked_tests\": 1, \"very_long_tests\": 3, \"subscores\": {\"naming\": 20, \"structure\": 9, \"fixtures\": 11, \"assertions\": 16, \"ai_slop\": 15}}",
+        "reasoning": "54 tests across 11 files. Naming: 20/20, Structure: 9/20, Fixtures: 11/20, Assertions: 16/20, AI Slop: 15/20."
+      }
+    ],
+    "metrics": {
+      "test_files": 11,
+      "total_tests": 54,
+      "descriptive_name_ratio": 0.98,
+      "generic_names": 0,
+      "fixture_usage_ratio": 0.61,
+      "parametrize_users": 0,
+      "conftest_fixtures": 0,
+      "no_assertion_tests": 2,
+      "weak_assertion_tests": 3,
+      "duplicate_groups": 0,
+      "large_files": 2,
+      "over_mocked_tests": 1,
+      "very_long_tests": 3,
+      "subscores": {
+        "naming": 20,
+        "structure": 9,
+        "fixtures": 11,
+        "assertions": 16,
+        "ai_slop": 15
+      }
+    },
+    "conftest": {
+      "conftest_count": 0,
+      "total_shared_fixtures": 0,
+      "has_root_conftest": false
+    },
+    "duplicates": [],
+    "large_files": [
+      {
+        "file": "test_mcp_handlers.py",
+        "lines": 567
+      },
+      {
+        "file": "test_directory_report.py",
+        "lines": 647
+      }
+    ]
+  },
+  {
+    "domain": "Environment Variables",
+    "score": 75,
+    "grade": "C",
+    "findings": [
+      "Partial env var documentation: 50% coverage",
+      "Undocumented env vars: AUTH_TYPE, EUNOMIA_POLICY_FILE, EUNOMIA_TYPE, GIT_OPERATIONSTOOL, LLM_API_KEY, LLM_BASE_URL, MISCTOOL, OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PUBLIC_KEY, OTEL_EXPORTER_OTLP_SECRET_KEY",
+      "8 Python env vars not in .env.example: LLM_API_KEY, LLM_BASE_URL, MCP_URL, MODEL_ID, REPOSITORY_MANAGER_DEFAULT_BRANCH"
+    ],
+    "justifications": [
+      {
+        "criterion": "env_var_documentation",
+        "points": 75,
+        "evidence": "{\"total_vars\": 30, \"python_vars\": 12, \"dockerfile_vars\": 4, \"compose_vars\": 0, \"dotenv_vars\": 21, \"readme_documented\": 15, \"readme_undocumented\": 15, \"documentation_coverage\": 0.5}",
+        "reasoning": "Found 30 unique env vars across 66 occurrences. README documents 15/30. Has .env.example."
+      }
+    ],
+    "metrics": {
+      "total_vars": 30,
+      "python_vars": 12,
+      "dockerfile_vars": 4,
+      "compose_vars": 0,
+      "dotenv_vars": 21,
+      "readme_documented": 15,
+      "readme_undocumented": 15,
+      "documentation_coverage": 0.5
+    },
+    "variables": {
+      "MODEL_ID": {
+        "name": "MODEL_ID",
+        "sources": [
+          "scripts/validate_agent.py:23"
+        ],
+        "defaults": [
+          "nvidia/nemotron-3-super"
+        ],
+        "source_types": [
+          "python"
+        ]
+      },
+      "LLM_BASE_URL": {
+        "name": "LLM_BASE_URL",
+        "sources": [
+          "scripts/validate_agent.py:24"
+        ],
+        "defaults": [
+          "http://host.docker.internal:1234/v1"
+        ],
+        "source_types": [
+          "python"
+        ]
+      },
+      "LLM_API_KEY": {
+        "name": "LLM_API_KEY",
+        "sources": [
+          "scripts/validate_agent.py:25"
+        ],
+        "defaults": [
+          "llama"
+        ],
+        "source_types": [
+          "python"
+        ]
+      },
+      "MCP_URL": {
+        "name": "MCP_URL",
+        "sources": [
+          "scripts/validate_agent.py:26"
+        ],
+        "defaults": [
+          "http://localhost:8007/mcp"
+        ],
+        "source_types": [
+          "python"
+        ]
+      },
+      "REPOSITORY_MANAGER_WORKSPACE": {
+        "name": "REPOSITORY_MANAGER_WORKSPACE",
+        "sources": [
+          "tests/test_mcp_registration.py:13",
+          "repository_manager/repository_manager.py:73",
+          ".env:25",
+          ".env.example:25"
+        ],
+        "defaults": [
+          "/home/apps/workspace"
+        ],
+        "source_types": [
+          "dotenv",
+          "python"
+        ]
+      },
+      "WORKSPACE_YML": {
+        "name": "WORKSPACE_YML",
+        "sources": [
+          "tests/test_repository_manager.py:109",
+          "repository_manager/mcp_server.py:53",
+          "repository_manager/repository_manager.py:78",
+          "repository_manager/repository_manager.py:2156",
+          "repository_manager/repository_manager.py:2388"
+        ],
+        "defaults": [
+          "workspace.yml"
+        ],
+        "source_types": [
+          "python"
+        ]
+      },
+      "WORKSPACE_PATH": {
+        "name": "WORKSPACE_PATH",
+        "sources": [
+          "repository_manager/mcp_server.py:50"
+        ],
+        "defaults": [
+          "/home/apps/workspace"
+        ],
+        "source_types": [
+          "python"
+        ]
+      },
+      "REPOSITORY_MANAGER_THREADS": {
+        "name": "REPOSITORY_MANAGER_THREADS",
+        "sources": [
+          "repository_manager/mcp_server.py:52",
+          "repository_manager/repository_manager.py:85"
+        ],
+        "defaults": [
+          "12"
+        ],
+        "source_types": [
+          "python"
+        ]
+      },
+      "MISCTOOL": {
+        "name": "MISCTOOL",
+        "sources": [
+          "repository_manager/mcp_server.py:535",
+          ".env:33",
+          ".env.example:33"
+        ],
+        "defaults": [
+          "True"
+        ],
+        "source_types": [
+          "dotenv",
+          "python"
+        ]
+      },
+      "GIT_OPERATIONSTOOL": {
+        "name": "GIT_OPERATIONSTOOL",
+        "sources": [
+          "repository_manager/mcp_server.py:539",
+          ".env:34",
+          ".env.example:34"
+        ],
+        "defaults": [
+          "True"
+        ],
+        "source_types": [
+          "dotenv",
+          "python"
+        ]
+      },
+      "WORKSPACE_MANAGEMENTTOOL": {
+        "name": "WORKSPACE_MANAGEMENTTOOL",
+        "sources": [
+          "repository_manager/mcp_server.py:543",
+          ".env:35",
+          ".env.example:35"
+        ],
+        "defaults": [
+          "True"
+        ],
+        "source_types": [
+          "dotenv",
+          "python"
+        ]
+      },
+      "REPOSITORY_MANAGER_DEFAULT_BRANCH": {
+        "name": "REPOSITORY_MANAGER_DEFAULT_BRANCH",
+        "sources": [
+          "repository_manager/repository_manager.py:90"
+        ],
+        "defaults": [],
+        "source_types": [
+          "python"
+        ]
+      },
+      "HOST": {
+        "name": "HOST",
+        "sources": [
+          "docker/Dockerfile:8",
+          "docker/Dockerfile:3",
+          "docker/debug.Dockerfile:8",
+          "docker/debug.Dockerfile:3",
+          ".env:6"
+        ],
+        "defaults": [
+          "0.0.0.0"
+        ],
+        "source_types": [
+          "dockerfile",
+          "dotenv"
+        ]
+      },
+      "PORT": {
+        "name": "PORT",
+        "sources": [
+          "docker/Dockerfile:4",
+          "docker/debug.Dockerfile:4",
+          ".env:7",
+          ".env.example:7"
+        ],
+        "defaults": [
+          "8000"
+        ],
+        "source_types": [
+          "dockerfile",
+          "dotenv"
+        ]
+      },
+      "TRANSPORT": {
+        "name": "TRANSPORT",
+        "sources": [
+          "docker/Dockerfile:5",
+          "docker/debug.Dockerfile:5",
+          ".env:8",
+          ".env.example:8"
+        ],
+        "defaults": [
+          "stdio # options: stdio, streamable-http, sse",
+          "stdio"
+        ],
+        "source_types": [
+          "dockerfile",
+          "dotenv"
+        ]
+      },
+      "AUTH_TYPE": {
+        "name": "AUTH_TYPE",
+        "sources": [
+          "docker/Dockerfile:6",
+          "docker/debug.Dockerfile:6"
+        ],
+        "defaults": [],
+        "source_types": [
+          "dockerfile"
+        ]
+      },
+      "ENABLE_OTEL": {
+        "name": "ENABLE_OTEL",
+        "sources": [
+          ".env:11",
+          ".env.example:11"
+        ],
+        "defaults": [
+          "True",
+          "False"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "OTEL_EXPORTER_OTLP_ENDPOINT": {
+        "name": "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "sources": [
+          ".env:12"
+        ],
+        "defaults": [
+          "http://langfuse.arpa/api/public/otel"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "OTEL_EXPORTER_OTLP_PUBLIC_KEY": {
+        "name": "OTEL_EXPORTER_OTLP_PUBLIC_KEY",
+        "sources": [
+          ".env:13"
+        ],
+        "defaults": [
+          "pk-lf-fa2ee252-4711-4298-9d9c-c73b21f23ac6"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "OTEL_EXPORTER_OTLP_SECRET_KEY": {
+        "name": "OTEL_EXPORTER_OTLP_SECRET_KEY",
+        "sources": [
+          ".env:14"
+        ],
+        "defaults": [
+          "sk-lf-703eb104-6916-4740-997f-7e445ba7c4b5"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "EUNOMIA_TYPE": {
+        "name": "EUNOMIA_TYPE",
+        "sources": [
+          ".env:18",
+          ".env.example:18"
+        ],
+        "defaults": [
+          "none",
+          "none # options: none, embedded, remote"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "EUNOMIA_POLICY_FILE": {
+        "name": "EUNOMIA_POLICY_FILE",
+        "sources": [
+          ".env:19",
+          ".env.example:19"
+        ],
+        "defaults": [
+          "mcp_policies.json"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "REPO_MANAGER_URL": {
+        "name": "REPO_MANAGER_URL",
+        "sources": [
+          ".env:23",
+          ".env.example:23"
+        ],
+        "defaults": [
+          "http://localhost:8000"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "REPO_MANAGER_USERNAME": {
+        "name": "REPO_MANAGER_USERNAME",
+        "sources": [
+          ".env:24",
+          ".env.example:24"
+        ],
+        "defaults": [
+          "admin"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "LLM_ROUTER_MODEL": {
+        "name": "LLM_ROUTER_MODEL",
+        "sources": [
+          ".env:26",
+          ".env.example:26"
+        ],
+        "defaults": [
+          "qwen/qwen3.5-9b"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "LLM_AGENT_MODEL": {
+        "name": "LLM_AGENT_MODEL",
+        "sources": [
+          ".env:27",
+          ".env.example:27"
+        ],
+        "defaults": [
+          "qwen/qwen3.5-9b"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "GRAPH_ROUTER_TIMEOUT": {
+        "name": "GRAPH_ROUTER_TIMEOUT",
+        "sources": [
+          ".env:28",
+          ".env.example:28"
+        ],
+        "defaults": [
+          "300.0"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "GRAPH_VERIFIER_TIMEOUT": {
+        "name": "GRAPH_VERIFIER_TIMEOUT",
+        "sources": [
+          ".env:29",
+          ".env.example:29"
+        ],
+        "defaults": [
+          "300.0"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "REPO_MANAGER_PASSWORD": {
+        "name": "REPO_MANAGER_PASSWORD",
+        "sources": [
+          ".env:30"
+        ],
+        "defaults": [
+          "admin12345!"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      },
+      "PROJECT_MANAGEMENT_TOOL": {
+        "name": "PROJECT_MANAGEMENT_TOOL",
+        "sources": [
+          ".env:36",
+          ".env.example:36"
+        ],
+        "defaults": [
+          "True"
+        ],
+        "source_types": [
+          "dotenv"
+        ]
+      }
+    },
+    "readme_coverage": {
+      "documented": [
+        "ENABLE_OTEL",
+        "GRAPH_ROUTER_TIMEOUT",
+        "GRAPH_VERIFIER_TIMEOUT",
+        "HOST",
+        "LLM_AGENT_MODEL",
+        "LLM_ROUTER_MODEL",
+        "MCP_URL",
+        "MODEL_ID",
+        "PORT",
+        "PROJECT_MANAGEMENT_TOOL",
+        "REPOSITORY_MANAGER_WORKSPACE",
+        "REPO_MANAGER_PASSWORD",
+        "REPO_MANAGER_URL",
+        "REPO_MANAGER_USERNAME",
+        "TRANSPORT"
+      ],
+      "undocumented": [
+        "AUTH_TYPE",
+        "EUNOMIA_POLICY_FILE",
+        "EUNOMIA_TYPE",
+        "GIT_OPERATIONSTOOL",
+        "LLM_API_KEY",
+        "LLM_BASE_URL",
+        "MISCTOOL",
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_EXPORTER_OTLP_PUBLIC_KEY",
+        "OTEL_EXPORTER_OTLP_SECRET_KEY",
+        "REPOSITORY_MANAGER_DEFAULT_BRANCH",
+        "REPOSITORY_MANAGER_THREADS",
+        "WORKSPACE_MANAGEMENTTOOL",
+        "WORKSPACE_PATH",
+        "WORKSPACE_YML"
+      ],
+      "coverage": 0.5
+    }
+  }
+]

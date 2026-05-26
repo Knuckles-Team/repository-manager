@@ -54,7 +54,7 @@ def agent_server():
     print(f"\nDEBUG: Starting server: {' '.join(cmd)}")
     print(f"DEBUG: Logs at {log_path}")
 
-    process = subprocess.Popen(
+    process = subprocess.Popen(  # nosec B603
         cmd,
         cwd=PROJECT_ROOT,
         env=env,
@@ -217,5 +217,5 @@ if __name__ == "__main__":
     try:
         httpx.get(f"{BASE_URL}/health")
         asyncio.run(run_manual())
-    except:
+    except Exception:
         print("Server not running. Run with pytest.")

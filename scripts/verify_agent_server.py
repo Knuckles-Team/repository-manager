@@ -120,7 +120,7 @@ def start_server():
     print(f"Starting server: {' '.join(cmd)}")
 
     log_file = open("server.log", "w")
-    process = subprocess.Popen(
+    process = subprocess.Popen(  # nosec B603
         cmd, stdout=log_file, stderr=subprocess.STDOUT, env=env, text=True, bufsize=1
     )
 

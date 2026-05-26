@@ -427,6 +427,9 @@ class Git:
             progress: Optional mutable dict for live progress reporting.
                 Updated in-place with current_phase, per-phase repo counts,
                 and overall progress percentage.
+
+        Concept:
+            CONCEPT:RM-VALIDATE
         """
         effective_threads = threads if threads is not None else self.threads
         threads = min(effective_threads, self._cpu_aware_threads(20.0))
@@ -449,6 +452,8 @@ class Git:
             expected_phases.append("Ecosystem Installation")
         if run_all or type == "pre-commit":
             expected_phases.append("Pre-commit Compliance")
+        if run_all or type == "test" or coverage:
+            expected_phases.append("Coverage Report")
 
         total_phases = max(1, len(expected_phases))
         completed_phases = 0
@@ -597,6 +602,231 @@ class Git:
 
                 _phase_end("Pre-commit Compliance")
                 results.extend(pc_results)
+
+            # --- Phase 3: Pytest & Coverage Analysis ---
+            if run_all or type == "test" or coverage:
+                _phase_start("Coverage Report", len(self.project_map))
+                logger.info(
+                    f"Running pytest and coverage analysis for {len(self.project_map)} projects..."
+                )
+
+                targets = []
+                for _url, path in self.project_map.items():
+                    targets.append(
+                        {
+                            "name": os.path.basename(path),
+                            "path": path,
+                        }
+                    )
+
+                test_results = self.test_projects(
+                    targets=targets,
+                    coverage=True,
+                    progress_phase="Coverage Report",
+                    progress_dict=progress,
+                )
+
+                for r in test_results:
+                    repo = (
+                        os.path.basename(r.metadata.workspace)
+                        if r.metadata
+                        else "unknown"
+                    )
+                    _phase_repo("Coverage Report", repo, r.status)
+                    if writer:
+                        writer.write_incremental_result("Coverage Report", r)
+
+                results.extend(test_results)
+                _phase_end("Coverage Report")
+
+                # Generate code coverage summary tables
+                coverage_entries: list[dict[str, Any]] = []
+                for r in results:
+                    if r.metadata and "coverage report" in r.metadata.command:
+                        pkg = os.path.basename(r.metadata.workspace)
+                        data_str = r.data
+                        pct_match = re.search(r"Coverage:\s*([0-9.]+)%", data_str)
+                        stmts_match = re.search(r"Statements:\s*(\d+)", data_str)
+                        covered_match = re.search(r"Covered:\s*(\d+)", data_str)
+                        missing_match = re.search(r"Missing:\s*(\d+)", data_str)
+
+                        pct = float(pct_match.group(1)) if pct_match else 0.0
+                        stmts = int(stmts_match.group(1)) if stmts_match else 0
+                        covered = int(covered_match.group(1)) if covered_match else 0
+                        missing = int(missing_match.group(1)) if missing_match else 0
+
+                        status_icon = (
+                            "🟢" if pct >= 80 else ("🟡" if pct >= 50 else "🔴")
+                        )
+                        coverage_entries.append(
+                            {
+                                "project": pkg,
+                                "pct": pct,
+                                "statements": stmts,
+                                "covered": covered,
+                                "missing": missing,
+                                "status_icon": status_icon,
+                                "status": "success"
+                                if r.status == "success"
+                                else "error",
+                            }
+                        )
+
+                # Compile map for all projects to account for skipped ones
+                project_coverage_map: dict[str, dict[str, Any]] = {}
+                for _url, path in self.project_map.items():
+                    pkg = os.path.basename(path)
+                    project_coverage_map[pkg] = {
+                        "project": pkg,
+                        "pct": 0.0,
+                        "statements": 0,
+                        "covered": 0,
+                        "missing": 0,
+                        "status_icon": "⚪",
+                        "status": "No Tests / Skipped",
+                    }
+
+                for entry in coverage_entries:
+                    pkg = entry["project"]
+                    if pkg in project_coverage_map:
+                        project_coverage_map[pkg].update(entry)
+                        project_coverage_map[pkg]["status"] = f"{entry['pct']:.2f}%"
+
+                # Sort by coverage descending, then name, skipped at bottom
+                sorted_projects = sorted(
+                    project_coverage_map.values(),
+                    key=lambda x: (
+                        x["status"] != "No Tests / Skipped",
+                        x["pct"],
+                        x["project"],
+                    ),
+                    reverse=True,
+                )
+
+                total_statements = 0
+                total_covered = 0
+                for entry in sorted_projects:
+                    if entry["status"] != "No Tests / Skipped":
+                        total_statements += int(entry["statements"])
+                        total_covered += int(entry["covered"])
+
+                # Generate Markdown table lines
+                md_lines = [
+                    "# 📊 Agent Packages Code Coverage Report",
+                    f"**Generated on:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
+                    "",
+                    "| Status | Project | Coverage % | Statements | Covered | Missing | Details / Health |",
+                    "|:---:|:---|:---:|:---:|:---:|:---:|:---|",
+                ]
+
+                for entry in sorted_projects:
+                    pkg = entry["project"]
+                    pct_val = float(entry["pct"])
+                    pct_str = (
+                        f"{pct_val:.2f}%"
+                        if entry["status"] != "No Tests / Skipped"
+                        else "-"
+                    )
+                    stmts_str = (
+                        str(entry["statements"])
+                        if entry["status"] != "No Tests / Skipped"
+                        else "-"
+                    )
+                    covered_str = (
+                        str(entry["covered"])
+                        if entry["status"] != "No Tests / Skipped"
+                        else "-"
+                    )
+                    missing_str = (
+                        str(entry["missing"])
+                        if entry["status"] != "No Tests / Skipped"
+                        else "-"
+                    )
+
+                    if entry["status"] == "No Tests / Skipped":
+                        health_bar = "⏭️ *No tests directory found*"
+                        status_icon = "⚪"
+                    elif pct_val >= 90.0:
+                        health_bar = "🟢 **Excellent** (>=90%)"
+                        status_icon = "🟢"
+                    elif pct_val >= 80.0:
+                        health_bar = "🟢 **Good** (>=80%)"
+                        status_icon = "🟢"
+                    elif pct_val >= 50.0:
+                        health_bar = "🟡 **Needs Improvement** (>=50%)"
+                        status_icon = "🟡"
+                    else:
+                        health_bar = "🔴 **Critical** (<50%)"
+                        status_icon = "🔴"
+
+                    md_lines.append(
+                        f"| {status_icon} | **{pkg}** | {pct_str} | {stmts_str} | {covered_str} | {missing_str} | {health_bar} |"
+                    )
+
+                if total_statements > 0:
+                    overall_pct = (total_covered / total_statements) * 100
+                    overall_icon = (
+                        "🟢"
+                        if overall_pct >= 80
+                        else ("🟡" if overall_pct >= 50 else "🔴")
+                    )
+                    md_lines.append("|---|---|---|---|---|---|---|")
+                    md_lines.append(
+                        f"| {overall_icon} | **OVERALL ECOSYSTEM** | **{overall_pct:.2f}%** | **{total_statements}** | **{total_covered}** | **{total_statements - total_covered}** | **Ecosystem Health** |"
+                    )
+
+                # Log terminal table
+                logger.info("\n" + "=" * 80)
+                logger.info(f"{'PROJECT CODE COVERAGE SUMMARY':^80}")
+                logger.info("=" * 80)
+                logger.info(
+                    f"{'Project':<30} | {'Coverage':<10} | {'Statements':<10} | {'Covered':<10} | {'Missing':<10}"
+                )
+                logger.info("-" * 80)
+                for entry in sorted_projects:
+                    pct_str = (
+                        f"{entry['pct']:.2f}%"
+                        if entry["status"] != "No Tests / Skipped"
+                        else "-"
+                    )
+                    stmts_str = (
+                        str(entry["statements"])
+                        if entry["status"] != "No Tests / Skipped"
+                        else "-"
+                    )
+                    covered_str = (
+                        str(entry["covered"])
+                        if entry["status"] != "No Tests / Skipped"
+                        else "-"
+                    )
+                    missing_str = (
+                        str(entry["missing"])
+                        if entry["status"] != "No Tests / Skipped"
+                        else "-"
+                    )
+                    logger.info(
+                        f"{entry['project']:<30} | {pct_str:<10} | {stmts_str:<10} | {covered_str:<10} | {missing_str:<10}"
+                    )
+                if total_statements > 0:
+                    overall_pct = (total_covered / total_statements) * 100
+                    logger.info("-" * 80)
+                    logger.info(
+                        f"{'OVERALL ECOSYSTEM':<30} | {f'{overall_pct:.2f}%':<10} | {total_statements:<10} | {total_covered:<10} | {total_statements - total_covered:<10}"
+                    )
+                logger.info("=" * 80 + "\n")
+
+                # Export MD file
+                coverage_report_path = os.path.join(self.path, "coverage_report.md")
+                try:
+                    with open(coverage_report_path, "w") as report_file_obj:
+                        report_file_obj.write("\n".join(md_lines))
+                    logger.info(
+                        f"💾 Comprehensive coverage report written to {coverage_report_path}"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to write coverage report to {coverage_report_path}: {e}"
+                    )
 
             # --- Console summary ---
             successes = [r for r in results if r.status == "success"]
@@ -811,6 +1041,9 @@ class Git:
 
         Returns:
             GitResult: The combined stdout and stderr output of the command in structured format.
+
+        Concept:
+            CONCEPT:RM-GIT-ACTION
         """
         target_path = self._resolve_path(path)
 
@@ -901,7 +1134,6 @@ class Git:
                     log_file.flush()
 
         out = "".join(output_lines)
-        err = ""  # stderr was merged into stdout
         return_code = process.returncode
 
         metadata = GitMetadata(
@@ -914,9 +1146,7 @@ class Git:
         error_obj = None
         if return_code != 0:
             error_obj = GitError(
-                message=(
-                    err.strip() if err else (out.strip() if out else "Unknown error")
-                ),
+                message=out.strip() if out else "Unknown error",
                 code=return_code,
             )
 
@@ -1004,13 +1234,13 @@ class Git:
                 os.makedirs(expanded_path, exist_ok=True)
 
             targets = []
-            if self.project_map:
-                for url, path in self.project_map.items():
-                    targets.append((url, path))
-            elif projects:
+            if projects:
                 for url in projects:
                     name = url.split("/")[-1].replace(".git", "")
                     targets.append((url, os.path.join(expanded_path, name)))
+            elif self.project_map:
+                for url, path in self.project_map.items():
+                    targets.append((url, path))
 
             if not targets:
                 logger.warning("No projects to clone.")
@@ -1208,6 +1438,105 @@ class Git:
         logger.info(f"Pushing latest changes and tags for {target_path}")
         return self.git_action(command="git push --follow-tags", path=target_path)
 
+    def add_projects(self, project_dirs: list[str] | None = None) -> list[GitResult]:
+        """
+        Stage all changes for multiple projects in parallel.
+        """
+        if project_dirs is None:
+            if self.project_map:
+                project_dirs = list(self.project_map.values())
+            else:
+                logger.warning("No projects found in project_map to add.")
+                return []
+
+        if not project_dirs:
+            logger.warning("No projects found to add.")
+            return []
+
+        logger.info(
+            f"Staging changes in {len(project_dirs)} projects in parallel using {self.threads} threads..."
+        )
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            return list(executor.map(self.add_project, project_dirs))
+
+    def add_project(self, path: str | None = None) -> GitResult:
+        """
+        Stage all changes (git add -A) for a single Git project.
+        """
+        target_path = self._resolve_path(path)
+        logger.info(f"Staging all changes for {target_path}")
+        return self.git_action(command="git add -A", path=target_path)
+
+    def commit_projects(
+        self, message: str, project_dirs: list[str] | None = None
+    ) -> list[GitResult]:
+        """
+        Commit staged changes for multiple projects in parallel.
+        """
+        if project_dirs is None:
+            if self.project_map:
+                project_dirs = list(self.project_map.values())
+            else:
+                logger.warning("No projects found in project_map to commit.")
+                return []
+
+        if not project_dirs:
+            logger.warning("No projects found to commit.")
+            return []
+
+        logger.info(
+            f"Committing changes in {len(project_dirs)} projects in parallel using {self.threads} threads..."
+        )
+        from functools import partial
+
+        commit_func = partial(self.commit_project, message)
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            return list(executor.map(commit_func, project_dirs))
+
+    def commit_project(self, message: str, path: str | None = None) -> GitResult:
+        """
+        Commit staged changes (git commit -m "{message}") for a single Git project.
+        """
+        target_path = self._resolve_path(path)
+
+        # Check if there are staged changes to commit
+        status_res = self.git_action(command="git status --porcelain", path=target_path)
+        if status_res.status == "success":
+            # Check porcelain output for staged changes
+            has_staged = False
+            for line in status_res.data.splitlines():
+                if line and not line.startswith("?"):
+                    # Staged changes are indicated when the first character is not a space/untracked status
+                    if line[0] not in (" ", "?"):
+                        has_staged = True
+                        break
+
+            if not has_staged:
+                logger.info(f"No staged changes to commit for {target_path}")
+                metadata = GitMetadata(
+                    command=f'git commit -m "{message}"',
+                    workspace=target_path,
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                )
+                return GitResult(
+                    status="success",
+                    data="No staged changes to commit (skipped)",
+                    error=None,
+                    metadata=metadata,
+                )
+
+        logger.info(f"Committing staged changes for {target_path}")
+        from shlex import quote
+
+        safe_msg = quote(message)
+        return self.git_action(command=f"git commit -m {safe_msg}", path=target_path)
+
     def set_threads(self, threads: int) -> None:
         """
         Set the number of threads for parallel processing.
@@ -1270,8 +1599,10 @@ class Git:
             commands.append("pre-commit autoupdate")
         if run:
             commands.append("git add -A")
+            # Run pre-commit once. If it fails (likely due to auto-formatting files),
+            # stage the newly formatted changes and run it again to verify.
             commands.append(
-                "SKIP=no-commit-to-branch pre-commit run --all-files --verbose"
+                "SKIP=no-commit-to-branch pre-commit run --all-files --verbose || (git add -A && SKIP=no-commit-to-branch pre-commit run --all-files --verbose)"
             )
 
         if not commands:
@@ -1295,6 +1626,7 @@ class Git:
             env["SKIP"] += ",no-commit-to-branch"
         else:
             env["SKIP"] = "no-commit-to-branch"
+        env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "4"
 
         result = self.git_action(
             command=full_command, path=target_path, env=env, timeout=600
@@ -1332,19 +1664,46 @@ class Git:
         res = self.git_action(cmd, path=path, env=env, timeout=timeout)
         results.append(res)
 
-        # # Only try coverage if we succeeded or if coverage data exists
-        # cov_file_path = env.get("COVERAGE_FILE")
-        # if cov_file_path and os.path.exists(cov_file_path):
-        #     cov_cmd = (
-        #         "uv run -q coverage report --format=markdown"
-        #         if "uv run" in cmd
-        #         else f"{sys.executable} -m coverage report --format=markdown"
-        #     )
-        #     cov_res = self.git_action(cov_cmd, path=path, env=env, quiet=True)
-        #     if cov_res.metadata:
-        #         cov_res.metadata.command = "coverage report"
-        #     if cov_res.status == "success":
-        #         results.append(cov_res)
+        # Parse coverage.json if it was generated
+        cov_json_path = os.path.join(path, "coverage.json")
+        if os.path.exists(cov_json_path):
+            try:
+                with open(cov_json_path) as f:
+                    cov_data = json.load(f)
+                try:
+                    os.remove(cov_json_path)
+                except Exception:  # nosec B110
+                    pass
+
+                totals = cov_data.get("totals", {})
+                pct = totals.get("percent_covered", 0.0)
+                cov_lines = totals.get("covered_lines", 0)
+                num_stmts = totals.get("num_statements", 0)
+                missing = totals.get("missing_lines", 0)
+
+                cov_summary = (
+                    f"Coverage: {pct:.2f}% | "
+                    f"Statements: {num_stmts} | "
+                    f"Covered: {cov_lines} | "
+                    f"Missing: {missing}"
+                )
+
+                cov_res = GitResult(
+                    status="success",
+                    data=cov_summary,
+                    metadata=GitMetadata(
+                        command="coverage report",
+                        workspace=path,
+                        return_code=0,
+                        timestamp=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
+                        + "Z",
+                    ),
+                )
+                results.append(cov_res)
+            except Exception as e:
+                logger.warning(f"Failed to process coverage.json in {path}: {e}")
 
         return results
 
@@ -1380,7 +1739,7 @@ class Git:
                     os.path.join(path, "tests")
                 ) or os.path.exists(os.path.join(path, "test"))
                 if has_tests:
-                    cov_flag = " --cov=." if coverage else ""
+                    cov_flag = " --cov=. --cov-report=json" if coverage else ""
                     # Detect if we should use uv or standard python
                     if os.path.exists(os.path.join(path, "uv.lock")):
                         cmd = f"uv run --extra test pytest -v --timeout=120{cov_flag}"
@@ -1877,9 +2236,13 @@ class Git:
         single_phase: bool = False,
         project_filter: str | None = None,
         progress: dict | None = None,
+        force: bool = False,
     ) -> list[GitResult]:
         """
         Execute the phased bumpversion workflow: pre-commits + phased bumping.
+
+        Concept:
+            CONCEPT:RM-BUMP
         """
         if progress is None:
             progress = self.progress
@@ -1944,10 +2307,22 @@ class Git:
                 if not project_dir:
                     return None
 
+                if not force:
+                    status_check = self.git_action("git status", path=project_dir)
+                    data_lower = status_check.data.lower() if status_check.data else ""
+                    if (
+                        "nothing to commit" in data_lower
+                        and "your branch is up to date" in data_lower
+                    ):
+                        logger.info(
+                            f"Skipping bump for {project_name}: no code changes detected (use force=True to override)"
+                        )
+                        return "skipped"
+
                 result = self.bump_version(
                     part=part,
                     allow_dirty=True,
-                    path=str(project_dir),
+                    path=project_dir,
                     dry_run=dry_run,
                     verbose=dry_run or not dry_run,
                 )
@@ -2076,7 +2451,7 @@ class Git:
                                         data=f"Updated {project_name} to {new_version} in pyproject.toml",
                                         metadata=GitMetadata(
                                             command="update_dependency",
-                                            workspace=str(path),
+                                            workspace=path,
                                             return_code=0,
                                             timestamp=datetime.datetime.now(
                                                 datetime.timezone.utc
@@ -2107,6 +2482,9 @@ class Git:
     ) -> list[GitResult]:
         """
         Execute the phased git push workflow.
+
+        Concept:
+            CONCEPT:RM-PUSH
         """
         import time
 
@@ -2138,7 +2516,7 @@ class Git:
                 return []
 
         processed_projects = set()
-        phase_list = []
+        phase_list: list[dict[str, Any]] = []
         total_projects = 0
 
         for phase in config.get("phases", []):
@@ -2182,7 +2560,7 @@ class Git:
                     "phase_num": phase_num,
                     "name": phase_name,
                     "projects_to_push": projects_to_push,
-                    "wait_minutes": phase.get("wait_minutes", 0),
+                    "wait_minutes": float(phase.get("wait_minutes", 0)),
                 }
             )
             total_projects += len(projects_to_push)
@@ -2223,6 +2601,8 @@ class Git:
                 f"Starting {phase_name} push for {len(projects_to_push)} projects..."
             )
 
+            phase_had_pushes = False
+
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=self.threads
             ) as executor:
@@ -2240,6 +2620,11 @@ class Git:
                         res = future.result()
                         all_results.append(res)
                         status_str = "success" if res.status == "success" else "failed"
+                        if (
+                            res.status == "success"
+                            and "Everything up-to-date" not in res.data
+                        ):
+                            phase_had_pushes = True
                     except Exception as e:
                         all_results.append(
                             GitResult(
@@ -2275,14 +2660,19 @@ class Git:
                 progress["phases"][phase_name]["status"] = "completed"
 
             if wait_minutes > 0:
-                logger.info(
-                    f"Phase {phase_num} complete. Waiting {wait_minutes} minutes before proceeding..."
-                )
-                if progress is not None:
-                    progress["current_phase"] = (
-                        f"Waiting {wait_minutes} min after {phase_name}"
+                if not phase_had_pushes:
+                    logger.info(
+                        f"Phase {phase_num} complete. Skipping {wait_minutes} minutes wait because 0 commits were pushed."
                     )
-                time.sleep(wait_minutes * 60)
+                else:
+                    logger.info(
+                        f"Phase {phase_num} complete. Waiting {wait_minutes} minutes before proceeding..."
+                    )
+                    if progress is not None:
+                        progress["current_phase"] = (
+                            f"Waiting {wait_minutes} min after {phase_name}"
+                        )
+                    time.sleep(wait_minutes * 60)
 
         if progress is not None:
             progress["current_phase"] = "Pushes Completed"
@@ -2342,6 +2732,50 @@ class Git:
         except Exception as e:
             logger.error(f"Failed to load projects from YAML: {e}")
             return False
+
+    def discover_projects(self) -> dict[str, str]:
+        """
+        Scan self.path for immediate subdirectories containing a .git folder.
+        Populates and returns self.project_map.
+        """
+        self.project_map = {}
+        expanded_path = os.path.abspath(os.path.expanduser(self.path))
+        if not os.path.exists(expanded_path):
+            return self.project_map
+
+        try:
+            for item in os.listdir(expanded_path):
+                full_path = os.path.join(expanded_path, item)
+                if os.path.isdir(full_path) and os.path.exists(
+                    os.path.join(full_path, ".git")
+                ):
+                    # Get remote URL
+                    remote_url = None
+                    try:
+                        res = subprocess.run(
+                            ["git", "config", "--get", "remote.origin.url"],
+                            cwd=full_path,
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        if res.returncode == 0 and res.stdout.strip():
+                            remote_url = res.stdout.strip()
+                    except Exception:
+                        pass
+
+                    if not remote_url:
+                        remote_url = f"local://{item}"
+
+                    self.project_map[remote_url] = os.path.abspath(full_path)
+
+            logger.info(
+                f"Auto-discovered {len(self.project_map)} git repositories in {expanded_path}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to discover git projects in {expanded_path}: {e}")
+
+        return self.project_map
 
     def _parse_subdirectories(
         self, subdirs: dict[str, SubdirectoryConfig], current_path: str
@@ -2596,6 +3030,22 @@ Examples:
         "--pull", action="store_true", help="Pull latest changes for all projects."
     )
     group_git.add_argument(
+        "--add",
+        action="store_true",
+        help="Stage all changes in the specified repositories.",
+    )
+    group_git.add_argument(
+        "--commit",
+        action="store_true",
+        help="Commit staged changes in the specified repositories.",
+    )
+    group_git.add_argument(
+        "-m",
+        "--message",
+        type=str,
+        help="Commit message for bulk commits. Required for --commit.",
+    )
+    group_git.add_argument(
         "--default-branch",
         action="store_true",
         help="Switch all repos to their default branch (via origin/HEAD).",
@@ -2758,6 +3208,23 @@ Examples:
         git.clone_projects()
     if pull_flag:
         git.pull_projects()
+
+    if args.add:
+        results = git.add_projects()
+        summary = git.generate_markdown_summary("Bulk Git Add", results)
+        logger.info(summary)
+        git._export_report(summary, "git_add_report.md")
+
+    if args.commit:
+        if not args.message:
+            logger.error(
+                "Error: --message/-m is required for bulk commits when using --commit."
+            )
+            sys.exit(1)
+        results = git.commit_projects(message=args.message)
+        summary = git.generate_markdown_summary("Bulk Git Commit", results)
+        logger.info(summary)
+        git._export_report(summary, "git_commit_report.md")
 
     if args.branches:
         branches = git.list_branches()
