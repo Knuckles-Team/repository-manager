@@ -43,7 +43,7 @@
 
 This agent wraps the Manage your git projects API. You can interact with it programmatically or via its integrated execution entrypoints.
 
-Detailed instructions on how to use the underlying API wrappers, extended schema bindings, and developer SDK references are maintained in [docs/index.md](file:///home/apps/workspace/agent-packages/agents/repository-manager/docs/index.md).
+Detailed instructions on how to use the underlying API wrappers, extended schema bindings, and developer SDK references are maintained in [docs/index.md](docs/index.md).
 
 ---
 
@@ -54,12 +54,33 @@ This server utilizes dynamic Action-Routed tools to optimize token overhead and 
 ### Available MCP Tools
 | Tool Module | Toggle Env Var | Enabled by Default | Description & Nested Methods |
 |-------------|----------------|--------------------|------------------------------|
-| **Misc** | `MISCTOOL` | `True` | Register miscellaneous tools like health check. |
-| **Git Operations** | `GIT_OPERATIONSTOOL` | `True` | Bulk Git operations and arbitrary command execution. Action-routed methods: `raw`, `clone`, `pull`, `push`, `phased_push`. |
-| **Workspace Management** | `WORKSPACE_MANAGEMENTTOOL` | `True` | Register tools for core workspace setup and organization. Action-routed methods: `list`, `list_branches`, `setup`, `template`, `save`, `maintain`, `remediate`. |
-| **Project Management** | `PROJECT_MANAGEMENT_TOOL` | `True` | Register tools for the autonomous project harness. Action-routed methods: `install`, `build`, `validate`, `validate_status`. |
+| **Misc** | `MISC_TOOL` | `True` | Register miscellaneous tools like health check. |
+| **Git Operations** | `GIT_OPERATIONS_TOOL` | `True` | Bulk Git operations and arbitrary command execution. Action-routed methods: `clone`, `phased_push`, `pull`, `push`, `raw`. |
+| **Workspace Management** | `WORKSPACE_MANAGEMENT_TOOL` | `True` | Register tools for core workspace setup and organization. Action-routed methods: `list`, `list_branches`, `maintain`, `remediate`, `save`, `setup`, `template`. |
+| **Project Management** | `PROJECT_MANAGEMENT_TOOL` | `True` | Register tools for the autonomous project harness. Action-routed methods: `build`, `install`, `validate`, `validate_status`. |
 
-Detailed tool schemas, parameter shapes, and validation constraints are preserved in [docs/mcp.md](file:///home/apps/workspace/agent-packages/agents/repository-manager/docs/mcp.md).
+Detailed tool schemas, parameter shapes, and validation constraints are preserved in [docs/mcp.md](docs/mcp.md).
+
+### Dynamic Tool Selection & Visibility
+
+This MCP server supports dynamic toolset selection and visibility filtering at runtime. This allows you to restrict the set of exposed tools in order to prevent blowing up the LLM's context window.
+
+You can configure tool filtering via multiple input channels:
+
+- **CLI Arguments:** Pass `--tools` or `--toolsets` (or their disabled counterparts `--disabled-tools` and `--disabled-toolsets`) during startup.
+- **Environment Variables:** Define standard environment variables:
+  - `MCP_ENABLED_TOOLS` / `MCP_DISABLED_TOOLS`
+  - `MCP_ENABLED_TAGS` / `MCP_DISABLED_TAGS`
+- **HTTP SSE Request Headers:** Pass custom headers during transport initialization:
+  - `x-mcp-enabled-tools` / `x-mcp-disabled-tools`
+  - `x-mcp-enabled-tags` / `x-mcp-disabled-tags`
+- **HTTP SSE Request Query Parameters:** Append query parameters directly to your transport connection URL:
+  - `?tools=tool1,tool2`
+  - `?tags=tag1`
+
+When query strings or parameters are supplied, an LLM-free **Knowledge Graph resolution layer** (using `DynamicToolOrchestrator`) matches query intents against known tool tags, names, or descriptions, with safe fallback and automated 24-hour background cache refreshing.
+
+---
 
 ### MCP Configuration Examples
 
@@ -245,7 +266,7 @@ services:
 
 ```
 
-Detailed graph node architecture explanations, custom skill configurations, and agentic trace guides are available in [docs/agent.md](file:///home/apps/workspace/agent-packages/agents/repository-manager/docs/agent.md).
+Detailed graph node architecture explanations, custom skill configurations, and agentic trace guides are available in [docs/agent.md](docs/agent.md).
 
 ---
 

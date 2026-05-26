@@ -96,7 +96,7 @@ repos:
   hooks:
   - id: pytest
     name: pytest
-    entry: uv run pytest -n auto
+    entry: bash -c 'export PYTEST_XDIST_AUTO_NUM_WORKERS=4; uv run pytest -n auto'
     language: system
     types: [python]
     pass_filenames: false

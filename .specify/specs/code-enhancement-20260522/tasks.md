@@ -1,0 +1,81 @@
+# Tasks: Code Enhancement: repository-manager
+
+Generated: 2026-05-22T22:44:22.784177+00:00
+Skipped informational: 5
+
+- [ ] [P] **T001** [Dependency Audit] Minor update: pre-commit 4.5.1 (constraint — not installed) -> 4.6.0
+  - Priority: P3-Low | Effort: Small
+- [ ] [P] **T002** [Codebase Optimization] Moderate avg cyclomatic complexity: 7.5
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T003** [Codebase Optimization] 4 functions exceed 200 lines (actionable refactoring targets): validate_projects
+  - Priority: P2-Medium | Effort: Large
+- [ ] [P] **T004** [Codebase Optimization] Monolithic: mcp_server.py (574L) — 1 functions with high complexity (worst: _get
+  - Priority: P1-High | Effort: Large
+- [ ] [P] **T005** [Codebase Optimization] Monolithic: repository_manager.py (3142L) — 11 functions with high complexity (w
+  - Priority: P1-High | Effort: Large
+- [ ] [P] **T006** [Codebase Optimization] Monolithic: models.py (1452L) — 7 functions with high complexity (worst: Validat
+  - Priority: P1-High | Effort: Large
+- [ ] [P] **T007** [Codebase Optimization] 18 functions with nesting depth >4
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T008** [Security Analysis] 3 HIGH severity vulnerabilities found
+  - Priority: P1-High | Effort: Medium
+- [ ] [P] **T009** [Test Coverage] Test suite lacks intent diversity (only one type)
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T010** [Test Coverage] 17 potential doc-test drift items
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T011** [Documentation & Governance] README.md missing sections: usage|quick start
+  - Priority: P3-Low | Effort: Small
+- [ ] [P] **T012** [Documentation & Governance] 2 broken internal links in README.md
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T013** [Documentation & Governance] README missing: Has a Table of Contents
+  - Priority: P3-Low | Effort: Small
+- [ ] [P] **T014** [Documentation & Governance] README missing: Has usage examples with code blocks
+  - Priority: P3-Low | Effort: Small
+- [ ] [P] **T015** [Documentation & Governance] 39 broken file references in documentation
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T016** [Architecture & Design Patterns] SRP: 5 modules exceed 500 lines (god modules)
+  - Priority: P2-Medium | Effort: Large
+- [ ] [P] **T017** [Architecture & Design Patterns] SRP: 1 classes have >15 methods
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T018** [Architecture & Design Patterns] No discernible layer architecture (no domain/service/adapter separation)
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T019** [Architecture & Design Patterns] Low dependency injection ratio: 8%
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T020** [Concept Traceability] Low traceability ratio: 0% concepts fully traced
+  - Priority: P4-Enhancement | Effort: Medium
+- [ ] [P] **T021** [Concept Traceability] 54 test functions missing concept markers
+  - Priority: P4-Enhancement | Effort: Small
+- [ ] [P] **T022** [Concept Traceability] 67 significant functions (>10 lines) missing concept markers in docstrings
+  - Priority: P4-Enhancement | Effort: Small
+- [ ] [P] **T023** [Linting & Formatting] Total lint findings: 0 (high/error: 0, medium/warning: 0, low: 0)
+  - Priority: P4-Enhancement | Effort: Medium
+- [ ] [P] **T024** [Pre-Commit Compliance] 1 hook(s) may be outdated: ruff-pre-commit
+  - Priority: P2-Medium | Effort: Small
+- [ ] [P] **T025** [Directory Organization] 4 rogue/throwaway scripts detected (fix_*, validate_*, patch_*, etc.): scripts/d
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T026** [Changelog Audit] CHANGELOG.md exists but could not be parsed — check format compliance
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T027** [Changelog Audit] No changelog entries within the last 30 days
+  - Priority: P3-Low | Effort: Medium
+- [ ] [P] **T028** [Changelog Audit] keepachangelog not installed — pip install 'universal-skills[code-enhancer]'
+  - Priority: P3-Low | Effort: Small
+- [ ] [P] **T029** [Pytest Quality] 2 test files exceed 500 lines — split into focused modules
+  - Priority: P2-Medium | Effort: Large
+- [ ] [P] **T030** [Pytest Quality] Test directory lacks subdirectory organization (consider unit/, integration/, e2
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T031** [Pytest Quality] Missing conftest.py for shared fixtures
+  - Priority: P2-Medium | Effort: Small
+- [ ] [P] **T032** [Pytest Quality] No @pytest.mark.parametrize usage — consider data-driven tests
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T033** [Pytest Quality] No shared fixtures in conftest.py
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T034** [Pytest Quality] 2 tests have no assertions
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T035** [Pytest Quality] 3 tests exceed 100 lines — likely doing too much per test
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T036** [Environment Variables] Partial env var documentation: 50% coverage
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T037** [Environment Variables] Undocumented env vars: AUTH_TYPE, EUNOMIA_POLICY_FILE, EUNOMIA_TYPE, GIT_OPERATI
+  - Priority: P2-Medium | Effort: Medium
+- [ ] [P] **T038** [Environment Variables] 8 Python env vars not in .env.example: LLM_API_KEY, LLM_BASE_URL, MCP_URL, MODEL
+  - Priority: P2-Medium | Effort: Medium

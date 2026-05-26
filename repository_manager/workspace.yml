@@ -1,14 +1,13 @@
 # Repository Workspace Configuration
 # This file defines the directory structure and repositories for the agent ecosystem.
-
 name: "Agent Packages Workspace"
 path: "/home/apps/workspace"
 description: "Main development environment for the agent-packages ecosystem."
-
 repositories:
   - url: "https://github.com/Knuckles-Team/pipelines.git"
     description: "GitHub Actions pipelines for the agent ecosystem."
-
+  - url: "http://gitlab.arpa/homelab/pipelines/gitlab-pipelines.git"
+    description: "GitLab CI pipelines for the agent ecosystem."
 subdirectories:
   agent-packages:
     description: "Core utility packages, shared libraries, and agent implementations."
@@ -19,6 +18,10 @@ subdirectories:
         description: "Standard web UI component library for agents."
       - url: "https://github.com/Knuckles-Team/agent-terminal-ui.git"
         description: "Standard terminal UI component library for agents."
+      - url: "https://github.com/Knuckles-Team/geniusbot.git"
+        description: "Desktop Cockpit for AI agents."
+      - url: "https://github.com/Knuckles-Team/epistemic-graph.git"
+        description: "Local Knowledge Graph for AI agents."
     subdirectories:
       skills:
         description: "Agent capabilities, skill graphs, and tool definitions."
@@ -30,27 +33,34 @@ subdirectories:
       agents:
         description: "Collection of specialized agent implementations, MCP servers, API Wrappers/Core Python Tools."
         repositories:
-          - url: "https://github.com/Knuckles-Team/adguard-home-agent.git"
           - url: "https://github.com/Knuckles-Team/ansible-tower-mcp.git"
           - url: "https://github.com/Knuckles-Team/archivebox-api.git"
           - url: "https://github.com/Knuckles-Team/arr-mcp.git"
           - url: "https://github.com/Knuckles-Team/atlassian-agent.git"
           - url: "https://github.com/Knuckles-Team/audio-transcriber.git"
+          - url: "https://github.com/Knuckles-Team/caddy-mcp.git"
           - url: "https://github.com/Knuckles-Team/container-manager-mcp.git"
           - url: "https://github.com/Knuckles-Team/data-science-mcp.git"
           - url: "https://github.com/Knuckles-Team/documentdb-mcp.git"
+          - url: "https://github.com/Knuckles-Team/emerald-exchange.git"
+          - url: "https://github.com/Knuckles-Team/erpnext-agent.git"
           - url: "https://github.com/Knuckles-Team/genius-agent.git"
           - url: "https://github.com/Knuckles-Team/github-agent.git"
           - url: "https://github.com/Knuckles-Team/gitlab-api.git"
           - url: "https://github.com/Knuckles-Team/home-assistant-agent.git"
           - url: "https://github.com/Knuckles-Team/jellyfin-mcp.git"
+          - url: "https://github.com/Knuckles-Team/keycloak-agent.git"
           - url: "https://github.com/Knuckles-Team/langfuse-agent.git"
           - url: "https://github.com/Knuckles-Team/leanix-agent.git"
+          - url: "https://github.com/Knuckles-Team/legal-peripherals-mcp.git"
+          - url: "https://github.com/Knuckles-Team/lgtm-mcp.git"
           - url: "https://github.com/Knuckles-Team/listmonk-api.git"
+          - url: "https://github.com/Knuckles-Team/mattermost-mcp.git"
           - url: "https://github.com/Knuckles-Team/mealie-mcp.git"
           - url: "https://github.com/Knuckles-Team/media-downloader.git"
           - url: "https://github.com/Knuckles-Team/microsoft-agent.git"
           - url: "https://github.com/Knuckles-Team/nextcloud-agent.git"
+          - url: "https://github.com/Knuckles-Team/openbao-mcp.git"
           - url: "https://github.com/Knuckles-Team/owncast-agent.git"
           - url: "https://github.com/Knuckles-Team/plane-agent.git"
           - url: "https://github.com/Knuckles-Team/portainer-agent.git"
@@ -62,11 +72,12 @@ subdirectories:
           - url: "https://github.com/Knuckles-Team/servicenow-api.git"
           - url: "https://github.com/Knuckles-Team/stirlingpdf-agent.git"
           - url: "https://github.com/Knuckles-Team/systems-manager.git"
+          - url: "https://github.com/Knuckles-Team/technitium-dns-mcp.git"
+          - url: "https://github.com/Knuckles-Team/twenty-mcp.git"
           - url: "https://github.com/Knuckles-Team/tunnel-manager.git"
           - url: "https://github.com/Knuckles-Team/uptime-kuma-agent.git"
           - url: "https://github.com/Knuckles-Team/vector-mcp.git"
           - url: "https://github.com/Knuckles-Team/wger-agent.git"
-
 maintenance:
   description: "Phased update sequence for the agent ecosystem."
   phases:
@@ -74,25 +85,104 @@ maintenance:
       phase: 1
       projects:
         - "pipelines"
-      wait_minutes: 6
-    - name: "Phase 2: Core Tools and UIs"
+      wait_minutes: 12
+    - name: "Phase 2: Epistemic Graph"
       phase: 2
+      projects:
+        - "epistemic-graph"
+      wait_minutes: 12
+    - name: "Phase 3: Core Tools and UIs"
+      phase: 3
       projects:
         - "universal-skills"
         - "skill-graphs"
         - "agent-webui"
         - "agent-terminal-ui"
       wait_minutes: 12
-    - name: "Phase 3: agent-utilities"
-      phase: 3
+    - name: "Phase 4: agent-utilities"
+      phase: 4
       projects:
         - "agent-utilities"
-      wait_minutes: 6
-    - name: "Phase 4: Agents"
-      phase: 4
+      wait_minutes: 12
+    - name: "Phase 5: Agents"
+      phase: 5
       bulk_bump: True
       bulk_push: True
-
+services:
+  description: "Declares all active containerized services deployed on the Swarm, including their Git sources and LAN domains."
+  items:
+    - name: "keycloak"
+      url: "http://gitlab.arpa/homelab/containers/services/keycloak.git"
+      domain: "keycloak.arpa"
+      description: "Local identity and access management system (OIDC/SAML SSO)."
+    - name: "openbao"
+      url: "http://gitlab.arpa/homelab/containers/services/openbao.git"
+      domain: "openbao.arpa"
+      description: "Secure secrets engine and root of trust vault."
+    - name: "twenty"
+      url: "http://gitlab.arpa/homelab/containers/services/twenty.git"
+      domain: "twenty.arpa"
+      description: "Specialized CRM solution for the customer relationship lifecycle."
+    - name: "erpnext"
+      url: "http://gitlab.arpa/homelab/containers/services/erpnext.git"
+      domain: "erpnext.arpa"
+      description: "Enterprise Resource Planning and management system."
+    - name: "plane"
+      url: "http://gitlab.arpa/homelab/containers/services/plane.git"
+      domain: "plane.arpa"
+      description: "Enterprise-grade issue tracking and project management platform."
+    - name: "lgtm"
+      url: "http://gitlab.arpa/homelab/containers/services/lgtm.git"
+      domain: "grafana.arpa"
+      description: "Observability stack comprising Prometheus, Grafana, Alertmanager, and Loki."
+    - name: "uptime-kuma"
+      url: "http://gitlab.arpa/homelab/containers/services/uptime-kuma.git"
+      domain: "uptime.arpa"
+      description: "Continuous self-healing system status and endpoint monitoring tool."
+    - name: "mattermost"
+      url: "http://gitlab.arpa/homelab/containers/services/mattermost.git"
+      domain: "mattermost.arpa"
+      description: "Collaborative chat platform and internal team messaging interface."
+    - name: "jellyfin"
+      url: "http://gitlab.arpa/homelab/containers/services/jellyfin.git"
+      domain: "jellyfin.arpa"
+      description: "Media player and streaming library provider."
+    - name: "mealie"
+      url: "http://gitlab.arpa/homelab/containers/services/mealie.git"
+      domain: "mealie.arpa"
+      description: "Household recipe manager and healthy meal planner."
+    - name: "nextcloud"
+      url: "http://gitlab.arpa/homelab/containers/services/nextcloud.git"
+      domain: "nextcloud.arpa"
+      description: "Personal calendar, files, and scheduling storage platform."
+    - name: "postiz"
+      url: "http://gitlab.arpa/homelab/containers/services/postiz.git"
+      domain: "postiz.arpa"
+      description: "Social media post creator and automated schedulers."
+    - name: "vaultwarden"
+      url: "http://gitlab.arpa/homelab/containers/services/vaultwarden.git"
+      domain: "vaultwarden.arpa"
+      description: "Bitwarden-compatible secure password manager backend."
+    - name: "wger"
+      url: "http://gitlab.arpa/homelab/containers/services/wger.git"
+      domain: "wger.arpa"
+      description: "Personal training manager and physical fitness registry."
+    - name: "searxng"
+      url: "http://gitlab.arpa/homelab/containers/services/searxng.git"
+      domain: "searxng.arpa"
+      description: "Privacy-respecting search engine aggregator."
+    - name: "gitlab"
+      url: "http://gitlab.arpa/homelab/containers/services/gitlab.git"
+      domain: "gitlab.arpa"
+      description: "Ecosystem core GitLab instance hosting all GitOps repositories."
+    - name: "technitium-dns"
+      url: "http://gitlab.arpa/homelab/containers/services/technitium-dns.git"
+      domain: "adguard.arpa"
+      description: "Authoritative local DNS server (Option C) managing the arpa zone."
+    - name: "networks"
+      url: "http://gitlab.arpa/homelab/containers/networks.git"
+      domain: "networks.arpa"
+      description: "Core overlay network infrastructure definitions for the Swarm."
 graph:
   enabled: true
   multimodal: true
