@@ -33,7 +33,9 @@ async def main():
                 tools = load_mcp_servers(temp_config_path)
                 print(f"Loaded {len(tools)} tools:")
                 for tool in tools:
-                    print(f" - {tool.name}: {tool.description}")
+                    name = getattr(tool, "name", "unknown")
+                    description = getattr(tool, "description", "")
+                    print(f" - {name}: {description}")
 
             except Exception as e:
                 print(f"Error loading tools: {e}")

@@ -210,7 +210,12 @@ async def test_mcp_rm_git_tool():
             ctx=None,
         )
         assert res["status"] == "submitted"
-        mock_git.clone_projects.assert_called_with(projects=["https://github.com/org/repo-a.git", "https://github.com/org/repo-b.git"])
+        mock_git.clone_projects.assert_called_with(
+            projects=[
+                "https://github.com/org/repo-a.git",
+                "https://github.com/org/repo-b.git",
+            ]
+        )
 
         # 4. Action: pull
         res = await rm_git.fn(
@@ -237,7 +242,9 @@ async def test_mcp_rm_git_tool():
             ctx=None,
         )
         assert res["status"] == "submitted"
-        mock_git.pull_projects.assert_called_with(project_dirs=["/tmp/repo-a", "/absolute/path/repo-b"])
+        mock_git.pull_projects.assert_called_with(
+            project_dirs=["/tmp/repo-a", "/absolute/path/repo-b"]
+        )
 
         # 5. Action: push
         res = await rm_git.fn(
@@ -264,7 +271,9 @@ async def test_mcp_rm_git_tool():
             ctx=None,
         )
         assert res["status"] == "submitted"
-        mock_git.push_projects.assert_called_with(project_dirs=["/tmp/repo-a", "/absolute/path/repo-b"])
+        mock_git.push_projects.assert_called_with(
+            project_dirs=["/tmp/repo-a", "/absolute/path/repo-b"]
+        )
 
         # 6. Action: phased_push
         res = await rm_git.fn(
@@ -502,7 +511,6 @@ async def test_mcp_rm_projects_tool():
             output_dir=None,
             generate_report=True,
             repositories="repo-a",
-            coverage=False,
             job_id=None,
             ctx=None,
         )
@@ -525,7 +533,6 @@ async def test_mcp_rm_projects_tool():
             output_dir=None,
             generate_report=True,
             repositories=None,
-            coverage=False,
             job_id=None,
             ctx=None,
         )
@@ -540,7 +547,6 @@ async def test_mcp_rm_projects_tool():
             output_dir=None,
             generate_report=True,
             repositories=None,
-            coverage=False,
             job_id=None,
             ctx=None,
         )
@@ -564,7 +570,6 @@ async def test_mcp_rm_projects_tool():
             output_dir=None,
             generate_report=True,
             repositories=None,
-            coverage=False,
             job_id="job-status-test",
             ctx=None,
         )
@@ -579,7 +584,6 @@ async def test_mcp_rm_projects_tool():
             output_dir=None,
             generate_report=True,
             repositories=None,
-            coverage=False,
             job_id=None,
             ctx=None,
         )

@@ -201,8 +201,31 @@ class TestToDirectoryReport:
             assert len(files) > 0
             for f in files:
                 assert f.endswith(".md")
+                if f.startswith(("summary", "summaries")):
+                    continue
                 assert "error(s)" in f
                 assert "warning(s)" in f
+
+    def test_creates_single_project_summary(self, sample_report, tmp_path):
+        report_dir = sample_report.to_directory_report(str(tmp_path))
+        alpha_dir = os.path.join(report_dir, "alpha-agent-results")
+        if os.path.exists(alpha_dir):
+            files = os.listdir(alpha_dir)
+            summaries = [f for f in files if f.startswith("summary_")]
+            assert len(summaries) == 1
+            summary_file = summaries[0]
+            assert "summary_alpha_agent_" in summary_file
+            assert summary_file.endswith(".md")
+
+            # Stale files should not exist
+            assert "summary.md" not in files
+            for f in files:
+                assert not f.startswith("summaries_")
+
+            with open(os.path.join(alpha_dir, summary_file)) as f_in:
+                content = f_in.read()
+            assert "# 📋 alpha-agent Validation Summary" in content
+            assert "Total Checks:" in content
 
     def test_index_contains_summary_table(self, sample_report, tmp_path):
         report_dir = sample_report.to_directory_report(str(tmp_path))
@@ -283,8 +306,9 @@ class TestIncrementalReportWriter:
         repo_dir = os.path.join(writer.report_root, "test-agent-results")
         assert os.path.isdir(repo_dir)
         files = os.listdir(repo_dir)
-        assert len(files) == 1
-        assert files[0].startswith("installation-")
+        report_files = [f for f in files if not f.startswith(("summary", "summaries"))]
+        assert len(report_files) == 1
+        assert report_files[0].startswith("installation-")
 
     def test_write_phase_incremental_accumulation(self, tmp_path):
         writer = IncrementalReportWriter(
@@ -329,7 +353,8 @@ class TestIncrementalReportWriter:
         # my-agent should now have 2 files
         repo_dir = os.path.join(writer.report_root, "my-agent-results")
         files = os.listdir(repo_dir)
-        assert len(files) == 2
+        report_files = [f for f in files if not f.startswith(("summary", "summaries"))]
+        assert len(report_files) == 2
 
         # Stats should be accumulated
         assert writer.project_stats["my-agent"]["success"] == 1
@@ -431,7 +456,7 @@ class TestCategorySlugMap:
             "Agent Runtime & Web UI",
             "Pre-commit Standard Compliance",
             "Additional Operational Checks",
-            "Coverage Report",
+            "Pytest Suite",
         }
         assert expected == set(CATEGORY_SLUG_MAP.keys())
 

@@ -306,46 +306,46 @@ def register_git_operations_tools(mcp: FastMCP):
             return _submit_job("clone", git.clone_projects, projects=urls)
 
         if action == "pull":
-            dirs = None
+            pull_dirs: list[str] | None = None
             if projects:
-                dirs = []
+                pull_dirs = []
                 for p in projects.split(","):
                     p = p.strip()
                     if not p:
                         continue
                     if os.path.isabs(p):
-                        dirs.append(p)
+                        pull_dirs.append(p)
                     else:
-                        dirs.append(os.path.abspath(os.path.join(git.path, p)))
-            return _submit_job("pull", git.pull_projects, project_dirs=dirs)
+                        pull_dirs.append(os.path.abspath(os.path.join(git.path, p)))
+            return _submit_job("pull", git.pull_projects, project_dirs=pull_dirs)
 
         if action == "push":
-            dirs = None
+            push_dirs: list[str] | None = None
             if projects:
-                dirs = []
+                push_dirs = []
                 for p in projects.split(","):
                     p = p.strip()
                     if not p:
                         continue
                     if os.path.isabs(p):
-                        dirs.append(p)
+                        push_dirs.append(p)
                     else:
-                        dirs.append(os.path.abspath(os.path.join(git.path, p)))
-            return _submit_job("push", git.push_projects, project_dirs=dirs)
+                        push_dirs.append(os.path.abspath(os.path.join(git.path, p)))
+            return _submit_job("push", git.push_projects, project_dirs=push_dirs)
 
         if action == "add":
-            dirs = None
+            add_dirs: list[str] | None = None
             if projects:
-                dirs = []
+                add_dirs = []
                 for p in projects.split(","):
                     p = p.strip()
                     if not p:
                         continue
                     if os.path.isabs(p):
-                        dirs.append(p)
+                        add_dirs.append(p)
                     else:
-                        dirs.append(os.path.abspath(os.path.join(git.path, p)))
-            return _submit_job("add", git.add_projects, project_dirs=dirs)
+                        add_dirs.append(os.path.abspath(os.path.join(git.path, p)))
+            return _submit_job("add", git.add_projects, project_dirs=add_dirs)
 
         if action == "commit":
             if not message:
@@ -356,19 +356,19 @@ def register_git_operations_tools(mcp: FastMCP):
                         message="message is required for 'commit' action", code=1
                     ),
                 )
-            dirs = None
+            commit_dirs: list[str] | None = None
             if projects:
-                dirs = []
+                commit_dirs = []
                 for p in projects.split(","):
                     p = p.strip()
                     if not p:
                         continue
                     if os.path.isabs(p):
-                        dirs.append(p)
+                        commit_dirs.append(p)
                     else:
-                        dirs.append(os.path.abspath(os.path.join(git.path, p)))
+                        commit_dirs.append(os.path.abspath(os.path.join(git.path, p)))
             return _submit_job(
-                "commit", git.commit_projects, message=message, project_dirs=dirs
+                "commit", git.commit_projects, message=message, project_dirs=commit_dirs
             )
 
         if action == "phased_push":
@@ -529,10 +529,6 @@ def register_project_management_tools(mcp: FastMCP):
             default=None,
             description="Comma-separated list of specific repositories to target.",
         ),
-        coverage: bool = Field(
-            default=False,
-            description="Collect pytest coverage data. Default False (opt-in for speed).",
-        ),
         job_id: str | None = Field(
             default=None,
             description="Job ID to check status for 'validate_status' action.",
@@ -590,7 +586,6 @@ def register_project_management_tools(mcp: FastMCP):
                 output_dir=output_dir,
                 generate_report=generate_report,
                 validated_repositories=repo_list_for_writer,
-                coverage=coverage,
                 progress=progress,
                 _extra_job_data={"progress_detail": progress},
             )

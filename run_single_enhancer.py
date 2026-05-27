@@ -5,8 +5,10 @@ import time
 from pathlib import Path
 
 # Paths
-SCRIPTS_DIR = Path("/home/genius/.gemini/antigravity/skills/code-enhancer/scripts")
-PROJECT_DIR = Path("/home/apps/workspace/agent-packages/agents/repository-manager")
+SCRIPTS_DIR = (
+    Path.home() / ".gemini" / "antigravity" / "skills" / "code-enhancer" / "scripts"
+)
+PROJECT_DIR = Path(__file__).parent.resolve()
 SPECIFY_DIR = PROJECT_DIR / ".specify"
 
 

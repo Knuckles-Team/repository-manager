@@ -3,7 +3,7 @@ import os
 from unittest.mock import patch
 
 import pytest
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from repository_manager.models import (
     GitMetadata,
@@ -178,6 +178,7 @@ def test_discover_projects(tmp_path):
     # Mock subprocess.run to return a mock remote URL
     with patch("subprocess.run") as mock_run:
         import subprocess
+
         def mock_git_config(args, cwd, **kwargs):
             if "repo1" in cwd:
                 url = "https://github.com/user/repo1.git"
@@ -185,7 +186,9 @@ def test_discover_projects(tmp_path):
                 url = "https://github.com/user/repo2.git"
             else:
                 url = ""
-            return subprocess.CompletedProcess(args=args, returncode=0, stdout=f"{url}\n")
+            return subprocess.CompletedProcess(
+                args=args, returncode=0, stdout=f"{url}\n"
+            )
 
         mock_run.side_effect = mock_git_config
 
@@ -211,7 +214,9 @@ def test_git_add_operations(mock_git_action, sample_workspace_yml):
     # Test single add
     res = git.add_project(str(workspace_dir / "pipelines"))
     assert res.status == "success"
-    mock_git_action.assert_called_with(command="git add -A", path=str(workspace_dir / "pipelines"))
+    mock_git_action.assert_called_with(
+        command="git add -A", path=str(workspace_dir / "pipelines")
+    )
 
     # Test bulk add
     results = git.add_projects([str(workspace_dir / "pipelines")])
@@ -231,7 +236,9 @@ def test_git_commit_operations(mock_git_action, sample_workspace_yml):
     )
 
     # Test commit with no changes (should skip)
-    res = git.commit_project(message="Updating services", path=str(workspace_dir / "pipelines"))
+    res = git.commit_project(
+        message="Updating services", path=str(workspace_dir / "pipelines")
+    )
     assert res.status == "success"
     assert "skipped" in res.data
 
@@ -239,22 +246,30 @@ def test_git_commit_operations(mock_git_action, sample_workspace_yml):
     def mock_status_call(command, path, **kwargs):
         if "status --porcelain" in command:
             return GitResult(
-                status="success", data="M  somefile.py\n", metadata=get_mock_metadata("git status --porcelain")
+                status="success",
+                data="M  somefile.py\n",
+                metadata=get_mock_metadata("git status --porcelain"),
             )
         elif "commit" in command:
             return GitResult(
-                status="success", data="Committed", metadata=get_mock_metadata("git commit")
+                status="success",
+                data="Committed",
+                metadata=get_mock_metadata("git commit"),
             )
         return GitResult(status="success", data="")
 
     mock_git_action.side_effect = mock_status_call
 
     # Test commit with staged changes
-    res2 = git.commit_project(message="Updating services", path=str(workspace_dir / "pipelines"))
+    res2 = git.commit_project(
+        message="Updating services", path=str(workspace_dir / "pipelines")
+    )
     assert res2.status == "success"
     assert "Committed" in res2.data
 
     # Test bulk commit
-    results = git.commit_projects(message="Updating services", project_dirs=[str(workspace_dir / "pipelines")])
+    results = git.commit_projects(
+        message="Updating services", project_dirs=[str(workspace_dir / "pipelines")]
+    )
     assert len(results) == 1
     assert results[0].status == "success"

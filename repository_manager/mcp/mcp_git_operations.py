@@ -71,32 +71,32 @@ def register_git_operations_tools(mcp: FastMCP):
             return _submit_job("clone", git.clone_projects, projects=urls)
 
         if action == "pull":
-            dirs = None
+            pull_dirs: list[str] | None = None
             if projects:
-                dirs = []
+                pull_dirs = []
                 for p in projects.split(","):
                     p = p.strip()
                     if not p:
                         continue
                     if os.path.isabs(p):
-                        dirs.append(p)
+                        pull_dirs.append(p)
                     else:
-                        dirs.append(os.path.abspath(os.path.join(git.path, p)))
-            return _submit_job("pull", git.pull_projects, project_dirs=dirs)
+                        pull_dirs.append(os.path.abspath(os.path.join(git.path, p)))
+            return _submit_job("pull", git.pull_projects, project_dirs=pull_dirs)
 
         if action == "push":
-            dirs = None
+            push_dirs: list[str] | None = None
             if projects:
-                dirs = []
+                push_dirs = []
                 for p in projects.split(","):
                     p = p.strip()
                     if not p:
                         continue
                     if os.path.isabs(p):
-                        dirs.append(p)
+                        push_dirs.append(p)
                     else:
-                        dirs.append(os.path.abspath(os.path.join(git.path, p)))
-            return _submit_job("push", git.push_projects, project_dirs=dirs)
+                        push_dirs.append(os.path.abspath(os.path.join(git.path, p)))
+            return _submit_job("push", git.push_projects, project_dirs=push_dirs)
 
         if action == "phased_push":
             progress = {
