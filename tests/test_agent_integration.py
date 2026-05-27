@@ -42,6 +42,7 @@ def agent_server():
     env["OPENAI_ADMIN_KEY"] = "EMPTY"
     env["GRAPH_DB_PATH"] = str(AGENT_WORKSPACE / "knowledge_graph.db")
     env["AGENT_UTILITIES_TESTING"] = "1"
+    env["LADYBUG_TRANSIENT_CONNECTIONS"] = "0"
     env["TOOL_GUARD_MODE"] = "off"
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONPATH"] = PROJECT_ROOT
@@ -122,6 +123,8 @@ def agent_server():
 
 @pytest.mark.asyncio
 @pytest.mark.integration
+@pytest.mark.slow
+@pytest.mark.timeout(300)
 async def test_get_workspace_projects_via_graph(agent_server):
     """Verifies that the agent server correctly orchestrates a call to get_workspace_projects."""
     query = "List all projects in the workspace."
