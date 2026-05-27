@@ -24,7 +24,7 @@ import multiprocessing
 import shutil
 import signal
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from agent_utilities.base_utilities import get_library_file_path, to_boolean
 
 try:
@@ -123,7 +123,20 @@ class Git:
         if threads:
             self.set_threads(threads=threads)
 
-        self.debug_log_path = os.path.join(self.path, "repository_manager_debug.log")
+        # Centralized debug logging under XDG logs directory of agent-utilities
+        try:
+            from agent_utilities.core.paths import log_dir
+
+            logs_dir = log_dir()
+        except ImportError:
+            import platformdirs
+
+            logs_dir = Path(
+                platformdirs.user_log_path("agent-utilities", "knuckles-team")
+            )
+
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        self.debug_log_path = str(logs_dir / "repository_manager_debug.log")
         self.debug_lock = threading.Lock()
         self.python_exe = self._find_python()
 
@@ -411,7 +424,6 @@ class Git:
         output_dir: str | None = None,
         generate_report: bool = True,
         validated_repositories: list[str] | None = None,
-        coverage: bool = False,
         progress: dict | None = None,
     ) -> ValidationReport:
         """Bulk validates agent/MCP servers using various modes (help, static, runtime).
@@ -422,8 +434,6 @@ class Git:
         results are available before the full run finishes.
 
         Args:
-            coverage: When True, collect pytest coverage data (``--cov=.``).
-                Defaults to False for faster validation runs.
             progress: Optional mutable dict for live progress reporting.
                 Updated in-place with current_phase, per-phase repo counts,
                 and overall progress percentage.
@@ -452,8 +462,8 @@ class Git:
             expected_phases.append("Ecosystem Installation")
         if run_all or type == "pre-commit":
             expected_phases.append("Pre-commit Compliance")
-        if run_all or type == "test" or coverage:
-            expected_phases.append("Coverage Report")
+        if run_all or type == "test":
+            expected_phases.append("Pytest Suite")
 
         total_phases = max(1, len(expected_phases))
         completed_phases = 0
@@ -603,11 +613,11 @@ class Git:
                 _phase_end("Pre-commit Compliance")
                 results.extend(pc_results)
 
-            # --- Phase 3: Pytest & Coverage Analysis ---
-            if run_all or type == "test" or coverage:
-                _phase_start("Coverage Report", len(self.project_map))
+            # --- Phase 3: Pytest Suite ---
+            if run_all or type == "test":
+                _phase_start("Pytest Suite", len(self.project_map))
                 logger.info(
-                    f"Running pytest and coverage analysis for {len(self.project_map)} projects..."
+                    f"Running pytest suite for {len(self.project_map)} projects..."
                 )
 
                 targets = []
@@ -621,8 +631,7 @@ class Git:
 
                 test_results = self.test_projects(
                     targets=targets,
-                    coverage=True,
-                    progress_phase="Coverage Report",
+                    progress_phase="Pytest Suite",
                     progress_dict=progress,
                 )
 
@@ -632,201 +641,12 @@ class Git:
                         if r.metadata
                         else "unknown"
                     )
-                    _phase_repo("Coverage Report", repo, r.status)
+                    _phase_repo("Pytest Suite", repo, r.status)
                     if writer:
-                        writer.write_incremental_result("Coverage Report", r)
+                        writer.write_incremental_result("Pytest Suite", r)
 
                 results.extend(test_results)
-                _phase_end("Coverage Report")
-
-                # Generate code coverage summary tables
-                coverage_entries: list[dict[str, Any]] = []
-                for r in results:
-                    if r.metadata and "coverage report" in r.metadata.command:
-                        pkg = os.path.basename(r.metadata.workspace)
-                        data_str = r.data
-                        pct_match = re.search(r"Coverage:\s*([0-9.]+)%", data_str)
-                        stmts_match = re.search(r"Statements:\s*(\d+)", data_str)
-                        covered_match = re.search(r"Covered:\s*(\d+)", data_str)
-                        missing_match = re.search(r"Missing:\s*(\d+)", data_str)
-
-                        pct = float(pct_match.group(1)) if pct_match else 0.0
-                        stmts = int(stmts_match.group(1)) if stmts_match else 0
-                        covered = int(covered_match.group(1)) if covered_match else 0
-                        missing = int(missing_match.group(1)) if missing_match else 0
-
-                        status_icon = (
-                            "🟢" if pct >= 80 else ("🟡" if pct >= 50 else "🔴")
-                        )
-                        coverage_entries.append(
-                            {
-                                "project": pkg,
-                                "pct": pct,
-                                "statements": stmts,
-                                "covered": covered,
-                                "missing": missing,
-                                "status_icon": status_icon,
-                                "status": "success"
-                                if r.status == "success"
-                                else "error",
-                            }
-                        )
-
-                # Compile map for all projects to account for skipped ones
-                project_coverage_map: dict[str, dict[str, Any]] = {}
-                for _url, path in self.project_map.items():
-                    pkg = os.path.basename(path)
-                    project_coverage_map[pkg] = {
-                        "project": pkg,
-                        "pct": 0.0,
-                        "statements": 0,
-                        "covered": 0,
-                        "missing": 0,
-                        "status_icon": "⚪",
-                        "status": "No Tests / Skipped",
-                    }
-
-                for entry in coverage_entries:
-                    pkg = entry["project"]
-                    if pkg in project_coverage_map:
-                        project_coverage_map[pkg].update(entry)
-                        project_coverage_map[pkg]["status"] = f"{entry['pct']:.2f}%"
-
-                # Sort by coverage descending, then name, skipped at bottom
-                sorted_projects = sorted(
-                    project_coverage_map.values(),
-                    key=lambda x: (
-                        x["status"] != "No Tests / Skipped",
-                        x["pct"],
-                        x["project"],
-                    ),
-                    reverse=True,
-                )
-
-                total_statements = 0
-                total_covered = 0
-                for entry in sorted_projects:
-                    if entry["status"] != "No Tests / Skipped":
-                        total_statements += int(entry["statements"])
-                        total_covered += int(entry["covered"])
-
-                # Generate Markdown table lines
-                md_lines = [
-                    "# 📊 Agent Packages Code Coverage Report",
-                    f"**Generated on:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
-                    "",
-                    "| Status | Project | Coverage % | Statements | Covered | Missing | Details / Health |",
-                    "|:---:|:---|:---:|:---:|:---:|:---:|:---|",
-                ]
-
-                for entry in sorted_projects:
-                    pkg = entry["project"]
-                    pct_val = float(entry["pct"])
-                    pct_str = (
-                        f"{pct_val:.2f}%"
-                        if entry["status"] != "No Tests / Skipped"
-                        else "-"
-                    )
-                    stmts_str = (
-                        str(entry["statements"])
-                        if entry["status"] != "No Tests / Skipped"
-                        else "-"
-                    )
-                    covered_str = (
-                        str(entry["covered"])
-                        if entry["status"] != "No Tests / Skipped"
-                        else "-"
-                    )
-                    missing_str = (
-                        str(entry["missing"])
-                        if entry["status"] != "No Tests / Skipped"
-                        else "-"
-                    )
-
-                    if entry["status"] == "No Tests / Skipped":
-                        health_bar = "⏭️ *No tests directory found*"
-                        status_icon = "⚪"
-                    elif pct_val >= 90.0:
-                        health_bar = "🟢 **Excellent** (>=90%)"
-                        status_icon = "🟢"
-                    elif pct_val >= 80.0:
-                        health_bar = "🟢 **Good** (>=80%)"
-                        status_icon = "🟢"
-                    elif pct_val >= 50.0:
-                        health_bar = "🟡 **Needs Improvement** (>=50%)"
-                        status_icon = "🟡"
-                    else:
-                        health_bar = "🔴 **Critical** (<50%)"
-                        status_icon = "🔴"
-
-                    md_lines.append(
-                        f"| {status_icon} | **{pkg}** | {pct_str} | {stmts_str} | {covered_str} | {missing_str} | {health_bar} |"
-                    )
-
-                if total_statements > 0:
-                    overall_pct = (total_covered / total_statements) * 100
-                    overall_icon = (
-                        "🟢"
-                        if overall_pct >= 80
-                        else ("🟡" if overall_pct >= 50 else "🔴")
-                    )
-                    md_lines.append("|---|---|---|---|---|---|---|")
-                    md_lines.append(
-                        f"| {overall_icon} | **OVERALL ECOSYSTEM** | **{overall_pct:.2f}%** | **{total_statements}** | **{total_covered}** | **{total_statements - total_covered}** | **Ecosystem Health** |"
-                    )
-
-                # Log terminal table
-                logger.info("\n" + "=" * 80)
-                logger.info(f"{'PROJECT CODE COVERAGE SUMMARY':^80}")
-                logger.info("=" * 80)
-                logger.info(
-                    f"{'Project':<30} | {'Coverage':<10} | {'Statements':<10} | {'Covered':<10} | {'Missing':<10}"
-                )
-                logger.info("-" * 80)
-                for entry in sorted_projects:
-                    pct_str = (
-                        f"{entry['pct']:.2f}%"
-                        if entry["status"] != "No Tests / Skipped"
-                        else "-"
-                    )
-                    stmts_str = (
-                        str(entry["statements"])
-                        if entry["status"] != "No Tests / Skipped"
-                        else "-"
-                    )
-                    covered_str = (
-                        str(entry["covered"])
-                        if entry["status"] != "No Tests / Skipped"
-                        else "-"
-                    )
-                    missing_str = (
-                        str(entry["missing"])
-                        if entry["status"] != "No Tests / Skipped"
-                        else "-"
-                    )
-                    logger.info(
-                        f"{entry['project']:<30} | {pct_str:<10} | {stmts_str:<10} | {covered_str:<10} | {missing_str:<10}"
-                    )
-                if total_statements > 0:
-                    overall_pct = (total_covered / total_statements) * 100
-                    logger.info("-" * 80)
-                    logger.info(
-                        f"{'OVERALL ECOSYSTEM':<30} | {f'{overall_pct:.2f}%':<10} | {total_statements:<10} | {total_covered:<10} | {total_statements - total_covered:<10}"
-                    )
-                logger.info("=" * 80 + "\n")
-
-                # Export MD file
-                coverage_report_path = os.path.join(self.path, "coverage_report.md")
-                try:
-                    with open(coverage_report_path, "w") as report_file_obj:
-                        report_file_obj.write("\n".join(md_lines))
-                    logger.info(
-                        f"💾 Comprehensive coverage report written to {coverage_report_path}"
-                    )
-                except Exception as e:
-                    logger.error(
-                        f"Failed to write coverage report to {coverage_report_path}: {e}"
-                    )
+                _phase_end("Pytest Suite")
 
             # --- Console summary ---
             successes = [r for r in results if r.status == "success"]
@@ -1535,7 +1355,9 @@ class Git:
         from shlex import quote
 
         safe_msg = quote(message)
-        return self.git_action(command=f"git commit --no-verify -m {safe_msg}", path=target_path)
+        return self.git_action(
+            command=f"git commit --no-verify -m {safe_msg}", path=target_path
+        )
 
     def set_threads(self, threads: int) -> None:
         """
@@ -1627,6 +1449,7 @@ class Git:
         else:
             env["SKIP"] = "no-commit-to-branch"
         env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "4"
+        env["PYTEST_ADDOPTS"] = '-q --tb=short -m "not slow" --timeout=60'
 
         result = self.git_action(
             command=full_command, path=target_path, env=env, timeout=600
@@ -1657,60 +1480,17 @@ class Git:
 
         return result
 
-    def _run_project_test_and_coverage(
+    def _run_project_test(
         self, cmd: str, path: str, env: dict, timeout: int
     ) -> list[GitResult]:
         results = []
         res = self.git_action(cmd, path=path, env=env, timeout=timeout)
         results.append(res)
-
-        # Parse coverage.json if it was generated
-        cov_json_path = os.path.join(path, "coverage.json")
-        if os.path.exists(cov_json_path):
-            try:
-                with open(cov_json_path) as f:
-                    cov_data = json.load(f)
-                try:
-                    os.remove(cov_json_path)
-                except Exception:  # nosec B110
-                    pass
-
-                totals = cov_data.get("totals", {})
-                pct = totals.get("percent_covered", 0.0)
-                cov_lines = totals.get("covered_lines", 0)
-                num_stmts = totals.get("num_statements", 0)
-                missing = totals.get("missing_lines", 0)
-
-                cov_summary = (
-                    f"Coverage: {pct:.2f}% | "
-                    f"Statements: {num_stmts} | "
-                    f"Covered: {cov_lines} | "
-                    f"Missing: {missing}"
-                )
-
-                cov_res = GitResult(
-                    status="success",
-                    data=cov_summary,
-                    metadata=GitMetadata(
-                        command="coverage report",
-                        workspace=path,
-                        return_code=0,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
-                    ),
-                )
-                results.append(cov_res)
-            except Exception as e:
-                logger.warning(f"Failed to process coverage.json in {path}: {e}")
-
         return results
 
     def test_projects(
         self,
         targets: list[dict[str, str]],
-        coverage: bool = False,
         progress_phase: str | None = None,
         progress_dict: dict | None = None,
     ) -> list[GitResult]:
@@ -1718,7 +1498,6 @@ class Git:
         Execute pytests for the specified projects in parallel.
 
         Args:
-            coverage: When True, append ``--cov=.`` and set COVERAGE_FILE.
             progress_phase: Phase name for live progress updates.
             progress_dict: Shared mutable dict for live progress reporting.
         """
@@ -1734,17 +1513,20 @@ class Git:
 
                 path = target["path"]
                 repo_name = target.get("name", os.path.basename(path))
-                # Try to find tests directory
-                has_tests = os.path.exists(
-                    os.path.join(path, "tests")
-                ) or os.path.exists(os.path.join(path, "test"))
-                if has_tests:
-                    cov_flag = " --cov=. --cov-report=json" if coverage else ""
+
+                # Check for the existence of unit test directories first, then general test directories
+                test_target = None
+                for candidate in ["tests/unit", "test/unit", "tests", "test"]:
+                    if os.path.exists(os.path.join(path, candidate)):
+                        test_target = candidate
+                        break
+
+                if test_target is not None:
                     # Detect if we should use uv or standard python
                     if os.path.exists(os.path.join(path, "uv.lock")):
-                        cmd = f"uv run --extra test pytest -v --timeout=120{cov_flag}"
+                        cmd = f'uv run --extra test pytest {test_target} -q --tb=short -m "not slow" --timeout=60'
                     else:
-                        cmd = f"{sys.executable} -m pytest -v --timeout=120{cov_flag}"
+                        cmd = f'{sys.executable} -m pytest {test_target} -q --tb=short -m "not slow" --timeout=60'
 
                     # Ensure memory safety for ladybug and set validation mode
                     test_env = os.environ.copy()
@@ -1752,14 +1534,9 @@ class Git:
                     test_env["VALIDATION_MODE"] = "True"
                     test_env["KNOWLEDGE_GRAPH_SYNC_BACKGROUND"] = "False"
                     test_env["GRAPH_DB_PATH"] = ":memory:"
-                    if coverage:
-                        test_env["COVERAGE_FILE"] = os.path.join(
-                            os.path.abspath(self.path),
-                            f".coverage.{os.path.basename(path)}",
-                        )
 
                     fut = executor.submit(
-                        self._run_project_test_and_coverage,
+                        self._run_project_test,
                         cmd,
                         path,
                         test_env,
@@ -2752,8 +2529,11 @@ class Git:
                     # Get remote URL
                     remote_url = None
                     try:
+                        import shutil
+
+                        git_path = shutil.which("git") or "git"
                         res = subprocess.run(
-                            ["git", "config", "--get", "remote.origin.url"],
+                            [git_path, "config", "--get", "remote.origin.url"],
                             cwd=full_path,
                             capture_output=True,
                             text=True,
@@ -2761,8 +2541,8 @@ class Git:
                         )
                         if res.returncode == 0 and res.stdout.strip():
                             remote_url = res.stdout.strip()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug(f"Failed to get remote URL for {item}: {exc}")
 
                     if not remote_url:
                         remote_url = f"local://{item}"

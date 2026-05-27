@@ -36,11 +36,28 @@ def agent_server():
     # 2. Start Agent Server
     env = os.environ.copy()
     # Explicitly inject the known-good local LLM config
-    env["LLM_BASE_URL"] = "http://10.0.0.18:1234/v1"
+    env["LLM_BASE_URL"] = "http://127.0.0.1:1"
     env["LLM_API_KEY"] = "EMPTY"
+    env["OPENAI_API_KEY"] = "EMPTY"
+    env["OPENAI_ADMIN_KEY"] = "EMPTY"
+    env["GRAPH_DB_PATH"] = str(AGENT_WORKSPACE / "knowledge_graph.db")
+    env["AGENT_UTILITIES_TESTING"] = "1"
+    env["TOOL_GUARD_MODE"] = "off"
+    env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONPATH"] = PROJECT_ROOT
 
-    log_path = os.path.join(PROJECT_ROOT, "server_integration.log")
+    try:
+        from agent_utilities.core.paths import log_dir
+
+        log_path = os.path.join(log_dir(), "server_integration.log")
+    except ImportError:
+        import platformdirs
+
+        log_path = os.path.join(
+            platformdirs.user_log_path("agent-utilities", "knuckles-team"),
+            "server_integration.log",
+        )
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
     log_file = open(log_path, "w")
 
     cmd = [

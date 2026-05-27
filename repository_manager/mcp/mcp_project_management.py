@@ -44,10 +44,6 @@ def register_project_management_tools(mcp: FastMCP):
             default=None,
             description="Comma-separated list of specific repositories to target.",
         ),
-        coverage: bool = Field(
-            default=False,
-            description="Collect pytest coverage data. Default False (opt-in for speed).",
-        ),
         job_id: str | None = Field(
             default=None,
             description="Job ID to check status for 'validate_status' action.",
@@ -105,7 +101,6 @@ def register_project_management_tools(mcp: FastMCP):
                 output_dir=output_dir,
                 generate_report=generate_report,
                 validated_repositories=repo_list_for_writer,
-                coverage=coverage,
                 progress=progress,
                 _extra_job_data={"progress_detail": progress},
             )
