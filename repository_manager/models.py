@@ -1291,7 +1291,14 @@ class ValidationReport(BaseModel):
             )
             status_icon = "🔴" if stats["failure"] > 0 else "🟢"
             index_md.append(f"### {status_icon} {project}")
-            for fpath in sorted(files_list):
+
+            def _sort_key(fpath: str) -> tuple[int, str]:
+                fname = os.path.basename(fpath)
+                if fname.startswith("summary_"):
+                    return (1, fname)
+                return (0, fname)
+
+            for fpath in sorted(files_list, key=_sort_key):
                 fname = os.path.basename(fpath)
                 index_md.append(f"- [{fname}]({fpath})")
             index_md.append("")
@@ -1367,6 +1374,7 @@ class IncrementalReportWriter:
         self.categories: list[ValidationCategory] = []
         self.project_stats: dict[str, dict[str, int]] = {}
         self.project_files: dict[str, list[str]] = {}
+        self.project_paths: dict[str, str] = {}
 
     def write_phase(
         self, category_name: str, results: list[GitResult]
@@ -1390,6 +1398,13 @@ class IncrementalReportWriter:
 
         for r in results:
             pkg = r.metadata.workspace.split("/")[-1] if r.metadata else "unknown"
+            if (
+                pkg != "unknown"
+                and pkg not in self.project_paths
+                and r.metadata
+                and r.metadata.workspace
+            ):
+                self.project_paths[pkg] = r.metadata.workspace
             cmd = r.metadata.command if r.metadata else None
 
             if r.status == "success":
@@ -1432,6 +1447,13 @@ class IncrementalReportWriter:
 
         cat.total += 1
         pkg = result.metadata.workspace.split("/")[-1] if result.metadata else "unknown"
+        if (
+            pkg != "unknown"
+            and pkg not in self.project_paths
+            and result.metadata
+            and result.metadata.workspace
+        ):
+            self.project_paths[pkg] = result.metadata.workspace
         cmd = result.metadata.command if result.metadata else None
 
         if result.status == "success":
@@ -1482,9 +1504,17 @@ class IncrementalReportWriter:
             self.project_stats[pkg]["skipped"] += 1
 
         if cat.name not in ("Ecosystem Installation", "Pre-commit Standard Compliance"):
-            # Write project-level summary dynamically
-            self._write_project_summary(pkg)
             return
+
+        # Check if project should be skipped (has neither .pre-commit-config.yaml nor pyproject.toml)
+        workspace_path = self.project_paths.get(pkg)
+        if workspace_path and os.path.isdir(workspace_path):
+            has_pc = os.path.exists(
+                os.path.join(workspace_path, ".pre-commit-config.yaml")
+            )
+            has_py = os.path.exists(os.path.join(workspace_path, "pyproject.toml"))
+            if not has_pc and not has_py:
+                return
 
         # Write the per-scan file for this project
         filtered = cat.for_project(pkg)
@@ -1541,9 +1571,6 @@ class IncrementalReportWriter:
         except Exception as e:
             logger.error(f"Failed to write report file {filepath}: {e}")
 
-        # Write project-level summary dynamically
-        self._write_project_summary(pkg)
-
     def _write_category_files(self, cat: ValidationCategory) -> None:
         """Write per-repo files for a single category immediately."""
         all_projects_in_cat: set[str] = set()
@@ -1579,9 +1606,17 @@ class IncrementalReportWriter:
                 "Ecosystem Installation",
                 "Pre-commit Standard Compliance",
             ):
-                # Write project-level summary dynamically
-                self._write_project_summary(project)
                 continue
+
+            # Check if project should be skipped (has neither .pre-commit-config.yaml nor pyproject.toml)
+            workspace_path = self.project_paths.get(project)
+            if workspace_path and os.path.isdir(workspace_path):
+                has_pc = os.path.exists(
+                    os.path.join(workspace_path, ".pre-commit-config.yaml")
+                )
+                has_py = os.path.exists(os.path.join(workspace_path, "pyproject.toml"))
+                if not has_pc and not has_py:
+                    continue
 
             # Build filename & directory
             safe_project = _sanitize_filename(project)
@@ -1635,11 +1670,13 @@ class IncrementalReportWriter:
             except Exception as e:
                 logger.error(f"Failed to write report file {filepath}: {e}")
 
-            # Write project-level summary dynamically
-            self._write_project_summary(project)
-
     def finalize(self) -> str:
         """Write the index.md with aggregate stats and return the report directory path."""
+        # Write project-level summaries at the very end of all validation phases
+        all_projects = sorted(self.project_stats.keys())
+        for project in all_projects:
+            self._write_project_summary(project)
+
         total = sum(c.total for c in self.categories)
         success_total = sum(c.success_count for c in self.categories)
         failure_total = sum(c.failure_count for c in self.categories)
@@ -1712,7 +1749,14 @@ class IncrementalReportWriter:
             )
             status_icon = "🔴" if stats["failure"] > 0 else "🟢"
             index_md.append(f"### {status_icon} {project}")
-            for fpath in sorted(files_list):
+
+            def _sort_key(fpath: str) -> tuple[int, str]:
+                fname = os.path.basename(fpath)
+                if fname.startswith("summary_"):
+                    return (1, fname)
+                return (0, fname)
+
+            for fpath in sorted(files_list, key=_sort_key):
                 fname = os.path.basename(fpath)
                 index_md.append(f"- [{fname}]({fpath})")
             index_md.append("")
@@ -1758,21 +1802,49 @@ class IncrementalReportWriter:
         repo_dir = os.path.join(self.report_root, repo_dir_name)
         os.makedirs(repo_dir, exist_ok=True)
 
-        # 1. Clean up any stale summary files inside repo_dir (like summary.md or summaries_...)
+        # 1. Clean up any stale summary files inside repo_dir (like summary.md or summaries_... or summary_...)
         for fname in os.listdir(repo_dir):
-            if fname == "summary.md" or fname.startswith("summaries_"):
+            if (
+                fname == "summary.md"
+                or fname.startswith("summaries_")
+                or fname.startswith("summary_")
+            ):
                 try:
                     os.remove(os.path.join(repo_dir, fname))
                 except Exception:  # nosec B110
                     pass
 
-        # Collect categories for this project
-        project_categories = [cat.for_project(project) for cat in self.categories]
-        summary_md = _build_project_summary_md(
-            project=project,
-            timestamp=self.timestamp,
-            categories=project_categories,
-        )
+        # Check if project should be skipped (has neither .pre-commit-config.yaml nor pyproject.toml)
+        workspace_path = self.project_paths.get(project)
+        has_pc = False
+        has_py = False
+        if workspace_path and os.path.isdir(workspace_path):
+            has_pc = os.path.exists(
+                os.path.join(workspace_path, ".pre-commit-config.yaml")
+            )
+            has_py = os.path.exists(os.path.join(workspace_path, "pyproject.toml"))
+
+        if (
+            workspace_path
+            and os.path.isdir(workspace_path)
+            and not has_pc
+            and not has_py
+        ):
+            summary_md = [
+                f"# 📋 {project} Validation Summary",
+                f"**Time:** {self.timestamp}  ",
+                "",
+                "> No pre-commit configuration (`.pre-commit-config.yaml`) or `pyproject.toml` file found in the repository. This repository does not require ecosystem validation.",
+                "",
+            ]
+        else:
+            # Collect categories for this project
+            project_categories = [cat.for_project(project) for cat in self.categories]
+            summary_md = _build_project_summary_md(
+                project=project,
+                timestamp=self.timestamp,
+                categories=project_categories,
+            )
         summary_filename = f"summary_{safe_project_underscores}_{self.ts_path}.md"
         summary_filepath = os.path.join(repo_dir, summary_filename)
 

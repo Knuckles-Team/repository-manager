@@ -42,7 +42,7 @@ from repository_manager.models import (
 )
 from repository_manager.repository_manager import Git
 
-__version__ = "1.18.0"
+__version__ = "1.19.0"
 
 DEFAULT_WORKSPACE = os.environ.get(
     "REPOSITORY_MANAGER_WORKSPACE",
@@ -165,6 +165,8 @@ def _get_job_status(job_id: str | None = None) -> dict[str, Any]:
             for phase_data in pd.get("phases", {}).values():
                 repos_dict = phase_data.get("repos") or phase_data.get("details") or {}
                 for repo_name, status in repos_dict.items():
+                    if not isinstance(repo_name, str):
+                        continue
                     if status in ("success", "failed", "error", "skipped", "skip"):
                         completed_projects.add(repo_name)
                     elif status == "running":

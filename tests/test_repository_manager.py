@@ -273,3 +273,76 @@ def test_git_commit_operations(mock_git_action, sample_workspace_yml):
     )
     assert len(results) == 1
     assert results[0].status == "success"
+
+
+@patch("repository_manager.repository_manager.Git.git_action")
+def test_bump_version_fallback_no_changes(mock_git_action, sample_workspace_yml):
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    (workspace_dir / "pipelines").mkdir(parents=True, exist_ok=True)
+
+    # Mock status --porcelain to show no changes
+    mock_git_action.return_value = GitResult(
+        status="success", data="", metadata=get_mock_metadata("git status --porcelain")
+    )
+
+    res = git.bump_version(part="patch", path=str(workspace_dir / "pipelines"))
+    assert res.status == "skipped"
+    assert "No changes to stage or commit" in res.data
+
+
+@patch("repository_manager.repository_manager.Git.git_action")
+def test_bump_version_fallback_dry_run(mock_git_action, sample_workspace_yml):
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    (workspace_dir / "pipelines").mkdir(parents=True, exist_ok=True)
+
+    # Mock status --porcelain to show dirty status
+    mock_git_action.return_value = GitResult(
+        status="success", data="M  file.py\n", metadata=get_mock_metadata("git status")
+    )
+
+    res = git.bump_version(part="patch", path=str(workspace_dir / "pipelines"), dry_run=True)
+    assert res.status == "success"
+    assert "current_version=unknown" in res.data
+    assert "new_version=unknown" in res.data
+
+
+@patch("repository_manager.repository_manager.Git.git_action")
+def test_bump_version_fallback_execution(mock_git_action, sample_workspace_yml):
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    (workspace_dir / "pipelines").mkdir(parents=True, exist_ok=True)
+
+    def mock_git_calls(command, path, **kwargs):
+        if "status --porcelain" in command:
+            return GitResult(
+                status="success",
+                data="M  somefile.py\n",
+                metadata=get_mock_metadata("git status"),
+            )
+        elif "add -A" in command:
+            return GitResult(
+                status="success",
+                data="added",
+                metadata=get_mock_metadata("git add"),
+            )
+        elif "commit" in command:
+            assert "--no-verify" in command
+            assert "phased push" in command
+            return GitResult(
+                status="success",
+                data="Committed fallback",
+                metadata=get_mock_metadata("git commit"),
+            )
+        return GitResult(status="success", data="")
+
+    mock_git_action.side_effect = mock_git_calls
+
+    res = git.bump_version(part="patch", path=str(workspace_dir / "pipelines"), dry_run=False)
+    assert res.status == "success"
+    assert "current_version=unknown" in res.data
+    assert "new_version=unknown" in res.data
