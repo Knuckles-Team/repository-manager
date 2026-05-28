@@ -13,11 +13,15 @@ def mock_repo_manager(tmp_path):
         "https://github.com/Knuckles-Team/repo2.git": str(tmp_path / "repo2"),
         "https://github.com/Knuckles-Team/repo3.git": str(tmp_path / "repo3"),
     }
-    manager.git_action = MagicMock(  # type: ignore[method-assign]
-        return_value=GitResult(
-            status="success", data="Pushed", error=None, metadata=None
-        )
-    )
+    def git_action_side_effect(*args, **kwargs):
+        command = kwargs.get("command", "")
+        if not command and args:
+            command = args[0]
+        if "status --porcelain" in command:
+            return GitResult(status="success", data="", error=None, metadata=None)
+        return GitResult(status="success", data="Pushed", error=None, metadata=None)
+
+    manager.git_action = MagicMock(side_effect=git_action_side_effect)  # type: ignore[method-assign]
     return manager
 
 
@@ -38,7 +42,8 @@ def test_phased_push(mock_sleep, mock_repo_manager):
     results = mock_repo_manager.phased_push(start_phase=1, config=config)
 
     assert len(results) == 3  # 3 pushes
-    assert mock_repo_manager.git_action.call_count == 3
+    # 3 status checks + 3 pushes = 6 calls
+    assert mock_repo_manager.git_action.call_count == 6
 
     # Should sleep for 5 mins after phase 1, and 10 mins after phase 2
     assert mock_sleep.call_count == 2
@@ -64,7 +69,8 @@ def test_phased_push_single_project(mock_sleep, mock_repo_manager):
     )
 
     assert len(results) == 1
-    assert mock_repo_manager.git_action.call_count == 1
+    # 1 status check + 1 push = 2 calls
+    assert mock_repo_manager.git_action.call_count == 2
 
     # Still sleep after phase if project filter matches
     assert mock_sleep.call_count == 1
@@ -74,7 +80,11 @@ def test_push_projects(mock_repo_manager):
     results = mock_repo_manager.push_projects(["/fake/path/repo1", "/fake/path/repo2"])
 
     assert len(results) == 2
-    assert mock_repo_manager.git_action.call_count == 2
-    # Verify the git_action was called with the correct command
-    calls = mock_repo_manager.git_action.call_args_list
-    assert all(call.kwargs.get("command") == "git push --follow-tags" for call in calls)
+    # 2 status checks + 2 pushes = 4 calls
+    assert mock_repo_manager.git_action.call_count == 4
+    # Verify the push commands called were git push --follow-tags
+    push_calls = [
+        call for call in mock_repo_manager.git_action.call_args_list
+        if "git push --follow-tags" in (call.kwargs.get("command") or (call.args[0] if call.args else ""))
+    ]
+    assert len(push_calls) == 2

@@ -1,4 +1,5 @@
 import datetime
+import glob
 import logging
 import os
 import re
@@ -1535,6 +1536,18 @@ class IncrementalReportWriter:
         )
         filepath = os.path.join(repo_dir, filename)
 
+        # Clean up stale files for the same slug/timestamp with different counts
+
+        stale_pattern = os.path.join(
+            repo_dir, f"{safe_slug}-*-error(s)-*-warning(s)-{self.ts_path}.md"
+        )
+        for stale in glob.glob(stale_pattern):  # noqa: PTH207
+            if stale != filepath:
+                try:
+                    os.remove(stale)
+                except OSError:
+                    pass
+
         scan_md = [
             f"# {pkg} — {cat.name}",
             f"**Time:** {self.timestamp}  ",
@@ -1632,6 +1645,18 @@ class IncrementalReportWriter:
                 f"{safe_slug}-{errors}-error(s)-{warnings}-warning(s)-{self.ts_path}.md"
             )
             filepath = os.path.join(repo_dir, filename)
+
+            # Clean up stale files for the same slug/timestamp with different counts
+
+            stale_pattern = os.path.join(
+                repo_dir, f"{safe_slug}-*-error(s)-*-warning(s)-{self.ts_path}.md"
+            )
+            for stale in glob.glob(stale_pattern):  # noqa: PTH207
+                if stale != filepath:
+                    try:
+                        os.remove(stale)
+                    except OSError:
+                        pass
 
             # Write the per-scan file
             scan_md = [
