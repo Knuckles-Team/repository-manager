@@ -732,6 +732,16 @@ class Git:
 
             report = ValidationReport.from_results(results)
 
+            try:
+                summary_content = report.to_markdown()
+                stable_path = os.path.join(self.path, "reports", "report_final.md")
+                os.makedirs(os.path.dirname(stable_path), exist_ok=True)
+                with open(stable_path, "w") as fh:
+                    fh.write(summary_content)
+                logger.info(f"📋 Stable report written to: {stable_path}")
+            except Exception as e:
+                logger.error(f"Failed to write stable report_final.md: {e}")
+
             return report
 
     def _export_report(self, markdown_content: str, default_name: str) -> None:
@@ -1308,9 +1318,37 @@ class Git:
 
     def push_project(self, path: str | None = None) -> GitResult:
         """
-        Push updates and tags for a single Git project.
+        Push updates and tags for a single Git project, ensuring all staged and unstaged changes are committed first.
         """
         target_path = self._resolve_path(path)
+        logger.info(f"Checking for uncommitted changes in {target_path} before pushing")
+
+        status_check = self.git_action(
+            command="git status --porcelain", path=target_path, quiet=True
+        )
+        if status_check.status == "success" and status_check.data.strip():
+            logger.info(
+                f"Detected uncommitted changes in {target_path}. Staging and committing them first."
+            )
+            add_res = self.git_action(command="git add -A", path=target_path)
+            if add_res.status != "success":
+                logger.error(
+                    f"Failed to stage changes in {target_path}: {add_res.error}"
+                )
+            else:
+                commit_res = self.git_action(
+                    command='git commit --no-verify -m "phased push uncommitted changes"',
+                    path=target_path,
+                )
+                if commit_res.status != "success":
+                    logger.error(
+                        f"Failed to commit changes in {target_path}: {commit_res.error}"
+                    )
+                else:
+                    logger.info(
+                        f"Successfully committed uncommitted changes in {target_path}"
+                    )
+
         logger.info(f"Pushing latest changes and tags for {target_path}")
         return self.git_action(command="git push --follow-tags", path=target_path)
 
@@ -2057,33 +2095,31 @@ class Git:
                     uv_lock_path = os.path.join(target_dir, "uv.lock")
                     if os.path.exists(uv_lock_path):
                         self.git_action(command="uv lock", path=target_dir, quiet=True)
-                        status_check = self.git_action(
-                            command="git status --porcelain pyproject.toml uv.lock",
+
+                    # Stage all changes (staged and uncommitted/unstaged changes) in the workspace
+                    self.git_action(command="git add -A", path=target_dir, quiet=True)
+                    status_check = self.git_action(
+                        command="git status --porcelain",
+                        path=target_dir,
+                        quiet=True,
+                    )
+                    if status_check.data.strip():
+                        # Commit all staged changes (including version bump, uv.lock, and other files) into the bump commit
+                        self.git_action(
+                            command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit",
                             path=target_dir,
                             quiet=True,
                         )
-                        if status_check.data.strip():
-                            # Commit the lockfile update into the bump commit
-                            self.git_action(
-                                command="git add pyproject.toml uv.lock",
-                                path=target_dir,
-                                quiet=True,
-                            )
-                            self.git_action(
-                                command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit",
-                                path=target_dir,
-                                quiet=True,
-                            )
 
-                            # Move the tag to point to the newly amended commit
-                            match = re.search(r"new_version=(.*)", result.data)
-                            if match:
-                                new_version = match.group(1).strip()
-                                self.git_action(
-                                    command=f"git tag -f v{new_version}",
-                                    path=target_dir,
-                                    quiet=True,
-                                )
+                        # Move the tag to point to the newly amended commit
+                        match = re.search(r"new_version=(.*)", result.data)
+                        if match:
+                            new_version = match.group(1).strip()
+                            self.git_action(
+                                command=f"git tag -f v{new_version}",
+                                path=target_dir,
+                                quiet=True,
+                            )
             else:
                 logger.error(f"Failed to bump version in {target_dir}: {result.error}")
 

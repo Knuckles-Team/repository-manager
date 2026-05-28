@@ -185,6 +185,18 @@ def _get_job_status(job_id: str | None = None) -> dict[str, Any]:
             response["remaining_projects"] = sorted(list(remaining_projects))
 
         if job["status"] == "completed" and job["result"] is not None:
+            if hasattr(job["result"], "to_markdown"):
+                try:
+                    response["summary"] = job["result"].to_markdown()
+                    git = get_git_instance()
+                    response["report_final_path"] = os.path.join(
+                        git.path, "reports", "report_final.md"
+                    )
+                except Exception as e:
+                    logger.error(
+                        f"Failed to generate summary or locate report path in job status: {e}"
+                    )
+
             if hasattr(job["result"], "model_dump"):
                 try:
                     ts = job["result"]._format_timestamp_for_path()
