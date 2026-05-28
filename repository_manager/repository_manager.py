@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.18.0"
+__version__ = "1.19.0"
 
 import concurrent.futures
 import multiprocessing
@@ -293,6 +293,13 @@ class Git:
 
             # Generate parity reporting for each Python project
             for _url, path in self.project_map.items():
+                has_precommit = os.path.exists(
+                    os.path.join(path, ".pre-commit-config.yaml")
+                )
+                has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
+                if not has_precommit and not has_pyproject:
+                    continue
+
                 is_python = os.path.exists(
                     os.path.join(path, "pyproject.toml")
                 ) or os.path.exists(os.path.join(path, "setup.py"))
@@ -319,6 +326,29 @@ class Git:
 
         # 2. Install Node Ecosystem sequentially
         for _url, path in self.project_map.items():
+            has_precommit = os.path.exists(
+                os.path.join(path, ".pre-commit-config.yaml")
+            )
+            has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
+
+            if not has_precommit and not has_pyproject:
+                results.append(
+                    GitResult(
+                        status="skipped",
+                        data="Skipped (No .pre-commit-config.yaml and no pyproject.toml)",
+                        metadata=GitMetadata(
+                            command="install",
+                            workspace=path,
+                            return_code=0,
+                            timestamp=datetime.datetime.now(
+                                datetime.timezone.utc
+                            ).isoformat()
+                            + "Z",
+                        ),
+                    )
+                )
+                continue
+
             is_node = os.path.exists(os.path.join(path, "package.json"))
             if is_node:
                 pm = self._get_package_manager(path)
@@ -583,7 +613,29 @@ class Git:
 
                 for _url, path in self.project_map.items():
                     repo_name = Path(path).name
-                    if os.path.exists(os.path.join(path, ".pre-commit-config.yaml")):
+                    has_precommit = os.path.exists(
+                        os.path.join(path, ".pre-commit-config.yaml")
+                    )
+                    has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
+
+                    if not has_precommit and not has_pyproject:
+                        r = GitResult(
+                            status="skipped",
+                            data="Skipped (No .pre-commit-config.yaml and no pyproject.toml)",
+                            metadata=GitMetadata(
+                                command="pre_commit",
+                                workspace=path,
+                                return_code=0,
+                                timestamp=skip_ts,
+                            ),
+                        )
+                        pc_results.append(r)
+                        _phase_repo("Pre-commit Compliance", repo_name, "skipped")
+                        if writer:
+                            writer.write_incremental_result(
+                                "Pre-commit Standard Compliance", r
+                            )
+                    elif has_precommit:
                         _phase_repo("Pre-commit Compliance", repo_name, "running")
                         fut = executor.submit(self.pre_commit, True, False, path)
                         pc_futures[fut] = repo_name
@@ -600,6 +652,10 @@ class Git:
                         )
                         pc_results.append(r)
                         _phase_repo("Pre-commit Compliance", repo_name, "skipped")
+                        if writer:
+                            writer.write_incremental_result(
+                                "Pre-commit Standard Compliance", r
+                            )
 
                 for f in concurrent.futures.as_completed(pc_futures):
                     r = f.result()
@@ -1514,6 +1570,35 @@ class Git:
                 path = target["path"]
                 repo_name = target.get("name", os.path.basename(path))
 
+                has_precommit = os.path.exists(
+                    os.path.join(path, ".pre-commit-config.yaml")
+                )
+                has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
+                if not has_precommit and not has_pyproject:
+                    results.append(
+                        GitResult(
+                            status="skipped",
+                            data="Skipped (No .pre-commit-config.yaml and no pyproject.toml)",
+                            metadata=GitMetadata(
+                                command="pytest",
+                                workspace=path,
+                                return_code=0,
+                                timestamp=datetime.datetime.now(
+                                    datetime.timezone.utc
+                                ).isoformat()
+                                + "Z",
+                            ),
+                        )
+                    )
+                    if progress_dict and progress_phase:
+                        phases = progress_dict.get("phases", {})
+                        if progress_phase in phases:
+                            phases[progress_phase]["repos"][repo_name] = "skipped"
+                            phases[progress_phase]["completed"] = len(
+                                phases[progress_phase]["repos"]
+                            )
+                    continue
+
                 # Check for the existence of unit test directories first, then general test directories
                 test_target = None
                 for candidate in ["tests/unit", "test/unit", "tests", "test"]:
@@ -1832,6 +1917,88 @@ class Git:
                 ),
             )
 
+        # Check if the project has a bump2version configuration file.
+        has_cfg = os.path.exists(os.path.join(target_dir, ".bumpversion.cfg"))
+        if not has_cfg and os.path.exists(os.path.join(target_dir, "setup.cfg")):
+            try:
+                with open(os.path.join(target_dir, "setup.cfg"), encoding="utf-8") as f:
+                    if "[bumpversion]" in f.read():
+                        has_cfg = True
+            except Exception as e:
+                logger.debug(f"Could not read setup.cfg in {target_dir}: {e}")
+
+        if not has_cfg:
+            # Fallback behavior: stage all changes and commit them as "phased push"
+            status_check = self.git_action(
+                command="git status --porcelain", path=target_dir, quiet=True
+            )
+            if status_check.status != "success":
+                return status_check
+
+            changed_files = status_check.data.strip()
+            if not changed_files:
+                logger.info(f"No changes to stage or commit in {target_dir}. Skipping.")
+                return GitResult(
+                    status="skipped",
+                    data="No changes to stage or commit (fallback mode)",
+                    metadata=GitMetadata(
+                        command="bump_version",
+                        workspace=target_dir,
+                        return_code=0,
+                        timestamp=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
+                        + "Z",
+                    ),
+                )
+
+            if dry_run:
+                logger.info(
+                    f"[DRY RUN] Would fallback to git add -A && git commit -m 'phased push' in {target_dir}"
+                )
+                return GitResult(
+                    status="success",
+                    data="current_version=unknown\nnew_version=unknown\n",
+                    metadata=GitMetadata(
+                        command="bump_version",
+                        workspace=target_dir,
+                        return_code=0,
+                        timestamp=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
+                        + "Z",
+                    ),
+                )
+
+            add_res = self.git_action(command="git add -A", path=target_dir)
+            if add_res.status != "success":
+                logger.error(f"Failed to add changes in {target_dir}: {add_res.error}")
+                return add_res
+
+            commit_res = self.git_action(
+                command='git commit --no-verify -m "phased push"', path=target_dir
+            )
+            if commit_res.status != "success":
+                logger.error(
+                    f"Failed to commit fallback changes in {target_dir}: {commit_res.error}"
+                )
+                return commit_res
+
+            logger.info(
+                f"Successfully committed fallback changes with 'phased push' in {target_dir}"
+            )
+            return GitResult(
+                status="success",
+                data="current_version=unknown\nnew_version=unknown\n",
+                metadata=GitMetadata(
+                    command="bump_version",
+                    workspace=target_dir,
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
         command = (
             f"SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build bump2version {part}"
         )
@@ -1953,32 +2120,15 @@ class Git:
                 continue
 
             project_dir = Path(path)
-            if (project_dir / ".bumpversion.cfg").exists():
-                results.append(
-                    self.bump_version(
-                        part,
-                        allow_dirty=True,
-                        path=str(project_dir),
-                        dry_run=dry_run,
-                        verbose=verbose,
-                    )
+            results.append(
+                self.bump_version(
+                    part,
+                    allow_dirty=True,
+                    path=str(project_dir),
+                    dry_run=dry_run,
+                    verbose=verbose,
                 )
-            else:
-                results.append(
-                    GitResult(
-                        status="skipped",
-                        data="Missing .bumpversion.cfg",
-                        metadata=GitMetadata(
-                            command="bulk_bump",
-                            workspace=str(project_dir),
-                            return_code=0,
-                            timestamp=datetime.datetime.now(
-                                datetime.timezone.utc
-                            ).isoformat()
-                            + "Z",
-                        ),
-                    )
-                )
+            )
         return results
 
     def update_dependency(
@@ -2214,7 +2364,7 @@ class Git:
                         f"Completed bump for {project_name}: {status_str}"
                     )
 
-                if new_version:
+                if new_version and re.match(r"^v?\d+\.\d+\.\d+", new_version):
                     for _, path in self.project_map.items():
                         pyproject = Path(path) / "pyproject.toml"
                         if pyproject.exists():
@@ -3046,13 +3196,12 @@ Examples:
             project_dirs = list(git.project_map.values())
             results = []
             for d in project_dirs:
-                if (Path(d) / ".bumpversion.cfg").exists():
-                    res = git.bump_version(
-                        args.bump, allow_dirty=True, path=d, dry_run=args.dry_run
-                    )
-                    results.append(res)
-                    if res.status == "error":
-                        has_errors = True
+                res = git.bump_version(
+                    args.bump, allow_dirty=True, path=d, dry_run=args.dry_run
+                )
+                results.append(res)
+                if res.status == "error":
+                    has_errors = True
 
             summary = git.generate_markdown_summary("Bulk Version Bump", results)
             logger.info(summary)
