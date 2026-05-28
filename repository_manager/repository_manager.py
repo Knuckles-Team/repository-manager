@@ -2106,7 +2106,7 @@ class Git:
                     if status_check.data.strip():
                         # Commit all staged changes (including version bump, uv.lock, and other files) into the bump commit
                         self.git_action(
-                            command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit",
+                            command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit --no-verify",
                             path=target_dir,
                             quiet=True,
                         )
