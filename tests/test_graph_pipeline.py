@@ -25,7 +25,7 @@ def test_pipeline_runner_execution():
 
         runner = PipelineRunner([p1, p2])
         ctx = PipelineContext(
-            config=PipelineConfig(workspace_path="."), nx_graph=nx.MultiDiGraph()
+            config=PipelineConfig(workspace_path=".")
         )
 
         results = await runner.run(ctx)
@@ -45,7 +45,7 @@ def test_pipeline_runner_failure():
         p1 = PipelinePhase(name="fail", deps=[], execute_fn=fail_fn)
         runner = PipelineRunner([p1])
         ctx = PipelineContext(
-            config=PipelineConfig(workspace_path="."), nx_graph=nx.MultiDiGraph()
+            config=PipelineConfig(workspace_path=".")
         )
 
         with pytest.raises(ValueError, match="Intentional failure"):
