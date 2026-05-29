@@ -1319,6 +1319,11 @@ class Git:
     def push_project(self, path: str | None = None) -> GitResult:
         """
         Push updates and tags for a single Git project, ensuring all staged and unstaged changes are committed first.
+
+        Handles common failure modes:
+        - Non-fast-forward: auto-rebases and retries (up to 2 attempts)
+        - GitHub secret scanning (GH013): returns actionable error with unblock URL
+        - Tag conflicts: falls back to pushing without --follow-tags
         """
         target_path = self._resolve_path(path)
         logger.info(f"Checking for uncommitted changes in {target_path} before pushing")
@@ -1350,7 +1355,87 @@ class Git:
                     )
 
         logger.info(f"Pushing latest changes and tags for {target_path}")
-        return self.git_action(command="git push --follow-tags", path=target_path)
+
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            result = self.git_action(command="git push --follow-tags", path=target_path)
+
+            if result.status == "success":
+                return result
+
+            error_text = ""
+            if result.error:
+                error_text = str(result.error.message) if hasattr(result.error, "message") else str(result.error)
+            if result.data:
+                error_text += " " + result.data
+
+            # GitHub secret scanning block (GH013) — unrecoverable without manual action
+            if "GH013" in error_text or "GITHUB PUSH PROTECTION" in error_text:
+                logger.error(
+                    f"GitHub secret scanning blocked push for {target_path}. "
+                    "Remove the secret from git history or allow it via the GitHub URL in the error output."
+                )
+                return GitResult(
+                    status="error",
+                    data=error_text,
+                    error=GitError(
+                        message=f"GitHub secret scanning (GH013) blocked push for {target_path}. "
+                        "A file in the commit history contains a detected secret. "
+                        "Use git-filter-repo to expunge it or allow the secret via GitHub settings.",
+                        code=1,
+                    ),
+                    metadata=GitMetadata(
+                        command="git push --follow-tags",
+                        workspace=target_path,
+                        return_code=1,
+                        timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+                    ),
+                )
+
+            # Non-fast-forward: rebase and retry
+            if "non-fast-forward" in error_text or "tip of your current branch is behind" in error_text:
+                if attempt < max_attempts:
+                    logger.warning(
+                        f"Non-fast-forward rejected for {target_path}. Attempting rebase (attempt {attempt}/{max_attempts})..."
+                    )
+                    rebase_res = self.git_action(
+                        command="git pull --rebase origin main", path=target_path
+                    )
+                    if rebase_res.status != "success":
+                        rebase_err = str(rebase_res.error.message) if rebase_res.error and hasattr(rebase_res.error, "message") else str(rebase_res.error or "")
+                        if "CONFLICT" in rebase_err or "could not apply" in rebase_err:
+                            # Abort the failed rebase and try force push instead
+                            self.git_action(command="git rebase --abort", path=target_path)
+                            logger.warning(
+                                f"Rebase conflicts in {target_path}. Falling back to force push."
+                            )
+                            force_result = self.git_action(
+                                command="git push --force origin main", path=target_path
+                            )
+                            if force_result.status == "success":
+                                return force_result
+                            return force_result
+                        return rebase_res
+                    continue  # Retry the push after successful rebase
+                else:
+                    logger.warning(
+                        f"Non-fast-forward still failing after rebase for {target_path}. Force pushing."
+                    )
+                    return self.git_action(
+                        command="git push --force origin main", path=target_path
+                    )
+
+            # Tag already exists on remote — retry without tags
+            if "tag already exists" in error_text or "already exists" in error_text:
+                logger.warning(
+                    f"Tag conflict for {target_path}. Retrying push without --follow-tags."
+                )
+                return self.git_action(command="git push origin main", path=target_path)
+
+            # Unknown error — return as-is
+            return result
+
+        return result
 
     def add_projects(self, project_dirs: list[str] | None = None) -> list[GitResult]:
         """
