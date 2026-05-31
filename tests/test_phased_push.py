@@ -13,6 +13,7 @@ def mock_repo_manager(tmp_path):
         "https://github.com/Knuckles-Team/repo2.git": str(tmp_path / "repo2"),
         "https://github.com/Knuckles-Team/repo3.git": str(tmp_path / "repo3"),
     }
+
     def git_action_side_effect(*args, **kwargs):
         command = kwargs.get("command", "")
         if not command and args:
@@ -84,7 +85,9 @@ def test_push_projects(mock_repo_manager):
     assert mock_repo_manager.git_action.call_count == 4
     # Verify the push commands called were git push --follow-tags
     push_calls = [
-        call for call in mock_repo_manager.git_action.call_args_list
-        if "git push --follow-tags" in (call.kwargs.get("command") or (call.args[0] if call.args else ""))
+        call
+        for call in mock_repo_manager.git_action.call_args_list
+        if "git push --follow-tags"
+        in (call.kwargs.get("command") or (call.args[0] if call.args else ""))
     ]
     assert len(push_calls) == 2

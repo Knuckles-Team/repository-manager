@@ -369,8 +369,7 @@ subdirectories:
         description: "Regclient registry client tool for image registry operations."
       - url: "http://gitlab.arpa/homelab/containers/services/portainer.git"
         description: "Docker Swarm service stack for portainer."
-      - url: "http://gitlab.arpa/homelab/containers/services/ollama.git"
-        description: "Ollama runtime engine for local LLMs."
+
       - url: "http://gitlab.arpa/homelab/containers/services/paperless-ngx.git"
         description: "Paperless-ngx document archiver and OCR parser."
       - url: "http://gitlab.arpa/homelab/containers/services/nextcloud.git"

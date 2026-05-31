@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.25.0"
+__version__ = "1.26.0"
 
 import concurrent.futures
 import multiprocessing
@@ -42,13 +42,13 @@ from repository_manager.models import (
     GitError,
     GitMetadata,
     GitResult,
-    IncrementalReportWriter,
     MaintenanceConfig,
     ReadmeResult,
     SubdirectoryConfig,
-    ValidationReport,
     WorkspaceConfig,
 )
+from repository_manager.scan_models import RepoScanResult
+from repository_manager.scanner import scan_repository
 
 logger = get_logger("RepositoryManager")
 
@@ -447,302 +447,78 @@ class Git:
         target = max(1, int(cores * max_cpu_pct / 100.0))
         return target
 
-    def validate_projects(
+    def validate_single_project(self, repo_path: str) -> RepoScanResult:
+        """Validates a single repository by running the scanner logic."""
+        logger.info(f"Validating single project: {repo_path}")
+
+        # Optionally perform ecosystem installation before scanning if needed
+        # In this implementation, we focus on pre-commit and pytest via the scanner
+
+        return scan_repository(repo_path)
+
+    def validate_and_release(
         self,
-        type: str = "all",
         threads: int | None = None,
-        output_dir: str | None = None,
-        generate_report: bool = True,
-        validated_repositories: list[str] | None = None,
-        progress: dict | None = None,
-    ) -> ValidationReport:
-        """Bulk validates agent/MCP servers using various modes (help, static, runtime).
-
-        When ``output_dir`` is provided, validation results are written incrementally
-        to a ``validation-reports-<timestamp>/`` directory structure under that path.
-        Each scan phase writes its per-repo files immediately upon completion so
-        results are available before the full run finishes.
-
-        Args:
-            progress: Optional mutable dict for live progress reporting.
-                Updated in-place with current_phase, per-phase repo counts,
-                and overall progress percentage.
-
-        Concept:
-            CONCEPT:RM-VALIDATE
-        """
-        effective_threads = threads if threads is not None else self.threads
-        threads = min(effective_threads, self._cpu_aware_threads(20.0))
+        auto_bump: bool = False,
+        auto_push: bool = False,
+        bump_part: str = "minor",
+    ) -> dict[str, Any]:
+        """Validate projects in parallel, optionally triggering a release if successful."""
         if not self.project_map:
             logger.warning("No projects to validate.")
-            return ValidationReport.from_results([])
+            return {"passed": False, "validation_results": {}, "release_results": {}}
 
-        if progress is None:
-            progress = self.progress
-
+        effective_threads = threads or self._cpu_aware_threads()
         logger.info(
-            f"Validating {len(self.project_map)} projects (mode={type}) in parallel ({threads} threads)..."
+            f"Validating {len(self.project_map)} projects in parallel ({effective_threads} threads)..."
         )
 
-        # --- Progress helpers (no-op when progress is None) ---
-        run_all = type in ["all", "flat", "graph"]
+        validation_results: dict[str, Any] = {}
+        passed = True
 
-        expected_phases = []
-        if run_all or type == "installation":
-            expected_phases.append("Ecosystem Installation")
-        if run_all or type == "pre-commit":
-            expected_phases.append("Pre-commit Compliance")
-        if run_all or type == "test":
-            expected_phases.append("Pytest Suite")
-
-        total_phases = max(1, len(expected_phases))
-        completed_phases = 0
-
-        def _phase_start(name: str, total: int = 0) -> None:
-            nonlocal completed_phases
-            if progress is not None:
-                progress["current_phase"] = name
-                progress["progress"] = int(completed_phases / total_phases * 100)
-                if "phases" not in progress:
-                    progress["phases"] = {}
-                if name not in progress["phases"]:
-                    progress["phases"][name] = {
-                        "status": "running",
-                        "total": total,
-                        "processed": 0,
-                        "completed": 0,
-                        "success": 0,
-                        "failed": 0,
-                        "skipped": 0,
-                        "repos": {
-                            Path(path).name: "pending"
-                            for path in self.project_map.values()
-                        },
-                    }
-                else:
-                    progress["phases"][name]["status"] = "running"
-                    if total > 0:
-                        progress["phases"][name]["total"] = total
-
-        def _phase_repo(name: str, repo: str, status: str) -> None:
-            if progress is not None and name in progress.get("phases", {}):
-                p = progress["phases"][name]
-                p["repos"][repo] = status
-                p["processed"] = sum(
-                    1
-                    for s in p["repos"].values()
-                    if s in ("success", "error", "skipped", "skip", "failed")
-                )
-                p["completed"] = p["processed"]  # Backwards compatibility
-                p["success"] = sum(1 for s in p["repos"].values() if s == "success")
-                p["failed"] = sum(
-                    1 for s in p["repos"].values() if s in ("error", "failed")
-                )
-                p["skipped"] = sum(
-                    1 for s in p["repos"].values() if s in ("skipped", "skip")
-                )
-
-        def _phase_end(name: str) -> None:
-            nonlocal completed_phases
-            completed_phases += 1
-            if progress is not None and name in progress.get("phases", {}):
-                progress["phases"][name]["status"] = "completed"
-                progress["progress"] = int(completed_phases / total_phases * 100)
-
-        # Initialize incremental report writer if output directory is specified or generate_report is true
-        report_output = output_dir or (
-            os.path.join(self.path, "reports") if generate_report else None
-        )
-        writer = (
-            IncrementalReportWriter(
-                output_dir=report_output,
-                validated_repositories=validated_repositories,
-            )
-            if report_output
-            else None
-        )
-        results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-            # Pre-populate progress phases as pending
-            if progress is not None:
-                if "phases" not in progress:
-                    progress["phases"] = {}
-                for phase_name in expected_phases:
-                    phase_total = len(self.project_map)
-
-                    if phase_name not in progress["phases"]:
-                        progress["phases"][phase_name] = {
-                            "status": "pending",
-                            "total": phase_total,
-                            "processed": 0,
-                            "completed": 0,
-                            "success": 0,
-                            "failed": 0,
-                            "skipped": 0,
-                            "repos": {
-                                Path(path).name: "pending"
-                                for path in self.project_map.values()
-                            },
-                        }
-
-            # --- Phase 1: Ecosystem Installation ---
-            if run_all or type == "installation":
-                _phase_start("Ecosystem Installation", len(self.project_map))
-                for _url, path in self.project_map.items():
-                    repo = Path(path).name
-                    _phase_repo("Ecosystem Installation", repo, "running")
-                install_results = self.install_projects(report=False)
-                for r in install_results:
-                    repo = Path(r.metadata.workspace).name if r.metadata else "unknown"
-                    _phase_repo("Ecosystem Installation", repo, r.status)
-                    if writer:
-                        writer.write_incremental_result("Ecosystem Installation", r)
-                results.extend(install_results)
-                _phase_end("Ecosystem Installation")
-
-            # --- Phase 2: Pre-commit Standard Compliance ---
-            if run_all or type == "pre-commit":
-                _phase_start("Pre-commit Compliance", len(self.project_map))
-                logger.info(
-                    f"Checking pre-commit compliance for {len(self.project_map)} projects..."
-                )
-
-                pc_results = []
-                pc_futures = {}
-                skip_ts = datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z"
-
-                for _url, path in self.project_map.items():
-                    repo_name = Path(path).name
-                    has_precommit = os.path.exists(
-                        os.path.join(path, ".pre-commit-config.yaml")
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=effective_threads
+        ) as executor:
+            futures = {
+                executor.submit(self.validate_single_project, path): url
+                for url, path in self.project_map.items()
+            }
+            for future in concurrent.futures.as_completed(futures):
+                url = futures[future]
+                repo_name = url.split("/")[-1].replace(".git", "")
+                try:
+                    result = future.result()
+                    validation_results[repo_name] = (
+                        result.model_dump() if hasattr(result, "model_dump") else result
                     )
-                    has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
-
-                    if not has_precommit and not has_pyproject:
-                        r = GitResult(
-                            status="skipped",
-                            data="Skipped (No .pre-commit-config.yaml and no pyproject.toml)",
-                            metadata=GitMetadata(
-                                command="pre_commit",
-                                workspace=path,
-                                return_code=0,
-                                timestamp=skip_ts,
-                            ),
-                        )
-                        pc_results.append(r)
-                        _phase_repo("Pre-commit Compliance", repo_name, "skipped")
-                        if writer:
-                            writer.write_incremental_result(
-                                "Pre-commit Standard Compliance", r
-                            )
-                    elif has_precommit:
-                        _phase_repo("Pre-commit Compliance", repo_name, "running")
-                        fut = executor.submit(self.pre_commit, True, False, path)
-                        pc_futures[fut] = repo_name
+                    if hasattr(result, "success"):
+                        if not result.success:
+                            passed = False
                     else:
-                        r = GitResult(
-                            status="skipped",
-                            data="Skipped (No .pre-commit-config.yaml)",
-                            metadata=GitMetadata(
-                                command="pre_commit",
-                                workspace=path,
-                                return_code=0,
-                                timestamp=skip_ts,
-                            ),
-                        )
-                        pc_results.append(r)
-                        _phase_repo("Pre-commit Compliance", repo_name, "skipped")
-                        if writer:
-                            writer.write_incremental_result(
-                                "Pre-commit Standard Compliance", r
-                            )
+                        passed = False
+                except Exception as e:
+                    logger.error(f"Validation exception for {repo_name}: {e}")
+                    validation_results[repo_name] = {"success": False, "error": str(e)}
+                    passed = False
 
-                for f in concurrent.futures.as_completed(pc_futures):
-                    r = f.result()
-                    pc_results.append(r)
-                    _phase_repo("Pre-commit Compliance", pc_futures[f], r.status)
-                    if writer:
-                        writer.write_incremental_result(
-                            "Pre-commit Standard Compliance", r
-                        )
+        release_results = {}
+        if passed:
+            logger.info("All validations passed.")
+            if auto_bump:
+                logger.info(f"Triggering phased bumpversion ({bump_part})...")
+                release_results["bump"] = self.phased_bumpversion(part=bump_part)
+            if auto_push:
+                logger.info("Triggering phased push...")
+                release_results["push"] = self.phased_push()
+        else:
+            if auto_bump or auto_push:
+                logger.warning("Validation failed. Skipping bump and push.")
 
-                _phase_end("Pre-commit Compliance")
-                results.extend(pc_results)
-
-            # --- Phase 3: Pytest Suite ---
-            if run_all or type == "test":
-                _phase_start("Pytest Suite", len(self.project_map))
-                logger.info(
-                    f"Running pytest suite for {len(self.project_map)} projects..."
-                )
-
-                targets = []
-                for _url, path in self.project_map.items():
-                    targets.append(
-                        {
-                            "name": os.path.basename(path),
-                            "path": path,
-                        }
-                    )
-
-                test_results = self.test_projects(
-                    targets=targets,
-                    progress_phase="Pytest Suite",
-                    progress_dict=progress,
-                )
-
-                for r in test_results:
-                    repo = (
-                        os.path.basename(r.metadata.workspace)
-                        if r.metadata
-                        else "unknown"
-                    )
-                    _phase_repo("Pytest Suite", repo, r.status)
-                    if writer:
-                        writer.write_incremental_result("Pytest Suite", r)
-
-                results.extend(test_results)
-                _phase_end("Pytest Suite")
-
-            # --- Console summary ---
-            successes = [r for r in results if r.status == "success"]
-            failures = [r for r in results if r.status == "error"]
-            skipped = [r for r in results if r.status == "skipped"]
-
-            logger.info("\n" + "=" * 50)
-            logger.info("VALIDATION SUMMARY")
-            logger.info(
-                f"Total: {len(results)} | Success: {len(successes)} ✅ | Failure: {len(failures)} ❌ | Skipped: {len(skipped)} ⏭️"
-            )
-            if failures:
-                logger.info("\nFailures:")
-                for r in failures:
-                    pkg = "unknown"
-                    if r.metadata:
-                        pkg = r.metadata.workspace.split("/")[-1]
-                    error_msg = r.error.message if r.error else r.data
-                    logger.info(f"- {pkg}: {error_msg}")
-            logger.info("=" * 50 + "\n")
-
-            # Finalize directory report (writes index.md)
-            report_dir = None
-            if writer:
-                report_dir = writer.finalize()
-                logger.info(f"📋 Report directory: {report_dir}")
-
-            report = ValidationReport.from_results(results)
-
-            try:
-                summary_content = report.to_markdown()
-                stable_path = os.path.join(self.path, "reports", "report_final.md")
-                os.makedirs(os.path.dirname(stable_path), exist_ok=True)
-                with open(stable_path, "w") as fh:
-                    fh.write(summary_content)
-                logger.info(f"📋 Stable report written to: {stable_path}")
-            except Exception as e:
-                logger.error(f"Failed to write stable report_final.md: {e}")
-
-            return report
+        return {
+            "passed": passed,
+            "validation_results": validation_results,
+            "release_results": release_results,
+        }
 
     def _export_report(self, markdown_content: str, default_name: str) -> None:
         """Exports markdown content to a file if reporting is enabled."""
@@ -1365,7 +1141,11 @@ class Git:
 
             error_text = ""
             if result.error:
-                error_text = str(result.error.message) if hasattr(result.error, "message") else str(result.error)
+                error_text = (
+                    str(result.error.message)
+                    if hasattr(result.error, "message")
+                    else str(result.error)
+                )
             if result.data:
                 error_text += " " + result.data
 
@@ -1388,12 +1168,18 @@ class Git:
                         command="git push --follow-tags",
                         workspace=target_path,
                         return_code=1,
-                        timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+                        timestamp=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
+                        + "Z",
                     ),
                 )
 
             # Non-fast-forward: rebase and retry
-            if "non-fast-forward" in error_text or "tip of your current branch is behind" in error_text:
+            if (
+                "non-fast-forward" in error_text
+                or "tip of your current branch is behind" in error_text
+            ):
                 if attempt < max_attempts:
                     logger.warning(
                         f"Non-fast-forward rejected for {target_path}. Attempting rebase (attempt {attempt}/{max_attempts})..."
@@ -1402,10 +1188,16 @@ class Git:
                         command="git pull --rebase origin main", path=target_path
                     )
                     if rebase_res.status != "success":
-                        rebase_err = str(rebase_res.error.message) if rebase_res.error and hasattr(rebase_res.error, "message") else str(rebase_res.error or "")
+                        rebase_err = (
+                            str(rebase_res.error.message)
+                            if rebase_res.error and hasattr(rebase_res.error, "message")
+                            else str(rebase_res.error or "")
+                        )
                         if "CONFLICT" in rebase_err or "could not apply" in rebase_err:
                             # Abort the failed rebase and try force push instead
-                            self.git_action(command="git rebase --abort", path=target_path)
+                            self.git_action(
+                                command="git rebase --abort", path=target_path
+                            )
                             logger.warning(
                                 f"Rebase conflicts in {target_path}. Falling back to force push."
                             )
@@ -3301,12 +3093,21 @@ Examples:
     has_errors = False
 
     if args.validate:
-        report = git.validate_projects(
-            type=args.type, generate_report=not args.no_report
+        val_results = git.validate_and_release(
+            threads=args.threads,
+            auto_bump=bool(args.bump) if not args.maintain else False,
+            auto_push=args.push,
+            bump_part=args.bump if args.bump else "minor",
         )
-        if report and report.failure_count > 0:
+        if not val_results.get("passed"):
             has_errors = True
-            logger.error("Validation failed with errors. Check the report for details.")
+            logger.error("Validation failed with errors.")
+        else:
+            logger.info("Validation and subsequent operations completed successfully.")
+
+        # Prevent these from executing again below
+        args.bump = None
+        args.push = False
 
     if args.bump and not args.maintain:
         if has_errors and (args.push or args.bump):
