@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from typing import List, Optional
 
 
 class HookResult(BaseModel):
@@ -12,7 +11,7 @@ class RepoScanResult(BaseModel):
     repo_path: str
     success: bool
     exit_code: int
-    hooks: List[HookResult] = []
+    hooks: list[HookResult] = []
     raw_output: str = ""
-    pytest_output: Optional[str] = None
-    error: Optional[str] = None
+    pytest_output: str | None = None
+    error: str | None = None

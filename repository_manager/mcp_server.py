@@ -42,7 +42,7 @@ from repository_manager.models import (
 from repository_manager.repository_manager import Git
 from repository_manager.scan_models import RepoScanResult
 
-__version__ = "1.26.0"
+__version__ = "1.27.0"
 
 DEFAULT_WORKSPACE = os.environ.get(
     "REPOSITORY_MANAGER_WORKSPACE",
@@ -577,127 +577,52 @@ def register_workspace_management_tools(mcp: FastMCP):
         return f"Error: Unknown action '{action}'"
 
 
-def _validate_and_release_coordinator(
-    git, targets, auto_bump, auto_push, bump_part, force_revalidate=False
-):
+def _wait_for_jobs_and_run(
+    dependency_job_ids: list[str],
+    success_required: bool,
+    func: Callable,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
     import time
 
-    job_ids = {}
-
-    # Check existing jobs for caching
-    with _jobs_lock:
-        for repo_name, path in targets:
-            needs_validation = True
-
-            if not force_revalidate:
-                # Find the most recent job for this repo
-                latest_job = None
-                for _jid, j in _jobs.items():
-                    if j["action"] == "validate" and j.get("repo_name") == repo_name:
-                        latest_job = j
-
-                if latest_job:
-                    if latest_job["status"] == "completed" and latest_job.get("result"):
-                        res = latest_job["result"]
-                        if getattr(res, "success", False):
-                            needs_validation = False
-                            logger.info(
-                                f"Skipping validation for {repo_name} (already passed)."
-                            )
-
-            if needs_validation:
-                j_id = _submit_job(
-                    "validate",
-                    git.validate_single_project,
-                    path,
-                    _extra_job_data={"repo_name": repo_name},
-                )
-                job_ids[repo_name] = j_id["job_id"]
-            else:
-                job_ids[repo_name] = "ALREADY_PASSED"
-
-    # Poll until all active validation jobs are completed
     while True:
         all_done = True
-        for job_id in job_ids.values():
-            if job_id == "ALREADY_PASSED":
-                continue
+        for job_id in dependency_job_ids:
             with _jobs_lock:
-                status = _jobs[job_id]["status"]
-            if status in ("running", "queued", "pending"):
+                status = _jobs.get(job_id, {}).get("status", "unknown")
+            if status in ("running", "queued", "pending", "submitted"):
                 all_done = False
                 break
         if all_done:
             break
         time.sleep(1)
 
-    # Check if all passed
-    passed = True
-    for _repo_name, job_id in job_ids.items():
-        if job_id == "ALREADY_PASSED":
-            continue
-        with _jobs_lock:
-            job_data = _jobs[job_id]
-            res = job_data.get("result")
-            if not res or not getattr(res, "success", False):
-                passed = False
-                break
+    if success_required:
+        passed = True
+        for job_id in dependency_job_ids:
+            with _jobs_lock:
+                job_data = _jobs.get(job_id, {})
+                res = job_data.get("result")
+                status = job_data.get("status")
+                action = job_data.get("action")
 
-    release_results = {}
-    if passed:
-        logger.info("All validations passed. Queuing bump and push jobs...")
-        if auto_bump:
-            progress = {
-                "current_phase": "Initializing Bumps",
-                "progress": 0,
-                "phases": {},
-            }
-            bump_job = _submit_job(
-                "maintain",
-                git.maintain_projects,
-                part=bump_part,
-                start_phase=1,
-                dry_run=False,
-                progress=progress,
-                _extra_job_data={"progress_detail": progress},
-            )
-            # Wait for bump to finish
-            while True:
-                with _jobs_lock:
-                    b_status = _jobs[bump_job["job_id"]]["status"]
-                if b_status not in ("running", "queued", "pending"):
+                if status == "failed":
+                    passed = False
                     break
-                time.sleep(1)
-            release_results["bump_job_id"] = bump_job["job_id"]
+                if action == "validate":
+                    if not res or not getattr(res, "success", False):
+                        passed = False
+                        break
+                elif action == "maintain":
+                    if res == "Skipped due to dependency failures.":
+                        passed = False
+                        break
 
-        if auto_push:
-            progress = {
-                "current_phase": "Initializing Pushes",
-                "progress": 0,
-                "phases": {},
-            }
-            push_job = _submit_job(
-                "phased_push",
-                git.phased_push,
-                start_phase=1,
-                project_filter=None,
-                progress=progress,
-                _extra_job_data={"progress_detail": progress},
-            )
-            # Wait for push to finish
-            while True:
-                with _jobs_lock:
-                    p_status = _jobs[push_job["job_id"]]["status"]
-                if p_status not in ("running", "queued", "pending"):
-                    break
-                time.sleep(1)
-            release_results["push_job_id"] = push_job["job_id"]
+        if not passed:
+            return "Skipped due to dependency failures."
 
-    return {
-        "passed": passed,
-        "release_results": release_results,
-        "status": "completed" if passed else "deferred_due_to_failures",
-    }
+    return func(*args, **kwargs)
 
 
 def register_project_management_tools(mcp: FastMCP):
@@ -841,33 +766,73 @@ def register_project_management_tools(mcp: FastMCP):
                         # Queue new job
                         pass  # We will queue it below outside this block but wait, we need to do it without deadlock.
 
-            if auto_bump or auto_push:
-                coord_id = _submit_job(
-                    "validate_and_release",
-                    _validate_and_release_coordinator,
-                    git=git,
-                    targets=targets,
-                    auto_bump=auto_bump,
-                    auto_push=auto_push,
-                    bump_part=bump_part,
-                    force_revalidate=force_revalidate,
-                )
-                result_payload["coordinator_job_id"] = coord_id["job_id"]
-            else:
-                for repo_name, path in targets:
-                    if (
-                        repo_name in result_payload["running"]
-                        or repo_name in result_payload["completed"]
-                    ):
-                        continue
+            validation_job_ids = []
+            for repo_name, path in targets:
+                if (
+                    repo_name in result_payload["running"]
+                    or repo_name in result_payload["completed"]
+                ):
+                    continue
 
-                    res = _submit_job(
-                        "validate",
-                        git.validate_single_project,
-                        path,
-                        _extra_job_data={"repo_name": repo_name},
+                res = _submit_job(
+                    "validate",
+                    git.validate_single_project,
+                    path,
+                    _extra_job_data={"repo_name": repo_name},
+                )
+                result_payload["queued"][repo_name] = res["job_id"]
+
+            for r_name in [t[0] for t in targets]:
+                if r_name in result_payload["queued"]:
+                    validation_job_ids.append(result_payload["queued"][r_name])
+                elif r_name in result_payload["running"]:
+                    validation_job_ids.append(result_payload["running"][r_name])
+                elif r_name in result_payload["completed"]:
+                    validation_job_ids.append(
+                        result_payload["completed"][r_name]["job_id"]
                     )
-                    result_payload["queued"][repo_name] = res["job_id"]
+
+            if auto_bump:
+                progress = {
+                    "current_phase": "Waiting for validation",
+                    "progress": 0,
+                    "phases": {},
+                }
+                res_bump = _submit_job(
+                    "maintain",
+                    _wait_for_jobs_and_run,
+                    validation_job_ids,
+                    True,
+                    git.maintain_projects,
+                    part=bump_part,
+                    start_phase=1,
+                    dry_run=False,
+                    progress=progress,
+                    _extra_job_data={"progress_detail": progress},
+                )
+                result_payload["bump_job_id"] = res_bump["job_id"]
+                push_dependencies = [res_bump["job_id"]]
+            else:
+                push_dependencies = validation_job_ids
+
+            if auto_push:
+                progress = {
+                    "current_phase": "Waiting for dependencies",
+                    "progress": 0,
+                    "phases": {},
+                }
+                res_push = _submit_job(
+                    "phased_push",
+                    _wait_for_jobs_and_run,
+                    push_dependencies,
+                    True,
+                    git.phased_push,
+                    start_phase=1,
+                    project_filter=None,
+                    progress=progress,
+                    _extra_job_data={"progress_detail": progress},
+                )
+                result_payload["push_job_id"] = res_push["job_id"]
 
             return result_payload
 
