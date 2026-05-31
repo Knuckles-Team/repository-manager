@@ -1,7 +1,7 @@
-import subprocess
 import os
 import re
-from typing import List
+import subprocess
+
 from .scan_models import HookResult, RepoScanResult
 
 
@@ -28,14 +28,14 @@ def run_pre_commit(
     )
 
 
-def parse_pre_commit_output(output: str) -> List[HookResult]:
+def parse_pre_commit_output(output: str) -> list[HookResult]:
     """Parse pre-commit verbose output into structured HookResults."""
     lines = output.split("\n")
     hooks = []
 
     current_hook_name = None
     current_status = None
-    current_output: List[str] = []
+    current_output: list[str] = []
 
     # Pre-commit output line structure: `Hook Name.................................................................Passed`
     hook_regex = re.compile(r"^(.+?)\.{5,}(Passed|Failed|Skipped)\s*$")

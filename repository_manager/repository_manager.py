@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.26.0"
+__version__ = "1.27.0"
 
 import concurrent.futures
 import multiprocessing
@@ -1389,13 +1389,13 @@ class Git:
 
         commands = []
         if autoupdate:
-            commands.append("pre-commit autoupdate")
+            commands.append("pre-commit autoupdate && git add -A")
         if run:
             commands.append("git add -A")
             # Run pre-commit once. If it fails (likely due to auto-formatting files),
             # stage the newly formatted changes and run it again to verify.
             commands.append(
-                "SKIP=no-commit-to-branch pre-commit run --all-files --verbose || (git add -A && SKIP=no-commit-to-branch pre-commit run --all-files --verbose)"
+                "SKIP=no-commit-to-branch pre-commit run --all-files --verbose || (git add -A && SKIP=no-commit-to-branch pre-commit run --all-files --verbose && git add -A)"
             )
 
         if not commands:
@@ -1622,17 +1622,24 @@ class Git:
                     logger.warning("No projects found in project_map for pre-commit.")
                     return []
             else:
-                project_dirs = [
-                    os.path.abspath(os.path.expanduser(p))
-                    for p in projects
-                    if os.path.isdir(os.path.abspath(os.path.expanduser(p)))
-                    and os.path.exists(
-                        os.path.join(
-                            os.path.abspath(os.path.expanduser(p)),
-                            ".pre-commit-config.yaml",
+                project_dirs = []
+                for p in projects:
+                    p_path = None
+                    if os.path.isabs(p) and os.path.exists(p):
+                        p_path = p
+                    else:
+                        for url, path in self.project_map.items():
+                            if url.endswith(f"/{p}.git") or url.endswith(f"/{p}"):
+                                p_path = path
+                                break
+                    if (
+                        p_path
+                        and os.path.isdir(p_path)
+                        and os.path.exists(
+                            os.path.join(p_path, ".pre-commit-config.yaml")
                         )
-                    )
-                ]
+                    ):
+                        project_dirs.append(p_path)
 
             if not project_dirs:
                 return []
@@ -1843,7 +1850,7 @@ class Git:
                 logger.debug(f"Could not read setup.cfg in {target_dir}: {e}")
 
         if not has_cfg:
-            # Fallback behavior: stage all changes and commit them as "phased push"
+            # Fallback behavior: stage all changes and commit them as "phased bump"
             status_check = self.git_action(
                 command="git status --porcelain", path=target_dir, quiet=True
             )
@@ -1869,7 +1876,7 @@ class Git:
 
             if dry_run:
                 logger.info(
-                    f"[DRY RUN] Would fallback to git add -A && git commit -m 'phased push' in {target_dir}"
+                    f"[DRY RUN] Would fallback to git add -A && git commit -m 'phased bump' in {target_dir}"
                 )
                 return GitResult(
                     status="success",
@@ -1891,7 +1898,7 @@ class Git:
                 return add_res
 
             commit_res = self.git_action(
-                command='git commit --no-verify -m "phased push"', path=target_dir
+                command='git commit --no-verify -m "phased bump"', path=target_dir
             )
             if commit_res.status != "success":
                 logger.error(
@@ -1900,7 +1907,7 @@ class Git:
                 return commit_res
 
             logger.info(
-                f"Successfully committed fallback changes with 'phased push' in {target_dir}"
+                f"Successfully committed fallback changes with 'phased bump' in {target_dir}"
             )
             return GitResult(
                 status="success",
@@ -2133,6 +2140,23 @@ class Git:
                 run=True, autoupdate=True, projects=projects_to_check
             )
             all_results.extend(pc_results)
+
+            dirs_to_commit = None
+            if projects_to_check is not None:
+                dirs_to_commit = []
+                for p_name in projects_to_check:
+                    for url, p_path in self.project_map.items():
+                        if url.endswith(f"/{p_name}.git") or url.endswith(f"/{p_name}"):
+                            dirs_to_commit.append(p_path)
+                            break
+            else:
+                dirs_to_commit = list(self.project_map.values())
+
+            commit_res = self.commit_projects(
+                message="chore: pre-commit autoupdate and formatting",
+                project_dirs=dirs_to_commit,
+            )
+            all_results.extend(commit_res)
 
         def run_step_bump(project_name, phase_num):
             if start_phase <= phase_num:
