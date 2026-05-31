@@ -162,4 +162,3 @@ mcp_config.sync.lock
 *errors*.txt
 failed_tests.txt
 trace.txt
-

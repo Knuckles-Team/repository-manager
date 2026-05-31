@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.27.0"
+__version__ = "1.27.1"
 
 import concurrent.futures
 import multiprocessing
@@ -902,9 +902,13 @@ class Git:
                         if file_path.match(pat):
                             try:
                                 file_path.unlink()
-                                logger.info(f"Cleaned up root transient script: {file_path}")
+                                logger.info(
+                                    f"Cleaned up root transient script: {file_path}"
+                                )
                             except Exception as e:
-                                logger.debug(f"Failed to clean up root script {file_path}: {e}")
+                                logger.debug(
+                                    f"Failed to clean up root script {file_path}: {e}"
+                                )
                             matched_script = True
                             break
                     if matched_script:
@@ -916,9 +920,13 @@ class Git:
                     ):
                         try:
                             file_path.unlink()
-                            logger.info(f"Cleaned up root non-standard text file: {file_path}")
+                            logger.info(
+                                f"Cleaned up root non-standard text file: {file_path}"
+                            )
                         except Exception as e:
-                            logger.debug(f"Failed to clean up root text file {file_path}: {e}")
+                            logger.debug(
+                                f"Failed to clean up root text file {file_path}: {e}"
+                            )
 
             # Check for file-level cleanup targets
             for f in filenames:
