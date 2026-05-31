@@ -433,17 +433,17 @@ maintenance:
       phase: 1
       projects:
         - "pipelines"
-      wait_minutes: 12
+      wait_minutes: 0
     - name: "Phase 2: Epistemic Graph"
       phase: 2
       projects:
         - "epistemic-graph"
-      wait_minutes: 12
+      wait_minutes: 0
     - name: "Phase 3: agent-utilities"
       phase: 3
       projects:
         - "agent-utilities"
-      wait_minutes: 12
+      wait_minutes: 0
     - name: "Phase 4: Core Tools and UIs"
       phase: 4
       projects:
@@ -452,7 +452,7 @@ maintenance:
         - "agent-webui"
         - "agent-terminal-ui"
         - "geniusbot"
-      wait_minutes: 12
+      wait_minutes: 0
     - name: "Phase 5: Agents"
       phase: 5
       bulk_bump: true
