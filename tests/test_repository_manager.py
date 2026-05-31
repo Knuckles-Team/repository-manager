@@ -304,7 +304,9 @@ def test_bump_version_fallback_dry_run(mock_git_action, sample_workspace_yml):
         status="success", data="M  file.py\n", metadata=get_mock_metadata("git status")
     )
 
-    res = git.bump_version(part="patch", path=str(workspace_dir / "pipelines"), dry_run=True)
+    res = git.bump_version(
+        part="patch", path=str(workspace_dir / "pipelines"), dry_run=True
+    )
     assert res.status == "success"
     assert "current_version=unknown" in res.data
     assert "new_version=unknown" in res.data
@@ -342,7 +344,9 @@ def test_bump_version_fallback_execution(mock_git_action, sample_workspace_yml):
 
     mock_git_action.side_effect = mock_git_calls
 
-    res = git.bump_version(part="patch", path=str(workspace_dir / "pipelines"), dry_run=False)
+    res = git.bump_version(
+        part="patch", path=str(workspace_dir / "pipelines"), dry_run=False
+    )
     assert res.status == "success"
     assert "current_version=unknown" in res.data
     assert "new_version=unknown" in res.data

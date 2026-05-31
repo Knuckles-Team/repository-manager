@@ -25,10 +25,9 @@ def test_pipeline_runner_execution():
 
         runner = PipelineRunner([p1, p2])
         from unittest.mock import patch
+
         with patch("epistemic_graph.client.SyncEpistemicGraphClient.connect"):
-            ctx = PipelineContext(
-                config=PipelineConfig(workspace_path=".")
-            )
+            ctx = PipelineContext(config=PipelineConfig(workspace_path="."))
 
         results = await runner.run(ctx)
 
@@ -47,10 +46,9 @@ def test_pipeline_runner_failure():
         p1 = PipelinePhase(name="fail", deps=[], execute_fn=fail_fn)
         runner = PipelineRunner([p1])
         from unittest.mock import patch
+
         with patch("epistemic_graph.client.SyncEpistemicGraphClient.connect"):
-            ctx = PipelineContext(
-                config=PipelineConfig(workspace_path=".")
-            )
+            ctx = PipelineContext(config=PipelineConfig(workspace_path="."))
 
         with pytest.raises(ValueError, match="Intentional failure"):
             await runner.run(ctx)

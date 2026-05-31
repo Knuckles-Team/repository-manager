@@ -37,12 +37,12 @@ from starlette.responses import JSONResponse
 
 from repository_manager.models import (
     GitResult,
-    ValidationReport,
     WorkspaceConfig,
 )
 from repository_manager.repository_manager import Git
+from repository_manager.scan_models import RepoScanResult
 
-__version__ = "1.25.0"
+__version__ = "1.26.0"
 
 DEFAULT_WORKSPACE = os.environ.get(
     "REPOSITORY_MANAGER_WORKSPACE",
@@ -53,12 +53,29 @@ DEFAULT_WORKSPACE_YML = os.environ.get("WORKSPACE_YML", "workspace.yml")
 
 logger = get_logger("RepositoryManagerServer")
 
+
 # ---------------------------------------------------------------------------
 # Unified Background Job Queue
 # ---------------------------------------------------------------------------
+import concurrent.futures
 
+import psutil
+
+
+def _get_max_workers():
+    try:
+        cpu_count = psutil.cpu_count(logical=True)
+        if not cpu_count:
+            return 4
+        return max(1, int(cpu_count * 0.2))
+    except Exception:
+        return 4
+
+
+_executor = concurrent.futures.ThreadPoolExecutor(max_workers=_get_max_workers())
 _jobs: dict[str, dict[str, Any]] = {}
-_jobs_lock = threading.Lock()
+
+_jobs_lock = threading.RLock()
 
 
 def _submit_job(
@@ -107,8 +124,7 @@ def _submit_job(
                     datetime.now(timezone.utc).isoformat() + "Z"
                 )
 
-    thread = threading.Thread(target=_run, daemon=True, name=f"{action}-{job_id}")
-    thread.start()
+    _executor.submit(_run)
 
     return {
         "status": "submitted",
@@ -126,16 +142,62 @@ def _get_job_status(job_id: str | None = None) -> dict[str, Any]:
         with _jobs_lock:
             if not _jobs:
                 return {"status": "empty", "message": "No background jobs found."}
-            return {
-                "jobs": {
-                    jid: {
-                        "status": j["status"],
-                        "action": j["action"],
-                        "started_at": j["started_at"],
-                        "completed_at": j["completed_at"],
-                    }
-                    for jid, j in _jobs.items()
+
+            jobs_output = {}
+            failed_projects = []
+            running_projects = []
+
+            for jid, j in _jobs.items():
+                job_data = {
+                    "status": j["status"],
+                    "action": j["action"],
+                    "started_at": j["started_at"],
+                    "completed_at": j["completed_at"],
                 }
+                repo_name = None
+                if "repo_name" in j:
+                    repo_name = j["repo_name"]
+                    job_data["repo_name"] = repo_name
+
+                if (
+                    j["status"] == "running"
+                    or j["status"] == "queued"
+                    or j["status"] == "pending"
+                ):
+                    if repo_name:
+                        running_projects.append(repo_name)
+
+                if j["status"] == "completed" and j.get("result"):
+                    res = j["result"]
+                    if hasattr(res, "success"):
+                        summary = {"passed": res.success, "failures": []}
+                        if hasattr(res, "hooks"):
+                            for h in res.hooks:
+                                if not getattr(h, "passed", True):
+                                    out = getattr(h, "output", "").strip()
+                                    summary["failures"].append(
+                                        f"Hook '{h.hook_id}' failed: {out}"
+                                        if out
+                                        else f"Hook '{h.hook_id}' failed."
+                                    )
+                        if hasattr(res, "error") and res.error:
+                            summary["failures"].append(res.error)
+                        job_data["summary"] = summary
+                        if not res.success and repo_name:
+                            failed_projects.append(repo_name)
+
+                if j["status"] == "failed" and j.get("error"):
+                    job_data["error"] = j["error"]
+                    if repo_name:
+                        failed_projects.append(repo_name)
+
+                jobs_output[jid] = job_data
+
+            return {
+                "jobs": jobs_output,
+                "failed_projects": failed_projects,
+                "failed_projects_csv": ",".join(failed_projects),
+                "running_projects": running_projects,
             }
 
     with _jobs_lock:
@@ -515,6 +577,129 @@ def register_workspace_management_tools(mcp: FastMCP):
         return f"Error: Unknown action '{action}'"
 
 
+def _validate_and_release_coordinator(
+    git, targets, auto_bump, auto_push, bump_part, force_revalidate=False
+):
+    import time
+
+    job_ids = {}
+
+    # Check existing jobs for caching
+    with _jobs_lock:
+        for repo_name, path in targets:
+            needs_validation = True
+
+            if not force_revalidate:
+                # Find the most recent job for this repo
+                latest_job = None
+                for _jid, j in _jobs.items():
+                    if j["action"] == "validate" and j.get("repo_name") == repo_name:
+                        latest_job = j
+
+                if latest_job:
+                    if latest_job["status"] == "completed" and latest_job.get("result"):
+                        res = latest_job["result"]
+                        if getattr(res, "success", False):
+                            needs_validation = False
+                            logger.info(
+                                f"Skipping validation for {repo_name} (already passed)."
+                            )
+
+            if needs_validation:
+                j_id = _submit_job(
+                    "validate",
+                    git.validate_single_project,
+                    path,
+                    _extra_job_data={"repo_name": repo_name},
+                )
+                job_ids[repo_name] = j_id["job_id"]
+            else:
+                job_ids[repo_name] = "ALREADY_PASSED"
+
+    # Poll until all active validation jobs are completed
+    while True:
+        all_done = True
+        for job_id in job_ids.values():
+            if job_id == "ALREADY_PASSED":
+                continue
+            with _jobs_lock:
+                status = _jobs[job_id]["status"]
+            if status in ("running", "queued", "pending"):
+                all_done = False
+                break
+        if all_done:
+            break
+        time.sleep(1)
+
+    # Check if all passed
+    passed = True
+    for _repo_name, job_id in job_ids.items():
+        if job_id == "ALREADY_PASSED":
+            continue
+        with _jobs_lock:
+            job_data = _jobs[job_id]
+            res = job_data.get("result")
+            if not res or not getattr(res, "success", False):
+                passed = False
+                break
+
+    release_results = {}
+    if passed:
+        logger.info("All validations passed. Queuing bump and push jobs...")
+        if auto_bump:
+            progress = {
+                "current_phase": "Initializing Bumps",
+                "progress": 0,
+                "phases": {},
+            }
+            bump_job = _submit_job(
+                "maintain",
+                git.maintain_projects,
+                part=bump_part,
+                start_phase=1,
+                dry_run=False,
+                progress=progress,
+                _extra_job_data={"progress_detail": progress},
+            )
+            # Wait for bump to finish
+            while True:
+                with _jobs_lock:
+                    b_status = _jobs[bump_job["job_id"]]["status"]
+                if b_status not in ("running", "queued", "pending"):
+                    break
+                time.sleep(1)
+            release_results["bump_job_id"] = bump_job["job_id"]
+
+        if auto_push:
+            progress = {
+                "current_phase": "Initializing Pushes",
+                "progress": 0,
+                "phases": {},
+            }
+            push_job = _submit_job(
+                "phased_push",
+                git.phased_push,
+                start_phase=1,
+                project_filter=None,
+                progress=progress,
+                _extra_job_data={"progress_detail": progress},
+            )
+            # Wait for push to finish
+            while True:
+                with _jobs_lock:
+                    p_status = _jobs[push_job["job_id"]]["status"]
+                if p_status not in ("running", "queued", "pending"):
+                    break
+                time.sleep(1)
+            release_results["push_job_id"] = push_job["job_id"]
+
+    return {
+        "passed": passed,
+        "release_results": release_results,
+        "status": "completed" if passed else "deferred_due_to_failures",
+    }
+
+
 def register_project_management_tools(mcp: FastMCP):
     """Register tools for the autonomous project harness."""
 
@@ -526,10 +711,6 @@ def register_project_management_tools(mcp: FastMCP):
         threads: int | None = Field(default=None, description="Parallel workers."),
         extra: str = Field(
             default="all", description="Install group (e.g. 'all') for 'install'."
-        ),
-        type: str = Field(
-            default="all",
-            description="Validation type: 'agent', 'mcp', or 'all' for 'validate'.",
         ),
         output_dir: str | None = Field(
             default=None,
@@ -543,6 +724,22 @@ def register_project_management_tools(mcp: FastMCP):
             default=None,
             description="Comma-separated list of specific repositories to target.",
         ),
+        auto_bump: bool = Field(
+            default=False,
+            description="Automatically run phased_bumpversion if validation passes.",
+        ),
+        auto_push: bool = Field(
+            default=False,
+            description="Automatically run phased_push if validation passes.",
+        ),
+        bump_part: str = Field(
+            default="minor",
+            description="The part of the version to bump (e.g. minor, patch, major) if auto_bump is used.",
+        ),
+        force_revalidate: bool = Field(
+            default=False,
+            description="If true, bypass validation cache and force re-validation of all projects.",
+        ),
         job_id: str | None = Field(
             default=None,
             description="Job ID to check status for 'validate_status' action.",
@@ -550,7 +747,7 @@ def register_project_management_tools(mcp: FastMCP):
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
         ),
-    ) -> str | ValidationReport | dict:
+    ) -> str | RepoScanResult | dict:
         """Bulk install, build, and validate Python projects.
 
         The 'validate' action submits validation as a background job and returns
@@ -577,32 +774,102 @@ def register_project_management_tools(mcp: FastMCP):
             return _submit_job("build", git.build_projects)
 
         if action == "validate":
-            with _jobs_lock:
-                for existing_id, existing_job in _jobs.items():
-                    if (
-                        existing_job["action"] == "validate"
-                        and existing_job["status"] == "running"
-                    ):
-                        return {
-                            "status": "error",
-                            "message": f"There is already another validation job in the queue with job_id '{existing_id}'.",
-                        }
+            result_payload: dict[str, Any] = {
+                "queued": {},
+                "running": {},
+                "completed": {},
+            }
 
             repo_list_for_writer = (
                 repositories.replace(" ", "").split(",") if repositories else None
             )
-            # Shared progress dict — updated by validate_projects(), read by status poller
-            progress = {"current_phase": "Initializing", "progress": 0, "phases": {}}
-            return _submit_job(
-                "validate",
-                git.validate_projects,
-                type=type,
-                output_dir=output_dir,
-                generate_report=generate_report,
-                validated_repositories=repo_list_for_writer,
-                progress=progress,
-                _extra_job_data={"progress_detail": progress},
-            )
+
+            targets = []
+            for _url, path in git.project_map.items():
+                repo_name = os.path.basename(path)
+                if repo_list_for_writer and repo_name not in repo_list_for_writer:
+                    continue
+                targets.append((repo_name, path))
+
+            with _jobs_lock:
+                for repo_name, _path in targets:
+                    existing_job_id = None
+                    existing_job_status = None
+                    existing_job_result = None
+                    for jid, j in _jobs.items():
+                        if (
+                            j["action"] == "validate"
+                            and j.get("repo_name") == repo_name
+                        ):
+                            if j["status"] in ("running", "queued", "pending"):
+                                existing_job_id = jid
+                                existing_job_status = "running"
+                                break
+                            elif j["status"] == "completed":
+                                existing_job_id = jid
+                                existing_job_status = "completed"
+                                existing_job_result = j.get("result")
+
+                    if existing_job_status == "running":
+                        result_payload["running"][repo_name] = existing_job_id
+                    elif existing_job_status == "completed" and not force_revalidate:
+                        summary: dict[str, Any] = {"passed": False, "failures": []}
+                        if existing_job_result:
+                            if hasattr(existing_job_result, "success"):
+                                summary["passed"] = existing_job_result.success
+                            if hasattr(existing_job_result, "hooks"):
+                                summary["failures"] = []
+                                for h in existing_job_result.hooks:
+                                    if not getattr(h, "passed", True):
+                                        out = getattr(h, "output", "").strip()
+                                        summary["failures"].append(
+                                            f"Hook '{h.hook_id}' failed: {out}"
+                                            if out
+                                            else f"Hook '{h.hook_id}' failed."
+                                        )
+                            if (
+                                hasattr(existing_job_result, "error")
+                                and existing_job_result.error
+                            ):
+                                summary["failures"].append(existing_job_result.error)
+
+                        result_payload["completed"][repo_name] = {
+                            "job_id": existing_job_id,
+                            "summary": summary,
+                        }
+                    else:
+                        # Queue new job
+                        pass  # We will queue it below outside this block but wait, we need to do it without deadlock.
+
+            if auto_bump or auto_push:
+                coord_id = _submit_job(
+                    "validate_and_release",
+                    _validate_and_release_coordinator,
+                    git=git,
+                    targets=targets,
+                    auto_bump=auto_bump,
+                    auto_push=auto_push,
+                    bump_part=bump_part,
+                    force_revalidate=force_revalidate,
+                )
+                result_payload["coordinator_job_id"] = coord_id["job_id"]
+            else:
+                for repo_name, path in targets:
+                    if (
+                        repo_name in result_payload["running"]
+                        or repo_name in result_payload["completed"]
+                    ):
+                        continue
+
+                    res = _submit_job(
+                        "validate",
+                        git.validate_single_project,
+                        path,
+                        _extra_job_data={"repo_name": repo_name},
+                    )
+                    result_payload["queued"][repo_name] = res["job_id"]
+
+            return result_payload
 
         if action == "validate_status":
             return _get_job_status(job_id)

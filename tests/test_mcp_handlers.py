@@ -210,6 +210,8 @@ async def test_mcp_rm_git_tool():
             ctx=None,
         )
         assert res["status"] == "submitted"
+        # Wait for thread to process
+        await asyncio.sleep(0.1)
         mock_git.clone_projects.assert_called_with(
             projects=[
                 "https://github.com/org/repo-a.git",
@@ -242,6 +244,8 @@ async def test_mcp_rm_git_tool():
             ctx=None,
         )
         assert res["status"] == "submitted"
+        # Wait for thread to process
+        await asyncio.sleep(0.1)
         mock_git.pull_projects.assert_called_with(
             project_dirs=["/tmp/repo-a", "/absolute/path/repo-b"]
         )
@@ -271,6 +275,8 @@ async def test_mcp_rm_git_tool():
             ctx=None,
         )
         assert res["status"] == "submitted"
+        # Wait for thread to process
+        await asyncio.sleep(0.1)
         mock_git.push_projects.assert_called_with(
             project_dirs=["/tmp/repo-a", "/absolute/path/repo-b"]
         )
@@ -507,7 +513,6 @@ async def test_mcp_rm_projects_tool():
             action="install",
             threads=None,
             extra="all",
-            type="all",
             output_dir=None,
             generate_report=True,
             repositories="repo-a",
@@ -529,7 +534,6 @@ async def test_mcp_rm_projects_tool():
             action="build",
             threads=None,
             extra="all",
-            type="all",
             output_dir=None,
             generate_report=True,
             repositories=None,
@@ -543,14 +547,15 @@ async def test_mcp_rm_projects_tool():
             action="validate",
             threads=None,
             extra="all",
-            type="all",
             output_dir=None,
             generate_report=True,
             repositories=None,
             job_id=None,
             ctx=None,
         )
-        assert res["status"] == "submitted"
+        assert "queued" in res
+        assert "running" in res
+        assert "completed" in res
 
         # 4. Action: validate_status
         # Submit a status request
@@ -566,7 +571,6 @@ async def test_mcp_rm_projects_tool():
             action="validate_status",
             threads=None,
             extra="all",
-            type="all",
             output_dir=None,
             generate_report=True,
             repositories=None,
@@ -580,7 +584,6 @@ async def test_mcp_rm_projects_tool():
             action="invalid_action",
             threads=None,
             extra="all",
-            type="all",
             output_dir=None,
             generate_report=True,
             repositories=None,
