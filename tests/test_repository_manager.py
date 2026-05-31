@@ -334,7 +334,7 @@ def test_bump_version_fallback_execution(mock_git_action, sample_workspace_yml):
             )
         elif "commit" in command:
             assert "--no-verify" in command
-            assert "phased push" in command
+            assert "phased bump" in command
             return GitResult(
                 status="success",
                 data="Committed fallback",

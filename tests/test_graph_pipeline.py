@@ -1,6 +1,5 @@
 import asyncio
 
-import networkx as nx
 import pytest
 from agent_utilities.knowledge_graph.pipeline.runner import PipelineRunner
 from agent_utilities.knowledge_graph.pipeline.types import (

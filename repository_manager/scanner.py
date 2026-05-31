@@ -18,7 +18,7 @@ def run_pre_commit(
     if skip_pytest:
         env["SKIP"] += ",pytest"
 
-    return subprocess.run(
+    return subprocess.run(  # nosec B603 B607
         ["pre-commit", "run", "--all-files", "--verbose"],
         cwd=repo_path,
         capture_output=True,
