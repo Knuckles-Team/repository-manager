@@ -845,6 +845,20 @@ class Git:
             "session<MagicMock*",
             "coverage.xml",
             ".coverage",
+            "*.orig",
+            "*.rej",
+            "*.patch",
+            "failed_tests.txt",
+            "pytest_errors.txt",
+            "pytest_output.txt",
+            "mypy_errors.txt",
+            "mypy_output.txt",
+            "pre-commit-out.txt",
+            "cargo_check.log",
+            "check.log",
+            "check_out.txt",
+            "test_out.txt",
+            "trace.txt",
         ]
 
         dir_patterns_to_remove = {
@@ -870,6 +884,41 @@ class Git:
                     except Exception as e:
                         logger.debug(f"Failed to clean up directory {full_path}: {e}")
                     dirnames.remove(d)
+
+            # Check for root-level transient scripts and non-standard text files (only at target_dir root)
+            if dirpath == target_dir:
+                root_patterns = [
+                    "test_*.py",
+                    "fix_*.py",
+                    "debug_*.py",
+                    "scratch_*.py",
+                    "temp_*.py",
+                ]
+                for f in filenames:
+                    file_path = Path(os.path.join(dirpath, f))
+                    # 1. Clean up root-level python transient scripts
+                    matched_script = False
+                    for pat in root_patterns:
+                        if file_path.match(pat):
+                            try:
+                                file_path.unlink()
+                                logger.info(f"Cleaned up root transient script: {file_path}")
+                            except Exception as e:
+                                logger.debug(f"Failed to clean up root script {file_path}: {e}")
+                            matched_script = True
+                            break
+                    if matched_script:
+                        continue
+                    # 2. Clean up root-level non-standard *.txt files (exclude requirements.txt and requirements-dev.txt)
+                    if file_path.suffix == ".txt" and file_path.name not in (
+                        "requirements.txt",
+                        "requirements-dev.txt",
+                    ):
+                        try:
+                            file_path.unlink()
+                            logger.info(f"Cleaned up root non-standard text file: {file_path}")
+                        except Exception as e:
+                            logger.debug(f"Failed to clean up root text file {file_path}: {e}")
 
             # Check for file-level cleanup targets
             for f in filenames:
@@ -1111,7 +1160,7 @@ class Git:
             logger.info(
                 f"Detected uncommitted changes in {target_path}. Staging and committing them first."
             )
-            add_res = self.git_action(command="git add -A", path=target_path)
+            add_res = self.git_action(command="git add -u", path=target_path)
             if add_res.status != "success":
                 logger.error(
                     f"Failed to stage changes in {target_path}: {add_res.error}"
@@ -1892,7 +1941,7 @@ class Git:
                     ),
                 )
 
-            add_res = self.git_action(command="git add -A", path=target_dir)
+            add_res = self.git_action(command="git add -u", path=target_dir)
             if add_res.status != "success":
                 logger.error(f"Failed to add changes in {target_dir}: {add_res.error}")
                 return add_res
@@ -1981,7 +2030,7 @@ class Git:
                         self.git_action(command="uv lock", path=target_dir, quiet=True)
 
                     # Stage all changes (staged and uncommitted/unstaged changes) in the workspace
-                    self.git_action(command="git add -A", path=target_dir, quiet=True)
+                    self.git_action(command="git add -u", path=target_dir, quiet=True)
                     status_check = self.git_action(
                         command="git status --porcelain",
                         path=target_dir,
