@@ -2060,7 +2060,7 @@ class Git:
             return False
 
         content = target_file.read_text()
-        pattern = rf'("{package_name}(?:\[.*?\])?>=)\d+\.\d+\.\d+'
+        pattern = rf'(["\']{package_name}(?:\[.*?\])?\s*>=?\s*)\d+\.\d+\.\d+'
         replacement = rf"\g<1>{new_version}"
 
         new_content, count = re.subn(pattern, replacement, content)
@@ -2120,6 +2120,23 @@ class Git:
                 return []
 
             config = maintenance_cfg
+
+        # Build a map of project_name -> phase_num for topological dependency check
+        project_phases: dict[str, int] = {}
+        bulk_phase_num = 5
+        if config:
+            for phase in config.get("phases", []):
+                p_num = phase.get("phase", 1)
+                if phase.get("bulk_bump"):
+                    bulk_phase_num = p_num
+                projects_in_phase = phase.get("projects", [])[:]
+                if phase.get("project"):
+                    projects_in_phase.append(phase.get("project"))
+                for p in projects_in_phase:
+                    project_phases[p] = p_num
+
+        def get_project_phase(proj_name: str) -> int:
+            return project_phases.get(proj_name, bulk_phase_num)
 
         if allow_pre_commit:
             projects_to_check: list[Any] | None = None
@@ -2303,6 +2320,15 @@ class Git:
 
                 if new_version and re.match(r"^v?\d+\.\d+\.\d+", new_version):
                     for _, path in self.project_map.items():
+                        other_project_name = os.path.basename(path)
+                        other_phase = get_project_phase(other_project_name)
+                        if other_phase < phase_num:
+                            logger.info(
+                                f"Skipping dependency update for {project_name} in {other_project_name} "
+                                f"to avoid circular updates of earlier phase (Phase {other_phase} < Phase {phase_num})"
+                            )
+                            continue
+
                         pyproject = Path(path) / "pyproject.toml"
                         if pyproject.exists():
                             is_updated = self.update_dependency(

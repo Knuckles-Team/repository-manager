@@ -439,18 +439,19 @@ maintenance:
       projects:
         - "epistemic-graph"
       wait_minutes: 12
-    - name: "Phase 3: Core Tools and UIs"
+    - name: "Phase 3: agent-utilities"
       phase: 3
+      projects:
+        - "agent-utilities"
+      wait_minutes: 12
+    - name: "Phase 4: Core Tools and UIs"
+      phase: 4
       projects:
         - "universal-skills"
         - "skill-graphs"
         - "agent-webui"
         - "agent-terminal-ui"
-      wait_minutes: 12
-    - name: "Phase 4: agent-utilities"
-      phase: 4
-      projects:
-        - "agent-utilities"
+        - "geniusbot"
       wait_minutes: 12
     - name: "Phase 5: Agents"
       phase: 5
