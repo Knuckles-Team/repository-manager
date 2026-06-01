@@ -1,11 +1,10 @@
-import pytest
 from repository_manager.models import (
-    _extract_pytest_failures,
-    _extract_error_lines,
-    _clean_and_truncate_error_lines,
-    _build_summary_md,
-    ValidationCategory,
     ProjectResult,
+    ValidationCategory,
+    _build_summary_md,
+    _clean_and_truncate_error_lines,
+    _extract_error_lines,
+    _extract_pytest_failures,
 )
 
 
