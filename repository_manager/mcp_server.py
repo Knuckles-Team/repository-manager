@@ -471,7 +471,7 @@ def register_workspace_management_tools(mcp: FastMCP):
     @mcp.tool(tags={"workspace_management"})
     async def rm_workspace(
         action: str = Field(
-            description="Action: 'list', 'list_branches', 'setup', 'template', 'save', 'maintain', 'remediate'"
+            description="Action: 'list', 'list_branches', 'setup', 'template', 'save', 'maintain', 'maintain_status'"
         ),
         yml_path: str | None = Field(
             default=None,
@@ -495,9 +495,9 @@ def register_workspace_management_tools(mcp: FastMCP):
             default=True,
             description="Use the pre-filled package template for 'template'.",
         ),
-        repositories: str | None = Field(
+        job_id: str | None = Field(
             default=None,
-            description="Comma-separated list of specific repositories to target for 'remediate'.",
+            description="Job ID to check status for 'maintain_status' action.",
         ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
@@ -567,12 +567,16 @@ def register_workspace_management_tools(mcp: FastMCP):
                 _extra_job_data={"progress_detail": progress},
             )
 
-        if action == "remediate":
-            repos = []
-            if repositories:
-                repos = [r.strip() for r in repositories.split(",")]
-            res = git.remediate_projects(repos)
-            return f"Remediation complete. \nSuccess: {res['success']}\nErrors: {res['errors']}"
+        if action == "maintain_status":
+            if not job_id:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message="job_id required for 'maintain_status'", code=1
+                    ),
+                )
+            return _get_job_status(job_id)
 
         return f"Error: Unknown action '{action}'"
 
