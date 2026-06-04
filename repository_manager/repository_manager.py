@@ -1325,6 +1325,22 @@ class Git:
         """
         target_path = self._resolve_path(path)
 
+        # Un-cloned / missing repo (e.g. a workspace.yml entry not pulled): skip
+        # gracefully — a missing dir must never abort the whole batch.
+        if not os.path.isdir(os.path.join(target_path, ".git")):
+            return GitResult(
+                status="skipped",
+                data=f"Not a git repo (missing/un-cloned): {target_path}",
+                error=None,
+                metadata=GitMetadata(
+                    command="commit_code",
+                    workspace=target_path,
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
         status_res = self.git_action(
             command="git status --porcelain", path=target_path, quiet=True
         )
@@ -1379,13 +1395,34 @@ class Git:
             f"Committing feature code in {len(project_dirs)} projects in parallel "
             f"(pre_commit={run_precommit}) using {self.threads} threads..."
         )
-        from functools import partial
 
-        fn = partial(self.commit_code_project, message, run_precommit)
+        def _safe(d: str) -> GitResult:
+            # Isolate every repo: one raising item must never abort the batch
+            # (which would cascade-skip the bump + push). Convert to an error
+            # GitResult instead.
+            try:
+                return self.commit_code_project(message, run_precommit, d)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("commit_code failed for %s: %s", d, exc)
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=f"commit_code {d}: {exc}", code=1),
+                    metadata=GitMetadata(
+                        command="commit_code",
+                        workspace=d,
+                        return_code=1,
+                        timestamp=datetime.datetime.now(
+                            datetime.timezone.utc
+                        ).isoformat()
+                        + "Z",
+                    ),
+                )
+
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.threads
         ) as executor:
-            return list(executor.map(fn, project_dirs))
+            return list(executor.map(_safe, project_dirs))
 
     def set_threads(self, threads: int) -> None:
         """

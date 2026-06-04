@@ -285,7 +285,7 @@ def test_commit_code_stages_untracked_and_gates_on_precommit(
     git = Git(path=str(workspace_dir))
     git.load_projects_from_yaml(str(yml_path))
     target = str(workspace_dir / "pipelines")
-    (workspace_dir / "pipelines").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "pipelines" / ".git").mkdir(parents=True, exist_ok=True)
     # Make the repo look like it has an untracked file + a staged change.
     (workspace_dir / "pipelines" / ".pre-commit-config.yaml").write_text("repos: []\n")
 
@@ -321,7 +321,7 @@ def test_commit_code_aborts_when_precommit_fails(
     git = Git(path=str(workspace_dir))
     git.load_projects_from_yaml(str(yml_path))
     target = str(workspace_dir / "pipelines")
-    (workspace_dir / "pipelines").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "pipelines" / ".git").mkdir(parents=True, exist_ok=True)
     (workspace_dir / "pipelines" / ".pre-commit-config.yaml").write_text("repos: []\n")
 
     committed: list[str] = []
