@@ -350,3 +350,39 @@ def test_bump_version_fallback_execution(mock_git_action, sample_workspace_yml):
     assert res.status == "success"
     assert "current_version=unknown" in res.data
     assert "new_version=unknown" in res.data
+
+
+class TestUpdateDependencyPropagation:
+    """update_dependency must propagate across all pin shapes + file types.
+
+    Regression: previously only quoted ``>=`` pyproject entries were matched,
+    silently leaving ``==`` pins and ALL requirements.txt refs stale.
+    (CONCEPT:RM-BUMP cross-dependency propagation)
+    """
+
+    def _run(self, tmp_path, content):
+        f = tmp_path / "deps.txt"
+        f.write_text(content)
+        git = Git(path=str(tmp_path))
+        updated = git.update_dependency(str(f), "agent-utilities", "0.39.0")
+        return updated, f.read_text()
+
+    def test_pyproject_gte(self, tmp_path):
+        upd, out = self._run(tmp_path, 'deps = ["agent-utilities>=0.38.0"]')
+        assert upd and 'agent-utilities>=0.39.0' in out
+
+    def test_requirements_exact_pin(self, tmp_path):
+        upd, out = self._run(tmp_path, "agent-utilities==0.16.0\n")
+        assert upd and "agent-utilities==0.39.0" in out  # == preserved, not stale
+
+    def test_extras_and_compatible(self, tmp_path):
+        upd, out = self._run(tmp_path, "agent-utilities[all]~=0.30.0\n")
+        assert upd and "agent-utilities[all]~=0.39.0" in out
+
+    def test_transitive_comment_untouched(self, tmp_path):
+        upd, out = self._run(tmp_path, "    # via agent-utilities\n")
+        assert upd is False and out.strip() == "# via agent-utilities"
+
+    def test_unpinned_untouched(self, tmp_path):
+        upd, out = self._run(tmp_path, "agent-utilities\n")
+        assert upd is False

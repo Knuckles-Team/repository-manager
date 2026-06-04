@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.28.0"
+__version__ = "1.29.0"
 
 import concurrent.futures
 import multiprocessing
@@ -2033,13 +2033,30 @@ class Git:
     def update_dependency(
         self, file_path: str, package_name: str, new_version: str, dry_run: bool = False
     ) -> bool:
-        """Updates the version of a package in a pyproject.toml's dependencies."""
+        """Update a package's pinned version in a deps file (pyproject OR requirements).
+
+        Handles every common pin shape so cross-dependency bumps propagate fully
+        (previously only ``>=`` in quoted pyproject entries was matched, which
+        silently left ``==`` pins and ALL ``requirements.txt`` references stale):
+
+        * quoted (pyproject ``"pkg>=1.2.3"``) AND unquoted (requirements
+          ``pkg==1.2.3``) — the optional surrounding quote is preserved.
+        * optional extras: ``pkg[all]==1.2.3``.
+        * operators: ``==`` ``>=`` ``<=`` ``~=`` ``!=`` ``>`` ``<`` (the captured
+          operator is preserved — an ``==`` pin stays ``==`` at the new version).
+
+        Skips transitive ``# via pkg`` comment lines (no operator+version → no match).
+        (CONCEPT:RM-BUMP cross-dependency propagation)
+        """
         target_file = Path(self._resolve_path(file_path))
         if not target_file.exists() or not target_file.is_file():
             return False
 
         content = target_file.read_text()
-        pattern = rf'(["\']{package_name}(?:\[.*?\])?\s*>=?\s*)\d+\.\d+\.\d+'
+        pattern = (
+            rf'(["\']?{re.escape(package_name)}(?:\[[^\]]*\])?\s*'
+            r"(?:==|>=|<=|~=|!=|>|<)\s*)\d+\.\d+\.\d+"
+        )
         replacement = rf"\g<1>{new_version}"
 
         new_content, count = re.subn(pattern, replacement, content)
@@ -2047,7 +2064,8 @@ class Git:
             if not dry_run:
                 target_file.write_text(new_content)
             logger.info(
-                f"{'[DRY RUN] Would update' if dry_run else 'Updated'} {package_name} to >={new_version} in {target_file}"
+                f"{'[DRY RUN] Would update' if dry_run else 'Updated'} "
+                f"{package_name} -> {new_version} ({count}x) in {target_file}"
             )
             return True
         return False
@@ -2308,16 +2326,25 @@ class Git:
                             )
                             continue
 
-                        pyproject = Path(path) / "pyproject.toml"
-                        if pyproject.exists():
+                        # Propagate the bump to EVERY dependency-declaring file —
+                        # not just pyproject.toml. requirements.txt commonly pins
+                        # the same package (often ==) and would otherwise go stale.
+                        # (CONCEPT:RM-BUMP cross-dependency propagation)
+                        for dep_file_name in ("pyproject.toml", "requirements.txt"):
+                            dep_file = Path(path) / dep_file_name
+                            if not dep_file.exists():
+                                continue
                             is_updated = self.update_dependency(
-                                str(pyproject), project_name, new_version, dry_run
+                                str(dep_file), project_name, new_version, dry_run
                             )
                             if is_updated:
                                 all_results.append(
                                     GitResult(
                                         status="success",
-                                        data=f"Updated {project_name} to {new_version} in pyproject.toml",
+                                        data=(
+                                            f"Updated {project_name} to "
+                                            f"{new_version} in {dep_file_name}"
+                                        ),
                                         metadata=GitMetadata(
                                             command="update_dependency",
                                             workspace=path,

@@ -42,7 +42,7 @@ from repository_manager.models import (
 from repository_manager.repository_manager import Git
 from repository_manager.scan_models import RepoScanResult
 
-__version__ = "1.28.0"
+__version__ = "1.29.0"
 
 DEFAULT_WORKSPACE = os.environ.get(
     "REPOSITORY_MANAGER_WORKSPACE",
@@ -63,13 +63,51 @@ import psutil
 
 
 def _get_max_workers():
+    """Concurrency for the validation executor — bounded to a share of the host.
+
+    Caps parallelism to **both** a CPU fraction and a RAM fraction (whichever is
+    smaller) so a big workspace never oversubscribes the box (each validation
+    runs pre-commit + pytest, which is CPU- and RAM-heavy). Defaults to **20%**
+    of CPU and 20% of RAM. All env-tunable:
+
+    * ``RM_MAX_WORKERS``     — explicit override (skips the computation).
+    * ``RM_CPU_FRACTION``    — fraction of logical cores (default 0.20).
+    * ``RM_RAM_FRACTION``    — fraction of total RAM to budget (default 0.20).
+    * ``RM_WORKER_MEM_GB``   — assumed RAM per validation worker (default 1.5).
+    (CONCEPT:RM-TOPOLOGY scale + host-throttle)
+    """
+    import os as _os
+
+    override = _os.environ.get("RM_MAX_WORKERS")
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            pass
+
+    def _frac(name: str, default: float) -> float:
+        try:
+            return float(_os.environ.get(name, default))
+        except ValueError:
+            return default
+
     try:
-        cpu_count = psutil.cpu_count(logical=True)
-        if not cpu_count:
-            return 4
-        return max(1, int(cpu_count * 0.2))
+        cpu_count = psutil.cpu_count(logical=True) or 4
+        cpu_workers = max(1, int(cpu_count * _frac("RM_CPU_FRACTION", 0.20)))
     except Exception:
-        return 4
+        cpu_workers = 4
+
+    try:
+        total_gb = psutil.virtual_memory().total / (1024**3)
+        per_worker = max(0.25, _frac("RM_WORKER_MEM_GB", 1.5))
+        ram_workers = max(
+            1, int((total_gb * _frac("RM_RAM_FRACTION", 0.20)) / per_worker)
+        )
+    except Exception:
+        ram_workers = cpu_workers
+
+    # Honor the tighter of the two caps so we stay under ~20% CPU AND ~20% RAM.
+    return max(1, min(cpu_workers, ram_workers))
 
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=_get_max_workers())
@@ -136,69 +174,136 @@ def _submit_job(
     }
 
 
-def _get_job_status(job_id: str | None = None) -> dict[str, Any]:
-    """Get the status of a specific job, or list all jobs."""
+def _job_failures(j: dict[str, Any]) -> list[str]:
+    """Extract the human-readable failure messages from a completed/failed job."""
+    out: list[str] = []
+    res = j.get("result")
+    if res is not None and hasattr(res, "hooks"):
+        for h in res.hooks:
+            if not getattr(h, "passed", True):
+                ho = getattr(h, "output", "").strip()
+                out.append(
+                    f"Hook '{h.hook_id}' failed: {ho}"
+                    if ho
+                    else f"Hook '{h.hook_id}' failed."
+                )
+    if res is not None and getattr(res, "error", None):
+        out.append(res.error)
+    if j.get("error"):
+        out.append(j["error"])
+    return out
+
+
+def _job_passed(j: dict[str, Any]) -> bool:
+    res = j.get("result")
+    return bool(res is not None and getattr(res, "success", False))
+
+
+def _last_failed_repos() -> list[str]:
+    """Repos whose most-recent validate job did NOT pass (for failed-only reruns).
+
+    Uses the latest job per repo so a repo that was fixed and re-validated green
+    drops out of the set. Powers the remediation loop's "re-validate only the
+    failures" behavior. (CONCEPT:RM-TOPOLOGY)
+    """
+    latest: dict[str, dict[str, Any]] = {}
+    with _jobs_lock:
+        for j in _jobs.values():
+            if j.get("action") != "validate":
+                continue
+            repo = j.get("repo_name")
+            if not repo:
+                continue
+            prev = latest.get(repo)
+            if prev is None or (j.get("started_at") or "") >= (
+                prev.get("started_at") or ""
+            ):
+                latest[repo] = j
+    return [
+        repo
+        for repo, j in latest.items()
+        if j["status"] == "failed"
+        or (j["status"] == "completed" and not _job_passed(j))
+    ]
+
+
+def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str, Any]:
+    """Get the status of a specific job, or a roll-up of all jobs.
+
+    ``summary=True`` (default) returns a COMPACT roll-up — counts, the failed
+    set with their failure detail, and the running names — but OMITS the full
+    per-job record dict. This keeps the response small enough to return inline
+    even at thousands of repositories (the full dump exceeds the MCP token limit
+    and forces a file spill). ``summary=False`` adds the full ``jobs`` map.
+    """
     if not job_id:
         with _jobs_lock:
             if not _jobs:
                 return {"status": "empty", "message": "No background jobs found."}
 
-            jobs_output = {}
-            failed_projects = []
-            running_projects = []
+            counts = {"completed": 0, "running": 0, "failed": 0, "passed": 0}
+            failed_projects: list[str] = []
+            running_projects: list[str] = []
+            failed_details: dict[str, Any] = {}
+            jobs_output: dict[str, Any] = {}
 
             for jid, j in _jobs.items():
-                job_data = {
-                    "status": j["status"],
-                    "action": j["action"],
-                    "started_at": j["started_at"],
-                    "completed_at": j["completed_at"],
-                }
-                repo_name = None
-                if "repo_name" in j:
-                    repo_name = j["repo_name"]
-                    job_data["repo_name"] = repo_name
-
-                if (
-                    j["status"] == "running"
-                    or j["status"] == "queued"
-                    or j["status"] == "pending"
-                ):
+                st = j["status"]
+                repo_name = j.get("repo_name")
+                if st in ("running", "queued", "pending"):
+                    counts["running"] += 1
                     if repo_name:
                         running_projects.append(repo_name)
-
-                if j["status"] == "completed" and j.get("result"):
-                    res = j["result"]
-                    if hasattr(res, "success"):
-                        summary = {"passed": res.success, "failures": []}
-                        if hasattr(res, "hooks"):
-                            for h in res.hooks:
-                                if not getattr(h, "passed", True):
-                                    out = getattr(h, "output", "").strip()
-                                    summary["failures"].append(
-                                        f"Hook '{h.hook_id}' failed: {out}"
-                                        if out
-                                        else f"Hook '{h.hook_id}' failed."
-                                    )
-                        if hasattr(res, "error") and res.error:
-                            summary["failures"].append(res.error)
-                        job_data["summary"] = summary
-                        if not res.success and repo_name:
+                elif st == "completed":
+                    counts["completed"] += 1
+                    if _job_passed(j):
+                        counts["passed"] += 1
+                    else:
+                        counts["failed"] += 1
+                        if repo_name:
                             failed_projects.append(repo_name)
-
-                if j["status"] == "failed" and j.get("error"):
-                    job_data["error"] = j["error"]
+                            failed_details[repo_name] = {
+                                "job_id": jid,
+                                "failures": _job_failures(j),
+                            }
+                elif st == "failed":
+                    counts["failed"] += 1
                     if repo_name:
                         failed_projects.append(repo_name)
+                        failed_details[repo_name] = {
+                            "job_id": jid,
+                            "failures": _job_failures(j),
+                        }
 
-                jobs_output[jid] = job_data
+                if not summary:
+                    jd = {
+                        "status": st,
+                        "action": j["action"],
+                        "started_at": j["started_at"],
+                        "completed_at": j["completed_at"],
+                    }
+                    if repo_name:
+                        jd["repo_name"] = repo_name
+                    if st == "completed" and j.get("result") is not None:
+                        jd["summary"] = {
+                            "passed": _job_passed(j),
+                            "failures": _job_failures(j),
+                        }
+                    elif st == "failed" and j.get("error"):
+                        jd["error"] = j["error"]
+                    jobs_output[jid] = jd
 
-            return {
-                "jobs": jobs_output,
+            counts["total"] = len(_jobs)
+            resp: dict[str, Any] = {
+                "summary": counts,
                 "failed_projects": failed_projects,
                 "failed_projects_csv": ",".join(failed_projects),
+                "failed_details": failed_details,
                 "running_projects": running_projects,
             }
+            if not summary:
+                resp["jobs"] = jobs_output
+            return resp
 
     with _jobs_lock:
         job = _jobs.get(job_id)
@@ -669,6 +774,23 @@ def register_project_management_tools(mcp: FastMCP):
             default=False,
             description="If true, bypass validation cache and force re-validation of all projects.",
         ),
+        failed_only: bool = Field(
+            default=False,
+            description=(
+                "For 'validate': target ONLY repositories whose most-recent "
+                "validation failed (the remediation loop). Ignored if "
+                "'repositories' is given. Forces re-validation of that set."
+            ),
+        ),
+        summary: bool = Field(
+            default=True,
+            description=(
+                "For 'validate'/'validate_status': return a COMPACT roll-up "
+                "(counts + failed set + running names) instead of the full "
+                "per-job dump. Keeps responses inline-returnable at thousands of "
+                "repos. Set False for the full per-job detail."
+            ),
+        ),
         job_id: str | None = Field(
             default=None,
             description="Job ID to check status for 'validate_status' action.",
@@ -684,6 +806,31 @@ def register_project_management_tools(mcp: FastMCP):
         progress and retrieve results once complete.
         """
         git = get_git_instance(threads=threads)
+
+        # Coerce Field defaults to real bools: when this tool is invoked directly
+        # (bypassing FastMCP's default resolution, e.g. in unit tests), unset
+        # bool params arrive as truthy ``FieldInfo`` objects. (CONCEPT:RM-TOPOLOGY)
+        if not isinstance(failed_only, bool):
+            failed_only = False
+        if not isinstance(summary, bool):
+            summary = True
+        if not isinstance(force_revalidate, bool):
+            force_revalidate = False
+
+        # Remediation loop: ``failed_only`` re-validates ONLY the repos whose
+        # most-recent validation failed (and forces past the cache). The final
+        # ecosystem-wide sweep is a normal full validate (no failed_only).
+        # (CONCEPT:RM-TOPOLOGY)
+        if action == "validate" and failed_only and not repositories:
+            _failed = _last_failed_repos()
+            if not _failed:
+                return {
+                    "status": "clean",
+                    "message": "No previously-failed projects to re-validate.",
+                    "queued_count": 0,
+                }
+            repositories = ",".join(_failed)
+            force_revalidate = True
 
         if repositories:
             repo_list = repositories.replace(" ", "").split(",")
@@ -742,16 +889,19 @@ def register_project_management_tools(mcp: FastMCP):
                     if existing_job_status == "running":
                         result_payload["running"][repo_name] = existing_job_id
                     elif existing_job_status == "completed" and not force_revalidate:
-                        summary: dict[str, Any] = {"passed": False, "failures": []}
+                        cache_summary: dict[str, Any] = {
+                            "passed": False,
+                            "failures": [],
+                        }
                         if existing_job_result:
                             if hasattr(existing_job_result, "success"):
-                                summary["passed"] = existing_job_result.success
+                                cache_summary["passed"] = existing_job_result.success
                             if hasattr(existing_job_result, "hooks"):
-                                summary["failures"] = []
+                                cache_summary["failures"] = []
                                 for h in existing_job_result.hooks:
                                     if not getattr(h, "passed", True):
                                         out = getattr(h, "output", "").strip()
-                                        summary["failures"].append(
+                                        cache_summary["failures"].append(
                                             f"Hook '{h.hook_id}' failed: {out}"
                                             if out
                                             else f"Hook '{h.hook_id}' failed."
@@ -760,11 +910,13 @@ def register_project_management_tools(mcp: FastMCP):
                                 hasattr(existing_job_result, "error")
                                 and existing_job_result.error
                             ):
-                                summary["failures"].append(existing_job_result.error)
+                                cache_summary["failures"].append(
+                                    existing_job_result.error
+                                )
 
                         result_payload["completed"][repo_name] = {
                             "job_id": existing_job_id,
-                            "summary": summary,
+                            "summary": cache_summary,
                         }
                     else:
                         # Queue new job
@@ -838,10 +990,30 @@ def register_project_management_tools(mcp: FastMCP):
                 )
                 result_payload["push_job_id"] = res_push["job_id"]
 
+            # Terse submission echo (default): at scale the full id↔name maps are
+            # huge. Return counts + the small running/completed lists + release
+            # job ids; full maps only when summary=False. (CONCEPT:RM-TOPOLOGY)
+            if summary:
+                terse: dict[str, Any] = {
+                    "status": "submitted",
+                    "queued_count": len(result_payload["queued"]),
+                    "running_count": len(result_payload["running"]),
+                    "completed_count": len(result_payload["completed"]),
+                    "queued_projects": list(result_payload["queued"].keys()),
+                }
+                for k in ("bump_job_id", "push_job_id"):
+                    if k in result_payload:
+                        terse[k] = result_payload[k]
+                terse["message"] = (
+                    "Validation submitted. Poll action='validate_status' "
+                    "(summary mode) for the compact roll-up."
+                )
+                return terse
+
             return result_payload
 
         if action == "validate_status":
-            return _get_job_status(job_id)
+            return _get_job_status(job_id, summary=summary)
 
         return f"Error: Unknown action '{action}'"
 
