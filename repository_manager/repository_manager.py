@@ -269,6 +269,21 @@ class Git:
 
         return os.path.abspath(os.path.join(self.path, path))
 
+    def _tag_on_remote(self, tag: str, path: str | None = None) -> bool:
+        """True if ``tag`` exists on the ``origin`` remote (so it's published).
+
+        Used to guard force-deletion of an orphan local tag: we only ever delete
+        a tag that is local-only (never one already pushed). Network failure is
+        treated as "on remote" (conservative — don't delete).
+        """
+        target_dir = self._resolve_path(path)
+        res = self.git_action(
+            command=f"git ls-remote --tags origin {tag}", path=target_dir, quiet=True
+        )
+        if res.status != "success":
+            return True  # can't verify -> assume present, do not delete
+        return f"refs/tags/{tag}" in (res.data or "")
+
     def install_projects(
         self, extra: str = "all", threads: int | None = None, report: bool = True
     ) -> list[GitResult]:
@@ -1882,6 +1897,7 @@ class Git:
         path: str | None = None,
         dry_run: bool = False,
         verbose: bool = False,
+        force: bool = False,
     ) -> GitResult:
         """
         Bump the version of the project using bump2version.
@@ -1892,6 +1908,10 @@ class Git:
             path (str): The path to the project directory.
             dry_run (bool): Whether to perform a dry run.
             verbose (bool): Whether to use verbose output (for dry-run visibility).
+            force (bool): If the target version's tag already exists locally (an
+                orphan tag from a prior partial bump that left the version file
+                un-updated), delete that local tag and re-bump instead of
+                silently skipping. The orphan tag must NOT be on the remote.
 
         Returns:
             GitResult: Result of the operation.
@@ -2044,22 +2064,44 @@ class Git:
                         tag_check.status == "success"
                         and f"v{new_version}" in tag_check.data
                     ):
-                        logger.warning(
-                            f"Tag v{new_version} already exists in {target_dir}. Skipping bump."
-                        )
-                        return GitResult(
-                            status="success",
-                            data=f"current_version={new_version}\nnew_version={new_version}\n",
-                            metadata=GitMetadata(
-                                command="bump_version",
-                                workspace=target_dir,
-                                return_code=0,
-                                timestamp=datetime.datetime.now(
-                                    datetime.timezone.utc
-                                ).isoformat()
-                                + "Z",
-                            ),
-                        )
+                        if force and not self._tag_on_remote(
+                            f"v{new_version}", target_dir
+                        ):
+                            # Orphan local tag from a prior partial bump (version
+                            # file never updated). Delete it locally and re-bump so
+                            # the version actually advances. Never touch a remote
+                            # tag this way.
+                            logger.warning(
+                                "Tag v%s exists locally in %s but force=True and it "
+                                "is not on the remote — deleting orphan tag and "
+                                "re-bumping.",
+                                new_version,
+                                target_dir,
+                            )
+                            self.git_action(
+                                command=f"git tag -d v{new_version}",
+                                path=target_dir,
+                                quiet=True,
+                            )
+                        else:
+                            logger.warning(
+                                f"Tag v{new_version} already exists in {target_dir}. "
+                                "Skipping bump."
+                                + ("" if force else " (use force=True to override)")
+                            )
+                            return GitResult(
+                                status="skipped",
+                                data=f"current_version={new_version}\nnew_version={new_version}\ntag_exists=true\n",
+                                metadata=GitMetadata(
+                                    command="bump_version",
+                                    workspace=target_dir,
+                                    return_code=0,
+                                    timestamp=datetime.datetime.now(
+                                        datetime.timezone.utc
+                                    ).isoformat()
+                                    + "Z",
+                                ),
+                            )
             command += " --list"
 
         try:
@@ -2317,6 +2359,7 @@ class Git:
                     allow_dirty=True,
                     path=project_dir,
                     dry_run=dry_run,
+                    force=force,
                     verbose=dry_run or not dry_run,
                 )
                 all_results.append(result)
@@ -2343,6 +2386,16 @@ class Git:
         phase_list = []
         total_projects = 0
 
+        # ``project_filter`` may be a single name or a comma-separated set, letting
+        # a caller re-bump exactly N specific repos (e.g. repos a prior partial
+        # run silently skipped) without re-bumping the whole ecosystem. When a
+        # filter set is active, the bulk phase is restricted to its members.
+        filter_set: set[str] | None = (
+            {p.strip() for p in project_filter.split(",") if p.strip()}
+            if project_filter
+            else None
+        )
+
         for phase in config.get("phases", []):
             phase_num = phase.get("phase")
             if phase_num < start_phase:
@@ -2352,15 +2405,17 @@ class Git:
             if phase.get("project"):
                 projects.append(phase.get("project"))
 
-            if project_filter:
-                projects = [p for p in projects if p == project_filter]
+            if filter_set is not None:
+                projects = [p for p in projects if p in filter_set]
 
-            # Also apply project filter to bulk operations if applicable
-            if not projects and phase.get("bulk_bump"):
-                if project_filter not in assigned_projects:
-                    projects = [project_filter]
-
-            if phase.get("bulk_bump") and not project_filter:
+            # When a filter set is active, a bulk phase contributes exactly the
+            # not-yet-assigned filter members (so filtered agents/services land
+            # in the bulk phase). Without a filter, bulk sweeps everything.
+            if phase.get("bulk_bump") and filter_set is not None:
+                for name in filter_set:
+                    if name not in assigned_projects and name not in projects:
+                        projects.append(name)
+            elif phase.get("bulk_bump") and filter_set is None:
                 bulk_projects = []
                 for url, _ in self.project_map.items():
                     name = url.split("/")[-1].replace(".git", "")
