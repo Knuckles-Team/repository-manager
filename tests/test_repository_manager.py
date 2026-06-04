@@ -275,6 +275,75 @@ def test_git_commit_operations(mock_git_action, sample_workspace_yml):
     assert results[0].status == "success"
 
 
+@patch("repository_manager.repository_manager.Git.pre_commit")
+@patch("repository_manager.repository_manager.Git.git_action")
+def test_commit_code_stages_untracked_and_gates_on_precommit(
+    mock_git_action, mock_pre_commit, sample_workspace_yml
+):
+    """commit_code stages ALL changes (incl. untracked), runs pre-commit, commits."""
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    target = str(workspace_dir / "pipelines")
+    (workspace_dir / "pipelines").mkdir(parents=True, exist_ok=True)
+    # Make the repo look like it has an untracked file + a staged change.
+    (workspace_dir / "pipelines" / ".pre-commit-config.yaml").write_text("repos: []\n")
+
+    calls: list[str] = []
+
+    def mock_call(command, path=None, **kwargs):
+        calls.append(command)
+        # After `git add -A`, the previously-untracked file is staged ("A ").
+        data = "A  new_feature.py\n" if "status --porcelain" in command else "ok"
+        return GitResult(
+            status="success", data=data, metadata=get_mock_metadata(command)
+        )
+
+    mock_git_action.side_effect = mock_call
+    mock_pre_commit.return_value = GitResult(
+        status="success", data="hooks passed", metadata=get_mock_metadata("pre_commit")
+    )
+
+    res = git.commit_code_project("feat: x", run_precommit=True, path=target)
+    assert res.status == "success"
+    mock_pre_commit.assert_called_once()  # hooks gated the commit
+    assert any(c == "git add -A" for c in calls)  # untracked files staged
+    assert any("commit" in c for c in calls)
+
+
+@patch("repository_manager.repository_manager.Git.pre_commit")
+@patch("repository_manager.repository_manager.Git.git_action")
+def test_commit_code_aborts_when_precommit_fails(
+    mock_git_action, mock_pre_commit, sample_workspace_yml
+):
+    """A real pre-commit failure surfaces and nothing is committed."""
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    target = str(workspace_dir / "pipelines")
+    (workspace_dir / "pipelines").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "pipelines" / ".pre-commit-config.yaml").write_text("repos: []\n")
+
+    committed: list[str] = []
+
+    def mock_call(command, path=None, **kwargs):
+        if "commit" in command and "status" not in command:
+            committed.append(command)
+        data = "M  f.py\n" if "status --porcelain" in command else "ok"
+        return GitResult(
+            status="success", data=data, metadata=get_mock_metadata(command)
+        )
+
+    mock_git_action.side_effect = mock_call
+    mock_pre_commit.return_value = GitResult(
+        status="error", data="hook failed", metadata=get_mock_metadata("pre_commit")
+    )
+
+    res = git.commit_code_project("feat: x", run_precommit=True, path=target)
+    assert res.status == "error"
+    assert not committed  # never committed on hook failure
+
+
 @patch("repository_manager.repository_manager.Git.git_action")
 def test_bump_version_fallback_no_changes(mock_git_action, sample_workspace_yml):
     yml_path, workspace_dir = sample_workspace_yml

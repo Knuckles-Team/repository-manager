@@ -1090,7 +1090,7 @@ class Git:
             logger.info(
                 f"Detected uncommitted changes in {target_path}. Staging and committing them first."
             )
-            add_res = self.git_action(command="git add -u", path=target_path)
+            add_res = self.git_action(command="git add -A", path=target_path)
             if add_res.status != "success":
                 logger.error(
                     f"Failed to stage changes in {target_path}: {add_res.error}"
@@ -1308,6 +1308,84 @@ class Git:
         return self.git_action(
             command=f"git commit --no-verify -m {safe_msg}", path=target_path
         )
+
+    def commit_code_project(
+        self, message: str, run_precommit: bool = True, path: str | None = None
+    ) -> GitResult:
+        """Stage ALL changes (git add -A), optionally gate on pre-commit, then commit.
+
+        This is the per-repo "commit our feature code" step the release pipeline
+        runs BEFORE bumping versions. Unlike :meth:`commit_project` it stages
+        untracked files too (``git add -A``) and runs the project's pre-commit
+        hooks (auto-formatters land in the same commit), so feature code is never
+        left behind for the push safety net to sweep up with ``--no-verify``.
+
+        If pre-commit fails for real (not just auto-format), the failure is
+        surfaced and nothing is committed.
+        """
+        target_path = self._resolve_path(path)
+
+        status_res = self.git_action(
+            command="git status --porcelain", path=target_path, quiet=True
+        )
+        if status_res.status == "success" and not status_res.data.strip():
+            return GitResult(
+                status="skipped",
+                data="No changes to commit.",
+                error=None,
+                metadata=GitMetadata(
+                    command="commit_code",
+                    workspace=target_path,
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
+            )
+
+        if run_precommit and os.path.exists(
+            os.path.join(target_path, ".pre-commit-config.yaml")
+        ):
+            pc_res = self.pre_commit(run=True, autoupdate=False, path=target_path)
+            if pc_res.status == "error":
+                return pc_res
+
+        # Stage again (pre-commit may have reformatted files) and commit.
+        self.git_action(command="git add -A", path=target_path)
+        return self.commit_project(message, path=target_path)
+
+    def commit_code_projects(
+        self,
+        message: str,
+        run_precommit: bool = True,
+        project_dirs: list[str] | None = None,
+    ) -> list[GitResult]:
+        """Concurrently stage + pre-commit + commit feature code across projects.
+
+        The "add all our code, pre-commit, then commit" release-prep step,
+        throttled by ``self.threads`` (the 20% CPU/RAM cap). Scales to thousands
+        of repositories.
+        """
+        if project_dirs is None:
+            if self.project_map:
+                project_dirs = list(self.project_map.values())
+            else:
+                logger.warning("No projects found in project_map to commit_code.")
+                return []
+        if not project_dirs:
+            logger.warning("No projects found to commit_code.")
+            return []
+
+        logger.info(
+            f"Committing feature code in {len(project_dirs)} projects in parallel "
+            f"(pre_commit={run_precommit}) using {self.threads} threads..."
+        )
+        from functools import partial
+
+        fn = partial(self.commit_code_project, message, run_precommit)
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            return list(executor.map(fn, project_dirs))
 
     def set_threads(self, threads: int) -> None:
         """

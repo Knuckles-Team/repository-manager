@@ -435,7 +435,7 @@ def register_git_operations_tools(mcp: FastMCP):
     )
     async def rm_git(
         action: str = Field(
-            description="Action: 'raw', 'clone', 'pull', 'push', 'phased_push', 'add', 'commit'"
+            description="Action: 'raw', 'clone', 'pull', 'push', 'phased_push', 'add', 'commit', 'pre_commit', 'commit_code'"
         ),
         command: str | None = Field(
             default=None,
@@ -458,7 +458,11 @@ def register_git_operations_tools(mcp: FastMCP):
         ),
         message: str | None = Field(
             default=None,
-            description="Commit message for 'commit' action.",
+            description="Commit message for 'commit' / 'commit_code' actions.",
+        ),
+        run_precommit: bool = Field(
+            default=True,
+            description="For 'commit_code': run pre-commit hooks before committing. Default True.",
         ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
@@ -550,6 +554,47 @@ def register_git_operations_tools(mcp: FastMCP):
                         commit_dirs.append(os.path.abspath(os.path.join(git.path, p)))
             return _submit_job(
                 "commit", git.commit_projects, message=message, project_dirs=commit_dirs
+            )
+
+        def _resolve_dirs(spec: str | None) -> list[str] | None:
+            if not spec:
+                return None
+            out: list[str] = []
+            for p in spec.split(","):
+                p = p.strip()
+                if not p:
+                    continue
+                out.append(
+                    p
+                    if os.path.isabs(p)
+                    else os.path.abspath(os.path.join(git.path, p))
+                )
+            return out
+
+        if action == "pre_commit":
+            if not isinstance(run_precommit, bool):
+                run_precommit = True
+            pc_dirs = _resolve_dirs(projects)
+            return _submit_job("pre_commit", git.pre_commit_projects, projects=pc_dirs)
+
+        if action == "commit_code":
+            if not message:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message="message is required for 'commit_code' action", code=1
+                    ),
+                )
+            if not isinstance(run_precommit, bool):
+                run_precommit = True
+            cc_dirs = _resolve_dirs(projects)
+            return _submit_job(
+                "commit_code",
+                git.commit_code_projects,
+                message=message,
+                run_precommit=run_precommit,
+                project_dirs=cc_dirs,
             )
 
         if action == "phased_push":
@@ -770,6 +815,20 @@ def register_project_management_tools(mcp: FastMCP):
             default="minor",
             description="The part of the version to bump (e.g. minor, patch, major) if auto_bump is used.",
         ),
+        commit_code: bool = Field(
+            default=False,
+            description=(
+                "For 'validate': after validation passes and BEFORE the version "
+                "bump, concurrently stage (git add -A), run pre-commit, and commit "
+                "feature code across ALL targeted repos. Ensures untracked/new "
+                "files are committed (not left for the push safety net). The bump "
+                "then waits on this step. Use with commit_message."
+            ),
+        ),
+        commit_message: str | None = Field(
+            default=None,
+            description="Commit message for the commit_code step. Required when commit_code=True.",
+        ),
         force_revalidate: bool = Field(
             default=False,
             description="If true, bypass validation cache and force re-validation of all projects.",
@@ -816,6 +875,8 @@ def register_project_management_tools(mcp: FastMCP):
             summary = True
         if not isinstance(force_revalidate, bool):
             force_revalidate = False
+        if not isinstance(commit_code, bool):
+            commit_code = False
 
         # Remediation loop: ``failed_only`` re-validates ONLY the repos whose
         # most-recent validation failed (and forces past the cache). The final
@@ -948,6 +1009,26 @@ def register_project_management_tools(mcp: FastMCP):
                         result_payload["completed"][r_name]["job_id"]
                     )
 
+            # Commit feature code (stage -A → pre-commit → commit) after validation
+            # passes and before the bump, so untracked/new files are committed and
+            # the bump operates on a clean tree. (CONCEPT:RM-TOPOLOGY)
+            bump_dependencies = validation_job_ids
+            if commit_code:
+                commit_dirs = [path for _name, path in targets]
+                res_commit = _submit_job(
+                    "commit_code",
+                    _wait_for_jobs_and_run,
+                    validation_job_ids,
+                    True,
+                    git.commit_code_projects,
+                    message=commit_message
+                    or "chore: commit validated feature code (pre-release)",
+                    run_precommit=True,
+                    project_dirs=commit_dirs,
+                )
+                result_payload["commit_job_id"] = res_commit["job_id"]
+                bump_dependencies = [res_commit["job_id"]]
+
             if auto_bump:
                 progress = {
                     "current_phase": "Waiting for validation",
@@ -957,7 +1038,7 @@ def register_project_management_tools(mcp: FastMCP):
                 res_bump = _submit_job(
                     "maintain",
                     _wait_for_jobs_and_run,
-                    validation_job_ids,
+                    bump_dependencies,
                     True,
                     git.maintain_projects,
                     part=bump_part,
@@ -969,7 +1050,7 @@ def register_project_management_tools(mcp: FastMCP):
                 result_payload["bump_job_id"] = res_bump["job_id"]
                 push_dependencies = [res_bump["job_id"]]
             else:
-                push_dependencies = validation_job_ids
+                push_dependencies = bump_dependencies
 
             if auto_push:
                 progress = {
@@ -1001,7 +1082,7 @@ def register_project_management_tools(mcp: FastMCP):
                     "completed_count": len(result_payload["completed"]),
                     "queued_projects": list(result_payload["queued"].keys()),
                 }
-                for k in ("bump_job_id", "push_job_id"):
+                for k in ("commit_job_id", "bump_job_id", "push_job_id"):
                     if k in result_payload:
                         terse[k] = result_payload[k]
                 terse["message"] = (
