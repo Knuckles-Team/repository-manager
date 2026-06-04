@@ -677,6 +677,22 @@ def register_workspace_management_tools(mcp: FastMCP):
         dry_run: bool = Field(
             default=False, description="Perform a dry run for 'maintain'."
         ),
+        projects: str | None = Field(
+            default=None,
+            description=(
+                "For 'maintain': comma-separated repo names to bump ONLY those "
+                "(e.g. re-bump repos a prior run skipped) instead of the whole "
+                "topological set. Restricts the bulk phase to these names."
+            ),
+        ),
+        force: bool = Field(
+            default=False,
+            description=(
+                "For 'maintain': bump even when no code changes are detected, and "
+                "override an orphan local 'next-version' tag (delete it and "
+                "re-bump) — only if that tag is NOT on the remote."
+            ),
+        ),
         use_default: bool = Field(
             default=True,
             description="Use the pre-filled package template for 'template'.",
@@ -703,6 +719,8 @@ def register_workspace_management_tools(mcp: FastMCP):
 
         if not isinstance(summary, bool):
             summary = True
+        if not isinstance(force, bool):
+            force = False
 
         git = get_git_instance()
 
@@ -761,6 +779,8 @@ def register_workspace_management_tools(mcp: FastMCP):
                 part=part,
                 start_phase=phase,
                 dry_run=dry_run,
+                project_filter=projects or None,
+                force=force,
                 progress=progress,
                 _extra_job_data={"progress_detail": progress},
             )
