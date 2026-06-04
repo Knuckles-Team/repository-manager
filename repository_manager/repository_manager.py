@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-__version__ = "1.30.0"
+__version__ = "1.31.0"
 
 import concurrent.futures
 import multiprocessing
@@ -268,6 +268,38 @@ class Git:
             return os.path.abspath(path)
 
         return os.path.abspath(os.path.join(self.path, path))
+
+    def _current_release_tag(self, path: str | None = None) -> str | None:
+        """Return ``v<current_version>`` from the repo's .bumpversion.cfg, if any.
+
+        The tag the most recent bump created for this repo — pushed explicitly so
+        lightweight tags reach the remote without dragging along stale historical
+        tags. Returns None when there's no bumpversion config or it exists only
+        locally (never created).
+        """
+        target_dir = self._resolve_path(path)
+        cfg = os.path.join(target_dir, ".bumpversion.cfg")
+        if not os.path.exists(cfg):
+            return None
+        try:
+            with open(cfg) as fh:
+                for line in fh:
+                    if line.strip().startswith("current_version"):
+                        ver = line.split("=", 1)[1].strip()
+                        if ver:
+                            tag = f"v{ver}"
+                            # Only if the tag actually exists locally.
+                            chk = self.git_action(
+                                command=f"git tag -l {tag}",
+                                path=target_dir,
+                                quiet=True,
+                            )
+                            if chk.status == "success" and tag in (chk.data or ""):
+                                return tag
+                        return None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("_current_release_tag(%s) failed: %s", target_dir, exc)
+        return None
 
     def _tag_on_remote(self, tag: str, path: str | None = None) -> bool:
         """True if ``tag`` exists on the ``origin`` remote (so it's published).
@@ -1131,6 +1163,26 @@ class Git:
             result = self.git_action(command="git push --follow-tags", path=target_path)
 
             if result.status == "success":
+                # --follow-tags only pushes ANNOTATED tags. bump2version can emit
+                # LIGHTWEIGHT tags (objecttype=commit), which would silently never
+                # reach the remote — so no tag-triggered CI / image build. Push the
+                # CURRENT release tag explicitly (v<current_version> from
+                # .bumpversion.cfg) to cover both annotated and lightweight, WITHOUT
+                # also dumping stale never-pushed historical tags onto the remote
+                # (which would trigger CI for old versions).
+                # (CONCEPT:RM-BUMP tag-publish correctness)
+                rel_tag = self._current_release_tag(target_path)
+                if rel_tag:
+                    tag_res = self.git_action(
+                        command=f"git push origin {rel_tag}", path=target_path
+                    )
+                    if tag_res.status != "success":
+                        logger.warning(
+                            "Branch pushed but tag push (%s) failed for %s: %s",
+                            rel_tag,
+                            target_path,
+                            tag_res.error,
+                        )
                 return result
 
             error_text = ""
