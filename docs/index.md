@@ -87,7 +87,7 @@ Setup my workspace using the workspace.yml configuration. Also, install and vali
 
 AI Response:
 ```text
-Workspace setup complete: Missing repositories have been cloned and existing ones updated.
+    WorkspaceSetup --> RepoSetup(["Clone and Initialize"])
 Bulk operations finished: All projects installed and validated (agent/mcp) across the workspace.
 ```
 
@@ -109,7 +109,8 @@ flowchart TB
         D["MCP Tools"]
         F["Agent Skills"]
   end
-    C --> D & F
+    C --> D
+    C --> F
     A["User Query"] --> B
     B --> C
     D --> E["Platform API"]
@@ -247,7 +248,7 @@ flowchart TD
     end
 
     subgraph WorkspaceManager
-        Parse[Parse YAML & Groups]
+        Parse["Parse YAML & Groups"]
     end
 
     subgraph GraphEngine
@@ -259,7 +260,7 @@ flowchart TD
             Leiden[Leiden Clustering]
         end
 
-        subgraph GraphPersistence [Persistence & Storage]
+        subgraph GraphPersistence ["Persistence & Storage"]
             LB[(LadybugDB .lbug)]
             Sync[Sync / MERGE]
             Vector[Vector Indexes]

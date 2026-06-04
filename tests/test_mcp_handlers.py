@@ -107,8 +107,11 @@ def test_get_job_status_variations():
     assert "repo_c" in status["active_projects"]
     assert "repo_d" in status["remaining_projects"]
 
-    # List all jobs
-    all_jobs = _get_job_status()
+    # List all jobs — terse roll-up by default (omits the per-job dump for
+    # scale); the full dump is opt-in via summary=False.
+    terse_jobs = _get_job_status()
+    assert "summary" in terse_jobs and "jobs" not in terse_jobs
+    all_jobs = _get_job_status(summary=False)
     assert "jobs" in all_jobs
     assert "job-abc" in all_jobs["jobs"]
 
@@ -331,7 +334,6 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert res == ["proj1", "proj2"]
@@ -345,7 +347,6 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert res == ["main", "dev"]
@@ -359,7 +360,6 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert res.status == "error"
@@ -373,7 +373,6 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert res == "setup_ok"
@@ -387,7 +386,6 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert res.status == "error"
@@ -401,7 +399,6 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert res == "template_ok"
@@ -415,7 +412,6 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert res.status == "error"
@@ -429,7 +425,6 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert res.status == "error"
@@ -443,7 +438,6 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert res == "save_ok"
@@ -457,24 +451,9 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert res["status"] == "submitted"
-
-        # 11. Action: remediate
-        res = await rm_workspace.fn(
-            action="remediate",
-            yml_path=None,
-            config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
-            use_default=True,
-            repositories="repo1,repo2",
-            ctx=None,
-        )
-        assert "Remediation complete" in res
 
         # 12. Action: invalid
         res = await rm_workspace.fn(
@@ -485,7 +464,6 @@ async def test_mcp_rm_workspace_tool():
             phase=1,
             dry_run=False,
             use_default=True,
-            repositories=None,
             ctx=None,
         )
         assert "Unknown action" in res
@@ -515,6 +493,10 @@ async def test_mcp_rm_projects_tool():
             extra="all",
             output_dir=None,
             generate_report=True,
+            force_revalidate=False,
+            auto_bump=False,
+            auto_push=False,
+            bump_part="minor",
             repositories="repo-a",
             job_id=None,
             ctx=None,
@@ -536,6 +518,10 @@ async def test_mcp_rm_projects_tool():
             extra="all",
             output_dir=None,
             generate_report=True,
+            force_revalidate=False,
+            auto_bump=False,
+            auto_push=False,
+            bump_part="minor",
             repositories=None,
             job_id=None,
             ctx=None,
@@ -549,13 +535,18 @@ async def test_mcp_rm_projects_tool():
             extra="all",
             output_dir=None,
             generate_report=True,
+            force_revalidate=False,
+            auto_bump=False,
+            auto_push=False,
+            bump_part="minor",
             repositories=None,
             job_id=None,
             ctx=None,
         )
-        assert "queued" in res
-        assert "running" in res
-        assert "completed" in res
+        # Terse submission by default (counts, not the full id↔name maps).
+        assert res["status"] == "submitted"
+        assert "queued_count" in res
+        assert "queued_projects" in res
 
         # 4. Action: validate_status
         # Submit a status request
@@ -573,6 +564,10 @@ async def test_mcp_rm_projects_tool():
             extra="all",
             output_dir=None,
             generate_report=True,
+            force_revalidate=False,
+            auto_bump=False,
+            auto_push=False,
+            bump_part="minor",
             repositories=None,
             job_id="job-status-test",
             ctx=None,
@@ -586,6 +581,10 @@ async def test_mcp_rm_projects_tool():
             extra="all",
             output_dir=None,
             generate_report=True,
+            force_revalidate=False,
+            auto_bump=False,
+            auto_push=False,
+            bump_part="minor",
             repositories=None,
             job_id=None,
             ctx=None,
