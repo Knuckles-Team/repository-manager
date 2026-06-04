@@ -2218,6 +2218,13 @@ class Git:
 
         # Pre-expand phases & projects for progress tracking
         processed_projects: set[str] = set()
+        # Projects already claimed by an EARLIER phase during pre-expansion. The
+        # bulk phase must dedupe against THIS (not ``processed_projects``, which
+        # is empty here and only populated later in the run loop) — otherwise a
+        # project named in an explicit phase (e.g. agent-utilities in Phase 3) is
+        # ALSO swept into the Phase-5 bulk list and gets BUMPED TWICE.
+        # (CONCEPT:RM-BUMP single-bump-per-project)
+        assigned_projects: set[str] = set()
         phase_list = []
         total_projects = 0
 
@@ -2235,16 +2242,21 @@ class Git:
 
             # Also apply project filter to bulk operations if applicable
             if not projects and phase.get("bulk_bump"):
-                if project_filter not in processed_projects:
+                if project_filter not in assigned_projects:
                     projects = [project_filter]
 
             if phase.get("bulk_bump") and not project_filter:
                 bulk_projects = []
                 for url, _ in self.project_map.items():
                     name = url.split("/")[-1].replace(".git", "")
-                    if name not in processed_projects and name not in projects:
+                    if name not in assigned_projects and name not in projects:
                         bulk_projects.append(name)
                 projects.extend(bulk_projects)
+
+            # Drop any project already claimed by an earlier phase, then record
+            # this phase's claims so later (bulk) phases can't re-bump them.
+            projects = [p for p in projects if p not in assigned_projects]
+            assigned_projects.update(projects)
 
             if not projects:
                 continue
@@ -2286,6 +2298,11 @@ class Git:
                 progress["phases"][phase_name]["status"] = "running"
 
             for project_name in projects:
+                # Defensive: never bump a project twice in one run (a later phase
+                # must not re-bump one an earlier phase already handled).
+                if project_name in processed_projects:
+                    continue
+
                 if progress is not None:
                     progress["phases"][phase_name]["details"][project_name] = "running"
                     progress["phases"][phase_name]["repos"][project_name] = "running"
