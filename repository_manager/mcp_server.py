@@ -318,23 +318,31 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             "completed_at": job["completed_at"],
         }
 
-        # Include live progress details if available
+        # Include live progress details if available. At workspace scale (200+
+        # repos) the full per-repo phase dicts blow past the MCP token limit
+        # (and spill to a file), so the DEFAULT is a compact roll-up: per-phase
+        # counts + the failed set + active names + remaining COUNT. summary=False
+        # restores the full per-repo phase dicts + project lists.
+        # (CONCEPT:RM-BUMP / RM-TOPOLOGY terse status)
         if "progress_detail" in job:
             pd = job["progress_detail"]
             response["current_phase"] = pd.get("current_phase", "")
             response["progress"] = pd.get("progress", 0)
-            response["phases"] = pd.get("phases", {})
 
             completed_projects = set()
             active_projects = set()
             remaining_projects = set()
+            failed_projects: list[str] = []
 
             for phase_data in pd.get("phases", {}).values():
                 repos_dict = phase_data.get("repos") or phase_data.get("details") or {}
                 for repo_name, status in repos_dict.items():
                     if not isinstance(repo_name, str):
                         continue
-                    if status in ("success", "failed", "error", "skipped", "skip"):
+                    if status in ("failed", "error"):
+                        completed_projects.add(repo_name)
+                        failed_projects.append(repo_name)
+                    elif status in ("success", "skipped", "skip"):
                         completed_projects.add(repo_name)
                     elif status == "running":
                         active_projects.add(repo_name)
@@ -347,9 +355,37 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             for p in completed_projects:
                 active_projects.discard(p)
 
-            response["completed_projects"] = sorted(list(completed_projects))
-            response["active_projects"] = sorted(list(active_projects))
-            response["remaining_projects"] = sorted(list(remaining_projects))
+            if summary:
+                # Per-phase counts only (drop the big per-repo details/repos maps).
+                phase_summary: dict[str, Any] = {}
+                for pname, pdata in pd.get("phases", {}).items():
+                    phase_summary[pname] = {
+                        k: pdata.get(k)
+                        for k in (
+                            "status",
+                            "total",
+                            "processed",
+                            "completed",
+                            "success",
+                            "failed",
+                        )
+                        if k in pdata
+                    }
+                response["phases"] = phase_summary
+                response["counts"] = {
+                    "completed": len(completed_projects),
+                    "active": len(active_projects),
+                    "remaining": len(remaining_projects),
+                    "failed": len(failed_projects),
+                }
+                response["failed_projects"] = sorted(failed_projects)
+                response["active_projects"] = sorted(active_projects)
+            else:
+                response["phases"] = pd.get("phases", {})
+                response["completed_projects"] = sorted(completed_projects)
+                response["active_projects"] = sorted(active_projects)
+                response["remaining_projects"] = sorted(remaining_projects)
+                response["failed_projects"] = sorted(failed_projects)
 
         if job["status"] == "completed" and job["result"] is not None:
             if hasattr(job["result"], "to_markdown"):
@@ -649,12 +685,24 @@ def register_workspace_management_tools(mcp: FastMCP):
             default=None,
             description="Job ID to check status for 'maintain_status' action.",
         ),
+        summary: bool = Field(
+            default=True,
+            description=(
+                "For 'maintain_status': return a COMPACT roll-up (per-phase "
+                "counts + failed set + active names + remaining count) instead of "
+                "the full per-repo phase dump. Keeps the response inline at 200+ "
+                "repos. Set False for the full per-repo detail."
+            ),
+        ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
         ),
     ) -> list[str] | str | GitResult | dict:
         """Core workspace organization, configuration, and maintenance."""
         from repository_manager.models import GitError
+
+        if not isinstance(summary, bool):
+            summary = True
 
         git = get_git_instance()
 
@@ -726,7 +774,7 @@ def register_workspace_management_tools(mcp: FastMCP):
                         message="job_id required for 'maintain_status'", code=1
                     ),
                 )
-            return _get_job_status(job_id)
+            return _get_job_status(job_id, summary=summary)
 
         return f"Error: Unknown action '{action}'"
 

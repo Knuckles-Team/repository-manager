@@ -99,13 +99,24 @@ def test_get_job_status_variations():
     with _jobs_lock:
         _jobs["job-abc"] = mock_job
 
+    # Terse default: counts + failed set + active names (no full per-repo dump).
     status = _get_job_status("job-abc")
     assert status["current_phase"] == "Phase 2"
     assert status["progress"] == 50
-    assert "repo_a" in status["completed_projects"]
-    assert "repo_b" in status["completed_projects"]
+    assert status["counts"]["completed"] == 2  # repo_a (success) + repo_b (failed)
+    assert status["counts"]["active"] == 1
+    assert status["counts"]["remaining"] == 1
+    assert status["failed_projects"] == ["repo_b"]
     assert "repo_c" in status["active_projects"]
-    assert "repo_d" in status["remaining_projects"]
+    assert "completed_projects" not in status  # omitted in terse mode
+
+    # Full per-repo detail is opt-in via summary=False.
+    full = _get_job_status("job-abc", summary=False)
+    assert "repo_a" in full["completed_projects"]
+    assert "repo_b" in full["completed_projects"]
+    assert "repo_c" in full["active_projects"]
+    assert "repo_d" in full["remaining_projects"]
+    assert full["failed_projects"] == ["repo_b"]
 
     # List all jobs — terse roll-up by default (omits the per-job dump for
     # scale); the full dump is opt-in via summary=False.
