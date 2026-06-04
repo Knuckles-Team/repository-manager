@@ -42,7 +42,7 @@ from repository_manager.models import (
 from repository_manager.repository_manager import Git
 from repository_manager.scan_models import RepoScanResult
 
-__version__ = "1.29.0"
+__version__ = "1.30.0"
 
 DEFAULT_WORKSPACE = os.environ.get(
     "REPOSITORY_MANAGER_WORKSPACE",
@@ -332,7 +332,7 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             completed_projects = set()
             active_projects = set()
             remaining_projects = set()
-            failed_projects: list[str] = []
+            phase_failed: list[str] = []
 
             for phase_data in pd.get("phases", {}).values():
                 repos_dict = phase_data.get("repos") or phase_data.get("details") or {}
@@ -341,7 +341,7 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
                         continue
                     if status in ("failed", "error"):
                         completed_projects.add(repo_name)
-                        failed_projects.append(repo_name)
+                        phase_failed.append(repo_name)
                     elif status in ("success", "skipped", "skip"):
                         completed_projects.add(repo_name)
                     elif status == "running":
@@ -376,16 +376,16 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
                     "completed": len(completed_projects),
                     "active": len(active_projects),
                     "remaining": len(remaining_projects),
-                    "failed": len(failed_projects),
+                    "failed": len(phase_failed),
                 }
-                response["failed_projects"] = sorted(failed_projects)
+                response["failed_projects"] = sorted(phase_failed)
                 response["active_projects"] = sorted(active_projects)
             else:
                 response["phases"] = pd.get("phases", {})
                 response["completed_projects"] = sorted(completed_projects)
                 response["active_projects"] = sorted(active_projects)
                 response["remaining_projects"] = sorted(remaining_projects)
-                response["failed_projects"] = sorted(failed_projects)
+                response["failed_projects"] = sorted(phase_failed)
 
         if job["status"] == "completed" and job["result"] is not None:
             if hasattr(job["result"], "to_markdown"):
