@@ -1254,7 +1254,7 @@
 <div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Setup my workspace using the workspace.yml configuration. Also, install and validate all projects in the workspace.
 </code></pre></div></p>
 <p>AI Response:
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Workspace setup complete: Missing repositories have been cloned and existing ones updated.
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>    WorkspaceSetup --&gt; RepoSetup([&quot;Clone and Initialize&quot;])
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>Bulk operations finished: All projects installed and validated (agent/mcp) across the workspace.
 </code></pre></div></p>
 <p>This repository is actively maintained - Contributions are welcome!</p>
@@ -1271,7 +1271,8 @@ flowchart TB
         D["MCP Tools"]
         F["Agent Skills"]
   end
-    C --&gt; D &amp; F
+    C --&gt; D
+    C --&gt; F
     A["User Query"] --&gt; B
     B --&gt; C
     D --&gt; E["Platform API"]
@@ -1661,7 +1662,7 @@ flowchart TB
     end
 
     subgraph WorkspaceManager
-        Parse[Parse YAML &amp; Groups]
+        Parse["Parse YAML &amp; Groups"]
     end
 
     subgraph GraphEngine
@@ -1673,7 +1674,7 @@ flowchart TB
             Leiden[Leiden Clustering]
         end
 
-        subgraph GraphPersistence [Persistence &amp; Storage]
+        subgraph GraphPersistence ["Persistence &amp; Storage"]
             LB[(LadybugDB .lbug)]
             Sync[Sync / MERGE]
             Vector[Vector Indexes]
