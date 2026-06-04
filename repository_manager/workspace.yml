@@ -383,8 +383,6 @@ subdirectories:
         description: "Online collaboration platform for calendars, contacts, and files."
       - url: "http://gitlab.arpa/homelab/containers/services/mealie.git"
         description: "Recipe organizer and recipe-based meal planner."
-      - url: "http://gitlab.arpa/homelab/containers/services/loki.git"
-        description: "Grafana Loki multi-tenant log aggregation system."
       - url: "http://gitlab.arpa/homelab/containers/services/jellyfin.git"
         description: "Media server for streaming movies, music, and tv shows."
       - url: "http://gitlab.arpa/homelab/containers/services/jdownloader.git"
