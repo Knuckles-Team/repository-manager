@@ -199,6 +199,84 @@ def _job_passed(j: dict[str, Any]) -> bool:
     return bool(res is not None and getattr(res, "success", False))
 
 
+def _latest_jobs() -> dict[str, dict[str, Any]]:
+    """Return the deduplicated ``{job_id: job}`` set used for every roll-up.
+
+    Repo-scoped jobs (those carrying ``repo_name``) collapse to the **most
+    recent** job per repo, keyed by ``started_at``. This is the fix for the
+    stale-roll-up bug: ``_jobs`` accumulates a new job_id for every validation
+    of a repo across successive cascade runs, so a repo that FAILED early and
+    then PASSED on a re-run used to appear in BOTH the passed and failed
+    tallies — the historical failed job_id never cleared. Collapsing to the
+    latest job per repo means a repo reflects only its current state, and stale
+    'running' jobs from a superseded cascade stop inflating the running count.
+
+    Workspace-wide orchestration jobs (phased bump/push, etc.) carry no
+    ``repo_name`` and are each preserved verbatim. (CONCEPT:RM-TOPOLOGY)
+    """
+    latest_by_repo: dict[str, tuple[str, dict[str, Any]]] = {}
+    out: dict[str, dict[str, Any]] = {}
+    with _jobs_lock:
+        for jid, j in _jobs.items():
+            repo = j.get("repo_name")
+            if not repo:
+                out[jid] = j
+                continue
+            cur = latest_by_repo.get(repo)
+            if cur is None or (j.get("started_at") or "") >= (
+                cur[1].get("started_at") or ""
+            ):
+                latest_by_repo[repo] = (jid, j)
+    for jid, j in latest_by_repo.values():
+        out[jid] = j
+    return out
+
+
+def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
+    """Flip jobs wedged in 'running' past a hard ceiling to a timeout failure.
+
+    A validation worker whose subprocess hung (or whose host was starved by an
+    oversized concurrent sweep) can otherwise sit in 'running' forever, making
+    the roll-up look permanently frozen (e.g. ``626 completed / 45 running``
+    unchanged for many minutes). This is a DISPLAY/accounting safety net — it
+    does not, and cannot, kill the underlying thread; the per-command
+    subprocess timeout (<=600s) is what actually frees the worker. The ceiling
+    is deliberately set well above the longest legitimate per-repo validation
+    so it never reaps a merely-slow repo. Env-tunable via
+    ``RM_JOB_STALE_SECONDS`` (default 1800). (CONCEPT:RM-TOPOLOGY watchdog)
+    """
+    import os as _os
+
+    if max_age_seconds is None:
+        try:
+            max_age_seconds = float(_os.environ.get("RM_JOB_STALE_SECONDS", 1800))
+        except ValueError:
+            max_age_seconds = 1800.0
+
+    now = datetime.now(timezone.utc)
+    with _jobs_lock:
+        for j in _jobs.values():
+            if j.get("status") not in ("running", "queued", "pending"):
+                continue
+            started = j.get("started_at")
+            if not started:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(started).rstrip("Z"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if (now - dt).total_seconds() > max_age_seconds:
+                j["status"] = "failed"
+                j["error"] = (
+                    f"Job exceeded the {int(max_age_seconds)}s stale-job ceiling "
+                    "and was reaped (worker wedged or host starved). The release "
+                    "step is gated on validation, so re-run the failed set."
+                )
+                j["completed_at"] = now.isoformat() + "Z"
+
+
 def _last_failed_repos() -> list[str]:
     """Repos whose most-recent validate job did NOT pass (for failed-only reruns).
 
@@ -206,22 +284,13 @@ def _last_failed_repos() -> list[str]:
     drops out of the set. Powers the remediation loop's "re-validate only the
     failures" behavior. (CONCEPT:RM-TOPOLOGY)
     """
-    latest: dict[str, dict[str, Any]] = {}
-    with _jobs_lock:
-        for j in _jobs.values():
-            if j.get("action") != "validate":
-                continue
-            repo = j.get("repo_name")
-            if not repo:
-                continue
-            prev = latest.get(repo)
-            if prev is None or (j.get("started_at") or "") >= (
-                prev.get("started_at") or ""
-            ):
-                latest[repo] = j
     return [
         repo
-        for repo, j in latest.items()
+        for repo, j in (
+            (j.get("repo_name"), j)
+            for j in _latest_jobs().values()
+            if j.get("action") == "validate" and j.get("repo_name")
+        )
         if j["status"] == "failed"
         or (j["status"] == "completed" and not _job_passed(j))
     ]
@@ -237,6 +306,10 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
     and forces a file spill). ``summary=False`` adds the full ``jobs`` map.
     """
     if not job_id:
+        # Self-heal first: reap wedged 'running' jobs, then roll up over the
+        # LATEST job per repo (not every historical job_id) so stale failures
+        # and stale running entries from superseded cascade runs never linger.
+        _reap_stale_jobs()
         with _jobs_lock:
             if not _jobs:
                 return {"status": "empty", "message": "No background jobs found."}
@@ -247,7 +320,8 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             failed_details: dict[str, Any] = {}
             jobs_output: dict[str, Any] = {}
 
-            for jid, j in _jobs.items():
+            rollup_jobs = _latest_jobs()
+            for jid, j in rollup_jobs.items():
                 st = j["status"]
                 repo_name = j.get("repo_name")
                 if st in ("running", "queued", "pending"):
@@ -293,7 +367,7 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
                         jd["error"] = j["error"]
                     jobs_output[jid] = jd
 
-            counts["total"] = len(_jobs)
+            counts["total"] = len(rollup_jobs)
             resp: dict[str, Any] = {
                 "summary": counts,
                 "failed_projects": failed_projects,

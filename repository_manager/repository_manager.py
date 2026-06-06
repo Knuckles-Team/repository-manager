@@ -1942,6 +1942,38 @@ class Git:
                 ),
             )
 
+    def _bump_skip_reason(self, project_dir: str) -> str | None:
+        """Why a bump should be skipped for this repo, or ``None`` if it needs one.
+
+        Returns a human-readable reason when no (further) bump is warranted:
+
+        * **no code changes** — clean tree AND in sync with origin.
+        * **already bumped, awaiting push** — clean tree but AHEAD of origin
+          with a ``Bump version:`` commit at HEAD. Re-bumping here is the
+          double-bump bug: while the push step is starved, every retry sees the
+          repo as "not up to date" and bumps again (0.38→0.39→0.40 …). The push
+          step will deliver the existing bump, so skip.
+
+        A clean tree whose HEAD is a *feature* commit (committed but not yet
+        version-bumped) returns ``None`` so it still gets its first bump — the
+        fix narrows the skip to genuine no-ops, it does not suppress real bumps.
+        (CONCEPT:RM-BUMP idempotency)
+        """
+        status_check = self.git_action("git status", path=project_dir)
+        data_lower = status_check.data.lower() if status_check.data else ""
+        clean = "nothing to commit" in data_lower
+        up_to_date = "your branch is up to date" in data_lower
+        if clean and up_to_date:
+            return "no code changes detected (use force=True to override)"
+        if clean and not up_to_date:
+            head_subj = self.git_action(
+                "git log -1 --pretty=%s", path=project_dir, quiet=True
+            )
+            subject = (head_subj.data or "").strip().lower()
+            if subject.startswith("bump version:"):
+                return "already bumped, awaiting push (avoids double-bump)"
+        return None
+
     def bump_version(
         self,
         part: str,
@@ -2395,15 +2427,9 @@ class Git:
                     return None
 
                 if not force:
-                    status_check = self.git_action("git status", path=project_dir)
-                    data_lower = status_check.data.lower() if status_check.data else ""
-                    if (
-                        "nothing to commit" in data_lower
-                        and "your branch is up to date" in data_lower
-                    ):
-                        logger.info(
-                            f"Skipping bump for {project_name}: no code changes detected (use force=True to override)"
-                        )
+                    skip_reason = self._bump_skip_reason(project_dir)
+                    if skip_reason:
+                        logger.info(f"Skipping bump for {project_name}: {skip_reason}")
                         return "skipped"
 
                 result = self.bump_version(
