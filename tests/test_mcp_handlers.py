@@ -660,3 +660,148 @@ def test_mcp_server_cli_execution():
     ):
         with pytest.raises(SystemExit):
             mcp_server()
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the cascade-deadlock root causes (RM-TOPOLOGY / RM-BUMP)
+# ---------------------------------------------------------------------------
+
+
+def _mk_job(status, repo, started_at, *, passed=None, error=None):
+    """Build a synthetic _jobs entry for roll-up tests."""
+    job = {
+        "status": status,
+        "action": "validate",
+        "repo_name": repo,
+        "started_at": started_at,
+        "completed_at": None,
+        "result": None,
+        "error": error,
+    }
+    if passed is not None:
+        res = MagicMock()
+        res.success = passed
+        res.hooks = []
+        res.error = None
+        job["result"] = res
+        if status == "completed":
+            job["completed_at"] = started_at
+    return job
+
+
+def test_rollup_dedupes_stale_failure_to_latest_per_repo():
+    """A repo that FAILED early then PASSED on a re-run must not linger as failed.
+
+    Root cause: _get_job_status iterated every historical job_id, so the old
+    failed job stayed in failed_projects forever. The fix collapses to the
+    latest job per repo.
+    """
+    from repository_manager.mcp_server import _get_job_status
+
+    with _jobs_lock:
+        _jobs.clear()
+        # earlier: failed; later: passed (same repo)
+        _jobs["old1"] = _mk_job(
+            "completed", "repo-a", "2026-06-06T01:00:00+00:00Z", passed=False
+        )
+        _jobs["new1"] = _mk_job(
+            "completed", "repo-a", "2026-06-06T02:00:00+00:00Z", passed=True
+        )
+        # a genuinely still-failing repo
+        _jobs["f2"] = _mk_job(
+            "failed", "repo-b", "2026-06-06T01:30:00+00:00Z", error="boom"
+        )
+
+    rollup = _get_job_status()
+    assert "repo-a" not in rollup["failed_projects"], rollup["failed_projects"]
+    assert "repo-b" in rollup["failed_projects"]
+    assert rollup["summary"]["total"] == 2  # deduped: repo-a (latest) + repo-b
+    assert rollup["summary"]["passed"] == 1
+    assert rollup["summary"]["failed"] == 1
+
+    with _jobs_lock:
+        _jobs.clear()
+
+
+def test_reap_stale_jobs_flips_overdue_running_to_failed():
+    """A wedged 'running' job past the ceiling is reaped so status never freezes."""
+    from repository_manager.mcp_server import _reap_stale_jobs
+
+    with _jobs_lock:
+        _jobs.clear()
+        _jobs["wedged"] = _mk_job("running", "repo-z", "2020-01-01T00:00:00+00:00Z")
+        _jobs["fresh"] = _mk_job("running", "repo-y", "2099-01-01T00:00:00+00:00Z")
+
+    _reap_stale_jobs(max_age_seconds=60)
+
+    with _jobs_lock:
+        assert _jobs["wedged"]["status"] == "failed"
+        assert "reaped" in (_jobs["wedged"]["error"] or "")
+        assert _jobs["fresh"]["status"] == "running"  # future ts, not reaped
+        _jobs.clear()
+
+
+def test_bump_skip_reason_avoids_double_bump_on_unpushed_repo():
+    """Clean tree + ahead-of-origin + HEAD is a bump commit => skip (no re-bump)."""
+    from repository_manager.repository_manager import Git
+
+    git = Git.__new__(Git)  # bypass __init__; we only exercise _bump_skip_reason
+
+    def fake_git_action(command, path=None, **kw):
+        r = MagicMock()
+        if command == "git status":
+            r.data = (
+                "On branch main\nYour branch is ahead of 'origin/main' by 1 commit.\n"
+                "nothing to commit, working tree clean"
+            )
+        elif command.startswith("git log"):
+            r.data = "Bump version: 0.38.0 -> 0.39.0"
+        else:
+            r.data = ""
+        return r
+
+    git.git_action = fake_git_action
+    reason = git._bump_skip_reason("/fake/repo")
+    assert reason and "awaiting push" in reason
+
+
+def test_bump_skip_reason_allows_bump_for_unbumped_feature_commit():
+    """Clean tree + ahead, but HEAD is a FEATURE commit => must NOT skip (needs bump)."""
+    from repository_manager.repository_manager import Git
+
+    git = Git.__new__(Git)
+
+    def fake_git_action(command, path=None, **kw):
+        r = MagicMock()
+        if command == "git status":
+            r.data = (
+                "On branch main\nYour branch is ahead of 'origin/main' by 2 commits.\n"
+                "nothing to commit, working tree clean"
+            )
+        elif command.startswith("git log"):
+            r.data = "feat: add new endpoint"
+        else:
+            r.data = ""
+        return r
+
+    git.git_action = fake_git_action
+    assert git._bump_skip_reason("/fake/repo") is None
+
+
+def test_bump_skip_reason_skips_when_clean_and_in_sync():
+    """Clean tree + in sync with origin => skip (no changes to bump)."""
+    from repository_manager.repository_manager import Git
+
+    git = Git.__new__(Git)
+
+    def fake_git_action(command, path=None, **kw):
+        r = MagicMock()
+        r.data = (
+            "On branch main\nYour branch is up to date with 'origin/main'.\n"
+            "nothing to commit, working tree clean"
+        )
+        return r
+
+    git.git_action = fake_git_action
+    reason = git._bump_skip_reason("/fake/repo")
+    assert reason and "no code changes" in reason
