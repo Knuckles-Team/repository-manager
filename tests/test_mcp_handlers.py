@@ -760,7 +760,7 @@ def test_bump_skip_reason_avoids_double_bump_on_unpushed_repo():
             r.data = ""
         return r
 
-    git.git_action = fake_git_action
+    git.git_action = fake_git_action  # type: ignore[method-assign,assignment]
     reason = git._bump_skip_reason("/fake/repo")
     assert reason and "awaiting push" in reason
 
@@ -784,7 +784,7 @@ def test_bump_skip_reason_allows_bump_for_unbumped_feature_commit():
             r.data = ""
         return r
 
-    git.git_action = fake_git_action
+    git.git_action = fake_git_action  # type: ignore[method-assign,assignment]
     assert git._bump_skip_reason("/fake/repo") is None
 
 
@@ -802,7 +802,7 @@ def test_bump_skip_reason_skips_when_clean_and_in_sync():
         )
         return r
 
-    git.git_action = fake_git_action
+    git.git_action = fake_git_action  # type: ignore[method-assign,assignment]
     reason = git._bump_skip_reason("/fake/repo")
     assert reason and "no code changes" in reason
 
