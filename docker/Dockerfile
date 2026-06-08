@@ -9,7 +9,7 @@ ENV UV_COMPILE_BYTECODE=1 \
     UV_HTTP_TIMEOUT=3600
 RUN --mount=type=cache,target=/root/.cache/uv \
     pip install --no-cache-dir uv \
-    && uv pip install --system --upgrade --break-system-packages --prerelease=allow repository-manager[all]>=1.33.0
+    && uv pip install --system --upgrade --break-system-packages --prerelease=allow repository-manager[all]>=1.33.1
 
 FROM python:3.11-slim
 

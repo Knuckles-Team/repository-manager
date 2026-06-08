@@ -690,6 +690,8 @@ When adding new utility modules to the agent_utilities package:
 - Follow semantic versioning for dependencies when possible
 
 ## Recent Changes
+- **Consistent nested-path resolution for git sub-actions**: `rm_git` pull/push/add/commit now resolve a bare repo name through the workspace `project_map` (`_resolve_repo_dir`) instead of flat-joining `git.path + name`. Fixes `[Errno 2] No such file or directory` failures on nested repos (e.g. `push projects=agent-utilities` looked for `<ws>/agent-utilities` while the repo lives at `<ws>/agent-packages/agent-utilities`), making the git actions agree with `validate`. Absolute paths and existing flat repos are unchanged; unknown names keep the prior fallback.
+- **Cascade-deadlock root causes eliminated** (`633ffd4`): `_latest_jobs()` collapses repo-scoped jobs to the most-recent per repo so a fixed+re-validated repo drops out of `failed_projects`; `_reap_stale_jobs()` (env `RM_JOB_STALE_SECONDS`, default 1800) self-heals wedged `running` jobs. Note: a long-lived RM-MCP process must be **restarted** to pick these up — they are loaded at import time.
 - **Consolidated Architecture**: Centralized core repo logic into the `Git` class (`repository_manager.py`), refactoring `mcp_server.py` into a thin client.
 - **Enhanced Hybrid Graph Intelligence**: Implemented a multi-faceted graph search defaulting to `hybrid` mode, which merges structural NetworkX data with semantic vector results for higher precision.
 - **Modernized Documentation**: Updated `README.md` and `AGENTS.md` to reflect the streamlined CLI toolset and hybrid search capabilities.
