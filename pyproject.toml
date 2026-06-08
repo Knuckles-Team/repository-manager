@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repository-manager"
-version = "1.33.0"
+version = "1.33.1"
 description = "Manage your git projects"
 readme = "README.md"
 classifiers = [ "Development Status :: 5 - Production/Stable", "License :: Public Domain", "Environment :: Console", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3",]
@@ -86,4 +86,4 @@ ignore = [ "E402", "E501", "B008",]
 where = [ ".",]
 
 [tool.vulture]
-ignore_names = ["request", "config"]
+ignore_names = ["request", "config", "kw"]

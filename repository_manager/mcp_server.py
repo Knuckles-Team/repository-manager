@@ -42,7 +42,7 @@ from repository_manager.models import (
 from repository_manager.repository_manager import Git
 from repository_manager.scan_models import RepoScanResult
 
-__version__ = "1.33.0"
+__version__ = "1.33.1"
 
 DEFAULT_WORKSPACE = os.environ.get(
     "REPOSITORY_MANAGER_WORKSPACE",
@@ -285,7 +285,7 @@ def _last_failed_repos() -> list[str]:
     failures" behavior. (CONCEPT:RM-TOPOLOGY)
     """
     return [
-        repo
+        str(repo)
         for repo, j in (
             (j.get("repo_name"), j)
             for j in _latest_jobs().values()
@@ -522,6 +522,40 @@ def get_git_instance(path: str | None = None, threads: int | None = None) -> Git
     return git
 
 
+def _resolve_repo_dir(git: Git, spec: str) -> str:
+    """Resolve a repo name / relative spec to its real on-disk directory.
+
+    Honors the workspace's **nested** layout. The workspace.yml groups repos
+    under subdirectories (e.g. ``agent-packages/agents/data-science-mcp``), so a
+    bare name like ``agent-utilities`` lives at
+    ``<ws>/agent-packages/agent-utilities`` — NOT the flat ``<ws>/agent-utilities``.
+    ``validate`` already resolves via ``project_map``; the per-repo git
+    sub-actions (pull/push/add/commit) historically flat-joined ``git.path + name``
+    and so hit ``[Errno 2] No such file or directory`` on every nested repo (e.g.
+    a standalone ``push projects=agent-utilities`` failing while ``validate``
+    of the same repo passed). This makes path resolution consistent across
+    actions by consulting ``project_map`` for bare names.
+
+    Resolution order (first match wins):
+      1. absolute path → used verbatim;
+      2. relative path that already exists under ``git.path`` (flat repos, or an
+         already-correct nested relative spec) → used as-is for back-compat;
+      3. bare name matched by basename against ``project_map`` → its nested path;
+      4. otherwise the flat join (preserves the prior behavior + error surface).
+    """
+    if os.path.isabs(spec):
+        return spec
+    flat = os.path.abspath(os.path.join(git.path, spec))
+    if os.path.exists(flat):
+        return flat
+    base = os.path.basename(spec.rstrip("/"))
+    for mapped in getattr(git, "project_map", {}).values():
+        ap = os.path.abspath(os.path.expanduser(mapped))
+        if os.path.basename(ap) == base:
+            return ap
+    return flat
+
+
 # ---------------------------------------------------------------------------
 # MCP Tool Registration
 # ---------------------------------------------------------------------------
@@ -608,10 +642,7 @@ def register_git_operations_tools(mcp: FastMCP):
                     p = p.strip()
                     if not p:
                         continue
-                    if os.path.isabs(p):
-                        pull_dirs.append(p)
-                    else:
-                        pull_dirs.append(os.path.abspath(os.path.join(git.path, p)))
+                    pull_dirs.append(_resolve_repo_dir(git, p))
             return _submit_job("pull", git.pull_projects, project_dirs=pull_dirs)
 
         if action == "push":
@@ -622,10 +653,7 @@ def register_git_operations_tools(mcp: FastMCP):
                     p = p.strip()
                     if not p:
                         continue
-                    if os.path.isabs(p):
-                        push_dirs.append(p)
-                    else:
-                        push_dirs.append(os.path.abspath(os.path.join(git.path, p)))
+                    push_dirs.append(_resolve_repo_dir(git, p))
             return _submit_job("push", git.push_projects, project_dirs=push_dirs)
 
         if action == "add":
@@ -636,10 +664,7 @@ def register_git_operations_tools(mcp: FastMCP):
                     p = p.strip()
                     if not p:
                         continue
-                    if os.path.isabs(p):
-                        add_dirs.append(p)
-                    else:
-                        add_dirs.append(os.path.abspath(os.path.join(git.path, p)))
+                    add_dirs.append(_resolve_repo_dir(git, p))
             return _submit_job("add", git.add_projects, project_dirs=add_dirs)
 
         if action == "commit":
@@ -658,10 +683,7 @@ def register_git_operations_tools(mcp: FastMCP):
                     p = p.strip()
                     if not p:
                         continue
-                    if os.path.isabs(p):
-                        commit_dirs.append(p)
-                    else:
-                        commit_dirs.append(os.path.abspath(os.path.join(git.path, p)))
+                    commit_dirs.append(_resolve_repo_dir(git, p))
             return _submit_job(
                 "commit", git.commit_projects, message=message, project_dirs=commit_dirs
             )
@@ -674,11 +696,7 @@ def register_git_operations_tools(mcp: FastMCP):
                 p = p.strip()
                 if not p:
                     continue
-                out.append(
-                    p
-                    if os.path.isabs(p)
-                    else os.path.abspath(os.path.join(git.path, p))
-                )
+                out.append(_resolve_repo_dir(git, p))
             return out
 
         if action == "pre_commit":
