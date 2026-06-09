@@ -976,6 +976,66 @@ def register_project_management_tools(mcp: FastMCP):
     """Register tools for the autonomous project harness."""
 
     @mcp.tool(tags={"workspace_management", "project_manager"})
+    async def rm_worktree(
+        action: str = Field(
+            description="Action: 'add', 'list', 'remove', 'merge', 'sync', 'prune', 'bulk_add'."
+        ),
+        repo: str | None = Field(
+            default=None,
+            description="Repo basename (e.g. 'agent-utilities') or absolute path. Omit for 'list'/'prune' across all repos.",
+        ),
+        branch: str | None = Field(
+            default=None, description="Worktree branch name (each session uses a distinct branch)."
+        ),
+        base: str = Field(default="main", description="Base branch to fork from / sync against."),
+        into: str = Field(default="main", description="Target branch for 'merge'."),
+        adopt: bool = Field(
+            default=False,
+            description="For 'add': stash the canonical checkout's uncommitted WIP and replay it onto the new branch.",
+        ),
+        force: bool = Field(default=False, description="For 'remove': remove even if the worktree is dirty."),
+        delete_branch: bool = Field(
+            default=False, description="For 'remove': also delete the branch."
+        ),
+        strategy: str = Field(default="rebase", description="For 'sync': 'rebase' or 'merge'."),
+        repos: str | None = Field(
+            default=None,
+            description="For 'bulk_add': comma-separated repo basenames (default: every workspace repo).",
+        ),
+        path: str | None = Field(default=None, description="Workspace root override."),
+        ctx: Context | None = Field(
+            default=None, description="MCP context for progress reporting"
+        ),
+    ) -> dict:
+        """Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE).
+
+        Each session works a repo in its own worktree on its own branch under
+        ``/home/apps/worktrees/<repo>/<branch>`` (shared ``.git``, no re-clone),
+        leaving the canonical checkout on its default branch so a working-tree
+        reset never disturbs in-flight session work.
+        """
+        from repository_manager.worktree import WorktreeManager
+
+        git = get_git_instance(path=path)
+        wm = WorktreeManager(git)
+        if action == "add":
+            return wm.add(repo, branch, base=base, adopt=adopt)
+        if action == "list":
+            return wm.list(repo=repo)
+        if action == "remove":
+            return wm.remove(repo, branch, force=force, delete_branch=delete_branch)
+        if action == "merge":
+            return wm.merge(repo, branch, into=into)
+        if action == "sync":
+            return wm.sync(repo, branch, base=base, strategy=strategy)
+        if action == "prune":
+            return wm.prune(repo=repo)
+        if action == "bulk_add":
+            repo_list = [r.strip() for r in repos.split(",")] if repos else None
+            return wm.bulk_add(branch, repos=repo_list, base=base)
+        return {"ok": False, "error": f"unknown action: {action}"}
+
+    @mcp.tool(tags={"workspace_management", "project_manager"})
     async def rm_projects(
         action: str = Field(
             description="Action: 'install', 'build', 'validate', 'validate_status'"
