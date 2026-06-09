@@ -1056,12 +1056,36 @@ class Git:
                 default_branch = re.sub(
                     "refs/remotes/origin/", "", default_branch_result.data
                 ).strip()
-                checkout_result = self.git_action(
-                    f'git checkout "{default_branch}"',
-                    path=target_path,
-                )
-                results.append(checkout_result)
-                logger.info(f"Checking out default branch: {checkout_result}")
+                # WT-3 (CONCEPT:RM-WORKTREE) — non-destructive / worktree-aware.
+                # Never switch branches on a dirty canonical tree: a concurrent
+                # session may have uncommitted work here, and a forced checkout
+                # would disrupt it. Skip the checkout (and skip the no-op when we
+                # are already on the default branch). Session work belongs in a
+                # worktree under WORKTREE_ROOT anyway, which this never touches.
+                current_branch = self.git_action(
+                    "git rev-parse --abbrev-ref HEAD", path=target_path, quiet=True
+                ).data.strip()
+                dirty = self.git_action(
+                    "git status --porcelain", path=target_path, quiet=True
+                ).data.strip()
+                if dirty:
+                    logger.warning(
+                        f"Skipping default-branch checkout for {target_path}: "
+                        "uncommitted changes present (a concurrent session may be "
+                        "active). Leaving the working tree untouched."
+                    )
+                elif current_branch == default_branch:
+                    logger.info(
+                        f"{target_path} already on default branch "
+                        f"{default_branch}; no checkout needed."
+                    )
+                else:
+                    checkout_result = self.git_action(
+                        f'git checkout "{default_branch}"',
+                        path=target_path,
+                    )
+                    results.append(checkout_result)
+                    logger.info(f"Checking out default branch: {checkout_result}")
             else:
                 results.append(default_branch_result)
                 logger.error(
