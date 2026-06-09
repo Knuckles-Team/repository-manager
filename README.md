@@ -22,6 +22,10 @@
 
 *Version: 1.33.2*
 
+> **Documentation** — Installation, deployment, usage across the CLI, API, MCP, and
+> agent interfaces, and the phased multi-repository release workflows are maintained
+> in the [official documentation](https://knuckles-team.github.io/repository-manager/).
+
 ---
 
 ## Overview
@@ -308,6 +312,26 @@ python -m pip install repository-manager[all]
 
 ![GitHub followers](https://img.shields.io/github/followers/Knucklessg1)
 ![GitHub User's stars](https://img.shields.io/github/stars/Knucklessg1)
+
+---
+
+## Documentation
+
+The complete documentation is published as the
+[official documentation site](https://knuckles-team.github.io/repository-manager/) and
+is the recommended reference for installation, deployment, and day-to-day operation.
+
+| Page | Contents |
+|---|---|
+| [Installation](https://knuckles-team.github.io/repository-manager/installation/) | pip, source, extras, prebuilt Docker image |
+| [Deployment](https://knuckles-team.github.io/repository-manager/deployment/) | run the MCP and agent servers, Compose, Caddy + Technitium, env config |
+| [Usage](https://knuckles-team.github.io/repository-manager/usage/) | the MCP tools, the `Git` client, the CLI |
+| [Overview](https://knuckles-team.github.io/repository-manager/overview/) | ecosystem role, enterprise readiness, architecture |
+| [Phased Maintenance](https://knuckles-team.github.io/repository-manager/phased_maintenance/) | dependency-ordered workspace updates |
+| [Phased Push](https://knuckles-team.github.io/repository-manager/phased_push/) | parallel, phase-gated multi-repository releases |
+| [Concepts](https://knuckles-team.github.io/repository-manager/concepts/) | concept registry (`CONCEPT:RM-*`) |
+
+`AGENTS.md` is the canonical contributor/agent guidance.
 
 ---
 
