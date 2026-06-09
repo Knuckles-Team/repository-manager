@@ -579,7 +579,7 @@ def register_git_operations_tools(mcp: FastMCP):
     )
     async def rm_git(
         action: str = Field(
-            description="Action: 'raw', 'clone', 'pull', 'push', 'phased_push', 'add', 'commit', 'pre_commit', 'commit_code'"
+            description="Action: 'raw', 'clone', 'enumerate', 'pull', 'push', 'phased_push', 'add', 'commit', 'pre_commit', 'commit_code'. 'enumerate' lists all repos across a GitLab instance/GitHub org into an ingest manifest (command=vcs, projects=groups/orgs)."
         ),
         command: str | None = Field(
             default=None,
@@ -627,6 +627,39 @@ def register_git_operations_tools(mcp: FastMCP):
                     ),
                 )
             return git.git_action(command=command, path=path)
+
+        if action == "enumerate":
+            # Remote VCS enumeration for enterprise-scale ingestion (CONCEPT:KG-2.49):
+            # list all repos across a GitLab instance / GitHub org into a JSON ingest
+            # manifest the KG batch ingestor consumes. `command` selects the VCS
+            # ('gitlab'|'github'); `projects` is a comma-separated group/org list.
+            import uuid as _uuid
+
+            from repository_manager.vcs_enumerator import (
+                enumerate_github,
+                enumerate_gitlab,
+                write_manifest,
+            )
+
+            vcs = (command or "gitlab").strip().lower()
+            scopes = (
+                [s.strip() for s in projects.split(",") if s.strip()]
+                if projects
+                else None
+            )
+            run_id = _uuid.uuid4().hex[:10]
+            if vcs == "github":
+                refs = enumerate_github(orgs=scopes, user=not scopes)
+            else:
+                refs = enumerate_gitlab(groups=scopes)
+            manifest_path = write_manifest(refs, run_id)
+            return {
+                "status": "ok",
+                "vcs": vcs,
+                "count": len(refs),
+                "run_id": run_id,
+                "manifest": manifest_path,
+            }
 
         if action == "clone":
             urls = None
