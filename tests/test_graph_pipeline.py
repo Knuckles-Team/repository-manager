@@ -1,12 +1,21 @@
 import asyncio
 
 import pytest
-from agent_utilities.knowledge_graph.pipeline.runner import PipelineRunner
-from agent_utilities.knowledge_graph.pipeline.types import (
+
+# This suite exercises agent_utilities' knowledge_graph pipeline. The published
+# agent_utilities wheel ships without that heavy subpackage, so skip the whole
+# module (rather than erroring at collection) when the dev build isn't installed.
+pytest.importorskip(
+    "agent_utilities.knowledge_graph.pipeline.runner",
+    reason="dev agent_utilities (with knowledge_graph) not installed",
+)
+
+from agent_utilities.knowledge_graph.pipeline.runner import PipelineRunner  # noqa: E402
+from agent_utilities.knowledge_graph.pipeline.types import (  # noqa: E402
     PipelineContext,
     PipelinePhase,
 )
-from agent_utilities.models.knowledge_graph import PipelineConfig
+from agent_utilities.models.knowledge_graph import PipelineConfig  # noqa: E402
 
 
 def test_pipeline_runner_execution():
