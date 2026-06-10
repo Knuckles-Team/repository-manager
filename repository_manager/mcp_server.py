@@ -985,19 +985,27 @@ def register_project_management_tools(mcp: FastMCP):
             description="Repo basename (e.g. 'agent-utilities') or absolute path. Omit for 'list'/'prune' across all repos.",
         ),
         branch: str | None = Field(
-            default=None, description="Worktree branch name (each session uses a distinct branch)."
+            default=None,
+            description="Worktree branch name (each session uses a distinct branch).",
         ),
-        base: str = Field(default="main", description="Base branch to fork from / sync against."),
+        base: str = Field(
+            default="main", description="Base branch to fork from / sync against."
+        ),
         into: str = Field(default="main", description="Target branch for 'merge'."),
         adopt: bool = Field(
             default=False,
             description="For 'add': stash the canonical checkout's uncommitted WIP and replay it onto the new branch.",
         ),
-        force: bool = Field(default=False, description="For 'remove': remove even if the worktree is dirty."),
+        force: bool = Field(
+            default=False,
+            description="For 'remove': remove even if the worktree is dirty.",
+        ),
         delete_branch: bool = Field(
             default=False, description="For 'remove': also delete the branch."
         ),
-        strategy: str = Field(default="rebase", description="For 'sync': 'rebase' or 'merge'."),
+        strategy: str = Field(
+            default="rebase", description="For 'sync': 'rebase' or 'merge'."
+        ),
         repos: str | None = Field(
             default=None,
             description="For 'bulk_add': comma-separated repo basenames (default: every workspace repo).",
@@ -1018,21 +1026,29 @@ def register_project_management_tools(mcp: FastMCP):
 
         git = get_git_instance(path=path)
         wm = WorktreeManager(git)
+        if action == "list":
+            return wm.list_worktrees(repo=repo)
+        if action == "prune":
+            return wm.prune(repo=repo)
+        if action == "bulk_add":
+            if branch is None:
+                return {"ok": False, "error": "action 'bulk_add' requires 'branch'"}
+            repo_list = [r.strip() for r in repos.split(",")] if repos else None
+            return wm.bulk_add(branch, repos=repo_list, base=base)
+        # add / remove / merge / sync all require a concrete repo + branch.
+        if repo is None or branch is None:
+            return {
+                "ok": False,
+                "error": f"action '{action}' requires 'repo' and 'branch'",
+            }
         if action == "add":
             return wm.add(repo, branch, base=base, adopt=adopt)
-        if action == "list":
-            return wm.list(repo=repo)
         if action == "remove":
             return wm.remove(repo, branch, force=force, delete_branch=delete_branch)
         if action == "merge":
             return wm.merge(repo, branch, into=into)
         if action == "sync":
             return wm.sync(repo, branch, base=base, strategy=strategy)
-        if action == "prune":
-            return wm.prune(repo=repo)
-        if action == "bulk_add":
-            repo_list = [r.strip() for r in repos.split(",")] if repos else None
-            return wm.bulk_add(branch, repos=repo_list, base=base)
         return {"ok": False, "error": f"unknown action: {action}"}
 
     @mcp.tool(tags={"workspace_management", "project_manager"})

@@ -62,14 +62,14 @@ def test_pipeline_runner_failure():
             await runner.run(ctx)
 
         assert ctx.results["fail"].success is False
-        assert "Intentional failure" in ctx.results["fail"].error
+        assert "Intentional failure" in (ctx.results["fail"].error or "")
 
     asyncio.run(_run())
 
 
 def test_topological_sort():
-    p1 = PipelinePhase(name="p1", deps=["p2"], execute_fn=lambda _, __: None)
-    p2 = PipelinePhase(name="p2", deps=[], execute_fn=lambda _, __: None)
+    p1 = PipelinePhase(name="p1", deps=["p2"], execute_fn=lambda _, __: asyncio.sleep(0))
+    p2 = PipelinePhase(name="p2", deps=[], execute_fn=lambda _, __: asyncio.sleep(0))
 
     runner = PipelineRunner([p1, p2])
     # Sorted order should be p2 then p1
