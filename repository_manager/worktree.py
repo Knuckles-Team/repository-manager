@@ -18,10 +18,26 @@ from __future__ import annotations
 
 import os
 import shlex
-from typing import TYPE_CHECKING, Any
+from typing import Any, Protocol
 
-if TYPE_CHECKING:
-    from repository_manager.repository_manager import Git
+
+class GitLike(Protocol):
+    """Structural type for the ``Git`` surface :class:`WorktreeManager` depends on.
+
+    Typing the dependency by shape (not the concrete ``Git`` class) lets the real
+    ``Git`` and lightweight test doubles both satisfy it.
+    """
+
+    path: str
+    project_map: dict[str, str]
+
+    # WorktreeManager only ever calls git_action(command=, path=, quiet=); real Git
+    # carries extra defaulted params (env/timeout) and FakeGit absorbs them via
+    # **kwargs, so both satisfy this minimal contract.
+    def git_action(
+        self, command: str, path: str | None = ..., quiet: bool = ...
+    ) -> Any: ...
+
 
 WORKTREE_ROOT = os.path.abspath(
     os.path.expanduser(
@@ -44,7 +60,7 @@ class WorktreeManager:
     repository-manager.
     """
 
-    def __init__(self, git: "Git") -> None:
+    def __init__(self, git: GitLike) -> None:
         self.git = git
 
     # ── resolution ────────────────────────────────────────────────────────
@@ -94,8 +110,12 @@ class WorktreeManager:
         wt = self.worktree_path(repo, branch)
         if os.path.isdir(wt):
             return {
-                "ok": True, "repo": repo, "branch": branch, "path": wt,
-                "created": False, "status": "exists",
+                "ok": True,
+                "repo": repo,
+                "branch": branch,
+                "path": wt,
+                "created": False,
+                "status": "exists",
             }
         os.makedirs(os.path.dirname(wt), exist_ok=True)
 
@@ -115,7 +135,8 @@ class WorktreeManager:
 
         exists = self._run(
             f"git rev-parse --verify --quiet refs/heads/{shlex.quote(branch)}",
-            canonical, quiet=True,
+            canonical,
+            quiet=True,
         )
         if self._ok(exists) and exists.data.strip():
             cmd = f"git worktree add {shlex.quote(wt)} {shlex.quote(branch)}"
@@ -126,7 +147,8 @@ class WorktreeManager:
             if adopted:  # restore the stash we took
                 self._run("git stash pop", canonical)
             return {
-                "ok": False, "path": wt,
+                "ok": False,
+                "path": wt,
                 "error": res.error.message if res.error else res.data,
             }
 
@@ -134,15 +156,19 @@ class WorktreeManager:
             pop = self._run("git stash pop", wt)
             adopted = self._ok(pop)
         return {
-            "ok": True, "repo": repo, "branch": branch, "path": wt,
-            "base": base, "created": True, "adopted": adopted,
+            "ok": True,
+            "repo": repo,
+            "branch": branch,
+            "path": wt,
+            "base": base,
+            "created": True,
+            "adopted": adopted,
         }
 
-    def list(self, repo: str | None = None) -> dict[str, Any]:
+    def list_worktrees(self, repo: str | None = None) -> dict[str, Any]:
         """List worktrees for one repo, or across every workspace repo."""
         repos = (
-            [self.resolve_repo(repo)] if repo
-            else list(self.git.project_map.values())
+            [self.resolve_repo(repo)] if repo else list(self.git.project_map.values())
         )
         out: list[dict[str, Any]] = []
         for canonical in filter(None, repos):
@@ -155,11 +181,11 @@ class WorktreeManager:
                 if line.startswith("worktree "):
                     if cur:
                         out.append(cur)
-                    cur = {"repo": name, "path": line[len("worktree "):]}
+                    cur = {"repo": name, "path": line[len("worktree ") :]}
                 elif line.startswith("branch "):
-                    cur["branch"] = line[len("branch "):].replace("refs/heads/", "")
+                    cur["branch"] = line[len("branch ") :].replace("refs/heads/", "")
                 elif line.startswith("HEAD "):
-                    cur["head"] = line[len("HEAD "):][:10]
+                    cur["head"] = line[len("HEAD ") :][:10]
                 elif line.startswith("detached"):
                     cur["branch"] = "(detached)"
             if cur:
@@ -169,7 +195,10 @@ class WorktreeManager:
         return {"ok": True, "worktrees": out, "count": len(out)}
 
     def remove(
-        self, repo: str, branch: str, force: bool = False,
+        self,
+        repo: str,
+        branch: str,
+        force: bool = False,
         delete_branch: bool = False,
     ) -> dict[str, Any]:
         """Remove a worktree (and prune); refuses a dirty tree unless ``force``."""
@@ -187,8 +216,11 @@ class WorktreeManager:
             d = self._run(f"git branch -D {shlex.quote(branch)}", canonical)
             deleted = self._ok(d)
         return {
-            "ok": True, "repo": repo, "branch": branch,
-            "removed": wt, "branch_deleted": deleted,
+            "ok": True,
+            "repo": repo,
+            "branch": branch,
+            "removed": wt,
+            "branch_deleted": deleted,
         }
 
     def merge(
@@ -204,10 +236,16 @@ class WorktreeManager:
             if not self._ok(co):
                 return {"ok": False, "error": f"cannot checkout {into}: {co.data}"}
         ff = "--no-ff" if no_ff else ""
-        res = self._run(f"git merge {ff} {shlex.quote(branch)}".replace("  ", " "), canonical)
+        res = self._run(
+            f"git merge {ff} {shlex.quote(branch)}".replace("  ", " "), canonical
+        )
         return {
-            "ok": self._ok(res), "repo": repo, "branch": branch, "into": into,
-            "output": res.data, "conflict": "conflict" in res.data.lower(),
+            "ok": self._ok(res),
+            "repo": repo,
+            "branch": branch,
+            "into": into,
+            "output": res.data,
+            "conflict": "conflict" in res.data.lower(),
         }
 
     def sync(
@@ -224,21 +262,25 @@ class WorktreeManager:
         op = "merge" if strategy == "merge" else "rebase"
         res = self._run(f"git {op} origin/{shlex.quote(base)}", wt)
         return {
-            "ok": self._ok(res), "repo": repo, "branch": branch,
-            "strategy": op, "output": res.data,
+            "ok": self._ok(res),
+            "repo": repo,
+            "branch": branch,
+            "strategy": op,
+            "output": res.data,
         }
 
     def prune(self, repo: str | None = None) -> dict[str, Any]:
         """Prune stale worktree administrative entries across the workspace."""
         repos = (
-            [self.resolve_repo(repo)] if repo
-            else list(self.git.project_map.values())
+            [self.resolve_repo(repo)] if repo else list(self.git.project_map.values())
         )
         pruned: list[dict[str, str]] = []
         for canonical in filter(None, repos):
             r = self._run("git worktree prune -v", canonical, quiet=True)
             if self._ok(r) and r.data.strip():
-                pruned.append({"repo": os.path.basename(canonical), "output": r.data.strip()})
+                pruned.append(
+                    {"repo": os.path.basename(canonical), "output": r.data.strip()}
+                )
         return {"ok": True, "pruned": pruned}
 
     def bulk_add(

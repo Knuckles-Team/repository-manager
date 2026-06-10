@@ -77,7 +77,7 @@ def test_add_is_idempotent(repo):
 
 def test_list_reports_linked_worktree(repo):
     repo.wm.add("myrepo", "feat-x")
-    listing = repo.wm.list("myrepo")
+    listing = repo.wm.list_worktrees("myrepo")
     branches = {w.get("branch") for w in listing["worktrees"]}
     assert "feat-x" in branches
     linked = [w for w in listing["worktrees"] if w["branch"] == "feat-x"][0]
