@@ -154,7 +154,7 @@ def test_get_git_instance_fallbacks(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_mcp_rm_git_tool():
+async def test_mcp_rm_git_tool(tmp_path):
     """Test all actions and parameter checks of rm_git tool."""
     mcp, _, _, _ = get_mcp_instance()
     tools = await mcp.list_tools()
@@ -169,7 +169,13 @@ async def test_mcp_rm_git_tool():
     mock_git.pull_projects.return_value = "pulled"
     mock_git.push_projects.return_value = "pushed"
     mock_git.phased_push.return_value = "phased_pushed"
-    mock_git.path = "/tmp"
+    mock_git.path = str(tmp_path)
+    # _resolve_repo_dir() resolves a bare name to a real on-disk dir via
+    # os.path.exists() under the workspace path. Create the relative repo dir so
+    # resolution is deterministic — the pull/push assertions below previously
+    # depended on a stray ``/tmp/repo-a`` happening to exist (flaky).
+    (tmp_path / "repo-a").mkdir()
+    repo_a_dir = str(tmp_path / "repo-a")
 
     with patch("repository_manager.mcp_server.get_git_instance", return_value=mock_git):
         # 1. Action: raw (missing command)
@@ -224,8 +230,12 @@ async def test_mcp_rm_git_tool():
             ctx=None,
         )
         assert res["status"] == "submitted"
-        # Wait for thread to process
-        await asyncio.sleep(0.1)
+        # The clone job runs on a background thread; wait until it has invoked the
+        # mock rather than relying on a fixed sleep (which raced under load).
+        for _ in range(300):
+            if mock_git.clone_projects.called:
+                break
+            await asyncio.sleep(0.01)
         mock_git.clone_projects.assert_called_with(
             projects=[
                 "https://github.com/org/repo-a.git",
@@ -258,10 +268,16 @@ async def test_mcp_rm_git_tool():
             ctx=None,
         )
         assert res["status"] == "submitted"
-        # Wait for thread to process
-        await asyncio.sleep(0.1)
-        mock_git.pull_projects.assert_called_with(
-            project_dirs=["/tmp/repo-a", "/absolute/path/repo-b"]
+        # Both pull jobs (4 + 4b) run on background threads that can finish in any
+        # order; wait until both have invoked the mock, then assert the custom call
+        # was made (order-independent — assert_called_with checks only the LAST
+        # call, which flaked when 4a's thread landed after 4b's).
+        for _ in range(300):
+            if mock_git.pull_projects.call_count >= 2:
+                break
+            await asyncio.sleep(0.01)
+        mock_git.pull_projects.assert_any_call(
+            project_dirs=[repo_a_dir, "/absolute/path/repo-b"]
         )
 
         # 5. Action: push
@@ -289,10 +305,14 @@ async def test_mcp_rm_git_tool():
             ctx=None,
         )
         assert res["status"] == "submitted"
-        # Wait for thread to process
-        await asyncio.sleep(0.1)
-        mock_git.push_projects.assert_called_with(
-            project_dirs=["/tmp/repo-a", "/absolute/path/repo-b"]
+        # Both push jobs (5 + 5b) run on background threads; wait for both, then
+        # assert the custom call landed (order-independent — see pull above).
+        for _ in range(300):
+            if mock_git.push_projects.call_count >= 2:
+                break
+            await asyncio.sleep(0.01)
+        mock_git.push_projects.assert_any_call(
+            project_dirs=[repo_a_dir, "/absolute/path/repo-b"]
         )
 
         # 6. Action: phased_push
