@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://knuckles-team.github.io/repository-manager/phased_maintenance/">
+        <link rel="canonical" href="https://knuckles-team.github.io/repository-manager/usage/">
       
       
-        <link rel="prev" href="../usage/">
+        <link rel="prev" href="../deployment/">
       
       
-        <link rel="next" href="../phased_push/">
+        <link rel="next" href="../phased_maintenance/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>Phased Maintenance - repository-manager</title>
+        <title>Usage (API / CLI / MCP) - repository-manager</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#phased-maintenance-workflows" class="md-skip">
+        <a href="#usage-api-cli-mcp" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Phased Maintenance
+              Usage (API / CLI / MCP)
             
           </span>
         </div>
@@ -310,9 +310,11 @@
   
   
   
+    
   
-    <li class="md-tabs__item">
-      <a href="../usage/" class="md-tabs__link">
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
         
   
   
@@ -329,11 +331,9 @@
   
   
   
-    
   
-  
-    <li class="md-tabs__item md-tabs__item--active">
-      <a href="./" class="md-tabs__link">
+    <li class="md-tabs__item">
+      <a href="../phased_maintenance/" class="md-tabs__link">
         
   
   
@@ -547,33 +547,6 @@
       
   
   
-  
-  
-    <li class="md-nav__item">
-      <a href="../usage/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Usage (API / CLI / MCP)
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-    
-      
-      
-  
-  
     
   
   
@@ -593,7 +566,7 @@
   <span class="md-ellipsis">
     
   
-    Phased Maintenance
+    Usage (API / CLI / MCP)
   
 
     
@@ -611,7 +584,7 @@
   <span class="md-ellipsis">
     
   
-    Phased Maintenance
+    Usage (API / CLI / MCP)
   
 
     
@@ -637,10 +610,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#phased-maintenance-phases" class="md-nav__link">
+  <a href="#as-an-mcp-server" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Phased Maintenance Phases
+        As an MCP server
       
     </span>
   </a>
@@ -648,10 +621,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cli-usage" class="md-nav__link">
+  <a href="#as-a-python-api" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CLI Usage
+        As a Python API
       
     </span>
   </a>
@@ -659,21 +632,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#example-the-sequential-execution-pipeline" class="md-nav__link">
+  <a href="#as-a-cli" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Example: The Sequential Execution Pipeline
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#example-targeting-specific-phases-or-projects" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example: Targeting specific phases or projects
+        As a CLI
       
     </span>
   </a>
@@ -684,6 +646,33 @@
   
 </nav>
       
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../phased_maintenance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Phased Maintenance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -769,10 +758,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#phased-maintenance-phases" class="md-nav__link">
+  <a href="#as-an-mcp-server" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Phased Maintenance Phases
+        As an MCP server
       
     </span>
   </a>
@@ -780,10 +769,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cli-usage" class="md-nav__link">
+  <a href="#as-a-python-api" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CLI Usage
+        As a Python API
       
     </span>
   </a>
@@ -791,21 +780,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#example-the-sequential-execution-pipeline" class="md-nav__link">
+  <a href="#as-a-cli" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Example: The Sequential Execution Pipeline
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#example-targeting-specific-phases-or-projects" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example: Targeting specific phases or projects
+        As a CLI
       
     </span>
   </a>
@@ -832,54 +810,104 @@
   
 
 
-<h1 id="phased-maintenance-workflows">Phased Maintenance Workflows<a class="headerlink" href="#phased-maintenance-workflows" title="Permanent link">&para;</a></h1>
-<p>The <code>repository-manager</code> includes powerful workflow automation features to execute phased, sequential updates across the workspace. This is primarily controlled via the <code>workspace.yml</code> configuration and the command-line interface.</p>
-<h2 id="phased-maintenance-phases">Phased Maintenance Phases<a class="headerlink" href="#phased-maintenance-phases" title="Permanent link">&para;</a></h2>
-<p>The agent ecosystem enforces dependency order updates through sequential maintenance phases. By default, three core phases govern the ecosystem:</p>
-<ol>
-<li>
-<p><strong>Phase 1: Core Tools and UIs</strong>
-   Updates the foundation (<code>universal-skills</code>, <code>skill-graphs</code>, <code>agent-webui</code>, <code>agent-terminal-ui</code>).
-   Wait Interval: 10 minutes (allows CI/CD or CD pipeline deployments to propagate).</p>
-</li>
-<li>
-<p><strong>Phase 2: agent-utilities</strong>
-   Updates the primary orchestrator that depends on core tools.
-   Wait Interval: 5 minutes.</p>
-</li>
-<li>
-<p><strong>Phase 3: Agents</strong>
-   Executes a bulk update for all <code>agent</code> projects using a wildcard strategy to deploy final updates to the ecosystem.</p>
-</li>
-</ol>
-<h2 id="cli-usage">CLI Usage<a class="headerlink" href="#cli-usage" title="Permanent link">&para;</a></h2>
-<p>The following flags control phased update and push sequences:</p>
+<h1 id="usage-api-cli-mcp">Usage — API / CLI / MCP<a class="headerlink" href="#usage-api-cli-mcp" title="Permanent link">&para;</a></h1>
+<p><code>repository-manager</code> exposes the same capability three ways: as <strong>MCP tools</strong> an
+agent calls, as a <strong>Python API</strong> (<code>Git</code>) you import, and as a <strong>command-line
+interface</strong>.</p>
+<h2 id="as-an-mcp-server">As an MCP server<a class="headerlink" href="#as-an-mcp-server" title="Permanent link">&para;</a></h2>
+<p>Once <a href="../deployment/">deployed</a>, the server registers consolidated, action-routed tool
+modules. Each module groups related methods behind one tool to keep the LLM context
+small, and each can be toggled independently with its environment variable.</p>
+<table>
+<thead>
+<tr>
+<th>Module</th>
+<th>Toggle</th>
+<th>Default</th>
+<th>Action-routed methods</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Misc</td>
+<td><code>MISCTOOL</code></td>
+<td><code>True</code></td>
+<td>health check and miscellaneous helpers</td>
+</tr>
+<tr>
+<td>Git Operations</td>
+<td><code>GIT_OPERATIONSTOOL</code></td>
+<td><code>True</code></td>
+<td><code>clone</code>, <code>pull</code>, <code>push</code>, <code>phased_push</code>, <code>raw</code></td>
+</tr>
+<tr>
+<td>Workspace Management</td>
+<td><code>WORKSPACE_MANAGEMENTTOOL</code></td>
+<td><code>True</code></td>
+<td><code>list</code>, <code>list_branches</code>, <code>maintain</code>, <code>remediate</code>, <code>save</code>, <code>setup</code>, <code>template</code></td>
+</tr>
+<tr>
+<td>Project Management</td>
+<td><code>PROJECT_MANAGEMENT_TOOL</code></td>
+<td><code>True</code></td>
+<td><code>build</code>, <code>install</code>, <code>validate</code>, <code>validate_status</code></td>
+</tr>
+</tbody>
+</table>
+<p>Example agent prompts that map onto these tools:</p>
 <ul>
-<li><code>--validate</code>: Executes a full pre-release validation. If this fails, the next steps are aborted.</li>
-<li><code>--bump [patch/minor/major]</code>: Executes a version bump.</li>
-<li><code>--maintain</code>: Executes phased dependency updates across the workspace. Modifies <code>pyproject.toml</code> automatically based on dependency tree.</li>
-<li><code>--push</code>: Executes a parallelized Git Push sequence per-phase, respecting <code>wait_minutes</code> pauses.</li>
-<li><code>--phase [int]</code>: Starting phase (1-3).</li>
-<li><code>--single-phase</code>: Execute only the specified starting phase and halt.</li>
-<li><code>--project [name]</code>: Execute bumps or pushes exclusively for a targeted project name.</li>
+<li><em>"List every project in the workspace."</em> → <code>workspace_management list</code></li>
+<li><em>"Pull the latest changes for all repositories."</em> → <code>git_operations pull</code></li>
+<li><em>"Validate the workspace, then run a phased push of the agents."</em> → <code>project_management validate</code> + <code>git_operations phased_push</code></li>
 </ul>
-<h2 id="example-the-sequential-execution-pipeline">Example: The Sequential Execution Pipeline<a class="headerlink" href="#example-the-sequential-execution-pipeline" title="Permanent link">&para;</a></h2>
-<p>To run a safe end-to-end update sequence that stops if errors are detected:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>repository-manager<span class="w"> </span>--validate<span class="w"> </span>--bump<span class="w"> </span>patch<span class="w"> </span>--maintain<span class="w"> </span>--push
+<h2 id="as-a-python-api">As a Python API<a class="headerlink" href="#as-a-python-api" title="Permanent link">&para;</a></h2>
+<p><code>Git</code> (<code>repository_manager.repository_manager</code>) is a workspace-aware client for bulk
+Git operations and workspace introspection.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">repository_manager.repository_manager</span><span class="w"> </span><span class="kn">import</span> <span class="n">Git</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">git</span> <span class="o">=</span> <span class="n">Git</span><span class="p">(</span><span class="n">path</span><span class="o">=</span><span class="s2">&quot;/home/apps/workspace&quot;</span><span class="p">)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Reads</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">projects</span> <span class="o">=</span> <span class="n">git</span><span class="o">.</span><span class="n">get_workspace_projects</span><span class="p">()</span>        <span class="c1"># list of managed project names</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">project_map</span> <span class="o">=</span> <span class="n">git</span><span class="o">.</span><span class="n">get_project_map</span><span class="p">()</span>            <span class="c1"># name -&gt; absolute path</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">branches</span> <span class="o">=</span> <span class="n">git</span><span class="o">.</span><span class="n">list_branches</span><span class="p">()</span>                 <span class="c1"># name -&gt; current branch</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="c1"># Bulk operations</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">git</span><span class="o">.</span><span class="n">pull_projects</span><span class="p">()</span>                            <span class="c1"># pull every managed repository</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="n">git</span><span class="o">.</span><span class="n">clone_projects</span><span class="p">([</span><span class="s2">&quot;agent-utilities&quot;</span><span class="p">])</span>        <span class="c1"># clone selected projects</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="c1"># Validation</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="n">result</span> <span class="o">=</span> <span class="n">git</span><span class="o">.</span><span class="n">validate_single_project</span><span class="p">(</span><span class="n">project_map</span><span class="p">[</span><span class="s2">&quot;agent-utilities&quot;</span><span class="p">])</span>
 </span></code></pre></div>
-<ol>
-<li><strong>Validation</strong>: Verifies static analysis and imports.</li>
-<li><strong>Bump</strong>: Bumps semantic versions.</li>
-<li><strong>Maintain</strong>: Propagates version changes in dependency trees.</li>
-<li><strong>Push</strong>: Pushes all projects upstream in parallel chunks, grouped by phase.</li>
-</ol>
-<h2 id="example-targeting-specific-phases-or-projects">Example: Targeting specific phases or projects<a class="headerlink" href="#example-targeting-specific-phases-or-projects" title="Permanent link">&para;</a></h2>
-<p>Run only Phase 2 pushing:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>repository-manager<span class="w"> </span>--push<span class="w"> </span>--phase<span class="w"> </span><span class="m">2</span><span class="w"> </span>--single-phase
-</span></code></pre></div></p>
-<p>Target only <code>agent-utilities</code> during a phased bump:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>repository-manager<span class="w"> </span>--maintain<span class="w"> </span>--bump<span class="w"> </span>patch<span class="w"> </span>--project<span class="w"> </span>agent-utilities
-</span></code></pre></div></p>
+<p>Load a workspace from its declarative <code>workspace.yml</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">git</span> <span class="o">=</span> <span class="n">Git</span><span class="p">(</span><span class="n">path</span><span class="o">=</span><span class="s2">&quot;/home/apps/workspace&quot;</span><span class="p">)</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">git</span><span class="o">.</span><span class="n">setup_from_yaml</span><span class="p">(</span><span class="s2">&quot;workspace.yml&quot;</span><span class="p">)</span>           <span class="c1"># materialize the declared estate</span>
+</span></code></pre></div>
+<h2 id="as-a-cli">As a CLI<a class="headerlink" href="#as-a-cli" title="Permanent link">&para;</a></h2>
+<p>The <code>repository-manager</code> console script drives the full maintenance lifecycle from
+the command line.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Set up the workspace from its declared configuration</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>repository-manager<span class="w"> </span>--setup
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Enumerate branches across every managed repository</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>repository-manager<span class="w"> </span>--branches
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># Clone and pull in bulk</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>repository-manager<span class="w"> </span>--clone
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>repository-manager<span class="w"> </span>--pull
+</span></code></pre></div>
+<p>The autonomous release harness runs a validation → bump → maintain → push sequence
+that aborts on the first failure:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>repository-manager<span class="w"> </span>--validate<span class="w"> </span>--bump<span class="w"> </span>patch<span class="w"> </span>--maintain<span class="w"> </span>--push
+</span></code></pre></div>
+<ul>
+<li><strong><code>--validate</code></strong> runs a full pre-release validation; subsequent steps abort on failure.</li>
+<li><strong><code>--bump [patch|minor|major]</code></strong> bumps semantic versions.</li>
+<li><strong><code>--maintain</code></strong> propagates version changes through the dependency tree.</li>
+<li><strong><code>--push</code></strong> runs a parallelized, phase-gated Git push respecting <code>wait_minutes</code>.</li>
+</ul>
+<p>The phased mechanics are documented in detail in
+<a href="../phased_maintenance/">Phased Maintenance</a> and <a href="../phased_push/">Phased Push</a>.</p>
 
 
 
@@ -917,7 +945,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../usage/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Usage (API / CLI / MCP)">
+          <a href="../deployment/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Deployment">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -927,20 +955,20 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                Usage (API / CLI / MCP)
+                Deployment
               </div>
             </div>
           </a>
         
         
           
-          <a href="../phased_push/" class="md-footer__link md-footer__link--next" aria-label="Next: Phased Push">
+          <a href="../phased_maintenance/" class="md-footer__link md-footer__link--next" aria-label="Next: Phased Maintenance">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Phased Push
+                Phased Maintenance
               </div>
             </div>
             <div class="md-footer__button md-icon">
