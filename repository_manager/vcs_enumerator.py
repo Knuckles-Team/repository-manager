@@ -36,7 +36,9 @@ except ImportError:  # pragma: no cover - exercised only without httpx
     _HTTPX = False
 
 
-def _gitlab_creds(base_url: str | None, token: str | None) -> tuple[str | None, str | None]:
+def _gitlab_creds(
+    base_url: str | None, token: str | None
+) -> tuple[str | None, str | None]:
     return (
         base_url or os.getenv("GITLAB_URL") or os.getenv("GITLAB_HOST"),
         token or os.getenv("GITLAB_TOKEN") or os.getenv("GITLAB_PRIVATE_TOKEN"),
@@ -111,10 +113,7 @@ def enumerate_gitlab(
         client = httpx.Client(verify=verify_ssl, timeout=30.0)
     headers = {"PRIVATE-TOKEN": tok} if tok else {}
     targets: list[str] = (
-        [
-            f"{base.rstrip('/')}/api/v4/groups/{g}/projects"
-            for g in groups
-        ]
+        [f"{base.rstrip('/')}/api/v4/groups/{g}/projects" for g in groups]
         if groups
         else [f"{base.rstrip('/')}/api/v4/projects"]
     )
@@ -214,7 +213,9 @@ def enumerate_github(
     return out
 
 
-def write_manifest(refs: list[dict[str, Any]], run_id: str, out_dir: str | None = None) -> str:
+def write_manifest(
+    refs: list[dict[str, Any]], run_id: str, out_dir: str | None = None
+) -> str:
     """Write the enumerated refs as a JSON ingest manifest under reports/.
 
     Returns the manifest path. Never writes to a repo root (AGENTS hygiene).
