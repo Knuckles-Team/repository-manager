@@ -55,6 +55,8 @@ subdirectories:
             description: "Data Science MCP Server — Model training, evaluation, and evolution tools for agentic ML workflows. Integrates with agent-utilities IModelEvolver (CONCEPT:AHE-3.8)."
           - url: "https://github.com/Knuckles-Team/documentdb-mcp.git"
             description: "DocumentDB MCP Server & A2A Server. DocumentDB is a MongoDB compatible open source document database built on PostgreSQL."
+          - url: "https://github.com/Knuckles-Team/egeria-mcp.git"
+            description: "Apache Egeria open-metadata API + MCP Server for Agentic AI! Metadata/governance/lineage system-of-record federated with the epistemic-graph KG. CONCEPT:EG-001"
           - url: "https://github.com/Knuckles-Team/emerald-exchange.git"
             description: "Emerald Exchange — Unified Finance MCP Server with fully abstracted exchange backends for equities, crypto, and derivatives trading. CONCEPT:EE-001"
           - url: "https://github.com/Knuckles-Team/erpnext-agent.git"
