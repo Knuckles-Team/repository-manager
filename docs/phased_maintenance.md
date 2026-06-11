@@ -17,6 +17,26 @@ The agent ecosystem enforces dependency order updates through sequential mainten
 3. **Phase 3: Agents**
    Executes a bulk update for all `agent` projects using a wildcard strategy to deploy final updates to the ecosystem.
 
+## Change-aware Start Phase
+
+When the bump and push are driven automatically (the `workspace-validator` skill's
+`auto_bump` / `auto_push`, which the MCP `validate` tool wires on), the sequence does
+not blindly start at Phase 1. It first detects the **lowest phase that contains a repo
+with pending work** and starts there, skipping unchanged upstream phases and their
+inter-phase waits.
+
+This is safe because phases are topologically ordered — a change in phase *N* can only
+cascade downstream to phases `>= N` (dependency-pin propagation flows from upstream to
+downstream, never the reverse). So:
+
+- Edit something in **Phase 2** → the bump/push runs **Phase 2, 3, 4, …** and skips Phase 1.
+- No repo has pending work → the bump/push is a **no-op** (nothing to do).
+
+A repo is considered to have pending work when it is *not* both clean and in sync with
+origin: i.e. it has uncommitted changes, an unpushed feature commit, or an unpushed
+version bump awaiting delivery. An explicit starting phase (`--phase`) is honored as a
+floor — the effective start is `max(explicit_phase, detected_phase)`.
+
 ## CLI Usage
 
 The following flags control phased update and push sequences:

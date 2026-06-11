@@ -1074,11 +1074,20 @@ def register_project_management_tools(mcp: FastMCP):
         ),
         auto_bump: bool = Field(
             default=False,
-            description="Automatically run phased_bumpversion if validation passes.",
+            description=(
+                "Automatically run phased_bumpversion if validation passes. "
+                "Begins at the lowest phase that has repository changes (and "
+                "cascades to every later phase), skipping unchanged upstream "
+                "phases."
+            ),
         ),
         auto_push: bool = Field(
             default=False,
-            description="Automatically run phased_push if validation passes.",
+            description=(
+                "Automatically run phased_push if validation passes. Begins at "
+                "the lowest phase with unpushed work, skipping the inter-phase "
+                "waits of unchanged upstream phases."
+            ),
         ),
         bump_part: str = Field(
             default="minor",
@@ -1312,6 +1321,7 @@ def register_project_management_tools(mcp: FastMCP):
                     git.maintain_projects,
                     part=bump_part,
                     start_phase=1,
+                    auto_start=True,
                     dry_run=False,
                     progress=progress,
                     _extra_job_data={"progress_detail": progress},
@@ -1334,6 +1344,7 @@ def register_project_management_tools(mcp: FastMCP):
                     True,
                     git.phased_push,
                     start_phase=1,
+                    auto_start=True,
                     project_filter=None,
                     progress=progress,
                     _extra_job_data={"progress_detail": progress},
