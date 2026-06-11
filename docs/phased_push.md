@@ -32,6 +32,9 @@ maintenance:
 - **Parallel Push**: All projects defined in the same `phase` block are pushed concurrently using a ThreadPoolExecutor (`git push --follow-tags`).
 - **Wait Durations**: The `wait_minutes` key introduces an active wait period (in minutes) upon completing a phase, preventing subsequent phases from building against stale/unpublished remote artifacts.
 - **Bulk Execution**: A phase marked with `bulk_push: True` will dynamically resolve all repositories inside the workspace mapping that haven't been pushed in earlier phases (typically all the `agents/*` directories).
+- **Change-aware start (`auto_start`)**: When enabled, the push begins at the *lowest phase that actually has unpushed work* instead of always Phase 1. Because phases are topologically ordered (lower phase = more upstream), a change in phase *N* can only cascade to phases `>= N` — so earlier, unchanged phases (and their `wait_minutes` pauses) are safely skipped. A repo counts as having work when it is not both clean and in sync with origin (uncommitted changes, an unpushed feature commit, or an unpushed version bump). If no repo has pending work, the push is a no-op. This is what the `workspace-validator` skill's `auto_push` uses, so editing a single Phase-2 repo triggers Phase 2 onward without sitting through the Phase-1 wait.
+
+> **Independent vs. explicit start.** `auto_start` only ever advances the start phase forward; an explicit `start_phase` (CLI `--phase`) still acts as a floor, and the two compose as `max(explicit, detected)`.
 
 ## Usage
 

@@ -1998,6 +1998,67 @@ class Git:
                 return "already bumped, awaiting push (avoids double-bump)"
         return None
 
+    @staticmethod
+    def _build_phase_map(config: dict) -> tuple[dict[str, int], int]:
+        """Map each explicitly-named project to its phase number.
+
+        Returns ``(project_phases, bulk_phase_num)`` where ``project_phases``
+        maps a project name to the phase that names it, and ``bulk_phase_num``
+        is the phase carrying ``bulk_bump``/``bulk_push`` (the catch-all every
+        unnamed repo falls into). Mirrors the per-project phase resolution
+        already used by :meth:`phased_bumpversion`.
+        """
+        project_phases: dict[str, int] = {}
+        bulk_phase_num = 5
+        for phase in config.get("phases", []):
+            p_num = phase.get("phase", 1)
+            if phase.get("bulk_bump") or phase.get("bulk_push"):
+                bulk_phase_num = p_num
+            projects_in_phase = phase.get("projects", [])[:]
+            if phase.get("project"):
+                projects_in_phase.append(phase.get("project"))
+            for p in projects_in_phase:
+                project_phases[p] = p_num
+        return project_phases, bulk_phase_num
+
+    def _repo_has_pending_work(self, project_dir: str) -> bool:
+        """True when a repo has anything to bump or push.
+
+        A repo that is both clean and in sync with origin has no uncommitted
+        changes, no unpushed feature commits, and no unpushed version bump — so
+        neither the bump nor the push step would act on it. This is the same
+        no-op test :meth:`_bump_skip_reason` uses; anything else (dirty tree,
+        ahead of origin) is treated as pending work.
+        """
+        status_check = self.git_action("git status", path=project_dir, quiet=True)
+        data_lower = status_check.data.lower() if status_check.data else ""
+        clean = "nothing to commit" in data_lower
+        up_to_date = "your branch is up to date" in data_lower
+        return not (clean and up_to_date)
+
+    def _auto_start_phase(self, config: dict) -> int | None:
+        """Lowest phase number that contains a repo with pending work.
+
+        Phases are topologically ordered (lower phase = more upstream): a change
+        in phase *N* can only cascade to phases ``>= N`` via dependency-pin
+        propagation, never to an earlier phase. So the bump/push can safely begin
+        at the lowest phase that actually has work and still capture every
+        downstream effect, skipping purely-unaffected upstream phases (and their
+        inter-phase waits). Returns ``None`` when no repo has pending work — the
+        caller should then do nothing. (CONCEPT:RM-PHASE-START)
+        """
+        project_phases, bulk_phase_num = self._build_phase_map(config)
+        lowest: int | None = None
+        for url, path in self.project_map.items():
+            name = url.split("/")[-1].replace(".git", "")
+            phase_num = project_phases.get(name, bulk_phase_num)
+            # Once a candidate is found, only earlier phases can lower it.
+            if lowest is not None and phase_num >= lowest:
+                continue
+            if self._repo_has_pending_work(path):
+                lowest = phase_num
+        return lowest
+
     def bump_version(
         self,
         part: str,
@@ -2346,9 +2407,15 @@ class Git:
         project_filter: str | None = None,
         progress: dict | None = None,
         force: bool = False,
+        auto_start: bool = False,
     ) -> list[GitResult]:
         """
         Execute the phased bumpversion workflow: pre-commits + phased bumping.
+
+        When ``auto_start`` is set, the run begins at the lowest phase that
+        actually contains a repo with pending work (advancing ``start_phase``
+        forward, never backward) so unchanged upstream phases are skipped.
+        A change in phase *N* still cascades to every phase ``>= N``.
 
         Concept:
             CONCEPT:RM-BUMP
@@ -2356,7 +2423,7 @@ class Git:
         if progress is None:
             progress = self.progress
 
-        all_results = []
+        all_results: list[GitResult] = []
         if config is None:
             config_model: MaintenanceConfig | None = None
             if hasattr(self, "config") and self.config and self.config.maintenance:
@@ -2399,6 +2466,24 @@ class Git:
 
         def get_project_phase(proj_name: str) -> int:
             return project_phases.get(proj_name, bulk_phase_num)
+
+        if auto_start:
+            detected = self._auto_start_phase(config)
+            if detected is None:
+                logger.info(
+                    "Phased bump: no repository changes detected; nothing to bump."
+                )
+                if progress is not None:
+                    progress["current_phase"] = "No changes — nothing to bump"
+                    progress["progress"] = 100
+                    progress["phases"] = {}
+                return all_results
+            if detected > start_phase:
+                logger.info(
+                    f"Phased bump: lowest changed phase is {detected}; "
+                    f"starting there (skipping phases {start_phase}–{detected - 1})."
+                )
+            start_phase = max(start_phase, detected)
 
         if allow_pre_commit:
             projects_to_check: list[Any] | None = None
@@ -2664,9 +2749,14 @@ class Git:
         single_phase: bool = False,
         project_filter: str | None = None,
         progress: dict | None = None,
+        auto_start: bool = False,
     ) -> list[GitResult]:
         """
         Execute the phased git push workflow.
+
+        When ``auto_start`` is set, the push begins at the lowest phase that has
+        a repo with unpushed work (advancing ``start_phase`` forward, never
+        backward), skipping the inter-phase waits of unchanged upstream phases.
 
         Concept:
             CONCEPT:RM-PUSH
@@ -2676,7 +2766,7 @@ class Git:
         if progress is None:
             progress = self.progress
 
-        all_results = []
+        all_results: list[GitResult] = []
         if config is None:
             config_model: MaintenanceConfig | None = None
             if hasattr(self, "config") and self.config and self.config.maintenance:
@@ -2699,6 +2789,24 @@ class Git:
             else:
                 logger.error("No maintenance configuration found.")
                 return []
+
+        if auto_start:
+            detected = self._auto_start_phase(config)
+            if detected is None:
+                logger.info(
+                    "Phased push: no repository changes detected; nothing to push."
+                )
+                if progress is not None:
+                    progress["current_phase"] = "No changes — nothing to push"
+                    progress["progress"] = 100
+                    progress["phases"] = {}
+                return all_results
+            if detected > start_phase:
+                logger.info(
+                    f"Phased push: lowest unpushed phase is {detected}; "
+                    f"starting there (skipping phases {start_phase}–{detected - 1})."
+                )
+            start_phase = max(start_phase, detected)
 
         processed_projects = set()
         phase_list: list[dict[str, Any]] = []
