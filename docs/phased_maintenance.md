@@ -17,13 +17,14 @@ The agent ecosystem enforces dependency order updates through sequential mainten
 3. **Phase 3: Agents**
    Executes a bulk update for all `agent` projects using a wildcard strategy to deploy final updates to the ecosystem.
 
-## Change-aware Start Phase
+## Change-aware Start Phase (default)
 
-When the bump and push are driven automatically (the `workspace-validator` skill's
-`auto_bump` / `auto_push`, which the MCP `validate` tool wires on), the sequence does
-not blindly start at Phase 1. It first detects the **lowest phase that contains a repo
-with pending work** and starts there, skipping unchanged upstream phases and their
-inter-phase waits.
+Phased bump and push are **change-aware by default**: instead of blindly starting at
+Phase 1, they first detect the **lowest phase that contains a repo with pending work**
+and start there, skipping unchanged upstream phases and their inter-phase waits. This
+applies everywhere — the CLI (`--maintain` / `--push`), the MCP tools
+(`rm_workspace action="maintain"`, `rm_git action="phased_push"`), and the
+`workspace-validator` skill's `auto_bump` / `auto_push`.
 
 This is safe because phases are topologically ordered — a change in phase *N* can only
 cascade downstream to phases `>= N` (dependency-pin propagation flows from upstream to
@@ -37,6 +38,12 @@ origin: i.e. it has uncommitted changes, an unpushed feature commit, or an unpus
 version bump awaiting delivery. An explicit starting phase (`--phase`) is honored as a
 floor — the effective start is `max(explicit_phase, detected_phase)`.
 
+**Opting out.** Pass `--no-auto-start` on the CLI, or `auto_start=False` to the MCP
+tools / library functions, to force a start at the explicit `--phase` (default 1).
+Change-aware start also **stands down automatically** for explicit-targeting requests —
+when a `--project` / `project_filter` is given (bump and push), or `--force` (bump) —
+since those deliberately bypass change detection.
+
 ## CLI Usage
 
 The following flags control phased update and push sequences:
@@ -45,9 +52,10 @@ The following flags control phased update and push sequences:
 - `--bump [patch/minor/major]`: Executes a version bump.
 - `--maintain`: Executes phased dependency updates across the workspace. Modifies `pyproject.toml` automatically based on dependency tree.
 - `--push`: Executes a parallelized Git Push sequence per-phase, respecting `wait_minutes` pauses.
-- `--phase [int]`: Starting phase (1-3).
+- `--phase [int]`: Starting phase (1-3). Acts as a floor under change-aware start.
+- `--no-auto-start`: Opt out of change-aware start; begin at `--phase` (default 1) instead of the lowest changed phase.
 - `--single-phase`: Execute only the specified starting phase and halt.
-- `--project [name]`: Execute bumps or pushes exclusively for a targeted project name.
+- `--project [name]`: Execute bumps or pushes exclusively for a targeted project name (disables change-aware start).
 
 ## Example: The Sequential Execution Pipeline
 
