@@ -146,3 +146,78 @@ def test_phased_bumpversion_auto_start_no_changes_is_noop(tmp_path):
 
     manager.bump_version.assert_not_called()
     assert results == []
+
+
+# --- Default-on behavior and opt-out / explicit-targeting guards ---
+
+
+@patch("time.sleep")
+def test_phased_push_auto_start_is_default(mock_sleep, tmp_path):
+    # No auto_start argument => change-aware start is the default.
+    manager = _make_manager(
+        tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": CLEAN}
+    )
+    manager.push_project = MagicMock(
+        return_value=GitResult(status="success", data="Pushed", error=None, metadata=None)
+    )
+
+    progress: dict = {"current_phase": "", "progress": 0, "phases": {}}
+    manager.phased_push(config=CONFIG, progress=progress)
+
+    assert set(progress["phases"]) == {"Phase 2", "Phase 3"}
+
+
+@patch("time.sleep")
+def test_phased_push_auto_start_false_opts_out(mock_sleep, tmp_path):
+    # auto_start=False => always start at start_phase (Phase 1 here).
+    manager = _make_manager(
+        tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": CLEAN}
+    )
+    manager.push_project = MagicMock(
+        return_value=GitResult(status="success", data="Pushed", error=None, metadata=None)
+    )
+
+    progress: dict = {"current_phase": "", "progress": 0, "phases": {}}
+    manager.phased_push(config=CONFIG, auto_start=False, progress=progress)
+
+    assert set(progress["phases"]) == {"Phase 1", "Phase 2", "Phase 3"}
+
+
+@patch("time.sleep")
+def test_phased_push_project_filter_disables_auto_start(mock_sleep, tmp_path):
+    # Targeting repo1 (Phase 1, clean) must still push it even though the lowest
+    # changed phase is 2 — explicit targeting overrides change-aware start.
+    manager = _make_manager(
+        tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": DIRTY}
+    )
+    manager.push_project = MagicMock(
+        return_value=GitResult(status="success", data="Pushed", error=None, metadata=None)
+    )
+
+    manager.phased_push(config=CONFIG, project_filter="repo1")
+
+    pushed_paths = {c.kwargs.get("path") for c in manager.push_project.call_args_list}
+    assert pushed_paths == {str(tmp_path / "repo1")}
+
+
+def test_phased_bumpversion_force_disables_auto_start(tmp_path):
+    # force=True must bump every phase even though nothing has pending changes;
+    # auto_start would otherwise short-circuit to a no-op.
+    manager = _make_manager(
+        tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN}
+    )
+    manager.bump_version = MagicMock(
+        return_value=GitResult(
+            status="success", data="new_version=1.0.1", error=None, metadata=None
+        )
+    )
+    manager.update_dependency = MagicMock(return_value=False)
+
+    manager.phased_bumpversion(config=CONFIG, force=True)
+
+    bumped_paths = {c.kwargs.get("path") for c in manager.bump_version.call_args_list}
+    assert bumped_paths == {
+        str(tmp_path / "repo1"),
+        str(tmp_path / "repo2"),
+        str(tmp_path / "repo3"),
+    }
