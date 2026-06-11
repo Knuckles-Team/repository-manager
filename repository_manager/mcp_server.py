@@ -596,6 +596,15 @@ def register_git_operations_tools(mcp: FastMCP):
             default=None,
             description="Optional specific project to push for 'phased_push'.",
         ),
+        auto_start: bool = Field(
+            default=True,
+            description=(
+                "For 'phased_push': begin at the lowest phase with unpushed work "
+                "instead of always 'phase', skipping the inter-phase waits of "
+                "unchanged upstream phases. Default True; set False to start at "
+                "'phase'. Ignored when 'target_project' is set."
+            ),
+        ),
         projects: str | None = Field(
             default=None,
             description="Optional comma-separated list of repository URLs to clone or directory names/paths to pull/push/add/commit.",
@@ -614,6 +623,9 @@ def register_git_operations_tools(mcp: FastMCP):
     ) -> GitResult | str | dict:
         """Bulk Git operations and arbitrary command execution."""
         from repository_manager.models import GitError
+
+        if not isinstance(auto_start, bool):
+            auto_start = True
 
         git = get_git_instance(path=path, threads=threads)
 
@@ -769,6 +781,7 @@ def register_git_operations_tools(mcp: FastMCP):
                 git.phased_push,
                 start_phase=phase or 1,
                 project_filter=target_project,
+                auto_start=auto_start,
                 progress=progress,
                 _extra_job_data={"progress_detail": progress},
             )
@@ -798,6 +811,15 @@ def register_workspace_management_tools(mcp: FastMCP):
         ),
         phase: int = Field(
             default=1, description="Starting phase number for 'maintain'."
+        ),
+        auto_start: bool = Field(
+            default=True,
+            description=(
+                "For 'maintain': begin at the lowest phase with repository changes "
+                "instead of always 'phase', cascading to every later phase and "
+                "skipping unchanged upstream phases. Default True; set False to "
+                "start at 'phase'. Ignored when 'projects' or 'force' is set."
+            ),
         ),
         dry_run: bool = Field(
             default=False, description="Perform a dry run for 'maintain'."
@@ -846,6 +868,8 @@ def register_workspace_management_tools(mcp: FastMCP):
             summary = True
         if not isinstance(force, bool):
             force = False
+        if not isinstance(auto_start, bool):
+            auto_start = True
 
         git = get_git_instance()
 
@@ -903,6 +927,7 @@ def register_workspace_management_tools(mcp: FastMCP):
                 git.maintain_projects,
                 part=part,
                 start_phase=phase,
+                auto_start=auto_start,
                 dry_run=dry_run,
                 project_filter=projects or None,
                 force=force,

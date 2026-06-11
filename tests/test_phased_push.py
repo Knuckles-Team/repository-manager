@@ -40,7 +40,10 @@ def test_phased_push(mock_sleep, mock_repo_manager):
         ]
     }
 
-    results = mock_repo_manager.phased_push(start_phase=1, config=config)
+    # auto_start=False isolates the raw push loop (no change-detection git calls).
+    results = mock_repo_manager.phased_push(
+        start_phase=1, config=config, auto_start=False
+    )
 
     assert len(results) == 3  # 3 pushes
     # 3 status checks + 3 pushes = 6 calls
