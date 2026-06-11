@@ -115,7 +115,9 @@ def test_maintenance_config_loading(sample_workspace_yml):
             ]
             mock_bump.return_value = get_mock_metadata("bump")
 
-            git.maintain_projects(dry_run=True, start_phase=100)
+            # auto_start=False keeps the high start_phase a clean no-op; this
+            # test exercises config loading, not change-aware start detection.
+            git.maintain_projects(dry_run=True, start_phase=100, auto_start=False)
 
             assert hasattr(git, "config")
             assert git.config is not None

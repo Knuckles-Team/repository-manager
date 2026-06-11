@@ -2407,15 +2407,19 @@ class Git:
         project_filter: str | None = None,
         progress: dict | None = None,
         force: bool = False,
-        auto_start: bool = False,
+        auto_start: bool = True,
     ) -> list[GitResult]:
         """
         Execute the phased bumpversion workflow: pre-commits + phased bumping.
 
-        When ``auto_start`` is set, the run begins at the lowest phase that
+        ``auto_start`` (the default) begins the run at the lowest phase that
         actually contains a repo with pending work (advancing ``start_phase``
         forward, never backward) so unchanged upstream phases are skipped.
-        A change in phase *N* still cascades to every phase ``>= N``.
+        A change in phase *N* still cascades to every phase ``>= N``. It stands
+        down — running from the explicit ``start_phase`` — when ``project_filter``
+        or ``force`` is set, since those are explicit-targeting requests that
+        deliberately bypass change detection. Pass ``auto_start=False`` to opt
+        out and always start at ``start_phase``.
 
         Concept:
             CONCEPT:RM-BUMP
@@ -2467,7 +2471,7 @@ class Git:
         def get_project_phase(proj_name: str) -> int:
             return project_phases.get(proj_name, bulk_phase_num)
 
-        if auto_start:
+        if auto_start and not project_filter and not force:
             detected = self._auto_start_phase(config)
             if detected is None:
                 logger.info(
@@ -2749,14 +2753,17 @@ class Git:
         single_phase: bool = False,
         project_filter: str | None = None,
         progress: dict | None = None,
-        auto_start: bool = False,
+        auto_start: bool = True,
     ) -> list[GitResult]:
         """
         Execute the phased git push workflow.
 
-        When ``auto_start`` is set, the push begins at the lowest phase that has
+        ``auto_start`` (the default) begins the push at the lowest phase that has
         a repo with unpushed work (advancing ``start_phase`` forward, never
         backward), skipping the inter-phase waits of unchanged upstream phases.
+        It stands down — pushing from the explicit ``start_phase`` — when
+        ``project_filter`` is set, since that is an explicit-targeting request.
+        Pass ``auto_start=False`` to opt out and always start at ``start_phase``.
 
         Concept:
             CONCEPT:RM-PUSH
@@ -2790,7 +2797,7 @@ class Git:
                 logger.error("No maintenance configuration found.")
                 return []
 
-        if auto_start:
+        if auto_start and not project_filter:
             detected = self._auto_start_phase(config)
             if detected is None:
                 logger.info(
@@ -3420,6 +3427,17 @@ Examples:
         help="Only execute the specified phase, do not proceed to subsequent phases.",
     )
     group_maintenance.add_argument(
+        "--no-auto-start",
+        dest="auto_start",
+        action="store_false",
+        default=True,
+        help=(
+            "Opt out of change-aware start. By default --maintain/--push begin at "
+            "the lowest phase with repository changes; this forces a start at "
+            "--phase instead."
+        ),
+    )
+    group_maintenance.add_argument(
         "--project",
         type=str,
         help="Only execute maintenance operations for a specific project.",
@@ -3606,6 +3624,7 @@ Examples:
                 config=config,
                 single_phase=args.single_phase,
                 project_filter=args.project,
+                auto_start=args.auto_start,
             )
 
             for res in results:
@@ -3634,6 +3653,7 @@ Examples:
                 config=config,
                 single_phase=args.single_phase,
                 project_filter=args.project,
+                auto_start=args.auto_start,
             )
             summary = git.generate_markdown_summary("Phased Push", push_results)
             logger.info(summary)
