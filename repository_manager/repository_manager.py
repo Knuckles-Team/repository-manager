@@ -2746,6 +2746,28 @@ class Git:
 
     maintain_projects = phased_bumpversion
 
+    def worktree_hygiene(
+        self,
+        prune: bool = False,
+        base: str = "main",
+        stale_days: int = 14,
+    ) -> dict[str, Any]:
+        """Audit (and optionally prune) session worktrees as a release-flow step.
+
+        Wraps :meth:`WorktreeManager.audit`. Read-only by default — it returns the
+        ``safe_to_prune``/``do_not_disturb`` classification so a release run can
+        report what *could* be cleaned without touching anything. With
+        ``prune=True`` it removes only ``merged`` worktrees (and ``dangling`` admin
+        pointers), never ``active``/``stale`` work or orphaned directories. This is
+        the audit-aware cleanup the release pipeline runs instead of a blind reaper.
+        (CONCEPT:RM-WORKTREE-AUDIT)
+        """
+        from repository_manager.worktree import WorktreeManager
+
+        return WorktreeManager(self).audit(
+            base=base, stale_days=stale_days, prune_merged=prune
+        )
+
     def phased_push(
         self,
         start_phase: int = 1,

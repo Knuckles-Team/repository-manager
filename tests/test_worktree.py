@@ -266,3 +266,55 @@ def test_audit_canonical_repo_unpushed(repo, tmp_path):
     assert rep["class"] == "unpushed"
     assert rep["ahead_origin"] == 1 and rep["no_upstream"] is False
     assert rep["base_unpushed"] is True
+
+
+# ── release-flow hygiene wrapper (Git.worktree_hygiene) ───────────────────
+
+
+def _real_git_repo(tmp_path, monkeypatch):
+    """A real ``Git`` (not FakeGit) over one temp repo, with an isolated
+    WORKTREE_ROOT — the surface the release pipeline calls worktree_hygiene on."""
+    from repository_manager.repository_manager import Git
+
+    ws = tmp_path / "workspace"
+    repo_path = ws / "myrepo"
+    repo_path.mkdir(parents=True)
+    _run("git init -b main", repo_path)
+    _run("git config user.email t@t.io && git config user.name t", repo_path)
+    (repo_path / "README.md").write_text("hello\n")
+    _run("git add -A && git commit -q -m init", repo_path)
+
+    monkeypatch.setattr(wt_mod, "WORKTREE_ROOT", str(tmp_path / "worktrees"))
+    git = Git(path=str(ws))
+    git.project_map = {"git@x/myrepo.git": str(repo_path)}
+    return git, WorktreeManager(git), str(repo_path)
+
+
+def test_worktree_hygiene_reports_without_pruning(tmp_path, monkeypatch):
+    git, wm, _ = _real_git_repo(tmp_path, monkeypatch)
+    merged = wm.add("myrepo", "feat-merged")
+    _commit_in(merged["path"], "f.txt", "feat")
+    wm.merge("myrepo", "feat-merged")
+    active = wm.add("myrepo", "feat-active")
+    _commit_in(active["path"], "wip.txt", "wip")
+
+    report = git.worktree_hygiene()  # default: read-only
+    assert "pruned" not in report
+    assert any(s["branch"] == "feat-merged" for s in report["safe_to_prune"])
+    assert {"repo": "myrepo", "branch": "feat-active"} in report["do_not_disturb"]
+    # nothing removed
+    assert os.path.isdir(merged["path"]) and os.path.isdir(active["path"])
+
+
+def test_worktree_hygiene_prune_removes_only_merged(tmp_path, monkeypatch):
+    git, wm, _ = _real_git_repo(tmp_path, monkeypatch)
+    merged = wm.add("myrepo", "feat-merged")
+    _commit_in(merged["path"], "f.txt", "feat")
+    wm.merge("myrepo", "feat-merged")
+    active = wm.add("myrepo", "feat-active")
+    _commit_in(active["path"], "wip.txt", "wip")
+
+    result = git.worktree_hygiene(prune=True)
+    assert not os.path.isdir(merged["path"])  # merged pruned
+    assert os.path.isdir(active["path"])  # active untouched
+    assert any(p["branch"] == "feat-merged" for p in result["pruned"])
