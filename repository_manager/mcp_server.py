@@ -1003,7 +1003,7 @@ def register_project_management_tools(mcp: FastMCP):
     @mcp.tool(tags={"workspace_management", "project_manager"})
     async def rm_worktree(
         action: str = Field(
-            description="Action: 'add', 'list', 'remove', 'merge', 'sync', 'prune', 'bulk_add'."
+            description="Action: 'add', 'list', 'remove', 'merge', 'sync', 'prune', 'bulk_add', 'audit'."
         ),
         repo: str | None = Field(
             default=None,
@@ -1031,6 +1031,14 @@ def register_project_management_tools(mcp: FastMCP):
         strategy: str = Field(
             default="rebase", description="For 'sync': 'rebase' or 'merge'."
         ),
+        stale_days: int = Field(
+            default=14,
+            description="For 'audit': an unmerged worktree quiet for longer than this many days is classified 'stale' (review) rather than 'active'.",
+        ),
+        prune_merged: bool = Field(
+            default=False,
+            description="For 'audit': DESTRUCTIVE. After classifying, remove every 'merged' worktree (and delete its branch) plus prune 'dangling' admin pointers. Never touches 'active'/'stale' work or orphaned directories.",
+        ),
         repos: str | None = Field(
             default=None,
             description="For 'bulk_add': comma-separated repo basenames (default: every workspace repo).",
@@ -1055,6 +1063,13 @@ def register_project_management_tools(mcp: FastMCP):
             return wm.list_worktrees(repo=repo)
         if action == "prune":
             return wm.prune(repo=repo)
+        if action == "audit":
+            return wm.audit(
+                repo=repo,
+                base=base,
+                stale_days=stale_days,
+                prune_merged=prune_merged,
+            )
         if action == "bulk_add":
             if branch is None:
                 return {"ok": False, "error": "action 'bulk_add' requires 'branch'"}
