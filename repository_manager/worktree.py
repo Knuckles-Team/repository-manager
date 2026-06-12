@@ -310,14 +310,12 @@ class WorktreeManager:
         }
         porcelain = self._run("git status --porcelain", wt_path, quiet=True)
         state["dirty"] = bool(self._ok(porcelain) and porcelain.data.strip())
-        # merged == this worktree's HEAD is reachable from base (an ancestor).
-        # `--is-ancestor` exits 0 when true, 1 when false (-> _ok False).
-        reachable = self._run(
-            f"git merge-base --is-ancestor HEAD {shlex.quote(base)}",
-            wt_path,
-            quiet=True,
-        )
-        state["merged"] = self._ok(reachable)
+        # ahead/behind vs base, and merged in one shot. `--is-ancestor` would be
+        # the idiomatic merged check, but it signals via a non-zero exit (-> the
+        # audited git runner logs a scary "Command failed" on EVERY unmerged
+        # worktree). `ahead == 0` is exactly equivalent — HEAD has no commit
+        # missing from base iff it is reachable from base — and the count call
+        # always exits 0, so derive merged from it and keep the logs clean.
         counts = self._run(
             f"git rev-list --left-right --count {shlex.quote(base)}...HEAD",
             wt_path,
@@ -327,6 +325,7 @@ class WorktreeManager:
             parts = counts.data.split()
             if len(parts) == 2 and all(p.isdigit() for p in parts):
                 state["behind"], state["ahead"] = int(parts[0]), int(parts[1])
+                state["merged"] = state["ahead"] == 0
         ts = self._run("git log -1 --format=%ct HEAD", wt_path, quiet=True)
         if self._ok(ts) and ts.data.strip().isdigit():
             state["last_commit_age_days"] = (
