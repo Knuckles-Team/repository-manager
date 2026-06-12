@@ -312,12 +312,12 @@ class WorktreeManager:
         state["dirty"] = bool(self._ok(porcelain) and porcelain.data.strip())
         # merged == this worktree's HEAD is reachable from base (an ancestor).
         # `--is-ancestor` exits 0 when true, 1 when false (-> _ok False).
-        anc = self._run(
+        reachable = self._run(
             f"git merge-base --is-ancestor HEAD {shlex.quote(base)}",
             wt_path,
             quiet=True,
         )
-        state["merged"] = self._ok(anc)
+        state["merged"] = self._ok(reachable)
         counts = self._run(
             f"git rev-list --left-right --count {shlex.quote(base)}...HEAD",
             wt_path,
@@ -478,9 +478,7 @@ class WorktreeManager:
             canonical = self.resolve_repo(w["repo"])
             path = w.get("path", "")
             if cls == "merged" and canonical and path:
-                res = self._run(
-                    f"git worktree remove {shlex.quote(path)}", canonical
-                )
+                res = self._run(f"git worktree remove {shlex.quote(path)}", canonical)
                 ok = self._ok(res)
                 if ok and w.get("branch"):
                     self._run(

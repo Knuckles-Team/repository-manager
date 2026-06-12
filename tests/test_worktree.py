@@ -21,22 +21,25 @@ class FakeGit:
 
     def git_action(self, command, path=None, quiet=False, **_):
         p = subprocess.run(
-            command, shell=True, cwd=path or self.path,
-            capture_output=True, text=True,
+            command,
+            shell=True,
+            cwd=path or self.path,
+            capture_output=True,
+            text=True,
         )
         out = (p.stdout + p.stderr).strip()
         return SimpleNamespace(
             status="success" if p.returncode == 0 else "error",
             data=out,
-            error=None if p.returncode == 0
+            error=None
+            if p.returncode == 0
             else SimpleNamespace(message=out, code=p.returncode),
             metadata=SimpleNamespace(return_code=p.returncode),
         )
 
 
 def _run(cmd, cwd):
-    subprocess.run(cmd, shell=True, cwd=cwd, check=True,
-                   capture_output=True, text=True)
+    subprocess.run(cmd, shell=True, cwd=cwd, check=True, capture_output=True, text=True)
 
 
 @pytest.fixture
@@ -62,8 +65,11 @@ def test_add_creates_worktree_on_branch(repo):
     assert os.path.isdir(res["path"])
     # the worktree is checked out on feat-x
     branch = subprocess.run(
-        "git rev-parse --abbrev-ref HEAD", shell=True, cwd=res["path"],
-        capture_output=True, text=True,
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=res["path"],
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     assert branch == "feat-x"
 
@@ -110,8 +116,11 @@ def test_adopt_moves_wip_onto_branch(repo):
     # WIP now lives in the worktree, and the canonical tree is clean
     assert os.path.isfile(os.path.join(res["path"], "wip.txt"))
     status = subprocess.run(
-        "git status --porcelain", shell=True, cwd=repo.path,
-        capture_output=True, text=True,
+        "git status --porcelain",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     assert status == ""
 
@@ -129,8 +138,12 @@ def _commit_in(path, name, msg, env=None):
     full_env = {**os.environ, **(env or {})}
     subprocess.run(
         f"git add -A && git commit -q -m {msg}",
-        shell=True, cwd=path, check=True, capture_output=True,
-        text=True, env=full_env,
+        shell=True,
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+        env=full_env,
     )
 
 
@@ -188,7 +201,9 @@ def test_audit_quiet_unmerged_branch_is_stale(repo):
     res = repo.wm.add("myrepo", "feat-stale")
     old = "2020-01-01T00:00:00"
     _commit_in(
-        res["path"], "old.txt", "old",
+        res["path"],
+        "old.txt",
+        "old",
         env={"GIT_AUTHOR_DATE": old, "GIT_COMMITTER_DATE": old},
     )
     audit = repo.wm.audit("myrepo", stale_days=14)
@@ -228,8 +243,11 @@ def test_audit_prune_merged_keeps_active(repo):
     assert any(k.get("branch") == "feat-active" for k in audit["kept"])
     # the deleted branch is gone, the active one survives
     branches = subprocess.run(
-        "git branch --list", shell=True, cwd=repo.path,
-        capture_output=True, text=True,
+        "git branch --list",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
     ).stdout
     assert "feat-merged" not in branches
     assert "feat-active" in branches
