@@ -1133,6 +1133,17 @@ def register_project_management_tools(mcp: FastMCP):
             default="minor",
             description="The part of the version to bump (e.g. minor, patch, major) if auto_bump is used.",
         ),
+        prune_worktrees: bool = Field(
+            default=False,
+            description=(
+                "For 'validate' with auto_bump/auto_push: after the release, prune "
+                "session worktrees already merged into main (and dangling admin "
+                "pointers). DESTRUCTIVE. Default False — the release still runs the "
+                "audit and REPORTS the safe_to_prune/do_not_disturb classification "
+                "under 'worktree_hygiene_job_id' WITHOUT deleting anything. Never "
+                "touches active/in-flight or orphaned worktrees."
+            ),
+        ),
         commit_code: bool = Field(
             default=False,
             description=(
@@ -1195,6 +1206,8 @@ def register_project_management_tools(mcp: FastMCP):
             force_revalidate = False
         if not isinstance(commit_code, bool):
             commit_code = False
+        if not isinstance(prune_worktrees, bool):
+            prune_worktrees = False
 
         # Remediation loop: ``failed_only`` re-validates ONLY the repos whose
         # most-recent validation failed (and forces past the cache). The final
@@ -1391,6 +1404,29 @@ def register_project_management_tools(mcp: FastMCP):
                 )
                 result_payload["push_job_id"] = res_push["job_id"]
 
+            # Worktree hygiene: after a release, audit the session worktrees and
+            # (opt-in) prune the ones already merged into main. Report-only by
+            # default — the result carries the safe_to_prune/do_not_disturb
+            # classification and never deletes active/in-flight work. Gated on the
+            # last release job; success_required=False so it still runs (and reports)
+            # even when the bump/push was a no-op. (CONCEPT:RM-WORKTREE-AUDIT)
+            if auto_bump or auto_push:
+                if "push_job_id" in result_payload:
+                    hygiene_deps = [result_payload["push_job_id"]]
+                elif "bump_job_id" in result_payload:
+                    hygiene_deps = [result_payload["bump_job_id"]]
+                else:
+                    hygiene_deps = bump_dependencies
+                res_hygiene = _submit_job(
+                    "worktree_hygiene",
+                    _wait_for_jobs_and_run,
+                    hygiene_deps,
+                    False,
+                    git.worktree_hygiene,
+                    prune=prune_worktrees,
+                )
+                result_payload["worktree_hygiene_job_id"] = res_hygiene["job_id"]
+
             # Terse submission echo (default): at scale the full id↔name maps are
             # huge. Return counts + the small running/completed lists + release
             # job ids; full maps only when summary=False. (CONCEPT:RM-TOPOLOGY)
@@ -1402,7 +1438,12 @@ def register_project_management_tools(mcp: FastMCP):
                     "completed_count": len(result_payload["completed"]),
                     "queued_projects": list(result_payload["queued"].keys()),
                 }
-                for k in ("commit_job_id", "bump_job_id", "push_job_id"):
+                for k in (
+                    "commit_job_id",
+                    "bump_job_id",
+                    "push_job_id",
+                    "worktree_hygiene_job_id",
+                ):
                     if k in result_payload:
                         terse[k] = result_payload[k]
                 terse["message"] = (
