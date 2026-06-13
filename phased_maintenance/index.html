@@ -648,6 +648,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#change-aware-start-phase-default" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Change-aware Start Phase (default)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cli-usage" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -780,6 +791,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#change-aware-start-phase-default" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Change-aware Start Phase (default)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cli-usage" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -852,6 +874,29 @@
    Executes a bulk update for all <code>agent</code> projects using a wildcard strategy to deploy final updates to the ecosystem.</p>
 </li>
 </ol>
+<h2 id="change-aware-start-phase-default">Change-aware Start Phase (default)<a class="headerlink" href="#change-aware-start-phase-default" title="Permanent link">&para;</a></h2>
+<p>Phased bump and push are <strong>change-aware by default</strong>: instead of blindly starting at
+Phase 1, they first detect the <strong>lowest phase that contains a repo with pending work</strong>
+and start there, skipping unchanged upstream phases and their inter-phase waits. This
+applies everywhere — the CLI (<code>--maintain</code> / <code>--push</code>), the MCP tools
+(<code>rm_workspace action="maintain"</code>, <code>rm_git action="phased_push"</code>), and the
+<code>workspace-validator</code> skill's <code>auto_bump</code> / <code>auto_push</code>.</p>
+<p>This is safe because phases are topologically ordered — a change in phase <em>N</em> can only
+cascade downstream to phases <code>&gt;= N</code> (dependency-pin propagation flows from upstream to
+downstream, never the reverse). So:</p>
+<ul>
+<li>Edit something in <strong>Phase 2</strong> → the bump/push runs <strong>Phase 2, 3, 4, …</strong> and skips Phase 1.</li>
+<li>No repo has pending work → the bump/push is a <strong>no-op</strong> (nothing to do).</li>
+</ul>
+<p>A repo is considered to have pending work when it is <em>not</em> both clean and in sync with
+origin: i.e. it has uncommitted changes, an unpushed feature commit, or an unpushed
+version bump awaiting delivery. An explicit starting phase (<code>--phase</code>) is honored as a
+floor — the effective start is <code>max(explicit_phase, detected_phase)</code>.</p>
+<p><strong>Opting out.</strong> Pass <code>--no-auto-start</code> on the CLI, or <code>auto_start=False</code> to the MCP
+tools / library functions, to force a start at the explicit <code>--phase</code> (default 1).
+Change-aware start also <strong>stands down automatically</strong> for explicit-targeting requests —
+when a <code>--project</code> / <code>project_filter</code> is given (bump and push), or <code>--force</code> (bump) —
+since those deliberately bypass change detection.</p>
 <h2 id="cli-usage">CLI Usage<a class="headerlink" href="#cli-usage" title="Permanent link">&para;</a></h2>
 <p>The following flags control phased update and push sequences:</p>
 <ul>
@@ -859,9 +904,10 @@
 <li><code>--bump [patch/minor/major]</code>: Executes a version bump.</li>
 <li><code>--maintain</code>: Executes phased dependency updates across the workspace. Modifies <code>pyproject.toml</code> automatically based on dependency tree.</li>
 <li><code>--push</code>: Executes a parallelized Git Push sequence per-phase, respecting <code>wait_minutes</code> pauses.</li>
-<li><code>--phase [int]</code>: Starting phase (1-3).</li>
+<li><code>--phase [int]</code>: Starting phase (1-3). Acts as a floor under change-aware start.</li>
+<li><code>--no-auto-start</code>: Opt out of change-aware start; begin at <code>--phase</code> (default 1) instead of the lowest changed phase.</li>
 <li><code>--single-phase</code>: Execute only the specified starting phase and halt.</li>
-<li><code>--project [name]</code>: Execute bumps or pushes exclusively for a targeted project name.</li>
+<li><code>--project [name]</code>: Execute bumps or pushes exclusively for a targeted project name (disables change-aware start).</li>
 </ul>
 <h2 id="example-the-sequential-execution-pipeline">Example: The Sequential Execution Pipeline<a class="headerlink" href="#example-the-sequential-execution-pipeline" title="Permanent link">&para;</a></h2>
 <p>To run a safe end-to-end update sequence that stops if errors are detected:</p>
