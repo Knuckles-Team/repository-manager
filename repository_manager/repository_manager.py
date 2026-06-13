@@ -146,6 +146,15 @@ class Git:
             "phases": {},
         }
 
+        # Run each repo's pre-commit gates (minus the slow full pytest suite)
+        # before pushing, so a push can't ship a commit the repo's CI gate would
+        # then reject. Skips the ``pytest`` hook for speed (the reason this was
+        # previously disabled); the guardrail/lint gates still run. Disable with
+        # RM_GATE_BEFORE_PUSH=false.
+        self.gate_before_push = to_boolean(
+            os.environ.get("RM_GATE_BEFORE_PUSH", "true")
+        )
+
         # Initialize log file
         with open(self.debug_log_path, "a") as f:
             f.write(f"\n\n--- NEW SESSION: {datetime.datetime.now().isoformat()} ---\n")
@@ -1142,6 +1151,67 @@ class Git:
         ) as executor:
             return list(executor.map(self.push_project, project_dirs))
 
+    def _has_unpushed_commits(self, target_path: str) -> bool:
+        """True when the local branch has commits the remote lacks.
+
+        Used to skip the pre-push gate on no-op repos (nothing to validate).
+        On any uncertainty (no upstream, error) returns True so the gate runs.
+        """
+        res = self.git_action(
+            command="git rev-list --count @{u}..HEAD", path=target_path, quiet=True
+        )
+        if res.status != "success" or not res.data:
+            return True
+        try:
+            return int(res.data.strip()) > 0
+        except (ValueError, AttributeError):
+            return True
+
+    def _gate_before_push(self, target_path: str) -> GitResult | None:
+        """Run the repo's pre-commit gates (minus full pytest) before pushing.
+
+        Mirrors the repo's CI gates locally so a push can't ship a commit the CI
+        would reject. Returns a failed ``GitResult`` (caller aborts the push) or
+        ``None`` to proceed. No-op when disabled, when the repo has no
+        ``.pre-commit-config.yaml``, or when there is nothing to push. The
+        gate-harness failing (tooling/env) never blocks a push — only a real
+        hook failure does. ``pytest`` is skipped for speed (see __init__).
+        """
+        if not self.gate_before_push:
+            return None
+        if not os.path.exists(os.path.join(target_path, ".pre-commit-config.yaml")):
+            return None
+        if not self._has_unpushed_commits(target_path):
+            return None
+        from .scanner import parse_pre_commit_output, run_pre_commit
+
+        logger.info(f"Pre-push gate (pre-commit, skip pytest) in {target_path}")
+        try:
+            result = run_pre_commit(target_path, skip_pytest=True)
+        except Exception as e:  # pragma: no cover - tooling/env failure
+            logger.warning(f"Pre-push gate could not run in {target_path}: {e}")
+            return None
+        if result.returncode == 0:
+            return None
+        failed = [
+            h.hook_id
+            for h in parse_pre_commit_output(result.stdout + "\n" + result.stderr)
+            if not h.passed
+        ]
+        names = ", ".join(failed) or "pre-commit gate"
+        logger.error(f"Pre-push gate FAILED in {target_path}: {names}")
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=(
+                    f"Pre-push gate failed ({names}) in {target_path}; push aborted. "
+                    "Fix the gate, or set RM_GATE_BEFORE_PUSH=false to bypass."
+                ),
+                code=1,
+            ),
+        )
+
     def push_project(self, path: str | None = None) -> GitResult:
         """
         Push updates and tags for a single Git project, ensuring all staged and unstaged changes are committed first.
@@ -1179,6 +1249,13 @@ class Git:
                     logger.info(
                         f"Successfully committed uncommitted changes in {target_path}"
                     )
+
+        # Fast pre-push gate: run the repo's own pre-commit gates (minus the
+        # slow full pytest suite) so a push can't ship a commit the repo's CI
+        # would reject. Aborts this repo's push on a real gate failure.
+        gate = self._gate_before_push(target_path)
+        if gate is not None:
+            return gate
 
         logger.info(f"Pushing latest changes and tags for {target_path}")
 
