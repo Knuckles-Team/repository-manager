@@ -11,7 +11,7 @@ ENV UV_COMPILE_BYTECODE=1 \
 # uv is the version pinner; bootstrapping it unpinned is intentional.
 # hadolint ignore=DL3013
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --upgrade --break-system-packages --prerelease=allow repository-manager[all]>=1.34.0
+    uv pip install --system --upgrade --break-system-packages --prerelease=allow repository-manager[all]>=1.35.0
 
 FROM python:3.11-slim
 
