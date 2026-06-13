@@ -907,7 +907,11 @@
 <li><strong>Parallel Push</strong>: All projects defined in the same <code>phase</code> block are pushed concurrently using a ThreadPoolExecutor (<code>git push --follow-tags</code>).</li>
 <li><strong>Wait Durations</strong>: The <code>wait_minutes</code> key introduces an active wait period (in minutes) upon completing a phase, preventing subsequent phases from building against stale/unpublished remote artifacts.</li>
 <li><strong>Bulk Execution</strong>: A phase marked with <code>bulk_push: True</code> will dynamically resolve all repositories inside the workspace mapping that haven't been pushed in earlier phases (typically all the <code>agents/*</code> directories).</li>
+<li><strong>Change-aware start (<code>auto_start</code>, default on)</strong>: By default the push begins at the <em>lowest phase that actually has unpushed work</em> instead of always Phase 1. Because phases are topologically ordered (lower phase = more upstream), a change in phase <em>N</em> can only cascade to phases <code>&gt;= N</code> — so earlier, unchanged phases (and their <code>wait_minutes</code> pauses) are safely skipped. A repo counts as having work when it is not both clean and in sync with origin (uncommitted changes, an unpushed feature commit, or an unpushed version bump). If no repo has pending work, the push is a no-op. So editing a single Phase-2 repo triggers Phase 2 onward without sitting through the Phase-1 wait. Pass <code>auto_start=False</code> (CLI <code>--no-auto-start</code>) to opt out and start at <code>start_phase</code>; it also stands down automatically when a <code>target_project</code> / <code>project_filter</code> is set.</li>
 </ul>
+<blockquote>
+<p><strong>Explicit start as a floor.</strong> <code>auto_start</code> only ever advances the start phase forward; an explicit <code>start_phase</code> (CLI <code>--phase</code>) still acts as a floor, and the two compose as <code>max(explicit, detected)</code>.</p>
+</blockquote>
 <h2 id="usage">Usage<a class="headerlink" href="#usage" title="Permanent link">&para;</a></h2>
 <h3 id="command-line">Command Line<a class="headerlink" href="#command-line" title="Permanent link">&para;</a></h3>
 <p>You can trigger a phased push independently or as part of the maintenance lifecycle.</p>
