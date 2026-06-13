@@ -1167,6 +1167,20 @@ class Git:
         except (ValueError, AttributeError):
             return True
 
+    def _unpushed_changed_files(self, target_path: str) -> list[str]:
+        """Files touched by the commits about to be pushed (``@{u}..HEAD``).
+
+        Lets the pre-push gate scope per-file hooks to just the diff being
+        pushed. Returns ``[]`` when the diff can't be computed (no upstream,
+        error) — the caller then falls back to an ``--all-files`` run.
+        """
+        res = self.git_action(
+            command="git diff --name-only @{u}..HEAD", path=target_path, quiet=True
+        )
+        if res.status != "success" or not res.data:
+            return []
+        return [line.strip() for line in res.data.splitlines() if line.strip()]
+
     def _gate_before_push(self, target_path: str) -> GitResult | None:
         """Run the repo's pre-commit gates (minus full pytest) before pushing.
 
@@ -1185,9 +1199,17 @@ class Git:
             return None
         from .scanner import parse_pre_commit_output, run_pre_commit
 
-        logger.info(f"Pre-push gate (pre-commit, skip pytest) in {target_path}")
+        # Scope per-file hooks to the diff being pushed; always_run guardrail
+        # gates still run fully. Falls back to --all-files if the diff is empty.
+        changed = self._unpushed_changed_files(target_path)
+        scope = f"{len(changed)} changed file(s)" if changed else "all files"
+        logger.info(
+            f"Pre-push gate (pre-commit, skip pytest, {scope}) in {target_path}"
+        )
         try:
-            result = run_pre_commit(target_path, skip_pytest=True)
+            result = run_pre_commit(
+                target_path, skip_pytest=True, files=changed or None
+            )
         except Exception as e:  # pragma: no cover - tooling/env failure
             logger.warning(f"Pre-push gate could not run in {target_path}: {e}")
             return None
