@@ -6,9 +6,18 @@ from .scan_models import HookResult, RepoScanResult
 
 
 def run_pre_commit(
-    repo_path: str, timeout: int = 600, skip_pytest: bool = False
+    repo_path: str,
+    timeout: int = 600,
+    skip_pytest: bool = False,
+    files: list[str] | None = None,
 ) -> subprocess.CompletedProcess:
-    """Runs a single pass of pre-commit."""
+    """Runs a single pass of pre-commit.
+
+    ``files`` (when given and non-empty) scopes the per-file hooks to just those
+    paths via ``--files`` instead of ``--all-files`` — much faster on large
+    repos. ``always_run`` hooks (the guardrail gates) still run regardless, so
+    nothing is skipped, only narrowed. Empty/None ``files`` runs ``--all-files``.
+    """
     env = os.environ.copy()
     if "SKIP" in env:
         env["SKIP"] += ",no-commit-to-branch"
@@ -18,8 +27,10 @@ def run_pre_commit(
     if skip_pytest:
         env["SKIP"] += ",pytest"
 
+    scope = ["--files", *files] if files else ["--all-files"]
+
     return subprocess.run(  # nosec B603 B607
-        ["pre-commit", "run", "--all-files", "--verbose"],
+        ["pre-commit", "run", *scope, "--verbose"],
         cwd=repo_path,
         capture_output=True,
         text=True,

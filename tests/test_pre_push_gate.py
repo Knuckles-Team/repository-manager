@@ -15,6 +15,13 @@ def _git(tmp_path, ahead="1"):
         cmd = kwargs.get("command", "") or (args[0] if args else "")
         if "rev-list --count" in cmd:
             return GitResult(status="success", data=ahead, error=None, metadata=None)
+        if "diff --name-only" in cmd:
+            return GitResult(
+                status="success",
+                data="pyproject.toml\nfoo.py\n",
+                error=None,
+                metadata=None,
+            )
         if "status --porcelain" in cmd:
             return GitResult(status="success", data="", error=None, metadata=None)
         return GitResult(status="success", data="Pushed", error=None, metadata=None)
@@ -48,6 +55,19 @@ def test_gate_passes_lets_push_proceed(tmp_path):
     m.gate_before_push = True
     with patch("repository_manager.scanner.run_pre_commit", return_value=_completed(0)):
         assert m._gate_before_push(str(tmp_path)) is None
+
+
+def test_gate_scopes_hooks_to_pushed_diff(tmp_path):
+    """Per-file hooks are scoped to the diff being pushed via files=."""
+    m = _git(tmp_path)
+    m.gate_before_push = True
+    with patch(
+        "repository_manager.scanner.run_pre_commit", return_value=_completed(0)
+    ) as rpc:
+        m._gate_before_push(str(tmp_path))
+        rpc.assert_called_once()
+        assert rpc.call_args.kwargs.get("files") == ["pyproject.toml", "foo.py"]
+        assert rpc.call_args.kwargs.get("skip_pytest") is True
 
 
 def test_gate_failure_aborts_push(tmp_path):
