@@ -117,6 +117,8 @@ subdirectories:
             description: "Manage your git projects"
           - url: "https://github.com/Knuckles-Team/rom-manager.git"
             description: "ROM conversion & organization (CHD/RVZ) with game-code naming. MCP Server + A2A Server. CONCEPT:ROM-001"
+          - url: "https://github.com/Knuckles-Team/pulselink-mcp.git"
+            description: "PulseLink — keyless open-web & social research source (X, Reddit, YouTube, Hacker News, news, web, …). Sibling to scholarx. CONCEPT:PULSE-001"
           - url: "https://github.com/Knuckles-Team/scholarx.git"
             description: "Universal Research Paper API — single entry point for arXiv, PMC, bioRxiv, medRxiv, PsyArXiv, OSF, and Semantic Scholar"
           - url: "https://github.com/Knuckles-Team/searxng-mcp.git"
