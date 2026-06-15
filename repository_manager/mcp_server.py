@@ -1260,23 +1260,37 @@ def register_project_management_tools(mcp: FastMCP):
                 targets.append((repo_name, path))
 
             with _jobs_lock:
+                # O(jobs + targets): index the latest validate job per repo ONCE,
+                # rather than re-scanning all jobs for every target (the former
+                # O(targets x jobs) nested loop held _jobs_lock long enough to
+                # starve the async event loop on a full-workspace run, so
+                # validate_status RPCs timed out). Running takes precedence; else
+                # the most-recent completed job wins.
+                _running_by_repo: dict[str, str] = {}
+                _completed_by_repo: dict[str, tuple[str, Any]] = {}
+                for jid, j in _jobs.items():
+                    if j.get("action") != "validate":
+                        continue
+                    rn = j.get("repo_name")
+                    if not rn:
+                        continue
+                    if j["status"] in ("running", "queued", "pending"):
+                        _running_by_repo[rn] = jid
+                    elif j["status"] == "completed":
+                        _completed_by_repo[rn] = (jid, j.get("result"))
+
                 for repo_name, _path in targets:
-                    existing_job_id = None
-                    existing_job_status = None
+                    existing_job_id = _running_by_repo.get(repo_name)
                     existing_job_result = None
-                    for jid, j in _jobs.items():
-                        if (
-                            j["action"] == "validate"
-                            and j.get("repo_name") == repo_name
-                        ):
-                            if j["status"] in ("running", "queued", "pending"):
-                                existing_job_id = jid
-                                existing_job_status = "running"
-                                break
-                            elif j["status"] == "completed":
-                                existing_job_id = jid
-                                existing_job_status = "completed"
-                                existing_job_result = j.get("result")
+                    if existing_job_id is not None:
+                        existing_job_status = "running"
+                    elif repo_name in _completed_by_repo:
+                        existing_job_id, existing_job_result = _completed_by_repo[
+                            repo_name
+                        ]
+                        existing_job_status = "completed"
+                    else:
+                        existing_job_status = None
 
                     if existing_job_status == "running":
                         result_payload["running"][repo_name] = existing_job_id
