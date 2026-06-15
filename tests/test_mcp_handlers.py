@@ -230,18 +230,22 @@ async def test_mcp_rm_git_tool(tmp_path):
             ctx=None,
         )
         assert res["status"] == "submitted"
-        # The clone job runs on a background thread; wait until it has invoked the
-        # mock rather than relying on a fixed sleep (which raced under load).
+        # Steps 3 and 3b both submit clone jobs on background executor threads that
+        # share this mock; completion order is nondeterministic. Wait until the
+        # SPECIFIC step-3b call (projects=[...]) has actually run — not merely until
+        # any clone fired — then assert it happened (assert_any_call).
+        expected = [
+            "https://github.com/org/repo-a.git",
+            "https://github.com/org/repo-b.git",
+        ]
         for _ in range(300):
-            if mock_git.clone_projects.called:
+            if any(
+                c.kwargs.get("projects") == expected
+                for c in mock_git.clone_projects.call_args_list
+            ):
                 break
             await asyncio.sleep(0.01)
-        mock_git.clone_projects.assert_called_with(
-            projects=[
-                "https://github.com/org/repo-a.git",
-                "https://github.com/org/repo-b.git",
-            ]
-        )
+        mock_git.clone_projects.assert_any_call(projects=expected)
 
         # 4. Action: pull
         res = await rm_git.fn(
