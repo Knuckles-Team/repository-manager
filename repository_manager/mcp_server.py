@@ -31,6 +31,7 @@ from agent_utilities.base_utilities import to_boolean, to_integer
 from agent_utilities.mcp_utilities import (
     create_mcp_server,
     resolve_action,
+    run_blocking,
 )
 from dotenv import find_dotenv, load_dotenv
 from starlette.requests import Request
@@ -685,7 +686,7 @@ def register_git_operations_tools(mcp: FastMCP):
                         message="command is required for 'raw' action", code=1
                     ),
                 )
-            return git.git_action(command=command, path=path)
+            return await run_blocking(git.git_action, command=command, path=path)
 
         if action == "enumerate":
             # Remote VCS enumeration for enterprise-scale ingestion (CONCEPT:KG-2.49):
@@ -708,10 +709,12 @@ def register_git_operations_tools(mcp: FastMCP):
             )
             run_id = _uuid.uuid4().hex[:10]
             if vcs == "github":
-                refs = enumerate_github(orgs=scopes, user=not scopes)
+                refs = await run_blocking(
+                    enumerate_github, orgs=scopes, user=not scopes
+                )
             else:
-                refs = enumerate_gitlab(groups=scopes)
-            manifest_path = write_manifest(refs, run_id)
+                refs = await run_blocking(enumerate_gitlab, groups=scopes)
+            manifest_path = await run_blocking(write_manifest, refs, run_id)
             return {
                 "status": "ok",
                 "vcs": vcs,
@@ -931,7 +934,7 @@ def register_workspace_management_tools(mcp: FastMCP):
             return git.get_workspace_projects()
 
         if action == "list_branches":
-            return git.list_branches()
+            return await run_blocking(git.list_branches)
 
         if action == "setup":
             if not yml_path:
@@ -940,7 +943,7 @@ def register_workspace_management_tools(mcp: FastMCP):
                     data="",
                     error=GitError(message="yml_path required for 'setup'", code=1),
                 )
-            return git.setup_from_yaml(yml_path)
+            return await run_blocking(git.setup_from_yaml, yml_path)
 
         if action == "template":
             if not yml_path:
@@ -949,8 +952,10 @@ def register_workspace_management_tools(mcp: FastMCP):
                     data="",
                     error=GitError(message="yml_path required for 'template'", code=1),
                 )
-            return git.generate_workspace_template(
-                target_path=yml_path, use_default=use_default
+            return await run_blocking(
+                git.generate_workspace_template,
+                target_path=yml_path,
+                use_default=use_default,
             )
 
         if action == "save":
@@ -964,7 +969,9 @@ def register_workspace_management_tools(mcp: FastMCP):
                 )
             try:
                 config = WorkspaceConfig(**config_dict)
-                return git.save_workspace_config(yaml_path=yml_path, config=config)
+                return await run_blocking(
+                    git.save_workspace_config, yaml_path=yml_path, config=config
+                )
             except Exception as e:
                 return GitResult(
                     status="error", data="", error=GitError(message=str(e), code=1)
@@ -1120,11 +1127,12 @@ def register_project_management_tools(mcp: FastMCP):
             return resolved
         action = resolved
         if action == "list":
-            return wm.list_worktrees(repo=repo)
+            return await run_blocking(wm.list_worktrees, repo=repo)
         if action == "prune":
-            return wm.prune(repo=repo)
+            return await run_blocking(wm.prune, repo=repo)
         if action == "audit":
-            return wm.audit(
+            return await run_blocking(
+                wm.audit,
                 repo=repo,
                 base=base,
                 stale_days=stale_days,
@@ -1134,7 +1142,7 @@ def register_project_management_tools(mcp: FastMCP):
             if branch is None:
                 return {"ok": False, "error": "action 'bulk_add' requires 'branch'"}
             repo_list = [r.strip() for r in repos.split(",")] if repos else None
-            return wm.bulk_add(branch, repos=repo_list, base=base)
+            return await run_blocking(wm.bulk_add, branch, repos=repo_list, base=base)
         # add / remove / merge / sync all require a concrete repo + branch.
         if repo is None or branch is None:
             return {
@@ -1142,13 +1150,17 @@ def register_project_management_tools(mcp: FastMCP):
                 "error": f"action '{action}' requires 'repo' and 'branch'",
             }
         if action == "add":
-            return wm.add(repo, branch, base=base, adopt=adopt)
+            return await run_blocking(wm.add, repo, branch, base=base, adopt=adopt)
         if action == "remove":
-            return wm.remove(repo, branch, force=force, delete_branch=delete_branch)
+            return await run_blocking(
+                wm.remove, repo, branch, force=force, delete_branch=delete_branch
+            )
         if action == "merge":
-            return wm.merge(repo, branch, into=into)
+            return await run_blocking(wm.merge, repo, branch, into=into)
         if action == "sync":
-            return wm.sync(repo, branch, base=base, strategy=strategy)
+            return await run_blocking(
+                wm.sync, repo, branch, base=base, strategy=strategy
+            )
         return {"ok": False, "error": f"unknown action: {action}"}
 
     @mcp.tool(tags={"workspace_management", "project_manager"})
