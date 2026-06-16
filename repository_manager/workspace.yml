@@ -125,6 +125,8 @@ subdirectories:
             description: "SearXNG Search Engine MCP Server for Agentic AI!"
           - url: "https://github.com/Knuckles-Team/servicenow-api.git"
             description: "Python ServiceNow API Wrapper"
+          - url: "https://github.com/Knuckles-Team/onetrust-api.git"
+            description: "OneTrust API Wrapper + MCP Server + A2A Agent (100% API coverage)"
           - url: "https://github.com/Knuckles-Team/stirlingpdf-agent.git"
             description: "Agent package for communicating with Stirling PDF via REST APIs."
           - url: "https://github.com/Knuckles-Team/systems-manager.git"
