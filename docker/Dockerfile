@@ -37,6 +37,17 @@ ENV HOST=${HOST} \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy
 
+# repository-manager shells out to `git` for validate/bump/push over the
+# bind-mounted workspace; the slim base ships none, so without this every repo
+# read as no_upstream/unknown and git ops failed. The container runs as root over
+# host-owned (uid 1000) repos, so git also needs a permissive safe.directory or
+# it refuses with "detected dubious ownership".
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --system --add safe.directory '*'
+
 # Install base dependencies, uv, and starship shell prompt
 COPY --from=builder /usr/local /usr/local
 
