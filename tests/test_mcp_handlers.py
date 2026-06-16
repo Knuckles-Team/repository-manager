@@ -331,9 +331,24 @@ async def test_mcp_rm_git_tool(tmp_path):
         )
         assert res["status"] == "submitted"
 
-        # 7. Action: invalid
-        res = await rm_git.fn(
-            action="invalid_action",
+        # 7. Action: invalid — the shared resolver raises a rich did-you-mean
+        # error pointing callers at 'list_actions'.
+        with pytest.raises(ValueError) as exc:
+            await rm_git.fn(
+                action="invalid_action",
+                command=None,
+                path=None,
+                threads=None,
+                phase=1,
+                target_project=None,
+                ctx=None,
+            )
+        assert "Unknown action" in str(exc.value)
+        assert "list_actions" in str(exc.value)
+
+        # 8. Action: discovery — 'list_actions' returns the available actions.
+        disc = await rm_git.fn(
+            action="list_actions",
             command=None,
             path=None,
             threads=None,
@@ -341,7 +356,8 @@ async def test_mcp_rm_git_tool(tmp_path):
             target_project=None,
             ctx=None,
         )
-        assert "Unknown action" in res
+        assert isinstance(disc, dict)
+        assert "raw" in disc["actions"]
 
 
 @pytest.mark.anyio
@@ -490,18 +506,20 @@ async def test_mcp_rm_workspace_tool():
         )
         assert res["status"] == "submitted"
 
-        # 12. Action: invalid
-        res = await rm_workspace.fn(
-            action="invalid_action",
-            yml_path=None,
-            config_dict=None,
-            part="patch",
-            phase=1,
-            dry_run=False,
-            use_default=True,
-            ctx=None,
-        )
-        assert "Unknown action" in res
+        # 12. Action: invalid — rich did-you-mean error from the shared resolver.
+        with pytest.raises(ValueError) as exc:
+            await rm_workspace.fn(
+                action="invalid_action",
+                yml_path=None,
+                config_dict=None,
+                part="patch",
+                phase=1,
+                dry_run=False,
+                use_default=True,
+                ctx=None,
+            )
+        assert "Unknown action" in str(exc.value)
+        assert "list_actions" in str(exc.value)
 
 
 @pytest.mark.anyio
@@ -609,22 +627,24 @@ async def test_mcp_rm_projects_tool():
         )
         assert res["result"] == "passed"
 
-        # 5. Action: invalid
-        res = await rm_projects.fn(
-            action="invalid_action",
-            threads=None,
-            extra="all",
-            output_dir=None,
-            generate_report=True,
-            force_revalidate=False,
-            auto_bump=False,
-            auto_push=False,
-            bump_part="minor",
-            repositories=None,
-            job_id=None,
-            ctx=None,
-        )
-        assert "Unknown action" in res
+        # 5. Action: invalid — rich did-you-mean error from the shared resolver.
+        with pytest.raises(ValueError) as exc:
+            await rm_projects.fn(
+                action="invalid_action",
+                threads=None,
+                extra="all",
+                output_dir=None,
+                generate_report=True,
+                force_revalidate=False,
+                auto_bump=False,
+                auto_push=False,
+                bump_part="minor",
+                repositories=None,
+                job_id=None,
+                ctx=None,
+            )
+        assert "Unknown action" in str(exc.value)
+        assert "list_actions" in str(exc.value)
 
 
 def test_mcp_server_cli_execution():

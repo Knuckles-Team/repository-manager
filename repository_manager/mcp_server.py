@@ -30,6 +30,7 @@ from typing import Any
 from agent_utilities.base_utilities import to_boolean, to_integer
 from agent_utilities.mcp_utilities import (
     create_mcp_server,
+    resolve_action,
 )
 from dotenv import find_dotenv, load_dotenv
 from starlette.requests import Request
@@ -52,6 +53,47 @@ DEFAULT_THREADS = to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "12"))
 DEFAULT_WORKSPACE_YML = os.environ.get("WORKSPACE_YML", "workspace.yml")
 
 logger = get_logger("RepositoryManagerServer")
+
+# Canonical action sets for the action-routed MCP tools. Kept in sync with each
+# tool's ``action`` Field description; reused by ``resolve_action`` so callers get
+# ``list_actions`` discovery, plural->singular aliases, and did-you-mean errors.
+RM_GIT_ACTIONS = (
+    "raw",
+    "clone",
+    "enumerate",
+    "pull",
+    "push",
+    "phased_push",
+    "add",
+    "commit",
+    "pre_commit",
+    "commit_code",
+)
+RM_WORKSPACE_ACTIONS = (
+    "list",
+    "list_branches",
+    "setup",
+    "template",
+    "save",
+    "maintain",
+    "maintain_status",
+)
+RM_WORKTREE_ACTIONS = (
+    "add",
+    "list",
+    "remove",
+    "merge",
+    "sync",
+    "prune",
+    "bulk_add",
+    "audit",
+)
+RM_PROJECTS_ACTIONS = (
+    "install",
+    "build",
+    "validate",
+    "validate_status",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +671,11 @@ def register_git_operations_tools(mcp: FastMCP):
 
         git = get_git_instance(path=path, threads=threads)
 
+        resolved = resolve_action(action, RM_GIT_ACTIONS, service="repository-manager")
+        if isinstance(resolved, dict):
+            return resolved
+        action = resolved
+
         if action == "raw":
             if not command:
                 return GitResult(
@@ -873,6 +920,13 @@ def register_workspace_management_tools(mcp: FastMCP):
 
         git = get_git_instance()
 
+        resolved = resolve_action(
+            action, RM_WORKSPACE_ACTIONS, service="repository-manager"
+        )
+        if isinstance(resolved, dict):
+            return resolved
+        action = resolved
+
         if action == "list":
             return git.get_workspace_projects()
 
@@ -1059,6 +1113,12 @@ def register_project_management_tools(mcp: FastMCP):
 
         git = get_git_instance(path=path)
         wm = WorktreeManager(git)
+        resolved = resolve_action(
+            action, RM_WORKTREE_ACTIONS, service="repository-manager"
+        )
+        if isinstance(resolved, dict):
+            return resolved
+        action = resolved
         if action == "list":
             return wm.list_worktrees(repo=repo)
         if action == "prune":
@@ -1208,6 +1268,13 @@ def register_project_management_tools(mcp: FastMCP):
             commit_code = False
         if not isinstance(prune_worktrees, bool):
             prune_worktrees = False
+
+        resolved = resolve_action(
+            action, RM_PROJECTS_ACTIONS, service="repository-manager"
+        )
+        if isinstance(resolved, dict):
+            return resolved
+        action = resolved
 
         # Remediation loop: ``failed_only`` re-validates ONLY the repos whose
         # most-recent validation failed (and forces past the cache). The final
