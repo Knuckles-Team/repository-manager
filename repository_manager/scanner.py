@@ -109,16 +109,34 @@ def scan_repository(repo_path: str) -> RepoScanResult:
         # Second Pass (Captures actual failures)
         result = run_pre_commit(repo_path)
 
-        hooks = parse_pre_commit_output(result.stdout + "\n" + result.stderr)
+        raw_output = result.stdout + "\n" + result.stderr
+        hooks = parse_pre_commit_output(raw_output)
 
         success = result.returncode == 0
+
+        # When pre-commit exits non-zero but produced NO parseable failing hook
+        # lines (e.g. it errored during environment install, hit an invalid
+        # config, or failed before any hook ran), the real diagnostic lives only
+        # in ``raw_output``. Surface it as ``error`` so the failure is never
+        # reported as "failed with empty failures" — the actual reason is shown.
+        error: str | None = None
+        if not success and not any(not h.passed for h in hooks):
+            tail = "\n".join(raw_output.strip().splitlines()[-40:]).strip()
+            error = (
+                "pre-commit exited "
+                f"{result.returncode} with no parseable hook results "
+                f"(likely an init/config/environment error):\n{tail}"
+                if tail
+                else f"pre-commit exited {result.returncode} with no output."
+            )
 
         return RepoScanResult(
             repo_path=repo_path,
             success=success,
             exit_code=result.returncode,
             hooks=hooks,
-            raw_output=result.stdout + "\n" + result.stderr,
+            raw_output=raw_output,
+            error=error,
         )
     except subprocess.TimeoutExpired as e:
         return RepoScanResult(
