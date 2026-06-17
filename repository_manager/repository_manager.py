@@ -2638,6 +2638,17 @@ class Git:
                 if not project_dir:
                     return None
 
+                # A declared project whose local clone is absent (stale registry
+                # entry / never-cloned repo) must not crash the whole phased bump.
+                # Skip it with a warning so the rest of the topology proceeds.
+                if not os.path.isdir(project_dir):
+                    logger.warning(
+                        "Skipping bump for %s: project directory missing (%s)",
+                        project_name,
+                        project_dir,
+                    )
+                    return None
+
                 if not force:
                     skip_reason = self._bump_skip_reason(project_dir)
                     if skip_reason:
@@ -2971,6 +2982,18 @@ class Git:
                         ):
                             projects_to_push.append((project_name, p_path))
                             break
+
+            # Drop declared projects whose local clone is absent (stale registry
+            # entry / never-cloned repo) so they don't surface as false push
+            # failures — mirrors the same guard in the phased bump.
+            missing = [(n, p) for (n, p) in projects_to_push if not os.path.isdir(p)]
+            for n, p in missing:
+                logger.warning(
+                    "Skipping push for %s: project directory missing (%s)", n, p
+                )
+            projects_to_push = [
+                (n, p) for (n, p) in projects_to_push if os.path.isdir(p)
+            ]
 
             if not projects_to_push:
                 continue
