@@ -27,10 +27,12 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from agent_utilities.base_utilities import to_boolean, to_integer
+from agent_utilities.base_utilities import to_integer
+from agent_utilities.core.config import setting
 from agent_utilities.mcp_utilities import (
     create_mcp_server,
     load_config,
+    register_tool_surface,
     resolve_action,
     run_blocking,
 )
@@ -46,12 +48,12 @@ from repository_manager.scan_models import RepoScanResult
 
 __version__ = "1.38.0"
 
-DEFAULT_WORKSPACE = os.environ.get(
+DEFAULT_WORKSPACE = setting(
     "REPOSITORY_MANAGER_WORKSPACE",
-    os.environ.get("WORKSPACE_PATH", "/home/apps/workspace"),
+    setting("WORKSPACE_PATH", "/home/apps/workspace"),
 )
-DEFAULT_THREADS = to_integer(os.environ.get("REPOSITORY_MANAGER_THREADS", "12"))
-DEFAULT_WORKSPACE_YML = os.environ.get("WORKSPACE_YML", "workspace.yml")
+DEFAULT_THREADS = to_integer(setting("REPOSITORY_MANAGER_THREADS", "12"))
+DEFAULT_WORKSPACE_YML = setting("WORKSPACE_YML", "workspace.yml")
 
 logger = get_logger("RepositoryManagerServer")
 
@@ -119,9 +121,7 @@ def _get_max_workers():
     * ``RM_WORKER_MEM_GB``   — assumed RAM per validation worker (default 1.5).
     (CONCEPT:RM-TOPOLOGY scale + host-throttle)
     """
-    import os as _os
-
-    override = _os.environ.get("RM_MAX_WORKERS")
+    override = setting("RM_MAX_WORKERS", None)
     if override:
         try:
             return max(1, int(override))
@@ -130,7 +130,7 @@ def _get_max_workers():
 
     def _frac(name: str, default: float) -> float:
         try:
-            return float(_os.environ.get(name, default))
+            return float(setting(name, default))
         except ValueError:
             return default
 
@@ -288,11 +288,9 @@ def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
     so it never reaps a merely-slow repo. Env-tunable via
     ``RM_JOB_STALE_SECONDS`` (default 1800). (CONCEPT:RM-TOPOLOGY watchdog)
     """
-    import os as _os
-
     if max_age_seconds is None:
         try:
-            max_age_seconds = float(_os.environ.get("RM_JOB_STALE_SECONDS", 1800))
+            max_age_seconds = float(setting("RM_JOB_STALE_SECONDS", 1800))
         except ValueError:
             max_age_seconds = 1800.0
 
@@ -1568,19 +1566,13 @@ def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
         instructions="Expert tool for managing hierarchical Git workspaces, engineering bulk operations, and documentation.",
     )
 
-    registered_tags = []
-    if to_boolean(os.getenv("MISCTOOL", "True")):
-        register_misc_tools(mcp)
-        registered_tags.append("misc")
-
-    if to_boolean(os.getenv("GIT_OPERATIONSTOOL", "True")):
-        register_git_operations_tools(mcp)
-        registered_tags.append("git_operations")
-
-    if to_boolean(os.getenv("WORKSPACE_MANAGEMENTTOOL", "True")):
-        register_workspace_management_tools(mcp)
-        register_project_management_tools(mcp)
-        registered_tags.append("workspace_management")
+    registered_tags = register_tool_surface(
+        mcp,
+        client_cls=Git,
+        get_client=lambda: Git(),
+        service="repository-manager",
+        tools_module=sys.modules[__name__],
+    )
 
     for mw in middlewares:
         mcp.add_middleware(mw)
