@@ -56,12 +56,20 @@ Detailed instructions on how to use the underlying API wrappers, extended schema
 This server utilizes dynamic Action-Routed tools to optimize token overhead and maximize IDE compatibility.
 
 ### Available MCP Tools
-| Tool Module | Toggle Env Var | Enabled by Default | Description & Nested Methods |
-|-------------|----------------|--------------------|------------------------------|
-| **Misc** | `MISC_TOOL` | `True` | Register miscellaneous tools like health check. |
-| **Git Operations** | `GIT_OPERATIONS_TOOL` | `True` | Bulk Git operations and arbitrary command execution. Action-routed methods: `clone`, `phased_push`, `pull`, `push`, `raw`. |
-| **Workspace Management** | `WORKSPACE_MANAGEMENT_TOOL` | `True` | Register tools for core workspace setup and organization. Action-routed methods: `list`, `list_branches`, `maintain`, `remediate`, `save`, `setup`, `template`. |
-| **Project Management** | `PROJECT_MANAGEMENT_TOOL` | `True` | Register tools for the autonomous project harness. Action-routed methods: `build`, `install`, `validate`, `validate_status`. |
+
+This table is auto-generated from the live server — do not edit by hand.
+
+<!-- MCP-TOOLS-TABLE:START -->
+
+| MCP Tool | Toggle Env Var | Description |
+|----------|----------------|-------------|
+| `rm_git` | `DEVOPS_ENGINEERTOOL` | Bulk Git operations and arbitrary command execution. |
+| `rm_projects` | `PROJECT_MANAGERTOOL` | Bulk install, build, and validate Python projects. |
+| `rm_workspace` | `WORKSPACE_MANAGEMENTTOOL` | Core workspace organization, configuration, and maintenance. |
+| `rm_worktree` | `PROJECT_MANAGERTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+
+_4 action-routed tools (default `MCP_TOOL_MODE=condensed`). Each is enabled unless its toggle is set false; set `MCP_TOOL_MODE=verbose` (or `both`) for the 1:1 per-operation surface. Auto-generated — do not edit._
+<!-- MCP-TOOLS-TABLE:END -->
 
 Detailed tool schemas, parameter shapes, and validation constraints are preserved in [docs/mcp.md](docs/mcp.md).
 
