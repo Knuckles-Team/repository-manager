@@ -63,10 +63,10 @@ This table is auto-generated from the live server — do not edit by hand.
 
 | MCP Tool | Toggle Env Var | Description |
 |----------|----------------|-------------|
-| `rm_git` | `DEVOPS_ENGINEERTOOL` | Bulk Git operations and arbitrary command execution. |
-| `rm_projects` | `PROJECT_MANAGERTOOL` | Bulk install, build, and validate Python projects. |
+| `rm_git` | `GIT_OPERATIONSTOOL` | Bulk Git operations and arbitrary command execution. |
+| `rm_projects` | `PROJECT_MANAGEMENTTOOL` | Bulk install, build, and validate Python projects. |
 | `rm_workspace` | `WORKSPACE_MANAGEMENTTOOL` | Core workspace organization, configuration, and maintenance. |
-| `rm_worktree` | `PROJECT_MANAGERTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+| `rm_worktree` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
 
 _4 action-routed tools (default `MCP_TOOL_MODE=condensed`). Each is enabled unless its toggle is set false; set `MCP_TOOL_MODE=verbose` (or `both`) for the 1:1 per-operation surface. Auto-generated — do not edit._
 <!-- MCP-TOOLS-TABLE:END -->
