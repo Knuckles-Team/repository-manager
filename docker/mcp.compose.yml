@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   repository-manager-mcp:
-    image: knucklessg1/repository-manager:latest
+    image: knucklessg1/repository-manager:mcp
     container_name: repository-manager-mcp
     hostname: repository-manager-mcp
     restart: always
