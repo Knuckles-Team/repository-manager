@@ -96,6 +96,14 @@ When query strings or parameters are supplied, an LLM-free **Knowledge Graph res
 
 ### MCP Configuration Examples
 
+> **Install the slim `[mcp]` extra.** All examples below install
+> `repository-manager[mcp]` — the MCP-server extra that pulls only the FastMCP /
+> FastAPI tooling (`agent-utilities[mcp]`). It deliberately **excludes** the heavy
+> agent runtime (the epistemic-graph engine, `pydantic-ai`, `dspy`, `llama-index`,
+> `tree-sitter`), so `uvx`/container installs are dramatically smaller and faster.
+> Use the full `[agent]` extra only when you need the integrated Pydantic AI agent
+> (see [Installation](#installation)).
+
 #### stdio Transport (Recommended for local IDEs e.g., Cursor, Claude Desktop)
 Configure your IDE's `mcp.json` to launch the MCP server via `uvx`:
 
@@ -106,7 +114,7 @@ Configure your IDE's `mcp.json` to launch the MCP server via `uvx`:
       "command": "uvx",
       "args": [
         "--from",
-        "repository-manager",
+        "repository-manager[mcp]",
         "repository-manager-mcp"
       ],
       "env": {
@@ -134,7 +142,7 @@ Configure your client's `mcp.json` to launch the Streamable-HTTP server via `uvx
       "command": "uvx",
       "args": [
         "--from",
-        "repository-manager",
+        "repository-manager[mcp]",
         "repository-manager-mcp"
       ],
       "env": {
@@ -183,8 +191,15 @@ docker run -d \
   -e GRAPH_ROUTER_TIMEOUT="your_value" \
   -e GRAPH_VERIFIER_TIMEOUT="your_value" \
   -e REPO_MANAGER_PASSWORD="your_value" \
-  knucklessg1/repository-manager:latest
+  knucklessg1/repository-manager:mcp
 ```
+
+> The `:mcp` tag is the **slim MCP-server image** (built from
+> `docker/Dockerfile --target mcp`, installing `repository-manager[mcp]`). The default
+> `:latest` tag is the **full agent image** (`--target agent`, `repository-manager[agent]`)
+> which also bundles the Pydantic AI agent and the epistemic-graph engine — use it
+> when you run `repository-manager-agent` (the agent), not just the MCP server. See
+> [Container images](#container-images-mcp-vs-agent).
 
 ---
 
@@ -233,7 +248,7 @@ version: '3.8'
 
 services:
   repository-manager-mcp:
-    image: knucklessg1/repository-manager:latest
+    image: knucklessg1/repository-manager:mcp
     container_name: repository-manager-mcp
     hostname: repository-manager-mcp
     restart: always
@@ -297,6 +312,73 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 
 ---
 
+## Environment Variables
+
+Every variable the server and agent read, sourced from [`.env.example`](.env.example).
+
+### MCP server / transport
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TRANSPORT` | `stdio`, `streamable-http`, or `sse` | `stdio` |
+| `HOST` | Bind host (HTTP transports) | `0.0.0.0` |
+| `PORT` | Bind port (HTTP transports) | `8000` |
+| `MCP_TOOL_MODE` | Tool surface: `condensed`, `verbose`, or `both` | `condensed` |
+| `MCP_ENABLED_TOOLS` / `MCP_DISABLED_TOOLS` | Comma-separated tool allow/deny list | — |
+| `MCP_ENABLED_TAGS` / `MCP_DISABLED_TAGS` | Comma-separated tag allow/deny list | — |
+| `PYTHONUNBUFFERED` | Unbuffered stdout (recommended in containers) | `1` |
+
+### Workspace & repository management
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `REPOSITORY_MANAGER_WORKSPACE` | Root directory of the git workspace to manage | — |
+| `REPOSITORY_MANAGER_WORKTREE_ROOT` | Root directory for managed git worktrees | — |
+| `REPOSITORY_MANAGER_DEFAULT_BRANCH` | Default branch name for git operations | — |
+| `REPOSITORY_MANAGER_THREADS` | Parallel threads for git operations | — |
+| `REPO_MANAGER_URL` | Base URL of the target service | `http://localhost:8000` |
+| `REPO_MANAGER_USERNAME` | Username for authentication | `admin` |
+| `REPO_MANAGER_PASSWORD` | Password for authentication | — |
+
+### Hybrid graph intelligence engine
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GRAPH_DB_PATH` | LadybugDB persistent graph store path | — |
+| `GRAPH_SYNC_BACKGROUND` | Run graph sync in the background | — |
+| `GRAPH_ROUTER_TIMEOUT` | Router-node timeout (seconds) | `300.0` |
+| `GRAPH_VERIFIER_TIMEOUT` | Verifier-node timeout (seconds) | `300.0` |
+| `LLM_ROUTER_MODEL` | Model used by the router node | — |
+| `LLM_AGENT_MODEL` | Model used by specialist agent nodes | — |
+
+### Tool toggles
+Each action-routed tool can be disabled individually via its toggle env var (set to `false`).
+The full list is in the [Available MCP Tools](#available-mcp-tools) table above.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GIT_OPERATIONSTOOL` | Enable bulk Git operations (`rm_git`) | `True` |
+| `PROJECT_MANAGEMENTTOOL` | Enable project + worktree management (`rm_projects` / `rm_worktree`) | `True` |
+| `WORKSPACE_MANAGEMENTTOOL` | Enable workspace organization (`rm_workspace`) | `True` |
+
+### Telemetry & governance
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ENABLE_OTEL` | Enable OpenTelemetry export | `True` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint | — |
+| `OTEL_EXPORTER_OTLP_PUBLIC_KEY` / `OTEL_EXPORTER_OTLP_SECRET_KEY` | OTLP auth keys | — |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | OTLP protocol (e.g. `http/protobuf`) | — |
+| `EUNOMIA_TYPE` | Authorization mode: `none`, `embedded`, `remote` | `none` |
+| `EUNOMIA_POLICY_FILE` | Embedded policy file | `mcp_policies.json` |
+| `EUNOMIA_REMOTE_URL` | Remote Eunomia server URL | — |
+
+### Agent CLI (full `[agent]` runtime only)
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `MCP_URL` | URL of the MCP server the agent connects to | `http://localhost:8000/mcp` |
+| `PROVIDER` | LLM provider (e.g. `openai`) | `openai` |
+| `MODEL_ID` | Model id (e.g. `gpt-4o`) | `gpt-4o` |
+| `ENABLE_WEB_UI` | Serve the AG-UI web interface | `True` |
+
+---
+
 ## Security & Governance
 
 Built directly upon the enterprise-ready [`agent-utilities`](https://github.com/Knuckles-Team/agent-utilities) core, standard security parameters are fully supported:
@@ -317,15 +399,51 @@ Built directly upon the enterprise-ready [`agent-utilities`](https://github.com/
 
 ## Installation
 
-Install the Python package locally:
+Pick the extra that matches what you want to run:
+
+| Extra | Installs | Use when |
+|-------|----------|----------|
+| `repository-manager[mcp]` | Slim MCP server only (`agent-utilities[mcp]` — FastMCP/FastAPI) | You only run the **MCP server** (smallest install / image) |
+| `repository-manager[agent]` | Full agent runtime (`agent-utilities[agent,logfire]` — Pydantic AI + the epistemic-graph engine, plus `pre-commit` / `bump2version`) | You run the **integrated agent** |
+| `repository-manager[all]` | Everything (`mcp` + `agent` + `logfire`) | Development / both surfaces |
 
 ```bash
-# Using uv (highly recommended)
-uv pip install repository-manager[all]
+# MCP server only (recommended for tool hosting — slim deps)
+uv pip install "repository-manager[mcp]"
 
-# Using standard pip
-python -m pip install repository-manager[all]
+# Full agent runtime (Pydantic AI + epistemic-graph engine)
+uv pip install "repository-manager[agent]"
+
+# Everything (development)
+uv pip install "repository-manager[all]"      # or: python -m pip install "repository-manager[all]"
 ```
+
+### Container images (`:mcp` vs `:agent`)
+
+One multi-stage `docker/Dockerfile` builds two right-sized images, selected by `--target`:
+
+| Image tag | Build target | Contents | Entrypoint |
+|-----------|--------------|----------|------------|
+| `knucklessg1/repository-manager:mcp` | `--target mcp` | `repository-manager[mcp]` — **slim**, no engine/`pydantic-ai`/`dspy`/`llama-index`/`tree-sitter` | `repository-manager-mcp` |
+| `knucklessg1/repository-manager:latest` | `--target agent` (default) | `repository-manager[agent]` — **full** agent runtime + epistemic-graph engine | `repository-manager-agent` |
+
+```bash
+docker build --target mcp   -t knucklessg1/repository-manager:mcp    docker/   # slim MCP server
+docker build --target agent -t knucklessg1/repository-manager:latest docker/   # full agent
+```
+
+`docker/mcp.compose.yml` runs the slim `:mcp` server; `docker/agent.compose.yml` runs the
+agent (`:latest`) with a co-located `:mcp` sidecar.
+
+### Knowledge-graph database (`epistemic-graph`)
+
+The **full agent** (`[agent]` / `:latest`) embeds the **epistemic-graph** engine (pulled in
+transitively via `agent-utilities[agent]`). For production — or to share one knowledge graph
+across multiple agents — run **epistemic-graph as its own database container** and point the
+agent at it instead of embedding it. Deployment recipes (single-node + Raft HA), connection
+config, and the full database architecture (with diagrams) are documented in the
+[epistemic-graph deployment guide](https://knuckles-team.github.io/epistemic-graph/deployment/).
+The slim `[mcp]` server does **not** require the database.
 
 ---
 
