@@ -37,6 +37,10 @@ def _make_manager(tmp_path, pending_status):
         "https://github.com/Knuckles-Team/repo2.git": str(tmp_path / "repo2"),
         "https://github.com/Knuckles-Team/repo3.git": str(tmp_path / "repo3"),
     }
+    # The phased push/bump loops skip projects whose local clone is absent
+    # (os.path.isdir guard); create the mapped dirs so the mocked git_action runs.
+    for name in ("repo1", "repo2", "repo3"):
+        (tmp_path / name).mkdir(exist_ok=True)
     path_to_status = {
         str(tmp_path / name): status for name, status in pending_status.items()
     }
