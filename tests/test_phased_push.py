@@ -13,6 +13,10 @@ def mock_repo_manager(tmp_path):
         "https://github.com/Knuckles-Team/repo2.git": str(tmp_path / "repo2"),
         "https://github.com/Knuckles-Team/repo3.git": str(tmp_path / "repo3"),
     }
+    # The phased push/bump loops skip projects whose local clone is absent
+    # (os.path.isdir guard); create the mapped dirs so the mocked git_action runs.
+    for name in ("repo1", "repo2", "repo3"):
+        (tmp_path / name).mkdir(exist_ok=True)
 
     def git_action_side_effect(*args, **kwargs):
         command = kwargs.get("command", "")
