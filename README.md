@@ -61,6 +61,8 @@ This table is auto-generated from the live server — do not edit by hand.
 
 <!-- MCP-TOOLS-TABLE:START -->
 
+#### Condensed action-routed tools (default — `MCP_TOOL_MODE=condensed`)
+
 | MCP Tool | Toggle Env Var | Description |
 |----------|----------------|-------------|
 | `rm_git` | `GIT_OPERATIONSTOOL` | Bulk Git operations and arbitrary command execution. |
@@ -68,7 +70,59 @@ This table is auto-generated from the live server — do not edit by hand.
 | `rm_workspace` | `WORKSPACE_MANAGEMENTTOOL` | Core workspace organization, configuration, and maintenance. |
 | `rm_worktree` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
 
-_4 action-routed tools (default `MCP_TOOL_MODE=condensed`). Each is enabled unless its toggle is set false; set `MCP_TOOL_MODE=verbose` (or `both`) for the 1:1 per-operation surface. Auto-generated — do not edit._
+#### Verbose 1:1 API-mapped tools (`MCP_TOOL_MODE=verbose` or `both`)
+
+<details>
+<summary>42 per-operation tools — one per public API method (click to expand)</summary>
+
+| MCP Tool | Toggle Env Var | Description |
+|----------|----------------|-------------|
+| `repository_manager_add_project` | `GITTOOL` | Stage all changes (git add -A) for a single Git project. |
+| `repository_manager_add_projects` | `GITTOOL` | Stage all changes for multiple projects in parallel. |
+| `repository_manager_build_projects` | `GITTOOL` | Bulk builds Python and Node.js projects in the workspace. |
+| `repository_manager_bulk_bump` | `GITTOOL` | Bumps the version for all projects in the workspace in parallel. |
+| `repository_manager_bump_version` | `GITTOOL` | Bump the version of the project using bump2version. |
+| `repository_manager_cleanup_artifacts` | `GITTOOL` | Removes test artifacts and temporary files from the specified directory. |
+| `repository_manager_clone_projects` | `GITTOOL` | Clone all specified Git projects in parallel using multiple threads. |
+| `repository_manager_clone_repository` | `GITTOOL` | Clone a single Git repository to a specific target path. |
+| `repository_manager_commit_code_project` | `GITTOOL` | Stage ALL changes (git add -A), optionally gate on pre-commit, then commit. |
+| `repository_manager_commit_code_projects` | `GITTOOL` | Concurrently stage + pre-commit + commit feature code across projects. |
+| `repository_manager_commit_project` | `GITTOOL` | Commit staged changes (git commit -m "{message}") for a single Git project. |
+| `repository_manager_commit_projects` | `GITTOOL` | Commit staged changes for multiple projects in parallel. |
+| `repository_manager_create_project` | `GITTOOL` | Create a new project directory and initialize it as a git repository. |
+| `repository_manager_discover_projects` | `GITTOOL` | Scan self.path for immediate subdirectories containing a .git folder. |
+| `repository_manager_generate_markdown_summary` | `GITTOOL` | Generates a beautiful markdown summary of bulk operation results. |
+| `repository_manager_generate_workspace_template` | `GITTOOL` | Generates a workspace.yml template at the specified path. |
+| `repository_manager_get_consolidated_skill_paths` | `GITTOOL` | Returns absolute paths to the 15 specific building and documentation skills. |
+| `repository_manager_get_project_map` | `GITTOOL` | Returns the mapping of repository URLs to their local project paths. |
+| `repository_manager_get_readme` | `GITTOOL` | Get the content and path of the README.md file in the specified path. |
+| `repository_manager_get_workspace_projects` | `GITTOOL` | Returns a list of project basenames (e.g. 'genius-agent') defined in the workspace. |
+| `repository_manager_git_action` | `GITTOOL` | Execute a Git command in the specified directory. |
+| `repository_manager_install_project` | `GITTOOL` | Install a Python project using pip install -e .[extra]. |
+| `repository_manager_install_projects` | `GITTOOL` | Bulk installs Python and Node projects in the workspace. |
+| `repository_manager_list_branches` | `GITTOOL` | Returns a dictionary mapping project basenames to their current active git branch. |
+| `repository_manager_load_projects_from_yaml` | `GITTOOL` | Loads repository URLs from a YAML workspace file using Pydantic models. |
+| `repository_manager_maintain_projects` | `GITTOOL` | Execute the phased bumpversion workflow: pre-commits + phased bumping. |
+| `repository_manager_phased_bumpversion` | `GITTOOL` | Execute the phased bumpversion workflow: pre-commits + phased bumping. |
+| `repository_manager_phased_push` | `GITTOOL` | Execute the phased git push workflow. |
+| `repository_manager_pre_commit` | `GITTOOL` | Execute pre-commit commands in the specified path. |
+| `repository_manager_pre_commit_projects` | `GITTOOL` | Execute pre-commit commands for all projects in parallel. |
+| `repository_manager_pull_project` | `GITTOOL` | Pull updates for a single Git project and optionally checkout the default branch. |
+| `repository_manager_pull_projects` | `GITTOOL` | Pull updates for multiple projects in parallel. |
+| `repository_manager_push_project` | `GITTOOL` | Push updates and tags for a single Git project, ensuring all staged and unstaged changes are committed first. |
+| `repository_manager_push_projects` | `GITTOOL` | Push updates for multiple projects in parallel. |
+| `repository_manager_save_workspace_config` | `GITTOOL` | Saves the current or provided WorkspaceConfig to a YAML file. |
+| `repository_manager_set_threads` | `GITTOOL` | Set the number of threads for parallel processing. |
+| `repository_manager_setup_from_yaml` | `GITTOOL` | Sets up the workspace structure from a YAML file. |
+| `repository_manager_test_projects` | `GITTOOL` | Execute pytests for the specified projects in parallel. |
+| `repository_manager_update_dependency` | `GITTOOL` | Update a package's pinned version in a deps file (pyproject OR requirements). |
+| `repository_manager_validate_and_release` | `GITTOOL` | Validate projects in parallel, optionally triggering a release if successful. |
+| `repository_manager_validate_single_project` | `GITTOOL` | Validates a single repository by running the scanner logic. |
+| `repository_manager_worktree_hygiene` | `GITTOOL` | Audit (and optionally prune) session worktrees as a release-flow step. |
+
+</details>
+
+_4 action-routed tool(s) (default) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (`condensed` default · `verbose` 1:1 · `both`). Auto-generated — do not edit._
 <!-- MCP-TOOLS-TABLE:END -->
 
 Detailed tool schemas, parameter shapes, and validation constraints are preserved in [docs/mcp.md](docs/mcp.md).
@@ -118,14 +172,11 @@ Configure your IDE's `mcp.json` to launch the MCP server via `uvx`:
         "repository-manager-mcp"
       ],
       "env": {
-        "REPO_MANAGER_URL": "your_repo_manager_url_here",
-        "REPO_MANAGER_USERNAME": "your_repo_manager_username_here",
+        "MCP_TOOL_MODE": "condensed",
         "REPOSITORY_MANAGER_WORKSPACE": "your_repository_manager_workspace_here",
-        "LLM_ROUTER_MODEL": "your_llm_router_model_here",
-        "LLM_AGENT_MODEL": "your_llm_agent_model_here",
-        "GRAPH_ROUTER_TIMEOUT": "your_graph_router_timeout_here",
-        "GRAPH_VERIFIER_TIMEOUT": "your_graph_verifier_timeout_here",
-        "REPO_MANAGER_PASSWORD": "your_repo_manager_password_here"
+        "WORKSPACE_YML": "workspace.yml",
+        "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
+        "REPOSITORY_MANAGER_THREADS": "12"
       }
     }
   }
@@ -149,14 +200,11 @@ Configure your client's `mcp.json` to launch the Streamable-HTTP server via `uvx
         "TRANSPORT": "streamable-http",
         "HOST": "0.0.0.0",
         "PORT": "8000",
-        "REPO_MANAGER_URL": "your_repo_manager_url_here",
-        "REPO_MANAGER_USERNAME": "your_repo_manager_username_here",
+        "MCP_TOOL_MODE": "condensed",
         "REPOSITORY_MANAGER_WORKSPACE": "your_repository_manager_workspace_here",
-        "LLM_ROUTER_MODEL": "your_llm_router_model_here",
-        "LLM_AGENT_MODEL": "your_llm_agent_model_here",
-        "GRAPH_ROUTER_TIMEOUT": "your_graph_router_timeout_here",
-        "GRAPH_VERIFIER_TIMEOUT": "your_graph_verifier_timeout_here",
-        "REPO_MANAGER_PASSWORD": "your_repo_manager_password_here"
+        "WORKSPACE_YML": "workspace.yml",
+        "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
+        "REPOSITORY_MANAGER_THREADS": "12"
       }
     }
   }
@@ -183,14 +231,10 @@ docker run -d \
   -p 8000:8000 \
   -e TRANSPORT=streamable-http \
   -e PORT=8000 \
-  -e REPO_MANAGER_URL="your_value" \
-  -e REPO_MANAGER_USERNAME="your_value" \
   -e REPOSITORY_MANAGER_WORKSPACE="your_value" \
-  -e LLM_ROUTER_MODEL="your_value" \
-  -e LLM_AGENT_MODEL="your_value" \
-  -e GRAPH_ROUTER_TIMEOUT="your_value" \
-  -e GRAPH_VERIFIER_TIMEOUT="your_value" \
-  -e REPO_MANAGER_PASSWORD="your_value" \
+  -e WORKSPACE_YML="workspace.yml" \
+  -e REPOSITORY_MANAGER_DEFAULT_BRANCH="main" \
+  -e REPOSITORY_MANAGER_THREADS="12" \
   knucklessg1/repository-manager:mcp
 ```
 
@@ -226,15 +270,14 @@ This repository features a fully integrated Pydantic AI Graph Agent. It communic
 To start the interactive command-line agent:
 
 ```bash
-# Set credentials
-export REPO_MANAGER_URL="your_value"
-export REPO_MANAGER_USERNAME="your_value"
+# Set workspace + git operation settings
 export REPOSITORY_MANAGER_WORKSPACE="your_value"
-export LLM_ROUTER_MODEL="your_value"
-export LLM_AGENT_MODEL="your_value"
-export GRAPH_ROUTER_TIMEOUT="your_value"
-export GRAPH_VERIFIER_TIMEOUT="your_value"
-export REPO_MANAGER_PASSWORD="your_value"
+export WORKSPACE_YML="workspace.yml"
+export REPOSITORY_MANAGER_DEFAULT_BRANCH="main"
+export REPOSITORY_MANAGER_THREADS="12"
+# Optional VCS provider credentials
+export GITLAB_TOKEN="your_gitlab_token"
+export GITHUB_TOKEN="your_github_token"
 
 # Run the agent server
 repository-manager-agent --provider openai --model-id gpt-4o
@@ -331,23 +374,29 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `EUNOMIA_TYPE` | `none` | options: none, embedded, remote |
 | `EUNOMIA_POLICY_FILE` | `mcp_policies.json` |  |
 | `EUNOMIA_REMOTE_URL` | `http://eunomia-server:8000` |  |
-| `REPO_MANAGER_URL` | `http://localhost:8000` |  |
-| `REPO_MANAGER_USERNAME` | `admin` |  |
-| `REPOSITORY_MANAGER_WORKSPACE` | `/home/apps/workspace` |  |
-| `LLM_ROUTER_MODEL` | `qwen/qwen3.5-9b` |  |
-| `LLM_AGENT_MODEL` | `qwen/qwen3.5-9b` |  |
-| `GRAPH_ROUTER_TIMEOUT` | `300.0` |  |
-| `GRAPH_VERIFIER_TIMEOUT` | `300.0` |  |
-| `REPO_MANAGER_PASSWORD` | `your_repo_manager_password_here` |  |
+| `REPOSITORY_MANAGER_WORKSPACE` | `/home/apps/workspace` | root of the git workspace to manage |
+| `WORKSPACE_PATH` | `/home/apps/workspace` | fallback workspace root when REPOSITORY_MANAGER_WORKSPACE is unset |
+| `WORKSPACE_YML` | `workspace.yml` | workspace manifest filename (resolved under the workspace root) |
+| `WORKSPACE_REPORTS` | `/home/apps/workspace/reports` | directory where generated reports are written |
+| `REPOSITORY_MANAGER_WORKTREE_ROOT` | `/home/apps/worktrees` | root directory for managed git worktrees |
+| `REPOSITORY_MANAGER_DEFAULT_BRANCH` | `main` | default branch name for git operations |
+| `REPOSITORY_MANAGER_THREADS` | `12` | parallel threads for git operations |
+| `RM_MAX_WORKERS` | `8` | explicit worker-count override (skips auto-sizing from CPU count) |
+| `RM_JOB_STALE_SECONDS` | `1800` | seconds before an in-flight job is treated as stale by the watchdog |
+| `RM_GATE_BEFORE_PUSH` | `true` | run the pre-commit gate before pushing (set false to bypass) |
+| `GITLAB_URL` | `https://gitlab.com` | GitLab base URL (alias: GITLAB_HOST) |
+| `GITLAB_HOST` | `https://gitlab.com` | legacy alias for GITLAB_URL |
+| `GITLAB_TOKEN` | `your_gitlab_token_here` | GitLab access token (alias: GITLAB_PRIVATE_TOKEN) |
+| `GITLAB_PRIVATE_TOKEN` | `your_gitlab_token_here` | legacy alias for GITLAB_TOKEN |
+| `GITHUB_TOKEN` | `your_github_token_here` | GitHub access token (alias: GH_TOKEN) |
+| `GH_TOKEN` | `your_github_token_here` | legacy alias for GITHUB_TOKEN |
 | `GIT_OPERATIONSTOOL` | `True` | MCP tools table (condensed action-routed surface). |
 | `PROJECT_MANAGEMENTTOOL` | `True` |  |
 | `WORKSPACE_MANAGEMENTTOOL` | `True` |  |
 | `MISCTOOL` | `True` |  |
 | `AUTH_TYPE` | `bearer` | authentication type (e.g. bearer, none) |
-| `GIT_OPERATION_THREADS` | `4` | number of parallel threads for Git operations |
 | `LLM_API_KEY` | `your_llm_api_key_here` |  |
 | `LLM_BASE_URL` | `https://api.openai.com/v1` |  |
-| `MODEL_NAME` | `gpt-4o` |  |
 | `MCP_URL` | `http://localhost:8000` |  |
 
 #### Inherited agent-utilities variables (apply to every connector)
@@ -368,7 +417,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | `gpt-4o` | Model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_29 package + 13 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_35 package + 13 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 
@@ -388,23 +437,27 @@ Every variable the server and agent read, sourced from [`.env.example`](.env.exa
 ### Workspace & repository management
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `REPOSITORY_MANAGER_WORKSPACE` | Root directory of the git workspace to manage | — |
-| `REPOSITORY_MANAGER_WORKTREE_ROOT` | Root directory for managed git worktrees | — |
-| `REPOSITORY_MANAGER_DEFAULT_BRANCH` | Default branch name for git operations | — |
-| `REPOSITORY_MANAGER_THREADS` | Parallel threads for git operations | — |
-| `REPO_MANAGER_URL` | Base URL of the target service | `http://localhost:8000` |
-| `REPO_MANAGER_USERNAME` | Username for authentication | `admin` |
-| `REPO_MANAGER_PASSWORD` | Password for authentication | — |
+| `REPOSITORY_MANAGER_WORKSPACE` | Root directory of the git workspace to manage | `/home/apps/workspace` |
+| `WORKSPACE_PATH` | Fallback workspace root when `REPOSITORY_MANAGER_WORKSPACE` is unset | `/home/apps/workspace` |
+| `WORKSPACE_YML` | Workspace manifest filename (resolved under the workspace root) | `workspace.yml` |
+| `WORKSPACE_REPORTS` | Directory where generated reports are written | — |
+| `REPOSITORY_MANAGER_WORKTREE_ROOT` | Root directory for managed git worktrees | `/home/apps/worktrees` |
+| `REPOSITORY_MANAGER_DEFAULT_BRANCH` | Default branch name for git operations | `main` |
+| `REPOSITORY_MANAGER_THREADS` | Parallel threads for git operations | `12` |
 
-### Hybrid graph intelligence engine
+### Operations & gating
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `GRAPH_DB_PATH` | LadybugDB persistent graph store path | — |
-| `GRAPH_SYNC_BACKGROUND` | Run graph sync in the background | — |
-| `GRAPH_ROUTER_TIMEOUT` | Router-node timeout (seconds) | `300.0` |
-| `GRAPH_VERIFIER_TIMEOUT` | Verifier-node timeout (seconds) | `300.0` |
-| `LLM_ROUTER_MODEL` | Model used by the router node | — |
-| `LLM_AGENT_MODEL` | Model used by specialist agent nodes | — |
+| `RM_MAX_WORKERS` | Explicit worker-count override (skips auto-sizing from CPU count) | — |
+| `RM_JOB_STALE_SECONDS` | Seconds before an in-flight job is treated as stale by the watchdog | `1800` |
+| `RM_GATE_BEFORE_PUSH` | Run the pre-commit gate before pushing (set `false` to bypass) | `true` |
+
+### Version-control provider credentials
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GITLAB_URL` | GitLab base URL (alias: `GITLAB_HOST`) | — |
+| `GITLAB_TOKEN` | GitLab access token (alias: `GITLAB_PRIVATE_TOKEN`) | — |
+| `GITHUB_TOKEN` | GitHub access token (alias: `GH_TOKEN`) | — |
 
 ### Tool toggles
 Each action-routed tool can be disabled individually via its toggle env var (set to `false`).
