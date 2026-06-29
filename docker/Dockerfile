@@ -28,14 +28,24 @@ RUN apt-get update \
 # Slim MCP-only dependency closure.
 FROM builder-base AS builder-mcp
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --upgrade --break-system-packages --prerelease=allow repository-manager[mcp]>=1.38.0
+    uv pip install --system --upgrade --break-system-packages --prerelease=allow repository-manager[mcp]>=2.0.0
 
 # Full agent runtime dependency closure.
 FROM builder-base AS builder-agent
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --upgrade --break-system-packages --prerelease=allow repository-manager[agent]>=1.38.0
+    uv pip install --system --upgrade --break-system-packages --prerelease=allow repository-manager[agent]>=2.0.0
 
 FROM python:3.11-slim AS runtime-base
+# repository-manager shells out to `git` at RUNTIME — the validate/release flow runs
+# pre-commit (which requires git) and the git_tools/rm_git actions call git directly.
+# A git tool must ship git in its runtime image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && git config --system --add safe.directory '*'
+# uv is needed at RUNTIME too: the validate/release flow's pytest pre-commit hooks
+# shell out to `uv run`. A dev/validator worker must ship the toolchain it drives.
+COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /uvx /bin/
 ARG HOST=0.0.0.0
 ARG PORT=8000
 ARG TRANSPORT="stdio"
