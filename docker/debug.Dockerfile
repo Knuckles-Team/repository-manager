@@ -19,7 +19,7 @@ ENV HOST=${HOST} \
 
 # Install base dependencies, uv, and starship shell prompt
 RUN apt-get update \
-    && apt-get install -y default-jre ripgrep tree fd-find curl nano build-essential cmake libssl-dev libcurl4-openssl-dev pkg-config \
+    && apt-get install -y git default-jre ripgrep tree fd-find curl nano build-essential cmake libssl-dev libcurl4-openssl-dev pkg-config \
     && curl -LsSf https://astral.sh/uv/install.sh | sh \
     && curl -sS https://starship.rs/install.sh | sh -s -- --yes \
     && curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable --profile minimal \

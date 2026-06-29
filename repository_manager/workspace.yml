@@ -467,7 +467,7 @@ maintenance:
       phase: 2
       projects:
         - "epistemic-graph"
-      wait_minutes: 0
+      wait_minutes: 30
     - name: "Phase 3: agent-utilities"
       phase: 3
       projects:
