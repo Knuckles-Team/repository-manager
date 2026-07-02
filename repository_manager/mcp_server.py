@@ -46,7 +46,7 @@ from repository_manager.models import (
 from repository_manager.repository_manager import Git
 from repository_manager.scan_models import RepoScanResult
 
-__version__ = "2.0.0"
+__version__ = "2.0.1"
 
 DEFAULT_WORKSPACE = setting(
     "REPOSITORY_MANAGER_WORKSPACE",
