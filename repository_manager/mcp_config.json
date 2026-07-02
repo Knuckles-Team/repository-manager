@@ -8,18 +8,26 @@
       ],
       "env": {
         "MCP_TOOL_MODE": "condensed",
-        "MISCTOOL": "${ MISCTOOL:-True }",
-        "GIT_OPERATIONSTOOL": "${ GIT_OPERATIONSTOOL:-True }",
-        "PROJECT_MANAGEMENTTOOL": "${ PROJECT_MANAGEMENTTOOL:-True }",
-        "REPOSITORY_MANAGER_THREADS": "secret://REPOSITORY_MANAGER_THREADS",
-        "REPOSITORY_MANAGER_WORKSPACE": "secret://REPOSITORY_MANAGER_WORKSPACE",
-        "WORKSPACE_MANAGEMENTTOOL": "${ WORKSPACE_MANAGEMENTTOOL:-True }",
-        "WORKSPACE_YML": "secret://WORKSPACE_YML",
-        "AGENT_DESCRIPTION": "<YOUR_AGENT_DESCRIPTION>",
-        "AGENT_SYSTEM_PROMPT": "<YOUR_AGENT_SYSTEM_PROMPT>",
-        "DEFAULT_AGENT_NAME": "<YOUR_DEFAULT_AGENT_NAME>",
-        "MCP_URL": "<YOUR_MCP_URL>",
-        "REPOSITORY_MANAGER_DEFAULT_BRANCH": "<YOUR_REPOSITORY_MANAGER_DEFAULT_BRANCH>"
+        "GH_TOKEN": "your_github_token_here",
+        "GITHUB_TOKEN": "your_github_token_here",
+        "GITLAB_HOST": "https://gitlab.com",
+        "GITLAB_PRIVATE_TOKEN": "your_gitlab_token_here",
+        "GITLAB_TOKEN": "your_gitlab_token_here",
+        "GITLAB_URL": "https://gitlab.com",
+        "GIT_OPERATIONSTOOL": "True",
+        "MISCTOOL": "True",
+        "PROJECT_MANAGEMENTTOOL": "True",
+        "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
+        "REPOSITORY_MANAGER_THREADS": "12",
+        "REPOSITORY_MANAGER_WORKSPACE": "/home/apps/workspace",
+        "REPOSITORY_MANAGER_WORKTREE_ROOT": "/home/apps/worktrees",
+        "RM_GATE_BEFORE_PUSH": "true",
+        "RM_JOB_STALE_SECONDS": "1800",
+        "RM_MAX_WORKERS": "8",
+        "WORKSPACE_MANAGEMENTTOOL": "True",
+        "WORKSPACE_PATH": "/home/apps/workspace",
+        "WORKSPACE_REPORTS": "/home/apps/workspace/reports",
+        "WORKSPACE_YML": "workspace.yml"
       }
     }
   }
