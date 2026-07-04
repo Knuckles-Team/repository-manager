@@ -1,5 +1,5 @@
 #!/usr/bin/python
-"""Remote VCS enumeration (CONCEPT:KG-2.49).
+"""Remote VCS enumeration (CONCEPT:AU-KG.ontology.populated-at-import-real-3).
 
 Covers GitLab keyset pagination, GitHub page pagination, archived filtering, and
 the max_repos cap — all offline via an injected fake HTTP client.

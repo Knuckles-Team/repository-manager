@@ -687,7 +687,7 @@ def register_git_operations_tools(mcp: FastMCP):
             return await run_blocking(git.git_action, command=command, path=path)
 
         if action == "enumerate":
-            # Remote VCS enumeration for enterprise-scale ingestion (CONCEPT:KG-2.49):
+            # Remote VCS enumeration for enterprise-scale ingestion (CONCEPT:AU-KG.ontology.populated-at-import-real-3):
             # list all repos across a GitLab instance / GitHub org into a JSON ingest
             # manifest the KG batch ingestor consumes. `command` selects the VCS
             # ('gitlab'|'github'); `projects` is a comma-separated group/org list.

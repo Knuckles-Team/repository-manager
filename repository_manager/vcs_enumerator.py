@@ -1,7 +1,7 @@
 #!/usr/bin/python
 from __future__ import annotations
 
-"""Remote VCS enumeration for enterprise-scale ingestion (CONCEPT:KG-2.49).
+"""Remote VCS enumeration for enterprise-scale ingestion (CONCEPT:AU-KG.ontology.populated-at-import-real-3).
 
 Lists every repository across a GitLab instance or GitHub org so the KG-side
 batch ingestor (``agent_utilities.knowledge_graph.ingestion.batch_orchestrator``)
