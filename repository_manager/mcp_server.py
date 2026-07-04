@@ -608,6 +608,56 @@ def register_misc_tools(mcp: FastMCP):
     async def health_check(request: Request) -> JSONResponse:
         return JSONResponse({"status": "OK"})
 
+    @mcp.tool(tags={"workspace_management", "knowledge_graph"})
+    async def repository_ingest_repositories(
+        vcs: str = Field(
+            default="gitlab",
+            description="Which VCS to enumerate: 'gitlab' or 'github'.",
+        ),
+        scopes: str | None = Field(
+            default=None,
+            description="Comma-separated GitLab groups / GitHub orgs to enumerate. Omit for the whole instance / the authenticated user.",
+        ),
+        max_repos: int | None = Field(
+            default=None,
+            description="Optional cap on the number of repositories enumerated + ingested.",
+        ),
+        ctx: Context | None = Field(
+            default=None, description="MCP context for progress reporting"
+        ),
+    ) -> dict:
+        """Natively ingest git repositories into epistemic-graph as typed :GitRepository nodes.
+
+        Enumerates repositories across a GitLab instance / GitHub org via the real VCS
+        enumerator and pushes them (typed :GitRepository nodes with vcs/clone_url/web_url/
+        default_branch provenance) into the knowledge graph via the fast engine client.
+        Best-effort: returns ``{"ingested": None}`` when no engine is reachable.
+        CONCEPT:AU-KG.ingest.enterprise-source-extractor.
+        """
+        from repository_manager.kg_ingest import ingest_repositories
+        from repository_manager.vcs_enumerator import (
+            enumerate_github,
+            enumerate_gitlab,
+        )
+
+        which = (vcs or "gitlab").strip().lower()
+        scope_list = (
+            [s.strip() for s in scopes.split(",") if s.strip()] if scopes else None
+        )
+        if which == "github":
+            refs = await run_blocking(
+                enumerate_github,
+                orgs=scope_list,
+                user=not scope_list,
+                max_repos=max_repos,
+            )
+        else:
+            refs = await run_blocking(
+                enumerate_gitlab, groups=scope_list, max_repos=max_repos
+            )
+        ingested = await run_blocking(ingest_repositories, refs)
+        return {"vcs": which, "listed": len(refs), "ingested": ingested}
+
 
 def register_git_operations_tools(mcp: FastMCP):
     @mcp.tool(
@@ -713,12 +763,23 @@ def register_git_operations_tools(mcp: FastMCP):
             else:
                 refs = await run_blocking(enumerate_gitlab, groups=scopes)
             manifest_path = await run_blocking(write_manifest, refs, run_id)
+            # Native KG ingestion (default-on, best-effort): push the enumerated
+            # repositories into epistemic-graph as typed :GitRepository nodes. No-ops
+            # when no engine is reachable. CONCEPT:AU-KG.ingest.enterprise-source-extractor.
+            ingested = None
+            try:
+                from repository_manager.kg_ingest import ingest_repositories
+
+                ingested = await run_blocking(ingest_repositories, refs)
+            except Exception as _e:  # noqa: BLE001 — ingestion is best-effort
+                logger.debug("KG ingest skipped: %s", _e)
             return {
                 "status": "ok",
                 "vcs": vcs,
                 "count": len(refs),
                 "run_id": run_id,
                 "manifest": manifest_path,
+                "ingested": ingested,
             }
 
         if action == "clone":
