@@ -47,7 +47,7 @@ repository-manager-mcp = "repository_manager.mcp_server:mcp_server"
 repository-manager-agent = "repository_manager.agent_server:agent_server"
 
 [tool.setuptools.package-data]
-repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "prompts/**", "skills/**",]
+repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "prompts/**", "skills/**", "ontology/**", "connectors/**",]
 
 [tool.uv]
 managed = true
@@ -57,6 +57,12 @@ universal-skills = { workspace = true }
 
 [project.entry-points."agent_utilities.skill_providers"]
 repository-manager = "repository_manager.skills"
+
+[project.entry-points."agent_utilities.ontology_providers"]
+repository-manager = "repository_manager.ontology"
+
+[project.entry-points."agent_utilities.source_connector_providers"]
+repository-manager = "repository_manager.connectors"
 
 [project.entry-points."agent_utilities.prompt_providers"]
 repository-manager = "repository_manager.prompts"

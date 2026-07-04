@@ -1,0 +1,148 @@
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix foaf: <http://xmlns.com/foaf/0.1/> .
+@prefix dc: <http://purl.org/dc/terms/> .
+@prefix : <http://knuckles.team/kg#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+# Repository-manager ontology — git repositories, their linked worktrees, and the local
+# workspace projects the manager builds/validates/pushes. All classes and properties live
+# in the shared `:` (kg#) namespace; only the owl:Ontology node gets the per-package IRI.
+# Backs the repository-manager MCP tool surface (rm_git enumerate / rm_worktree / rm_projects).
+# Reuses the shared :Person class (never redefined here).
+
+# --- classes (owl:Class) ---
+
+:GitRepository a owl:Class ;
+    rdfs:label "Git Repository" ;
+    rdfs:comment "A version-controlled git repository — a remote enumerated across a GitLab instance / GitHub org (rm_git enumerate) or a local workspace checkout (rm_projects)." .
+
+:Worktree a owl:Class ;
+    rdfs:label "Worktree" ;
+    rdfs:comment "A linked git worktree of a repository (a checked-out branch on its own path), classified merged / active / stale / dangling (rm_worktree list/audit)." .
+
+:Project a owl:Class ;
+    rdfs:label "Project" ;
+    rdfs:comment "A managed workspace project directory — a buildable/testable/pushable unit the manager installs, validates, bumps and pushes (rm_projects / rm_workspace)." .
+
+# --- links (owl:ObjectProperty) ---
+
+:worktreeOf a owl:ObjectProperty ;
+    rdfs:label "worktree of" ;
+    rdfs:comment "Links a Worktree to the canonical GitRepository it was created from." ;
+    rdfs:domain :Worktree ;
+    rdfs:range :GitRepository .
+
+:projectOfRepository a owl:ObjectProperty ;
+    rdfs:label "project of repository" ;
+    rdfs:comment "Links a managed Project to the GitRepository backing it." ;
+    rdfs:domain :Project ;
+    rdfs:range :GitRepository .
+
+:authoredBy a owl:ObjectProperty ;
+    rdfs:label "authored by" ;
+    rdfs:comment "Links a repository, worktree, or project to the Person who last authored/owns it." ;
+    rdfs:range :Person .
+
+# --- fields (owl:DatatypeProperty) ---
+
+:vcs a owl:DatatypeProperty ;
+    rdfs:label "vcs" ;
+    rdfs:comment "Version-control host of a GitRepository (gitlab, github)." ;
+    rdfs:domain :GitRepository ;
+    rdfs:range xsd:string .
+
+:fullPath a owl:DatatypeProperty ;
+    rdfs:label "full path" ;
+    rdfs:comment "Namespaced repository path (e.g. group/subgroup/name or owner/name)." ;
+    rdfs:domain :GitRepository ;
+    rdfs:range xsd:string .
+
+:cloneUrl a owl:DatatypeProperty ;
+    rdfs:label "clone url" ;
+    rdfs:comment "HTTP(S) clone URL of a GitRepository." ;
+    rdfs:domain :GitRepository ;
+    rdfs:range xsd:string .
+
+:repoWebUrl a owl:DatatypeProperty ;
+    rdfs:label "web url" ;
+    rdfs:comment "Canonical web URL of a GitRepository." ;
+    rdfs:domain :GitRepository ;
+    rdfs:range xsd:string .
+
+:defaultBranch a owl:DatatypeProperty ;
+    rdfs:label "default branch" ;
+    rdfs:comment "The repository's default branch (e.g. main)." ;
+    rdfs:domain :GitRepository ;
+    rdfs:range xsd:string .
+
+:headSha a owl:DatatypeProperty ;
+    rdfs:label "head sha" ;
+    rdfs:comment "Short/long git SHA at the head of a GitRepository or Worktree." ;
+    rdfs:range xsd:string .
+
+:archived a owl:DatatypeProperty ;
+    rdfs:label "archived" ;
+    rdfs:comment "Whether the GitRepository is archived on its host." ;
+    rdfs:domain :GitRepository ;
+    rdfs:range xsd:boolean .
+
+:lastActivityAt a owl:DatatypeProperty ;
+    rdfs:label "last activity at" ;
+    rdfs:comment "ISO timestamp of the last activity/push on a GitRepository." ;
+    rdfs:domain :GitRepository ;
+    rdfs:range xsd:string .
+
+:worktreePath a owl:DatatypeProperty ;
+    rdfs:label "worktree path" ;
+    rdfs:comment "Filesystem path of a linked Worktree." ;
+    rdfs:domain :Worktree ;
+    rdfs:range xsd:string .
+
+:branchName a owl:DatatypeProperty ;
+    rdfs:label "branch name" ;
+    rdfs:comment "The branch a Worktree has checked out." ;
+    rdfs:domain :Worktree ;
+    rdfs:range xsd:string .
+
+:worktreeStatus a owl:DatatypeProperty ;
+    rdfs:label "worktree status" ;
+    rdfs:comment "Audit classification of a Worktree: merged, active, stale, or dangling." ;
+    rdfs:domain :Worktree ;
+    rdfs:range xsd:string .
+
+:dirty a owl:DatatypeProperty ;
+    rdfs:label "dirty" ;
+    rdfs:comment "Whether a Worktree or Project has uncommitted changes." ;
+    rdfs:range xsd:boolean .
+
+:aheadCount a owl:DatatypeProperty ;
+    rdfs:label "ahead count" ;
+    rdfs:comment "Number of commits a Worktree/Project is ahead of its base/upstream." ;
+    rdfs:range xsd:integer .
+
+:behindCount a owl:DatatypeProperty ;
+    rdfs:label "behind count" ;
+    rdfs:comment "Number of commits a Worktree/Project is behind its base/upstream." ;
+    rdfs:range xsd:integer .
+
+:projectPath a owl:DatatypeProperty ;
+    rdfs:label "project path" ;
+    rdfs:comment "Filesystem path of a managed Project." ;
+    rdfs:domain :Project ;
+    rdfs:range xsd:string .
+
+:validationStatus a owl:DatatypeProperty ;
+    rdfs:label "validation status" ;
+    rdfs:comment "Outcome of the last pre-commit/pytest validation of a Project (passed/failed/clean/unpushed)." ;
+    rdfs:domain :Project ;
+    rdfs:range xsd:string .
+
+<http://knuckles.team/kg/repository> a owl:Ontology ;
+    rdfs:label "Repository Manager Ontology" ;
+    rdfs:comment """Repository-manager source-control model — git repositories, their linked
+    worktrees and the local workspace projects the manager installs, validates, bumps and
+    pushes, with their worktree/project relationships — federated into the agent-utilities
+    knowledge-graph hub.""" ;
+    owl:imports <http://knuckles.team/kg> .
