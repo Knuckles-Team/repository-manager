@@ -1,5 +1,6 @@
 ---
 name: repository-manager-workspace-validation
+skill_type: skill
 description: >-
   Install, build, validate, and version-maintain the managed projects of a
   workspace via the repository-manager MCP server — run pre-commit + pytest

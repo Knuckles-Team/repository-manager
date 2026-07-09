@@ -1,5 +1,6 @@
 ---
 name: repository-manager-worktree-orchestration
+skill_type: skill
 description: >-
   Concurrent multi-session git worktree orchestration via the repository-manager
   MCP server — create, list, sync, merge, prune, and audit linked worktrees under
