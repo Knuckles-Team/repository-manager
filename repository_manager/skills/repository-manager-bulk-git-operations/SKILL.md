@@ -1,5 +1,6 @@
 ---
 name: repository-manager-bulk-git-operations
+skill_type: skill
 description: >-
   Bulk, parallel git operations across a whole workspace of repositories via the
   repository-manager MCP server — clone, pull, push, add, commit, pre-commit,
