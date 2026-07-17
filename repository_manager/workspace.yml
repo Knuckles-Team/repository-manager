@@ -49,8 +49,6 @@ subdirectories:
             description: "Generic SQL (Postgres/MySQL/MSSQL/Oracle/SQLite) MCP Server for Agentic AI!"
           - url: "https://github.com/Knuckles-Team/archivebox-api.git"
             description: "Pythonic ArchiveBox API Wrapper and Fast MCP Server for Agentic AI use!"
-          - url: "https://github.com/Knuckles-Team/archi-mcp.git"
-            description: "Archi MCP Server for Agentic AI!"
           - url: "https://github.com/Knuckles-Team/arr-mcp.git"
             description: "Arr Suite MCP Server for Agentic AI!"
           - url: "https://github.com/Knuckles-Team/atlassian-agent.git"
