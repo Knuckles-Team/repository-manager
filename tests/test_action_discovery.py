@@ -1,7 +1,7 @@
 """Action-discovery contract for the action-routed MCP tools.
 
 Each action-routed ``rm_*`` tool resolves its incoming ``action`` through the
-shared ``agent_utilities.mcp_utilities.resolve_action`` helper against a module
+shared ``agent_utilities.mcp.action_dispatch.resolve_action`` helper against a module
 -level canonical action set. That gives every tool ``list_actions`` discovery,
 plural->singular aliases, and a rich did-you-mean error on unknown actions.
 """
@@ -9,7 +9,7 @@ plural->singular aliases, and a rich did-you-mean error on unknown actions.
 from unittest.mock import MagicMock
 
 import pytest
-from agent_utilities.mcp_utilities import resolve_action
+from agent_utilities.mcp.action_dispatch import resolve_action
 
 import repository_manager.mcp_server as mcp_server
 

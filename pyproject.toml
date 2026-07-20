@@ -8,29 +8,29 @@ version = "2.0.1"
 description = "Manage your git projects"
 readme = "README.md"
 classifiers = [ "Development Status :: 5 - Production/Stable", "License :: Public Domain", "Environment :: Console", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3",]
-requires-python = ">=3.11"
-dependencies = [ "agent-utilities[mcp]>=1.0.0",]
+requires-python = ">=3.11,<3.15"
+dependencies = [ "agent-utilities[mcp]>=1.27.1,<2.0.0",]
 [[project.authors]]
-name = "Audel Rouhi"
-email = "knucklessg1@gmail.com"
+name = "Project Maintainers"
+email = "maintainers@users.noreply.github.com"
 
 [project.license]
 text = "MIT"
 
 [project.optional-dependencies]
 mcp = [
-    "agent-utilities[mcp]>=1.0.0"]
+    "agent-utilities[mcp]>=1.27.1,<2.0.0"]
 
 agent = [
-    "agent-utilities[agent,logfire]>=1.0.0",
+    "agent-utilities[agent-runtime,logfire]>=1.27.1,<2.0.0",
     "pre-commit>=4.5.1",
     "bump2version>=1.0.1"]
 
 all = [
-    "agent-utilities[agent,logfire]>=1.0.0",
+    "agent-utilities[agent-runtime,logfire]>=1.27.1,<2.0.0",
     "pre-commit>=4.5.1",
     "bump2version>=1.0.1",
-    "agent-utilities[mcp]>=1.0.0"
+    "agent-utilities[mcp]>=1.27.1,<2.0.0"
 ]
 
 test = [
@@ -52,8 +52,7 @@ repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "prompts/
 [tool.uv]
 managed = true
 
-[tool.uv.sources]
-universal-skills = { workspace = true }
+universal-skills = { path = "../../skills/universal-skills", editable = true }
 
 [project.entry-points."agent_utilities.skill_providers"]
 repository-manager = "repository_manager.skills"
@@ -72,10 +71,10 @@ include-package-data = true
 
 [tool.ruff]
 line-length = 88
-target-version = "py310"
+target-version = "py311"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 ignore_missing_imports = true
 check_untyped_defs = true
 

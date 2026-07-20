@@ -54,7 +54,7 @@ repository-manager-mcp            # stdio MCP server (default transport)
 Point it at a workspace of Git repositories:
 
 ```bash
-export REPOSITORY_MANAGER_WORKSPACE=/home/apps/workspace
+export REPOSITORY_MANAGER_WORKSPACE="${WORKSPACE_ROOT}"
 repository-manager-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 ```
 

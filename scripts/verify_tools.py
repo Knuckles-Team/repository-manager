@@ -3,7 +3,7 @@ import json
 import logging
 import os
 
-from agent_utilities.mcp_utilities import get_mcp_config_path
+from agent_utilities.core.workspace import get_mcp_config_path
 from pydantic_ai.mcp import load_mcp_servers
 
 logging.basicConfig(level=logging.INFO)
@@ -38,13 +38,13 @@ async def main():
                     print(f" - {name}: {description}")
 
             except Exception as e:
-                print(f"Error loading tools: {e}")
+                print(f"Operation failed: {type(e).__name__}")
             finally:
                 if os.path.exists(temp_config_path):
                     os.remove(temp_config_path)
 
         except Exception as e:
-            print(f"Error reading config: {e}")
+            print(f"Operation failed: {type(e).__name__}")
 
 
 if __name__ == "__main__":

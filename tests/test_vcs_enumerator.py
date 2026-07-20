@@ -5,6 +5,9 @@ Covers GitLab keyset pagination, GitHub page pagination, archived filtering, and
 the max_repos cap — all offline via an injected fake HTTP client.
 """
 
+from unittest.mock import patch
+
+import repository_manager.vcs_enumerator as vcs_enumerator
 from repository_manager.vcs_enumerator import (
     enumerate_github,
     enumerate_gitlab,
@@ -34,6 +37,17 @@ class _FakeClient:
 
     def close(self):
         pass
+
+
+class _FakeTLSProfile:
+    def __init__(self):
+        self.cleaned = False
+
+    def httpx_kwargs(self):
+        return {"verify": object(), "trust_env": True}
+
+    def cleanup(self):
+        self.cleaned = True
 
 
 def _gl_project(pid, name, archived=False):
@@ -104,6 +118,27 @@ def test_github_page_pagination():
     assert len(refs) == 101
     assert refs[-1]["full_path"] == "org/last"
     assert client.calls[1]["params"]["page"] == 2
+
+
+def test_live_client_uses_agent_config_tls_profile_and_cleans_it():
+    profile = _FakeTLSProfile()
+    client = _FakeClient([_Resp([])])
+    with (
+        patch.object(
+            vcs_enumerator,
+            "resolve_configured_tls_profile",
+            return_value=profile,
+        ) as resolver,
+        patch.object(vcs_enumerator.httpx, "Client", return_value=client) as factory,
+    ):
+        assert enumerate_github(token="t", orgs=["org"]) == []
+
+    resolver.assert_called_once_with("github")
+    kwargs = factory.call_args.kwargs
+    assert kwargs["timeout"] == 30.0
+    assert kwargs["trust_env"] is True
+    assert "verify" in kwargs
+    assert profile.cleaned is True
 
 
 def test_write_manifest(tmp_path):

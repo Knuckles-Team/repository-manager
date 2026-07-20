@@ -11,6 +11,7 @@ import datetime
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -52,6 +53,78 @@ from repository_manager.scanner import scan_repository
 
 logger = get_logger("RepositoryManager")
 
+_UNRESOLVED_ENV_REFERENCE = re.compile(
+    r"\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*"
+)
+_DIAGNOSTIC_ENDPOINT = re.compile(r"(?i)\b(?:https?|ssh)://[^\s]+|\bgit@[^\s:]+:[^\s]+")
+_DIAGNOSTIC_SECRET = re.compile(
+    r"(?i)\b(?:access[_-]?token|api[_-]?key|authorization|client[_-]?secret|"
+    r"password|refresh[_-]?token|secret|token)\s*[:=]\s*[^\s,;]+"
+)
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", re.DOTALL)
+_SHELL_CONTROL_TOKENS = {"&&", "||", ";", "|", "&", "(", ")"}
+_MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024
+
+
+def _privacy_safe_diagnostic(value: object) -> str:
+    """Sanitize command output before returning or persisting it."""
+
+    try:
+        from agent_utilities.security.persistence_privacy import (
+            sanitize_for_persistence,
+        )
+
+        clean, _ = sanitize_for_persistence(str(value or ""))
+    except Exception:
+        return "repository operation output withheld"
+    clean = _DIAGNOSTIC_ENDPOINT.sub("[REDACTED_ENDPOINT]", str(clean))
+    return _DIAGNOSTIC_SECRET.sub("[REDACTED_SECRET]", clean)
+
+
+def _operation_label(command: str) -> str:
+    """Classify a command without retaining its arguments or local paths."""
+
+    normalized = " ".join(str(command).lower().split())
+    for label in (
+        "pip install",
+        "uv sync",
+        "bump2version",
+        "pre-commit run",
+        "pytest",
+        "git clone",
+        "git pull",
+        "git push",
+        "git status",
+        "git commit",
+        "git checkout",
+        "git diff",
+        "git rev-parse",
+        "mcp_server --help",
+        "agent_server --help",
+    ):
+        if label in normalized:
+            return label
+    return "repository operation"
+
+
+def _project_label(path: object) -> str:
+    """Return a logical project label without retaining its filesystem path."""
+
+    candidate = Path(str(path or "")).name
+    clean = _privacy_safe_diagnostic(candidate).strip()
+    if not clean or "[REDACTED_" in clean:
+        return "configured-workspace"
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", clean).strip("-") or "configured-workspace"
+
+
+def _expand_required_environment(value: str, *, label: str) -> str:
+    """Expand a portable config value and fail before leaking an unresolved token."""
+
+    expanded = os.path.expandvars(value)
+    if _UNRESOLVED_ENV_REFERENCE.search(expanded):
+        raise ValueError(f"{label} environment reference is unresolved")
+    return expanded
+
 
 def get_packaged_file_path(package: str, file: str) -> str:
     """Robustly find a file in a package using importlib.resources."""
@@ -71,8 +144,9 @@ def get_packaged_file_path(package: str, file: str) -> str:
 
 # Robust environment variable retrieval with empty string fallbacks
 _raw_workspace = os.getenv("REPOSITORY_MANAGER_WORKSPACE", "")
+_portable_workspace = os.getenv("AGENT_UTILITIES_WORKSPACE_ROOT", "")
 DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.path.abspath(
-    os.path.expanduser(_raw_workspace if _raw_workspace else "/home/apps/workspace")
+    os.path.expanduser(_raw_workspace or _portable_workspace or os.getcwd())
 )
 
 _raw_yml = os.getenv("WORKSPACE_YML", "")
@@ -191,7 +265,9 @@ class Git:
             return GitResult(
                 status="error",
                 data="",
-                error=GitError(message=f"YAML not found: {abs_yaml_path}", code=1),
+                error=GitError(
+                    message="Configured workspace manifest was not found", code=1
+                ),
             )
 
         if not self.load_projects_from_yaml(abs_yaml_path):
@@ -201,7 +277,7 @@ class Git:
                 error=GitError(message="Failed to load YAML", code=1),
             )
 
-        logger.info(f"Creating workspace structure at {self.path}...")
+        logger.info("Creating configured workspace structure")
         os.makedirs(self.path, exist_ok=True)
 
         for _, project_path in self.project_map.items():
@@ -217,10 +293,10 @@ class Git:
 
         return GitResult(
             status="success",
-            data=f"Workspace setup completed at {self.path}",
+            data="Workspace setup completed",
             metadata=GitMetadata(
                 command="setup_workspace",
-                workspace=self.path,
+                workspace=_project_label(self.path),
                 return_code=0,
                 timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                 + "Z",
@@ -307,7 +383,7 @@ class Git:
                                 return tag
                         return None
         except Exception as exc:  # noqa: BLE001
-            logger.debug("_current_release_tag(%s) failed: %s", target_dir, exc)
+            logger.debug("Operation failed: error_type=%s", type(exc).__name__)
         return None
 
     def _tag_on_remote(self, tag: str, path: str | None = None) -> bool:
@@ -368,7 +444,7 @@ class Git:
                     error=res.error,
                     metadata=GitMetadata(
                         command="install",
-                        workspace=path,
+                        workspace=_project_label(path),
                         return_code=res.metadata.return_code if res.metadata else 0,
                         timestamp=datetime.datetime.now(
                             datetime.timezone.utc
@@ -394,7 +470,7 @@ class Git:
                         data="Skipped (No .pre-commit-config.yaml and no pyproject.toml)",
                         metadata=GitMetadata(
                             command="install",
-                            workspace=path,
+                            workspace=_project_label(path),
                             return_code=0,
                             timestamp=datetime.datetime.now(
                                 datetime.timezone.utc
@@ -424,7 +500,7 @@ class Git:
                         data="Skipped (Not a Python or Node project)",
                         metadata=GitMetadata(
                             command="install",
-                            workspace=path,
+                            workspace=_project_label(path),
                             return_code=0,
                             timestamp=datetime.datetime.now(
                                 datetime.timezone.utc
@@ -466,26 +542,27 @@ class Git:
         return results
 
     def build_projects(self, threads: int | None = None) -> list[GitResult]:
-        """Bulk builds Python and Node.js projects in the workspace."""
-        effective_threads = threads if threads is not None else self.threads
-        threads = min(effective_threads, self._cpu_aware_threads(20.0))
+        """Build projects serially so compilation cannot exhaust the workstation."""
+        del threads
         if not self.project_map:
             logger.warning("No projects to build.")
             return []
 
-        logger.info(
-            f"Building {len(self.project_map)} projects in parallel ({threads} threads)..."
-        )
-        with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = []
-            for _url, path in self.project_map.items():
-                if os.path.exists(os.path.join(path, "package.json")):
-                    pm = self._get_package_manager(path)
-                    cmd = f"{pm} install && {pm} run build"
-                else:
-                    cmd = f"{sys.executable} -m build"
-                futures.append(executor.submit(self.git_action, cmd, path=path))
-            return [f.result() for f in concurrent.futures.as_completed(futures)]
+        logger.info("Building configured projects in the serialized build lane")
+        results: list[GitResult] = []
+        for _url, path in self.project_map.items():
+            if os.path.exists(os.path.join(path, "package.json")):
+                package_manager = self._get_package_manager(path)
+                install = self.git_action(f"{package_manager} install", path=path)
+                results.append(install)
+                if install.status != "success":
+                    continue
+                results.append(
+                    self.git_action(f"{package_manager} run build", path=path)
+                )
+            else:
+                results.append(self.git_action(f"{sys.executable} -m build", path=path))
+        return results
 
     @staticmethod
     def _cpu_aware_threads(max_cpu_pct: float = 20.0) -> int:
@@ -505,7 +582,7 @@ class Git:
 
     def validate_single_project(self, repo_path: str) -> RepoScanResult:
         """Validates a single repository by running the scanner logic."""
-        logger.info(f"Validating single project: {repo_path}")
+        logger.info("Validating configured project")
 
         # Optionally perform ecosystem installation before scanning if needed
         # In this implementation, we focus on pre-commit and pytest via the scanner
@@ -553,8 +630,11 @@ class Git:
                     else:
                         passed = False
                 except Exception as e:
-                    logger.error(f"Validation exception for {repo_name}: {e}")
-                    validation_results[repo_name] = {"success": False, "error": str(e)}
+                    logger.error("Operation failed: error_type=%s", type(e).__name__)
+                    validation_results[repo_name] = {
+                        "success": False,
+                        "error": "Operation failed",
+                    }
                     passed = False
 
         release_results = {}
@@ -590,9 +670,12 @@ class Git:
         try:
             with open(report_file, "w") as f:
                 f.write(markdown_content)
-            logger.info(f"Report exported to: {report_file}")
+            logger.info("Repository report exported")
         except Exception as e:
-            logger.error(f"Failed to export report to {report_file}: {e}")
+            logger.error(
+                "Failed to export repository report: error_type=%s",
+                type(e).__name__,
+            )
 
     @staticmethod
     def generate_markdown_summary(action: str, results: list[GitResult]) -> str:
@@ -687,8 +770,32 @@ class Git:
         """
         target_path = self._resolve_path(path)
 
+        try:
+            command_argv = shlex.split(str(command), posix=True)
+        except ValueError as exc:
+            raise ValueError(
+                "repository operation has invalid argument quoting"
+            ) from exc
+        if not command_argv:
+            raise ValueError("repository operation is empty")
+
+        command_env: dict[str, str] = {}
+        while command_argv and _ENV_ASSIGNMENT.fullmatch(command_argv[0]):
+            name, value = command_argv.pop(0).split("=", 1)
+            command_env[name] = value
+        if not command_argv:
+            raise ValueError("repository operation has no executable")
+        if any(
+            token in _SHELL_CONTROL_TOKENS
+            or token.startswith((">", "<"))
+            or "\x00" in token
+            for token in command_argv
+        ):
+            raise ValueError("shell control syntax is not permitted")
+
         # Ensure ~/.local/bin is in PATH for tools like bump2version
         current_env = env if env else os.environ.copy()
+        current_env.update(command_env)
         local_bin = os.path.expanduser("~/.local/bin")
         if local_bin not in current_env.get("PATH", ""):
             current_env["PATH"] = f"{local_bin}:{current_env.get('PATH', '')}"
@@ -696,11 +803,12 @@ class Git:
         # Ensure Python output is unbuffered so we get real-time logs
         current_env["PYTHONUNBUFFERED"] = "1"
 
-        logger.info(f"Executing: {command} in {target_path}")
+        operation = _operation_label(command)
+        logger.info("Executing repository operation")
 
         process = subprocess.Popen(
-            command,
-            shell=True,  # nosec B602
+            command_argv,
+            shell=False,
             cwd=target_path,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -711,28 +819,36 @@ class Git:
             start_new_session=True,  # Isolate process group so killpg only kills the command
         )
 
-        output_lines = []
+        output_lines: list[str] = []
+        output_bytes = 0
+        output_truncated = False
         try:
             # Write start marker
             with self.debug_lock:
                 with open(self.debug_log_path, "a") as log_file:
                     log_file.write(
-                        f"\n[{datetime.datetime.now().isoformat()}] Starting: {command}\n"
-                    )
-                    log_file.write(
-                        f"[{datetime.datetime.now().isoformat()}] CWD: {target_path}\n"
+                        f"\n[{datetime.datetime.now().isoformat()}] Starting repository operation\n"
                     )
                     log_file.flush()
 
             # Read output line by line as it becomes available
             def _read_output():
+                nonlocal output_bytes, output_truncated
                 if process.stdout:
                     for line in process.stdout:
-                        output_lines.append(line)
+                        encoded = line.encode("utf-8", "replace")
+                        remaining = _MAX_CAPTURED_OUTPUT_BYTES - output_bytes
+                        if remaining > 0:
+                            clipped = encoded[:remaining].decode("utf-8", "ignore")
+                            output_lines.append(clipped)
+                            output_bytes += len(clipped.encode("utf-8"))
+                        if len(encoded) > remaining:
+                            output_truncated = True
                         with self.debug_lock:
                             with open(self.debug_log_path, "a") as log_file:
                                 log_file.write(
-                                    f"[{datetime.datetime.now().isoformat()}] {line}"
+                                    f"[{datetime.datetime.now().isoformat()}] "
+                                    "[repository output line omitted]\n"
                                 )
                                 log_file.flush()
 
@@ -744,7 +860,7 @@ class Git:
             reader_thread.join(timeout=1.0)
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            logger.warning(f"Command timed out: {command}")
+            logger.warning("Repository operation timed out")
             if hasattr(os, "killpg"):
                 try:
                     os.killpg(os.getpgid(process.pid), signal.SIGTERM)
@@ -773,12 +889,14 @@ class Git:
                     )
                     log_file.flush()
 
-        out = "".join(output_lines)
+        if output_truncated:
+            output_lines.append("\n[repository output truncated]\n")
+        out = _privacy_safe_diagnostic("".join(output_lines))
         return_code = process.returncode
 
         metadata = GitMetadata(
-            command=command,
-            workspace=target_path,
+            command=operation,
+            workspace=_project_label(target_path),
             return_code=return_code,
             timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
         )
@@ -798,10 +916,9 @@ class Git:
         )
 
         if result.status == "error":
-            err_msg = result.error.message if result.error else "Unknown error"
-            logger.error(f"Command failed: {command}\nError: {err_msg}")
+            logger.error("Repository operation failed")
         elif not quiet:
-            logger.info(f"Command: {command}\nOutput: {result.data}")
+            logger.info("Repository operation completed")
 
         return result
 
@@ -858,9 +975,11 @@ class Git:
                     full_path = os.path.join(dirpath, d)
                     try:
                         shutil.rmtree(full_path)
-                        logger.debug(f"Cleaned up directory: {full_path}")
+                        logger.debug("Cleaned up managed directory")
                     except Exception as e:
-                        logger.debug(f"Failed to clean up directory {full_path}: {e}")
+                        logger.debug(
+                            "Operation failed: error_type=%s", type(e).__name__
+                        )
                     dirnames.remove(d)
 
             # Check for root-level transient scripts and non-standard text files (only at target_dir root)
@@ -885,7 +1004,8 @@ class Git:
                                 )
                             except Exception as e:
                                 logger.debug(
-                                    f"Failed to clean up root script {file_path}: {e}"
+                                    "Root-script cleanup failed: error_type=%s",
+                                    type(e).__name__,
                                 )
                             matched_script = True
                             break
@@ -903,7 +1023,8 @@ class Git:
                             )
                         except Exception as e:
                             logger.debug(
-                                f"Failed to clean up root text file {file_path}: {e}"
+                                "Root-text cleanup failed: error_type=%s",
+                                type(e).__name__,
                             )
 
             # Check for file-level cleanup targets
@@ -913,9 +1034,11 @@ class Git:
                     if file_path.match(pat):
                         try:
                             file_path.unlink()
-                            logger.debug(f"Cleaned up file: {file_path}")
+                            logger.debug("Cleaned up managed file")
                         except Exception as e:
-                            logger.debug(f"Failed to clean up file {file_path}: {e}")
+                            logger.debug(
+                                "Operation failed: error_type=%s", type(e).__name__
+                            )
                         break
 
     def clone_projects(self, projects: list[str] | None = None) -> list[GitResult]:
@@ -959,17 +1082,18 @@ class Git:
             return results
 
         except Exception as e:
-            logger.error(f"Parallel project cloning failed: {str(e)}")
+            logger.error("Operation failed: error_type=%s", type(e).__name__)
             return [
                 GitResult(
                     status="error",
                     data="",
                     error=GitError(
-                        message=f"Parallel project cloning failed: {str(e)}", code=-1
+                        message=f"Parallel project cloning failed: {type(e).__name__}",
+                        code=-1,
                     ),
                     metadata=GitMetadata(
                         command="clone_projects",
-                        workspace=self.path,
+                        workspace=_project_label(self.path),
                         return_code=-1,
                         timestamp=datetime.datetime.now(
                             datetime.timezone.utc
@@ -997,7 +1121,7 @@ class Git:
                 error=GitError(message="No repository URL provided", code=1),
                 metadata=GitMetadata(
                     command="clone",
-                    workspace=target_path,
+                    workspace=_project_label(target_path),
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -1006,9 +1130,17 @@ class Git:
 
         os.makedirs(os.path.dirname(target_path), exist_ok=True)
 
-        command = f"git clone {url} {target_path}"
+        clone_filter = os.environ.get("REPOSITORY_MANAGER_CLONE_FILTER", "").strip()
+        filter_arg = (
+            f" --filter={shlex.quote(clone_filter)}"
+            if clone_filter in {"blob:none", "tree:0"}
+            else ""
+        )
+        command = (
+            f"git clone{filter_arg} -- {shlex.quote(url)} {shlex.quote(target_path)}"
+        )
         result = self.git_action(command, path=os.path.dirname(target_path))
-        logger.info(f"Cloning {url} to {target_path}: {result.status}")
+        logger.info("Repository clone completed with status %s", result.status)
         return result
 
     def pull_projects(self, project_dirs: list[str] | None = None) -> list[GitResult]:
@@ -1050,11 +1182,7 @@ class Git:
         pull_result = self.git_action(command="git pull", path=target_path)
         results.append(pull_result)
 
-        logger.info(
-            f"Scanning: {target_path}\n"
-            f"Pulling latest changes for {target_path}\n"
-            f"{pull_result}"
-        )
+        logger.info("Repository pull completed")
 
         if self.set_to_default_branch:
             default_branch_result = self.git_action(
@@ -1079,27 +1207,20 @@ class Git:
                 ).data.strip()
                 if dirty:
                     logger.warning(
-                        f"Skipping default-branch checkout for {target_path}: "
-                        "uncommitted changes present (a concurrent session may be "
-                        "active). Leaving the working tree untouched."
+                        "Skipping default-branch checkout because uncommitted changes are present"
                     )
                 elif current_branch == default_branch:
-                    logger.info(
-                        f"{target_path} already on default branch "
-                        f"{default_branch}; no checkout needed."
-                    )
+                    logger.info("Configured project is already on its default branch")
                 else:
                     checkout_result = self.git_action(
                         f'git checkout "{default_branch}"',
                         path=target_path,
                     )
                     results.append(checkout_result)
-                    logger.info(f"Checking out default branch: {checkout_result}")
+                    logger.info("Checked out configured default branch")
             else:
                 results.append(default_branch_result)
-                logger.error(
-                    f"Failed to get default branch for {target_path}: {default_branch_result.error}"
-                )
+                logger.error("Failed to resolve the configured default branch")
 
         combined_status = (
             "success" if all(r.status == "success" for r in results) else "error"
@@ -1116,7 +1237,7 @@ class Git:
 
         metadata = GitMetadata(
             command="pull_project",
-            workspace=target_path,
+            workspace=_project_label(target_path),
             return_code=0 if combined_status == "success" else 1,
             timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
         )
@@ -1203,15 +1324,13 @@ class Git:
         # gates still run fully. Falls back to --all-files if the diff is empty.
         changed = self._unpushed_changed_files(target_path)
         scope = f"{len(changed)} changed file(s)" if changed else "all files"
-        logger.info(
-            f"Pre-push gate (pre-commit, skip pytest, {scope}) in {target_path}"
-        )
+        logger.info("Running pre-push gate over %s", scope)
         try:
             result = run_pre_commit(
                 target_path, skip_pytest=True, files=changed or None
             )
         except Exception as e:  # pragma: no cover - tooling/env failure
-            logger.warning(f"Pre-push gate could not run in {target_path}: {e}")
+            logger.warning("Operation failed: error_type=%s", type(e).__name__)
             return None
         if result.returncode == 0:
             return None
@@ -1221,13 +1340,13 @@ class Git:
             if not h.passed
         ]
         names = ", ".join(failed) or "pre-commit gate"
-        logger.error(f"Pre-push gate FAILED in {target_path}: {names}")
+        logger.error("Pre-push gate failed")
         return GitResult(
             status="error",
             data="",
             error=GitError(
                 message=(
-                    f"Pre-push gate failed ({names}) in {target_path}; push aborted. "
+                    f"Pre-push gate failed ({names}); push aborted. "
                     "Fix the gate, or set RM_GATE_BEFORE_PUSH=false to bypass."
                 ),
                 code=1,
@@ -1236,41 +1355,39 @@ class Git:
 
     def push_project(self, path: str | None = None) -> GitResult:
         """
-        Push updates and tags for a single Git project, ensuring all staged and unstaged changes are committed first.
+        Push committed updates and tags for a single clean Git project.
 
         Handles common failure modes:
-        - Non-fast-forward: auto-rebases and retries (up to 2 attempts)
+        - Non-fast-forward: fails closed for an explicit reviewed sync
         - GitHub secret scanning (GH013): returns actionable error with unblock URL
         - Tag conflicts: falls back to pushing without --follow-tags
         """
         target_path = self._resolve_path(path)
-        logger.info(f"Checking for uncommitted changes in {target_path} before pushing")
+        logger.info("Checking configured project for uncommitted changes")
 
         status_check = self.git_action(
             command="git status --porcelain", path=target_path, quiet=True
         )
         if status_check.status == "success" and status_check.data.strip():
-            logger.info(
-                f"Detected uncommitted changes in {target_path}. Staging and committing them first."
+            logger.warning("Push refused because the configured project is dirty")
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=(
+                        "Push refused: the repository has uncommitted changes. "
+                        "Review and commit them explicitly before pushing."
+                    ),
+                    code=409,
+                ),
+                metadata=GitMetadata(
+                    command="git push",
+                    workspace=_project_label(target_path),
+                    return_code=409,
+                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    + "Z",
+                ),
             )
-            add_res = self.git_action(command="git add -A", path=target_path)
-            if add_res.status != "success":
-                logger.error(
-                    f"Failed to stage changes in {target_path}: {add_res.error}"
-                )
-            else:
-                commit_res = self.git_action(
-                    command='git commit --no-verify -m "phased push uncommitted changes"',
-                    path=target_path,
-                )
-                if commit_res.status != "success":
-                    logger.error(
-                        f"Failed to commit changes in {target_path}: {commit_res.error}"
-                    )
-                else:
-                    logger.info(
-                        f"Successfully committed uncommitted changes in {target_path}"
-                    )
 
         # Fast pre-push gate: run the repo's own pre-commit gates (minus the
         # slow full pytest suite) so a push can't ship a commit the repo's CI
@@ -1279,10 +1396,10 @@ class Git:
         if gate is not None:
             return gate
 
-        logger.info(f"Pushing latest changes and tags for {target_path}")
+        logger.info("Pushing latest changes and tags for configured project")
 
-        max_attempts = 2
-        for attempt in range(1, max_attempts + 1):
+        max_attempts = 1
+        for _attempt in range(1, max_attempts + 1):
             result = self.git_action(command="git push --follow-tags", path=target_path)
 
             if result.status == "success":
@@ -1300,12 +1417,7 @@ class Git:
                         command=f"git push origin {rel_tag}", path=target_path
                     )
                     if tag_res.status != "success":
-                        logger.warning(
-                            "Branch pushed but tag push (%s) failed for %s: %s",
-                            rel_tag,
-                            target_path,
-                            tag_res.error,
-                        )
+                        logger.warning("Branch pushed but the release-tag push failed")
                 return result
 
             error_text = ""
@@ -1321,21 +1433,20 @@ class Git:
             # GitHub secret scanning block (GH013) — unrecoverable without manual action
             if "GH013" in error_text or "GITHUB PUSH PROTECTION" in error_text:
                 logger.error(
-                    f"GitHub secret scanning blocked push for {target_path}. "
-                    "Remove the secret from git history or allow it via the GitHub URL in the error output."
+                    "GitHub secret scanning blocked the push; remove the secret from history"
                 )
                 return GitResult(
                     status="error",
-                    data=error_text,
+                    data="GitHub push protection blocked the push",
                     error=GitError(
-                        message=f"GitHub secret scanning (GH013) blocked push for {target_path}. "
+                        message="GitHub secret scanning (GH013) blocked the push. "
                         "A file in the commit history contains a detected secret. "
                         "Use git-filter-repo to expunge it or allow the secret via GitHub settings.",
                         code=1,
                     ),
                     metadata=GitMetadata(
                         command="git push --follow-tags",
-                        workspace=target_path,
+                        workspace=_project_label(target_path),
                         return_code=1,
                         timestamp=datetime.datetime.now(
                             datetime.timezone.utc
@@ -1344,53 +1455,30 @@ class Git:
                     ),
                 )
 
-            # Non-fast-forward: rebase and retry
+            # A divergent remote requires an explicit reviewed sync. Never
+            # rewrite remote history or mutate the local branch as a fallback.
             if (
                 "non-fast-forward" in error_text
                 or "tip of your current branch is behind" in error_text
             ):
-                if attempt < max_attempts:
-                    logger.warning(
-                        f"Non-fast-forward rejected for {target_path}. Attempting rebase (attempt {attempt}/{max_attempts})..."
-                    )
-                    rebase_res = self.git_action(
-                        command="git pull --rebase origin main", path=target_path
-                    )
-                    if rebase_res.status != "success":
-                        rebase_err = (
-                            str(rebase_res.error.message)
-                            if rebase_res.error and hasattr(rebase_res.error, "message")
-                            else str(rebase_res.error or "")
-                        )
-                        if "CONFLICT" in rebase_err or "could not apply" in rebase_err:
-                            # Abort the failed rebase and try force push instead
-                            self.git_action(
-                                command="git rebase --abort", path=target_path
-                            )
-                            logger.warning(
-                                f"Rebase conflicts in {target_path}. Falling back to force push."
-                            )
-                            force_result = self.git_action(
-                                command="git push --force origin main", path=target_path
-                            )
-                            if force_result.status == "success":
-                                return force_result
-                            return force_result
-                        return rebase_res
-                    continue  # Retry the push after successful rebase
-                else:
-                    logger.warning(
-                        f"Non-fast-forward still failing after rebase for {target_path}. Force pushing."
-                    )
-                    return self.git_action(
-                        command="git push --force origin main", path=target_path
-                    )
+                logger.warning("Push refused because the remote branch has diverged")
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message=(
+                            "Push refused: the remote branch has diverged. "
+                            "Fetch and perform an explicit reviewed merge or rebase; "
+                            "automatic force-push is permanently disabled."
+                        ),
+                        code=409,
+                    ),
+                    metadata=result.metadata,
+                )
 
             # Tag already exists on remote — retry without tags
-            if "tag already exists" in error_text or "already exists" in error_text:
-                logger.warning(
-                    f"Tag conflict for {target_path}. Retrying push without --follow-tags."
-                )
+            if "tag already exists" in error_text:
+                logger.warning("Tag conflict detected; retrying without follow-tags")
                 return self.git_action(command="git push origin main", path=target_path)
 
             # Unknown error — return as-is
@@ -1426,7 +1514,7 @@ class Git:
         Stage all changes (git add -A) for a single Git project.
         """
         target_path = self._resolve_path(path)
-        logger.info(f"Staging all changes for {target_path}")
+        logger.info("Staging all changes for configured project")
         return self.git_action(command="git add -A", path=target_path)
 
     def commit_projects(
@@ -1476,10 +1564,10 @@ class Git:
                         break
 
             if not has_staged:
-                logger.info(f"No staged changes to commit for {target_path}")
+                logger.info("No staged changes to commit for configured project")
                 metadata = GitMetadata(
-                    command=f'git commit -m "{message}"',
-                    workspace=target_path,
+                    command="git commit",
+                    workspace=_project_label(target_path),
                     return_code=0,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -1491,13 +1579,11 @@ class Git:
                     metadata=metadata,
                 )
 
-        logger.info(f"Committing staged changes for {target_path}")
+        logger.info("Committing staged changes for configured project")
         from shlex import quote
 
         safe_msg = quote(message)
-        return self.git_action(
-            command=f"git commit --no-verify -m {safe_msg}", path=target_path
-        )
+        return self.git_action(command=f"git commit -m {safe_msg}", path=target_path)
 
     def commit_code_project(
         self, message: str, run_precommit: bool = True, path: str | None = None
@@ -1508,7 +1594,7 @@ class Git:
         runs BEFORE bumping versions. Unlike :meth:`commit_project` it stages
         untracked files too (``git add -A``) and runs the project's pre-commit
         hooks (auto-formatters land in the same commit), so feature code is never
-        left behind for the push safety net to sweep up with ``--no-verify``.
+        left behind for an implicit push-time commit.
 
         If pre-commit fails for real (not just auto-format), the failure is
         surfaced and nothing is committed.
@@ -1520,11 +1606,11 @@ class Git:
         if not os.path.isdir(os.path.join(target_path, ".git")):
             return GitResult(
                 status="skipped",
-                data=f"Not a git repo (missing/un-cloned): {target_path}",
+                data="Configured project is not a cloned Git repository",
                 error=None,
                 metadata=GitMetadata(
                     command="commit_code",
-                    workspace=target_path,
+                    workspace=_project_label(target_path),
                     return_code=0,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -1541,7 +1627,7 @@ class Git:
                 error=None,
                 metadata=GitMetadata(
                     command="commit_code",
-                    workspace=target_path,
+                    workspace=_project_label(target_path),
                     return_code=0,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -1593,14 +1679,16 @@ class Git:
             try:
                 return self.commit_code_project(message, run_precommit, d)
             except Exception as exc:  # noqa: BLE001
-                logger.error("commit_code failed for %s: %s", d, exc)
+                logger.error("commit_code failed: error_type=%s", type(exc).__name__)
                 return GitResult(
                     status="error",
                     data="",
-                    error=GitError(message=f"commit_code {d}: {exc}", code=1),
+                    error=GitError(
+                        message=f"commit_code {d}: {type(exc).__name__}", code=1
+                    ),
                     metadata=GitMetadata(
                         command="commit_code",
-                        workspace=d,
+                        workspace=_project_label(d),
                         return_code=1,
                         timestamp=datetime.datetime.now(
                             datetime.timezone.utc
@@ -1634,7 +1722,8 @@ class Git:
                 self.threads = self.maximum_threads
         except Exception as e:
             logger.error(
-                f"Did not recognize {threads} as a valid value, defaulting to: {self.maximum_threads}. Error: {e}"
+                "Invalid worker-count configuration; using safe default: error_type=%s",
+                type(e).__name__,
             )
             self.threads = self.maximum_threads
 
@@ -1664,39 +1753,26 @@ class Git:
                 error=None,
                 metadata=GitMetadata(
                     command="pre_commit_check",
-                    workspace=target_path,
+                    workspace=_project_label(target_path),
                     return_code=0,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
                 ),
             )
 
-        commands = []
-        if autoupdate:
-            commands.append("pre-commit autoupdate && git add -A")
-        if run:
-            commands.append("git add -A")
-            # Run pre-commit once. If it fails (likely due to auto-formatting files),
-            # stage the newly formatted changes and run it again to verify.
-            commands.append(
-                "SKIP=no-commit-to-branch pre-commit run --all-files --verbose || (git add -A && SKIP=no-commit-to-branch pre-commit run --all-files --verbose && git add -A)"
-            )
-
-        if not commands:
+        if not autoupdate and not run:
             return GitResult(
                 status="skipped",
                 data="No action selected (run=False, autoupdate=False).",
                 error=None,
                 metadata=GitMetadata(
                     command="pre_commit_check",
-                    workspace=target_path,
+                    workspace=_project_label(target_path),
                     return_code=0,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
                 ),
             )
-
-        full_command = " && ".join(commands)
 
         env = os.environ.copy()
         if "SKIP" in env:
@@ -1706,9 +1782,41 @@ class Git:
         env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "4"
         env["PYTEST_ADDOPTS"] = '-q --tb=short -m "not slow" --timeout=60'
 
-        result = self.git_action(
-            command=full_command, path=target_path, env=env, timeout=600
-        )
+        result: GitResult | None = None
+        if autoupdate:
+            result = self.git_action(
+                command="pre-commit autoupdate",
+                path=target_path,
+                env=env,
+                timeout=600,
+            )
+            if result.status == "error":
+                return result
+            staged = self.git_action(command="git add -A", path=target_path)
+            if staged.status == "error":
+                return staged
+
+        if run:
+            staged = self.git_action(command="git add -A", path=target_path)
+            if staged.status == "error":
+                return staged
+            hook_command = "pre-commit run --all-files --verbose"
+            result = self.git_action(
+                command=hook_command, path=target_path, env=env, timeout=600
+            )
+            if result.status == "error":
+                # Hooks may have reformatted files. Stage those bounded changes
+                # and run once more, without a shell retry expression.
+                restaged = self.git_action(command="git add -A", path=target_path)
+                if restaged.status == "error":
+                    return restaged
+                result = self.git_action(
+                    command=hook_command, path=target_path, env=env, timeout=600
+                )
+            self.git_action(command="git add -A", path=target_path)
+
+        if result is None:
+            raise RuntimeError("pre-commit operation produced no result")
 
         if result.status == "error" and result.error:
             msg = result.error.message.lower()
@@ -1780,7 +1888,7 @@ class Git:
                             data="Skipped (No .pre-commit-config.yaml and no pyproject.toml)",
                             metadata=GitMetadata(
                                 command="pytest",
-                                workspace=path,
+                                workspace=_project_label(path),
                                 return_code=0,
                                 timestamp=datetime.datetime.now(
                                     datetime.timezone.utc
@@ -1834,7 +1942,7 @@ class Git:
                             data="No tests directory found",
                             metadata=GitMetadata(
                                 command="pytest",
-                                workspace=path,
+                                workspace=_project_label(path),
                                 return_code=0,
                                 timestamp=datetime.datetime.now(
                                     datetime.timezone.utc
@@ -1942,17 +2050,18 @@ class Git:
             return results
 
         except Exception as e:
-            logger.error(f"Parallel pre-commit failed: {str(e)}")
+            logger.error("Parallel pre-commit failed: error_type=%s", type(e).__name__)
             return [
                 GitResult(
                     status="error",
                     data="",
                     error=GitError(
-                        message=f"Parallel pre-commit failed: {str(e)}", code=-1
+                        message=f"Parallel pre-commit failed: {type(e).__name__}",
+                        code=-1,
                     ),
                     metadata=GitMetadata(
                         command="pre_commit_projects",
-                        workspace=self.path,
+                        workspace=_project_label(self.path),
                         return_code=-1,
                         timestamp=datetime.datetime.now(
                             datetime.timezone.utc
@@ -1970,7 +2079,7 @@ class Git:
 
         command = self._get_pip_command(extra)
 
-        logger.info(f"Installing project at {target_path} with {command}")
+        logger.info("Installing configured project")
         result = self.git_action(command=command, path=target_path)
 
         for d in ["build", "dist"]:
@@ -2009,7 +2118,7 @@ class Git:
                 content = f.read()
             return ReadmeResult(content=content, path=readme_path)
         except Exception as e:
-            logger.error(f"Error reading README: {e}")
+            logger.error("Operation failed: error_type=%s", type(e).__name__)
             return ReadmeResult(content="", path=readme_path)
 
     def create_project(self, path: str) -> GitResult:
@@ -2029,11 +2138,11 @@ class Git:
                 status="error",
                 data="",
                 error=GitError(
-                    message=f"Directory already exists: {target_path}", code=1
+                    message="Configured target directory already exists", code=1
                 ),
                 metadata=GitMetadata(
                     command="create_project",
-                    workspace=target_path,
+                    workspace=_project_label(target_path),
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -2045,20 +2154,23 @@ class Git:
             init_result = self.git_action("git init", path=target_path)
 
             if init_result.status == "success":
-                logger.info(f"Created project: {target_path}")
+                logger.info("Repository project created")
                 return init_result
             else:
                 return init_result
 
         except Exception as e:
-            logger.error(f"Failed to create project {target_path}: {e}")
+            logger.error(
+                "Failed to create repository project: error_type=%s",
+                type(e).__name__,
+            )
             return GitResult(
                 status="error",
                 data="",
-                error=GitError(message=str(e), code=1),
+                error=GitError(message=type(e).__name__, code=1),
                 metadata=GitMetadata(
                     command="create_project",
-                    workspace=target_path,
+                    workspace=_project_label(target_path),
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -2191,12 +2303,12 @@ class Git:
                 status="error",
                 data="",
                 error=GitError(
-                    message=f"Directory not found: {target_dir}",
+                    message="Configured project directory was not found",
                     code=1,
                 ),
                 metadata=GitMetadata(
                     command="bump_version",
-                    workspace=target_dir,
+                    workspace=_project_label(target_dir),
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -2214,7 +2326,7 @@ class Git:
                 ),
                 metadata=GitMetadata(
                     command="bump_version",
-                    workspace=target_dir,
+                    workspace=_project_label(target_dir),
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -2229,7 +2341,7 @@ class Git:
                     if "[bumpversion]" in f.read():
                         has_cfg = True
             except Exception as e:
-                logger.debug(f"Could not read setup.cfg in {target_dir}: {e}")
+                logger.debug("Operation failed: error_type=%s", type(e).__name__)
 
         if not has_cfg:
             # Fallback behavior: stage all changes and commit them as "phased bump"
@@ -2241,13 +2353,15 @@ class Git:
 
             changed_files = status_check.data.strip()
             if not changed_files:
-                logger.info(f"No changes to stage or commit in {target_dir}. Skipping.")
+                logger.info(
+                    "No changes to stage or commit; skipping configured project"
+                )
                 return GitResult(
                     status="skipped",
                     data="No changes to stage or commit (fallback mode)",
                     metadata=GitMetadata(
                         command="bump_version",
-                        workspace=target_dir,
+                        workspace=_project_label(target_dir),
                         return_code=0,
                         timestamp=datetime.datetime.now(
                             datetime.timezone.utc
@@ -2265,7 +2379,7 @@ class Git:
                     data="current_version=unknown\nnew_version=unknown\n",
                     metadata=GitMetadata(
                         command="bump_version",
-                        workspace=target_dir,
+                        workspace=_project_label(target_dir),
                         return_code=0,
                         timestamp=datetime.datetime.now(
                             datetime.timezone.utc
@@ -2276,27 +2390,23 @@ class Git:
 
             add_res = self.git_action(command="git add -u", path=target_dir)
             if add_res.status != "success":
-                logger.error(f"Failed to add changes in {target_dir}: {add_res.error}")
+                logger.error("Failed to add changes for configured project")
                 return add_res
 
             commit_res = self.git_action(
-                command='git commit --no-verify -m "phased bump"', path=target_dir
+                command='git commit -m "phased bump"', path=target_dir
             )
             if commit_res.status != "success":
-                logger.error(
-                    f"Failed to commit fallback changes in {target_dir}: {commit_res.error}"
-                )
+                logger.error("Failed to commit fallback changes")
                 return commit_res
 
-            logger.info(
-                f"Successfully committed fallback changes with 'phased bump' in {target_dir}"
-            )
+            logger.info("Successfully committed fallback changes with phased bump")
             return GitResult(
                 status="success",
                 data="current_version=unknown\nnew_version=unknown\n",
                 metadata=GitMetadata(
                     command="bump_version",
-                    workspace=target_dir,
+                    workspace=_project_label(target_dir),
                     return_code=0,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -2362,7 +2472,7 @@ class Git:
                                 data=f"current_version={new_version}\nnew_version={new_version}\ntag_exists=true\n",
                                 metadata=GitMetadata(
                                     command="bump_version",
-                                    workspace=target_dir,
+                                    workspace=_project_label(target_dir),
                                     return_code=0,
                                     timestamp=datetime.datetime.now(
                                         datetime.timezone.utc
@@ -2376,7 +2486,7 @@ class Git:
             result = self.git_action(command=command, path=target_dir)
 
             if result.status == "success":
-                logger.info(f"Bumped version ({part}) in {target_dir}")
+                logger.info("Bumped configured project version: part=%s", part)
 
                 if not dry_run:
                     # Synchronize uv.lock after pyproject.toml version bump
@@ -2394,7 +2504,7 @@ class Git:
                     if status_check.data.strip():
                         # Commit all staged changes (including version bump, uv.lock, and other files) into the bump commit
                         self.git_action(
-                            command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit --no-verify",
+                            command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit",
                             path=target_dir,
                             quiet=True,
                         )
@@ -2409,18 +2519,18 @@ class Git:
                                 quiet=True,
                             )
             else:
-                logger.error(f"Failed to bump version in {target_dir}: {result.error}")
+                logger.error("Failed to bump configured project version")
 
             return result
         except Exception as e:
-            logger.error(f"Error in bump_version: {e}")
+            logger.error("Operation failed: error_type=%s", type(e).__name__)
             return GitResult(
                 status="error",
                 data="",
-                error=GitError(message=str(e), code=1),
+                error=GitError(message=type(e).__name__, code=1),
                 metadata=GitMetadata(
                     command="bump_version",
-                    workspace=target_dir,
+                    workspace=_project_label(target_dir),
                     return_code=1,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
@@ -2652,7 +2762,7 @@ class Git:
                 if not force:
                     skip_reason = self._bump_skip_reason(project_dir)
                     if skip_reason:
-                        logger.info(f"Skipping bump for {project_name}: {skip_reason}")
+                        logger.info("Skipping project version bump")
                         return "skipped"
 
                 result = self.bump_version(
@@ -2835,7 +2945,7 @@ class Git:
                                         ),
                                         metadata=GitMetadata(
                                             command="update_dependency",
-                                            workspace=path,
+                                            workspace=_project_label(path),
                                             return_code=0,
                                             timestamp=datetime.datetime.now(
                                                 datetime.timezone.utc
@@ -3074,7 +3184,7 @@ class Git:
                             GitResult(
                                 status="error",
                                 data="",
-                                error=GitError(message=str(e), code=1),
+                                error=GitError(message=type(e).__name__, code=1),
                             )
                         )
                         status_str = "failed"
@@ -3133,7 +3243,7 @@ class Git:
         yaml_dir = os.path.dirname(abs_yaml_path)
 
         if not os.path.exists(abs_yaml_path):
-            logger.error(f"YAML file not found: {abs_yaml_path}")
+            logger.error("Workspace configuration file was not found")
             return False
 
         try:
@@ -3145,36 +3255,46 @@ class Git:
 
             self.config = WorkspaceConfig(**data)
 
-            yaml_config_path = os.path.expanduser(self.config.path)
+            yaml_config_path = os.path.expanduser(
+                _expand_required_environment(
+                    self.config.path,
+                    label="workspace root",
+                )
+            )
             is_default_yaml = yaml_path == DEFAULT_WORKSPACE_YML
 
             if self._explicit_path:
-                logger.info(f"Preserving explicit workspace path: {self.path}")
+                logger.info("Preserving the explicitly configured workspace root")
             elif os.path.isabs(yaml_config_path):
                 self.path = os.path.abspath(yaml_config_path)
             elif is_default_yaml:
                 self.path = os.path.abspath(
                     os.path.expanduser(DEFAULT_REPOSITORY_MANAGER_WORKSPACE)
                 )
-                logger.info(
-                    f"Using packaged workspace.yml, preserving default path: {self.path}"
-                )
+                logger.info("Using the packaged workspace configuration")
             else:
                 self.path = os.path.abspath(os.path.join(yaml_dir, yaml_config_path))
 
-            logger.info(f"Workspace root resolved to: {self.path}")
+            logger.info("Workspace root resolved")
 
             self.project_map = self._parse_subdirectories(
                 self.config.subdirectories, self.path
             )
 
             for repo in self.config.repositories:
-                repo_name = repo.url.split("/")[-1].replace(".git", "")
-                self.project_map[repo.url] = os.path.join(self.path, repo_name)
+                repo_url = _expand_required_environment(
+                    repo.url,
+                    label="repository origin",
+                )
+                repo_name = repo_url.split("/")[-1].replace(".git", "")
+                self.project_map[repo_url] = os.path.join(self.path, repo_name)
             return True
 
         except Exception as e:
-            logger.error(f"Failed to load projects from YAML: {e}")
+            logger.error(
+                "Failed to load projects from YAML: error_type=%s",
+                type(e).__name__,
+            )
             return False
 
     def discover_projects(self) -> dict[str, str]:
@@ -3209,7 +3329,10 @@ class Git:
                         if res.returncode == 0 and res.stdout.strip():
                             remote_url = res.stdout.strip()
                     except Exception as exc:
-                        logger.debug(f"Failed to get remote URL for {item}: {exc}")
+                        logger.debug(
+                            "Failed to get a remote URL: error_type=%s",
+                            type(exc).__name__,
+                        )
 
                     if not remote_url:
                         remote_url = f"local://{item}"
@@ -3220,7 +3343,7 @@ class Git:
                 f"Auto-discovered {len(self.project_map)} git repositories in {expanded_path}"
             )
         except Exception as e:
-            logger.error(f"Failed to discover git projects in {expanded_path}: {e}")
+            logger.error("Operation failed: error_type=%s", type(e).__name__)
 
         return self.project_map
 
@@ -3233,8 +3356,12 @@ class Git:
             new_path = os.path.join(current_path, name)
 
             for repo in data.repositories:
-                repo_name = repo.url.split("/")[-1].replace(".git", "")
-                project_map[repo.url] = os.path.join(new_path, repo_name)
+                repo_url = _expand_required_environment(
+                    repo.url,
+                    label="repository origin",
+                )
+                repo_name = repo_url.split("/")[-1].replace(".git", "")
+                project_map[repo_url] = os.path.join(new_path, repo_name)
 
             if data.subdirectories:
                 project_map.update(
@@ -3274,19 +3401,21 @@ class Git:
 
             return GitResult(
                 status="success",
-                data=f"Template generated at {target_path}",
+                data="Workspace template generated",
                 metadata=GitMetadata(
                     command="generate_template",
-                    workspace=target_path,
+                    workspace=_project_label(target_path),
                     return_code=0,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
                 ),
             )
         except Exception as e:
-            logger.error(f"Failed to generate template: {e}")
+            logger.error("Operation failed: error_type=%s", type(e).__name__)
             return GitResult(
-                status="error", data="", error=GitError(message=str(e), code=1)
+                status="error",
+                data="",
+                error=GitError(message="Repository operation failed", code=1),
             )
 
     def save_workspace_config(
@@ -3313,19 +3442,24 @@ class Git:
 
             return GitResult(
                 status="success",
-                data=f"Workspace saved to {yaml_path}",
+                data="Workspace manifest saved",
                 metadata=GitMetadata(
                     command="save_workspace",
-                    workspace=yaml_path,
+                    workspace=_project_label(yaml_path),
                     return_code=0,
                     timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
                     + "Z",
                 ),
             )
         except Exception as e:
-            logger.error(f"Failed to save workspace: {e}")
+            logger.error(
+                "Failed to save workspace configuration: error_type=%s",
+                type(e).__name__,
+            )
             return GitResult(
-                status="error", data="", error=GitError(message=str(e), code=1)
+                status="error",
+                data="",
+                error=GitError(message="Failed to save workspace", code=1),
             )
 
     def get_consolidated_skill_paths(self) -> list[str]:
@@ -3364,7 +3498,7 @@ class Git:
                     if skill_path.joinpath("SKILL.md").is_file():
                         paths.append(str(skill_path))
             except Exception as e:
-                logger.warning(f"Could not load universal skills via importlib: {e}")
+                logger.warning("Operation failed: error_type=%s", type(e).__name__)
 
                 all_universal = get_universal_skills_path()
                 paths.extend(
@@ -3385,7 +3519,7 @@ class Git:
                     if graph_path.joinpath("SKILL.md").is_file():
                         paths.append(str(graph_path))
             except Exception as e:
-                logger.warning(f"Could not load skill graphs via importlib: {e}")
+                logger.warning("Operation failed: error_type=%s", type(e).__name__)
 
                 all_graphs = get_skill_graphs_path(default_enabled=True)
                 paths.extend(
@@ -3628,9 +3762,9 @@ Examples:
     if args.file:
         if os.path.exists(args.file):
             if not git.load_projects_from_yaml(args.file):
-                logger.warning(f"Could not load {args.file} as a valid Workspace YAML.")
+                logger.warning("Could not load the requested Workspace YAML")
         else:
-            logger.error(f"Workspace file not found: {args.file}")
+            logger.error("Workspace configuration file was not found")
             parser.print_help()
             sys.exit(2)
 
@@ -3659,7 +3793,7 @@ Examples:
 
     if args.file and os.path.exists(args.file):
         if args.setup:
-            logger.info(f"Setting up workspace from {args.file}...")
+            logger.info("Setting up workspace from configured manifest")
             git.load_projects_from_yaml(args.file)
 
     if clone_flag:
@@ -3687,8 +3821,8 @@ Examples:
     if args.branches:
         branches = git.list_branches()
         logger.info("\n--- Workspace Branches ---")
-        for proj, branch in sorted(branches.items()):
-            logger.info(f"{proj:<30} | {branch}")
+        for _proj, _branch in sorted(branches.items()):
+            logger.info("Configured project branch discovered")
 
     if args.pre_commit:
         git.pre_commit_projects(run=True, autoupdate=True)
@@ -3757,7 +3891,7 @@ Examples:
                     with open(args.config) as f:
                         config = json.load(f)
                 except Exception as e:
-                    logger.error(f"Failed to load config from {args.config}: {e}")
+                    logger.error("Operation failed: error_type=%s", type(e).__name__)
                     sys.exit(1)
 
             results = git.phased_bumpversion(
@@ -3790,7 +3924,7 @@ Examples:
                     with open(args.config) as f:
                         config = json.load(f)
                 except Exception as e:
-                    logger.error(f"Failed to load config from {args.config}: {e}")
+                    logger.error("Operation failed: error_type=%s", type(e).__name__)
                     sys.exit(1)
             push_results = git.phased_push(
                 start_phase=args.phase,

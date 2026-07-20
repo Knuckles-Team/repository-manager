@@ -9,8 +9,8 @@ files. Git's invariant (a branch lives in at most one worktree) is the hard lock
 that keeps concurrent sessions from colliding.
 
 Worktrees live at ``<WORKTREE_ROOT>/<repo>/<branch-slug>``. ``WORKTREE_ROOT``
-defaults to ``/home/apps/worktrees`` (outside the workspace scan, so discovery
-and the cascade ignore it) and is overridable via
+defaults beneath the platform's XDG state directory (outside the workspace scan,
+so discovery and the cascade ignore it) and is overridable via
 ``REPOSITORY_MANAGER_WORKTREE_ROOT``.
 """
 
@@ -40,9 +40,15 @@ class GitLike(Protocol):
     ) -> Any: ...
 
 
+_XDG_STATE_HOME = os.getenv(
+    "XDG_STATE_HOME", os.path.join(os.path.expanduser("~"), ".local", "state")
+)
 WORKTREE_ROOT = os.path.abspath(
     os.path.expanduser(
-        os.getenv("REPOSITORY_MANAGER_WORKTREE_ROOT", "/home/apps/worktrees")
+        os.getenv(
+            "REPOSITORY_MANAGER_WORKTREE_ROOT",
+            os.path.join(_XDG_STATE_HOME, "repository-manager", "worktrees"),
+        )
     )
 )
 

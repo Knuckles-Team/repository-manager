@@ -3,6 +3,7 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
+from repository_manager.models import GitError
 from repository_manager.repository_manager import Git, GitResult
 
 
@@ -93,3 +94,47 @@ def test_gate_skipped_without_precommit_config(tmp_path):
     (tmp_path / ".pre-commit-config.yaml").unlink()
     m.gate_before_push = True
     assert m._gate_before_push(str(tmp_path)) is None
+
+
+def test_push_refuses_dirty_repository_without_implicit_commit(tmp_path):
+    manager = Git(path=str(tmp_path))
+    manager.git_action = MagicMock(  # type: ignore[method-assign]
+        return_value=GitResult(status="success", data=" M changed.py", error=None)
+    )
+
+    result = manager.push_project(str(tmp_path))
+
+    assert result.status == "error"
+    assert result.error and result.error.code == 409
+    commands = [
+        call.kwargs.get("command", "") for call in manager.git_action.call_args_list
+    ]
+    assert not any(
+        "git add" in command or "git commit" in command for command in commands
+    )
+    assert not any("git push" in command for command in commands)
+
+
+def test_diverged_push_never_rebases_or_force_pushes(tmp_path):
+    manager = Git(path=str(tmp_path))
+    manager.gate_before_push = False
+
+    def action(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if "status --porcelain" in command:
+            return GitResult(status="success", data="", error=None)
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(message="non-fast-forward", code=1),
+        )
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+    result = manager.push_project(str(tmp_path))
+
+    assert result.status == "error"
+    assert result.error and result.error.code == 409
+    commands = [
+        call.kwargs.get("command", "") for call in manager.git_action.call_args_list
+    ]
+    assert not any("rebase" in command or "--force" in command for command in commands)

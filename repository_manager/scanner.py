@@ -143,12 +143,12 @@ def scan_repository(repo_path: str) -> RepoScanResult:
             repo_path=repo_path,
             success=False,
             exit_code=-1,
-            error=f"Timeout expired during pre-commit run: {str(e)}",
+            error=f"Timeout expired during pre-commit run: {type(e).__name__}",
         )
     except Exception as e:
         return RepoScanResult(
             repo_path=repo_path,
             success=False,
             exit_code=-1,
-            error=f"Error executing scan: {str(e)}",
+            error=f"Error executing scan: {type(e).__name__}",
         )

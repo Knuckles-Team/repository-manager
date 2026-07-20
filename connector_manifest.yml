@@ -109,9 +109,11 @@ sync:
   updated_field: null
   pagination: null
   doc_type: repository
+  tool_schema_sha256: 32a9d56b6b468dd37af05dee6884c7ba1616dc14a8ec6c6feb4d7e7ca82418e8
   raw:
     server: repository-manager
     tool: rm_worktree
+    params_style: args
     action: list
     records_path: worktrees
     id_field: path
@@ -120,17 +122,20 @@ sync:
     doc_type: repository
 provenance:
   generated_by: scripts/generate_connector_manifests.py
-  generated_at: '2026-07-11T00:00:00Z'
+  generated_at: '2026-07-18T00:00:00Z'
   source_artifacts:
   - a2a.json
   - repository_manager/connectors/mcp_source_presets.json
+  - repository_manager/connectors/tool_schema_fingerprints.json
   - repository_manager/ontology/repository.ttl
   integrity:
     algorithm: urdna2015-sha256
     hash: b133677226f0bc9b6587f591f74ca86f03143f51c716b557f988f51a10e58fa1
     triple_count: 71
   signer: ontology-manifest-generator
-  signature: 721483d95a37ea174f5801cd4e4000d94fc32a2c4c6904c9b3888c5be68010e9
+  signature_algorithm: ed25519
+  signing_public_key: q0Cp7bmQMqJhbofGKKw8xXC6KbFzukBDDke0UYVi8y4
+  signature: 3aA7ONlQIDt1PfRZopYOZO4FCNP21BbN4pPSiHbj_QY4MYBRLyr3hVSBljETKaAFhMmT3XG1msorJsJooIiEBA
 policy:
   pii_fields: {}
   tenant_boundary: null
@@ -148,28 +153,3 @@ review_todos:
   \ on this crosswalk for reasoning/joins."
 - "schema_mappings.Worktree.ontology_class = None [UNRESOLVED \u2014 no crosswalk found by any heuristic]\
   \ \u2014 verify manually before relying on this crosswalk for reasoning/joins."
-- 'auth: API token/PAT per provider. Env: GITLAB_TOKEN/GITLAB_PRIVATE_TOKEN (legacy alias), GITLAB_URL/GITLAB_HOST,
-  GITHUB_TOKEN/GH_TOKEN (legacy alias). GitLab sent as ''PRIVATE-TOKEN'' header; GitHub sent as ''Authorization:
-  Bearer''. required_scopes: none documented (no required PAT scope like ''repo''/''read_api'' declared).
-  Shape: single shared service-wide token per provider, not per-user (a separate AUTH_TYPE=bearer/OIDC/Eunomia
-  layer governs the MCP tool surface itself, not the VCS provider credential).'
-- "change_support: none \u2014 this connector is NOT wired into any source_sync delta/hydrate/materialize\
-  \ ingestion path today (see docs/architecture/kg_connectors_and_ingestion.md section 8 connector inventory,\
-  \ which omits it entirely); it is an action/ops MCP connector (control-plane calls), not a KG data-ingestion\
-  \ source. cdc: none. webhook: none (any 'webhook' hits in this package's source manage webhooks/admission-hooks\
-  \ IN THE REMOTE SYSTEM \u2014 they are not an inbound push-ingestion receiver into this KG)."
-- "policy.classification / policy.retention: UNKNOWN \u2014 this connector declares no data classification\
-  \ (e.g. public/internal/confidential/restricted) or retention/legal-hold policy anywhere in its shipped\
-  \ artifacts; do not assume a default. Treat both as manifest_status=draft until an operator reviews\
-  \ the actual data handled and states a classification + retention period explicitly (see policy.pii_fields\
-  \ above for the one heuristic that IS populated)."
-- "quality (SHACL shapes / freshness SLA): UNKNOWN \u2014 no SHACL shape set or freshness contract is\
-  \ declared for this connector's resources; manifest_status=draft for quality until a shape set + freshness\
-  \ SLA is authored and referenced here."
-- "manifest_status: draft \u2014 resources/schema_mappings/sync/actions/events were generated deterministically\
-  \ (zero LLM, zero network) from this connector's OWN shipped artifacts via scripts/generate_connector_manifests.py;\
-  \ the auth/required_scopes/change_support/policy/quality annotations above were added by a manual read-only\
-  \ code survey (not re-verified against a live deployment) as part of AU-P1-6 making this connector's\
-  \ manifest MANDATORY for enterprise activation \u2014 operator sign-off on the ontology_class crosswalks,\
-  \ PII/RLS policy, and the classification/retention/quality gaps above is still required before this\
-  \ manifest should be treated as fully authoritative."

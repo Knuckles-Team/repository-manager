@@ -4,9 +4,24 @@ import logging
 import os
 import re
 
-from pydantic import BaseModel, Field
+from agent_utilities.security.persistence_privacy import sanitize_for_persistence
+from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger("RepositoryManager")
+
+_ENDPOINT_PATTERN = re.compile(r"(?i)\b(?:https?|ssh)://[^\s]+|\bgit@[^\s:]+:[^\s]+")
+_SECRET_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)\b(?:access[_-]?token|api[_-]?key|authorization|client[_-]?secret|"
+    r"password|refresh[_-]?token|secret|token)\s*[:=]\s*[^\s,;]+"
+)
+
+
+def _privacy_safe_report_text(value: object) -> str:
+    """Return diagnostic text safe for a durable validation report."""
+
+    clean, _ = sanitize_for_persistence(str(value or ""))
+    clean = _ENDPOINT_PATTERN.sub("[REDACTED_ENDPOINT]", str(clean))
+    return _SECRET_ASSIGNMENT_PATTERN.sub("[REDACTED_SECRET]", clean)
 
 # Mapping from display category names to filesystem-safe slug names
 CATEGORY_SLUG_MAP: dict[str, str] = {
@@ -48,7 +63,7 @@ def _build_next_command_block(
         List of markdown lines to extend into the index.
     """
     lines: list[str] = []
-    output_dir = "/home/apps/workspace/reports"
+    output_dir = "reports/"
 
     if failed_projects:
         repos_csv = ",".join(failed_projects)
@@ -195,6 +210,20 @@ class ProjectResult(BaseModel):
     message: str | None = None
     output: str | None = None
     command: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def protect_durable_diagnostics(cls, value: object) -> object:
+        """Sanitize report fields and never persist a raw command line."""
+
+        if not isinstance(value, dict):
+            return value
+        clean = dict(value)
+        for field in ("message", "output"):
+            if clean.get(field) is not None:
+                clean[field] = _privacy_safe_report_text(clean[field])
+        clean["command"] = None
+        return clean
 
 
 class ValidationCategory(BaseModel):
@@ -1203,7 +1232,10 @@ class ValidationReport(BaseModel):
                     rel_path = os.path.join(repo_dir_name, filename)
                     project_files[project].append(rel_path)
                 except Exception as e:
-                    logger.error(f"Failed to write report file {filepath}: {e}")
+                    logger.error(
+                        "Failed to write a validation report: error_type=%s",
+                        type(e).__name__,
+                    )
 
             # Write the single project-specific summary file
             project_categories = [cat.for_project(project) for cat in self.categories]
@@ -1222,7 +1254,8 @@ class ValidationReport(BaseModel):
                 project_files[project].append(rel_summary_path)
             except Exception as e:
                 logger.error(
-                    f"Failed to write project summary report file {summary_filepath}: {e}"
+                    "Failed to write project summary report: error_type=%s",
+                    type(e).__name__,
                 )
 
         # Identify failed projects for the next-command block
@@ -1309,7 +1342,7 @@ class ValidationReport(BaseModel):
             with open(index_path, "w") as f:
                 f.write("\n".join(index_md))
         except Exception as e:
-            logger.error(f"Failed to write index file {index_path}: {e}")
+            logger.error("Operation failed: error_type=%s", type(e).__name__)
 
         # --- Summary file ---
         summary_md = _build_summary_md(
@@ -1327,9 +1360,12 @@ class ValidationReport(BaseModel):
             with open(summary_path, "w") as f:
                 f.write("\n".join(summary_md))
         except Exception as e:
-            logger.error(f"Failed to write summary file {summary_path}: {e}")
+            logger.error(
+                "Failed to write the validation summary: error_type=%s",
+                type(e).__name__,
+            )
 
-        logger.info(f"Validation report written to: {report_root}")
+        logger.info("Validation report written")
         return report_root
 
 
@@ -1582,7 +1618,10 @@ class IncrementalReportWriter:
             if rel_path not in self.project_files[pkg]:
                 self.project_files[pkg].append(rel_path)
         except Exception as e:
-            logger.error(f"Failed to write report file {filepath}: {e}")
+            logger.error(
+                "Failed to write a validation report: error_type=%s",
+                type(e).__name__,
+            )
 
     def _write_category_files(self, cat: ValidationCategory) -> None:
         """Write per-repo files for a single category immediately."""
@@ -1691,9 +1730,12 @@ class IncrementalReportWriter:
                     f.write("\n".join(scan_md))
                 rel_path = os.path.join(repo_dir_name, filename)
                 self.project_files[project].append(rel_path)
-                logger.info(f"Wrote scan report: {filepath}")
+                logger.info("Validation scan report written")
             except Exception as e:
-                logger.error(f"Failed to write report file {filepath}: {e}")
+                logger.error(
+                    "Failed to write a validation report: error_type=%s",
+                    type(e).__name__,
+                )
 
     def finalize(self) -> str:
         """Write the index.md with aggregate stats and return the report directory path."""
@@ -1791,7 +1833,7 @@ class IncrementalReportWriter:
             with open(index_path, "w") as f:
                 f.write("\n".join(index_md))
         except Exception as e:
-            logger.error(f"Failed to write index file {index_path}: {e}")
+            logger.error("Operation failed: error_type=%s", type(e).__name__)
 
         # --- Summary file ---
         total = sum(c.total for c in self.categories)
@@ -1814,9 +1856,12 @@ class IncrementalReportWriter:
             with open(summary_path, "w") as f:
                 f.write("\n".join(summary_md))
         except Exception as e:
-            logger.error(f"Failed to write summary file {summary_path}: {e}")
+            logger.error(
+                "Failed to write the validation summary: error_type=%s",
+                type(e).__name__,
+            )
 
-        logger.info(f"Validation report finalized at: {self.report_root}")
+        logger.info("Validation report finalized")
         return self.report_root
 
     def _write_project_summary(self, project: str) -> None:
@@ -1881,5 +1926,6 @@ class IncrementalReportWriter:
                 self.project_files[project].append(rel_summary_path)
         except Exception as e:
             logger.error(
-                f"Failed to write project summary file {summary_filepath}: {e}"
+                "Failed to write project summary: error_type=%s",
+                type(e).__name__,
             )

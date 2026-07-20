@@ -1,0 +1,20 @@
+{
+  "connector": "repository-manager",
+  "fixtures": [
+    {
+      "expected": {
+        "acl_state": "quarantine",
+        "id": "fixture-record",
+        "title": "Synthetic certification record"
+      },
+      "preset": "repository-worktrees",
+      "record": {
+        "acl_public": false,
+        "branch": "Synthetic certification record",
+        "path": "fixture-record",
+        "repo": "Synthetic content used only for contract validation."
+      }
+    }
+  ],
+  "schema_version": "1"
+}

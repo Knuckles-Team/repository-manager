@@ -19,14 +19,10 @@
         "PROJECT_MANAGEMENTTOOL": "True",
         "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
         "REPOSITORY_MANAGER_THREADS": "12",
-        "REPOSITORY_MANAGER_WORKSPACE": "/home/apps/workspace",
-        "REPOSITORY_MANAGER_WORKTREE_ROOT": "/home/apps/worktrees",
         "RM_GATE_BEFORE_PUSH": "true",
         "RM_JOB_STALE_SECONDS": "1800",
         "RM_MAX_WORKERS": "8",
         "WORKSPACE_MANAGEMENTTOOL": "True",
-        "WORKSPACE_PATH": "/home/apps/workspace",
-        "WORKSPACE_REPORTS": "/home/apps/workspace/reports",
         "WORKSPACE_YML": "workspace.yml"
       }
     }

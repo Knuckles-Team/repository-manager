@@ -3,6 +3,7 @@
   "repository-worktrees": {
     "server": "repository-manager",
     "tool": "rm_worktree",
+    "params_style": "args",
     "action": "list",
     "records_path": "worktrees",
     "id_field": "path",

@@ -1,0 +1,6 @@
+{
+  "connector": "repository-manager",
+  "current_ontology_source": "repository",
+  "migrations": [],
+  "schema_version": "1"
+}

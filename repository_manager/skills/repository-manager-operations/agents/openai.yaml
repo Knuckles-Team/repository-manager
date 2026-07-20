@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Manager Operations"
+  short_description: "Help with Repository Manager Operations tasks"
+  default_prompt: "Use $repository-manager-operations to complete a governed provider workflow."

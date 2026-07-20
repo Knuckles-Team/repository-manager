@@ -45,7 +45,7 @@ def _run(cmd, cwd):
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     """A real git repo 'myrepo' on main with one commit, plus an isolated
-    WORKTREE_ROOT so tests never touch the real /home/apps/worktrees."""
+    WORKTREE_ROOT so tests never touch an operator worktree directory."""
     ws = tmp_path / "workspace"
     repo_path = ws / "myrepo"
     repo_path.mkdir(parents=True)

@@ -13,7 +13,7 @@ small, and each can be toggled independently with its environment variable.
 | Module | Toggle | Default | Action-routed methods |
 |---|---|---|---|
 | Misc | `MISCTOOL` | `True` | health check and miscellaneous helpers |
-| Git Operations | `GIT_OPERATIONSTOOL` | `True` | `clone`, `pull`, `push`, `phased_push`, `raw` |
+| Git Operations | `GIT_OPERATIONSTOOL` | `True` | `clone`, `pull`, `push`, `phased_push` (legacy `raw` is permanently retired) |
 | Workspace Management | `WORKSPACE_MANAGEMENTTOOL` | `True` | `list`, `list_branches`, `maintain`, `remediate`, `save`, `setup`, `template` |
 | Project Management | `PROJECT_MANAGEMENT_TOOL` | `True` | `build`, `install`, `validate`, `validate_status` |
 
@@ -29,9 +29,11 @@ Example agent prompts that map onto these tools:
 Git operations and workspace introspection.
 
 ```python
+import os
+
 from repository_manager.repository_manager import Git
 
-git = Git(path="/home/apps/workspace")
+git = Git(path=os.environ["REPOSITORY_MANAGER_WORKSPACE"])
 
 # Reads
 projects = git.get_workspace_projects()        # list of managed project names
@@ -49,9 +51,15 @@ result = git.validate_single_project(project_map["agent-utilities"])
 Load a workspace from its declarative `workspace.yml`:
 
 ```python
-git = Git(path="/home/apps/workspace")
-git.setup_from_yaml("workspace.yml")           # materialize the declared estate
+import os
+
+git = Git(path=os.environ["AGENT_UTILITIES_WORKSPACE_ROOT"])
+git.setup_from_yaml(os.environ["WORKSPACE_YML"])  # use the XDG-managed manifest
 ```
+
+The packaged manifest contains only environment references for the workspace root,
+private Git origin, and deployment DNS suffix. Inject those values at runtime; the
+manifest never persists a user name, machine path, or private endpoint.
 
 ## As a CLI
 
