@@ -178,7 +178,7 @@ async def test_mcp_rm_git_tool(tmp_path):
     repo_a_dir = str(tmp_path / "repo-a")
 
     with patch("repository_manager.mcp_server.get_git_instance", return_value=mock_git):
-        # 1. Action: raw (missing command)
+        # 1. Legacy raw action is permanently retired, with or without a command.
         res = await rm_git.fn(
             action="raw",
             command=None,
@@ -189,9 +189,9 @@ async def test_mcp_rm_git_tool(tmp_path):
             ctx=None,
         )
         assert res.status == "error"
-        assert "command is required" in res.error.message
+        assert "permanently retired" in res.error.message
 
-        # 2. Action: raw (with command)
+        # 2. No environment opt-in can re-enable arbitrary host commands.
         res = await rm_git.fn(
             action="raw",
             command="git status",
@@ -201,11 +201,11 @@ async def test_mcp_rm_git_tool(tmp_path):
             target_project=None,
             ctx=None,
         )
-        assert res.status == "success"
-        assert res.data == "mock_git_output"
-        mock_git.git_action.assert_called_with(command="git status", path=None)
+        assert res.status == "error"
+        assert "permanently retired" in res.error.message
+        mock_git.git_action.assert_not_called()
 
-        # 3. Action: clone
+        # 4. Action: clone
         res = await rm_git.fn(
             action="clone",
             command=None,

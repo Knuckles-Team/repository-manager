@@ -1,0 +1,37 @@
+{
+  "api_version": "graphos.io/v1",
+  "artifacts": {
+    "a2a.json": "f41da83a2aab672aff8b65a1cbe59b0f51d7e5bd849bf2edc24f6b38479fb029",
+    "connector_manifest.yml": "f91fecb6de3f756006ebcd83f1a84b1252bc3088aed7b223aa915f1c89510303",
+    "repository_manager/connectors/mcp_source_presets.json": "f37581884eb81ac4c93bf3d7b2ec27c25300e042366d185d158ef4e70b11d374",
+    "repository_manager/connectors/tool_schema_fingerprints.json": "1a4709641d625748405ea29199e0e5dea77202096b38af53755ce60ebccc976a",
+    "repository_manager/ontology/fixtures/records.json": "c891a92ceaa2a68e43cb5a20469acb663dc692cca1ea4b39d9644f0f28792961",
+    "repository_manager/ontology/mappings/source.yaml": "1a30dc90c307a96bf1fa4f693980d72975420b5786904e06a5b0d0bfe04a5fd2",
+    "repository_manager/ontology/migrations/manifest.json": "7407ce8c8371abe40ff43c81fd5f5ac8676abccc6ec41b35d1204ab0fec689dd",
+    "repository_manager/ontology/repository.ttl": "b95d7562d73472b710705428bcb129c1f4dff6e9cda9ab1dd17a01cf61a811f0",
+    "repository_manager/ontology/shapes/connector.shacl.ttl": "186d458931a7d3f2b6820b1b654aacaac6f8148d3319f0a436c9805dabb64ecb"
+  },
+  "checks": {
+    "declared_tool_schema": "passed",
+    "manifest_integrity": "passed",
+    "privacy_contract": "passed",
+    "shacl_parse": "passed",
+    "synthetic_fixture_contract": "passed"
+  },
+  "compatibility": {
+    "agent_utilities": ">=1.27.1,<2",
+    "bundle_schema": "2",
+    "epistemic_graph": ">=2.23.1,<3"
+  },
+  "connector": "repository-manager",
+  "kind": "ConnectorSourceAttestation",
+  "live_certified": false,
+  "mode": "offline-source",
+  "schema_version": "2",
+  "signature": "_kgprUUkJYMGOBhcpRqCAhaqmXVTtcR9HvdGn4_JWmVQGX6c9NEU9e7b-Q5a8OslK-auAvs6mhcXvwU9I3hBBg",
+  "signature_algorithm": "ed25519",
+  "signer": "ontology-manifest-generator",
+  "signing_public_key": "q0Cp7bmQMqJhbofGKKw8xXC6KbFzukBDDke0UYVi8y4",
+  "status": "source-validated",
+  "validated_at": "2026-07-18T00:00:00Z"
+}

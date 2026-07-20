@@ -28,14 +28,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent_utilities.base_utilities import to_integer
-from agent_utilities.core.config import setting
-from agent_utilities.mcp_utilities import (
-    create_mcp_server,
-    load_config,
-    register_tool_surface,
-    resolve_action,
-    run_blocking,
-)
+from agent_utilities.core.config import load_config, setting
+from agent_utilities.mcp.action_dispatch import resolve_action
+from agent_utilities.mcp.concurrency import run_blocking
+from agent_utilities.mcp.server_factory import create_mcp_server
+from agent_utilities.mcp.verbose_tools import register_tool_surface
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -50,12 +47,13 @@ __version__ = "2.0.1"
 
 DEFAULT_WORKSPACE = setting(
     "REPOSITORY_MANAGER_WORKSPACE",
-    setting("WORKSPACE_PATH", "/home/apps/workspace"),
+    setting("WORKSPACE_PATH", os.getenv("AGENT_UTILITIES_WORKSPACE_ROOT", os.getcwd())),
 )
 DEFAULT_THREADS = to_integer(setting("REPOSITORY_MANAGER_THREADS", "12"))
 DEFAULT_WORKSPACE_YML = setting("WORKSPACE_YML", "workspace.yml")
 
 logger = get_logger("RepositoryManagerServer")
+
 
 # Canonical action sets for the action-routed MCP tools. Kept in sync with each
 # tool's ``action`` Field description; reused by ``resolve_action`` so callers get
@@ -197,10 +195,10 @@ def _submit_job(
                 _jobs[job_id]["completed_at"] = (
                     datetime.now(timezone.utc).isoformat() + "Z"
                 )
-        except Exception as e:
+        except Exception:
             with _jobs_lock:
                 _jobs[job_id]["status"] = "failed"
-                _jobs[job_id]["error"] = str(e)
+                _jobs[job_id]["error"] = "Background repository operation failed"
                 _jobs[job_id]["completed_at"] = (
                     datetime.now(timezone.utc).isoformat() + "Z"
                 )
@@ -506,19 +504,19 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             if hasattr(job["result"], "to_markdown"):
                 try:
                     response["summary"] = job["result"].to_markdown()
-                    git = get_git_instance()
-                    response["report_final_path"] = os.path.join(
-                        git.path, "reports", "report_final.md"
+                    response["report_final_path"] = (
+                        "report://validation/report_final.md"
                     )
                 except Exception as e:
                     logger.error(
-                        f"Failed to generate summary or locate report path in job status: {e}"
+                        "Failed to generate project summary: error_type=%s",
+                        type(e).__name__,
                     )
 
             if hasattr(job["result"], "model_dump"):
                 try:
                     ts = job["result"]._format_timestamp_for_path()
-                    summary_path = f"/home/apps/workspace/reports/validation-reports-{ts}/summary.md"
+                    summary_path = f"report://validation-reports-{ts}/summary.md"
                     response["result"] = (
                         f"Validation completed. Check summary report at: {summary_path}"
                     )
@@ -670,7 +668,7 @@ def register_git_operations_tools(mcp: FastMCP):
     )
     async def rm_git(
         action: str = Field(
-            description="Action: 'raw', 'clone', 'enumerate', 'pull', 'push', 'phased_push', 'add', 'commit', 'pre_commit', 'commit_code'. 'enumerate' lists all repos across a GitLab instance/GitHub org into an ingest manifest (command=vcs, projects=groups/orgs)."
+            description="Action: 'clone', 'enumerate', 'pull', 'push', 'phased_push', 'add', 'commit', 'pre_commit', 'commit_code'. Legacy 'raw' is permanently retired. 'enumerate' lists all repos across a GitLab instance/GitHub org into an ingest manifest (command=vcs, projects=groups/orgs)."
         ),
         command: str | None = Field(
             default=None,
@@ -712,7 +710,7 @@ def register_git_operations_tools(mcp: FastMCP):
             description="MCP context for progress reporting", default=None
         ),
     ) -> GitResult | str | dict:
-        """Bulk Git operations and arbitrary command execution."""
+        """Typed bulk Git operations; arbitrary host commands are prohibited."""
         from repository_manager.models import GitError
 
         if not isinstance(auto_start, bool):
@@ -726,15 +724,18 @@ def register_git_operations_tools(mcp: FastMCP):
         action = resolved
 
         if action == "raw":
-            if not command:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message="command is required for 'raw' action", code=1
+            del command
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=(
+                        "Raw host commands are permanently retired; use a typed "
+                        "repository-manager action through governed delegation."
                     ),
-                )
-            return await run_blocking(git.git_action, command=command, path=path)
+                    code=13,
+                ),
+            )
 
         if action == "enumerate":
             # Remote VCS enumeration for enterprise-scale ingestion (CONCEPT:AU-KG.ontology.populated-at-import-real-3):
@@ -1031,9 +1032,11 @@ def register_workspace_management_tools(mcp: FastMCP):
                 return await run_blocking(
                     git.save_workspace_config, yaml_path=yml_path, config=config
                 )
-            except Exception as e:
+            except Exception:
                 return GitResult(
-                    status="error", data="", error=GitError(message=str(e), code=1)
+                    status="error",
+                    data="",
+                    error=GitError(message="Repository operation failed", code=1),
                 )
 
         if action == "maintain":
@@ -1171,7 +1174,7 @@ def register_project_management_tools(mcp: FastMCP):
         """Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE).
 
         Each session works a repo in its own worktree on its own branch under
-        ``/home/apps/worktrees/<repo>/<branch>`` (shared ``.git``, no re-clone),
+        ``<WORKTREE_ROOT>/<repo>/<branch>`` (shared ``.git``, no re-clone),
         leaving the canonical checkout on its default branch so a working-tree
         reset never disturbs in-flight session work.
         """

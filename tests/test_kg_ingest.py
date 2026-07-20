@@ -8,6 +8,9 @@ CONCEPT:AU-KG.ingest.enterprise-source-extractor.
 
 from __future__ import annotations
 
+import pytest
+from agent_utilities.knowledge_graph.memory.native_ingest import NativeIngestError
+
 from repository_manager.kg_ingest import (
     ingest_entities,
     ingest_projects,
@@ -19,6 +22,7 @@ from repository_manager.kg_ingest import (
 class _FakeTxn:
     def __init__(self):
         self.nodes = {}
+        self.edges = []
         self.committed = False
 
     def begin(self, graph=None):
@@ -28,33 +32,27 @@ class _FakeTxn:
     def add_node(self, txn, node_id, props):
         self.nodes[node_id] = props
 
+    def add_edge(self, txn, source, target, props):
+        self.edges.append((source, target, props))
+
     def commit(self, txn):
         self.committed = True
         return True
 
 
-class _FakeEdges:
-    def __init__(self):
-        self.edges = []
-
-    def add(self, src, dst, props):
-        self.edges.append((src, dst, props))
-
-
 class _FakeClient:
     def __init__(self):
         self.txn = _FakeTxn()
-        self.edges = _FakeEdges()
 
 
 def test_ingest_entities_writes_nodes_and_edges():
     c = _FakeClient()
     res = ingest_entities(
         [
-            {"id": "a", "type": "GitRepository", "name": "p"},
-            {"id": "b", "type": "Worktree"},
+            {"id": "a", "node_type": "GitRepository", "name": "p"},
+            {"id": "b", "node_type": "Worktree"},
         ],
-        [{"source": "b", "target": "a", "type": "worktreeOf"}],
+        [{"source": "b", "target": "a", "relationship": "worktreeOf"}],
         client=c,
         graph="__commons__",
     )
@@ -64,7 +62,7 @@ def test_ingest_entities_writes_nodes_and_edges():
     # provenance is stamped
     assert c.txn.nodes["a"]["source"] == "repository-manager"
     assert c.txn.nodes["a"]["domain"] == "repository"
-    assert c.edges.edges == [("b", "a", {"type": "worktreeOf"})]
+    assert c.txn.edges == [("b", "a", {"relationship": "worktreeOf"})]
 
 
 def test_ingest_repositories_maps_gitrepository():
@@ -88,7 +86,7 @@ def test_ingest_repositories_maps_gitrepository():
     )
     assert res == {"nodes": 1, "edges": 0}
     node = c.txn.nodes["repository:GitRepository:42"]
-    assert node["type"] == "GitRepository"
+    assert node["node_type"] == "GitRepository"
     assert node["vcs"] == "gitlab"
     assert node["fullPath"] == "grp/demo"
     assert node["cloneUrl"] == "https://gl/grp/demo.git"
@@ -114,7 +112,7 @@ def test_ingest_worktrees_maps_and_links_repo():
         [
             {
                 "repo": "agent-utilities",
-                "path": "/home/apps/worktrees/agent-utilities/feat-x",
+                "path": "worktree://agent-utilities/feat-x",
                 "branch": "feat/x",
                 "head": "abc1234567",
                 "class": "active",
@@ -127,18 +125,18 @@ def test_ingest_worktrees_maps_and_links_repo():
         graph="__commons__",
     )
     assert res == {"nodes": 2, "edges": 1}
-    wt = c.txn.nodes["repository:Worktree:/home/apps/worktrees/agent-utilities/feat-x"]
-    assert wt["type"] == "Worktree"
+    wt = c.txn.nodes["repository:Worktree:worktree://agent-utilities/feat-x"]
+    assert wt["node_type"] == "Worktree"
     assert wt["branchName"] == "feat/x"
     assert wt["worktreeStatus"] == "active"
     assert wt["dirty"] is True
     assert wt["aheadCount"] == 3
     assert "repository:GitRepository:agent-utilities" in c.txn.nodes
-    assert c.edges.edges == [
+    assert c.txn.edges == [
         (
-            "repository:Worktree:/home/apps/worktrees/agent-utilities/feat-x",
+            "repository:Worktree:worktree://agent-utilities/feat-x",
             "repository:GitRepository:agent-utilities",
-            {"type": "worktreeOf"},
+            {"relationship": "worktreeOf"},
         )
     ]
 
@@ -149,7 +147,7 @@ def test_ingest_projects_maps_and_links_repo():
         [
             {
                 "name": "gitlab-api",
-                "path": "/home/apps/workspace/agent-packages/agents/gitlab-api",
+                "path": "repository://gitlab-api",
                 "class": "clean",
                 "dirty": False,
                 "ahead_origin": 0,
@@ -160,25 +158,23 @@ def test_ingest_projects_maps_and_links_repo():
     )
     assert res == {"nodes": 2, "edges": 1}
     proj = c.txn.nodes["repository:Project:gitlab-api"]
-    assert proj["type"] == "Project"
+    assert proj["node_type"] == "Project"
     assert proj["validationStatus"] == "clean"
     assert proj["projectPath"].endswith("gitlab-api")
-    assert c.edges.edges == [
+    assert c.txn.edges == [
         (
             "repository:Project:gitlab-api",
             "repository:GitRepository:gitlab-api",
-            {"type": "projectOfRepository"},
+            {"relationship": "projectOfRepository"},
         )
     ]
 
 
-def test_ingest_noops_without_engine():
-    # No injected client + no reachable engine -> clean no-op.
-    assert ingest_entities([{"id": "a", "type": "GitRepository"}]) is None
+def test_retired_structural_alias_is_rejected():
+    with pytest.raises(NativeIngestError, match="canonical node_type"):
+        ingest_entities([{"id": "a", "type": "GitRepository"}], client=_FakeClient())
 
 
-def test_ingest_empty_is_noop():
-    assert ingest_entities([], client=_FakeClient()) is None
-    assert ingest_repositories([], client=_FakeClient()) is None
-    assert ingest_worktrees([], client=_FakeClient()) is None
-    assert ingest_projects([], client=_FakeClient()) is None
+def test_empty_native_ingest_is_rejected():
+    with pytest.raises(NativeIngestError, match="at least one entity"):
+        ingest_entities([], client=_FakeClient())

@@ -50,16 +50,16 @@ uv run repository-manager-mcp
 
 ## Prebuilt Docker image
 
-A multi-stage, slim image is published on every release (installs
+A multi-stage runtime image is published on every release (installs
 `repository-manager[all]`):
 
 ```bash
-docker pull knucklessg1/repository-manager:latest
+docker pull example/repository-manager@sha256:<digest>
 
 docker run --rm -i \
   -e REPOSITORY_MANAGER_WORKSPACE=/workspace \
-  -v /home/apps/workspace:/workspace \
-  knucklessg1/repository-manager:latest        # stdio transport (default)
+  -v "${REPOSITORY_MANAGER_WORKSPACE}:/workspace" \
+  example/repository-manager@sha256:<digest>        # stdio transport (default)
 ```
 
 For an HTTP server with a published port, the agent server, and Docker Compose, see

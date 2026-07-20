@@ -116,7 +116,7 @@ def agent_server():
         os.killpg(os.getpgid(process.pid), signal.SIGTERM)
         process.wait(timeout=10)
     except Exception as e:
-        print(f"Shutdown error: {e}")
+        print(f"Operation failed: {type(e).__name__}")
     finally:
         log_file.close()
 
@@ -193,7 +193,7 @@ async def test_get_workspace_projects_via_graph(agent_server):
                                 # Even if it just says "planner" (like in the logs), we consider it a success if we reached the end
                                 final_output_received = True
                         except Exception as e:
-                            print(f"DEBUG: Error parsing line: {line} - {e}")  # NEW
+                            print(f"DEBUG: Stream line parse failed: {type(e).__name__}")
                             pass
         except Exception as e:
             pytest.fail(f"SSE request failed: {e}")
@@ -231,7 +231,7 @@ if __name__ == "__main__":
                         if line.startswith("data: "):
                             print(line[6:])
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"Operation failed: {type(e).__name__}")
 
     # If port is open, run manual
     try:

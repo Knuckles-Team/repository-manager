@@ -404,7 +404,7 @@ def test_bump_version_fallback_execution(mock_git_action, sample_workspace_yml):
                 metadata=get_mock_metadata("git add"),
             )
         elif "commit" in command:
-            assert "--no-verify" in command
+            assert "--no-verify" not in command
             assert "phased bump" in command
             return GitResult(
                 status="success",
@@ -440,7 +440,7 @@ class TestUpdateDependencyPropagation:
 
     def test_pyproject_gte(self, tmp_path):
         upd, out = self._run(tmp_path, 'deps = ["agent-utilities>=0.38.0"]')
-        assert upd and 'agent-utilities>=0.39.0' in out
+        assert upd and "agent-utilities>=0.39.0" in out
 
     def test_requirements_exact_pin(self, tmp_path):
         upd, out = self._run(tmp_path, "agent-utilities==0.16.0\n")

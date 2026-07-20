@@ -6,7 +6,7 @@
 This document provides an overview of the Repository Manager agent, its architecture, and how to use it.
 
 ## Tech Stack & Architecture
-- **Language**: Python 3.10+
+- **Language**: Python 3.11–3.14
 - **Core Framework**: [Pydantic AI](https://ai.pydantic.dev) & [Pydantic Graph](https://ai.pydantic.dev/pydantic-graph/)
 - **Tooling**: `requests`, `pydantic`, `pyyaml`, `python-dotenv`, `fastapi`, `llama_index`, `FastMCP`
 - **Architecture**: Centered around the `create_agent` factory from `agent-utilities`, which has been modernized to support a **Unified Skill Loading** model (`skill_types`) and automated **Graph Orchestration**.
@@ -506,7 +506,9 @@ pip install -e .[all] # Install with all optional extras
 **Always:**
 - Use the `try/except ImportError` guardrail pattern for optional dependencies.
 - Use `agent_utilities.base_utilities.to_boolean` for parsing environment variables and CLI flags.
-- Support `SSL_VERIFY` environment variable and `--insecure` CLI flag for all network operations.
+- Use `resolve_configured_tls_profile(service)` and its client adapters for every
+  network operation; transport policy comes from AgentConfig and never from a
+  boolean verification switch.
 - Prefer `pathlib.Path` for file path manipulations.
 
 **Imports:**
@@ -792,23 +794,23 @@ why rather than bypassing it.
 ## Working with Git Worktrees (multi-session)
 
 Multiple agents/sessions work the `agent-packages/*` repos concurrently. **Do not
-edit the canonical checkout** (`/home/apps/workspace/agent-packages/<repo>`) — a
+edit the canonical checkout** (`$AGENT_UTILITIES_WORKSPACE_ROOT/agent-packages/<repo>`) — a
 background `repository-manager` sync can reset its working tree and discard
 uncommitted edits. Take your own git worktree on your own branch instead:
 
 ```bash
 # preferred — repository-manager MCP:
-rm_worktree add <repo> <your-branch>      # -> /home/apps/worktrees/<repo>/<your-branch>
+rm_worktree add <repo> <your-branch>      # -> $REPOSITORY_MANAGER_WORKTREE_ROOT/<repo>/<your-branch>
 
 # raw-git fallback:
 git -C agent-packages/<repo> checkout main
-git -C agent-packages/<repo> worktree add /home/apps/worktrees/<repo>/<branch> -b <branch>
+git -C agent-packages/<repo> worktree add "$REPOSITORY_MANAGER_WORKTREE_ROOT/<repo>/<branch>" -b <branch>
 ```
 
 Work in the worktree and **commit often** (commits survive a working-tree reset).
 Each session must use a **distinct branch** — git allows a branch in only one
 worktree, which is what keeps concurrent sessions from colliding. Worktrees live
-under `/home/apps/worktrees/` (outside the workspace scan, so the sync leaves them
+under `$REPOSITORY_MANAGER_WORKTREE_ROOT` (outside the workspace scan, so the sync leaves them
 alone).
 
 **Finishing work in a worktree** — run this sequence before calling it done:

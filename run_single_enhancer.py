@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
+import os
 import time
 from pathlib import Path
 
+from agent_utilities.security.persistence_privacy import sanitize_for_persistence
+
 # Paths
-SCRIPTS_DIR = (
-    Path.home() / ".gemini" / "antigravity" / "skills" / "code-enhancer" / "scripts"
-)
+SCRIPTS_DIR_VALUE = os.getenv("CODE_ENHANCER_SCRIPTS_DIR")
+if not SCRIPTS_DIR_VALUE:
+    raise SystemExit("CODE_ENHANCER_SCRIPTS_DIR must be configured")
+SCRIPTS_DIR = Path(SCRIPTS_DIR_VALUE).expanduser().resolve()
 PROJECT_DIR = Path(__file__).parent.resolve()
 SPECIFY_DIR = PROJECT_DIR / ".specify"
 
@@ -63,26 +67,27 @@ def run_enhancer():
                 results.append(result)
         except Exception as e:
             elapsed = time.monotonic() - start_time
-            print(f"💥 Error in {module_name} after {elapsed:.2f}s: {e}")
+            print(f"Operation failed: {type(e).__name__}")
             results.append(
                 {
                     "domain": module_name.replace("_", " ").title(),
                     "score": 0,
                     "grade": "F",
-                    "findings": [f"Analysis error: {str(e)[:200]}"],
+                    "findings": [f"Analysis error: {type(e).__name__[:200]}"],
                     "justifications": [],
                 }
             )
 
     print("\n📝 Compiling final results...")
+    safe_results, _privacy_report = sanitize_for_persistence(results)
 
     # Ensure specify dir exists
     SPECIFY_DIR.mkdir(parents=True, exist_ok=True)
 
     # Save raw json results
     results_json_path = SPECIFY_DIR / "results.json"
-    results_json_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
-    print(f"💾 Raw results saved to: {results_json_path}")
+    results_json_path.write_text(json.dumps(safe_results, indent=2), encoding="utf-8")
+    print("💾 Sanitized results saved successfully")
 
     # Load and run generate_report
     try:
@@ -98,11 +103,13 @@ def run_enhancer():
         report_md_path.parent.mkdir(parents=True, exist_ok=True)
 
         report_module.generate_report(
-            results, project_name=PROJECT_DIR.name, output_path=str(report_md_path)
+            safe_results,
+            project_name=PROJECT_DIR.name,
+            output_path=str(report_md_path),
         )
-        print(f"📄 Prettified report written to: {report_md_path}")
+        print("📄 Prettified report written successfully")
     except Exception as e:
-        print(f"❌ Failed to generate report: {e}")
+        print(f"Operation failed: {type(e).__name__}")
 
     # Load and run generate_sdd_handoff
     try:
@@ -119,7 +126,7 @@ def run_enhancer():
         )
         print("🎯 SDD handoff successfully written to: .specify/specs/")
     except Exception as e:
-        print(f"❌ Failed to generate SDD handoff: {e}")
+        print(f"Operation failed: {type(e).__name__}")
 
 
 if __name__ == "__main__":

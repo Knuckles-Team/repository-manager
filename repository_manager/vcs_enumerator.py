@@ -28,6 +28,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from agent_utilities.core.transport_security import (
+    ResolvedTLSProfile,
+    resolve_configured_tls_profile,
+)
+
 try:  # optional at import — only needed for the live (non-injected) path
     import httpx
 
@@ -89,7 +94,7 @@ def enumerate_gitlab(
     updated_after: str | None = None,
     max_repos: int | None = None,
     client: Any = None,
-    verify_ssl: bool = False,
+    tls_profile: ResolvedTLSProfile | None = None,
 ) -> list[dict[str, Any]]:
     """Enumerate GitLab projects via keyset pagination.
 
@@ -107,10 +112,12 @@ def enumerate_gitlab(
     if not base:
         return []
     owns_client = client is None
+    owns_profile = tls_profile is None
     if owns_client:
         if not _HTTPX:
             return []
-        client = httpx.Client(verify=verify_ssl, timeout=30.0)
+        tls_profile = tls_profile or resolve_configured_tls_profile("gitlab")
+        client = httpx.Client(timeout=30.0, **tls_profile.httpx_kwargs())
     headers = {"PRIVATE-TOKEN": tok} if tok else {}
     targets: list[str] = (
         [f"{base.rstrip('/')}/api/v4/groups/{g}/projects" for g in groups]
@@ -156,6 +163,8 @@ def enumerate_gitlab(
     finally:
         if owns_client:
             client.close()
+        if owns_profile and tls_profile is not None:
+            tls_profile.cleanup()
     return out
 
 
@@ -167,14 +176,17 @@ def enumerate_github(
     archived: bool = False,
     max_repos: int | None = None,
     client: Any = None,
+    tls_profile: ResolvedTLSProfile | None = None,
 ) -> list[dict[str, Any]]:
     """Enumerate GitHub repos per org (or the authenticated user) via pagination."""
     tok = _github_token(token)
     owns_client = client is None
+    owns_profile = tls_profile is None
     if owns_client:
         if not _HTTPX:
             return []
-        client = httpx.Client(timeout=30.0)
+        tls_profile = tls_profile or resolve_configured_tls_profile("github")
+        client = httpx.Client(timeout=30.0, **tls_profile.httpx_kwargs())
     headers = {"Accept": "application/vnd.github+json"}
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
@@ -210,6 +222,8 @@ def enumerate_github(
     finally:
         if owns_client:
             client.close()
+        if owns_profile and tls_profile is not None:
+            tls_profile.cleanup()
     return out
 
 

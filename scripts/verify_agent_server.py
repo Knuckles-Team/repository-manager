@@ -3,7 +3,6 @@ import asyncio
 import os
 import subprocess
 import sys
-import time
 
 import httpx
 
@@ -21,21 +20,19 @@ async def check_health(max_retries=30, delay=1):
             try:
                 response = await client.get(f"{BASE_URL}/health")
                 if response.status_code == 200:
-                    print(f"✅ Server is healthy: {response.json()}")
+                    print("✅ Server is healthy")
                     return True
             except Exception:
                 pass
             if i % 5 == 0:
-                print(
-                    f"Waiting for server on {BASE_URL}... (attempt {i}/{max_retries})"
-                )
+                print(f"Waiting for server... (attempt {i}/{max_retries})")
             await asyncio.sleep(delay)
     return False
 
 
 async def test_chat_stream(query: str):
     """Test standard AG-UI chat stream (/ag-ui)."""
-    print(f"\n--- Testing AG-UI Chat Stream: '{query}' ---")
+    print("\n--- Testing AG-UI Chat Stream ---")
     url = f"{BASE_URL}/ag-ui"
     payload = {
         "messages": [{"role": "user", "content": query, "id": "m-1"}],
@@ -59,8 +56,6 @@ async def test_chat_stream(query: str):
 
                 async for line in response.aiter_lines():
                     if line:
-                        # Print every line if it contains data
-                        print(f"  [STREAM] {line}")
                         found_output = True
                         # Protocol parsing for found_output flag
                         if line.startswith("0:"):
@@ -78,8 +73,8 @@ async def test_chat_stream(query: str):
             else:
                 print("❌ Received no content in chat stream.")
                 return False
-        except Exception as e:
-            print(f"\n❌ Error during chat stream: {e}")
+        except Exception as exc:
+            print(f"\n❌ Chat stream failed: {type(exc).__name__}")
             return False
 
 
@@ -102,8 +97,8 @@ async def test_acp_integration():
             # Additional session tests could go here if the protocol is known
             # For now, just verifying the endpoint is alive is a good start.
             return True
-        except Exception as e:
-            print(f"❌ ACP Test Failed: {e}")
+        except Exception as exc:
+            print(f"❌ ACP test failed: {type(exc).__name__}")
             return False
 
 
@@ -117,28 +112,17 @@ def start_server():
     env["PYTHONPATH"] = f".:{env.get('PYTHONPATH', '')}"
 
     cmd = [sys.executable, AGENT_SERVER_PATH, "--web", "--port", str(PORT)]
-    print(f"Starting server: {' '.join(cmd)}")
-
-    log_file = open("server.log", "w")
+    print("Starting validation server")
     process = subprocess.Popen(  # nosec B603
-        cmd, stdout=log_file, stderr=subprocess.STDOUT, env=env, text=True, bufsize=1
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+        text=True,
+        bufsize=1,
     )
 
-    return process, log_file
-
-
-def tail_log():
-    """Tail the server log file."""
-    if os.path.exists("server.log"):
-        with open("server.log") as f:
-            # Move to end
-            f.seek(0, 2)
-            while True:
-                line = f.readline()
-                if not line:
-                    time.sleep(0.1)
-                    continue
-                print(f"  [SERVER] {line.strip()}")
+    return process
 
 
 async def compare_tool_results():
@@ -152,13 +136,13 @@ async def compare_tool_results():
         git = get_git_instance()
         direct_projects = set(git.project_map.keys())
         print(f"Direct tool found {len(direct_projects)} projects.")
-    except Exception as e:
-        print(f"❌ Failed to execute tool directly: {e}")
+    except Exception as exc:
+        print(f"❌ Direct tool execution failed: {type(exc).__name__}")
         return False
 
     # 2. Get agent result via chat
     query = "get_workspace_projects"
-    print(f"Querying agent: '{query}'")
+    print("Querying agent")
 
     chat_output = ""
     url = f"{BASE_URL}/ag-ui"
@@ -183,7 +167,6 @@ async def compare_tool_results():
 
                 async for line in response.aiter_lines():
                     if line:
-                        print(f"  [STREAM] {line}")
                         if line.startswith("0:"):
                             content = line[2:].strip().strip('"')
                             if content:
@@ -191,8 +174,8 @@ async def compare_tool_results():
                         elif line.startswith("9:"):
                             # Protocol result or completion info
                             pass
-        except Exception as e:
-            print(f"\n❌ Error during comparison chat: {e}")
+        except Exception as exc:
+            print(f"\n❌ Comparison chat failed: {type(exc).__name__}")
             return False
 
     # 3. Compare
@@ -214,8 +197,8 @@ async def compare_tool_results():
     print(f"Agent mentioned {found_count}/{len(direct_projects)} projects.")
     if found_count > 0:
         print("✅ Agent successfully retrieved and reported projects.")
-        if missing and len(missing) < 5:
-            print(f"Note: Some projects were not explicitly found in output: {missing}")
+        if missing:
+            print(f"Note: {len(missing)} projects were not explicitly found in output")
         return True
     else:
         print("❌ Agent failed to report any projects from the tool.")
@@ -223,12 +206,7 @@ async def compare_tool_results():
 
 
 async def main():
-    process, log_file = start_server()
-
-    import threading
-
-    t = threading.Thread(target=tail_log, daemon=True)
-    t.start()
+    process = start_server()
 
     try:
         if await check_health():
@@ -258,7 +236,7 @@ async def main():
 
     finally:
         print("\n--- Test Suite Summary ---")
-        print(f"Terminating server (PID {process.pid})...")
+        print("Terminating server")
         # Give it a moment to flush buffers
         await asyncio.sleep(2)
         process.terminate()
@@ -267,7 +245,6 @@ async def main():
         except subprocess.TimeoutExpired:
             print("Killing server forcibly...")
             process.kill()
-        log_file.close()
 
 
 if __name__ == "__main__":

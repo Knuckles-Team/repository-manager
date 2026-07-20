@@ -48,13 +48,13 @@ xychart-beta
 |-----------|--------|----------|-----------|
 | has_pyproject | 10 | `pyproject.toml and requirements.txt` | Both pyproject.toml and requirements.txt exist, fulfilling mandatory Python proj |
 | project_type_detected | 10 | `Agent-Utilities Ecosystem` | Identified 1 ecosystem marker(s) in dependencies |
-| externalized_prompts | 0 | `/home/apps/workspace/agent-packages/agents/repository-manage` | No prompts/ directory found. Prompts may be hardcoded in source. |
+| externalized_prompts | 0 | `${WORKSPACE_ROOT}/agent-packages/agents/repository-manage` | No prompts/ directory found. Prompts may be hardcoded in source. |
 | observability | 0 | `dependency list` | No observability tools (logfire, sentry, opentelemetry) found |
 | testing_suite | 10 | `tests dir: True, pytest dep: True` | Tests directory exists, pytest in dependencies |
-| agents_md | 10 | `/home/apps/workspace/agent-packages/agents/repository-manage` | AGENTS.md exists with comprehensive content |
-| pre_commit_hooks | 10 | `/home/apps/workspace/agent-packages/agents/repository-manage` | Pre-commit configuration found for automated code quality checks |
-| gitignore | 10 | `/home/apps/workspace/agent-packages/agents/repository-manage` | .gitignore exists to prevent committing build artifacts and secrets |
-| env_template | 10 | `/home/apps/workspace/agent-packages/agents/repository-manage` | Environment template exists for onboarding and secret management |
+| agents_md | 10 | `${WORKSPACE_ROOT}/agent-packages/agents/repository-manage` | AGENTS.md exists with comprehensive content |
+| pre_commit_hooks | 10 | `${WORKSPACE_ROOT}/agent-packages/agents/repository-manage` | Pre-commit configuration found for automated code quality checks |
+| gitignore | 10 | `${WORKSPACE_ROOT}/agent-packages/agents/repository-manage` | .gitignore exists to prevent committing build artifacts and secrets |
+| env_template | 10 | `${WORKSPACE_ROOT}/agent-packages/agents/repository-manage` | Environment template exists for onboarding and secret management |
 | protocol_support | 4 | `MCP` | 1 communication protocol(s) detected |
 
 **Findings:**
@@ -71,7 +71,7 @@ xychart-beta
 
 | Criterion | Points | Evidence | Reasoning |
 |-----------|--------|----------|-----------|
-| dependency_freshness | 97 | `source=/home/apps/workspace/agent-packages/agents/repository` | Audited 8 deps (6 installed, 2 constraint-only). 0 major, 1 minor, 0 patch updates |
+| dependency_freshness | 97 | `source=${WORKSPACE_ROOT}/agent-packages/agents/repository` | Audited 8 deps (6 installed, 2 constraint-only). 0 major, 1 minor, 0 patch updates |
 
 ---
 
@@ -239,7 +239,7 @@ xychart-beta
 
 | Criterion | Points | Evidence | Reasoning |
 |-----------|--------|----------|-----------|
-| bumpversion_exists | 20 | `/home/apps/workspace/agent-packages/agents/repository-manage` | .bumpversion.cfg found |
+| bumpversion_exists | 20 | `${WORKSPACE_ROOT}/agent-packages/agents/repository-manage` | .bumpversion.cfg found |
 | current_version_defined | 20 | `1.18.0` | Current version tracked is 1.18.0 |
 | files_tracked | 20 | `6 files tracked` | Found 6 files tracked in .bumpversion.cfg |
 | version_drift_check | 40 | `0 drifted files` | No version drift detected in codebase files |
