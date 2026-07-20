@@ -1,5 +1,6 @@
 ---
 name: repository-manager-operations
+skill_type: skill
 description: >-
   Operate repository-manager through its governed MCP and GraphOS capabilities, including repository manager bulk git operations, repository manager workspace validation, repository manager worktree orchestration. Use when a request requires this provider's read, change, automation, ingestion, troubleshooting, or evidence workflows.
 ---
