@@ -23,7 +23,7 @@
       {
         "criterion": "externalized_prompts",
         "points": 0,
-        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager",
+        "evidence": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager",
         "reasoning": "No prompts/ directory found. Prompts may be hardcoded in source."
       },
       {
@@ -41,25 +41,25 @@
       {
         "criterion": "agents_md",
         "points": 10,
-        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager/AGENTS.md (39110 bytes)",
+        "evidence": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/AGENTS.md (39110 bytes)",
         "reasoning": "AGENTS.md exists with comprehensive content"
       },
       {
         "criterion": "pre_commit_hooks",
         "points": 10,
-        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager/.pre-commit-config.yaml",
+        "evidence": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/.pre-commit-config.yaml",
         "reasoning": "Pre-commit configuration found for automated code quality checks"
       },
       {
         "criterion": "gitignore",
         "points": 10,
-        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager/.gitignore",
+        "evidence": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/.gitignore",
         "reasoning": ".gitignore exists to prevent committing build artifacts and secrets"
       },
       {
         "criterion": "env_template",
         "points": 10,
-        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager/.env.example",
+        "evidence": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/.env.example",
         "reasoning": "Environment template exists for onboarding and secret management"
       },
       {
@@ -90,7 +90,7 @@
       {
         "criterion": "dependency_freshness",
         "points": 97,
-        "evidence": "source=/home/apps/workspace/agent-packages/agents/repository-manager/pyproject.toml total=8 major=0 minor=1 patch=0 not_installed=2",
+        "evidence": "source=${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/pyproject.toml total=8 major=0 minor=1 patch=0 not_installed=2",
         "reasoning": "Audited 8 deps (6 installed, 2 constraint-only). 0 major, 1 minor, 0 patch updates."
       }
     ],
@@ -213,7 +213,7 @@
         "length": 453,
         "complexity": 70,
         "nesting_depth": 7,
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
       },
       {
         "name": "phased_bumpversion",
@@ -221,7 +221,7 @@
         "length": 230,
         "complexity": 56,
         "nesting_depth": 6,
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
       },
       {
         "name": "from_results",
@@ -229,7 +229,7 @@
         "length": 135,
         "complexity": 54,
         "nesting_depth": 5,
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/models.py"
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/models.py"
       },
       {
         "name": "main",
@@ -237,7 +237,7 @@
         "length": 353,
         "complexity": 47,
         "nesting_depth": 5,
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
       },
       {
         "name": "phased_push",
@@ -245,7 +245,7 @@
         "length": 195,
         "complexity": 45,
         "nesting_depth": 5,
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
       }
     ],
     "top_long": [
@@ -255,7 +255,7 @@
         "length": 453,
         "complexity": 70,
         "nesting_depth": 7,
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
       },
       {
         "name": "main",
@@ -263,7 +263,7 @@
         "length": 353,
         "complexity": 47,
         "nesting_depth": 5,
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
       },
       {
         "name": "phased_bumpversion",
@@ -271,7 +271,7 @@
         "length": 230,
         "complexity": 56,
         "nesting_depth": 6,
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
       },
       {
         "name": "to_directory_report",
@@ -279,7 +279,7 @@
         "length": 209,
         "complexity": 23,
         "nesting_depth": 5,
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/models.py"
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/models.py"
       },
       {
         "name": "phased_push",
@@ -287,13 +287,13 @@
         "length": 195,
         "complexity": 45,
         "nesting_depth": 5,
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py"
       }
     ],
     "structural_issues": [
       {
         "file": "mcp_server.py",
-        "path": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "path": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
         "lines": 574,
         "issues": [
           "1 functions with high complexity (worst: _get_job_status at 78L, CC=20)",
@@ -311,7 +311,7 @@
       },
       {
         "file": "repository_manager.py",
-        "path": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
+        "path": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
         "lines": 3142,
         "issues": [
           "11 functions with high complexity (worst: Git.validate_projects at 453L, CC=70)",
@@ -353,7 +353,7 @@
       },
       {
         "file": "models.py",
-        "path": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/models.py",
+        "path": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/models.py",
         "lines": 1452,
         "issues": [
           "7 functions with high complexity (worst: ValidationReport.to_directory_report at 209L, CC=23)",
@@ -416,7 +416,7 @@
         "cwe": "CWE-78",
         "name": "OS Command Injection",
         "severity": "High",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
         "line": 123,
         "detail": "Dangerous call: subprocess.Popen()"
       },
@@ -424,7 +424,7 @@
         "cwe": "CWE-78",
         "name": "OS Command Injection",
         "severity": "High",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_agent_integration.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_agent_integration.py",
         "line": 57,
         "detail": "Dangerous call: subprocess.Popen()"
       },
@@ -432,7 +432,7 @@
         "cwe": "CWE-78",
         "name": "OS Command Injection",
         "severity": "High",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
         "line": 1061,
         "detail": "Dangerous call: subprocess.Popen()"
       }
@@ -476,7 +476,7 @@
     "tests": [
       {
         "name": "test_phased_push",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_phased_push.py",
         "line": 25,
         "length": 22,
         "intent": "unit",
@@ -486,7 +486,7 @@
       },
       {
         "name": "test_phased_push_single_project",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_phased_push.py",
         "line": 50,
         "length": 21,
         "intent": "unit",
@@ -496,7 +496,7 @@
       },
       {
         "name": "test_push_projects",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_phased_push.py",
         "line": 73,
         "length": 8,
         "intent": "unit",
@@ -506,7 +506,7 @@
       },
       {
         "name": "test_get_workspace_projects_via_graph",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_agent_integration.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_agent_integration.py",
         "line": 108,
         "length": 86,
         "intent": "unit",
@@ -519,7 +519,7 @@
       },
       {
         "name": "test_mcp_tools_registration",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_registration.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_registration.py",
         "line": 8,
         "length": 12,
         "intent": "unit",
@@ -529,7 +529,7 @@
       },
       {
         "name": "test_background_job_lifecycle",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 18,
         "length": 36,
         "intent": "unit",
@@ -541,7 +541,7 @@
       },
       {
         "name": "test_get_job_status_variations",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 55,
         "length": 75,
         "intent": "unit",
@@ -551,7 +551,7 @@
       },
       {
         "name": "test_get_git_instance_fallbacks",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 131,
         "length": 5,
         "intent": "unit",
@@ -561,7 +561,7 @@
       },
       {
         "name": "test_mcp_rm_git_tool",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 138,
         "length": 101,
         "intent": "unit",
@@ -573,7 +573,7 @@
       },
       {
         "name": "test_mcp_rm_workspace_tool",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 241,
         "length": 182,
         "intent": "unit",
@@ -585,7 +585,7 @@
       },
       {
         "name": "test_mcp_rm_projects_tool",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 425,
         "length": 101,
         "intent": "unit",
@@ -597,7 +597,7 @@
       },
       {
         "name": "test_mcp_server_cli_execution",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 527,
         "length": 41,
         "intent": "unit",
@@ -607,7 +607,7 @@
       },
       {
         "name": "test_dynamic_attributes_and_imports",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
         "line": 7,
         "length": 33,
         "intent": "unit",
@@ -617,7 +617,7 @@
       },
       {
         "name": "test_dynamic_attributes_import_failure",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
         "line": 41,
         "length": 22,
         "intent": "unit",
@@ -627,7 +627,7 @@
       },
       {
         "name": "test_main_entrypoint",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
         "line": 64,
         "length": 9,
         "intent": "unit",
@@ -637,7 +637,7 @@
       },
       {
         "name": "test_pipeline_runner_execution",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
         "line": 13,
         "length": 25,
         "intent": "unit",
@@ -647,7 +647,7 @@
       },
       {
         "name": "test_pipeline_runner_failure",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
         "line": 40,
         "length": 18,
         "intent": "unit",
@@ -657,7 +657,7 @@
       },
       {
         "name": "test_topological_sort",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
         "line": 60,
         "length": 8,
         "intent": "unit",
@@ -667,7 +667,7 @@
       },
       {
         "name": "test_to_markdown_renders_sections",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 119,
         "length": 22,
         "intent": "unit",
@@ -677,7 +677,7 @@
       },
       {
         "name": "test_for_project_filters_correctly",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 142,
         "length": 18,
         "intent": "unit",
@@ -687,7 +687,7 @@
       },
       {
         "name": "test_for_project_returns_empty_when_no_match",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 161,
         "length": 10,
         "intent": "unit",
@@ -697,7 +697,7 @@
       },
       {
         "name": "test_creates_directory_structure",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 179,
         "length": 6,
         "intent": "unit",
@@ -707,7 +707,7 @@
       },
       {
         "name": "test_creates_per_repo_directories",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 186,
         "length": 7,
         "intent": "unit",
@@ -717,7 +717,7 @@
       },
       {
         "name": "test_per_scan_files_have_correct_format",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 194,
         "length": 12,
         "intent": "unit",
@@ -727,7 +727,7 @@
       },
       {
         "name": "test_index_contains_summary_table",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 207,
         "length": 12,
         "intent": "unit",
@@ -737,7 +737,7 @@
       },
       {
         "name": "test_index_contains_repo_links",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 220,
         "length": 10,
         "intent": "unit",
@@ -747,7 +747,7 @@
       },
       {
         "name": "test_handles_empty_results",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 231,
         "length": 11,
         "intent": "unit",
@@ -757,7 +757,7 @@
       },
       {
         "name": "test_timestamp_format_in_dirname",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 243,
         "length": 8,
         "intent": "unit",
@@ -767,7 +767,7 @@
       },
       {
         "name": "test_write_phase_creates_files",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 259,
         "length": 29,
         "intent": "unit",
@@ -777,7 +777,7 @@
       },
       {
         "name": "test_write_phase_incremental_accumulation",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 289,
         "length": 48,
         "intent": "unit",
@@ -1293,23 +1293,23 @@
           "detail": "5 modules exceed 500 lines (god modules)",
           "items": [
             {
-              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+              "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
               "lines": 567
             },
             {
-              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+              "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
               "lines": 647
             },
             {
-              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+              "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
               "lines": 574
             },
             {
-              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
+              "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
               "lines": 3142
             },
             {
-              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/models.py",
+              "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/models.py",
               "lines": 1452
             }
           ]
@@ -1321,7 +1321,7 @@
           "items": [
             {
               "class": "Git",
-              "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
+              "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/repository_manager.py",
               "method_count": 42
             }
           ]
@@ -1472,223 +1472,223 @@
     "tests_missing_markers": [
       {
         "test_name": "test_phased_push",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_phased_push.py",
         "line": 25
       },
       {
         "test_name": "test_phased_push_single_project",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_phased_push.py",
         "line": 50
       },
       {
         "test_name": "test_push_projects",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_phased_push.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_phased_push.py",
         "line": 73
       },
       {
         "test_name": "test_get_workspace_projects_via_graph",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_agent_integration.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_agent_integration.py",
         "line": 108
       },
       {
         "test_name": "test_mcp_tools_registration",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_registration.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_registration.py",
         "line": 8
       },
       {
         "test_name": "test_background_job_lifecycle",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 18
       },
       {
         "test_name": "test_get_job_status_variations",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 55
       },
       {
         "test_name": "test_get_git_instance_fallbacks",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 131
       },
       {
         "test_name": "test_mcp_rm_git_tool",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 138
       },
       {
         "test_name": "test_mcp_rm_workspace_tool",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 241
       },
       {
         "test_name": "test_mcp_rm_projects_tool",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 425
       },
       {
         "test_name": "test_mcp_server_cli_execution",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_mcp_handlers.py",
         "line": 527
       },
       {
         "test_name": "test_dynamic_attributes_and_imports",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
         "line": 7
       },
       {
         "test_name": "test_dynamic_attributes_import_failure",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
         "line": 41
       },
       {
         "test_name": "test_main_entrypoint",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_init_dynamics.py",
         "line": 64
       },
       {
         "test_name": "test_pipeline_runner_execution",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
         "line": 13
       },
       {
         "test_name": "test_pipeline_runner_failure",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
         "line": 40
       },
       {
         "test_name": "test_topological_sort",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_graph_pipeline.py",
         "line": 60
       },
       {
         "test_name": "test_to_markdown_renders_sections",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 119
       },
       {
         "test_name": "test_for_project_filters_correctly",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/tests/test_directory_report.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/tests/test_directory_report.py",
         "line": 142
       }
     ],
     "functions_missing_docstrings": [
       {
         "function": "run_enhancer",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/run_single_enhancer.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/run_single_enhancer.py",
         "line": 14,
         "length": 92
       },
       {
         "function": "check_health",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
         "line": 17,
         "length": 17
       },
       {
         "function": "test_chat_stream",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
         "line": 36,
         "length": 48
       },
       {
         "function": "test_acp_integration",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
         "line": 86,
         "length": 22
       },
       {
         "function": "start_server",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
         "line": 110,
         "length": 18
       },
       {
         "function": "tail_log",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
         "line": 130,
         "length": 12
       },
       {
         "function": "compare_tool_results",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
         "line": 144,
         "length": 79
       },
       {
         "function": "main",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/verify_agent_server.py",
         "line": 225,
         "length": 46
       },
       {
         "function": "main",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/validate_agent.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/validate_agent.py",
         "line": 18,
         "length": 39
       },
       {
         "function": "list_tools",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/list_mcp_tools.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/list_mcp_tools.py",
         "line": 10,
         "length": 16
       },
       {
         "function": "main",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/validate_ecosystem.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/validate_ecosystem.py",
         "line": 12,
         "length": 34
       },
       {
         "function": "main",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/validate_a2a_agent.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/validate_a2a_agent.py",
         "line": 11,
         "length": 125
       },
       {
         "function": "main",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/scripts/verify_tools.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/scripts/verify_tools.py",
         "line": 13,
         "length": 33
       },
       {
         "function": "get_git_instance",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
         "line": 209,
         "length": 20
       },
       {
         "function": "register_git_operations_tools",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
         "line": 243,
         "length": 73
       },
       {
         "function": "register_workspace_management_tools",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
         "line": 318,
         "length": 110
       },
       {
         "function": "register_project_management_tools",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
         "line": 430,
         "length": 87
       },
       {
         "function": "get_mcp_instance",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
         "line": 524,
         "length": 28
       },
       {
         "function": "mcp_server",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
         "line": 554,
         "length": 17
       },
       {
         "function": "rm_git",
-        "file": "/home/apps/workspace/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
+        "file": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/repository_manager/mcp_server.py",
         "line": 252,
         "length": 64
       }
@@ -1887,7 +1887,7 @@
         "language": "python",
         "framework": "pytest",
         "command": [
-          "/home/apps/workspace/.venv/bin/python3",
+          "${WORKSPACE_ROOT}/.venv/bin/python3",
           "-m",
           "pytest",
           "--tb=line",
@@ -1980,7 +1980,7 @@
       {
         "criterion": "bumpversion_exists",
         "points": 20,
-        "evidence": "/home/apps/workspace/agent-packages/agents/repository-manager/.bumpversion.cfg",
+        "evidence": "${WORKSPACE_ROOT}/agent-packages/agents/repository-manager/.bumpversion.cfg",
         "reasoning": ".bumpversion.cfg found"
       },
       {
@@ -2196,7 +2196,7 @@
           ".env.example:25"
         ],
         "defaults": [
-          "/home/apps/workspace"
+          "${WORKSPACE_ROOT}"
         ],
         "source_types": [
           "dotenv",
@@ -2225,7 +2225,7 @@
           "repository_manager/mcp_server.py:50"
         ],
         "defaults": [
-          "/home/apps/workspace"
+          "${WORKSPACE_ROOT}"
         ],
         "source_types": [
           "python"
