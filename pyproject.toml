@@ -23,22 +23,22 @@ mcp = [
 
 agent = [
     "agent-utilities[agent-runtime,logfire]>=1.27.1,<2.0.0",
-    "pre-commit>=4.5.1",
+    "pre-commit>=4.6.0",
     "bump2version>=1.0.1"]
 
 all = [
     "agent-utilities[agent-runtime,logfire]>=1.27.1,<2.0.0",
-    "pre-commit>=4.5.1",
+    "pre-commit>=4.6.0",
     "bump2version>=1.0.1",
     "agent-utilities[mcp]>=1.27.1,<2.0.0"
 ]
 
 test = [
-    "pytest-xdist>=3.6.0",
-    "pytest",
-    "pytest-asyncio",
-    "pytest-cov",
-    "pytest-timeout"
+    "pytest-xdist>=3.8.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-timeout>=2.4.0"
 ]
 
 [project.scripts]
