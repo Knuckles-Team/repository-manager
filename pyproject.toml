@@ -52,7 +52,7 @@ repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "prompts/
 [tool.uv]
 managed = true
 
-universal-skills = { path = "../../skills/universal-skills", editable = true }
+universal-skills = { workspace = true }
 
 [project.entry-points."agent_utilities.skill_providers"]
 repository-manager = "repository_manager.skills"
