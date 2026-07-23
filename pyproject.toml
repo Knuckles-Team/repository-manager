@@ -9,7 +9,7 @@ description = "Manage your git projects"
 readme = "README.md"
 classifiers = [ "Development Status :: 5 - Production/Stable", "License :: Public Domain", "Environment :: Console", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3",]
 requires-python = ">=3.12,<3.15"
-dependencies = [ "agent-utilities[mcp]>=1.27.1,<2.0.0",]
+dependencies = [ "agent-utilities[mcp]>=2.0.0,<3.0.0",]
 [[project.authors]]
 name = "Project Maintainers"
 email = "maintainers@users.noreply.github.com"
@@ -19,18 +19,18 @@ text = "MIT"
 
 [project.optional-dependencies]
 mcp = [
-    "agent-utilities[mcp]>=1.27.1,<2.0.0"]
+    "agent-utilities[mcp]>=2.0.0,<3.0.0"]
 
 agent = [
-    "agent-utilities[agent-runtime,logfire]>=1.27.1,<2.0.0",
+    "agent-utilities[agent-runtime,logfire]>=2.0.0,<3.0.0",
     "pre-commit>=4.6.0",
     "bump2version>=1.0.1"]
 
 all = [
-    "agent-utilities[agent-runtime,logfire]>=1.27.1,<2.0.0",
+    "agent-utilities[agent-runtime,logfire]>=2.0.0,<3.0.0",
     "pre-commit>=4.6.0",
     "bump2version>=1.0.1",
-    "agent-utilities[mcp]>=1.27.1,<2.0.0"
+    "agent-utilities[mcp]>=2.0.0,<3.0.0"
 ]
 
 test = [
