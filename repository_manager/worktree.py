@@ -32,11 +32,16 @@ class GitLike(Protocol):
     path: str
     project_map: dict[str, str]
 
-    # WorktreeManager only ever calls git_action(command=, path=, quiet=); real Git
-    # carries extra defaulted params (env/timeout) and FakeGit absorbs them via
-    # **kwargs, so both satisfy this minimal contract.
+    # Worktree parsing needs raw machine-readable Git output; real Git carries
+    # additional defaulted parameters and FakeGit absorbs them via ``**kwargs``.
     def git_action(
-        self, command: str, path: str | None = ..., quiet: bool = ...
+        self,
+        command: str,
+        path: str | None = ...,
+        quiet: bool = ...,
+        env: dict | None = ...,
+        timeout: int = ...,
+        raw_output: bool = ...,
     ) -> Any: ...
 
 
@@ -95,7 +100,7 @@ class WorktreeManager:
         return getattr(res, "status", "") == "success"
 
     def _run(self, cmd: str, path: str, quiet: bool = False) -> Any:
-        return self.git.git_action(command=cmd, path=path, quiet=quiet)
+        return self.git.git_action(command=cmd, path=path, quiet=quiet, raw_output=True)
 
     # ── actions ───────────────────────────────────────────────────────────
     def add(

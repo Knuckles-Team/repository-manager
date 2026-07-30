@@ -19,7 +19,16 @@ class FakeGit:
         self.path = workspace
         self.project_map = project_map
 
-    def git_action(self, command, path=None, quiet=False, **_):
+    def git_action(
+        self,
+        command,
+        path=None,
+        quiet=False,
+        env=None,
+        timeout=1800,
+        raw_output=False,
+    ):
+        del env, timeout, raw_output
         p = subprocess.run(
             command,
             shell=True,
@@ -294,7 +303,7 @@ def test_worktree_hygiene_reports_without_pruning(tmp_path, monkeypatch):
     git, wm, _ = _real_git_repo(tmp_path, monkeypatch)
     merged = wm.add("myrepo", "feat-merged")
     _commit_in(merged["path"], "f.txt", "feat")
-    wm.merge("myrepo", "feat-merged")
+    assert wm.merge("myrepo", "feat-merged")["ok"]
     active = wm.add("myrepo", "feat-active")
     _commit_in(active["path"], "wip.txt", "wip")
 
@@ -310,7 +319,7 @@ def test_worktree_hygiene_prune_removes_only_merged(tmp_path, monkeypatch):
     git, wm, _ = _real_git_repo(tmp_path, monkeypatch)
     merged = wm.add("myrepo", "feat-merged")
     _commit_in(merged["path"], "f.txt", "feat")
-    wm.merge("myrepo", "feat-merged")
+    assert wm.merge("myrepo", "feat-merged")["ok"]
     active = wm.add("myrepo", "feat-active")
     _commit_in(active["path"], "wip.txt", "wip")
 

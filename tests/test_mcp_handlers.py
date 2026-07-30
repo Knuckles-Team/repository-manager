@@ -52,7 +52,7 @@ async def test_background_job_lifecycle():
         await asyncio.sleep(0.05)
 
     assert status_info["status"] == "failed"
-    assert "mock_failure" in status_info["error"]
+    assert status_info["error"] == "Background repository operation failed"
 
 
 def test_get_job_status_variations():

@@ -61,11 +61,12 @@ This table is auto-generated from the live server — do not edit by hand.
 
 <!-- MCP-TOOLS-TABLE:START -->
 
-#### Condensed action-routed tools (default — `MCP_TOOL_MODE=condensed`)
+#### Condensed action-routed tools (`MCP_TOOL_MODE=condensed`)
 
 | MCP Tool | Toggle Env Var | Description |
 |----------|----------------|-------------|
-| `rm_git` | `GIT_OPERATIONSTOOL` | Bulk Git operations and arbitrary command execution. |
+| `repository_ingest_repositories` | `MISCTOOL` | Natively ingest git repositories into epistemic-graph as typed :GitRepository nodes. |
+| `rm_git` | `GIT_OPERATIONSTOOL` | Typed bulk Git operations; arbitrary host commands are prohibited. |
 | `rm_projects` | `PROJECT_MANAGEMENTTOOL` | Bulk install, build, and validate Python projects. |
 | `rm_workspace` | `WORKSPACE_MANAGEMENTTOOL` | Core workspace organization, configuration, and maintenance. |
 | `rm_worktree` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
@@ -79,7 +80,7 @@ This table is auto-generated from the live server — do not edit by hand.
 |----------|----------------|-------------|
 | `repository_manager_add_project` | `GITTOOL` | Stage all changes (git add -A) for a single Git project. |
 | `repository_manager_add_projects` | `GITTOOL` | Stage all changes for multiple projects in parallel. |
-| `repository_manager_build_projects` | `GITTOOL` | Bulk builds Python and Node.js projects in the workspace. |
+| `repository_manager_build_projects` | `GITTOOL` | Build projects serially so compilation cannot exhaust the workstation. |
 | `repository_manager_bulk_bump` | `GITTOOL` | Bumps the version for all projects in the workspace in parallel. |
 | `repository_manager_bump_version` | `GITTOOL` | Bump the version of the project using bump2version. |
 | `repository_manager_cleanup_artifacts` | `GITTOOL` | Removes test artifacts and temporary files from the specified directory. |
@@ -109,7 +110,7 @@ This table is auto-generated from the live server — do not edit by hand.
 | `repository_manager_pre_commit_projects` | `GITTOOL` | Execute pre-commit commands for all projects in parallel. |
 | `repository_manager_pull_project` | `GITTOOL` | Pull updates for a single Git project and optionally checkout the default branch. |
 | `repository_manager_pull_projects` | `GITTOOL` | Pull updates for multiple projects in parallel. |
-| `repository_manager_push_project` | `GITTOOL` | Push updates and tags for a single Git project, ensuring all staged and unstaged changes are committed first. |
+| `repository_manager_push_project` | `GITTOOL` | Push committed updates and tags for a single clean Git project. |
 | `repository_manager_push_projects` | `GITTOOL` | Push updates for multiple projects in parallel. |
 | `repository_manager_save_workspace_config` | `GITTOOL` | Saves the current or provided WorkspaceConfig to a YAML file. |
 | `repository_manager_set_threads` | `GITTOOL` | Set the number of threads for parallel processing. |
@@ -122,7 +123,7 @@ This table is auto-generated from the live server — do not edit by hand.
 
 </details>
 
-_4 action-routed tool(s) (default) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (`condensed` default · `verbose` 1:1 · `both`). Auto-generated — do not edit._
+_5 action-routed tool(s) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
 <!-- MCP-TOOLS-TABLE:END -->
 
 Detailed tool schemas, parameter shapes, and validation constraints are preserved in [docs/usage.md](docs/usage.md).
@@ -412,37 +413,37 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `TRANSPORT` | `stdio` | options: stdio, streamable-http, sse |
 | `ENABLE_OTEL` | `True` |  |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:8080/api/public/otel` |  |
-| `OTEL_EXPORTER_OTLP_PUBLIC_KEY` | `pk-...` |  |
-| `OTEL_EXPORTER_OTLP_SECRET_KEY` | `sk-...` |  |
+| `OTEL_EXPORTER_OTLP_PUBLIC_KEY_REF` | `secret://observability/otlp-public-key` |  |
+| `OTEL_EXPORTER_OTLP_SECRET_KEY_REF` | `secret://observability/otlp-secret-key` |  |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` |  |
 | `EUNOMIA_TYPE` | `none` | options: none, embedded, remote |
 | `EUNOMIA_POLICY_FILE` | `mcp_policies.json` |  |
 | `EUNOMIA_REMOTE_URL` | `http://eunomia-server:8000` |  |
-| `AGENT_UTILITIES_WORKSPACE_ROOT` | — | Runtime-injected ecosystem root; never persist a machine path |
-| `AGENT_UTILITIES_REPO_ORIGIN` | — | Private Git origin used by the portable workspace manifest |
-| `AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX` | `example.invalid` | Deployment DNS suffix used by service metadata |
-| `REPOSITORY_MANAGER_WORKSPACE` | — | Optional workspace-root override |
-| `WORKSPACE_PATH` | — | Compatibility workspace-root override |
-| `WORKSPACE_YML` | `workspace.yml` | workspace manifest filename (resolved under the workspace root) |
-| `WORKSPACE_REPORTS` | — | Optional runtime report directory |
-| `REPOSITORY_MANAGER_WORKTREE_ROOT` | — | Optional runtime worktree root |
+| `AGENT_UTILITIES_WORKSPACE_ROOT` | — | runtime-injected root; never persist a machine path |
+| `REPOSITORY_MANAGER_WORKSPACE` | — | optional override of AGENT_UTILITIES_WORKSPACE_ROOT |
+| `WORKSPACE_PATH` | — | compatibility workspace-root override |
+| `WORKSPACE_YML` | `workspace.yml` | prefer the XDG agent-utilities copy at runtime |
+| `WORKSPACE_REPORTS` | — | optional report directory; defaults beneath the workspace root |
+| `REPOSITORY_MANAGER_WORKTREE_ROOT` | — | optional worktree root; injected at runtime |
 | `REPOSITORY_MANAGER_DEFAULT_BRANCH` | `main` | default branch name for git operations |
 | `REPOSITORY_MANAGER_THREADS` | `12` | parallel threads for git operations |
 | `RM_MAX_WORKERS` | `8` | explicit worker-count override (skips auto-sizing from CPU count) |
 | `RM_JOB_STALE_SECONDS` | `1800` | seconds before an in-flight job is treated as stale by the watchdog |
 | `RM_GATE_BEFORE_PUSH` | `true` | run the pre-commit gate before pushing (set false to bypass) |
+| `REPOSITORY_MANAGER_CLONE_FILTER` | — | optional git clone filter: blob:none or tree:0 |
+| `CODE_ENHANCER_SCRIPTS_DIR` | — | optional code-enhancer helper scripts directory |
 | `GITLAB_URL` | `https://gitlab.com` | GitLab base URL (alias: GITLAB_HOST) |
 | `GITLAB_HOST` | `https://gitlab.com` | legacy alias for GITLAB_URL |
-| `GITLAB_TOKEN` | `your_gitlab_token_here` | GitLab access token (alias: GITLAB_PRIVATE_TOKEN) |
-| `GITLAB_PRIVATE_TOKEN` | `your_gitlab_token_here` | legacy alias for GITLAB_TOKEN |
-| `GITHUB_TOKEN` | `your_github_token_here` | GitHub access token (alias: GH_TOKEN) |
-| `GH_TOKEN` | `your_github_token_here` | legacy alias for GITHUB_TOKEN |
-| `GIT_OPERATIONSTOOL` | `True` | MCP tools table (condensed action-routed surface). |
+| `GITLAB_TOKEN` | secret-injected | GitLab access token (alias: GITLAB_PRIVATE_TOKEN) |
+| `GITLAB_PRIVATE_TOKEN` | secret-injected | legacy alias for GITLAB_TOKEN |
+| `GITHUB_TOKEN` | secret-injected | GitHub access token (alias: GH_TOKEN) |
+| `GH_TOKEN` | secret-injected | legacy alias for GITHUB_TOKEN |
+| `GIT_OPERATIONSTOOL` | `True` | These names match the authoritative "Toggle Env Var" column in the README MCP tools table (condensed action-routed surface). |
 | `PROJECT_MANAGEMENTTOOL` | `True` |  |
 | `WORKSPACE_MANAGEMENTTOOL` | `True` |  |
 | `MISCTOOL` | `True` |  |
 | `AUTH_TYPE` | `bearer` | authentication type (e.g. bearer, none) |
-| `LLM_API_KEY` | `your_llm_api_key_here` |  |
+| `LLM_API_KEY` | secret-injected |  |
 | `LLM_BASE_URL` | `https://api.openai.com/v1` |  |
 | `MCP_URL` | `http://localhost:8000` |  |
 
@@ -450,21 +451,23 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `MCP_TOOL_MODE` | `condensed` | Tool surface: `condensed` | `verbose` | `both` |
+| `MCP_TOOL_MODE` | `intent` | Tool surface: `intent` \| `condensed` \| `verbose` \| `both` |
 | `MCP_ENABLED_TOOLS` | — | Comma-separated tool allow-list |
 | `MCP_DISABLED_TOOLS` | — | Comma-separated tool deny-list |
 | `MCP_ENABLED_TAGS` | — | Comma-separated tag allow-list |
 | `MCP_DISABLED_TAGS` | — | Comma-separated tag deny-list |
-| `MCP_CLIENT_AUTH` | — | Outbound MCP auth (`oidc-client-credentials` for fleet calls) |
+| `MCP_CLIENT_AUTH` | — | Outbound MCP child auth: `oidc-client-credentials` \| `basic` \| `none` |
 | `OIDC_CLIENT_ID` | — | OIDC client id (service-account auth) |
-| `OIDC_CLIENT_SECRET` | — | OIDC client secret (service-account auth) |
+| `OIDC_CLIENT_SECRET_REF` | `secret://identity/oidc-client-secret` | Runtime secret reference for the OIDC service account |
+| `MCP_BASIC_AUTH_USERNAME` | — | HTTP Basic username (`MCP_CLIENT_AUTH=basic`) |
+| `MCP_BASIC_AUTH_PASSWORD_REF` | `secret://identity/mcp-basic-password` | Runtime secret reference for HTTP Basic auth (`MCP_CLIENT_AUTH=basic`) |
 | `DEBUG` | `False` | Verbose logging |
 | `PYTHONUNBUFFERED` | `1` | Unbuffered stdout (recommended in containers) |
 | `PROVIDER` | `openai` | LLM provider for the agent |
 | `MODEL_ID` | `gpt-4o` | Model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_35 package + 13 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_38 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 

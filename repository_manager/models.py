@@ -23,6 +23,7 @@ def _privacy_safe_report_text(value: object) -> str:
     clean = _ENDPOINT_PATTERN.sub("[REDACTED_ENDPOINT]", str(clean))
     return _SECRET_ASSIGNMENT_PATTERN.sub("[REDACTED_SECRET]", clean)
 
+
 # Mapping from display category names to filesystem-safe slug names
 CATEGORY_SLUG_MAP: dict[str, str] = {
     "Ecosystem Installation": "installation",

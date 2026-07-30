@@ -79,7 +79,9 @@ def test_gitlab_keyset_pagination_walks_all_pages():
 
 def test_gitlab_excludes_archived_by_default():
     page = _Resp([_gl_project(1, "live"), _gl_project(2, "old", archived=True)])
-    refs = enumerate_gitlab(base_url="https://gl", token="t", client=_FakeClient([page]))
+    refs = enumerate_gitlab(
+        base_url="https://gl", token="t", client=_FakeClient([page])
+    )
     assert [r["full_path"] for r in refs] == ["group/live"]
 
 

@@ -18,7 +18,7 @@ def get_mock_metadata(command="test"):
         command=command,
         workspace="/tmp",
         return_code=0,
-        timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
     )
 
 

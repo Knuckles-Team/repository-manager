@@ -4,6 +4,9 @@ import os
 import sys
 
 import pytest
+from agent_utilities.knowledge_graph.core.session import GraphSession, use_session
+from agent_utilities.models.company_brain import ActorType
+from agent_utilities.security.brain_context import ActorContext, use_actor
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +34,28 @@ def _isolate_process_state(monkeypatch):
     finally:
         os.environ.clear()
         os.environ.update(saved_env)
+
+
+@pytest.fixture(autouse=True)
+def _governed_graph_session():
+    """Bind explicit verified test authority for current Graph-OS contracts."""
+
+    actor = ActorContext(
+        actor_id="subject:opaque:repository-manager-tests",
+        actor_type=ActorType.AUTOMATED_SERVICE,
+        tenant_id="tenant:opaque:repository-manager-tests",
+        authenticated=True,
+    )
+    session = GraphSession(
+        actor=actor,
+        tenant=actor.tenant_id,
+        scopes=frozenset({"kg:admin"}),
+        graph="__commons__",
+        policy_version="policy:opaque:test",
+        audience="epistemic-graph",
+    )
+    with use_actor(actor), use_session(session):
+        yield
 
 
 @pytest.fixture

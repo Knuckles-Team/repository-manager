@@ -13,7 +13,6 @@ import argparse
 import re
 from pathlib import Path
 
-
 AGENT_SECTION = re.compile(r"^      agents:\s*$")
 TOP_LEVEL_SECTION = re.compile(r"^  [a-zA-Z0-9_-]+:\s*$")
 GITHUB_REPOSITORY = re.compile(r"github\.com/[^/]+/([^/]+?)(?:\.git)?[\"']?$")
@@ -88,8 +87,10 @@ def check_repository(repository: Path) -> list[str]:
             errors.append(f"missing required documentation: {relative}")
 
     readme = repository / "README.md"
-    if readme.is_file() and "<!-- GOVERNED-CAPABILITY:START -->" not in readme.read_text(
-        encoding="utf-8"
+    if (
+        readme.is_file()
+        and "<!-- GOVERNED-CAPABILITY:START -->"
+        not in readme.read_text(encoding="utf-8")
     ):
         errors.append("README is missing the governed capability contract")
 
@@ -105,7 +106,9 @@ def check_repository(repository: Path) -> list[str]:
             page = match.group(1)
             nav_pages.add(page)
             if not (repository / "docs" / page).is_file():
-                errors.append(f"mkdocs.yml:{line_number}: nav target does not exist: {page}")
+                errors.append(
+                    f"mkdocs.yml:{line_number}: nav target does not exist: {page}"
+                )
         for required_page in (
             "index.md",
             "installation.md",
@@ -146,7 +149,10 @@ def main() -> int:
     parser.add_argument(
         "--manifest",
         type=Path,
-        default=default_agents_root / "repository-manager" / "repository_manager" / "workspace.yml",
+        default=default_agents_root
+        / "repository-manager"
+        / "repository_manager"
+        / "workspace.yml",
     )
     args = parser.parse_args()
 

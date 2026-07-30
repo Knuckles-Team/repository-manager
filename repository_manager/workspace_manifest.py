@@ -8,6 +8,7 @@ callers provide the canonical source and may override every destination.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import ipaddress
 import os
@@ -17,12 +18,17 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 import yaml  # type: ignore[import-untyped]
 
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _LOCAL_HOST_SUFFIXES = (".arpa", ".internal", ".lan", ".local", ".localhost")
+_PORTABLE_ENVIRONMENT_REFERENCES = {
+    "AGENT_UTILITIES_WORKSPACE_ROOT",
+    "AGENT_UTILITIES_REPO_ORIGIN",
+    "AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX",
+}
 _SECRET_FIELD_NAMES = {
     "access_token",
     "api_key",
@@ -36,32 +42,18 @@ _SECRET_FIELD_NAMES = {
 }
 
 
-def _portable_manifest_environment() -> dict[str, str | None]:
-    """Return non-secret environment inputs supported by the portable manifest."""
-
-    return {
-        "AGENT_UTILITIES_WORKSPACE_ROOT": os.environ.get(
-            "AGENT_UTILITIES_WORKSPACE_ROOT"
-        ),
-        "AGENT_UTILITIES_REPO_ORIGIN": os.environ.get("AGENT_UTILITIES_REPO_ORIGIN"),
-        "AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX": os.environ.get(
-            "AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX"
-        ),
-    }
-
-
 class WorkspaceManifestError(ValueError):
     """Raised when a manifest cannot safely be validated or synchronized."""
 
 
 @dataclass(frozen=True)
 class ManifestDestinationStatus:
-    """The digest state of one non-authoritative manifest copy."""
+    """The normalized semantic state of one non-authoritative manifest copy."""
 
     role: str
     exists: bool
     digest: str | None
-    matches_source: bool
+    matches_projection: bool
     action: str
 
 
@@ -77,9 +69,9 @@ class WorkspaceManifestReport:
 
     @property
     def synchronized(self) -> bool:
-        """Whether every requested mirror has the canonical source digest."""
+        """Whether every requested copy matches its own semantic projection."""
 
-        return all(destination.matches_source for destination in self.destinations)
+        return all(destination.matches_projection for destination in self.destinations)
 
     def as_dict(self) -> dict[str, Any]:
         """Return an output-safe representation without local filesystem paths."""
@@ -110,6 +102,7 @@ class _DestinationSnapshot:
     path: Path
     content: bytes | None
     mode: int | None
+    replacement: bytes
 
 
 def default_runtime_manifest_path() -> Path:
@@ -147,85 +140,182 @@ def _manifest_content(source: Path) -> tuple[bytes, dict[str, Any]]:
     return content, data
 
 
-def _validate_portable_manifest(data: dict[str, Any]) -> None:
-    """Reject machine-local or secret-bearing values before packaging a mirror."""
+def _validate_no_secrets(value: object) -> None:
+    """Reject secret-bearing manifest data before it reaches either destination."""
 
-    supported_references = set(_portable_manifest_environment())
-    workspace_path = data.get("path")
-    if not isinstance(workspace_path, str) or not workspace_path:
-        raise WorkspaceManifestError("Canonical manifest path must be a string")
-    if Path(workspace_path).is_absolute():
-        raise WorkspaceManifestError(
-            "Canonical manifest path must be relative or environment-referenced"
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise WorkspaceManifestError("Manifest mapping keys must be strings")
+            normalized = key.lower().replace("-", "_")
+            if normalized in _SECRET_FIELD_NAMES and child not in (None, ""):
+                raise WorkspaceManifestError(
+                    "Canonical manifest must not contain embedded secrets"
+                )
+            _validate_no_secrets(child)
+    elif isinstance(value, list):
+        for child in value:
+            _validate_no_secrets(child)
+    elif isinstance(value, str) and "://" in value:
+        _endpoint_host(value)
+
+
+def _endpoint_host(value: str) -> tuple[str, bool, SplitResult | None]:
+    """Return a host, whether the value is a URL, and its parsed URL when present."""
+
+    candidate = value.strip()
+    if "://" in candidate:
+        parsed = urlsplit(candidate)
+        if parsed.username is not None or parsed.password is not None:
+            raise WorkspaceManifestError("Manifest URLs must not embed credentials")
+        return parsed.hostname or "", True, parsed
+    if "/" in candidate:
+        return "", False, None
+    parsed = urlsplit(f"//{candidate}")
+    return parsed.hostname or "", False, parsed
+
+
+def _is_private_host(host: str) -> bool:
+    """Return whether a host is local to a machine or private network."""
+
+    normalized = host.rstrip(".").lower()
+    if not normalized:
+        return False
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        address = None
+    return bool(
+        normalized == "localhost"
+        or normalized.endswith(_LOCAL_HOST_SUFFIXES)
+        or (
+            address is not None
+            and (
+                address.is_private
+                or address.is_loopback
+                or address.is_link_local
+                or address.is_reserved
+            )
         )
+    )
 
-    def visit(value: object, *, field: str = "") -> None:
+
+def _is_endpoint_value(value: str, *, field: str) -> bool:
+    """Return whether a scalar can carry an endpoint that must be projected."""
+
+    return (
+        field in {"domain", "endpoint", "host", "hostname", "url"}
+        or "://" in value
+        or (not any(character.isspace() for character in value) and "/" not in value)
+    )
+
+
+def _validate_portable_seed(value: object, *, field: str = "") -> None:
+    """Prove that the generated package seed contains no local-only values."""
+
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise WorkspaceManifestError("Manifest mapping keys must be strings")
+            _validate_portable_seed(child, field=key.lower().replace("-", "_"))
+        return
+    if isinstance(value, list):
+        for child in value:
+            _validate_portable_seed(child, field=field)
+        return
+    if not isinstance(value, str):
+        return
+    references = set(_ENV_REFERENCE.findall(value))
+    if references and not references <= _PORTABLE_ENVIRONMENT_REFERENCES:
+        raise WorkspaceManifestError(
+            "Portable seed uses an unsupported environment reference"
+        )
+    if Path(value).is_absolute():
+        raise WorkspaceManifestError("Portable seed must not contain absolute paths")
+    if not _is_endpoint_value(value, field=field):
+        return
+    host, _, _ = _endpoint_host(value)
+    if _is_private_host(host):
+        raise WorkspaceManifestError("Portable seed contains a machine-local endpoint")
+
+
+def _portable_path(value: str, *, workspace_root: Path) -> str:
+    """Parameterize an absolute workspace path without retaining its prefix."""
+
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        return value
+    try:
+        relative = candidate.relative_to(workspace_root)
+    except ValueError as exc:
+        raise WorkspaceManifestError(
+            "Canonical manifest contains an absolute path outside its workspace root"
+        ) from exc
+    suffix = relative.as_posix()
+    return "${AGENT_UTILITIES_WORKSPACE_ROOT}" + (f"/{suffix}" if suffix else "")
+
+
+def _portable_endpoint(value: str) -> str:
+    """Parameterize a private URL or host while preserving its public semantics."""
+
+    host, is_url, parsed = _endpoint_host(value)
+    if not _is_private_host(host):
+        return value
+    if is_url:
+        assert parsed is not None
+        suffix = parsed.path
+        if parsed.query:
+            suffix += f"?{parsed.query}"
+        if parsed.fragment:
+            suffix += f"#{parsed.fragment}"
+        return f"${{AGENT_UTILITIES_REPO_ORIGIN}}{suffix}"
+    if not host or parsed is None:
+        raise WorkspaceManifestError("Cannot project a machine-local endpoint safely")
+    label = host.split(".", 1)[0]
+    if not label:
+        raise WorkspaceManifestError("Cannot project a machine-local endpoint safely")
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return f"{label}.${{AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}}{port}"
+
+
+def project_portable_seed(data: dict[str, Any]) -> dict[str, Any]:
+    """Build the package-safe projection of a private canonical manifest."""
+
+    _validate_no_secrets(data)
+    workspace = data.get("path")
+    if not isinstance(workspace, str) or not workspace:
+        raise WorkspaceManifestError("Canonical manifest path must be a string")
+    workspace_root = Path(workspace)
+    if not workspace_root.is_absolute():
+        raise WorkspaceManifestError("Canonical manifest path must be absolute")
+
+    def project(value: object, *, field: str = "") -> object:
         if isinstance(value, dict):
-            for key, child in value.items():
-                if not isinstance(key, str):
-                    raise WorkspaceManifestError(
-                        "Manifest mapping keys must be strings"
-                    )
-                normalized = key.lower().replace("-", "_")
-                if normalized in _SECRET_FIELD_NAMES and child not in (None, ""):
-                    raise WorkspaceManifestError(
-                        "Canonical manifest must not contain embedded secrets"
-                    )
-                visit(child, field=normalized)
-            return
+            return {
+                key: project(child, field=key.lower().replace("-", "_"))
+                for key, child in value.items()
+            }
         if isinstance(value, list):
-            for child in value:
-                visit(child, field=field)
-            return
+            return [project(child, field=field) for child in value]
         if not isinstance(value, str):
-            return
-        references = set(_ENV_REFERENCE.findall(value))
-        if references:
-            if not references <= supported_references:
-                raise WorkspaceManifestError(
-                    "Canonical manifest uses an unsupported environment reference"
-                )
-            return
-        if field not in {"domain", "endpoint", "host", "hostname", "url"}:
-            return
+            return value
+        path_value = _portable_path(value, workspace_root=workspace_root)
+        if path_value != value:
+            return path_value
+        if _is_endpoint_value(value, field=field):
+            return _portable_endpoint(value)
+        return value
 
-        candidate = value.strip()
-        host = candidate
-        if "://" in candidate:
-            parsed = urlsplit(candidate)
-            if parsed.password is not None:
-                raise WorkspaceManifestError(
-                    "Canonical manifest URLs must not embed credentials"
-                )
-            host = parsed.hostname or ""
-        elif "/" in candidate:
-            return
-        host = host.rstrip(".").lower()
-        if not host:
-            return
-        try:
-            address = ipaddress.ip_address(host)
-        except ValueError:
-            address = None
-        if (
-            host == "localhost"
-            or host.endswith(_LOCAL_HOST_SUFFIXES)
-            or (
-                address is not None
-                and (
-                    address.is_private
-                    or address.is_loopback
-                    or address.is_link_local
-                    or address.is_reserved
-                )
-            )
-        ):
-            raise WorkspaceManifestError(
-                "Canonical manifest contains a machine-local endpoint; "
-                "use an environment reference"
-            )
+    portable = project(copy.deepcopy(data))
+    assert isinstance(portable, dict)
+    _validate_portable_seed(portable)
+    return portable
 
-    visit(data)
+
+def _portable_yaml(data: dict[str, Any]) -> bytes:
+    """Serialize a seed deterministically after its semantic projection is proven."""
+
+    return yaml.safe_dump(data, allow_unicode=True, sort_keys=False).encode("utf-8")
 
 
 def _destination_path(path: str | Path, *, role: str) -> Path:
@@ -559,16 +649,17 @@ def _restore_snapshots(snapshots: list[_DestinationSnapshot]) -> bool:
 
 def _synchronize_destinations(
     snapshots: tuple[_DestinationSnapshot, ...],
-    *,
-    content: bytes,
-    mode: int,
 ) -> None:
-    """Replace all drifted mirrors or roll back every replacement."""
+    """Replace all drifted projections or roll back every replacement."""
 
     staged: dict[str, Path] = {}
     try:
         for snapshot in snapshots:
-            staged[snapshot.role] = _stage_write(snapshot.path, content, mode)
+            staged[snapshot.role] = _stage_write(
+                snapshot.path,
+                snapshot.replacement,
+                snapshot.mode if snapshot.mode is not None else 0o600,
+            )
     except OSError as exc:
         for temporary in staged.values():
             temporary.unlink(missing_ok=True)
@@ -585,7 +676,9 @@ def _synchronize_destinations(
             staged.pop(snapshot.role)
             replaced.append(snapshot)
             _fsync_directory(snapshot.path.parent)
-        if any(snapshot.path.read_bytes() != content for snapshot in snapshots):
+        if any(
+            snapshot.path.read_bytes() != snapshot.replacement for snapshot in snapshots
+        ):
             raise OSError("destination verification failed")
     except OSError as exc:
         for temporary in staged.values():
@@ -609,10 +702,10 @@ def synchronize_workspace_manifest(
     profile: str | None = None,
     selectors: Iterable[str] = (),
 ) -> WorkspaceManifestReport:
-    """Validate an authoritative manifest and optionally mirror its exact bytes.
+    """Validate an authoritative manifest and synchronize its two projections.
 
-    ``check`` and ``dry_run`` never write.  A normal call writes only the two
-    exact destination paths and only when their SHA-256 digest differs.
+    The runtime copy retains the canonical bytes. The packaged seed is a
+    deterministic, portable projection. ``check`` and ``dry_run`` never write.
     """
 
     if check and dry_run:
@@ -625,12 +718,16 @@ def synchronize_workspace_manifest(
         )
     source_path = source_candidate.resolve()
     source_bytes, data = _manifest_content(source_path)
-    _validate_portable_manifest(data)
+    _validate_no_secrets(data)
+    portable_seed = project_portable_seed(data)
     selected, profiles, available_selectors = select_repositories(
         data, profile=profile, selectors=selectors
     )
     source_digest = _content_digest(source_bytes)
-    source_mode = source_path.stat().st_mode & 0o777
+    projections = {
+        "runtime": (source_bytes, data),
+        "packaged_seed": (_portable_yaml(portable_seed), portable_seed),
+    }
     destinations = (
         (
             "runtime",
@@ -678,24 +775,28 @@ def synchronize_workspace_manifest(
             if destination_bytes is not None
             else None
         )
-        matches_source = digest == source_digest
-        initial.append((role, exists, digest, matches_source))
-        if not matches_source:
+        _, expected_data = projections[role]
+        try:
+            matches_projection = (
+                destination_bytes is not None
+                and yaml.safe_load(destination_bytes.decode("utf-8")) == expected_data
+            )
+        except (UnicodeDecodeError, yaml.YAMLError):
+            matches_projection = False
+        initial.append((role, exists, digest, matches_projection))
+        if not matches_projection:
             snapshots.append(
                 _DestinationSnapshot(
                     role=role,
                     path=destination,
                     content=destination_bytes,
                     mode=destination_mode,
+                    replacement=projections[role][0],
                 )
             )
 
     if not check and not dry_run and snapshots:
-        _synchronize_destinations(
-            tuple(snapshots),
-            content=source_bytes,
-            mode=source_mode,
-        )
+        _synchronize_destinations(tuple(snapshots))
 
     statuses: list[ManifestDestinationStatus] = []
     for role, existed, initial_digest, initially_matched in initial:
@@ -712,12 +813,16 @@ def synchronize_workspace_manifest(
         else:
             exists = True
             try:
-                digest = _content_digest(destination.read_bytes())
+                destination_bytes = destination.read_bytes()
+                digest = _content_digest(destination_bytes)
+                matches_source = (
+                    yaml.safe_load(destination_bytes.decode("utf-8"))
+                    == projections[role][1]
+                )
             except OSError as exc:
                 raise WorkspaceManifestError(
                     f"Failed to verify {role} manifest destination"
                 ) from exc
-            matches_source = digest == source_digest
             action = "updated" if matches_source else "error"
             if not matches_source:
                 raise WorkspaceManifestError(f"Failed to synchronize {role} manifest")
@@ -726,7 +831,7 @@ def synchronize_workspace_manifest(
                 role=role,
                 exists=exists,
                 digest=digest,
-                matches_source=matches_source,
+                matches_projection=matches_source,
                 action=action,
             )
         )

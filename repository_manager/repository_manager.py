@@ -302,8 +302,7 @@ class Git:
                 command="setup_workspace",
                 workspace=_project_label(self.path),
                 return_code=0,
-                timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                + "Z",
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
             ),
         )
 
@@ -450,10 +449,7 @@ class Git:
                         command="install",
                         workspace=_project_label(path),
                         return_code=res.metadata.return_code if res.metadata else 0,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
+                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                     ),
                 )
                 results.append(pkg_result)
@@ -476,9 +472,7 @@ class Git:
                             command="install",
                             workspace=_project_label(path),
                             return_code=0,
-                            timestamp=datetime.datetime.now(
-                                datetime.timezone.utc
-                            ).isoformat()
+                            timestamp=datetime.datetime.now(datetime.UTC).isoformat()
                             + "Z",
                         ),
                     )
@@ -506,9 +500,7 @@ class Git:
                             command="install",
                             workspace=_project_label(path),
                             return_code=0,
-                            timestamp=datetime.datetime.now(
-                                datetime.timezone.utc
-                            ).isoformat()
+                            timestamp=datetime.datetime.now(datetime.UTC).isoformat()
                             + "Z",
                         ),
                     )
@@ -757,6 +749,7 @@ class Git:
         quiet: bool = False,
         env: dict | None = None,
         timeout: int = 1800,
+        raw_output: bool = False,
     ) -> GitResult:
         """
         Execute a Git command in the specified directory.
@@ -895,14 +888,15 @@ class Git:
 
         if output_truncated:
             output_lines.append("\n[repository output truncated]\n")
-        out = _privacy_safe_diagnostic("".join(output_lines))
+        captured = "".join(output_lines)
+        out = captured if raw_output else _privacy_safe_diagnostic(captured)
         return_code = process.returncode
 
         metadata = GitMetadata(
             command=operation,
             workspace=_project_label(target_path),
             return_code=return_code,
-            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+            timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
         )
 
         error_obj = None
@@ -1099,10 +1093,7 @@ class Git:
                         command="clone_projects",
                         workspace=_project_label(self.path),
                         return_code=-1,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
+                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                     ),
                 )
             ]
@@ -1127,8 +1118,7 @@ class Git:
                     command="clone",
                     workspace=_project_label(target_path),
                     return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -1243,7 +1233,7 @@ class Git:
             command="pull_project",
             workspace=_project_label(target_path),
             return_code=0 if combined_status == "success" else 1,
-            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
+            timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
         )
 
         return GitResult(
@@ -1388,8 +1378,7 @@ class Git:
                     command="git push",
                     workspace=_project_label(target_path),
                     return_code=409,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -1452,10 +1441,7 @@ class Git:
                         command="git push --follow-tags",
                         workspace=_project_label(target_path),
                         return_code=1,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
+                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                     ),
                 )
 
@@ -1573,8 +1559,7 @@ class Git:
                     command="git commit",
                     workspace=_project_label(target_path),
                     return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 )
                 return GitResult(
                     status="success",
@@ -1616,8 +1601,7 @@ class Git:
                     command="commit_code",
                     workspace=_project_label(target_path),
                     return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -1633,8 +1617,7 @@ class Git:
                     command="commit_code",
                     workspace=_project_label(target_path),
                     return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -1694,10 +1677,7 @@ class Git:
                         command="commit_code",
                         workspace=_project_label(d),
                         return_code=1,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
+                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                     ),
                 )
 
@@ -1759,8 +1739,7 @@ class Git:
                     command="pre_commit_check",
                     workspace=_project_label(target_path),
                     return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -1773,8 +1752,7 @@ class Git:
                     command="pre_commit_check",
                     workspace=_project_label(target_path),
                     return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -1895,7 +1873,7 @@ class Git:
                                 workspace=_project_label(path),
                                 return_code=0,
                                 timestamp=datetime.datetime.now(
-                                    datetime.timezone.utc
+                                    datetime.UTC
                                 ).isoformat()
                                 + "Z",
                             ),
@@ -1949,7 +1927,7 @@ class Git:
                                 workspace=_project_label(path),
                                 return_code=0,
                                 timestamp=datetime.datetime.now(
-                                    datetime.timezone.utc
+                                    datetime.UTC
                                 ).isoformat()
                                 + "Z",
                             ),
@@ -2067,10 +2045,7 @@ class Git:
                         command="pre_commit_projects",
                         workspace=_project_label(self.path),
                         return_code=-1,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
+                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                     ),
                 )
             ]
@@ -2148,8 +2123,7 @@ class Git:
                     command="create_project",
                     workspace=_project_label(target_path),
                     return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -2176,8 +2150,7 @@ class Git:
                     command="create_project",
                     workspace=_project_label(target_path),
                     return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -2314,8 +2287,7 @@ class Git:
                     command="bump_version",
                     workspace=_project_label(target_dir),
                     return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -2332,8 +2304,7 @@ class Git:
                     command="bump_version",
                     workspace=_project_label(target_dir),
                     return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -2367,10 +2338,7 @@ class Git:
                         command="bump_version",
                         workspace=_project_label(target_dir),
                         return_code=0,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
+                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                     ),
                 )
 
@@ -2385,10 +2353,7 @@ class Git:
                         command="bump_version",
                         workspace=_project_label(target_dir),
                         return_code=0,
-                        timestamp=datetime.datetime.now(
-                            datetime.timezone.utc
-                        ).isoformat()
-                        + "Z",
+                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                     ),
                 )
 
@@ -2412,8 +2377,7 @@ class Git:
                     command="bump_version",
                     workspace=_project_label(target_dir),
                     return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -2479,7 +2443,7 @@ class Git:
                                     workspace=_project_label(target_dir),
                                     return_code=0,
                                     timestamp=datetime.datetime.now(
-                                        datetime.timezone.utc
+                                        datetime.UTC
                                     ).isoformat()
                                     + "Z",
                                 ),
@@ -2536,8 +2500,7 @@ class Git:
                     command="bump_version",
                     workspace=_project_label(target_dir),
                     return_code=1,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
 
@@ -2952,7 +2915,7 @@ class Git:
                                             workspace=_project_label(path),
                                             return_code=0,
                                             timestamp=datetime.datetime.now(
-                                                datetime.timezone.utc
+                                                datetime.UTC
                                             ).isoformat()
                                             + "Z",
                                         ),
@@ -3410,8 +3373,7 @@ class Git:
                     command="generate_template",
                     workspace=_project_label(target_path),
                     return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
         except Exception as e:
@@ -3451,8 +3413,7 @@ class Git:
                     command="save_workspace",
                     workspace=_project_label(yaml_path),
                     return_code=0,
-                    timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
-                    + "Z",
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
         except Exception as e:

@@ -48,6 +48,20 @@ uv pip install -e ".[all]"
 uv run repository-manager-mcp
 ```
 
+## Pre-commit in an isolated worktree
+
+The framework-owned checks run in the locked `agent-utilities` environment so
+they exercise the same implementation as the workspace gate. In a normal
+workspace, the hook discovers the canonical `repository-manager` worktree and
+its sibling `agent-utilities` checkout. For a standalone clone, set
+`AGENT_UTILITIES_ROOT` to that checkout before running `pre-commit run
+--all-files`.
+
+Docker Compose validation uses the checked-in synthetic digest fixture at
+`scripts/fixtures/precommit-compose.env`; it is never used for deployment.
+Deployment still requires its own `REPOSITORY_MANAGER_MCP_IMAGE` and
+`REPOSITORY_MANAGER_AGENT_IMAGE` values.
+
 ## Prebuilt Docker image
 
 A multi-stage runtime image is published on every release (installs

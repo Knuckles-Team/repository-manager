@@ -26,7 +26,9 @@ def test_init_failure_surfaces_raw_output(tmp_path):
     (tmp_path / ".pre-commit-config.yaml").write_text("repos: []\n")
     boom = "An error has occurred: InvalidConfigError\nfailed to install hook env"
 
-    with mock.patch.object(scanner, "run_pre_commit", return_value=_completed(1, stderr=boom)):
+    with mock.patch.object(
+        scanner, "run_pre_commit", return_value=_completed(1, stderr=boom)
+    ):
         result = scanner.scan_repository(str(tmp_path))
 
     assert result.success is False
@@ -41,7 +43,9 @@ def test_real_hook_failure_not_overridden(tmp_path):
     (tmp_path / ".pre-commit-config.yaml").write_text("repos: []\n")
     output = "ruff.....................................................................Failed\n- hook id: ruff\nE501 line too long\n"
 
-    with mock.patch.object(scanner, "run_pre_commit", return_value=_completed(1, stdout=output)):
+    with mock.patch.object(
+        scanner, "run_pre_commit", return_value=_completed(1, stdout=output)
+    ):
         result = scanner.scan_repository(str(tmp_path))
 
     assert result.success is False
@@ -54,7 +58,9 @@ def test_success_passes_cleanly(tmp_path):
     (tmp_path / ".pre-commit-config.yaml").write_text("repos: []\n")
     output = "ruff.....................................................................Passed\n"
 
-    with mock.patch.object(scanner, "run_pre_commit", return_value=_completed(0, stdout=output)):
+    with mock.patch.object(
+        scanner, "run_pre_commit", return_value=_completed(0, stdout=output)
+    ):
         result = scanner.scan_repository(str(tmp_path))
 
     assert result.success is True

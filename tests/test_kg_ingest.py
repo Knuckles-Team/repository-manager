@@ -45,6 +45,39 @@ class _FakeClient:
         self.txn = _FakeTxn()
 
 
+@pytest.fixture(autouse=True)
+def _capture_repository_mapping(monkeypatch):
+    """Keep repository DTO tests at their mapping boundary.
+
+    Agent Utilities owns ChangeEnvelope authorization and commit semantics; its
+    own suite covers that contract. These tests assert only this package's DTO
+    projection before it crosses that governed boundary.
+    """
+
+    def capture(entities, relationships, *, source, domain, client, graph):
+        if not entities:
+            raise NativeIngestError("native ingest requires at least one entity")
+        if any("type" in entity or not entity.get("node_type") for entity in entities):
+            raise NativeIngestError("native ingest nodes require canonical node_type")
+        for entity in entities:
+            row = {key: value for key, value in entity.items() if value is not None}
+            row.setdefault("source", source)
+            row.setdefault("domain", domain)
+            client.txn.nodes[row["id"]] = row
+        for relationship in relationships or []:
+            client.txn.edges.append(
+                (
+                    relationship["source"],
+                    relationship["target"],
+                    {"relationship": relationship["relationship"]},
+                )
+            )
+        client.txn.committed = True
+        return {"nodes": len(entities), "edges": len(relationships or [])}
+
+    monkeypatch.setattr("repository_manager.kg_ingest._native_ingest_entities", capture)
+
+
 def test_ingest_entities_writes_nodes_and_edges():
     c = _FakeClient()
     res = ingest_entities(

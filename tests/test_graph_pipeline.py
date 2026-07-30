@@ -68,7 +68,9 @@ def test_pipeline_runner_failure():
 
 
 def test_topological_sort():
-    p1 = PipelinePhase(name="p1", deps=["p2"], execute_fn=lambda _, __: asyncio.sleep(0))
+    p1 = PipelinePhase(
+        name="p1", deps=["p2"], execute_fn=lambda _, __: asyncio.sleep(0)
+    )
     p2 = PipelinePhase(name="p2", deps=[], execute_fn=lambda _, __: asyncio.sleep(0))
 
     runner = PipelineRunner([p1, p2])

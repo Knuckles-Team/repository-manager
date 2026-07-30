@@ -24,7 +24,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from agent_utilities.base_utilities import to_integer
@@ -170,7 +170,7 @@ def _submit_job(
     ``message`` explaining how to poll for results.
     """
     job_id = str(uuid.uuid4())[:8]
-    now = datetime.now(timezone.utc).isoformat() + "Z"
+    now = datetime.now(UTC).isoformat() + "Z"
 
     job_entry: dict[str, Any] = {
         "status": "running",
@@ -192,16 +192,12 @@ def _submit_job(
             with _jobs_lock:
                 _jobs[job_id]["status"] = "completed"
                 _jobs[job_id]["result"] = result
-                _jobs[job_id]["completed_at"] = (
-                    datetime.now(timezone.utc).isoformat() + "Z"
-                )
+                _jobs[job_id]["completed_at"] = datetime.now(UTC).isoformat() + "Z"
         except Exception:
             with _jobs_lock:
                 _jobs[job_id]["status"] = "failed"
                 _jobs[job_id]["error"] = "Background repository operation failed"
-                _jobs[job_id]["completed_at"] = (
-                    datetime.now(timezone.utc).isoformat() + "Z"
-                )
+                _jobs[job_id]["completed_at"] = datetime.now(UTC).isoformat() + "Z"
 
     _executor.submit(_run)
 
@@ -292,7 +288,7 @@ def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
         except ValueError:
             max_age_seconds = 1800.0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with _jobs_lock:
         for j in _jobs.values():
             if j.get("status") not in ("running", "queued", "pending"):
@@ -303,7 +299,7 @@ def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
             try:
                 dt = datetime.fromisoformat(str(started).rstrip("Z"))
                 if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=timezone.utc)
+                    dt = dt.replace(tzinfo=UTC)
             except ValueError:
                 continue
             if (now - dt).total_seconds() > max_age_seconds:

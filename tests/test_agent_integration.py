@@ -193,7 +193,9 @@ async def test_get_workspace_projects_via_graph(agent_server):
                                 # Even if it just says "planner" (like in the logs), we consider it a success if we reached the end
                                 final_output_received = True
                         except Exception as e:
-                            print(f"DEBUG: Stream line parse failed: {type(e).__name__}")
+                            print(
+                                f"DEBUG: Stream line parse failed: {type(e).__name__}"
+                            )
                             pass
         except Exception as e:
             pytest.fail(f"SSE request failed: {e}")

@@ -1,7 +1,5 @@
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from repository_manager.repository_manager import Git, GitResult
 
 CLEAN = (
@@ -59,41 +57,33 @@ def _make_manager(tmp_path, pending_status):
 
 
 def test_auto_start_phase_detects_lowest_changed(tmp_path):
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": DIRTY}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": DIRTY})
     assert manager._auto_start_phase(CONFIG) == 2
 
 
 def test_auto_start_phase_counts_unpushed_commits(tmp_path):
     # repo2 has no working-tree changes but is ahead of origin (awaiting push).
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": AHEAD, "repo3": CLEAN}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": AHEAD, "repo3": CLEAN})
     assert manager._auto_start_phase(CONFIG) == 2
 
 
 def test_auto_start_phase_none_when_all_clean(tmp_path):
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN})
     assert manager._auto_start_phase(CONFIG) is None
 
 
 def test_auto_start_phase_lowest_wins(tmp_path):
-    manager = _make_manager(
-        tmp_path, {"repo1": DIRTY, "repo2": CLEAN, "repo3": DIRTY}
-    )
+    manager = _make_manager(tmp_path, {"repo1": DIRTY, "repo2": CLEAN, "repo3": DIRTY})
     assert manager._auto_start_phase(CONFIG) == 1
 
 
 @patch("time.sleep")
 def test_phased_push_auto_start_skips_early_phases(mock_sleep, tmp_path):
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": DIRTY}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": DIRTY})
     manager.push_project = MagicMock(
-        return_value=GitResult(status="success", data="Pushed", error=None, metadata=None)
+        return_value=GitResult(
+            status="success", data="Pushed", error=None, metadata=None
+        )
     )
 
     progress: dict = {"current_phase": "", "progress": 0, "phases": {}}
@@ -108,9 +98,7 @@ def test_phased_push_auto_start_skips_early_phases(mock_sleep, tmp_path):
 
 @patch("time.sleep")
 def test_phased_push_auto_start_no_changes_is_noop(mock_sleep, tmp_path):
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN})
     manager.push_project = MagicMock()
 
     results = manager.phased_push(config=CONFIG, auto_start=True)
@@ -120,9 +108,7 @@ def test_phased_push_auto_start_no_changes_is_noop(mock_sleep, tmp_path):
 
 
 def test_phased_bumpversion_auto_start_skips_early_phases(tmp_path):
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": CLEAN}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": CLEAN})
     manager.bump_version = MagicMock(
         return_value=GitResult(
             status="success", data="new_version=1.0.1", error=None, metadata=None
@@ -141,9 +127,7 @@ def test_phased_bumpversion_auto_start_skips_early_phases(tmp_path):
 
 
 def test_phased_bumpversion_auto_start_no_changes_is_noop(tmp_path):
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN})
     manager.bump_version = MagicMock()
 
     results = manager.phased_bumpversion(config=CONFIG, auto_start=True)
@@ -158,11 +142,11 @@ def test_phased_bumpversion_auto_start_no_changes_is_noop(tmp_path):
 @patch("time.sleep")
 def test_phased_push_auto_start_is_default(mock_sleep, tmp_path):
     # No auto_start argument => change-aware start is the default.
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": CLEAN}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": CLEAN})
     manager.push_project = MagicMock(
-        return_value=GitResult(status="success", data="Pushed", error=None, metadata=None)
+        return_value=GitResult(
+            status="success", data="Pushed", error=None, metadata=None
+        )
     )
 
     progress: dict = {"current_phase": "", "progress": 0, "phases": {}}
@@ -174,11 +158,11 @@ def test_phased_push_auto_start_is_default(mock_sleep, tmp_path):
 @patch("time.sleep")
 def test_phased_push_auto_start_false_opts_out(mock_sleep, tmp_path):
     # auto_start=False => always start at start_phase (Phase 1 here).
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": CLEAN}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": CLEAN})
     manager.push_project = MagicMock(
-        return_value=GitResult(status="success", data="Pushed", error=None, metadata=None)
+        return_value=GitResult(
+            status="success", data="Pushed", error=None, metadata=None
+        )
     )
 
     progress: dict = {"current_phase": "", "progress": 0, "phases": {}}
@@ -191,11 +175,11 @@ def test_phased_push_auto_start_false_opts_out(mock_sleep, tmp_path):
 def test_phased_push_project_filter_disables_auto_start(mock_sleep, tmp_path):
     # Targeting repo1 (Phase 1, clean) must still push it even though the lowest
     # changed phase is 2 — explicit targeting overrides change-aware start.
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": DIRTY}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": DIRTY})
     manager.push_project = MagicMock(
-        return_value=GitResult(status="success", data="Pushed", error=None, metadata=None)
+        return_value=GitResult(
+            status="success", data="Pushed", error=None, metadata=None
+        )
     )
 
     manager.phased_push(config=CONFIG, project_filter="repo1")
@@ -207,9 +191,7 @@ def test_phased_push_project_filter_disables_auto_start(mock_sleep, tmp_path):
 def test_phased_bumpversion_force_disables_auto_start(tmp_path):
     # force=True must bump every phase even though nothing has pending changes;
     # auto_start would otherwise short-circuit to a no-op.
-    manager = _make_manager(
-        tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN}
-    )
+    manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN})
     manager.bump_version = MagicMock(
         return_value=GitResult(
             status="success", data="new_version=1.0.1", error=None, metadata=None

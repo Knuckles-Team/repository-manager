@@ -96,11 +96,13 @@ The phased mechanics are documented in detail in
 ## Canonical manifest gate
 
 For a development bootstrap, the root `workspace.yml` is the only authority.
-The Graph-OS XDG copy and this package's `workspace.yml` are byte-for-byte
-mirrors. The canonical source must therefore be portable: use environment
-references for the workspace root, private Git origin, and deployment domains.
-The gate rejects absolute machine paths, local endpoints, embedded URL
-credentials, and secret fields before any packaged copy can be written.
+The Graph-OS XDG copy retains its canonical bytes, including private runtime
+values. This package's `workspace.yml` is a separate portable projection: the
+workspace root becomes `${AGENT_UTILITIES_WORKSPACE_ROOT}`, private URL origins
+become `${AGENT_UTILITIES_REPO_ORIGIN}`, and private service suffixes become
+`${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}`. The gate rejects embedded URL
+credentials, secret fields, and absolute paths outside the declared workspace
+before either destination can be written.
 
 Validate all three before cloning. `--manifest-check` never writes and exits 1
 when either mirror has drifted. `--manifest-sync --manifest-dry-run` previews
@@ -118,15 +120,16 @@ repository-manager --manifest-sync --manifest-dry-run \
 
 Every destination is overridable for an isolated bootstrap or test. The command
 does not search for a source manifest and never treats the packaged seed as
-authority. Its JSON result reports only roles, SHA-256 digests, declared
-profiles/selectors, and selected workspace-relative repository identifiers; it
-omits local paths.
+authority. Drift is evaluated against each destination's normalized semantic
+projection, so formatting-only changes do not trigger a replacement. Its JSON
+result reports only roles, SHA-256 digests, declared profiles/selectors, and
+selected workspace-relative repository identifiers; it omits local paths.
 
 ```mermaid
 flowchart LR
     ROOT[Canonical root workspace.yml] --> GATE[repository-manager manifest gate]
-    GATE -->|digest check / atomic mirror| XDG[Graph-OS runtime copy]
-    GATE -->|digest check / atomic mirror| SEED[Packaged distribution seed]
+    GATE -->|canonical projection / atomic replace| XDG[Graph-OS runtime copy]
+    GATE -->|portable projection / atomic replace| SEED[Packaged distribution seed]
     GATE -->|profile + selector resolution| BOOT[Bounded development bootstrap]
 ```
 
