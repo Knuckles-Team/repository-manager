@@ -50,6 +50,10 @@ from repository_manager.models import (
 )
 from repository_manager.scan_models import RepoScanResult
 from repository_manager.scanner import scan_repository
+from repository_manager.workspace_manifest import (
+    WorkspaceManifestError,
+    synchronize_workspace_manifest,
+)
 
 logger = get_logger("RepositoryManager")
 
@@ -3600,6 +3604,48 @@ Examples:
         action="store_true",
         help="List the active git branch for all projects.",
     )
+    manifest_gate = group_workspace.add_mutually_exclusive_group()
+    manifest_gate.add_argument(
+        "--manifest-check",
+        action="store_true",
+        help="Validate the canonical manifest and fail when either mirror has drifted.",
+    )
+    manifest_gate.add_argument(
+        "--manifest-sync",
+        action="store_true",
+        help="Mirror the canonical manifest to the runtime and packaged seed paths.",
+    )
+    group_workspace.add_argument(
+        "--manifest-source",
+        type=str,
+        help="Explicit canonical root workspace.yml; packaged seeds are never sources.",
+    )
+    group_workspace.add_argument(
+        "--manifest-runtime-destination",
+        type=str,
+        help="Override the Graph-OS runtime manifest destination.",
+    )
+    group_workspace.add_argument(
+        "--manifest-seed-destination",
+        type=str,
+        help="Override the packaged repository-manager seed destination.",
+    )
+    group_workspace.add_argument(
+        "--manifest-dry-run",
+        action="store_true",
+        help="Report manifest synchronization changes without writing either destination.",
+    )
+    group_workspace.add_argument(
+        "--manifest-profile",
+        type=str,
+        help="Show the repositories selected by a named bootstrap profile.",
+    )
+    group_workspace.add_argument(
+        "--manifest-selector",
+        action="append",
+        default=[],
+        help="Add a named bootstrap selector (may be repeated).",
+    )
 
     group_git = parser.add_argument_group("Git Bulk Operations (Parallelized)")
     group_git.add_argument(
@@ -3742,6 +3788,44 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    manifest_option_used = any(
+        (
+            args.manifest_source,
+            args.manifest_runtime_destination,
+            args.manifest_seed_destination,
+            args.manifest_dry_run,
+            args.manifest_profile,
+            args.manifest_selector,
+        )
+    )
+    if manifest_option_used and not (args.manifest_check or args.manifest_sync):
+        parser.error(
+            "manifest source, destinations, profiles, selectors, and dry-run "
+            "require --manifest-check or --manifest-sync"
+        )
+    if args.manifest_dry_run and not args.manifest_sync:
+        parser.error("--manifest-dry-run requires --manifest-sync")
+
+    if args.manifest_check or args.manifest_sync:
+        if not args.manifest_source:
+            parser.error("--manifest-source is required for the manifest gate")
+        try:
+            report = synchronize_workspace_manifest(
+                args.manifest_source,
+                runtime_destination=args.manifest_runtime_destination,
+                seed_destination=args.manifest_seed_destination,
+                check=args.manifest_check,
+                dry_run=args.manifest_dry_run,
+                profile=args.manifest_profile,
+                selectors=args.manifest_selector,
+            )
+        except WorkspaceManifestError as exc:
+            parser.error(str(exc))
+        print(json.dumps(report.as_dict(), sort_keys=True))
+        if args.manifest_check and not report.synchronized:
+            raise SystemExit(1)
+        return
 
     git = Git(
         path=args.workspace

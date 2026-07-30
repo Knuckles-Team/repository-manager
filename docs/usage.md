@@ -92,3 +92,72 @@ repository-manager --validate --bump patch --maintain --push
 
 The phased mechanics are documented in detail in
 [Phased Maintenance](phased_maintenance.md) and [Phased Push](phased_push.md).
+
+## Canonical manifest gate
+
+For a development bootstrap, the root `workspace.yml` is the only authority.
+The Graph-OS XDG copy and this package's `workspace.yml` are byte-for-byte
+mirrors. The canonical source must therefore be portable: use environment
+references for the workspace root, private Git origin, and deployment domains.
+The gate rejects absolute machine paths, local endpoints, embedded URL
+credentials, and secret fields before any packaged copy can be written.
+
+Validate all three before cloning. `--manifest-check` never writes and exits 1
+when either mirror has drifted. `--manifest-sync --manifest-dry-run` previews
+the two updates. A real `--manifest-sync` stages both files first, replaces them
+atomically, and rolls back the first replacement if the second one fails.
+
+```bash
+repository-manager --manifest-check \
+  --manifest-source <workspace-root>/workspace.yml \
+  --manifest-profile development
+
+repository-manager --manifest-sync --manifest-dry-run \
+  --manifest-source <workspace-root>/workspace.yml
+```
+
+Every destination is overridable for an isolated bootstrap or test. The command
+does not search for a source manifest and never treats the packaged seed as
+authority. Its JSON result reports only roles, SHA-256 digests, declared
+profiles/selectors, and selected workspace-relative repository identifiers; it
+omits local paths.
+
+```mermaid
+flowchart LR
+    ROOT[Canonical root workspace.yml] --> GATE[repository-manager manifest gate]
+    GATE -->|digest check / atomic mirror| XDG[Graph-OS runtime copy]
+    GATE -->|digest check / atomic mirror| SEED[Packaged distribution seed]
+    GATE -->|profile + selector resolution| BOOT[Bounded development bootstrap]
+```
+
+Profiles make a development subset explicit without changing the repository
+tree. A profile names one or more selectors. Selectors use stable,
+workspace-relative identifiers, unambiguous basenames, or `*`:
+
+```yaml
+profiles:
+  development:
+    selectors: [core]
+selectors:
+  core:
+    include:
+      - agent-packages/agent-utilities
+      - agent-packages/agents/repository-manager
+```
+
+The rules are fail-closed:
+
+- a missing `include` starts with every repository, while `include: []` starts
+  empty;
+- `exclude` is applied within each selector, then multiple selectors are
+  unioned;
+- `*` cannot be combined with another value in the same list;
+- every profile reference and every selector member is validated, even when
+  that profile was not requested;
+- a basename that occurs in more than one directory is rejected as ambiguous;
+  use its workspace-relative identifier instead.
+
+A manifest with no requested profile or selector exposes every declared
+repository. Automation should consume the reported `selected_repositories`
+identifiers directly; do not collapse them to basenames when the manifest
+contains duplicate names.

@@ -35,9 +35,10 @@ def real_workspace_data():
 
 
 @pytest.fixture
-def sample_workspace_yml(tmp_path, real_workspace_data):
+def sample_workspace_yml(tmp_path, real_workspace_data, monkeypatch):
     workspace_dir = tmp_path / "my_workspace"
     workspace_dir.mkdir()
+    monkeypatch.setenv("AGENT_UTILITIES_REPO_ORIGIN", "https://example.invalid")
 
     config = real_workspace_data.copy()
     config["path"] = str(workspace_dir)
