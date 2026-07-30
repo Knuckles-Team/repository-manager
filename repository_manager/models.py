@@ -195,12 +195,29 @@ class GraphConfig(BaseModel):
     groups: list[dict] = Field(default_factory=list)
 
 
+class WorkspaceProfile(BaseModel):
+    """A named bootstrap profile composed from manifest selectors."""
+
+    description: str | None = None
+    selectors: list[str] = Field(default_factory=list)
+
+
+class WorkspaceSelector(BaseModel):
+    """A reusable include/exclude set of workspace-relative repository IDs."""
+
+    description: str | None = None
+    include: list[str] | None = None
+    exclude: list[str] | None = None
+
+
 class WorkspaceConfig(BaseModel):
     name: str
     path: str
     description: str | None = None
     repositories: list[RepositoryConfig] = Field(default_factory=list)
     subdirectories: dict[str, SubdirectoryConfig] = Field(default_factory=dict)
+    profiles: dict[str, WorkspaceProfile] = Field(default_factory=dict)
+    selectors: dict[str, WorkspaceSelector] = Field(default_factory=dict)
     maintenance: MaintenanceConfig | None = None
     graph: GraphConfig | None = None
 
