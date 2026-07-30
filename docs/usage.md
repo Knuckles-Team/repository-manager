@@ -120,8 +120,9 @@ repository-manager --manifest-sync --manifest-dry-run \
 
 Every destination is overridable for an isolated bootstrap or test. The command
 does not search for a source manifest and never treats the packaged seed as
-authority. Drift is evaluated against each destination's normalized semantic
-projection, so formatting-only changes do not trigger a replacement. Its JSON
+authority. The runtime mirror must match the canonical source byte-for-byte;
+the portable seed is compared semantically, so seed-only formatting changes do
+not trigger a replacement. Its JSON
 result reports only roles, SHA-256 digests, declared profiles/selectors, and
 selected workspace-relative repository identifiers; it omits local paths.
 

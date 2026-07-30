@@ -1,9 +1,10 @@
 """Validate and safely mirror the canonical workspace manifest.
 
-The workspace root manifest is human-authored.  The Graph-OS XDG manifest and
-the packaged repository-manager seed are byte-for-byte mirrors, never sources
-of truth.  This module deliberately does not discover or mutate a workspace:
-callers provide the canonical source and may override every destination.
+The workspace root manifest is human-authored.  The Graph-OS XDG manifest is an
+exact-byte mirror and the packaged repository-manager seed is its portable
+projection; neither is a source of truth.  This module deliberately does not
+discover or mutate a workspace: callers provide the canonical source and may
+override every destination.
 """
 
 from __future__ import annotations
@@ -24,6 +25,24 @@ import yaml  # type: ignore[import-untyped]
 
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _LOCAL_HOST_SUFFIXES = (".arpa", ".internal", ".lan", ".local", ".localhost")
+_PRIVATE_HOST_REFERENCE = re.compile(
+    r"(?<![A-Za-z0-9_-])"
+    r"(?P<host>"
+    r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})\.)+"
+    r"(?:arpa|internal|lan|local|localhost)"
+    r"|localhost"
+    r"|(?:\d{1,3}\.){3}\d{1,3}"
+    r")"
+    r"(?P<port>:\d{1,5})?"
+    r"(?![A-Za-z0-9_-])",
+    re.IGNORECASE,
+)
+_PRIVATE_IPV6_REFERENCE = re.compile(
+    r"\[(?P<bracketed>[0-9A-Fa-f:]*:[0-9A-Fa-f:]+)\]"
+    r"|(?<![0-9A-Fa-f:])"
+    r"(?P<bare>(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f]{0,4})"
+    r"(?![0-9A-Fa-f:])"
+)
 _PORTABLE_ENVIRONMENT_REFERENCES = {
     "AGENT_UTILITIES_WORKSPACE_ROOT",
     "AGENT_UTILITIES_REPO_ORIGIN",
@@ -48,7 +67,7 @@ class WorkspaceManifestError(ValueError):
 
 @dataclass(frozen=True)
 class ManifestDestinationStatus:
-    """The normalized semantic state of one non-authoritative manifest copy."""
+    """The governed projection state of one non-authoritative manifest copy."""
 
     role: str
     exists: bool
@@ -69,7 +88,7 @@ class WorkspaceManifestReport:
 
     @property
     def synchronized(self) -> bool:
-        """Whether every requested copy matches its own semantic projection."""
+        """Whether every requested copy matches its governed projection."""
 
         return all(destination.matches_projection for destination in self.destinations)
 
@@ -210,6 +229,51 @@ def _is_endpoint_value(value: str, *, field: str) -> bool:
     )
 
 
+def _contains_private_host_reference(value: str) -> bool:
+    """Return whether any scalar text embeds a private host or address."""
+
+    for match in _PRIVATE_HOST_REFERENCE.finditer(value):
+        if _is_private_host(match.group("host")):
+            return True
+    for match in _PRIVATE_IPV6_REFERENCE.finditer(value):
+        host = match.group("bracketed") or match.group("bare")
+        if _is_private_host(host):
+            return True
+    return False
+
+
+def _portable_host_label(host: str) -> str:
+    """Return a non-sensitive service label for a private host reference."""
+
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        label = host.split(".", 1)[0]
+        return label if label and label != "localhost" else "service"
+    return "service"
+
+
+def _portable_private_references(value: str) -> str:
+    """Parameterize private hosts embedded anywhere in otherwise free-form text."""
+
+    def replace_host(match: re.Match[str]) -> str:
+        host = match.group("host")
+        if not _is_private_host(host):
+            return match.group(0)
+        label = _portable_host_label(host)
+        port = match.group("port") or ""
+        return f"{label}.${{AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}}{port}"
+
+    def replace_ipv6(match: re.Match[str]) -> str:
+        host = match.group("bracketed") or match.group("bare")
+        if not _is_private_host(host):
+            return match.group(0)
+        return "service.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}"
+
+    projected = _PRIVATE_HOST_REFERENCE.sub(replace_host, value)
+    return _PRIVATE_IPV6_REFERENCE.sub(replace_ipv6, projected)
+
+
 def _validate_portable_seed(value: object, *, field: str = "") -> None:
     """Prove that the generated package seed contains no local-only values."""
 
@@ -232,6 +296,8 @@ def _validate_portable_seed(value: object, *, field: str = "") -> None:
         )
     if Path(value).is_absolute():
         raise WorkspaceManifestError("Portable seed must not contain absolute paths")
+    if _contains_private_host_reference(value):
+        raise WorkspaceManifestError("Portable seed contains a machine-local endpoint")
     if not _is_endpoint_value(value, field=field):
         return
     host, _, _ = _endpoint_host(value)
@@ -271,9 +337,7 @@ def _portable_endpoint(value: str) -> str:
         return f"${{AGENT_UTILITIES_REPO_ORIGIN}}{suffix}"
     if not host or parsed is None:
         raise WorkspaceManifestError("Cannot project a machine-local endpoint safely")
-    label = host.split(".", 1)[0]
-    if not label:
-        raise WorkspaceManifestError("Cannot project a machine-local endpoint safely")
+    label = _portable_host_label(host)
     port = f":{parsed.port}" if parsed.port is not None else ""
     return f"{label}.${{AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}}{port}"
 
@@ -303,8 +367,8 @@ def project_portable_seed(data: dict[str, Any]) -> dict[str, Any]:
         if path_value != value:
             return path_value
         if _is_endpoint_value(value, field=field):
-            return _portable_endpoint(value)
-        return value
+            value = _portable_endpoint(value)
+        return _portable_private_references(value)
 
     portable = project(copy.deepcopy(data))
     assert isinstance(portable, dict)
@@ -692,6 +756,25 @@ def _synchronize_destinations(
         ) from exc
 
 
+def _matches_projection(
+    role: str,
+    content: bytes | None,
+    *,
+    expected_content: bytes,
+    expected_data: dict[str, Any],
+) -> bool:
+    """Compare a destination using the contract owned by its projection role."""
+
+    if content is None:
+        return False
+    if role == "runtime":
+        return content == expected_content
+    try:
+        return yaml.safe_load(content.decode("utf-8")) == expected_data
+    except (UnicodeDecodeError, yaml.YAMLError):
+        return False
+
+
 def synchronize_workspace_manifest(
     source: str | Path,
     *,
@@ -775,14 +858,13 @@ def synchronize_workspace_manifest(
             if destination_bytes is not None
             else None
         )
-        _, expected_data = projections[role]
-        try:
-            matches_projection = (
-                destination_bytes is not None
-                and yaml.safe_load(destination_bytes.decode("utf-8")) == expected_data
-            )
-        except (UnicodeDecodeError, yaml.YAMLError):
-            matches_projection = False
+        expected_content, expected_data = projections[role]
+        matches_projection = _matches_projection(
+            role,
+            destination_bytes,
+            expected_content=expected_content,
+            expected_data=expected_data,
+        )
         initial.append((role, exists, digest, matches_projection))
         if not matches_projection:
             snapshots.append(
@@ -815,9 +897,11 @@ def synchronize_workspace_manifest(
             try:
                 destination_bytes = destination.read_bytes()
                 digest = _content_digest(destination_bytes)
-                matches_source = (
-                    yaml.safe_load(destination_bytes.decode("utf-8"))
-                    == projections[role][1]
+                matches_source = _matches_projection(
+                    role,
+                    destination_bytes,
+                    expected_content=projections[role][0],
+                    expected_data=projections[role][1],
                 )
             except OSError as exc:
                 raise WorkspaceManifestError(

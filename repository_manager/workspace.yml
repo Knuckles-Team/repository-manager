@@ -393,7 +393,7 @@ subdirectories:
       description: Docker Swarm service stack for langfuse.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/ciso-assistant.git
       description: CISO Assistant GRC platform (Risk, Compliance, Audit, Privacy)
-        — domain ciso.arpa.
+        — domain ciso.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/plane.git
       description: Project management and collaborative task/issue tracking dashboard.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/flux.2.git

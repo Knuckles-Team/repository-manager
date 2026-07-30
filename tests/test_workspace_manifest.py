@@ -131,6 +131,56 @@ def test_semantic_projection_check_ignores_seed_formatting_drift(tmp_path):
     assert [item.action for item in checked.destinations] == ["unchanged", "unchanged"]
 
 
+def test_runtime_projection_requires_and_repairs_exact_canonical_bytes(tmp_path):
+    source, runtime, seed = _paths(tmp_path)
+    synchronize_workspace_manifest(
+        source, runtime_destination=runtime, seed_destination=seed
+    )
+    runtime.write_text(
+        yaml.safe_dump(
+            yaml.safe_load(runtime.read_text(encoding="utf-8")), sort_keys=True
+        ),
+        encoding="utf-8",
+    )
+    assert yaml.safe_load(runtime.read_text(encoding="utf-8")) == yaml.safe_load(
+        source.read_text(encoding="utf-8")
+    )
+    assert runtime.read_bytes() != source.read_bytes()
+
+    checked = synchronize_workspace_manifest(
+        source, runtime_destination=runtime, seed_destination=seed, check=True
+    )
+
+    assert checked.synchronized is False
+    assert [item.action for item in checked.destinations] == ["drift", "unchanged"]
+
+    repaired = synchronize_workspace_manifest(
+        source, runtime_destination=runtime, seed_destination=seed
+    )
+
+    assert [item.action for item in repaired.destinations] == ["updated", "unchanged"]
+    assert runtime.read_bytes() == source.read_bytes()
+
+
+def test_free_text_private_hosts_are_projected_and_rejected_by_seed_validator():
+    data = yaml.safe_load(MANIFEST)
+    data["services"]["items"][0]["description"] = (
+        "Private domain ciso.arpa. at 10.0.0.42 or [fd00::42]."
+    )
+
+    portable = project_portable_seed(data)
+    portable_text = yaml.safe_dump(portable)
+
+    assert "ciso.arpa" not in portable_text
+    assert "10.0.0.42" not in portable_text
+    assert "fd00::42" not in portable_text
+    assert "ciso.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}" in portable_text
+    with pytest.raises(WorkspaceManifestError, match="machine-local endpoint"):
+        workspace_manifest._validate_portable_seed(
+            {"description": "Private domain ciso.arpa."}
+        )
+
+
 def test_validation_failure_never_writes_either_destination(tmp_path):
     source, runtime, seed = _paths(tmp_path)
     runtime.parent.mkdir(parents=True)
