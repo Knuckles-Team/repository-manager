@@ -17,7 +17,11 @@ Every checkout this module runs directly against a *canonical* checkout (as
 opposed to a linked worktree) goes through
 :func:`repository_manager.canonical_guard.guarded_canonical_mutation`
 (CONCEPT:RM-CANON-GUARD) first, so a dirty canonical tree is skipped-and-
-reported instead of silently clobbered.
+reported instead of silently clobbered. Symmetrically, every *destructive* step
+against a linked worktree — removing the directory, deleting the branch ref —
+goes through :mod:`repository_manager.prune_guard` (CONCEPT:RM-PRUNE-GUARD), so
+a worktree an active lane still holds is skipped and a branch ref is only ever
+deleted when git itself agrees its commits survive the deletion.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ import shlex
 import time
 from typing import Any, Protocol
 
+from repository_manager import prune_guard
 from repository_manager.canonical_guard import guarded_canonical_mutation
 
 
@@ -230,8 +235,16 @@ class WorktreeManager:
         branch: str,
         force: bool = False,
         delete_branch: bool = False,
+        base: str = "main",
     ) -> dict[str, Any]:
-        """Remove a worktree (and prune); refuses a dirty tree unless ``force``."""
+        """Remove a worktree (and prune); refuses a dirty tree unless ``force``.
+
+        ``force`` covers the *directory*, which is recoverable — the branch still
+        points at the work. It never covers the *ref*: ``delete_branch`` goes
+        through :meth:`_delete_merged_branch`, so an explicit removal request
+        cannot orphan commits either, and reports ``branch_kept_reason`` when it
+        declines (CONCEPT:RM-PRUNE-GUARD).
+        """
         canonical = self.resolve_repo(repo)
         if not canonical:
             return {"ok": False, "error": f"repo not found: {repo}"}
@@ -242,16 +255,19 @@ class WorktreeManager:
             return {"ok": False, "error": res.error.message if res.error else res.data}
         self._run("git worktree prune", canonical, quiet=True)
         deleted = False
+        reason = ""
         if delete_branch:
-            d = self._run(f"git branch -D {shlex.quote(branch)}", canonical)
-            deleted = self._ok(d)
-        return {
+            deleted, reason = self._delete_merged_branch(canonical, branch, base)
+        out: dict[str, Any] = {
             "ok": True,
             "repo": repo,
             "branch": branch,
             "removed": wt,
             "branch_deleted": deleted,
         }
+        if reason:
+            out["branch_kept_reason"] = reason
+        return out
 
     def merge(
         self, repo: str, branch: str, into: str = "main", no_ff: bool = True
@@ -332,24 +348,35 @@ class WorktreeManager:
 
         Worktrees share the object store and refs with their canonical checkout,
         so ``base`` (e.g. ``main``) resolves from inside a linked worktree even
-        though it is checked out elsewhere. Returns dirty/ahead/behind/merged plus
-        the age in days of the worktree's last commit.
+        though it is checked out elsewhere. Returns dirty/ahead/behind/merged/
+        at_base plus the age in days of the worktree's last commit.
+
+        ``merged`` deliberately means **more** than "base contains every commit
+        on this branch". ``ahead == 0`` alone is also true of a worktree that has
+        not committed anything yet — it is still sitting exactly on ``base`` —
+        and that worktree is the *start* of a lane, not the end of one. The
+        observable difference is that a branch whose work was merged back leaves
+        ``base`` strictly ahead of it (at minimum the merge commit itself), so
+        ``merged`` requires ``behind > 0`` as the proof that this branch actually
+        contributed something ``base`` now carries. A branch fast-forwarded into
+        a ``base`` that has not moved since reports ``at_base`` instead and is
+        kept — erring toward keeping is the only safe direction here.
         """
         state: dict[str, Any] = {
             "dirty": False,
             "ahead": 0,
             "behind": 0,
             "merged": False,
+            "at_base": False,
             "last_commit_age_days": None,
         }
         porcelain = self._run("git status --porcelain", wt_path, quiet=True)
         state["dirty"] = bool(self._ok(porcelain) and porcelain.data.strip())
-        # ahead/behind vs base, and merged in one shot. `--is-ancestor` would be
-        # the idiomatic merged check, but it signals via a non-zero exit (-> the
-        # audited git runner logs a scary "Command failed" on EVERY unmerged
-        # worktree). `ahead == 0` is exactly equivalent — HEAD has no commit
-        # missing from base iff it is reachable from base — and the count call
-        # always exits 0, so derive merged from it and keep the logs clean.
+        # ahead/behind vs base in one shot; this call always exits 0. It is a
+        # *classification* input only — it is never what authorises a deletion.
+        # `_delete_merged_branch` re-asks `git merge-base --is-ancestor` at the
+        # moment of deletion and then lets `git branch -d` re-decide under git's
+        # own ref lock, so a count that has gone stale cannot orphan a commit.
         counts = self._run(
             f"git rev-list --left-right --count {shlex.quote(base)}...HEAD",
             wt_path,
@@ -359,7 +386,8 @@ class WorktreeManager:
             parts = counts.data.split()
             if len(parts) == 2 and all(p.isdigit() for p in parts):
                 state["behind"], state["ahead"] = int(parts[0]), int(parts[1])
-                state["merged"] = state["ahead"] == 0
+                state["at_base"] = state["ahead"] == 0 and state["behind"] == 0
+                state["merged"] = state["ahead"] == 0 and state["behind"] > 0
         ts = self._run("git log -1 --format=%ct HEAD", wt_path, quiet=True)
         if self._ok(ts) and ts.data.strip().isdigit():
             state["last_commit_age_days"] = (
@@ -374,10 +402,18 @@ class WorktreeManager:
         """One of ``merged``/``active``/``stale``/``dangling`` for a worktree.
 
         Precedence is deliberate: a detached/missing worktree is ``dangling``; a
-        dirty tree is always ``active`` (live edits); a clean tree whose work is
-        already captured in ``base`` is ``merged`` (prunable) even if just
-        committed; otherwise an unmerged branch is ``active`` while it has recent
-        commits and ``stale`` once it goes quiet.
+        dirty tree is always ``active`` (live edits); a clean tree that
+        contributed work ``base`` now carries is ``merged``; a clean tree sitting
+        exactly *on* ``base`` has contributed nothing yet and is ``active`` (a
+        lane that has just opened its worktree, not one that has finished);
+        otherwise an unmerged branch is ``active`` while it has recent commits
+        and ``stale`` once it goes quiet.
+
+        ``merged`` says only that this branch's work is captured in ``base`` — it
+        never says the worktree is unoccupied. A lane that merges an intermediate
+        chunk back and keeps working is ``merged`` and still live, which is
+        exactly how D-FE-9 happened, so occupancy is asked separately at the
+        moment of deletion (CONCEPT:RM-PRUNE-GUARD).
         """
         if not exists or branch in (None, "", "(detached)"):
             return "dangling"
@@ -385,6 +421,8 @@ class WorktreeManager:
             return "active"
         if state["merged"]:
             return "merged"
+        if state.get("at_base"):
+            return "active"
         age = state["last_commit_age_days"]
         recent = age is not None and age <= stale_days
         if state["ahead"] > 0 and recent:
@@ -494,15 +532,63 @@ class WorktreeManager:
                     )
         return orphans
 
+    def _delete_merged_branch(
+        self, canonical: str, branch: str, base: str
+    ) -> tuple[bool, str]:
+        """Delete ``branch`` only if its commits survive the deletion.
+
+        A branch ref is the only thing standing between a lane's commits and
+        ``gc``, so deleting one is gated harder than removing a directory, and
+        gated *at the moment of deletion* rather than from an earlier scan:
+
+        1. ``git merge-base --is-ancestor <branch> <base>`` — the honest
+           reachability question, asked now. A non-zero exit is this command's
+           *answer*, not a malfunction; the audited runner logs it as a failure,
+           which is accurate here because it accompanies a real refusal, and it
+           is asked only of the handful of branches actually up for deletion
+           rather than of every worktree in the audit.
+        2. ``git branch -d`` — never ``-D``. Git re-decides reachability itself,
+           under its own ref lock, atomically with the delete. This is what makes
+           the guarantee hold through a check-then-delete race: no window exists
+           between git's decision and git's action.
+
+        Returns ``(deleted, reason)``; ``reason`` explains a refusal.
+        """
+        ancestor = self._run(
+            f"git merge-base --is-ancestor {shlex.quote(branch)} {shlex.quote(base)}",
+            canonical,
+            quiet=True,
+        )
+        if not self._ok(ancestor):
+            return False, (
+                f"refused to delete branch {branch!r}: it has commits that are "
+                f"not reachable from {base!r}, so deleting the ref would turn "
+                "them into unreferenced objects"
+            )
+        deleted = self._run(f"git branch -d {shlex.quote(branch)}", canonical)
+        if not self._ok(deleted):
+            detail = deleted.error.message if deleted.error else deleted.data
+            return False, (
+                f"git refused to delete branch {branch!r} as merged: {detail}"
+            )
+        return True, ""
+
     def _prune_merged(
-        self, worktrees: list[dict[str, Any]]
+        self, worktrees: list[dict[str, Any]], base: str = "main"
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Remove only ``merged`` worktrees and ``dangling`` admin pointers.
 
         Removes by the worktree's *actual* path (these repos use custom worktree
-        paths that ``worktree_path()`` would not reconstruct). Never forces a dirty
-        tree (merged worktrees are clean by definition) and never touches
+        paths that ``worktree_path()`` would not reconstruct) and never touches
         ``active``/``stale`` work.
+
+        Every removal is re-justified inside
+        :func:`prune_guard.guarded_worktree_prune` (CONCEPT:RM-PRUNE-GUARD): the
+        lane lease is held across the whole check-then-delete, occupancy is read
+        from the lane protocol, and ``_branch_state`` is recomputed *under that
+        lease* so a classification that went stale during the audit scan is
+        caught rather than acted on. The branch ref is then deleted only through
+        :meth:`_delete_merged_branch`.
         """
         pruned: list[dict[str, Any]] = []
         kept: list[dict[str, Any]] = []
@@ -511,24 +597,50 @@ class WorktreeManager:
             canonical = self.resolve_repo(w["repo"])
             path = w.get("path", "")
             if cls == "merged" and canonical and path:
-                res = self._run(f"git worktree remove {shlex.quote(path)}", canonical)
-                ok = self._ok(res)
-                if ok and w.get("branch"):
-                    self._run(
-                        f"git branch -D {shlex.quote(w['branch'])}",
-                        canonical,
-                        quiet=True,
-                    )
                 entry = {
                     "repo": w["repo"],
                     "branch": w["branch"],
                     "path": path,
                     "class": cls,
-                    "ok": ok,
                 }
-                if not ok:
-                    entry["error"] = res.error.message if res.error else res.data
-                (pruned if ok else kept).append(entry)
+                if prune_guard.worktree_is_locked(path):
+                    kept.append({**entry, "reason": "worktree is locked (git)"})
+                    continue
+                with prune_guard.guarded_worktree_prune(
+                    path, operation="prune merged worktree"
+                ) as held:
+                    if held is not None:
+                        kept.append({**entry, "reason": held})
+                        continue
+                    fresh = self._branch_state(path, base)
+                    if fresh["dirty"] or not fresh["merged"]:
+                        kept.append(
+                            {
+                                **entry,
+                                "reason": (
+                                    "state changed since the audit scan "
+                                    f"(dirty={fresh['dirty']}, "
+                                    f"ahead={fresh['ahead']}, "
+                                    f"behind={fresh['behind']}) - a lane is "
+                                    "still working here"
+                                ),
+                            }
+                        )
+                        continue
+                    res = self._run(
+                        f"git worktree remove {shlex.quote(path)}", canonical
+                    )
+                    ok = self._ok(res)
+                    entry["ok"] = ok
+                    if ok and w.get("branch"):
+                        entry["branch_deleted"], reason = self._delete_merged_branch(
+                            canonical, w["branch"], base
+                        )
+                        if reason:
+                            entry["branch_kept_reason"] = reason
+                    if not ok:
+                        entry["error"] = res.error.message if res.error else res.data
+                (pruned if entry.get("ok") else kept).append(entry)
             elif cls == "dangling" and canonical:
                 self._run("git worktree prune", canonical, quiet=True)
                 pruned.append(
@@ -565,7 +677,11 @@ class WorktreeManager:
         ``dangling`` (stale admin entry); reports canonical repos with
         unmerged/unpushed changes and orphaned directories. With
         ``prune_merged=True`` it then removes only the ``merged`` worktrees and
-        ``dangling`` admin pointers (orphans stay untouched). (CONCEPT:RM-WORKTREE-AUDIT)
+        ``dangling`` admin pointers (orphans stay untouched), and only after
+        re-justifying each removal at the moment of deletion — see
+        :meth:`_prune_merged` (CONCEPT:RM-PRUNE-GUARD). A ``merged``
+        classification here is a *candidate*, never an authorisation.
+        (CONCEPT:RM-WORKTREE-AUDIT)
         """
         listing = self.list_worktrees(repo=repo).get("worktrees", [])
         linked = [w for w in listing if w.get("linked")]
@@ -582,6 +698,7 @@ class WorktreeManager:
                     "ahead": 0,
                     "behind": 0,
                     "merged": False,
+                    "at_base": False,
                     "last_commit_age_days": None,
                 }
             worktrees.append(
@@ -633,5 +750,5 @@ class WorktreeManager:
             "review": [{"repo": w["repo"], "branch": w["branch"]} for w in review],
         }
         if prune_merged:
-            result["pruned"], result["kept"] = self._prune_merged(worktrees)
+            result["pruned"], result["kept"] = self._prune_merged(worktrees, base)
         return result

@@ -265,6 +265,20 @@ def _wt_by_branch(audit, branch):
     return next(w for w in audit["worktrees"] if w["branch"] == branch)
 
 
+def _branches(repo_path):
+    return subprocess.run(
+        "git branch --list",
+        shell=True,
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def _kept_reason(result, branch):
+    return next(k["reason"] for k in result["kept"] if k.get("branch") == branch)
+
+
 def test_audit_merged_worktree_is_safe_to_prune(repo):
     res = repo.wm.add("myrepo", "feat-merged")
     _commit_in(res["path"], "feature.txt", "feat")
@@ -278,11 +292,25 @@ def test_audit_merged_worktree_is_safe_to_prune(repo):
     )
 
 
-def test_audit_no_divergence_is_merged(repo):
-    # a branch with no commits beyond main is an ancestor of main -> redundant.
+def test_audit_fresh_worktree_at_base_is_not_prunable(repo):
+    """A worktree that has not committed yet sits exactly on base, so ``ahead``
+    is 0 — the same reading a merged-back branch gives. It is the *start* of a
+    lane, not the end of one, and must never be offered for pruning."""
     repo.wm.add("myrepo", "feat-empty")
     audit = repo.wm.audit("myrepo")
-    assert _wt_by_branch(audit, "feat-empty")["class"] == "merged"
+    w = _wt_by_branch(audit, "feat-empty")
+    assert w["ahead"] == 0 and w["behind"] == 0
+    assert w["at_base"] is True
+    assert w["merged"] is False
+    assert w["class"] == "active"
+    assert not any(s["branch"] == "feat-empty" for s in audit["safe_to_prune"])
+
+
+def test_prune_merged_leaves_a_fresh_worktree_and_its_branch_alone(repo):
+    fresh = repo.wm.add("myrepo", "feat-empty")
+    repo.wm.audit("myrepo", prune_merged=True)
+    assert os.path.isdir(fresh["path"])
+    assert "feat-empty" in _branches(repo.path)
 
 
 def test_audit_unmerged_ahead_is_active(repo):
@@ -432,3 +460,144 @@ def test_worktree_hygiene_prune_removes_only_merged(tmp_path, monkeypatch):
     assert not os.path.isdir(merged["path"])  # merged pruned
     assert os.path.isdir(active["path"])  # active untouched
     assert any(p["branch"] == "feat-merged" for p in result["pruned"])
+
+
+# ── prune safety (CONCEPT:RM-PRUNE-GUARD, registry D-FE-9) ────────────────────
+# D-FE-9: an `agent-utilities`-scoped sweep removed a live lane's worktree AND
+# ran `git branch -D` on its ref, leaving its commits reachable only as dangling
+# objects. The branch was genuinely merged at that instant — the lane had merged
+# an intermediate chunk back to main and kept working — so "merged" was never
+# sufficient authorisation to destroy anything.
+
+
+def _merged_worktree(wm, branch="feat-merged"):
+    """A worktree whose branch really is merged back into main."""
+    made = wm.add("myrepo", branch)
+    _commit_in(made["path"], f"{branch}.txt", "feat")
+    assert wm.merge("myrepo", branch)["ok"]
+    return made
+
+
+def test_prune_merged_still_removes_a_genuinely_merged_worktree(repo):
+    """The feature itself must keep working: a real merge-back is reclaimed,
+    branch ref included."""
+    made = _merged_worktree(repo.wm)
+    result = repo.wm.audit("myrepo", prune_merged=True)
+    entry = next(p for p in result["pruned"] if p["branch"] == "feat-merged")
+    assert entry["ok"] is True
+    assert entry["branch_deleted"] is True
+    assert not os.path.isdir(made["path"])
+    assert "feat-merged" not in _branches(repo.path)
+
+
+def test_prune_skips_a_worktree_whose_lane_holds_a_lease(repo):
+    """The D-FE-9 shape: the branch is merged and the tree is clean because the
+    lane is blocked inside a long `pre-commit` run — which the lane protocol
+    announces as a lease at the scope every lane of this repo shares."""
+    lanes = pytest.importorskip("agent_utilities.governance.lanes")
+    made = _merged_worktree(repo.wm)
+
+    with lanes.hold_lease(
+        "precommit-all-files", operation="pre-commit run", path=made["path"]
+    ):
+        result = repo.wm.audit("myrepo", prune_merged=True)
+
+    assert result["pruned"] == []
+    assert "precommit-all-files" in _kept_reason(result, "feat-merged")
+    assert os.path.isdir(made["path"])
+    assert "feat-merged" in _branches(repo.path)
+
+
+def test_prune_skips_a_worktree_the_lane_dirtied_after_the_scan(repo):
+    """Classification happens in `audit()`, deletion later in `_prune_merged`.
+    Work that lands inside that window must not be destroyed by a decision taken
+    before it existed."""
+    made = _merged_worktree(repo.wm)
+    scan = repo.wm.audit("myrepo")  # read-only: classification only
+    assert _wt_by_branch(scan, "feat-merged")["class"] == "merged"
+
+    open(os.path.join(made["path"], "late.txt"), "w").write("landed mid-sweep")
+
+    pruned, kept = repo.wm._prune_merged(scan["worktrees"], "main")
+    assert pruned == []
+    # the lane protocol answers first: a tree with uncommitted work is never
+    # resettable by an actor that does not own it.
+    assert "uncommitted work" in _kept_reason({"kept": kept}, "feat-merged")
+    assert os.path.isdir(made["path"])
+    assert os.path.isfile(os.path.join(made["path"], "late.txt"))
+
+
+def test_prune_never_deletes_a_branch_that_committed_after_the_scan(repo):
+    """The lethal race: two commits land between the `merged` reading and the
+    deletion. Neither the directory nor — above all — the ref may be taken."""
+    made = _merged_worktree(repo.wm)
+    scan = repo.wm.audit("myrepo")
+    assert _wt_by_branch(scan, "feat-merged")["class"] == "merged"
+
+    _commit_in(made["path"], "after-1.txt", "after1")
+    _commit_in(made["path"], "after-2.txt", "after2")
+    head = subprocess.run(
+        "git rev-parse HEAD",
+        shell=True,
+        cwd=made["path"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    pruned, kept = repo.wm._prune_merged(scan["worktrees"], "main")
+    assert pruned == []
+    # clean tree, no lease held: only the re-derived state catches this.
+    reason = _kept_reason({"kept": kept}, "feat-merged")
+    assert "state changed since the audit scan" in reason and "ahead=2" in reason
+    assert os.path.isdir(made["path"])
+    assert "feat-merged" in _branches(repo.path)
+    # the ref still points at the two new commits: nothing became garbage
+    tip = subprocess.run(
+        "git rev-parse feat-merged",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert tip == head
+
+
+def test_prune_skips_a_locked_worktree(repo):
+    made = _merged_worktree(repo.wm)
+    _run(f"git worktree lock {made['path']}", repo.path)
+    result = repo.wm.audit("myrepo", prune_merged=True)
+    assert result["pruned"] == []
+    assert "locked" in _kept_reason(result, "feat-merged")
+    assert os.path.isdir(made["path"])
+    assert "feat-merged" in _branches(repo.path)
+
+
+def test_delete_merged_branch_refuses_an_unmerged_branch(repo):
+    """The ref gate on its own: `git branch -D` would take this; the guard and
+    git's own `-d` both refuse it."""
+    made = repo.wm.add("myrepo", "feat-unmerged")
+    _commit_in(made["path"], "wip.txt", "wip")
+    deleted, reason = repo.wm._delete_merged_branch(repo.path, "feat-unmerged", "main")
+    assert deleted is False
+    assert "not reachable from" in reason
+    assert "feat-unmerged" in _branches(repo.path)
+
+
+def test_remove_with_delete_branch_refuses_an_unmerged_branch(repo):
+    """An explicit `remove --delete-branch` is still not authorisation to orphan
+    commits; `force` covers the recoverable directory, never the ref."""
+    made = repo.wm.add("myrepo", "feat-unmerged")
+    _commit_in(made["path"], "wip.txt", "wip")
+    result = repo.wm.remove("myrepo", "feat-unmerged", delete_branch=True)
+    assert result["ok"] is True
+    assert result["branch_deleted"] is False
+    assert "not reachable from" in result["branch_kept_reason"]
+    assert "feat-unmerged" in _branches(repo.path)
+    assert not os.path.isdir(made["path"])  # directory gone, work recoverable
+
+
+def test_remove_with_delete_branch_deletes_a_merged_branch(repo):
+    _merged_worktree(repo.wm, "feat-done")
+    result = repo.wm.remove("myrepo", "feat-done", delete_branch=True)
+    assert result["branch_deleted"] is True
+    assert "feat-done" not in _branches(repo.path)
