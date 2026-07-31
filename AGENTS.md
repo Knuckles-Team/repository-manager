@@ -850,6 +850,44 @@ alone).
    `rm_worktree remove <repo> <branch> --delete-branch`; `rm_worktree prune` clears
    stale entries. (Raw-git: `git worktree remove <path> && git branch -d <branch>`.)
 
+**The prune guard (CONCEPT:RM-PRUNE-GUARD, `repository_manager/prune_guard.py`):**
+`rm_worktree audit --prune-merged` used to treat a `merged` classification as
+authorisation to remove the worktree *and* run `git branch -D`. On 2026-07-31
+that took a live lane's `agent-utilities` worktree and branch ref out from under
+it (registry `D-FE-9`): the lane had merged an intermediate chunk back to `main`
+and kept working, so its branch really was an ancestor of `main` and its tree
+really was clean. **`merged` says the work is captured in `base`; it never says
+the worktree is unoccupied.** Three things follow, and none of them is a flag you
+can forget to set:
+
+- **A ref is gated harder than a directory.** Removing a clean worktree is
+  recoverable — `git worktree add` puts it back. Deleting the branch ref is what
+  turns commits into garbage. So deletion never uses `git branch -D`. It reads
+  the tip, re-asks `git merge-base --is-ancestor <tip> <base>` *at the moment of
+  deletion*, points `refs/lane-backup/<branch>` at that tip, and then defers to
+  `git branch -d`, which re-decides reachability itself under git's own ref lock.
+  This applies to `rm_worktree remove --delete-branch` too: `--force` covers the
+  recoverable directory, never the ref. The result reports `branch_anchor` (the
+  recovery ref) or `branch_kept_reason` (why it declined).
+- **A worktree sitting exactly on `base` is not prunable.** `ahead == 0` is
+  equally true of a lane that has finished and one that has not started, so
+  `merged` additionally requires `behind > 0` — proof `base` carries something
+  this branch contributed. A worktree at base reports `at_base` and classifies
+  `active`.
+- **Occupancy comes from the lane protocol, not a new mechanism.** Each removal
+  runs inside `agent_utilities.governance.lanes.guarded_tree_mutation` (the
+  repo-scoped lease in the shared `--git-common-dir`, plus
+  `require_resettable_tree`), and `_branch_state` is re-derived *inside* that
+  lease, so a classification that went stale during the audit scan is caught
+  rather than acted on. A merge/rebase in progress, uncommitted work, a live
+  lease held by that lane, and git's own `worktree lock` all mean "skip".
+
+**What this does not close:** a lease only binds actors that take it, and a lane
+that is merely between operations holds nothing, so it still looks like an
+abandoned worktree (`D-PS-1`). What is closed is the *consequence* — even when
+occupancy detection is wrong, the branch ref survives, so the worst case is a
+directory to re-add rather than a lane's commits to hunt for in `git fsck`.
+
 <!-- BEGIN concept-coordination (generated) -->
 ## Concept-ID Coordination (multi-session)
 
