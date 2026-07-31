@@ -139,6 +139,111 @@ def test_unknown_repo_errors(repo):
     assert res["ok"] is False and "not found" in res["error"]
 
 
+# ── canonical-checkout guard (CONCEPT:RM-CANON-GUARD) ─────────────────────
+# ``add`` parks the canonical checkout off the requested branch (if it holds
+# it), and ``merge`` switches the canonical checkout onto ``into`` -- both are
+# tree-mutating checkouts against the *canonical* tree. Prove they refuse and
+# report instead of clobbering when that tree is dirty, and still work when
+# it is clean, against a real git repo (not a mocked guard function).
+
+
+def test_add_refuses_dirty_tracked_change_on_canonical(repo):
+    _run("git checkout -b feat-y", repo.path)
+    open(os.path.join(repo.path, "README.md"), "w").write("dirty change\n")
+    res = repo.wm.add("myrepo", "feat-y")
+    assert res["ok"] is False
+    assert res["skipped"] is True
+    assert res["reason"] == "dirty-canonical-checkout"
+    # canonical untouched: still on feat-y, edit intact, no worktree created
+    branch = subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "feat-y"
+    assert open(os.path.join(repo.path, "README.md")).read() == "dirty change\n"
+    assert not os.path.isdir(repo.wm.worktree_path("myrepo", "feat-y"))
+
+
+def test_add_refuses_dirty_untracked_file_on_canonical(repo):
+    _run("git checkout -b feat-z", repo.path)
+    open(os.path.join(repo.path, "scratch.txt"), "w").write("wip\n")
+    res = repo.wm.add("myrepo", "feat-z")
+    assert res["ok"] is False and res["reason"] == "dirty-canonical-checkout"
+    assert os.path.isfile(os.path.join(repo.path, "scratch.txt"))  # not clobbered
+    assert not os.path.isdir(repo.wm.worktree_path("myrepo", "feat-z"))
+
+
+def test_add_parks_canonical_when_clean(repo):
+    _run("git checkout -b feat-w", repo.path)
+    res = repo.wm.add("myrepo", "feat-w")
+    assert res["ok"] and res["created"]
+    branch = subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "main"  # parked off feat-w so the worktree could take it
+
+
+def test_merge_refuses_dirty_tracked_change_on_canonical(repo):
+    res = repo.wm.add("myrepo", "feat-x")
+    open(os.path.join(res["path"], "feature.txt"), "w").write("x")
+    _run("git add -A && git commit -q -m feat", res["path"])
+    # canonical is on some other branch with uncommitted WIP (the exact
+    # "someone working directly in canonical" hazard).
+    _run("git checkout -b someone-else-branch", repo.path)
+    open(os.path.join(repo.path, "README.md"), "w").write("someone's WIP\n")
+
+    result = repo.wm.merge("myrepo", "feat-x")
+    assert result["ok"] is False
+    assert result["reason"] == "dirty-canonical-checkout"
+    branch = subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "someone-else-branch"  # never switched
+    assert open(os.path.join(repo.path, "README.md")).read() == "someone's WIP\n"
+
+
+def test_merge_refuses_dirty_untracked_file_on_canonical(repo):
+    res = repo.wm.add("myrepo", "feat-x2")
+    open(os.path.join(res["path"], "feature.txt"), "w").write("x")
+    _run("git add -A && git commit -q -m feat", res["path"])
+    _run("git checkout -b someone-else-branch2", repo.path)
+    open(os.path.join(repo.path, "scratch.txt"), "w").write("wip\n")
+
+    result = repo.wm.merge("myrepo", "feat-x2")
+    assert result["ok"] is False and result["reason"] == "dirty-canonical-checkout"
+    assert os.path.isfile(os.path.join(repo.path, "scratch.txt"))
+
+
+def test_merge_switches_canonical_when_clean(repo):
+    res = repo.wm.add("myrepo", "feat-x3")
+    open(os.path.join(res["path"], "feature.txt"), "w").write("x")
+    _run("git add -A && git commit -q -m feat", res["path"])
+    _run("git checkout -b someone-else-branch3", repo.path)  # clean
+
+    result = repo.wm.merge("myrepo", "feat-x3")
+    assert result["ok"] and not result["conflict"]
+    assert os.path.isfile(os.path.join(repo.path, "feature.txt"))
+    branch = subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "main"
+
+
 # ── audit (CONCEPT:RM-WORKTREE-AUDIT) ─────────────────────────────────────
 
 
@@ -160,6 +265,31 @@ def _wt_by_branch(audit, branch):
     return next(w for w in audit["worktrees"] if w["branch"] == branch)
 
 
+def _branches(repo_path):
+    return subprocess.run(
+        "git branch --list",
+        shell=True,
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+
+def _ref(repo_path, ref):
+    """What ``ref`` points at right now, or "" when it does not exist."""
+    return subprocess.run(
+        f"git rev-parse --verify --quiet {ref}",
+        shell=True,
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _kept_reason(result, branch):
+    return next(k["reason"] for k in result["kept"] if k.get("branch") == branch)
+
+
 def test_audit_merged_worktree_is_safe_to_prune(repo):
     res = repo.wm.add("myrepo", "feat-merged")
     _commit_in(res["path"], "feature.txt", "feat")
@@ -173,11 +303,25 @@ def test_audit_merged_worktree_is_safe_to_prune(repo):
     )
 
 
-def test_audit_no_divergence_is_merged(repo):
-    # a branch with no commits beyond main is an ancestor of main -> redundant.
+def test_audit_fresh_worktree_at_base_is_not_prunable(repo):
+    """A worktree that has not committed yet sits exactly on base, so ``ahead``
+    is 0 — the same reading a merged-back branch gives. It is the *start* of a
+    lane, not the end of one, and must never be offered for pruning."""
     repo.wm.add("myrepo", "feat-empty")
     audit = repo.wm.audit("myrepo")
-    assert _wt_by_branch(audit, "feat-empty")["class"] == "merged"
+    w = _wt_by_branch(audit, "feat-empty")
+    assert w["ahead"] == 0 and w["behind"] == 0
+    assert w["at_base"] is True
+    assert w["merged"] is False
+    assert w["class"] == "active"
+    assert not any(s["branch"] == "feat-empty" for s in audit["safe_to_prune"])
+
+
+def test_prune_merged_leaves_a_fresh_worktree_and_its_branch_alone(repo):
+    fresh = repo.wm.add("myrepo", "feat-empty")
+    repo.wm.audit("myrepo", prune_merged=True)
+    assert os.path.isdir(fresh["path"])
+    assert "feat-empty" in _branches(repo.path)
 
 
 def test_audit_unmerged_ahead_is_active(repo):
@@ -327,3 +471,208 @@ def test_worktree_hygiene_prune_removes_only_merged(tmp_path, monkeypatch):
     assert not os.path.isdir(merged["path"])  # merged pruned
     assert os.path.isdir(active["path"])  # active untouched
     assert any(p["branch"] == "feat-merged" for p in result["pruned"])
+
+
+# ── prune safety (CONCEPT:RM-PRUNE-GUARD, registry D-FE-9) ────────────────────
+# D-FE-9: an `agent-utilities`-scoped sweep removed a live lane's worktree AND
+# ran `git branch -D` on its ref, leaving its commits reachable only as dangling
+# objects. The branch was genuinely merged at that instant — the lane had merged
+# an intermediate chunk back to main and kept working — so "merged" was never
+# sufficient authorisation to destroy anything.
+
+
+def _merged_worktree(wm, branch="feat-merged"):
+    """A worktree whose branch really is merged back into main."""
+    made = wm.add("myrepo", branch)
+    _commit_in(made["path"], f"{branch}.txt", "feat")
+    assert wm.merge("myrepo", branch)["ok"]
+    return made
+
+
+def test_prune_merged_still_removes_a_genuinely_merged_worktree(repo):
+    """The feature itself must keep working: a real merge-back is reclaimed,
+    branch ref included."""
+    made = _merged_worktree(repo.wm)
+    tip = _ref(repo.path, "refs/heads/feat-merged")
+    result = repo.wm.audit("myrepo", prune_merged=True)
+    entry = next(p for p in result["pruned"] if p["branch"] == "feat-merged")
+    assert entry["ok"] is True
+    assert entry["branch_deleted"] is True
+    assert not os.path.isdir(made["path"])
+    assert "feat-merged" not in _branches(repo.path)
+    # the deleted tip is anchored, so even a wrong answer above stays recoverable
+    assert entry["branch_anchor"] == "refs/lane-backup/feat-merged"
+    assert _ref(repo.path, entry["branch_anchor"]) == tip
+
+
+def test_prune_skips_a_worktree_whose_lane_holds_a_lease(repo):
+    """The D-FE-9 shape: the branch is merged and the tree is clean because the
+    lane is blocked inside a long `pre-commit` run — which the lane protocol
+    announces as a lease at the scope every lane of this repo shares."""
+    lanes = pytest.importorskip("agent_utilities.governance.lanes")
+    made = _merged_worktree(repo.wm)
+
+    with lanes.hold_lease(
+        "precommit-all-files", operation="pre-commit run", path=made["path"]
+    ):
+        result = repo.wm.audit("myrepo", prune_merged=True)
+
+    assert result["pruned"] == []
+    assert "precommit-all-files" in _kept_reason(result, "feat-merged")
+    assert os.path.isdir(made["path"])
+    assert "feat-merged" in _branches(repo.path)
+
+
+def test_prune_skips_a_worktree_the_lane_dirtied_after_the_scan(repo):
+    """Classification happens in `audit()`, deletion later in `_prune_merged`.
+    Work that lands inside that window must not be destroyed by a decision taken
+    before it existed."""
+    made = _merged_worktree(repo.wm)
+    scan = repo.wm.audit("myrepo")  # read-only: classification only
+    assert _wt_by_branch(scan, "feat-merged")["class"] == "merged"
+
+    open(os.path.join(made["path"], "late.txt"), "w").write("landed mid-sweep")
+
+    pruned, kept = repo.wm._prune_merged(scan["worktrees"], "main")
+    assert pruned == []
+    # the lane protocol answers first: a tree with uncommitted work is never
+    # resettable by an actor that does not own it.
+    assert "uncommitted work" in _kept_reason({"kept": kept}, "feat-merged")
+    assert os.path.isdir(made["path"])
+    assert os.path.isfile(os.path.join(made["path"], "late.txt"))
+
+
+def test_prune_never_deletes_a_branch_that_committed_after_the_scan(repo):
+    """The lethal race: two commits land between the `merged` reading and the
+    deletion. Neither the directory nor — above all — the ref may be taken."""
+    made = _merged_worktree(repo.wm)
+    scan = repo.wm.audit("myrepo")
+    assert _wt_by_branch(scan, "feat-merged")["class"] == "merged"
+
+    _commit_in(made["path"], "after-1.txt", "after1")
+    _commit_in(made["path"], "after-2.txt", "after2")
+    head = subprocess.run(
+        "git rev-parse HEAD",
+        shell=True,
+        cwd=made["path"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    pruned, kept = repo.wm._prune_merged(scan["worktrees"], "main")
+    assert pruned == []
+    # clean tree, no lease held: only the re-derived state catches this.
+    reason = _kept_reason({"kept": kept}, "feat-merged")
+    assert "state changed since the audit scan" in reason and "ahead=2" in reason
+    assert os.path.isdir(made["path"])
+    assert "feat-merged" in _branches(repo.path)
+    # the ref still points at the two new commits: nothing became garbage
+    tip = subprocess.run(
+        "git rev-parse feat-merged",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert tip == head
+
+
+def test_prune_skips_a_locked_worktree(repo):
+    made = _merged_worktree(repo.wm)
+    _run(f"git worktree lock {made['path']}", repo.path)
+    result = repo.wm.audit("myrepo", prune_merged=True)
+    assert result["pruned"] == []
+    assert "locked" in _kept_reason(result, "feat-merged")
+    assert os.path.isdir(made["path"])
+    assert "feat-merged" in _branches(repo.path)
+
+
+def test_delete_merged_branch_refuses_an_unmerged_branch(repo):
+    """The ref gate on its own: `git branch -D` would take this; the guard and
+    git's own `-d` both refuse it."""
+    made = repo.wm.add("myrepo", "feat-unmerged")
+    _commit_in(made["path"], "wip.txt", "wip")
+    deleted, reason, anchor = repo.wm._delete_merged_branch(
+        repo.path, "feat-unmerged", "main"
+    )
+    assert deleted is False
+    assert "not reachable from" in reason
+    assert anchor == ""
+    assert "feat-unmerged" in _branches(repo.path)
+    # a refused delete leaves the ref namespace exactly as it found it
+    assert _ref(repo.path, "refs/lane-backup/feat-unmerged") == ""
+
+
+def test_remove_with_delete_branch_refuses_an_unmerged_branch(repo):
+    """An explicit `remove --delete-branch` is still not authorisation to orphan
+    commits; `force` covers the recoverable directory, never the ref."""
+    made = repo.wm.add("myrepo", "feat-unmerged")
+    _commit_in(made["path"], "wip.txt", "wip")
+    result = repo.wm.remove("myrepo", "feat-unmerged", delete_branch=True)
+    assert result["ok"] is True
+    assert result["branch_deleted"] is False
+    assert "not reachable from" in result["branch_kept_reason"]
+    assert "feat-unmerged" in _branches(repo.path)
+    assert not os.path.isdir(made["path"])  # directory gone, work recoverable
+
+
+def test_remove_with_delete_branch_deletes_a_merged_branch(repo):
+    _merged_worktree(repo.wm, "feat-done")
+    result = repo.wm.remove("myrepo", "feat-done", delete_branch=True)
+    assert result["branch_deleted"] is True
+    assert "feat-done" not in _branches(repo.path)
+
+
+def test_delete_anchors_the_tip_before_removing_the_ref(repo):
+    """The anchor is taken at the moment of deletion, not at lane start, so it
+    cannot preserve a commit the branch has since moved past."""
+    made = _merged_worktree(repo.wm, "feat-anchor")
+    # the branch advances after it was first observed, exactly as a live lane's
+    # would; the anchor must follow the tip, not the earlier reading.
+    early = _ref(repo.path, "refs/heads/feat-anchor")
+    _commit_in(made["path"], "later.txt", "later")
+    assert repo.wm.merge("myrepo", "feat-anchor")["ok"]
+    late = _ref(repo.path, "refs/heads/feat-anchor")
+    assert late != early
+
+    result = repo.wm.remove("myrepo", "feat-anchor", delete_branch=True)
+    assert result["branch_deleted"] is True
+    assert result["branch_anchor"] == "refs/lane-backup/feat-anchor"
+    assert _ref(repo.path, result["branch_anchor"]) == late
+    # and the anchor is a real root: the tip is reachable, not dangling
+    dangling = subprocess.run(
+        "git fsck --dangling",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert late not in dangling
+
+
+def test_delete_restores_a_pre_existing_anchor_when_git_refuses(repo):
+    """A merged branch whose worktree is still checked out passes the ancestry
+    gate and is then refused by git itself — the rollback path. Someone else's
+    anchor must survive our failed attempt untouched."""
+    _merged_worktree(repo.wm, "feat-held")  # worktree deliberately left in place
+    _run("git update-ref refs/lane-backup/feat-held main", repo.path)
+    prior = _ref(repo.path, "refs/lane-backup/feat-held")
+    assert prior == _ref(repo.path, "refs/heads/main")
+
+    deleted, reason, anchor = repo.wm._delete_merged_branch(
+        repo.path, "feat-held", "main"
+    )
+    assert deleted is False and anchor == ""
+    assert "used by worktree" in reason
+    assert _ref(repo.path, "refs/lane-backup/feat-held") == prior
+    assert "feat-held" in _branches(repo.path)
+
+
+def test_delete_removes_only_the_anchor_it_created_when_git_refuses(repo):
+    _merged_worktree(repo.wm, "feat-held2")  # worktree still checked out
+    deleted, _reason, _anchor = repo.wm._delete_merged_branch(
+        repo.path, "feat-held2", "main"
+    )
+    assert deleted is False
+    # no anchor existed before, so none is left behind
+    assert _ref(repo.path, "refs/lane-backup/feat-held2") == ""

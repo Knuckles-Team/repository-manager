@@ -39,6 +39,7 @@ from importlib.resources import files
 
 from agent_utilities.base_utilities import get_logger
 
+from repository_manager.canonical_guard import guarded_canonical_mutation
 from repository_manager.models import (
     GitError,
     GitMetadata,
@@ -1187,31 +1188,48 @@ class Git:
                 default_branch = re.sub(
                     "refs/remotes/origin/", "", default_branch_result.data
                 ).strip()
-                # WT-3 (CONCEPT:RM-WORKTREE) — non-destructive / worktree-aware.
-                # Never switch branches on a dirty canonical tree: a concurrent
-                # session may have uncommitted work here, and a forced checkout
-                # would disrupt it. Skip the checkout (and skip the no-op when we
-                # are already on the default branch). Session work belongs in a
-                # worktree under WORKTREE_ROOT anyway, which this never touches.
+                # WT-3 (CONCEPT:RM-WORKTREE, CONCEPT:RM-CANON-GUARD) —
+                # non-destructive / worktree-aware. Never switch branches on a
+                # dirty canonical tree: a concurrent session may have
+                # uncommitted work here, and a forced checkout would disrupt
+                # it. guarded_canonical_mutation skips the checkout (loudly,
+                # with the repo named) instead. Session work belongs in a
+                # worktree under WORKTREE_ROOT anyway, which this never
+                # touches.
                 current_branch = self.git_action(
                     "git rev-parse --abbrev-ref HEAD", path=target_path, quiet=True
                 ).data.strip()
-                dirty = self.git_action(
-                    "git status --porcelain", path=target_path, quiet=True
-                ).data.strip()
-                if dirty:
-                    logger.warning(
-                        "Skipping default-branch checkout because uncommitted changes are present"
-                    )
-                elif current_branch == default_branch:
+                if current_branch == default_branch:
                     logger.info("Configured project is already on its default branch")
                 else:
-                    checkout_result = self.git_action(
-                        f'git checkout "{default_branch}"',
-                        path=target_path,
-                    )
-                    results.append(checkout_result)
-                    logger.info("Checked out configured default branch")
+                    repo_label = _project_label(target_path)
+                    with guarded_canonical_mutation(
+                        self, target_path, repo_label, "check out default branch"
+                    ) as blocked:
+                        if blocked is not None:
+                            results.append(
+                                GitResult(
+                                    status="skipped",
+                                    data=blocked.get("detail", ""),
+                                    error=GitError(message=blocked["error"], code=0),
+                                    metadata=GitMetadata(
+                                        command="checkout-guard",
+                                        workspace=repo_label,
+                                        return_code=0,
+                                        timestamp=datetime.datetime.now(
+                                            datetime.UTC
+                                        ).isoformat()
+                                        + "Z",
+                                    ),
+                                )
+                            )
+                        else:
+                            checkout_result = self.git_action(
+                                f'git checkout "{default_branch}"',
+                                path=target_path,
+                            )
+                            results.append(checkout_result)
+                            logger.info("Checked out configured default branch")
             else:
                 results.append(default_branch_result)
                 logger.error("Failed to resolve the configured default branch")

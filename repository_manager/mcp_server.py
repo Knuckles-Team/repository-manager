@@ -1211,7 +1211,12 @@ def register_project_management_tools(mcp: FastMCP):
             return await run_blocking(wm.add, repo, branch, base=base, adopt=adopt)
         if action == "remove":
             return await run_blocking(
-                wm.remove, repo, branch, force=force, delete_branch=delete_branch
+                wm.remove,
+                repo,
+                branch,
+                force=force,
+                delete_branch=delete_branch,
+                base=base,
             )
         if action == "merge":
             return await run_blocking(wm.merge, repo, branch, into=into)

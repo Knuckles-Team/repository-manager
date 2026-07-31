@@ -27,6 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can't be computed).
 
 ### Fixed
+- **Worktree prune could delete an active lane's branch ref (CONCEPT:RM-PRUNE-GUARD, `D-FE-9`)** —
+  `rm_worktree audit --prune-merged` treated a `merged` classification as authorisation to remove a
+  worktree and run `git branch -D`. It removed a live lane's `agent-utilities` worktree *and* its
+  branch mid-run; the commits survived only as dangling objects. `merged` was a correct reading —
+  the lane had merged an intermediate chunk back to `main` and kept working — which is the point:
+  mergedness is not vacancy, and a scan-time classification is not a delete-time authorisation.
+  Now: `merged` additionally requires `behind > 0` (so a worktree still sitting on `base` — a lane
+  that has not started — is `active`, reported as `at_base`, never prunable); every removal runs
+  inside `agent_utilities.governance.lanes.guarded_tree_mutation` with `_branch_state` re-derived
+  under that lease; git's own `worktree lock` is honoured; and branch deletion goes through
+  `_delete_merged_branch`, which re-asks `git merge-base --is-ancestor` on the exact tip at deletion
+  time, anchors it at `refs/lane-backup/<branch>`, and uses `git branch -d` — never `-D` — so git
+  re-decides reachability under its own ref lock. `rm_worktree remove --delete-branch` uses the same
+  gate (`--force` covers the recoverable directory, never the ref) and both report `branch_anchor` /
+  `branch_kept_reason`.
 - **O(jobs+targets) job indexing in `validate`** — the action scanned all `_jobs` for every target
   (O(targets × jobs)) while holding `_jobs_lock` inside the async handler; on a full-workspace run
   that synchronous scan blocked the event loop long enough that concurrent `validate_status` RPCs

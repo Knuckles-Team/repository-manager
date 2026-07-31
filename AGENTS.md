@@ -794,9 +794,36 @@ why rather than bypassing it.
 ## Working with Git Worktrees (multi-session)
 
 Multiple agents/sessions work the `agent-packages/*` repos concurrently. **Do not
-edit the canonical checkout** (`$AGENT_UTILITIES_WORKSPACE_ROOT/agent-packages/<repo>`) — a
-background `repository-manager` sync can reset its working tree and discard
-uncommitted edits. Take your own git worktree on your own branch instead:
+edit the canonical checkout** (`$AGENT_UTILITIES_WORKSPACE_ROOT/agent-packages/<repo>`) —
+a background `repository-manager` sync runs checkouts against it (default-branch
+sync, `rm_worktree add`/`merge`'s park/switch checkouts) that can collide with
+concurrent edits there. Take your own git worktree on your own branch instead:
+
+**The dirty-tree guard (CONCEPT:RM-CANON-GUARD,
+`repository_manager/canonical_guard.py`):** every one of those checkouts now goes
+through `guarded_canonical_mutation`, which checks `git status --porcelain`
+(tracked modifications **and** untracked files, in one pass) immediately before
+mutating and — if the canonical tree is dirty — **skips the checkout and logs a
+loud, actionable warning naming the repo and what it found** instead of running
+it. It also takes a short-lived cross-process lease
+(`<canonical>/.git/repository-manager.lease`, an `flock`) for the duration of
+its own check-then-mutate sequence, so two repository-manager-initiated
+mutations against the same canonical serialize instead of racing each other.
+**What this does not close:** an external process (e.g. a human running
+`pre-commit` by hand directly in the canonical checkout, against this exact
+warning) never takes that lease on its own, so the classic TOCTOU window — tree
+clean when repository-manager checks it, dirtied a moment later by that
+external process — is narrowed, not eliminated. If you must run a long
+operation directly in canonical (**strongly discouraged — use a worktree**),
+make it visible to the guard by wrapping it with the same lease:
+
+```bash
+python -m repository_manager.canonical_guard agent-packages/<repo> -- pre-commit run --all-files
+```
+
+This is the concrete lease/marker primitive offered to the workspace's general
+concurrent-development protocol (PARTITION / APPEND-ONLY / LEASE / READ-ONLY)
+to generalize — see the coordination note below.
 
 ```bash
 # preferred — repository-manager MCP:
@@ -822,6 +849,44 @@ alone).
 4. **Clean up** — remove the worktree and delete the merged branch:
    `rm_worktree remove <repo> <branch> --delete-branch`; `rm_worktree prune` clears
    stale entries. (Raw-git: `git worktree remove <path> && git branch -d <branch>`.)
+
+**The prune guard (CONCEPT:RM-PRUNE-GUARD, `repository_manager/prune_guard.py`):**
+`rm_worktree audit --prune-merged` used to treat a `merged` classification as
+authorisation to remove the worktree *and* run `git branch -D`. On 2026-07-31
+that took a live lane's `agent-utilities` worktree and branch ref out from under
+it (registry `D-FE-9`): the lane had merged an intermediate chunk back to `main`
+and kept working, so its branch really was an ancestor of `main` and its tree
+really was clean. **`merged` says the work is captured in `base`; it never says
+the worktree is unoccupied.** Three things follow, and none of them is a flag you
+can forget to set:
+
+- **A ref is gated harder than a directory.** Removing a clean worktree is
+  recoverable — `git worktree add` puts it back. Deleting the branch ref is what
+  turns commits into garbage. So deletion never uses `git branch -D`. It reads
+  the tip, re-asks `git merge-base --is-ancestor <tip> <base>` *at the moment of
+  deletion*, points `refs/lane-backup/<branch>` at that tip, and then defers to
+  `git branch -d`, which re-decides reachability itself under git's own ref lock.
+  This applies to `rm_worktree remove --delete-branch` too: `--force` covers the
+  recoverable directory, never the ref. The result reports `branch_anchor` (the
+  recovery ref) or `branch_kept_reason` (why it declined).
+- **A worktree sitting exactly on `base` is not prunable.** `ahead == 0` is
+  equally true of a lane that has finished and one that has not started, so
+  `merged` additionally requires `behind > 0` — proof `base` carries something
+  this branch contributed. A worktree at base reports `at_base` and classifies
+  `active`.
+- **Occupancy comes from the lane protocol, not a new mechanism.** Each removal
+  runs inside `agent_utilities.governance.lanes.guarded_tree_mutation` (the
+  repo-scoped lease in the shared `--git-common-dir`, plus
+  `require_resettable_tree`), and `_branch_state` is re-derived *inside* that
+  lease, so a classification that went stale during the audit scan is caught
+  rather than acted on. A merge/rebase in progress, uncommitted work, a live
+  lease held by that lane, and git's own `worktree lock` all mean "skip".
+
+**What this does not close:** a lease only binds actors that take it, and a lane
+that is merely between operations holds nothing, so it still looks like an
+abandoned worktree (`D-PS-1`). What is closed is the *consequence* — even when
+occupancy detection is wrong, the branch ref survives, so the worst case is a
+directory to re-add rather than a lane's commits to hunt for in `git fsck`.
 
 <!-- BEGIN concept-coordination (generated) -->
 ## Concept-ID Coordination (multi-session)
