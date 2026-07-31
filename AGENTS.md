@@ -794,9 +794,36 @@ why rather than bypassing it.
 ## Working with Git Worktrees (multi-session)
 
 Multiple agents/sessions work the `agent-packages/*` repos concurrently. **Do not
-edit the canonical checkout** (`$AGENT_UTILITIES_WORKSPACE_ROOT/agent-packages/<repo>`) — a
-background `repository-manager` sync can reset its working tree and discard
-uncommitted edits. Take your own git worktree on your own branch instead:
+edit the canonical checkout** (`$AGENT_UTILITIES_WORKSPACE_ROOT/agent-packages/<repo>`) —
+a background `repository-manager` sync runs checkouts against it (default-branch
+sync, `rm_worktree add`/`merge`'s park/switch checkouts) that can collide with
+concurrent edits there. Take your own git worktree on your own branch instead:
+
+**The dirty-tree guard (CONCEPT:RM-CANON-GUARD,
+`repository_manager/canonical_guard.py`):** every one of those checkouts now goes
+through `guarded_canonical_mutation`, which checks `git status --porcelain`
+(tracked modifications **and** untracked files, in one pass) immediately before
+mutating and — if the canonical tree is dirty — **skips the checkout and logs a
+loud, actionable warning naming the repo and what it found** instead of running
+it. It also takes a short-lived cross-process lease
+(`<canonical>/.git/repository-manager.lease`, an `flock`) for the duration of
+its own check-then-mutate sequence, so two repository-manager-initiated
+mutations against the same canonical serialize instead of racing each other.
+**What this does not close:** an external process (e.g. a human running
+`pre-commit` by hand directly in the canonical checkout, against this exact
+warning) never takes that lease on its own, so the classic TOCTOU window — tree
+clean when repository-manager checks it, dirtied a moment later by that
+external process — is narrowed, not eliminated. If you must run a long
+operation directly in canonical (**strongly discouraged — use a worktree**),
+make it visible to the guard by wrapping it with the same lease:
+
+```bash
+python -m repository_manager.canonical_guard agent-packages/<repo> -- pre-commit run --all-files
+```
+
+This is the concrete lease/marker primitive offered to the workspace's general
+concurrent-development protocol (PARTITION / APPEND-ONLY / LEASE / READ-ONLY)
+to generalize — see the coordination note below.
 
 ```bash
 # preferred — repository-manager MCP:

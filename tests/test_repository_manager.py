@@ -1,5 +1,6 @@
 import datetime
 import os
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -458,3 +459,98 @@ class TestUpdateDependencyPropagation:
     def test_unpinned_untouched(self, tmp_path):
         upd, out = self._run(tmp_path, "agent-utilities\n")
         assert upd is False
+
+
+# ── pull_project canonical-checkout guard (CONCEPT:RM-CANON-GUARD) ────────
+# ``pull_project``'s default-branch checkout runs directly against the
+# *canonical* checkout. Prove it refuses and reports -- rather than
+# clobbering -- when that tree is dirty (tracked or untracked), and still
+# performs the checkout normally when it is clean, against a real git repo
+# with a real origin remote (not mocked).
+
+
+def _sh(cmd, cwd):
+    subprocess.run(cmd, shell=True, cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def _current_branch(cwd):
+    return subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+@pytest.fixture
+def canonical_with_origin(tmp_path):
+    """A real canonical checkout with a real bare ``origin`` whose default
+    branch is ``main``, wired up as the sole project in a fresh ``Git``."""
+    bare = tmp_path / "origin.git"
+    _sh(f"git init --bare -b main {bare}", tmp_path)
+
+    workspace = tmp_path / "ws"
+    repo_path = workspace / "myrepo"
+    repo_path.mkdir(parents=True)
+    _sh("git init -b main", repo_path)
+    _sh("git config user.email t@t.io && git config user.name t", repo_path)
+    (repo_path / "README.md").write_text("hello\n")
+    _sh("git add -A && git commit -q -m init", repo_path)
+    _sh(f"git remote add origin {bare}", repo_path)
+    _sh("git push -q -u origin main", repo_path)
+    _sh("git remote set-head origin -a", repo_path)  # sets refs/remotes/origin/HEAD
+
+    git = Git(path=str(workspace), set_to_default_branch=True)
+    git.project_map = {"origin/myrepo.git": str(repo_path)}
+    return git, str(repo_path)
+
+
+def test_pull_project_refuses_checkout_when_canonical_dirty_tracked(
+    canonical_with_origin, caplog
+):
+    git, repo_path = canonical_with_origin
+    _sh("git checkout -b other", repo_path)
+    _sh("git push -q -u origin other", repo_path)
+    (open(os.path.join(repo_path, "README.md"), "w")).write("dirty change\n")
+
+    with caplog.at_level("WARNING"):
+        result = git.pull_project(repo_path)
+
+    assert _current_branch(repo_path) == "other"  # never switched
+    assert open(os.path.join(repo_path, "README.md")).read() == "dirty change\n"
+    # the checkout was never attempted -- the guard's skip result is in there
+    assert "checkout-guard" in result.data
+    assert any(
+        "REFUSING" in r.message and "myrepo" in r.message for r in caplog.records
+    )
+
+
+def test_pull_project_refuses_checkout_when_canonical_dirty_untracked(
+    canonical_with_origin, caplog
+):
+    git, repo_path = canonical_with_origin
+    _sh("git checkout -b other2", repo_path)
+    _sh("git push -q -u origin other2", repo_path)
+    open(os.path.join(repo_path, "scratch.txt"), "w").write("wip\n")
+
+    with caplog.at_level("WARNING"):
+        result = git.pull_project(repo_path)
+
+    assert _current_branch(repo_path) == "other2"
+    assert os.path.isfile(os.path.join(repo_path, "scratch.txt"))  # not clobbered
+    assert "checkout-guard" in result.data
+    assert any(
+        "REFUSING" in r.message and "myrepo" in r.message for r in caplog.records
+    )
+
+
+def test_pull_project_checks_out_default_branch_when_clean(canonical_with_origin):
+    git, repo_path = canonical_with_origin
+    _sh("git checkout -b other3", repo_path)
+    _sh("git push -q -u origin other3", repo_path)  # clean
+
+    result = git.pull_project(repo_path)
+
+    assert _current_branch(repo_path) == "main"
+    assert result.status == "success"

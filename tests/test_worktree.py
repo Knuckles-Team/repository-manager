@@ -139,6 +139,111 @@ def test_unknown_repo_errors(repo):
     assert res["ok"] is False and "not found" in res["error"]
 
 
+# ── canonical-checkout guard (CONCEPT:RM-CANON-GUARD) ─────────────────────
+# ``add`` parks the canonical checkout off the requested branch (if it holds
+# it), and ``merge`` switches the canonical checkout onto ``into`` -- both are
+# tree-mutating checkouts against the *canonical* tree. Prove they refuse and
+# report instead of clobbering when that tree is dirty, and still work when
+# it is clean, against a real git repo (not a mocked guard function).
+
+
+def test_add_refuses_dirty_tracked_change_on_canonical(repo):
+    _run("git checkout -b feat-y", repo.path)
+    open(os.path.join(repo.path, "README.md"), "w").write("dirty change\n")
+    res = repo.wm.add("myrepo", "feat-y")
+    assert res["ok"] is False
+    assert res["skipped"] is True
+    assert res["reason"] == "dirty-canonical-checkout"
+    # canonical untouched: still on feat-y, edit intact, no worktree created
+    branch = subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "feat-y"
+    assert open(os.path.join(repo.path, "README.md")).read() == "dirty change\n"
+    assert not os.path.isdir(repo.wm.worktree_path("myrepo", "feat-y"))
+
+
+def test_add_refuses_dirty_untracked_file_on_canonical(repo):
+    _run("git checkout -b feat-z", repo.path)
+    open(os.path.join(repo.path, "scratch.txt"), "w").write("wip\n")
+    res = repo.wm.add("myrepo", "feat-z")
+    assert res["ok"] is False and res["reason"] == "dirty-canonical-checkout"
+    assert os.path.isfile(os.path.join(repo.path, "scratch.txt"))  # not clobbered
+    assert not os.path.isdir(repo.wm.worktree_path("myrepo", "feat-z"))
+
+
+def test_add_parks_canonical_when_clean(repo):
+    _run("git checkout -b feat-w", repo.path)
+    res = repo.wm.add("myrepo", "feat-w")
+    assert res["ok"] and res["created"]
+    branch = subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "main"  # parked off feat-w so the worktree could take it
+
+
+def test_merge_refuses_dirty_tracked_change_on_canonical(repo):
+    res = repo.wm.add("myrepo", "feat-x")
+    open(os.path.join(res["path"], "feature.txt"), "w").write("x")
+    _run("git add -A && git commit -q -m feat", res["path"])
+    # canonical is on some other branch with uncommitted WIP (the exact
+    # "someone working directly in canonical" hazard).
+    _run("git checkout -b someone-else-branch", repo.path)
+    open(os.path.join(repo.path, "README.md"), "w").write("someone's WIP\n")
+
+    result = repo.wm.merge("myrepo", "feat-x")
+    assert result["ok"] is False
+    assert result["reason"] == "dirty-canonical-checkout"
+    branch = subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "someone-else-branch"  # never switched
+    assert open(os.path.join(repo.path, "README.md")).read() == "someone's WIP\n"
+
+
+def test_merge_refuses_dirty_untracked_file_on_canonical(repo):
+    res = repo.wm.add("myrepo", "feat-x2")
+    open(os.path.join(res["path"], "feature.txt"), "w").write("x")
+    _run("git add -A && git commit -q -m feat", res["path"])
+    _run("git checkout -b someone-else-branch2", repo.path)
+    open(os.path.join(repo.path, "scratch.txt"), "w").write("wip\n")
+
+    result = repo.wm.merge("myrepo", "feat-x2")
+    assert result["ok"] is False and result["reason"] == "dirty-canonical-checkout"
+    assert os.path.isfile(os.path.join(repo.path, "scratch.txt"))
+
+
+def test_merge_switches_canonical_when_clean(repo):
+    res = repo.wm.add("myrepo", "feat-x3")
+    open(os.path.join(res["path"], "feature.txt"), "w").write("x")
+    _run("git add -A && git commit -q -m feat", res["path"])
+    _run("git checkout -b someone-else-branch3", repo.path)  # clean
+
+    result = repo.wm.merge("myrepo", "feat-x3")
+    assert result["ok"] and not result["conflict"]
+    assert os.path.isfile(os.path.join(repo.path, "feature.txt"))
+    branch = subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "main"
+
+
 # ── audit (CONCEPT:RM-WORKTREE-AUDIT) ─────────────────────────────────────
 
 

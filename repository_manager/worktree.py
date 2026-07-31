@@ -12,6 +12,12 @@ Worktrees live at ``<WORKTREE_ROOT>/<repo>/<branch-slug>``. ``WORKTREE_ROOT``
 defaults beneath the platform's XDG state directory (outside the workspace scan,
 so discovery and the cascade ignore it) and is overridable via
 ``REPOSITORY_MANAGER_WORKTREE_ROOT``.
+
+Every checkout this module runs directly against a *canonical* checkout (as
+opposed to a linked worktree) goes through
+:func:`repository_manager.canonical_guard.guarded_canonical_mutation`
+(CONCEPT:RM-CANON-GUARD) first, so a dirty canonical tree is skipped-and-
+reported instead of silently clobbered.
 """
 
 from __future__ import annotations
@@ -20,6 +26,8 @@ import os
 import shlex
 import time
 from typing import Any, Protocol
+
+from repository_manager.canonical_guard import guarded_canonical_mutation
 
 
 class GitLike(Protocol):
@@ -143,7 +151,17 @@ class WorktreeManager:
 
         cur = self._run("git rev-parse --abbrev-ref HEAD", canonical, quiet=True)
         if self._ok(cur) and cur.data.strip() == branch:
-            self._run(f"git checkout {shlex.quote(base)}", canonical)
+            with guarded_canonical_mutation(
+                self.git,
+                canonical,
+                repo,
+                "park canonical checkout off requested branch",
+            ) as blocked:
+                if blocked is not None:
+                    if adopted:  # restore the stash we already took
+                        self._run("git stash pop", canonical)
+                    return {**blocked, "branch": branch}
+                self._run(f"git checkout {shlex.quote(base)}", canonical)
 
         exists = self._run(
             f"git rev-parse --verify --quiet refs/heads/{shlex.quote(branch)}",
@@ -244,9 +262,14 @@ class WorktreeManager:
             return {"ok": False, "error": f"repo not found: {repo}"}
         cur = self._run("git rev-parse --abbrev-ref HEAD", canonical, quiet=True)
         if self._ok(cur) and cur.data.strip() != into:
-            co = self._run(f"git checkout {shlex.quote(into)}", canonical)
-            if not self._ok(co):
-                return {"ok": False, "error": f"cannot checkout {into}: {co.data}"}
+            with guarded_canonical_mutation(
+                self.git, canonical, repo, f"check out {into!r} for merge"
+            ) as blocked:
+                if blocked is not None:
+                    return {**blocked, "branch": branch, "into": into}
+                co = self._run(f"git checkout {shlex.quote(into)}", canonical)
+                if not self._ok(co):
+                    return {"ok": False, "error": f"cannot checkout {into}: {co.data}"}
         ff = "--no-ff" if no_ff else ""
         res = self._run(
             f"git merge {ff} {shlex.quote(branch)}".replace("  ", " "), canonical
