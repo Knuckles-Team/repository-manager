@@ -275,6 +275,17 @@ def _branches(repo_path):
     ).stdout
 
 
+def _ref(repo_path, ref):
+    """What ``ref`` points at right now, or "" when it does not exist."""
+    return subprocess.run(
+        f"git rev-parse --verify --quiet {ref}",
+        shell=True,
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
 def _kept_reason(result, branch):
     return next(k["reason"] for k in result["kept"] if k.get("branch") == branch)
 
@@ -482,12 +493,16 @@ def test_prune_merged_still_removes_a_genuinely_merged_worktree(repo):
     """The feature itself must keep working: a real merge-back is reclaimed,
     branch ref included."""
     made = _merged_worktree(repo.wm)
+    tip = _ref(repo.path, "refs/heads/feat-merged")
     result = repo.wm.audit("myrepo", prune_merged=True)
     entry = next(p for p in result["pruned"] if p["branch"] == "feat-merged")
     assert entry["ok"] is True
     assert entry["branch_deleted"] is True
     assert not os.path.isdir(made["path"])
     assert "feat-merged" not in _branches(repo.path)
+    # the deleted tip is anchored, so even a wrong answer above stays recoverable
+    assert entry["branch_anchor"] == "refs/lane-backup/feat-merged"
+    assert _ref(repo.path, entry["branch_anchor"]) == tip
 
 
 def test_prune_skips_a_worktree_whose_lane_holds_a_lease(repo):
@@ -577,10 +592,15 @@ def test_delete_merged_branch_refuses_an_unmerged_branch(repo):
     git's own `-d` both refuse it."""
     made = repo.wm.add("myrepo", "feat-unmerged")
     _commit_in(made["path"], "wip.txt", "wip")
-    deleted, reason = repo.wm._delete_merged_branch(repo.path, "feat-unmerged", "main")
+    deleted, reason, anchor = repo.wm._delete_merged_branch(
+        repo.path, "feat-unmerged", "main"
+    )
     assert deleted is False
     assert "not reachable from" in reason
+    assert anchor == ""
     assert "feat-unmerged" in _branches(repo.path)
+    # a refused delete leaves the ref namespace exactly as it found it
+    assert _ref(repo.path, "refs/lane-backup/feat-unmerged") == ""
 
 
 def test_remove_with_delete_branch_refuses_an_unmerged_branch(repo):
@@ -601,3 +621,58 @@ def test_remove_with_delete_branch_deletes_a_merged_branch(repo):
     result = repo.wm.remove("myrepo", "feat-done", delete_branch=True)
     assert result["branch_deleted"] is True
     assert "feat-done" not in _branches(repo.path)
+
+
+def test_delete_anchors_the_tip_before_removing_the_ref(repo):
+    """The anchor is taken at the moment of deletion, not at lane start, so it
+    cannot preserve a commit the branch has since moved past."""
+    made = _merged_worktree(repo.wm, "feat-anchor")
+    # the branch advances after it was first observed, exactly as a live lane's
+    # would; the anchor must follow the tip, not the earlier reading.
+    early = _ref(repo.path, "refs/heads/feat-anchor")
+    _commit_in(made["path"], "later.txt", "later")
+    assert repo.wm.merge("myrepo", "feat-anchor")["ok"]
+    late = _ref(repo.path, "refs/heads/feat-anchor")
+    assert late != early
+
+    result = repo.wm.remove("myrepo", "feat-anchor", delete_branch=True)
+    assert result["branch_deleted"] is True
+    assert result["branch_anchor"] == "refs/lane-backup/feat-anchor"
+    assert _ref(repo.path, result["branch_anchor"]) == late
+    # and the anchor is a real root: the tip is reachable, not dangling
+    dangling = subprocess.run(
+        "git fsck --dangling",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert late not in dangling
+
+
+def test_delete_restores_a_pre_existing_anchor_when_git_refuses(repo):
+    """A merged branch whose worktree is still checked out passes the ancestry
+    gate and is then refused by git itself — the rollback path. Someone else's
+    anchor must survive our failed attempt untouched."""
+    _merged_worktree(repo.wm, "feat-held")  # worktree deliberately left in place
+    _run("git update-ref refs/lane-backup/feat-held main", repo.path)
+    prior = _ref(repo.path, "refs/lane-backup/feat-held")
+    assert prior == _ref(repo.path, "refs/heads/main")
+
+    deleted, reason, anchor = repo.wm._delete_merged_branch(
+        repo.path, "feat-held", "main"
+    )
+    assert deleted is False and anchor == ""
+    assert "used by worktree" in reason
+    assert _ref(repo.path, "refs/lane-backup/feat-held") == prior
+    assert "feat-held" in _branches(repo.path)
+
+
+def test_delete_removes_only_the_anchor_it_created_when_git_refuses(repo):
+    _merged_worktree(repo.wm, "feat-held2")  # worktree still checked out
+    deleted, _reason, _anchor = repo.wm._delete_merged_branch(
+        repo.path, "feat-held2", "main"
+    )
+    assert deleted is False
+    # no anchor existed before, so none is left behind
+    assert _ref(repo.path, "refs/lane-backup/feat-held2") == ""

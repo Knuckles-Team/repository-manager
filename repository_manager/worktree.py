@@ -255,9 +255,11 @@ class WorktreeManager:
             return {"ok": False, "error": res.error.message if res.error else res.data}
         self._run("git worktree prune", canonical, quiet=True)
         deleted = False
-        reason = ""
+        reason = anchor = ""
         if delete_branch:
-            deleted, reason = self._delete_merged_branch(canonical, branch, base)
+            deleted, reason, anchor = self._delete_merged_branch(
+                canonical, branch, base
+            )
         out: dict[str, Any] = {
             "ok": True,
             "repo": repo,
@@ -267,6 +269,8 @@ class WorktreeManager:
         }
         if reason:
             out["branch_kept_reason"] = reason
+        if anchor:
+            out["branch_anchor"] = anchor
         return out
 
     def merge(
@@ -532,46 +536,95 @@ class WorktreeManager:
                     )
         return orphans
 
+    def _read_ref(self, canonical: str, ref: str) -> str:
+        """The object a ref points at right now, or ``""`` when it does not exist."""
+        res = self._run(
+            f"git rev-parse --verify --quiet {shlex.quote(ref)}", canonical, quiet=True
+        )
+        return res.data.strip() if self._ok(res) else ""
+
     def _delete_merged_branch(
         self, canonical: str, branch: str, base: str
-    ) -> tuple[bool, str]:
+    ) -> tuple[bool, str, str]:
         """Delete ``branch`` only if its commits survive the deletion.
 
         A branch ref is the only thing standing between a lane's commits and
         ``gc``, so deleting one is gated harder than removing a directory, and
         gated *at the moment of deletion* rather than from an earlier scan:
 
-        1. ``git merge-base --is-ancestor <branch> <base>`` — the honest
+        1. Read the tip. Every later step names that exact object, so a ref that
+           moves underneath us cannot make an earlier answer apply to a commit it
+           was never asked about.
+        2. ``git merge-base --is-ancestor <tip> <base>`` — the honest
            reachability question, asked now. A non-zero exit is this command's
            *answer*, not a malfunction; the audited runner logs it as a failure,
            which is accurate here because it accompanies a real refusal, and it
            is asked only of the handful of branches actually up for deletion
            rather than of every worktree in the audit.
-        2. ``git branch -d`` — never ``-D``. Git re-decides reachability itself,
+        3. **Anchor before deleting.** ``refs/lane-backup/<branch>`` is pointed at
+           the tip immediately before the delete — one ref write, taken at the
+           moment of deletion rather than at lane start, so it cannot go stale
+           the way an anchor laid down once and never refreshed does. Belt and
+           braces on the one operation whose failure turns commits into garbage:
+           even a wrong answer above now costs a ref to clean up rather than a
+           lane's work. The namespace is the one the workspace already uses for
+           this; a pre-existing anchor is restored, never discarded, if the
+           delete then fails.
+        4. ``git branch -d`` — never ``-D``. Git re-decides reachability itself,
            under its own ref lock, atomically with the delete. This is what makes
            the guarantee hold through a check-then-delete race: no window exists
-           between git's decision and git's action.
+           between git's decision and git's action. If the tip moved to an
+           unmerged commit in the meantime, ``-d`` refuses; if it moved to
+           another merged commit, that commit is reachable from ``base`` anyway
+           and the anchor still covers the tip we vouched for.
 
-        Returns ``(deleted, reason)``; ``reason`` explains a refusal.
+        Returns ``(deleted, reason, anchor)``; ``reason`` explains a refusal and
+        ``anchor`` names the backup ref left behind by a successful delete.
         """
+        tip = self._read_ref(canonical, f"refs/heads/{branch}")
+        if not tip:
+            return False, f"branch {branch!r} does not exist", ""
         ancestor = self._run(
-            f"git merge-base --is-ancestor {shlex.quote(branch)} {shlex.quote(base)}",
+            f"git merge-base --is-ancestor {tip} {shlex.quote(base)}",
             canonical,
             quiet=True,
         )
         if not self._ok(ancestor):
-            return False, (
-                f"refused to delete branch {branch!r}: it has commits that are "
-                f"not reachable from {base!r}, so deleting the ref would turn "
-                "them into unreferenced objects"
+            return (
+                False,
+                (
+                    f"refused to delete branch {branch!r}: {tip[:12]} has commits "
+                    f"that are not reachable from {base!r}, so deleting the ref "
+                    "would turn them into unreferenced objects"
+                ),
+                "",
             )
+        anchor = f"refs/lane-backup/{branch.replace('/', '-')}"
+        previous = self._read_ref(canonical, anchor)
+        self._run(f"git update-ref {shlex.quote(anchor)} {tip}", canonical, quiet=True)
         deleted = self._run(f"git branch -d {shlex.quote(branch)}", canonical)
         if not self._ok(deleted):
+            # Leave the ref namespace exactly as we found it: restore a
+            # pre-existing anchor, or remove only the one we just wrote.
+            if previous:
+                self._run(
+                    f"git update-ref {shlex.quote(anchor)} {previous} {tip}",
+                    canonical,
+                    quiet=True,
+                )
+            else:
+                self._run(
+                    f"git update-ref -d {shlex.quote(anchor)} {tip}",
+                    canonical,
+                    quiet=True,
+                )
             detail = deleted.error.message if deleted.error else deleted.data
-            return False, (
-                f"git refused to delete branch {branch!r} as merged: {detail}"
+            return (
+                False,
+                f"git refused to delete branch {branch!r} as merged: {detail}",
+                "",
             )
-        return True, ""
+        return True, "", anchor
 
     def _prune_merged(
         self, worktrees: list[dict[str, Any]], base: str = "main"
@@ -633,11 +686,15 @@ class WorktreeManager:
                     ok = self._ok(res)
                     entry["ok"] = ok
                     if ok and w.get("branch"):
-                        entry["branch_deleted"], reason = self._delete_merged_branch(
-                            canonical, w["branch"], base
-                        )
+                        (
+                            entry["branch_deleted"],
+                            reason,
+                            anchor,
+                        ) = self._delete_merged_branch(canonical, w["branch"], base)
                         if reason:
                             entry["branch_kept_reason"] = reason
+                        if anchor:
+                            entry["branch_anchor"] = anchor
                     if not ok:
                         entry["error"] = res.error.message if res.error else res.data
                 (pruned if entry.get("ok") else kept).append(entry)
