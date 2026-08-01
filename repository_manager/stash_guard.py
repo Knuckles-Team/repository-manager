@@ -37,8 +37,8 @@ repository-manager-initiated stash operation can interleave with our own):
    ``git stash push --ref <ref>`` to target a private ref directly instead of
    ``refs/stash``).
 3. Immediately capture the resulting commit (``git rev-parse refs/stash``) and
-   point a **private ref** at it: ``refs/rm-stash/<label>-<uuid>`` — a
-   namespace nothing else in this workspace writes to, so it can never
+   point a **private ref** at it: ``refs/lane/rm-adopt-stash/<label>-<uuid>`` —
+   a namespace nothing else in this workspace writes to, so it can never
    collide with another lane's own stash entries.
 4. ``git stash drop`` — vacate ``stash@{0}`` immediately, so the shared stack
    carries our WIP for as short a window as git's own plumbing allows (the
@@ -52,6 +52,35 @@ just a ``stash@{n}`` reflog entry) and deletes the private ref only once the
 apply reports success; a conflicted apply leaves the ref in place and reports
 its name, so the caller can surface it for manual recovery instead of losing
 the WIP.
+
+**Why this is a sibling of, not a call into,**
+``agent_utilities.governance.lanes`` **(the ecosystem's PARTITION-class
+pattern for exactly this hazard, registry note on ``D-CP-1``).**
+``lanes.partitioned_paths(path).stash_ref`` (``refs/lane/<lane>/stash``) plus
+``lanes.park_worktree``/``unpark_worktree`` is the sanctioned "give a lane a
+private stash ref instead of the shared stack" primitive, and this module
+follows the same namespace convention (``refs/lane/...``) deliberately. It is
+not reused directly for two structural reasons, not preference:
+
+* ``park_worktree`` calls ``lanes.require_mutable_tree``, which **raises**
+  ``CanonicalCheckoutError`` for a canonical checkout (``scope.is_canonical``)
+  outside a merge in progress — by design (au's own "never edit the canonical
+  checkout" rule). Every call this module makes is *against the canonical
+  checkout*, because rescuing WIP a human or process left there is exactly
+  repository-manager's job — the same role au's own docs describe as "a
+  global actor" (background sync, fleet cleanup) rather than a lane.
+* ``park_worktree``/``unpark_worktree`` operate on ``scope.tree`` for **both**
+  ends of the round trip — park and unpark the same tree — and never include
+  untracked files (``git stash create``, no ``-u`` support). ``add(adopt=True)``
+  needs the opposite of both: capture in the canonical tree, apply in a
+  **different** tree (the freshly created worktree), including untracked
+  files, which is why ``git stash push -u`` (not ``create``) does the capture
+  here.
+
+A future generalization of ``lanes.py`` to support a cross-tree,
+untracked-inclusive relocation would let this module delegate outright; until
+then, the private-ref-off-the-shared-stack *pattern* is followed even though
+the *function* cannot be.
 
 **Residual gap, stated plainly** — matching the same honesty note in
 :mod:`repository_manager.canonical_guard`: the lease closes the race between
@@ -75,10 +104,15 @@ from repository_manager.canonical_guard import BlockedByLease, hold_canonical_le
 
 logger = logging.getLogger(__name__)
 
-#: Nothing else in this workspace writes into this namespace, so a private ref
-#: minted here can never collide with another lane's own stash entries or with
-#: the shared ``refs/stash`` stack itself.
-PRIVATE_STASH_NAMESPACE = "refs/rm-stash"
+#: Nested under the same ``refs/lane/`` prefix ``agent_utilities.governance.lanes``
+#: uses for its own per-lane stash ref (``refs/lane/<lane>/stash``), so private,
+#: off-the-shared-stack refs are legible under one convention across the
+#: workspace. A distinct sub-path (not ``refs/lane/<lane>/stash`` itself) keeps
+#: this from ever colliding with that ref: this module captures from the
+#: *canonical* checkout (which is never a "lane" in that module's model — see
+#: the module docstring) and keys its refs by the requested branch label, not
+#: by lane identity.
+PRIVATE_STASH_NAMESPACE = "refs/lane/rm-adopt-stash"
 
 
 class _GitLike(Protocol):

@@ -153,7 +153,7 @@ def test_adopt_never_leaves_anything_on_the_shared_stash_stack(repo):
     assert stash_list == ""  # the shared stack was never left holding our WIP
     # and the private ref it briefly used is cleaned up too
     private_refs = subprocess.run(
-        "git for-each-ref refs/rm-stash",
+        "git for-each-ref refs/lane/rm-adopt-stash",
         shell=True,
         cwd=repo.path,
         capture_output=True,

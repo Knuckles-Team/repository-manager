@@ -16,7 +16,7 @@ operation, or a human/tool running a raw ``git stash`` directly, which is
 exactly why this workspace's lanes were told never to do that) lands on top
 and gets popped instead, silently crossing two lanes' WIP or burying one of
 them. ``stash_guard`` closes this by moving the capture onto a private ref
-(``refs/rm-stash/<label>-<uuid>``) the instant it is made, under the
+(``refs/lane/rm-adopt-stash/<label>-<uuid>``) the instant it is made, under the
 canonical checkout's cross-process lease, so nothing after that point ever
 depends on stack order again.
 """
@@ -137,7 +137,7 @@ def test_capture_moves_tracked_and_untracked_wip_off_the_shared_stack(repo):
 
     assert result["ok"] is True
     assert result["ref"] is not None
-    assert result["ref"].startswith("refs/rm-stash/lane-a-")
+    assert result["ref"].startswith("refs/lane/rm-adopt-stash/lane-a-")
     # canonical tree is clean again
     assert _status(repo) == ""
     # and NOT sitting on the shared stack -- the whole point
