@@ -3,7 +3,7 @@ connector: repository-manager
 ontology_source: repository
 sync:
 - preset: repository-worktrees
-  server: repository-manager
+  server: repository-manager-mcp
   tool: rm_worktree
   action: list
   records_path: worktrees

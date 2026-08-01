@@ -1,7 +1,7 @@
 {
   "_comment": "Tier-1 mcp_tool source preset(s) for repository-manager (AU-KG.ingest.mcp-tool-connector). Mirrors the workspace's linked git worktrees into the KG as repository documents via the repository-manager MCP server. Native typed-node ingestion (repository_ingest_repositories / kg_ingest.py) is the primary path; this preset covers the generic mcp_tool connector. Contributed presets win over the central MCP_TOOL_PRESETS.",
   "repository-worktrees": {
-    "server": "repository-manager",
+    "server": "repository-manager-mcp",
     "tool": "rm_worktree",
     "params_style": "args",
     "action": "list",
