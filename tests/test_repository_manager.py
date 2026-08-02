@@ -207,6 +207,76 @@ def test_discover_projects(tmp_path):
         assert len(projects) == 2
 
 
+# ---------------------------------------------------------------------------
+# D-CDX-6 — _operation_label must classify from the parsed executable +
+# structural subcommand ONLY, never by scanning free-form argument text
+# (a commit message, in the confirmed live incident).
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["git", "commit", "-m", "fix(pre-commit): preserve lane pytest partition (D-CDX-5)"], "git commit"),
+        (["git", "commit", "-m", "run git push then pre-commit run for real"], "git commit"),
+        (["git", "commit", "-m", "leaked token: sk-ABCDEF123456 https://evil.example/callback"], "git commit"),
+        (["git", "push", "origin", "lane/pytest-fixture"], "git push"),
+        (["git", "checkout", "pytest-flavored-branch-name"], "git checkout"),
+        (["pytest", "-k", "git commit"], "pytest"),
+        (["pre-commit", "run", "--all-files"], "pre-commit run"),
+        (["git", "status", "--porcelain"], "git status"),
+        (["git", "rev-parse", "--show-toplevel"], "git rev-parse"),
+        (["pip", "install", "git+https://example.invalid/pytest-plugin.git"], "pip install"),
+        (["uv", "sync", "--all-extras"], "uv sync"),
+        (["bump2version", "patch"], "bump2version"),
+        (
+            ["python", "-m", "repository_manager.mcp_server", "--help"],
+            "mcp_server --help",
+        ),
+        (["echo", "totally unrecognized command"], "repository operation"),
+        ([], "repository operation"),
+    ],
+)
+def test_operation_label_classifies_structurally_not_by_argument_text(argv, expected):
+    assert repository_manager_module._operation_label(argv) == expected
+
+
+def test_operation_label_adversarial_argument_never_wins_over_the_real_verb():
+    """The literal live incident: a commit message containing 'pytest' must
+    never make a `git commit` classify as `pytest` (or anything else)."""
+    spoofing_messages = [
+        "fix(pre-commit): preserve lane pytest partition (D-CDX-5)",
+        "chore: run pytest, pre-commit run, and git push before merging",
+        "docs: mention endpoint https://internal.example/api and secret sk-live-XYZ",
+    ]
+    for message in spoofing_messages:
+        argv = ["git", "commit", "-m", message]
+        assert repository_manager_module._operation_label(argv) == "git commit"
+
+
+def test_operation_label_reflects_a_real_commit_end_to_end(tmp_path):
+    """End-to-end reproduction of the confirmed-live incident: a real
+    `git_action` call committing with an adversarial message must report
+    `metadata.command == 'git commit'`, and the diagnostic-safe error/data
+    surfaces must never echo the raw command text (secrets/endpoints)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "t@t.io"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=repo, check=True)
+    (repo / "f.txt").write_text("x")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+
+    git = Git(path=str(tmp_path))
+    message = (
+        "fix(pre-commit): preserve lane pytest partition (D-CDX-5) — "
+        "token sk-live-ADVERSARIAL123 endpoint https://internal.example/hook"
+    )
+    result = git.git_action(command=f"git commit -m {message!r}", path=str(repo))
+
+    assert result.status == "success"
+    assert result.metadata is not None
+    assert result.metadata.command == "git commit"
+
+
 @patch("repository_manager.repository_manager.Git.git_action")
 def test_git_add_operations(mock_git_action, sample_workspace_yml):
     yml_path, workspace_dir = sample_workspace_yml

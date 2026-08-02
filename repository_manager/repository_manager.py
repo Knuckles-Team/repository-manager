@@ -151,29 +151,65 @@ def _privacy_safe_diagnostic(value: object) -> str:
     return _DIAGNOSTIC_SECRET.sub("[REDACTED_SECRET]", clean)
 
 
-def _operation_label(command: str) -> str:
-    """Classify a command without retaining its arguments or local paths."""
+#: (executable-basename, subcommand) -> label. Both positions are STRUCTURAL
+#: (argv[0] and argv[1]) — never a free-form argument value.
+_STRUCTURAL_OPERATION_LABELS: dict[tuple[str, str], str] = {
+    ("git", "clone"): "git clone",
+    ("git", "pull"): "git pull",
+    ("git", "push"): "git push",
+    ("git", "status"): "git status",
+    ("git", "commit"): "git commit",
+    ("git", "checkout"): "git checkout",
+    ("git", "diff"): "git diff",
+    ("git", "rev-parse"): "git rev-parse",
+    ("pip", "install"): "pip install",
+    ("uv", "sync"): "uv sync",
+    ("pre-commit", "run"): "pre-commit run",
+}
 
-    normalized = " ".join(str(command).lower().split())
-    for label in (
-        "pip install",
-        "uv sync",
-        "bump2version",
-        "pre-commit run",
-        "pytest",
-        "git clone",
-        "git pull",
-        "git push",
-        "git status",
-        "git commit",
-        "git checkout",
-        "git diff",
-        "git rev-parse",
-        "mcp_server --help",
-        "agent_server --help",
-    ):
-        if label in normalized:
-            return label
+#: Executable-basename alone is enough — no subcommand position exists.
+_SINGLE_TOKEN_OPERATION_LABELS: dict[str, str] = {
+    "bump2version": "bump2version",
+    "pytest": "pytest",
+}
+
+#: `python -m <module>` invocations, keyed by the module path (argv[2]).
+_MODULE_OPERATION_LABELS: dict[str, str] = {
+    "repository_manager.mcp_server": "mcp_server --help",
+    "repository_manager.agent_server": "agent_server --help",
+}
+
+
+def _operation_label(command_argv: list[str]) -> str:
+    """Classify a command from its PARSED executable + structural subcommand
+    position only — never by scanning free-form argument text (D-CDX-6).
+
+    Confirmed live: a commit message reading 'fix(pre-commit): preserve lane
+    pytest partition' made ``git commit -m '<that message>'`` classify as
+    ``pytest`` — the old implementation lowercased the WHOLE command string
+    and returned the first known label found anywhere in it, so any argument
+    value (a commit message, a file path, a branch name) could spoof a
+    different operation's label, corrupting provenance/metrics/policy keyed
+    on the classification. Only ``command_argv[0]`` (the executable) and,
+    where relevant, ``command_argv[1]`` (a git subcommand or ``-m`` module
+    path) are ever consulted — never any later token, which is exactly where
+    a commit message or other adversarial argument value lives.
+    """
+    if not command_argv:
+        return "repository operation"
+    exe = os.path.basename(command_argv[0]).lower()
+    rest = command_argv[1:]
+    sub = os.path.basename(rest[0]).lower() if rest else ""
+
+    label = _STRUCTURAL_OPERATION_LABELS.get((exe, sub))
+    if label:
+        return label
+    if exe in _SINGLE_TOKEN_OPERATION_LABELS:
+        return _SINGLE_TOKEN_OPERATION_LABELS[exe]
+    if exe in ("python", "python3") and len(rest) >= 2 and rest[0] == "-m":
+        module_label = _MODULE_OPERATION_LABELS.get(rest[1].lower())
+        if module_label:
+            return module_label
     return "repository operation"
 
 
@@ -917,7 +953,7 @@ class Git:
         # Ensure Python output is unbuffered so we get real-time logs
         current_env["PYTHONUNBUFFERED"] = "1"
 
-        operation = _operation_label(command)
+        operation = _operation_label(command_argv)
         logger.info("Executing repository operation")
 
         process = subprocess.Popen(
