@@ -3512,6 +3512,48 @@ class Git:
         return list(set(paths))
 
 
+def _run_merge_queue_cli(args) -> int:
+    """Drive the merge queue for one repository (CONCEPT:RM-MERGE-QUEUE).
+
+    A thin marshaller over :func:`repository_manager.merge_queue.dispatch` — the
+    SAME action core the ``rm_merge_queue`` MCP tool calls, so the two surfaces
+    cannot drift. Nothing here decides anything; it maps flags to arguments and
+    renders JSON.
+
+    Exit codes are a contract other tooling depends on:
+    ``0`` the action succeeded, ``1`` it was refused (with the reason on stdout),
+    ``75`` (``EX_TEMPFAIL``) another runner holds this repository's
+    ``reconciliation-merge`` lease — **defer, do not proceed**; a shell chained
+    with ``&&`` stops rather than racing it.
+    """
+    import json as _json
+
+    from agent_utilities.governance.lanes import LaneArbitrationError, LeaseUnavailable
+
+    from repository_manager import merge_queue
+
+    try:
+        result = merge_queue.dispatch(
+            args.merge_queue,
+            path=args.repo_path,
+            branch=args.queue_branch,
+            base=args.queue_base,
+            reason=args.queue_reason,
+            batch_size=args.queue_batch_size,
+            prune=not args.queue_no_prune,
+        )
+    except LeaseUnavailable as exc:
+        print(_json.dumps({"deferred": True, "holder": exc.holder}, default=str))
+        return 75
+    except LaneArbitrationError as exc:
+        print(_json.dumps({"refused": str(exc)}))
+        return 1
+    print(_json.dumps(result, default=str, indent=2))
+    if result.get("ok") is False:
+        return 1
+    return 1 if result.get("rejected") else 0
+
+
 def main() -> None:
     """
     Main entry point for the Repository Manager CLI.
@@ -3766,7 +3808,65 @@ Examples:
         help="Include --break-system-packages in pip install commands.",
     )
 
+    # CONCEPT:RM-MERGE-QUEUE — the cross-project parallel-development driver.
+    # Deliberately a sibling of the worktree verbs: a lane takes a worktree, works,
+    # then hands the branch to the queue, and the queue lands it and prunes both.
+    group_queue = parser.add_argument_group(
+        "Merge Queue (per-repo gates declared in .mergequeue.yaml)"
+    )
+    group_queue.add_argument(
+        "--merge-queue",
+        choices=["enqueue", "status", "withdraw", "run", "config"],
+        help=(
+            "Serialized merge queue for ANY repository. Gates come from that "
+            "repo's own .mergequeue.yaml, never from this tool. Use --repo-path "
+            "to select the repository (default: cwd). Exit 75 means another "
+            "runner holds the lease -- defer, do not proceed."
+        ),
+    )
+    group_queue.add_argument(
+        "--repo-path",
+        type=str,
+        default=None,
+        help="A working tree of the target repository for --merge-queue (default: cwd).",
+    )
+    group_queue.add_argument(
+        "--queue-branch",
+        type=str,
+        default="",
+        help="Candidate branch for --merge-queue enqueue/withdraw (default: current HEAD).",
+    )
+    group_queue.add_argument(
+        "--queue-base",
+        type=str,
+        default="",
+        help="Branch to land onto (default: the repo's declared base).",
+    )
+    group_queue.add_argument(
+        "--queue-reason",
+        type=str,
+        default="",
+        help="Why a candidate is being withdrawn.",
+    )
+    group_queue.add_argument(
+        "--queue-batch-size",
+        type=int,
+        default=0,
+        help="Candidates gated together per run (0 = the repo's declared batch_size).",
+    )
+    group_queue.add_argument(
+        "--queue-no-prune",
+        action="store_true",
+        help="Land but keep the worktrees and branches (skips the guarded prune).",
+    )
+
     args = parser.parse_args()
+
+    # Handled before every other verb and returns immediately: the queue drives a
+    # SINGLE named repository and must not be combined with the workspace-wide
+    # bulk operations above, whose --path/--repositories semantics are different.
+    if args.merge_queue:
+        sys.exit(_run_merge_queue_cli(args))
 
     manifest_option_used = any(
         (

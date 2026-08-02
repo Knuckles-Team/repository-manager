@@ -8,6 +8,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Universal merge queue (CONCEPT:RM-MERGE-QUEUE)** — `repository_manager/merge_queue.py`, a
+  **repo-agnostic** serialized merge queue: per-repo append-only candidate store, differential
+  gating against a base ref, regenerate-on-land, guarded prune, the `reconciliation-merge` lease,
+  fold-by-`recorded_at` ordering, optimistic batching with bisection, and fast-forward-only landing
+  under BOTH `lanes.guarded_tree_mutation` and `canonical_guard.guarded_canonical_mutation`.
+  Gates are **declarative and per repository** (`.mergequeue.yaml`) — the queue never knows what a
+  gate is, only how to run one and compare its result against the base ref. Ported from
+  `agent_utilities.governance.merge_queue`, which could serve only agent-utilities; the au queue is
+  untouched and stays live (see `docs/merge-queue.md` for the migration plan).
+- **`--merge-queue {enqueue,status,withdraw,run,config}` CLI verbs** and the **`rm_merge_queue` MCP
+  tool**, both thin marshallers over one `merge_queue.dispatch()` action core. Exit 75
+  (`EX_TEMPFAIL`) means another runner holds the repository's lease — defer, do not retry.
+- **`mergequeue_presets/`** — shipped gate declarations for `epistemic-graph`
+  (`cargo check --all-features` + clippy; the proof of genericity beyond Python — eg has had **no**
+  merge queue at all) and `agent-utilities` (pytest + ruff + contract scripts). Presets are inert
+  until copied into a repository root, which is what makes adoption per-repo and reversible.
+- **`WorktreeManager.delete_merged_branch()`** — public entry to the guarded ref deletion
+  (merge-base re-checked at delete time, `refs/lane-backup/<branch>` anchor, `git branch -d` never
+  `-D`) so the queue reuses that guard instead of reimplementing it (D-ORC-21).
+- **Pre-commit data-loss guard (D-ORC-37)** — `refuse_precommit_on_dirty_tree()` refuses to run any
+  pre-commit gate against a tree holding uncommitted work (pre-commit checks unstaged changes out
+  of the tree while hooks run; a crash in that window loses them, D-OB-12), and every gate run gets
+  a partitioned `PRE_COMMIT_HOME` so a crash can never orphan another lane's patch and the store's
+  SQLite `db.db` can never lock against another lane's.
+
+### Added
 - **`rm_worktree audit` action (CONCEPT:RM-WORKTREE-AUDIT)** — classifies each worktree / repo git
   state as merged (safe to prune), active (in-flight), stale, or dangling, with per-repo unpushed
   detection and orphan listing. Read-only by default; `prune_merged` is opt-in.

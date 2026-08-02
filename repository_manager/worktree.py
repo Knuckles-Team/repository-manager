@@ -626,6 +626,22 @@ class WorktreeManager:
             )
         return True, "", anchor
 
+    def delete_merged_branch(
+        self, canonical: str, branch: str, base: str = "main"
+    ) -> tuple[bool, str, str]:
+        """Public entry to :meth:`_delete_merged_branch`'s guarded ref deletion.
+
+        The merge queue (:mod:`repository_manager.merge_queue`) prunes a landed
+        candidate's branch and must go through the SAME anchor + merge-base
+        re-check + ``git branch -d`` sequence rather than reimplementing it —
+        reimplementing this guard inline is exactly the duplication D-ORC-21
+        recorded. It cannot use :meth:`remove` for that, because ``remove``
+        reconstructs the worktree path from ``WORKTREE_ROOT`` while lanes in this
+        workspace create worktrees at arbitrary paths (the same reason
+        :meth:`_prune_merged` removes by actual path).
+        """
+        return self._delete_merged_branch(canonical, branch, base)
+
     def _prune_merged(
         self, worktrees: list[dict[str, Any]], base: str = "main"
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
