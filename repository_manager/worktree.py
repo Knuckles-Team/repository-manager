@@ -107,7 +107,23 @@ class WorktreeManager:
         return None
 
     def worktree_path(self, repo: str, branch: str) -> str:
-        return os.path.join(WORKTREE_ROOT, repo, _slug(branch))
+        """Return a worktree path that cannot escape ``WORKTREE_ROOT``.
+
+        ``resolve_repo`` accepts absolute canonical paths, but passing one
+        directly to :func:`os.path.join` discards every preceding component.
+        Use the repository's final path component as the stable worktree key so
+        basename and absolute-path callers resolve to the same isolated lane.
+        """
+        repo_key = os.path.basename(os.path.normpath(repo))
+        branch_key = _slug(branch)
+        if repo_key in {"", ".", ".."} or branch_key in {"", ".", ".."}:
+            raise ValueError("repo and branch must name safe path components")
+
+        root = os.path.abspath(WORKTREE_ROOT)
+        path = os.path.abspath(os.path.join(root, repo_key, branch_key))
+        if os.path.commonpath((root, path)) != root:
+            raise ValueError("worktree path escapes WORKTREE_ROOT")
+        return path
 
     def _ok(self, res: Any) -> bool:
         return getattr(res, "status", "") == "success"

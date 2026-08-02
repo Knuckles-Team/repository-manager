@@ -83,6 +83,29 @@ def test_add_creates_worktree_on_branch(repo):
     assert branch == "feat-x"
 
 
+def test_add_absolute_repo_path_stays_beneath_worktree_root(repo):
+    res = repo.wm.add(repo.path, "feat-absolute")
+
+    assert res["ok"] and res["created"]
+    expected = os.path.join(
+        wt_mod.WORKTREE_ROOT,
+        os.path.basename(repo.path),
+        "feat-absolute",
+    )
+    assert res["path"] == expected
+    assert os.path.commonpath([res["path"], wt_mod.WORKTREE_ROOT]) == os.path.abspath(
+        wt_mod.WORKTREE_ROOT
+    )
+    branch = subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=res["path"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == "feat-absolute"
+
+
 def test_add_is_idempotent(repo):
     a = repo.wm.add("myrepo", "feat-x")
     b = repo.wm.add("myrepo", "feat-x")
