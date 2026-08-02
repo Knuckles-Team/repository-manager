@@ -407,20 +407,18 @@ def test_commit_code_excludes_concurrent_commit_through_precommit(
     monkeypatch.setattr(git, "git_action", mock_call)
     monkeypatch.setattr(git, "pre_commit", blocked_precommit)
     results: dict[str, GitResult] = {}
+
+    def run_contender() -> None:
+        contender_started.set()
+        results["contender"] = git.commit_project("feat: contender", path=target)
+
     compound = threading.Thread(
         target=lambda: results.setdefault(
             "compound",
             git.commit_code_project("feat: compound", run_precommit=True, path=target),
         )
     )
-    contender = threading.Thread(
-        target=lambda: (
-            contender_started.set(),
-            results.setdefault(
-                "contender", git.commit_project("feat: contender", path=target)
-            ),
-        )
-    )
+    contender = threading.Thread(target=run_contender)
 
     compound.start()
     assert precommit_started.wait(timeout=1)
@@ -478,16 +476,16 @@ def test_commit_code_excludes_pull_but_not_unrelated_repo(
 
     monkeypatch.setattr(git, "git_action", mock_call)
     monkeypatch.setattr(git, "pre_commit", blocked_precommit)
+
+    def run_pull() -> None:
+        pull_attempted.set()
+        git.pull_project(path=target)
+
     compound = threading.Thread(
         target=git.commit_code_project,
         kwargs={"message": "feat: compound", "run_precommit": True, "path": target},
     )
-    pull = threading.Thread(
-        target=lambda: (
-            pull_attempted.set(),
-            git.pull_project(path=target),
-        )
-    )
+    pull = threading.Thread(target=run_pull)
 
     compound.start()
     assert precommit_started.wait(timeout=1)
@@ -539,13 +537,16 @@ def test_relative_workspace_clone_and_pull_share_destination_lock(
         )
 
     monkeypatch.setattr(git, "git_action", mock_call)
+
+    def run_pull() -> None:
+        pull_attempted.set()
+        git.pull_project(path="repo")
+
     clone = threading.Thread(
         target=git.clone_repository,
         args=("https://example.invalid/repo.git", relative_target),
     )
-    pull = threading.Thread(
-        target=lambda: (pull_attempted.set(), git.pull_project(path="repo"))
-    )
+    pull = threading.Thread(target=run_pull)
 
     clone.start()
     assert clone_started.wait(timeout=1)

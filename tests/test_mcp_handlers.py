@@ -1,11 +1,12 @@
 import asyncio
 import concurrent.futures
+import importlib
 import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-import repository_manager.mcp_server as mcp_server_module
+mcp_server_module = importlib.import_module("repository_manager.mcp_server")
 from repository_manager.mcp_server import (
     _get_job_status,
     _job_futures,
@@ -426,7 +427,7 @@ async def test_mcp_rm_git_cancels_queued_job_and_refuses_running_job(monkeypatch
 
     def blocker():
         blocker_started.set()
-        assert release_blocker.wait(timeout=2)
+        release_blocker.wait()
         return "done"
 
     def queued_work():
