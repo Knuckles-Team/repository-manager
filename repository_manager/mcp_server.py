@@ -194,6 +194,7 @@ def _submit_job(
         "status": "queued",
         "action": action,
         "submitted_at": now,
+        "heartbeat_at": now,
         "started_at": None,
         "completed_at": None,
         "result": None,
@@ -201,6 +202,9 @@ def _submit_job(
     }
     if _extra_job_data:
         job_entry.update(_extra_job_data)
+    initial_progress = _progress_marker(job_entry)
+    if initial_progress is not None:
+        job_entry["_progress_marker"] = initial_progress
 
     def _run() -> None:
         with _jobs_lock:
@@ -208,7 +212,9 @@ def _submit_job(
             if job is None or job["status"] != "queued":
                 return
             job["status"] = "running"
-            job["started_at"] = datetime.now(UTC).isoformat() + "Z"
+            started_at = datetime.now(UTC).isoformat() + "Z"
+            job["started_at"] = started_at
+            job["heartbeat_at"] = started_at
         try:
             result = func(*args, **kwargs)
             with _jobs_lock:
@@ -383,17 +389,59 @@ def _latest_jobs() -> dict[str, dict[str, Any]]:
     return out
 
 
+def _progress_marker(job: dict[str, Any]) -> tuple[Any, ...] | None:
+    """Return a compact marker for observable long-running job progress."""
+    progress = job.get("progress_detail")
+    if not isinstance(progress, dict):
+        return None
+    phases = []
+    for name, detail in sorted(progress.get("phases", {}).items()):
+        if not isinstance(detail, dict):
+            continue
+        phases.append(
+            (
+                str(name),
+                detail.get("status"),
+                detail.get("processed"),
+                detail.get("completed"),
+                detail.get("success"),
+                detail.get("failed"),
+            )
+        )
+    return (
+        progress.get("current_phase"),
+        progress.get("progress"),
+        tuple(phases),
+    )
+
+
+def _refresh_progress_heartbeats() -> None:
+    """Advance heartbeats only when a job's observable progress changes."""
+    now = datetime.now(UTC).isoformat() + "Z"
+    with _jobs_lock:
+        for job in _jobs.values():
+            if job.get("status") not in {"running", "queued", "pending"}:
+                continue
+            marker = _progress_marker(job)
+            if marker is None:
+                continue
+            previous = job.get("_progress_marker")
+            job["_progress_marker"] = marker
+            if previous is not None and marker != previous:
+                job["heartbeat_at"] = now
+
+
 def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
-    """Flip jobs wedged in 'running' past a hard ceiling to a timeout failure.
+    """Fail old orphaned records without terminalizing live background work.
 
     A validation worker whose subprocess hung (or whose host was starved by an
     oversized concurrent sweep) can otherwise sit in 'running' forever, making
     the roll-up look permanently frozen (e.g. ``626 completed / 45 running``
-    unchanged for many minutes). This is a DISPLAY/accounting safety net — it
-    does not, and cannot, kill the underlying thread; the per-command
-    subprocess timeout (<=600s) is what actually frees the worker. The ceiling
-    is deliberately set well above the longest legitimate per-repo validation
-    so it never reaps a merely-slow repo. Env-tunable via
+    unchanged for many minutes). A pending/running Future is authoritative
+    liveness evidence regardless of age; observable phased progress advances a
+    heartbeat. Only a record with neither is eligible for age-based reaping.
+    This is a DISPLAY/accounting safety net — it does not kill an underlying
+    operation. Env-tunable via
     ``RM_JOB_STALE_SECONDS`` (default 1800). (CONCEPT:RM-TOPOLOGY watchdog)
     """
     if max_age_seconds is None:
@@ -402,16 +450,25 @@ def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
         except ValueError:
             max_age_seconds = 1800.0
 
+    _refresh_progress_heartbeats()
     now = datetime.now(UTC)
     with _jobs_lock:
-        for j in _jobs.values():
+        for job_id, j in _jobs.items():
             if j.get("status") not in ("running", "queued", "pending"):
                 continue
-            started = j.get("started_at")
-            if not started:
+            future = _job_futures.get(job_id)
+            if future is not None and not future.done():
+                # A live worker/pending Future is stronger liveness evidence than
+                # wall age. This is essential for phased_push, whose configured
+                # inter-phase wait alone can legitimately reach 30 minutes.
+                continue
+            heartbeat = (
+                j.get("heartbeat_at") or j.get("started_at") or j.get("submitted_at")
+            )
+            if not heartbeat:
                 continue
             try:
-                dt = datetime.fromisoformat(str(started).rstrip("Z"))
+                dt = datetime.fromisoformat(str(heartbeat).rstrip("Z"))
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=UTC)
             except ValueError:
@@ -420,8 +477,9 @@ def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
                 j["status"] = "failed"
                 j["error"] = (
                     f"Job exceeded the {int(max_age_seconds)}s stale-job ceiling "
-                    "and was reaped (worker wedged or host starved). The release "
-                    "step is gated on validation, so re-run the failed set."
+                    "without a live Future or progress heartbeat and was reaped "
+                    "as an orphaned record. The release step is gated on "
+                    "validation, so re-run the failed set."
                 )
                 j["completed_at"] = now.isoformat() + "Z"
 
@@ -514,6 +572,7 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
                         "status": st,
                         "action": j["action"],
                         "submitted_at": j.get("submitted_at", j["started_at"]),
+                        "heartbeat_at": j.get("heartbeat_at", j["started_at"]),
                         "started_at": j["started_at"],
                         "completed_at": j["completed_at"],
                     }
@@ -550,6 +609,7 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             "status": job["status"],
             "action": job["action"],
             "submitted_at": job.get("submitted_at", job["started_at"]),
+            "heartbeat_at": job.get("heartbeat_at", job["started_at"]),
             "started_at": job["started_at"],
             "completed_at": job["completed_at"],
         }

@@ -120,9 +120,16 @@ def _exclusive_repo_mutation(
         bound = method_signature.bind(*args, **kwargs)
         bound.apply_defaults()
         manager = args[0]
-        target_path = manager._resolve_path(
-            bound.arguments.get("path", bound.arguments.get("target_path"))
-        )
+        if "target_path" in bound.arguments:
+            # clone_repository's contract names this as the destination path,
+            # already relative to the caller's cwd when it is not absolute. Do
+            # not feed a workspace-prefixed target through ``_resolve_path`` a
+            # second time (``workspace/workspace/repo``).
+            target_path = os.path.abspath(
+                os.path.expanduser(str(bound.arguments["target_path"]))
+            )
+        else:
+            target_path = manager._resolve_path(bound.arguments.get("path"))
         with _hold_repo_mutation(target_path):
             return method(*args, **kwargs)
 
@@ -1220,6 +1227,7 @@ class Git:
         Returns:
             GitResult: The result of the Git clone command.
         """
+        target_path = os.path.abspath(os.path.expanduser(target_path))
         if not url:
             return GitResult(
                 status="error",

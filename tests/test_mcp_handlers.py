@@ -970,6 +970,64 @@ def test_reap_stale_jobs_flips_overdue_running_to_failed():
         _jobs.clear()
 
 
+def test_reaper_preserves_live_long_phased_push_and_fails_orphan():
+    """Future/progress liveness beats age; an equally old orphan is reaped."""
+    live_future: concurrent.futures.Future[str] = concurrent.futures.Future()
+    assert live_future.set_running_or_notify_cancel()
+    old = "2020-01-01T00:00:00+00:00Z"
+    progress = {
+        "current_phase": "Waiting 30 min after Phase 1",
+        "progress": 50,
+        "phases": {},
+    }
+    with _jobs_lock:
+        _jobs.clear()
+        _job_futures.clear()
+        _jobs["live-phased"] = {
+            "status": "running",
+            "action": "phased_push",
+            "submitted_at": old,
+            "started_at": old,
+            "heartbeat_at": old,
+            "completed_at": None,
+            "result": None,
+            "error": None,
+            "progress_detail": progress,
+            "_progress_marker": (
+                "Waiting 30 min after Phase 1",
+                50,
+                (),
+            ),
+        }
+        _jobs["orphan"] = {
+            "status": "running",
+            "action": "pull",
+            "submitted_at": old,
+            "started_at": old,
+            "heartbeat_at": old,
+            "completed_at": None,
+            "result": None,
+            "error": None,
+        }
+        _job_futures["live-phased"] = live_future
+
+    mcp_server_module._reap_stale_jobs(max_age_seconds=60)
+
+    with _jobs_lock:
+        assert _jobs["live-phased"]["status"] == "running"
+        assert _jobs["orphan"]["status"] == "failed"
+
+    progress["progress"] = 51
+    status = _get_job_status("live-phased")
+    assert status["status"] == "running"
+    assert status["heartbeat_at"] != old
+
+    live_future.set_result("done")
+    with _jobs_lock:
+        _job_futures.clear()
+        _jobs.clear()
+
+
 def test_bump_skip_reason_avoids_double_bump_on_unpushed_repo():
     """Clean tree + ahead-of-origin + HEAD is a bump commit => skip (no re-bump)."""
     from repository_manager.repository_manager import Git

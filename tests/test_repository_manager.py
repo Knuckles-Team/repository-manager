@@ -516,6 +516,61 @@ def test_commit_code_excludes_pull_but_not_unrelated_repo(
     assert not repository_manager_module._REPO_MUTATION_LOCKS
 
 
+def test_relative_workspace_clone_and_pull_share_destination_lock(
+    tmp_path, monkeypatch
+):
+    """Relative-root clone and pull serialize on the same physical destination."""
+    monkeypatch.chdir(tmp_path)
+    git = Git(path="workspace")
+    relative_target = os.path.join("workspace", "repo")
+    actual_target = str(tmp_path / "workspace" / "repo")
+    clone_started = threading.Event()
+    allow_clone = threading.Event()
+    pull_attempted = threading.Event()
+    commands: list[tuple[str, str]] = []
+
+    def mock_call(command, path=None, **kwargs):
+        commands.append((command, str(path)))
+        if command.startswith("git clone"):
+            clone_started.set()
+            assert allow_clone.wait(timeout=1)
+        return GitResult(
+            status="success", data="ok", metadata=get_mock_metadata(command)
+        )
+
+    monkeypatch.setattr(git, "git_action", mock_call)
+    clone = threading.Thread(
+        target=git.clone_repository,
+        args=("https://example.invalid/repo.git", relative_target),
+    )
+    pull = threading.Thread(
+        target=lambda: (pull_attempted.set(), git.pull_project(path="repo"))
+    )
+
+    clone.start()
+    assert clone_started.wait(timeout=1)
+    pull.start()
+    assert pull_attempted.wait(timeout=1)
+    assert not any(command == "git pull" for command, _path in commands)
+
+    allow_clone.set()
+    clone.join(timeout=1)
+    pull.join(timeout=1)
+
+    assert not clone.is_alive()
+    assert not pull.is_alive()
+    mutation_order = [
+        "clone" if command.startswith("git clone") else "pull"
+        for command, _path in commands
+        if command.startswith("git clone") or command == "git pull"
+    ]
+    assert mutation_order == ["clone", "pull"]
+    clone_command, clone_cwd = commands[0]
+    assert actual_target in clone_command
+    assert clone_cwd == str(tmp_path / "workspace")
+    assert not repository_manager_module._REPO_MUTATION_LOCKS
+
+
 @pytest.mark.parametrize(
     "existing_addopts",
     [None, "--basetemp=/tmp/repository-manager-lane-pytest"],
