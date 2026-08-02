@@ -77,7 +77,8 @@ def test_get_job_status_variations():
     mock_job = {
         "status": "running",
         "action": "validate",
-        "started_at": "2026-05-22T00:00:00Z",
+        "submitted_at": "2099-05-21T23:59:59Z",
+        "started_at": "2099-05-22T00:00:00Z",
         "completed_at": None,
         "result": None,
         "error": None,
@@ -105,6 +106,7 @@ def test_get_job_status_variations():
 
     # Terse default: counts + failed set + active names (no full per-repo dump).
     status = _get_job_status("job-abc")
+    assert status["submitted_at"] == "2099-05-21T23:59:59Z"
     assert status["current_phase"] == "Phase 2"
     assert status["progress"] == 50
     assert status["counts"]["completed"] == 2  # repo_a (success) + repo_b (failed)
@@ -129,6 +131,7 @@ def test_get_job_status_variations():
     all_jobs = _get_job_status(summary=False)
     assert "jobs" in all_jobs
     assert "job-abc" in all_jobs["jobs"]
+    assert all_jobs["jobs"]["job-abc"]["submitted_at"] == "2099-05-21T23:59:59Z"
 
     # Test completed job with Pydantic model result
     mock_model_result = MagicMock()
@@ -473,6 +476,73 @@ async def test_mcp_rm_git_cancels_queued_job_and_refuses_running_job(monkeypatch
 
     assert not queued_ran.is_set()
     assert _get_job_status(queued["job_id"])["status"] == "cancelled"
+
+
+def test_submit_job_publishes_record_with_future_or_nothing(monkeypatch):
+    """Publication is atomic and executor refusal leaves no phantom queued job."""
+    pending: concurrent.futures.Future[str] = concurrent.futures.Future()
+
+    class PendingExecutor:
+        def submit(self, _func):
+            assert not _jobs
+            assert not _job_futures
+            return pending
+
+    with _jobs_lock:
+        _jobs.clear()
+        _job_futures.clear()
+    monkeypatch.setattr(mcp_server_module, "_executor", PendingExecutor())
+
+    submitted = _submit_job("commit", lambda: "unused")
+
+    assert submitted["status"] == "submitted"
+    job_id = submitted["job_id"]
+    with _jobs_lock:
+        assert _jobs[job_id]["status"] == "queued"
+        assert _job_futures[job_id] is pending
+
+    pending.cancel()
+    with _jobs_lock:
+        assert _jobs[job_id]["status"] == "cancelled"
+        assert job_id not in _job_futures
+        _jobs.clear()
+
+    class FailingExecutor:
+        def submit(self, _func):
+            raise RuntimeError("executor unavailable")
+
+    monkeypatch.setattr(mcp_server_module, "_executor", FailingExecutor())
+    refused = _submit_job("commit", lambda: "unused")
+
+    assert refused == {
+        "status": "error",
+        "message": "Job (commit) could not be submitted: RuntimeError.",
+    }
+    with _jobs_lock:
+        assert not _jobs
+        assert not _job_futures
+
+
+def test_targeted_status_reaps_stale_job_and_exposes_submission_time():
+    """Polling by job id performs the same stale lifecycle check as roll-up."""
+    with _jobs_lock:
+        _jobs.clear()
+        _jobs["stale-targeted"] = {
+            "status": "running",
+            "action": "pull",
+            "submitted_at": "2020-01-01T00:00:00Z",
+            "started_at": "2020-01-01T00:00:01Z",
+            "completed_at": None,
+            "result": None,
+            "error": None,
+        }
+
+    status = _get_job_status("stale-targeted")
+
+    assert status["status"] == "failed"
+    assert status["outcome"] == "failed"
+    assert status["submitted_at"] == "2020-01-01T00:00:00Z"
+    assert "stale-job ceiling" in status["error"]
 
 
 @pytest.mark.anyio

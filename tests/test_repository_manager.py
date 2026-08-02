@@ -442,6 +442,80 @@ def test_commit_code_excludes_concurrent_commit_through_precommit(
     )
 
 
+def test_commit_code_excludes_pull_but_not_unrelated_repo(
+    sample_workspace_yml, monkeypatch
+):
+    """A blocked compound commit excludes same-repo pull, not other paths."""
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    target = str(workspace_dir / "pipelines")
+    unrelated = str(workspace_dir / "other-repo")
+    (workspace_dir / "pipelines" / ".git").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "pipelines" / ".pre-commit-config.yaml").write_text("repos: []\n")
+    (workspace_dir / "other-repo" / ".git").mkdir(parents=True, exist_ok=True)
+
+    precommit_started = threading.Event()
+    allow_precommit = threading.Event()
+    pull_attempted = threading.Event()
+    mutation_commands: list[tuple[str, str]] = []
+
+    def mock_call(command, path=None, **kwargs):
+        mutation_commands.append((command, str(path)))
+        data = "M  changed.py" if command == "git status --porcelain" else "ok"
+        return GitResult(
+            status="success", data=data, metadata=get_mock_metadata(command)
+        )
+
+    def blocked_precommit(*args, **kwargs):
+        precommit_started.set()
+        assert allow_precommit.wait(timeout=1)
+        return GitResult(
+            status="success",
+            data="hooks passed",
+            metadata=get_mock_metadata("pre_commit"),
+        )
+
+    monkeypatch.setattr(git, "git_action", mock_call)
+    monkeypatch.setattr(git, "pre_commit", blocked_precommit)
+    compound = threading.Thread(
+        target=git.commit_code_project,
+        kwargs={"message": "feat: compound", "run_precommit": True, "path": target},
+    )
+    pull = threading.Thread(
+        target=lambda: (
+            pull_attempted.set(),
+            git.pull_project(path=target),
+        )
+    )
+
+    compound.start()
+    assert precommit_started.wait(timeout=1)
+    unrelated_result = git.add_project(unrelated)
+    assert unrelated_result.status == "success"
+    assert ("git add -A", unrelated) in mutation_commands
+
+    pull.start()
+    assert pull_attempted.wait(timeout=1)
+    assert not any(command == "git pull" for command, _path in mutation_commands)
+
+    allow_precommit.set()
+    compound.join(timeout=1)
+    pull.join(timeout=1)
+
+    assert not compound.is_alive()
+    assert not pull.is_alive()
+    ordered = [
+        command
+        for command, path in mutation_commands
+        if path == target
+        and (command.startswith("git commit") or command == "git pull")
+    ]
+    assert ordered[0].startswith("git commit")
+    assert ordered[1] == "git pull"
+    assert not repository_manager_module._REPO_MUTATION_LOCKS
+
+
 @pytest.mark.parametrize(
     "existing_addopts",
     [None, "--basetemp=/tmp/repository-manager-lane-pytest"],

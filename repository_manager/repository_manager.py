@@ -120,7 +120,9 @@ def _exclusive_repo_mutation(
         bound = method_signature.bind(*args, **kwargs)
         bound.apply_defaults()
         manager = args[0]
-        target_path = manager._resolve_path(bound.arguments.get("path"))
+        target_path = manager._resolve_path(
+            bound.arguments.get("path", bound.arguments.get("target_path"))
+        )
         with _hold_repo_mutation(target_path):
             return method(*args, **kwargs)
 
@@ -1206,6 +1208,7 @@ class Git:
                 )
             ]
 
+    @_exclusive_repo_mutation
     def clone_repository(self, url: str, target_path: str) -> GitResult:
         """
         Clone a single Git repository to a specific target path.
@@ -1270,6 +1273,7 @@ class Git:
         _run_post_hydration_mount_checks(self.path)
         return results
 
+    @_exclusive_repo_mutation
     def pull_project(self, path: str | None = None) -> GitResult:
         """
         Pull updates for a single Git project and optionally checkout the default branch.
@@ -1474,6 +1478,7 @@ class Git:
             ),
         )
 
+    @_exclusive_repo_mutation
     def push_project(self, path: str | None = None) -> GitResult:
         """
         Push committed updates and tags for a single clean Git project.
@@ -2391,6 +2396,7 @@ class Git:
                 lowest = phase_num
         return lowest
 
+    @_exclusive_repo_mutation
     def bump_version(
         self,
         part: str,

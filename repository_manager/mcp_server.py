@@ -183,8 +183,9 @@ def _submit_job(
 ) -> dict[str, str]:
     """Submit a function to run in the background.
 
-    Returns a dict with ``status``, ``job_id``, and a human-readable
-    ``message`` explaining how to poll for results.
+    A successful response includes ``status``, ``job_id``, and a human-readable
+    polling message. Executor refusal returns ``status=error`` without publishing
+    a job id that cannot be polled or cancelled.
     """
     job_id = str(uuid.uuid4())[:8]
     now = datetime.now(UTC).isoformat() + "Z"
@@ -200,9 +201,6 @@ def _submit_job(
     }
     if _extra_job_data:
         job_entry.update(_extra_job_data)
-
-    with _jobs_lock:
-        _jobs[job_id] = job_entry
 
     def _run() -> None:
         with _jobs_lock:
@@ -229,10 +227,6 @@ def _submit_job(
                     )
                     job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
 
-    future = _executor.submit(_run)
-    with _jobs_lock:
-        _job_futures[job_id] = future
-
     def _release_future(done: concurrent.futures.Future[Any]) -> None:
         with _jobs_lock:
             job = _jobs.get(job_id)
@@ -241,7 +235,22 @@ def _submit_job(
                 job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
             _job_futures.pop(job_id, None)
 
-    future.add_done_callback(_release_future)
+    # Publish the record and its Future atomically under the same lock the worker
+    # must acquire before transitioning out of ``queued``. No status/cancel caller
+    # can therefore observe a queued job without its cancellation handle.
+    with _jobs_lock:
+        try:
+            future = _executor.submit(_run)
+        except Exception as exc:
+            return {
+                "status": "error",
+                "message": (
+                    f"Job ({action}) could not be submitted: {type(exc).__name__}."
+                ),
+            }
+        _jobs[job_id] = job_entry
+        _job_futures[job_id] = future
+        future.add_done_callback(_release_future)
 
     return {
         "status": "submitted",
@@ -272,11 +281,23 @@ def _cancel_job(job_id: str) -> dict[str, Any]:
             }
 
         future = _job_futures.get(job_id)
-        if future is not None and future.cancel():
+        if status == "queued" and future is not None:
+            # ``Future.cancel`` may return false when a pool worker has entered
+            # our wrapper but is still blocked on ``_jobs_lock``. The operation
+            # itself has not started at that point: marking the record cancelled
+            # is sufficient because ``_run`` checks this state before calling it.
+            future.cancel()
             job["status"] = "cancelled"
             job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
-            _job_futures.pop(job_id, None)
             return {"job_id": job_id, "status": "cancelled", "cancelled": True}
+
+        if status == "queued":
+            return {
+                "job_id": job_id,
+                "status": "error",
+                "cancelled": False,
+                "message": "Queued job has no cancellation Future; lifecycle is invalid.",
+            }
 
         return {
             "job_id": job_id,
@@ -433,11 +454,14 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
     even at thousands of repositories (the full dump exceeds the MCP token limit
     and forces a file spill). ``summary=False`` adds the full ``jobs`` map.
     """
+    # Targeted polling must self-heal just like the roll-up. Otherwise callers
+    # following the documented job_id path can observe a wedged ``running`` job
+    # forever while only an unrelated global-status call reaps it.
+    _reap_stale_jobs()
     if not job_id:
         # Self-heal first: reap wedged 'running' jobs, then roll up over the
         # LATEST job per repo (not every historical job_id) so stale failures
         # and stale running entries from superseded cascade runs never linger.
-        _reap_stale_jobs()
         with _jobs_lock:
             if not _jobs:
                 return {"status": "empty", "message": "No background jobs found."}
@@ -489,6 +513,7 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
                     jd = {
                         "status": st,
                         "action": j["action"],
+                        "submitted_at": j.get("submitted_at", j["started_at"]),
                         "started_at": j["started_at"],
                         "completed_at": j["completed_at"],
                     }
@@ -524,6 +549,7 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             "job_id": job_id,
             "status": job["status"],
             "action": job["action"],
+            "submitted_at": job.get("submitted_at", job["started_at"]),
             "started_at": job["started_at"],
             "completed_at": job["completed_at"],
         }
