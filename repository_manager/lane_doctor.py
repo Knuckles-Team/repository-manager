@@ -527,6 +527,13 @@ def diagnose(
 # ---------------------------------------------------------------------------
 # start / finish
 # ---------------------------------------------------------------------------
+def _load_merge_queue() -> Any:
+    """Load the optional universal queue at the lane handoff boundary."""
+    from repository_manager import merge_queue
+
+    return merge_queue
+
+
 def start(
     repo: str,
     branch: str,
@@ -599,7 +606,7 @@ def finish(
         }
 
     try:
-        from repository_manager import merge_queue
+        merge_queue = _load_merge_queue()
     except ImportError as exc:
         return {
             "ok": False,
@@ -614,7 +621,17 @@ def finish(
             "forced": force,
         }
 
-    result = merge_queue.enqueue(branch or "", base=base or "", path=tree)
+    try:
+        result = merge_queue.enqueue(branch or "", base=base or "", path=tree)
+    except merge_queue.MergeQueueError as exc:
+        return {
+            "ok": False,
+            "stage": "enqueue",
+            "enqueued": False,
+            "reason": str(exc),
+            "preflight": report,
+            "forced": force,
+        }
     return {
         "ok": bool(result.get("ok", True)),
         "stage": "enqueue",

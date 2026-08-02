@@ -40,18 +40,18 @@ same value.
 
 ```mermaid
 flowchart TD
-    L1[lane A worktree] -->|enqueue| S[(candidate store<br/>append-only fragments<br/>in the repo's git-common-dir)]
+    L1[lane A worktree] -->|enqueue| S[("candidate store<br/>append-only fragments<br/>in the repo's git-common-dir")]
     L2[lane B worktree] -->|enqueue| S
     L3[lane N worktree] -->|enqueue| S
-    S --> R{{run — holds the repo's<br/>reconciliation-merge LEASE}}
-    R --> C[merge-tree --write-tree<br/>→ commit-tree<br/>NO working tree touched]
-    C --> G[materialize a throwaway<br/>detached worktree]
+    S --> R{{"run — holds the repo's<br/>reconciliation-merge LEASE"}}
+    R --> C["merge-tree --write-tree<br/>→ commit-tree<br/>NO working tree touched"]
+    C --> G["materialize a throwaway<br/>detached worktree"]
     G --> Y[".mergequeue.yaml<br/>read from the MERGED tree"]
     Y --> F[run each fast-tier gate]
-    F --> B[run the SAME gate on the base ref<br/>→ differential comparison]
-    B -->|new signal| REJ[reject with the evidence<br/>candidate stays on its branch]
-    B -->|only pre-existing| FF[git merge --ff-only<br/>under BOTH guards]
-    FF --> P[guarded prune:<br/>worktree + branch -d + anchor]
+    F --> B["run the SAME gate on the base ref<br/>→ differential comparison"]
+    B -->|new signal| REJ["reject with the evidence<br/>candidate stays on its branch"]
+    B -->|only pre-existing| FF["git merge --ff-only<br/>under BOTH guards"]
+    FF --> P["guarded prune:<br/>worktree + branch -d + anchor"]
     REJ -.->|batch >1| BI[bisect: log2 N extra runs]
     BI --> C
 ```

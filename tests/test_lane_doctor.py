@@ -353,22 +353,19 @@ def test_finish_records_a_forced_run_rather_than_hiding_it(
     # importable, which is not what this test pins.
     assert result["stage"] == "enqueue"
     assert result["forced"] is True
+    assert result["ok"] is False
+    assert result["enqueued"] is False
+    assert "candidate must be a named branch" in result["reason"]
 
 
 def test_finish_degrades_honestly_when_the_queue_is_unavailable(
     worktree: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No path may report a success it did not verify."""
-    import builtins
+    def _no_queue():
+        raise ImportError("merge queue not in this build")
 
-    real_import = builtins.__import__
-
-    def _no_queue(name, *args, **kwargs):
-        if name == "repository_manager.merge_queue" or name.endswith("merge_queue"):
-            raise ImportError("merge queue not in this build")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", _no_queue)
+    monkeypatch.setattr(lane_doctor, "_load_merge_queue", _no_queue)
     result = lane_doctor.finish(worktree, base="main", force=True)
     assert result["ok"] is False
     assert result["enqueued"] is False
