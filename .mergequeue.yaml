@@ -21,16 +21,25 @@ gates:
   # Syntax/import integrity. This repo is hostPath-mounted straight over the
   # pod's site-packages, so a merge to main is a LIVE DEPLOY — an import error
   # here crashloops the MCP server that drives every other repo's merges.
-  - id: import-smoke
-    run: python3 -c "import repository_manager, repository_manager.merge_queue, repository_manager.worktree, repository_manager.lane_doctor"
+  # `command` is argv, never a shell string — no quoting, no injection surface.
+  - name: import-smoke
+    command:
+      - python3
+      - -c
+      - import repository_manager, repository_manager.merge_queue, repository_manager.worktree, repository_manager.lane_doctor
     timeout: 120
     compare: exit
 
   # The queue's own tests. `compare: pytest-ids` is deliberate: judging by exit
   # code alone would refuse every candidate the moment main carries one unrelated
   # red test, which is exactly the deadlock that stranded 19 branches elsewhere.
-  - id: queue-tests
-    run: python3 -m pytest tests/ -q
+  - name: queue-tests
+    command:
+      - python3
+      - -m
+      - pytest
+      - tests/
+      - -q
     timeout: 1800
     compare: pytest-ids
     when_changed:
