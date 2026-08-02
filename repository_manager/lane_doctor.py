@@ -215,17 +215,62 @@ def _check_not_canonical(tree: Path, scope: Any) -> Check:
 def _check_no_local_venv(tree: Path) -> Check:
     """A worktree-local ``.venv`` produced ~167 phantom test failures."""
     venv = tree / ".venv"
-    if venv.exists():
+    if not venv.exists():
+        return Check("no-worktree-venv", OK, "no worktree-local .venv")
+
+    launcher = tree / "scripts" / "uv_workspace.py"
+    marker = venv / ".uv-workspace-selection.json"
+    python = venv / "bin" / "python"
+    expected = {"label": "", "selection": ["--all-extras"]}
+    reason = ""
+    loaded: Any = None
+    if venv.is_symlink():
+        reason = "the environment directory is a symlink"
+    elif not launcher.is_file():
+        reason = f"the owning launcher is absent ({launcher})"
+    elif marker.is_symlink() or not marker.is_file():
+        reason = f"the ownership marker is absent or not a regular file ({marker})"
+    else:
+        try:
+            loaded = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            reason = f"the ownership marker is unreadable or invalid JSON ({marker})"
+        if not reason and loaded != expected:
+            reason = "the ownership marker does not identify the canonical all-extras selection"
+        elif not reason and not (venv / "pyvenv.cfg").is_file():
+            reason = f"the environment metadata is absent ({venv / 'pyvenv.cfg'})"
+        elif not reason and not python.is_file():
+            reason = f"the environment interpreter is absent ({python})"
+        elif not reason and not os.access(python, os.X_OK):
+            reason = f"the environment interpreter is not executable ({python})"
+
+    if not reason:
         return Check(
             "no-worktree-venv",
-            FAIL,
-            f"{venv} exists. A worktree-local venv shadows the workspace "
-            "environment and has produced ~167 phantom test failures that were "
-            "read as real regressions.",
-            remedy=f"rm -rf {venv}   # then use the workspace runner, never a local venv",
-            evidence={"venv": str(venv)},
+            OK,
+            f"{venv} is owned by scripts/uv_workspace.py and partitioned for "
+            "the canonical all-extras selection",
+            evidence={
+                "venv": str(venv),
+                "marker": str(marker),
+                "selection": loaded["selection"],
+            },
         )
-    return Check("no-worktree-venv", OK, "no worktree-local .venv")
+
+    return Check(
+        "no-worktree-venv",
+        FAIL,
+        f"{venv} exists but is not a healthy uv-workspace-managed environment: "
+        f"{reason}. An unmanaged worktree-local venv shadows the workspace "
+        "environment and has produced ~167 phantom test failures that were read "
+        "as real regressions.",
+        remedy=(
+            f"rm -rf {venv}; python3 scripts/uv_workspace.py sync --all-extras"
+            if launcher.is_file()
+            else f"rm -rf {venv}   # then use the workspace runner, never a local venv"
+        ),
+        evidence={"venv": str(venv), "marker": str(marker)},
+    )
 
 
 def _check_cargo_partition(tree: Path, env: dict[str, str]) -> Check:
