@@ -1,0 +1,56 @@
+# Build-broker declaration for `epistemic-graph` (a RUST/pyo3 repository).
+#
+# Copy to the repository root as `.buildcache.yaml`.
+#
+# This is the DEDUP half of the story `epistemic-graph.mergequeue.yaml` already
+# tells for GATING: that file's `cargo-check` gate runs in a throwaway
+# `--target-dir target-isolated` per candidate because a shared target dir both
+# serialises and corrupts concurrent builds. This file targets the same
+# incident from the other direction -- N lanes asking the SAME question (build
+# the eg-numeric kernel for this exact tree/toolchain) should get the SAME
+# answer without each paying for a full `cargo`/`maturin` build. Measured: 4
+# `target-isolated/` dirs, 21.7 GB, after pruning -- almost all of it identical
+# work repeated.
+#
+# Reuses existing prior art rather than reimplementing it: `command` is exactly
+# `scripts/build_numeric_kernel.py`, which already knows how to invoke maturin
+# with a private, non-shared `--target-dir` (NEVER `CARGO_TARGET_DIR`) and graft
+# the resulting `numeric*.so` into `epistemic_graph/` -- the mounted-tree
+# deployment path the whole MCP fleet depends on. `check_mounted_kernel.py` is
+# the cheap, no-toolchain verifier for the artifact this build produces; run it
+# after `rm_build artifacts` to confirm what got published.
+
+base: main
+
+specs:
+  - name: numeric-kernel
+    command: ["python3", "scripts/build_numeric_kernel.py"]
+    workdir: "."
+
+    # `cargo --version` + `rustc --version` + `maturin --version`: an in-place
+    # toolchain bump busts the cache key instead of silently serving an
+    # artifact built by tools that no longer exist on this host (same
+    # reasoning as the mergequeue preset's `environment_signature`).
+    toolchain_fingerprint: ["sh", "-c", "cargo --version && rustc --version && maturin --version"]
+
+    # Only these paths participate in the content-address. A doc or Python
+    # change elsewhere in the tree must not bust a kernel that did not move --
+    # narrower than the whole-tree default so the cache actually earns its
+    # keep on a repository this size.
+    cache_key_paths:
+      - "crates/eg-numeric"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "scripts/build_numeric_kernel.py"
+
+    # The pyo3 abi3 cdylib `build_numeric_kernel.py` installs into the mounted
+    # package. `*.so` is deliberately gitignored (see that script's docstring:
+    # a committed platform binary would ride into wheels for every OS and make
+    # `check_wheel_completeness.py` pass falsely), which is exactly why this
+    # broker exists -- the artifact must be BUILT or FETCHED-FROM-CACHE, never
+    # committed.
+    artifacts:
+      - "epistemic_graph/numeric*.so"
+
+    # A release cargo build of a pyo3 extension; generous but bounded.
+    timeout: 1800

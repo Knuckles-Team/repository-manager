@@ -1,0 +1,48 @@
+# Build-broker declaration for `agent-webui` (a PNPM/TypeScript repository).
+#
+# Copy to the repository root as `.buildcache.yaml`.
+#
+# The proof that repository_manager/build_queue.py is genuinely generic:
+# nothing below is cargo, rustc, or maturin, and the broker needs no code
+# change to run it -- same relationship `epistemic-graph.mergequeue.yaml` has
+# to `agent-utilities.mergequeue.yaml` in the merge-queue presets. This
+# repository's own waste was a `node_modules/` duplicated per lane rather than
+# a `target-isolated/`, but the shape of the fix is identical: dedup the build
+# by content address, publish the artifact, let the install dir be a throwaway
+# implementation detail.
+
+base: main
+
+specs:
+  - name: web-build
+    # `tsc -b && vite build`, per package.json's own `build` script -- reused,
+    # not reimplemented, so a change to the real build pipeline (e.g. adding a
+    # step) only needs editing in one place.
+    command: ["pnpm", "build"]
+    workdir: "."
+
+    # node + pnpm + tsc versions: an in-place toolchain bump (a Volta/nvm
+    # switch, a pnpm upgrade) busts the key rather than silently serving a
+    # bundle built by a compiler that no longer matches this host's `tsc`.
+    toolchain_fingerprint: ["sh", "-c", "node --version && pnpm --version && pnpm exec tsc --version"]
+
+    # Narrowed to what the build actually reads. Docs/tests changing does not
+    # bust a bundle that would come out byte-identical.
+    cache_key_paths:
+      - "src"
+      - "index.html"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "tsconfig.json"
+      - "tsconfig.app.json"
+      - "tsconfig.node.json"
+      - "vite.config.ts"
+
+    # The whole built bundle Vite emits. Every file under `dist/` -- there is
+    # no single named binary the way eg-numeric has one .so, so the pattern is
+    # necessarily broad; the broker still verifies (checksums) rather than
+    # trusting the directory's mere existence on a later cache hit.
+    artifacts:
+      - "dist/**/*"
+
+    timeout: 900

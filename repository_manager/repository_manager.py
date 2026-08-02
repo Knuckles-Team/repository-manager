@@ -3611,6 +3611,44 @@ def _run_merge_queue_cli(args) -> int:
     return 1 if result.get("rejected") else 0
 
 
+def _run_build_queue_cli(args) -> int:
+    """Drive the build broker for one repository (CONCEPT:RM-TASK-LEDGER).
+
+    A thin marshaller over :func:`repository_manager.build_queue.dispatch` —
+    the SAME action core the ``rm_build`` MCP tool calls, so the two surfaces
+    cannot drift (mirrors :func:`_run_merge_queue_cli`'s own contract).
+
+    ``--same-node`` defaults OFF: a bare CLI invocation has no way to prove it
+    runs on the same node as the target repo's lease holder, so it is refused
+    by default (:class:`repository_manager.task_queue.ColocationRequired`)
+    rather than silently trusting a lock that may not actually exclude
+    anything over NFS. Only pass it when an operator has genuinely pinned
+    this invocation to the right node.
+    """
+    import json as _json
+
+    from agent_utilities.governance.lanes import LaneArbitrationError
+
+    from repository_manager import build_queue
+
+    try:
+        result = build_queue.dispatch(
+            args.build_broker,
+            path=args.repo_path,
+            spec=args.build_spec,
+            key=args.build_key,
+            colocated=args.same_node,
+            wait_timeout=args.build_wait_timeout,
+            keep_recent=args.build_keep_recent,
+            max_age_days=args.build_max_age_days,
+        )
+    except LaneArbitrationError as exc:
+        print(_json.dumps({"refused": str(exc)}))
+        return 1
+    print(_json.dumps(result, default=str, indent=2))
+    return 1 if result.get("ok") is False else 0
+
+
 def main() -> None:
     """
     Main entry point for the Repository Manager CLI.
@@ -3969,6 +4007,67 @@ Examples:
         help="Land but keep the worktrees and branches (skips the guarded prune).",
     )
 
+    # CONCEPT:RM-TASK-LEDGER — the content-addressed build broker. A sibling of
+    # --merge-queue: same "declared per repo, refused when absent" contract,
+    # same dispatch()-core-shared-by-every-surface shape, different resource
+    # (a build's output artifacts, not a landed branch).
+    group_build = parser.add_argument_group(
+        "Build Broker (per-repo build specs declared in .buildcache.yaml)"
+    )
+    group_build.add_argument(
+        "--build-broker",
+        choices=["request", "status", "artifacts", "explain", "gc"],
+        help=(
+            "Content-addressed build broker for ANY repository (distinct from "
+            "the packaging '--build' above). A second request for the SAME "
+            "(repo, tree-sha, feature-set, toolchain, target) waits on and "
+            "reuses the first's published artifacts instead of rebuilding. "
+            "Use --repo-path to select the repository (default: cwd)."
+        ),
+    )
+    group_build.add_argument(
+        "--build-spec",
+        type=str,
+        default="",
+        help="Which declared spec to build (default: the repo's first).",
+    )
+    group_build.add_argument(
+        "--build-key",
+        type=str,
+        default="",
+        help="A cache key, for --build-broker status/artifacts/explain.",
+    )
+    group_build.add_argument(
+        "--same-node",
+        action="store_true",
+        help=(
+            "Assert this invocation runs on the SAME node as the target repo's "
+            "lease holder -- only pass this when it is actually true (this IS "
+            "the pinned repository-manager-mcp process, or an operator has "
+            "verified pinning). An unproven assertion reintroduces the exact "
+            "false-safety this flag exists to prevent; unset, the broker "
+            "refuses and names the MCP route instead."
+        ),
+    )
+    group_build.add_argument(
+        "--build-wait-timeout",
+        type=int,
+        default=60,
+        help="Seconds to wait on an in-flight build of the same key before building anyway.",
+    )
+    group_build.add_argument(
+        "--build-keep-recent",
+        type=int,
+        default=10,
+        help="For --build-broker gc: always keep this many most-recent cache entries.",
+    )
+    group_build.add_argument(
+        "--build-max-age-days",
+        type=int,
+        default=14,
+        help="For --build-broker gc: reclaim cache entries older than this (subject to --build-keep-recent).",
+    )
+
     args = parser.parse_args()
 
     # Handled before every other verb and returns immediately: the queue drives a
@@ -3976,6 +4075,8 @@ Examples:
     # bulk operations above, whose --path/--repositories semantics are different.
     if args.merge_queue:
         sys.exit(_run_merge_queue_cli(args))
+    if args.build_broker:
+        sys.exit(_run_build_queue_cli(args))
 
     manifest_option_used = any(
         (

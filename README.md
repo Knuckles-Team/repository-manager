@@ -66,6 +66,7 @@ This table is auto-generated from the live server — do not edit by hand.
 | MCP Tool | Toggle Env Var | Description |
 |----------|----------------|-------------|
 | `repository_ingest_repositories` | `MISCTOOL` | Natively ingest git repositories into epistemic-graph as typed :GitRepository nodes. |
+| `rm_build` | `PROJECT_MANAGEMENTTOOL` | Content-addressed build broker for ANY repository (CONCEPT:RM-TASK-LEDGER). |
 | `rm_git` | `GIT_OPERATIONSTOOL` | Typed bulk Git operations; arbitrary host commands are prohibited. |
 | `rm_lane` | `PROJECT_MANAGEMENTTOOL` | The lane lifecycle for concurrent agents and humans (CONCEPT:RM-LANE-DOCTOR). |
 | `rm_merge_queue` | `PROJECT_MANAGEMENTTOOL` | Serialized merge queue for ANY git repository (CONCEPT:RM-MERGE-QUEUE). |
@@ -125,7 +126,7 @@ This table is auto-generated from the live server — do not edit by hand.
 
 </details>
 
-_7 action-routed tool(s) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
+_8 action-routed tool(s) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
 <!-- MCP-TOOLS-TABLE:END -->
 
 Detailed tool schemas, parameter shapes, and validation constraints are preserved in [docs/usage.md](docs/usage.md).
@@ -432,6 +433,8 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `RM_MAX_WORKERS` | `8` | explicit worker-count override (skips auto-sizing from CPU count) |
 | `RM_JOB_STALE_SECONDS` | `1800` | seconds before an in-flight job is treated as stale by the watchdog |
 | `RM_GATE_BEFORE_PUSH` | `true` | run the pre-commit gate before pushing (set false to bypass) |
+| `RM_TASK_LEDGER_FLEET` | — | optional: caller identity (claude/codex/human/vllm) recorded against a task_queue reservation |
+| `RM_TASK_LEDGER_SESSION` | — | optional: caller's lane/session id recorded against a task_queue reservation |
 | `REPOSITORY_MANAGER_CLONE_FILTER` | — | optional git clone filter: blob:none or tree:0 |
 | `CODE_ENHANCER_SCRIPTS_DIR` | — | optional code-enhancer helper scripts directory |
 | `GITLAB_URL` | `https://gitlab.com` | GitLab base URL (alias: GITLAB_HOST) |
@@ -469,7 +472,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | `gpt-4o` | Model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_38 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_40 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 
