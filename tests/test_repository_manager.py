@@ -1,6 +1,7 @@
 import datetime
 import os
 import subprocess
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -313,6 +314,57 @@ def test_commit_code_stages_untracked_and_gates_on_precommit(
     mock_pre_commit.assert_called_once()  # hooks gated the commit
     assert any(c == "git add -A" for c in calls)  # untracked files staged
     assert any("commit" in c for c in calls)
+
+
+def test_commit_code_does_not_commit_before_staging_completes(
+    sample_workspace_yml, monkeypatch
+):
+    """The combined operation cannot race a commit ahead of its staging step."""
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    target = str(workspace_dir / "pipelines")
+    (workspace_dir / "pipelines" / ".git").mkdir(parents=True, exist_ok=True)
+
+    stage_started = threading.Event()
+    allow_stage = threading.Event()
+    commit_started = threading.Event()
+    staged = threading.Event()
+
+    def mock_call(command, path=None, **kwargs):
+        if command == "git status --porcelain":
+            return GitResult(
+                status="success",
+                data="M  changed.py" if staged.is_set() else " M changed.py",
+                metadata=get_mock_metadata(command),
+            )
+        if command == "git add -A":
+            stage_started.set()
+            assert allow_stage.wait(timeout=1)
+            staged.set()
+        if command.startswith("git commit -m"):
+            commit_started.set()
+        return GitResult(
+            status="success", data="ok", metadata=get_mock_metadata(command)
+        )
+
+    monkeypatch.setattr(git, "git_action", mock_call)
+    result: list[GitResult] = []
+    worker = threading.Thread(
+        target=lambda: result.append(
+            git.commit_code_project("feat: ordered", run_precommit=False, path=target)
+        )
+    )
+    worker.start()
+
+    assert stage_started.wait(timeout=1)
+    assert not commit_started.wait(timeout=0.05)
+    allow_stage.set()
+    worker.join(timeout=1)
+
+    assert not worker.is_alive()
+    assert result[0].status == "success"
+    assert commit_started.is_set()
 
 
 @pytest.mark.parametrize(

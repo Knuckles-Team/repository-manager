@@ -12,7 +12,7 @@ from repository_manager.mcp_server import (
     get_mcp_instance,
     mcp_server,
 )
-from repository_manager.models import GitResult
+from repository_manager.models import GitError, GitResult
 
 
 @pytest.mark.anyio
@@ -52,7 +52,7 @@ async def test_background_job_lifecycle():
         await asyncio.sleep(0.05)
 
     assert status_info["status"] == "failed"
-    assert status_info["error"] == "Background repository operation failed"
+    assert status_info["error"] == "Background repository operation raised ValueError."
 
 
 def test_get_job_status_variations():
@@ -358,6 +358,54 @@ async def test_mcp_rm_git_tool(tmp_path):
         )
         assert isinstance(disc, dict)
         assert "raw" in disc["actions"]
+
+
+@pytest.mark.anyio
+async def test_mcp_rm_git_status_exposes_submitted_job_and_failure():
+    """rm_git owns the polling surface for its own background jobs."""
+    mcp, _, _, _ = get_mcp_instance()
+    tools = await mcp.list_tools()
+    rm_git = next(t for t in tools if t.name == "rm_git")
+
+    with _jobs_lock:
+        _jobs.clear()
+        _jobs["git-failed"] = {
+            "status": "failed",
+            "action": "commit_code",
+            "started_at": "2026-08-02T00:00:00Z",
+            "completed_at": "2026-08-02T00:01:00Z",
+            "result": None,
+            "error": "pre-commit gate failed",
+        }
+
+    response = await rm_git.fn(action="status", job_id="git-failed")
+
+    assert response["job_id"] == "git-failed"
+    assert response["status"] == "failed"
+    assert response["action"] == "commit_code"
+    assert response["error"] == "pre-commit gate failed"
+
+    with _jobs_lock:
+        _jobs["git-completed-failed"] = {
+            "status": "completed",
+            "action": "commit_code",
+            "started_at": "2026-08-02T00:00:00Z",
+            "completed_at": "2026-08-02T00:01:00Z",
+            "result": [
+                GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message="pre-commit gate failed", code=1),
+                )
+            ],
+            "error": None,
+        }
+
+    completed = await rm_git.fn(action="status", job_id="git-completed-failed")
+
+    assert completed["status"] == "completed"
+    assert completed["outcome"] == "failed"
+    assert completed["failures"] == ["pre-commit gate failed"]
 
 
 @pytest.mark.anyio

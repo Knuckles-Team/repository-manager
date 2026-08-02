@@ -69,6 +69,7 @@ RM_GIT_ACTIONS = (
     "commit",
     "pre_commit",
     "commit_code",
+    "status",
 )
 RM_WORKSPACE_ACTIONS = (
     "list",
@@ -207,10 +208,12 @@ def _submit_job(
                 _jobs[job_id]["status"] = "completed"
                 _jobs[job_id]["result"] = result
                 _jobs[job_id]["completed_at"] = datetime.now(UTC).isoformat() + "Z"
-        except Exception:
+        except Exception as exc:
             with _jobs_lock:
                 _jobs[job_id]["status"] = "failed"
-                _jobs[job_id]["error"] = "Background repository operation failed"
+                _jobs[job_id]["error"] = (
+                    f"Background repository operation raised {type(exc).__name__}."
+                )
                 _jobs[job_id]["completed_at"] = datetime.now(UTC).isoformat() + "Z"
 
     _executor.submit(_run)
@@ -238,16 +241,31 @@ def _job_failures(j: dict[str, Any]) -> list[str]:
                     if ho
                     else f"Hook '{h.hook_id}' failed."
                 )
-    if res is not None and getattr(res, "error", None):
-        out.append(res.error)
+    results = res if isinstance(res, list) else [res]
+    for result in results:
+        error = getattr(result, "error", None)
+        if error:
+            out.append(str(getattr(error, "message", error)))
     if j.get("error"):
         out.append(j["error"])
     return out
 
 
 def _job_passed(j: dict[str, Any]) -> bool:
+    """Return the operation outcome separately from its execution lifecycle."""
     res = j.get("result")
-    return bool(res is not None and getattr(res, "success", False))
+    if res is None:
+        return False
+    if isinstance(res, list):
+        return all(
+            isinstance(item, GitResult) and item.status in {"success", "skipped"}
+            for item in res
+        )
+    if isinstance(res, GitResult):
+        return res.status in {"success", "skipped"}
+    if hasattr(res, "success"):
+        return bool(res.success)
+    return True
 
 
 def _latest_jobs() -> dict[str, dict[str, Any]]:
@@ -511,6 +529,8 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
                 response["failed_projects"] = sorted(phase_failed)
 
         if job["status"] == "completed" and job["result"] is not None:
+            response["outcome"] = "succeeded" if _job_passed(job) else "failed"
+            response["failures"] = _job_failures(job)
             if hasattr(job["result"], "to_markdown"):
                 try:
                     response["summary"] = job["result"].to_markdown()
@@ -535,6 +555,7 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             else:
                 response["result"] = str(job["result"])
         elif job["status"] == "failed":
+            response["outcome"] = "failed"
             response["error"] = job["error"]
 
         return response
@@ -678,7 +699,16 @@ def register_git_operations_tools(mcp: FastMCP):
     )
     async def rm_git(
         action: str = Field(
-            description="Action: 'clone', 'enumerate', 'pull', 'push', 'phased_push', 'add', 'commit', 'pre_commit', 'commit_code'. Legacy 'raw' is permanently retired. 'enumerate' lists all repos across a GitLab instance/GitHub org into an ingest manifest (command=vcs, projects=groups/orgs)."
+            description=(
+                "Action: 'clone', 'enumerate', 'pull', 'push', 'phased_push', "
+                "'add', 'commit', 'pre_commit', 'commit_code', or 'status'. "
+                "Use 'status' with job_id to poll any submitted rm_git job. "
+                "Use 'commit_code', rather than separate add and commit jobs, "
+                "for the ordered stage → gate → commit operation. Legacy 'raw' "
+                "is permanently retired. 'enumerate' lists all repos across a "
+                "GitLab instance/GitHub org into an ingest manifest "
+                "(command=vcs, projects=groups/orgs)."
+            )
         ),
         command: str | None = Field(
             default=None,
@@ -716,6 +746,14 @@ def register_git_operations_tools(mcp: FastMCP):
             default=True,
             description="For 'commit_code': run pre-commit hooks before committing. Default True.",
         ),
+        job_id: str | None = Field(
+            default=None,
+            description="Background rm_git job id to inspect; required for action='status'.",
+        ),
+        summary: bool = Field(
+            default=True,
+            description="For action='status': return compact progress by default; false includes full detail.",
+        ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
         ),
@@ -726,12 +764,23 @@ def register_git_operations_tools(mcp: FastMCP):
         if not isinstance(auto_start, bool):
             auto_start = True
 
-        git = get_git_instance(path=path, threads=threads)
-
         resolved = resolve_action(action, RM_GIT_ACTIONS, service="repository-manager")
         if isinstance(resolved, dict):
             return resolved
         action = resolved
+
+        if action == "status":
+            if not job_id:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message="job_id is required for 'status' action", code=1
+                    ),
+                )
+            return _get_job_status(job_id, summary=summary)
+
+        git = get_git_instance(path=path, threads=threads)
 
         if action == "raw":
             del command

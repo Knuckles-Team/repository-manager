@@ -35,7 +35,7 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
 ## Tools & actions
 | Condensed tool | Actions |
 |----------------|---------|
-| `rm_git` | `raw`, `clone`, `enumerate`, `pull`, `push`, `phased_push`, `add`, `commit`, `pre_commit`, `commit_code` |
+| `rm_git` | `raw`, `clone`, `enumerate`, `pull`, `push`, `phased_push`, `add`, `commit`, `pre_commit`, `commit_code`, `status` |
 
 ### Key parameters
 - `command` — the git command for `raw`; also the VCS selector (`gitlab`|`github`) for `enumerate`.
@@ -43,6 +43,7 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
   for `enumerate`, comma-separated GitLab groups / GitHub orgs (omit for whole instance / your user).
 - `message` — commit message for `commit` / `commit_code`.
 - `run_precommit` — for `commit_code`: run hooks before committing (default true).
+- `job_id` — required for `status`; use the id returned by a submitted `rm_git` job.
 - `phase` / `auto_start` / `target_project` — control `phased_push`.
 
 ## Recipes
@@ -65,7 +66,9 @@ rm_git(action="enumerate", command="github", projects="my-org,another-org")
 
 ## Gotchas
 - `clone`/`pull`/`push`/`commit`/`pre_commit`/`commit_code`/`phased_push` return a **job id** and run in
-  the background — poll status rather than expecting inline results.
+  the background — poll with `rm_git(action="status", job_id="<id>")` rather than expecting inline results.
+- Do not submit `add` and `commit` as separate dependent jobs; use `commit_code` for its ordered
+  stage → gate → commit operation.
 - `enumerate` returns `{count, run_id, manifest, ingested}`; `ingested` is `null` when no KG engine is
   reachable (best-effort, non-fatal).
 - `push` honors the pre-push gate when `RM_GATE_BEFORE_PUSH` is set — a failing gate blocks the push.

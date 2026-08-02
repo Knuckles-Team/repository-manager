@@ -1692,6 +1692,13 @@ class Git:
                 ),
             )
 
+        # The stage, optional gate, re-stage, and commit intentionally happen in
+        # this one call.  Callers must use this ordered operation instead of
+        # racing separately submitted ``add`` and ``commit`` background jobs.
+        stage_res = self.add_project(target_path)
+        if stage_res.status != "success":
+            return stage_res
+
         if run_precommit and os.path.exists(
             os.path.join(target_path, ".pre-commit-config.yaml")
         ):
@@ -1700,7 +1707,9 @@ class Git:
                 return pc_res
 
         # Stage again (pre-commit may have reformatted files) and commit.
-        self.git_action(command="git add -A", path=target_path)
+        stage_res = self.add_project(target_path)
+        if stage_res.status != "success":
+            return stage_res
         return self.commit_project(message, path=target_path)
 
     def commit_code_projects(
