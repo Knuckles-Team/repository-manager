@@ -427,6 +427,98 @@ def _check_canonical_clean(scope: Any) -> Check:
     )
 
 
+def _check_canonical_is_worktree(scope: Any) -> Check:
+    """FAIL loudly if the canonical checkout has been corrupted into `core.bare`.
+
+    D-MQR-5/D-MQR-6: ``core.bare=true`` was found set directly in the
+    ``agent-utilities`` canonical checkout's ``.git/config`` -- files and every
+    linked worktree stayed intact, but every git command run WITH CWD=canonical
+    (``git status``, the merge queue's own driver, invoked via ``cd $REPO``)
+    then failed with "fatal: this operation must be run in a work tree". That
+    silently killed the repo's merge queue outright, and under the pre-D-MQR-2
+    runner it collapsed into "queue depth 0" and was skipped forever with no log
+    line at all.
+
+    The reason nothing upstream of this check ever caught it: :func:`lane_scope`
+    is normally called from a LANE'S OWN linked worktree, and `git worktree
+    list`/`git rev-parse --git-common-dir` run just fine there even while the
+    MAIN tree is bare -- so ``scope.main_tree`` resolves correctly and every
+    other check in this module (which all operate on the calling lane's own
+    tree) stays green. This check is the one that inspects the canonical
+    checkout DIRECTLY, the only way the corruption is visible at all.
+
+    Also note ``_check_canonical_clean``'s ``_git()`` helper only captures
+    stdout, so the exact same "must be run in a work tree" fatal error there
+    reads as ``SKIP "cannot read <canonical>: "`` (empty message) rather than a
+    named failure -- this check exists precisely to not repeat that silent
+    pattern, by capturing and surfacing stderr.
+    """
+    if scope is None:
+        return Check(
+            "canonical-is-worktree",
+            SKIP,
+            "lane scope unresolvable — cannot locate the canonical checkout",
+            remedy="install agent-utilities so agent_utilities.governance.lanes imports",
+        )
+    canonical = Path(scope.main_tree)
+    try:
+        proc = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["git", "-C", str(canonical), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return Check(
+            "canonical-is-worktree",
+            FAIL,
+            f"could not run git against canonical checkout {canonical}: "
+            f"{type(exc).__name__}: {exc}",
+            remedy=f"inspect {canonical}/.git/config by hand",
+            evidence={"canonical": str(canonical)},
+        )
+    stdout = proc.stdout.strip()
+    if proc.returncode == 0 and stdout == "true":
+        return Check(
+            "canonical-is-worktree",
+            OK,
+            f"canonical checkout {canonical} is a real work tree",
+        )
+    return Check(
+        "canonical-is-worktree",
+        FAIL,
+        f"canonical checkout {canonical} is NOT a work tree ("
+        f"`git rev-parse --is-inside-work-tree` -> rc={proc.returncode} "
+        f"stdout={stdout!r} stderr={proc.stderr.strip()!r}). Every git command "
+        f'run with cwd={canonical} now fails with "this operation must be run '
+        "in a work tree\", which silently kills this repo's merge queue "
+        "(D-MQR-5). Most likely cause: core.bare=true got written into "
+        "`.git/config`. RECOVERY: back up the config, flip the flag back, and "
+        "verify with git status BEFORE touching any lane worktree — a `core."
+        "bare` flip on the shared common dir has been observed to leave at "
+        "least one lane worktree's INDEX (not working tree) looking wiped "
+        "(files staged deleted while the same paths show untracked); a plain "
+        "`git reset` (mixed) there is enough to restore it. Do NOT reach for "
+        "`git reset --hard` or `git checkout .` in that worktree — those "
+        "discard real uncommitted work instead of just re-reading the index.",
+        remedy=(
+            f"cp {canonical}/.git/config "
+            f"{canonical}/.git/config.bak-$(date -u +%Y%m%dT%H%M%SZ) && "
+            f"git -C {canonical} config core.bare false && "
+            f"git -C {canonical} status --porcelain   # then, per worktree ONLY "
+            "if its index looks wiped: git -C <worktree> status --porcelain && "
+            "git -C <worktree> reset   # mixed reset, never --hard"
+        ),
+        evidence={
+            "canonical": str(canonical),
+            "returncode": proc.returncode,
+            "stdout": stdout,
+            "stderr": proc.stderr.strip(),
+        },
+    )
+
+
 def _check_merge_queue_config(tree: Path, scope: Any) -> Check:
     """A repository that declares no gates is REFUSED by the queue, not defaulted."""
     roots = [tree]
@@ -553,6 +645,7 @@ def diagnose(
         _check_stash_ref(tree, scope),
         _check_test_runner(tree, scope),
         _check_canonical_clean(scope),
+        _check_canonical_is_worktree(scope),
         _check_merge_queue_config(tree, scope),
         _check_base_drift(tree, base),
         _check_uncommitted(tree),

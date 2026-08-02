@@ -264,6 +264,35 @@ def test_a_clean_canonical_passes(worktree: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# canonical-is-worktree — D-MQR-5/D-MQR-6: `core.bare=true` corrupted the
+# agent-utilities canonical checkout's .git/config directly. Every git command
+# run WITH CWD=canonical then failed ("this operation must be run in a work
+# tree"), which silently killed the repo's merge queue -- but `lane_scope()`
+# resolves fine from a LINKED WORKTREE even while the main tree is bare, so
+# every OTHER check in this module (which all inspect the calling lane's own
+# tree) stayed green throughout. This is the one check that inspects the
+# canonical checkout directly -- the known-bad input is `core.bare=true`
+# written onto a THROWAWAY canonical fixture, never a real checkout.
+# ---------------------------------------------------------------------------
+def test_a_bare_corrupted_canonical_is_refused_from_inside_the_worktree(
+    canonical: Path, worktree: Path
+) -> None:
+    """The known-bad input this check exists to catch, reproduced directly."""
+    _git(["config", "core.bare", "true"], canonical)
+    check = _named(lane_doctor.diagnose(worktree, env={}), "canonical-is-worktree")
+    assert check["status"] == FAIL
+    assert "core.bare" in check["finding"]
+    assert "must be run in a work tree" not in check["remedy"]  # remedy, not echo
+    assert str(canonical) in check["evidence"]["canonical"]
+
+
+def test_a_healthy_canonical_passes_the_worktree_check(worktree: Path) -> None:
+    """The positive half: without it, an unconditional FAIL would pass above."""
+    check = _named(lane_doctor.diagnose(worktree, env={}), "canonical-is-worktree")
+    assert check["status"] == OK
+
+
+# ---------------------------------------------------------------------------
 # merge-queue-config — a repo declaring no gates is REFUSED, not defaulted
 # ---------------------------------------------------------------------------
 def test_a_repo_with_no_gate_declaration_is_flagged(worktree: Path) -> None:
