@@ -178,8 +178,11 @@ def _run_git(args: list[str], cwd: Path, *, timeout: int = 300) -> GitResult:
     ``GitLike``/:class:`WorktreeManager` is still the surface used for every
     worktree and prune operation, where the abstraction genuinely pays.
     """
+    git_executable = shutil.which("git")
+    if git_executable is None:
+        raise MergeQueueError("git executable was not found on PATH")
     proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        ["git", *args],
+        [git_executable, *args],
         cwd=str(cwd),
         capture_output=True,
         text=True,

@@ -315,6 +315,46 @@ def test_commit_code_stages_untracked_and_gates_on_precommit(
     assert any("commit" in c for c in calls)
 
 
+@pytest.mark.parametrize(
+    "existing_addopts",
+    [None, "--basetemp=/tmp/repository-manager-lane-pytest"],
+)
+def test_pre_commit_preserves_lane_pytest_options(
+    tmp_path, monkeypatch, existing_addopts
+):
+    (tmp_path / ".pre-commit-config.yaml").write_text("repos: []\n")
+    manager = Git(path=str(tmp_path))
+    monkeypatch.setattr(manager, "cleanup_artifacts", lambda _path: None)
+    if existing_addopts is None:
+        monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    else:
+        monkeypatch.setenv("PYTEST_ADDOPTS", existing_addopts)
+
+    calls = []
+
+    def _git_action(command, path=None, env=None, timeout=1800, **_kwargs):
+        calls.append((command, path, env, timeout))
+        return GitResult(
+            status="success",
+            data="ok",
+            metadata=get_mock_metadata(command),
+        )
+
+    monkeypatch.setattr(manager, "git_action", _git_action)
+
+    result = manager.pre_commit(path=str(tmp_path))
+
+    assert result.status == "success"
+    hook_env = next(
+        env
+        for command, _path, env, _timeout in calls
+        if command.startswith("pre-commit")
+    )
+    assert "-q --tb=short" in hook_env["PYTEST_ADDOPTS"]
+    if existing_addopts is not None:
+        assert existing_addopts in hook_env["PYTEST_ADDOPTS"]
+
+
 @patch("repository_manager.repository_manager.Git.pre_commit")
 @patch("repository_manager.repository_manager.Git.git_action")
 def test_commit_code_aborts_when_precommit_fails(
