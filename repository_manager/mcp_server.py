@@ -1175,9 +1175,11 @@ def register_project_management_tools(mcp: FastMCP):
         background `git reset` then discarded; a `git stash` into the ONE
         `refs/stash` shared by ~54 worktrees; a shared `CARGO_TARGET_DIR` that
         corrupts rather than merely serializes; an unset `PRE_COMMIT_HOME` whose
-        shared store swallows unstaged work; a worktree-local `.venv` worth ~167
-        phantom failures; and measuring a branch TIP that will never be the tree
-        that lands.
+        shared store swallows unstaged work; a foreign or stale worktree-local
+        `.venv` worth ~167 phantom failures; and measuring a branch TIP that will
+        never be the tree that lands. The exact all-extras environment managed by
+        `scripts/uv_workspace.py` is accepted because it is lane-partitioned and
+        synchronized before execution.
 
         `doctor` is the one to reach for when something behaves impossibly — a
         test failing that cannot fail, a build that will not go green, a merge

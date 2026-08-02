@@ -123,7 +123,7 @@ exists:
 | Check | Failure it exists to catch |
 |---|---|
 | `not-canonical` | editing a canonical checkout a background `git reset` can discard |
-| `no-worktree-venv` | a worktree-local `.venv` shadowing the workspace environment |
+| `no-worktree-venv` | a foreign or stale worktree-local `.venv` shadowing the workspace environment; the exact all-extras environment managed by `scripts/uv_workspace.py` is accepted |
 | `cargo-partition` | a shared `CARGO_TARGET_DIR`, which corrupts concurrent builds rather than merely serializing them |
 | `precommit-home` | the shared pre-commit store, where a crash inside `staged_files_only()`'s window loses unstaged work to an orphaned patch |
 | `pytest-basetemp` | concurrent lanes contending on one pytest temp root |
@@ -136,6 +136,14 @@ exists:
 
 The same action core backs the `rm_lane` MCP tool and
 `python -m repository_manager.lane_doctor`, so the surfaces cannot drift.
+
+```mermaid
+flowchart LR
+    V{Worktree has .venv} -->|No| OK[Isolation check passes]
+    V -->|Yes| M{Launcher marker config and interpreter are valid}
+    M -->|Yes| MANAGED[Managed all-extras environment passes]
+    M -->|No| FAIL[Foreign or stale environment blocks finish]
+```
 
 ## Canonical manifest gate
 

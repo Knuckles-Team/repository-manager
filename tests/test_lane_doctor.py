@@ -80,6 +80,41 @@ def test_a_worktree_local_venv_is_refused(worktree: Path) -> None:
     assert str(worktree / ".venv") in check["evidence"]["venv"]
 
 
+def test_a_uv_workspace_managed_worktree_venv_passes(worktree: Path) -> None:
+    (worktree / "scripts").mkdir()
+    (worktree / "scripts" / "uv_workspace.py").write_text("# managed launcher\n")
+    venv = worktree / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    python = venv / "bin" / "python"
+    python.write_text("#!/usr/bin/env python3\n")
+    python.chmod(0o755)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv / ".uv-workspace-selection.json").write_text(
+        '{"label": "", "selection": ["--all-extras"]}\n'
+    )
+
+    check = _named(lane_doctor.diagnose(worktree, env={}), "no-worktree-venv")
+
+    assert check["status"] == OK
+    assert check["evidence"]["selection"] == ["--all-extras"]
+
+
+def test_a_stale_managed_worktree_venv_is_refused(worktree: Path) -> None:
+    (worktree / "scripts").mkdir()
+    (worktree / "scripts" / "uv_workspace.py").write_text("# managed launcher\n")
+    venv = worktree / ".venv"
+    venv.mkdir()
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    (venv / ".uv-workspace-selection.json").write_text(
+        '{"label": "", "selection": ["--all-extras"]}\n'
+    )
+
+    check = _named(lane_doctor.diagnose(worktree, env={}), "no-worktree-venv")
+
+    assert check["status"] == FAIL
+    assert "bin/python" in check["finding"]
+
+
 def test_no_local_venv_passes(worktree: Path) -> None:
     check = _named(lane_doctor.diagnose(worktree, env={}), "no-worktree-venv")
     assert check["status"] == OK
@@ -362,6 +397,7 @@ def test_finish_degrades_honestly_when_the_queue_is_unavailable(
     worktree: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No path may report a success it did not verify."""
+
     def _no_queue():
         raise ImportError("merge queue not in this build")
 
