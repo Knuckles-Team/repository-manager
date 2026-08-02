@@ -91,7 +91,7 @@ import re
 import shutil
 import subprocess  # nosec B404 - fixed argv, never shell=True
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -602,15 +602,18 @@ def _resolve_latest_candidate_record(group: list[dict[str, Any]]) -> dict[str, A
     ``"canonical" < "lane-foo"`` — so a candidate that had genuinely landed
     reported ``queued`` forever, and a stale record could revive a dead one.
 
-    ISO-8601 timestamps sort correctly as plain strings. Falls back to
-    ``group[-1]`` ONLY when every record in the group lacks ``recorded_at`` (a
-    fragment written before the field existed), so old stores degrade rather
-    than needing a migration.
+    Delegates to :func:`repository_manager.task_queue.resolve_latest_record` —
+    the SAME fold-by-``recorded_at`` rule :mod:`build_queue` relies on for its
+    own ``Task`` records, extracted so the two queues share one mechanism
+    (CONCEPT:RM-TASK-LEDGER) rather than maintaining two copies of this exact
+    ordering fix. Only this pure comparison moved; ``Candidate``'s on-disk
+    layout (``QUEUE_DIRNAME``) is untouched deliberately — the live queue is
+    draining real branches on a 5-minute timer and a storage-path change would
+    silently orphan whatever is mid-flight.
     """
-    with_timestamp = [r for r in group if str(r.get("recorded_at", "")).strip()]
-    if not with_timestamp:
-        return group[-1]
-    return max(with_timestamp, key=lambda r: str(r.get("recorded_at", "")))
+    from repository_manager.task_queue import resolve_latest_record
+
+    return resolve_latest_record(group)
 
 
 def _all_candidates(path: Path | str | None = None) -> list[Candidate]:
