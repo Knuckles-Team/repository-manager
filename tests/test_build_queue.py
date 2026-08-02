@@ -263,6 +263,7 @@ def test_gc_never_removes_an_entry_with_a_running_task(repo: Path):
     result = bq.request(repo_path=repo, spec_name="widget", colocated=True)
     _backdate_manifest(repo, result["key"], days_ago=30)
     task = tq.find_task("build", result["key"], path=repo)
+    assert task is not None
     tq.record_state(task, tq.RUNNING, "still going", path=repo)
 
     gc_result = bq.gc(repo_path=repo, keep_recent=0, max_age_days=0)
@@ -308,7 +309,7 @@ def test_the_cli_flag_routes_to_the_same_dispatch_core(
     from repository_manager.repository_manager import _run_build_queue_cli
 
     args = SimpleNamespace(
-        build="status",
+        build_broker="status",
         repo_path=str(repo),
         build_spec="widget",
         build_key="",
@@ -334,7 +335,7 @@ def test_the_cli_defaults_to_not_colocated_and_is_refused_for_request(
     from repository_manager.repository_manager import _run_build_queue_cli
 
     args = SimpleNamespace(
-        build="request",
+        build_broker="request",
         repo_path=str(repo),
         build_spec="widget",
         build_key="",

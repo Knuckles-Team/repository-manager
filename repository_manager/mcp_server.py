@@ -1449,10 +1449,12 @@ def register_project_management_tools(mcp: FastMCP):
             description="Seconds 'request' waits on an in-flight build of the same key before building anyway.",
         ),
         keep_recent: int = Field(
-            default=10, description="For gc: always keep this many most-recent cache entries."
+            default=10,
+            description="For gc: always keep this many most-recent cache entries.",
         ),
         max_age_days: int = Field(
-            default=14, description="For gc: reclaim cache entries older than this (subject to keep_recent)."
+            default=14,
+            description="For gc: reclaim cache entries older than this (subject to keep_recent).",
         ),
         ctx: Context | None = Field(
             default=None, description="MCP context for progress reporting"
@@ -1486,7 +1488,9 @@ def register_project_management_tools(mcp: FastMCP):
 
         from repository_manager import build_queue as bq
 
-        resolved = resolve_action(action, RM_BUILD_ACTIONS, service="repository-manager")
+        resolved = resolve_action(
+            action, RM_BUILD_ACTIONS, service="repository-manager"
+        )
         if isinstance(resolved, dict):
             return resolved
         if ctx is not None:

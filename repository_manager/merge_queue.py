@@ -262,7 +262,9 @@ class GateSpec:
         Matched on the command, not declared by the config, so a repo cannot
         opt out of the dirty-tree refusal by forgetting to flag it.
         """
-        return any("pre-commit" in part or "pre_commit" in part for part in self.command)
+        return any(
+            "pre-commit" in part or "pre_commit" in part for part in self.command
+        )
 
 
 @dataclass(frozen=True)
@@ -319,10 +321,14 @@ def parse_config(data: dict[str, Any], *, source: str = "") -> QueueConfig:
     gates: list[GateSpec] = []
     for index, raw in enumerate(data.get("gates") or []):
         if not isinstance(raw, dict):
-            raise MergeQueueError(f"{source or CONFIG_FILENAME}: gates[{index}] is not a mapping")
+            raise MergeQueueError(
+                f"{source or CONFIG_FILENAME}: gates[{index}] is not a mapping"
+            )
         name = str(raw.get("name") or "").strip()
         if not name:
-            raise MergeQueueError(f"{source or CONFIG_FILENAME}: gates[{index}] has no name")
+            raise MergeQueueError(
+                f"{source or CONFIG_FILENAME}: gates[{index}] has no name"
+            )
         compare = str(raw.get("compare", "lines"))
         if compare not in {"exit", "lines", "pytest-ids"}:
             raise MergeQueueError(
@@ -563,7 +569,9 @@ def enqueue(
     }
 
 
-def _record_state(candidate: Candidate, state: str, reason: str, path: Path | str) -> None:
+def _record_state(
+    candidate: Candidate, state: str, reason: str, path: Path | str
+) -> None:
     """Supersede a candidate's record with its terminal state — a NEW append.
 
     Never an edit: the fold collapses records sharing an ``id`` to the
@@ -643,7 +651,9 @@ def queue_report(path: Path | str | None = None) -> dict[str, Any]:
         "repo": scope.main_tree.name,
         "depth": len(pending),
         "queued": [c.to_record() for c in pending],
-        "recent": [c.to_record() for c in everything if c.state in {LANDED, REJECTED}][-20:],
+        "recent": [c.to_record() for c in everything if c.state in {LANDED, REJECTED}][
+            -20:
+        ],
         "lease": MERGE_LEASE,
         "config": (
             {
@@ -692,7 +702,9 @@ def trial_merge(repo: Path, base_ref: str, branch: str) -> TrialMerge:
     is why this is safe to run against a canonical checkout while other lanes are
     mid-work, and why it costs milliseconds rather than a checkout.
     """
-    res = _run_git(["merge-tree", "--write-tree", "--name-only", base_ref, branch], repo)
+    res = _run_git(
+        ["merge-tree", "--write-tree", "--name-only", base_ref, branch], repo
+    )
     if res.ok:
         return TrialMerge(ok=True, tree=res.out.splitlines()[0].strip())
     if res.code != 1:
@@ -912,7 +924,10 @@ def _environment_signature(tree: Path, config: QueueConfig) -> str:
     for venv in (tree / ".venv", tree.parent / ".venv"):
         dists = [
             p.name
-            for site in (*venv.glob("lib/python*/site-packages"), *venv.glob("Lib/site-packages"))
+            for site in (
+                *venv.glob("lib/python*/site-packages"),
+                *venv.glob("Lib/site-packages"),
+            )
             for p in (*site.glob("*.dist-info"), *site.glob("*.egg-info"))
         ]
         if dists:
@@ -932,9 +947,16 @@ def _baseline_cache_path(
     if environment == "unpinned":
         return None
     digest = hashlib.sha256(
-        "\n".join([base_sha, gate.name, " ".join(gate.command), gate.compare, environment]).encode()
+        "\n".join(
+            [base_sha, gate.name, " ".join(gate.command), gate.compare, environment]
+        ).encode()
     ).hexdigest()
-    return scope.arbitration_dir / QUEUE_DIRNAME / BASELINE_CACHE_DIRNAME / f"{digest}.json"
+    return (
+        scope.arbitration_dir
+        / QUEUE_DIRNAME
+        / BASELINE_CACHE_DIRNAME
+        / f"{digest}.json"
+    )
 
 
 def _load_baseline_cache(path: Path | None) -> GateBaseline | None:
@@ -1036,7 +1058,10 @@ def compute_gate_baseline(
                     f"(command: {' '.join(gate.command)}) — REFUSED, not assumed clean"
                 ),
             )
-        if gate.compare == "pytest-ids" and proc.returncode not in _PYTEST_READABLE_EXIT_CODES:
+        if (
+            gate.compare == "pytest-ids"
+            and proc.returncode not in _PYTEST_READABLE_EXIT_CODES
+        ):
             return GateBaseline(
                 readable=False,
                 base_sha=base_sha,
@@ -1179,7 +1204,9 @@ def _compare_gate(
     if new:
         detail = _fmt(f"NEW signal(s) not present on {base_label}", new)
         if pre_existing:
-            detail += "\n" + _fmt(f"pre-existing on {base_label} (not blocking)", pre_existing)
+            detail += "\n" + _fmt(
+                f"pre-existing on {base_label} (not blocking)", pre_existing
+            )
         if fixed:
             detail += "\n" + _fmt(f"FIXED relative to {base_label}", fixed)
         return Check(gate.name, ok=False, seconds=seconds, detail=detail)
@@ -1188,7 +1215,12 @@ def _compare_gate(
     if pre_existing:
         # Allowed, but reported explicitly with counts, so a pass over a red base
         # can never read as a silent success. This is not a masking mechanism.
-        parts.append(_fmt(f"pre-existing on {base_label} (allowed — not caused here)", pre_existing))
+        parts.append(
+            _fmt(
+                f"pre-existing on {base_label} (allowed — not caused here)",
+                pre_existing,
+            )
+        )
     if fixed:
         parts.append(_fmt(f"FIXED relative to {base_label}", fixed))
     return Check(
@@ -1252,7 +1284,10 @@ def run_gate(
                 "cannot run is refused, never assumed clean"
             ),
         )
-    if gate.compare == "pytest-ids" and proc.returncode not in _PYTEST_READABLE_EXIT_CODES:
+    if (
+        gate.compare == "pytest-ids"
+        and proc.returncode not in _PYTEST_READABLE_EXIT_CODES
+    ):
         # A collection error is not a pass on EITHER tree, and an unreadable
         # merged run gives no signal set to diff — there is nothing to compare.
         return Check(
@@ -1441,7 +1476,9 @@ def _worktrees_holding(repo: Path, base: str) -> list[str]:
     return holders
 
 
-def land(repo: Path, commit: str, *, base: str, scope: LaneScope, git: Any = None) -> dict[str, Any]:
+def land(
+    repo: Path, commit: str, *, base: str, scope: LaneScope, git: Any = None
+) -> dict[str, Any]:
     """Advance the **declared base ref** to *commit*, fast-forward only.
 
     D-RMD-1 — **the bug this function is written against, and why it was
@@ -1503,7 +1540,13 @@ def land(repo: Path, commit: str, *, base: str, scope: LaneScope, git: Any = Non
         )
     current = before.out
     if current == commit:
-        return {"base": base, "ref": ref, "from": current, "to": commit, "method": "already-current"}
+        return {
+            "base": base,
+            "ref": ref,
+            "from": current,
+            "to": commit,
+            "method": "already-current",
+        }
     if not _run_git(["merge-base", "--is-ancestor", current, commit], repo).ok:
         raise MergeQueueError(
             f"refusing to land: {commit[:12]} is not a descendant of {ref} "
@@ -1582,7 +1625,9 @@ def land(repo: Path, commit: str, *, base: str, scope: LaneScope, git: Any = Non
 # ---------------------------------------------------------------------------
 # Guarded prune — behaviour 4, delegated to where the guard already lives
 # ---------------------------------------------------------------------------
-def prune_landed(candidate: Candidate, *, repo: Path, base: str, git: Any) -> dict[str, Any]:
+def prune_landed(
+    candidate: Candidate, *, repo: Path, base: str, git: Any
+) -> dict[str, Any]:
     """Remove a landed candidate's worktree and branch through the guarded path.
 
     Both halves are delegated to where the guard already lives — reimplementing
@@ -1651,7 +1696,12 @@ def prune_landed(candidate: Candidate, *, repo: Path, base: str, git: Any) -> di
 # The runner — optimistic batching with bisection on failure
 # ---------------------------------------------------------------------------
 def _build_chain(
-    repo: Path, base: str, candidates: list[Candidate], *, scope: LaneScope, config: QueueConfig
+    repo: Path,
+    base: str,
+    candidates: list[Candidate],
+    *,
+    scope: LaneScope,
+    config: QueueConfig,
 ) -> tuple[str, list[Candidate], list[tuple[Candidate, TrialMerge]]]:
     """Merge each candidate onto a rolling trial commit; split off the conflicted.
 
@@ -1776,10 +1826,20 @@ def integrate_batch(
 
     middle = len(accepted) // 2
     outcomes += integrate_batch(
-        accepted[:middle], base=base, scope=scope, config=config, git=git, depth=depth + 1
+        accepted[:middle],
+        base=base,
+        scope=scope,
+        config=config,
+        git=git,
+        depth=depth + 1,
     )
     outcomes += integrate_batch(
-        accepted[middle:], base=base, scope=scope, config=config, git=git, depth=depth + 1
+        accepted[middle:],
+        base=base,
+        scope=scope,
+        config=config,
+        git=git,
+        depth=depth + 1,
     )
     return outcomes
 
@@ -1824,12 +1884,16 @@ def run_queue(
             "the base never moved (D-RMD-1)."
         )
     started = time.monotonic()
-    with hold_lease(MERGE_LEASE, operation=f"drain the {repo.name} merge queue", path=scope.tree):
+    with hold_lease(
+        MERGE_LEASE, operation=f"drain the {repo.name} merge queue", path=scope.tree
+    ):
         batch = queued(scope.tree)[:batch_size]
         if not batch:
             return {"repo": repo.name, "drained": 0, "outcomes": [], "seconds": 0.0}
         by_branch = {c.branch: c for c in batch}
-        outcomes = integrate_batch(batch, base=base, scope=scope, config=config, git=git)
+        outcomes = integrate_batch(
+            batch, base=base, scope=scope, config=config, git=git
+        )
         for outcome in outcomes:
             candidate = by_branch.get(outcome["branch"])
             if candidate is None:
@@ -1939,10 +2003,14 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(prog="python -m repository_manager.merge_queue")
     p.add_argument(
-        "action", nargs="?", default="run",
+        "action",
+        nargs="?",
+        default="run",
         choices=["run", "status", "enqueue", "withdraw", "config"],
     )
-    p.add_argument("--path", default=None, help="a working tree of the target repository")
+    p.add_argument(
+        "--path", default=None, help="a working tree of the target repository"
+    )
     p.add_argument("--base", default="", help="branch to land onto (default: config)")
     p.add_argument("--branch", default="")
     p.add_argument("--reason", default="")

@@ -3629,7 +3629,7 @@ def _run_build_queue_cli(args) -> int:
 
     try:
         result = build_queue.dispatch(
-            args.build,
+            args.build_broker,
             path=args.repo_path,
             spec=args.build_spec,
             key=args.build_key,
@@ -4011,14 +4011,14 @@ Examples:
         "Build Broker (per-repo build specs declared in .buildcache.yaml)"
     )
     group_build.add_argument(
-        "--build",
+        "--build-broker",
         choices=["request", "status", "artifacts", "explain", "gc"],
         help=(
-            "Content-addressed build broker for ANY repository. A second "
-            "request for the SAME (repo, tree-sha, feature-set, toolchain, "
-            "target) waits on and reuses the first's published artifacts "
-            "instead of rebuilding. Use --repo-path to select the repository "
-            "(default: cwd)."
+            "Content-addressed build broker for ANY repository (distinct from "
+            "the packaging '--build' above). A second request for the SAME "
+            "(repo, tree-sha, feature-set, toolchain, target) waits on and "
+            "reuses the first's published artifacts instead of rebuilding. "
+            "Use --repo-path to select the repository (default: cwd)."
         ),
     )
     group_build.add_argument(
@@ -4031,7 +4031,7 @@ Examples:
         "--build-key",
         type=str,
         default="",
-        help="A cache key, for --build status/artifacts/explain.",
+        help="A cache key, for --build-broker status/artifacts/explain.",
     )
     group_build.add_argument(
         "--same-node",
@@ -4055,13 +4055,13 @@ Examples:
         "--build-keep-recent",
         type=int,
         default=10,
-        help="For --build gc: always keep this many most-recent cache entries.",
+        help="For --build-broker gc: always keep this many most-recent cache entries.",
     )
     group_build.add_argument(
         "--build-max-age-days",
         type=int,
         default=14,
-        help="For --build gc: reclaim cache entries older than this (subject to --build-keep-recent).",
+        help="For --build-broker gc: reclaim cache entries older than this (subject to --build-keep-recent).",
     )
 
     args = parser.parse_args()
@@ -4071,7 +4071,7 @@ Examples:
     # bulk operations above, whose --path/--repositories semantics are different.
     if args.merge_queue:
         sys.exit(_run_merge_queue_cli(args))
-    if args.build:
+    if args.build_broker:
         sys.exit(_run_build_queue_cli(args))
 
     manifest_option_used = any(

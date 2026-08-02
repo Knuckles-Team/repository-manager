@@ -433,6 +433,8 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `RM_MAX_WORKERS` | `8` | explicit worker-count override (skips auto-sizing from CPU count) |
 | `RM_JOB_STALE_SECONDS` | `1800` | seconds before an in-flight job is treated as stale by the watchdog |
 | `RM_GATE_BEFORE_PUSH` | `true` | run the pre-commit gate before pushing (set false to bypass) |
+| `RM_TASK_LEDGER_FLEET` | — | optional: caller identity (claude/codex/human/vllm) recorded against a task_queue reservation |
+| `RM_TASK_LEDGER_SESSION` | — | optional: caller's lane/session id recorded against a task_queue reservation |
 | `REPOSITORY_MANAGER_CLONE_FILTER` | — | optional git clone filter: blob:none or tree:0 |
 | `CODE_ENHANCER_SCRIPTS_DIR` | — | optional code-enhancer helper scripts directory |
 | `GITLAB_URL` | `https://gitlab.com` | GitLab base URL (alias: GITLAB_HOST) |
@@ -470,7 +472,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | `gpt-4o` | Model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_38 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_40 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 
