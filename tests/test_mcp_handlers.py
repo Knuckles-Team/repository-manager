@@ -1,10 +1,15 @@
 import asyncio
+import concurrent.futures
+import importlib
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+mcp_server_module = importlib.import_module("repository_manager.mcp_server")
 from repository_manager.mcp_server import (
     _get_job_status,
+    _job_futures,
     _jobs,
     _jobs_lock,
     _submit_job,
@@ -12,7 +17,7 @@ from repository_manager.mcp_server import (
     get_mcp_instance,
     mcp_server,
 )
-from repository_manager.models import GitResult
+from repository_manager.models import GitError, GitResult
 
 
 @pytest.mark.anyio
@@ -52,7 +57,7 @@ async def test_background_job_lifecycle():
         await asyncio.sleep(0.05)
 
     assert status_info["status"] == "failed"
-    assert status_info["error"] == "Background repository operation failed"
+    assert status_info["error"] == "Background repository operation raised ValueError."
 
 
 def test_get_job_status_variations():
@@ -73,7 +78,8 @@ def test_get_job_status_variations():
     mock_job = {
         "status": "running",
         "action": "validate",
-        "started_at": "2026-05-22T00:00:00Z",
+        "submitted_at": "2099-05-21T23:59:59Z",
+        "started_at": "2099-05-22T00:00:00Z",
         "completed_at": None,
         "result": None,
         "error": None,
@@ -101,6 +107,7 @@ def test_get_job_status_variations():
 
     # Terse default: counts + failed set + active names (no full per-repo dump).
     status = _get_job_status("job-abc")
+    assert status["submitted_at"] == "2099-05-21T23:59:59Z"
     assert status["current_phase"] == "Phase 2"
     assert status["progress"] == 50
     assert status["counts"]["completed"] == 2  # repo_a (success) + repo_b (failed)
@@ -125,6 +132,7 @@ def test_get_job_status_variations():
     all_jobs = _get_job_status(summary=False)
     assert "jobs" in all_jobs
     assert "job-abc" in all_jobs["jobs"]
+    assert all_jobs["jobs"]["job-abc"]["submitted_at"] == "2099-05-21T23:59:59Z"
 
     # Test completed job with Pydantic model result
     mock_model_result = MagicMock()
@@ -358,6 +366,184 @@ async def test_mcp_rm_git_tool(tmp_path):
         )
         assert isinstance(disc, dict)
         assert "raw" in disc["actions"]
+
+
+@pytest.mark.anyio
+async def test_mcp_rm_git_status_exposes_submitted_job_and_failure():
+    """rm_git owns the polling surface for its own background jobs."""
+    mcp, _, _, _ = get_mcp_instance()
+    tools = await mcp.list_tools()
+    rm_git = next(t for t in tools if t.name == "rm_git")
+
+    with _jobs_lock:
+        _jobs.clear()
+        _jobs["git-failed"] = {
+            "status": "failed",
+            "action": "commit_code",
+            "started_at": "2026-08-02T00:00:00Z",
+            "completed_at": "2026-08-02T00:01:00Z",
+            "result": None,
+            "error": "pre-commit gate failed",
+        }
+
+    response = await rm_git.fn(action="status", job_id="git-failed")
+
+    assert response["job_id"] == "git-failed"
+    assert response["status"] == "failed"
+    assert response["action"] == "commit_code"
+    assert response["error"] == "pre-commit gate failed"
+
+    with _jobs_lock:
+        _jobs["git-completed-failed"] = {
+            "status": "completed",
+            "action": "commit_code",
+            "started_at": "2026-08-02T00:00:00Z",
+            "completed_at": "2026-08-02T00:01:00Z",
+            "result": [
+                GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message="pre-commit gate failed", code=1),
+                )
+            ],
+            "error": None,
+        }
+
+    completed = await rm_git.fn(action="status", job_id="git-completed-failed")
+
+    assert completed["status"] == "completed"
+    assert completed["outcome"] == "failed"
+    assert completed["failures"] == ["pre-commit gate failed"]
+
+
+@pytest.mark.anyio
+async def test_mcp_rm_git_cancels_queued_job_and_refuses_running_job(monkeypatch):
+    """Queued cancellation is terminal; active work is refused honestly."""
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(mcp_server_module, "_executor", executor)
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+    queued_ran = threading.Event()
+
+    def blocker():
+        blocker_started.set()
+        release_blocker.wait()
+        return "done"
+
+    def queued_work():
+        queued_ran.set()
+        return "should not run"
+
+    with _jobs_lock:
+        _jobs.clear()
+        _job_futures.clear()
+
+    try:
+        active = _submit_job("add", blocker)
+        assert blocker_started.wait(timeout=1)
+        queued = _submit_job("commit", queued_work)
+        with _jobs_lock:
+            assert queued["job_id"] in _job_futures
+
+        mcp, _, _, _ = get_mcp_instance()
+        tools = await mcp.list_tools()
+        rm_git = next(t for t in tools if t.name == "rm_git")
+
+        refused = await rm_git.fn(action="cancel", job_id=active["job_id"])
+        assert refused == {
+            "job_id": active["job_id"],
+            "status": "running",
+            "cancelled": False,
+            "message": (
+                "Job has started; cooperative cancellation is not supported, "
+                "so it remains running."
+            ),
+        }
+
+        cancelled = await rm_git.fn(action="cancel", job_id=queued["job_id"])
+        assert cancelled == {
+            "job_id": queued["job_id"],
+            "status": "cancelled",
+            "cancelled": True,
+        }
+        status = await rm_git.fn(action="status", job_id=queued["job_id"])
+        assert status["status"] == "cancelled"
+        assert status["outcome"] == "cancelled"
+        with _jobs_lock:
+            assert queued["job_id"] not in _job_futures
+    finally:
+        release_blocker.set()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert not queued_ran.is_set()
+    assert _get_job_status(queued["job_id"])["status"] == "cancelled"
+
+
+def test_submit_job_publishes_record_with_future_or_nothing(monkeypatch):
+    """Publication is atomic and executor refusal leaves no phantom queued job."""
+    pending: concurrent.futures.Future[str] = concurrent.futures.Future()
+
+    class PendingExecutor:
+        def submit(self, _func):
+            assert not _jobs
+            assert not _job_futures
+            return pending
+
+    with _jobs_lock:
+        _jobs.clear()
+        _job_futures.clear()
+    monkeypatch.setattr(mcp_server_module, "_executor", PendingExecutor())
+
+    submitted = _submit_job("commit", lambda: "unused")
+
+    assert submitted["status"] == "submitted"
+    job_id = submitted["job_id"]
+    with _jobs_lock:
+        assert _jobs[job_id]["status"] == "queued"
+        assert _job_futures[job_id] is pending
+
+    pending.cancel()
+    with _jobs_lock:
+        assert _jobs[job_id]["status"] == "cancelled"
+        assert job_id not in _job_futures
+        _jobs.clear()
+
+    class FailingExecutor:
+        def submit(self, _func):
+            raise RuntimeError("executor unavailable")
+
+    monkeypatch.setattr(mcp_server_module, "_executor", FailingExecutor())
+    refused = _submit_job("commit", lambda: "unused")
+
+    assert refused == {
+        "status": "error",
+        "message": "Job (commit) could not be submitted: RuntimeError.",
+    }
+    with _jobs_lock:
+        assert not _jobs
+        assert not _job_futures
+
+
+def test_targeted_status_reaps_stale_job_and_exposes_submission_time():
+    """Polling by job id performs the same stale lifecycle check as roll-up."""
+    with _jobs_lock:
+        _jobs.clear()
+        _jobs["stale-targeted"] = {
+            "status": "running",
+            "action": "pull",
+            "submitted_at": "2020-01-01T00:00:00Z",
+            "started_at": "2020-01-01T00:00:01Z",
+            "completed_at": None,
+            "result": None,
+            "error": None,
+        }
+
+    status = _get_job_status("stale-targeted")
+
+    assert status["status"] == "failed"
+    assert status["outcome"] == "failed"
+    assert status["submitted_at"] == "2020-01-01T00:00:00Z"
+    assert "stale-job ceiling" in status["error"]
 
 
 @pytest.mark.anyio
@@ -782,6 +968,64 @@ def test_reap_stale_jobs_flips_overdue_running_to_failed():
         assert _jobs["wedged"]["status"] == "failed"
         assert "reaped" in (_jobs["wedged"]["error"] or "")
         assert _jobs["fresh"]["status"] == "running"  # future ts, not reaped
+        _jobs.clear()
+
+
+def test_reaper_preserves_live_long_phased_push_and_fails_orphan():
+    """Future/progress liveness beats age; an equally old orphan is reaped."""
+    live_future: concurrent.futures.Future[str] = concurrent.futures.Future()
+    assert live_future.set_running_or_notify_cancel()
+    old = "2020-01-01T00:00:00+00:00Z"
+    progress = {
+        "current_phase": "Waiting 30 min after Phase 1",
+        "progress": 50,
+        "phases": {},
+    }
+    with _jobs_lock:
+        _jobs.clear()
+        _job_futures.clear()
+        _jobs["live-phased"] = {
+            "status": "running",
+            "action": "phased_push",
+            "submitted_at": old,
+            "started_at": old,
+            "heartbeat_at": old,
+            "completed_at": None,
+            "result": None,
+            "error": None,
+            "progress_detail": progress,
+            "_progress_marker": (
+                "Waiting 30 min after Phase 1",
+                50,
+                (),
+            ),
+        }
+        _jobs["orphan"] = {
+            "status": "running",
+            "action": "pull",
+            "submitted_at": old,
+            "started_at": old,
+            "heartbeat_at": old,
+            "completed_at": None,
+            "result": None,
+            "error": None,
+        }
+        _job_futures["live-phased"] = live_future
+
+    mcp_server_module._reap_stale_jobs(max_age_seconds=60)
+
+    with _jobs_lock:
+        assert _jobs["live-phased"]["status"] == "running"
+        assert _jobs["orphan"]["status"] == "failed"
+
+    progress["progress"] = 51
+    status = _get_job_status("live-phased")
+    assert status["status"] == "running"
+    assert status["heartbeat_at"] != old
+
+    live_future.set_result("done")
+    with _jobs_lock:
+        _job_futures.clear()
         _jobs.clear()
 
 

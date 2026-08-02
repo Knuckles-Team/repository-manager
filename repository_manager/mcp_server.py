@@ -69,6 +69,8 @@ RM_GIT_ACTIONS = (
     "commit",
     "pre_commit",
     "commit_code",
+    "status",
+    "cancel",
 )
 RM_WORKSPACE_ACTIONS = (
     "list",
@@ -167,6 +169,7 @@ def _get_max_workers():
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=_get_max_workers())
 _jobs: dict[str, dict[str, Any]] = {}
+_job_futures: dict[str, concurrent.futures.Future[Any]] = {}
 
 _jobs_lock = threading.RLock()
 
@@ -180,40 +183,80 @@ def _submit_job(
 ) -> dict[str, str]:
     """Submit a function to run in the background.
 
-    Returns a dict with ``status``, ``job_id``, and a human-readable
-    ``message`` explaining how to poll for results.
+    A successful response includes ``status``, ``job_id``, and a human-readable
+    polling message. Executor refusal returns ``status=error`` without publishing
+    a job id that cannot be polled or cancelled.
     """
     job_id = str(uuid.uuid4())[:8]
     now = datetime.now(UTC).isoformat() + "Z"
 
     job_entry: dict[str, Any] = {
-        "status": "running",
+        "status": "queued",
         "action": action,
-        "started_at": now,
+        "submitted_at": now,
+        "heartbeat_at": now,
+        "started_at": None,
         "completed_at": None,
         "result": None,
         "error": None,
     }
     if _extra_job_data:
         job_entry.update(_extra_job_data)
-
-    with _jobs_lock:
-        _jobs[job_id] = job_entry
+    initial_progress = _progress_marker(job_entry)
+    if initial_progress is not None:
+        job_entry["_progress_marker"] = initial_progress
 
     def _run() -> None:
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None or job["status"] != "queued":
+                return
+            job["status"] = "running"
+            started_at = datetime.now(UTC).isoformat() + "Z"
+            job["started_at"] = started_at
+            job["heartbeat_at"] = started_at
         try:
             result = func(*args, **kwargs)
             with _jobs_lock:
-                _jobs[job_id]["status"] = "completed"
-                _jobs[job_id]["result"] = result
-                _jobs[job_id]["completed_at"] = datetime.now(UTC).isoformat() + "Z"
-        except Exception:
+                job = _jobs.get(job_id)
+                if job is not None and job["status"] == "running":
+                    job["status"] = "completed"
+                    job["result"] = result
+                    job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
+        except Exception as exc:
             with _jobs_lock:
-                _jobs[job_id]["status"] = "failed"
-                _jobs[job_id]["error"] = "Background repository operation failed"
-                _jobs[job_id]["completed_at"] = datetime.now(UTC).isoformat() + "Z"
+                job = _jobs.get(job_id)
+                if job is not None and job["status"] == "running":
+                    job["status"] = "failed"
+                    job["error"] = (
+                        f"Background repository operation raised {type(exc).__name__}."
+                    )
+                    job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
 
-    _executor.submit(_run)
+    def _release_future(done: concurrent.futures.Future[Any]) -> None:
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if done.cancelled() and job is not None and job["status"] == "queued":
+                job["status"] = "cancelled"
+                job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
+            _job_futures.pop(job_id, None)
+
+    # Publish the record and its Future atomically under the same lock the worker
+    # must acquire before transitioning out of ``queued``. No status/cancel caller
+    # can therefore observe a queued job without its cancellation handle.
+    with _jobs_lock:
+        try:
+            future = _executor.submit(_run)
+        except Exception as exc:
+            return {
+                "status": "error",
+                "message": (
+                    f"Job ({action}) could not be submitted: {type(exc).__name__}."
+                ),
+            }
+        _jobs[job_id] = job_entry
+        _job_futures[job_id] = future
+        future.add_done_callback(_release_future)
 
     return {
         "status": "submitted",
@@ -223,6 +266,54 @@ def _submit_job(
             f"Poll with the corresponding tool's status action using job_id='{job_id}'."
         ),
     }
+
+
+def _cancel_job(job_id: str) -> dict[str, Any]:
+    """Cancel a queued job, or honestly refuse once its worker has started."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return {"status": "error", "message": f"Job '{job_id}' not found."}
+
+        status = str(job["status"])
+        if status == "cancelled":
+            return {"job_id": job_id, "status": status, "cancelled": True}
+        if status in {"completed", "failed"}:
+            return {
+                "job_id": job_id,
+                "status": status,
+                "cancelled": False,
+                "message": "Job is already terminal and cannot be cancelled.",
+            }
+
+        future = _job_futures.get(job_id)
+        if status == "queued" and future is not None:
+            # ``Future.cancel`` may return false when a pool worker has entered
+            # our wrapper but is still blocked on ``_jobs_lock``. The operation
+            # itself has not started at that point: marking the record cancelled
+            # is sufficient because ``_run`` checks this state before calling it.
+            future.cancel()
+            job["status"] = "cancelled"
+            job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
+            return {"job_id": job_id, "status": "cancelled", "cancelled": True}
+
+        if status == "queued":
+            return {
+                "job_id": job_id,
+                "status": "error",
+                "cancelled": False,
+                "message": "Queued job has no cancellation Future; lifecycle is invalid.",
+            }
+
+        return {
+            "job_id": job_id,
+            "status": str(job["status"]),
+            "cancelled": False,
+            "message": (
+                "Job has started; cooperative cancellation is not supported, "
+                "so it remains running."
+            ),
+        }
 
 
 def _job_failures(j: dict[str, Any]) -> list[str]:
@@ -238,16 +329,31 @@ def _job_failures(j: dict[str, Any]) -> list[str]:
                     if ho
                     else f"Hook '{h.hook_id}' failed."
                 )
-    if res is not None and getattr(res, "error", None):
-        out.append(res.error)
+    results = res if isinstance(res, list) else [res]
+    for result in results:
+        error = getattr(result, "error", None)
+        if error:
+            out.append(str(getattr(error, "message", error)))
     if j.get("error"):
         out.append(j["error"])
     return out
 
 
 def _job_passed(j: dict[str, Any]) -> bool:
+    """Return the operation outcome separately from its execution lifecycle."""
     res = j.get("result")
-    return bool(res is not None and getattr(res, "success", False))
+    if res is None:
+        return False
+    if isinstance(res, list):
+        return all(
+            isinstance(item, GitResult) and item.status in {"success", "skipped"}
+            for item in res
+        )
+    if isinstance(res, GitResult):
+        return res.status in {"success", "skipped"}
+    if hasattr(res, "success"):
+        return bool(res.success)
+    return True
 
 
 def _latest_jobs() -> dict[str, dict[str, Any]]:
@@ -283,17 +389,59 @@ def _latest_jobs() -> dict[str, dict[str, Any]]:
     return out
 
 
+def _progress_marker(job: dict[str, Any]) -> tuple[Any, ...] | None:
+    """Return a compact marker for observable long-running job progress."""
+    progress = job.get("progress_detail")
+    if not isinstance(progress, dict):
+        return None
+    phases = []
+    for name, detail in sorted(progress.get("phases", {}).items()):
+        if not isinstance(detail, dict):
+            continue
+        phases.append(
+            (
+                str(name),
+                detail.get("status"),
+                detail.get("processed"),
+                detail.get("completed"),
+                detail.get("success"),
+                detail.get("failed"),
+            )
+        )
+    return (
+        progress.get("current_phase"),
+        progress.get("progress"),
+        tuple(phases),
+    )
+
+
+def _refresh_progress_heartbeats() -> None:
+    """Advance heartbeats only when a job's observable progress changes."""
+    now = datetime.now(UTC).isoformat() + "Z"
+    with _jobs_lock:
+        for job in _jobs.values():
+            if job.get("status") not in {"running", "queued", "pending"}:
+                continue
+            marker = _progress_marker(job)
+            if marker is None:
+                continue
+            previous = job.get("_progress_marker")
+            job["_progress_marker"] = marker
+            if previous is not None and marker != previous:
+                job["heartbeat_at"] = now
+
+
 def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
-    """Flip jobs wedged in 'running' past a hard ceiling to a timeout failure.
+    """Fail old orphaned records without terminalizing live background work.
 
     A validation worker whose subprocess hung (or whose host was starved by an
     oversized concurrent sweep) can otherwise sit in 'running' forever, making
     the roll-up look permanently frozen (e.g. ``626 completed / 45 running``
-    unchanged for many minutes). This is a DISPLAY/accounting safety net — it
-    does not, and cannot, kill the underlying thread; the per-command
-    subprocess timeout (<=600s) is what actually frees the worker. The ceiling
-    is deliberately set well above the longest legitimate per-repo validation
-    so it never reaps a merely-slow repo. Env-tunable via
+    unchanged for many minutes). A pending/running Future is authoritative
+    liveness evidence regardless of age; observable phased progress advances a
+    heartbeat. Only a record with neither is eligible for age-based reaping.
+    This is a DISPLAY/accounting safety net — it does not kill an underlying
+    operation. Env-tunable via
     ``RM_JOB_STALE_SECONDS`` (default 1800). (CONCEPT:RM-TOPOLOGY watchdog)
     """
     if max_age_seconds is None:
@@ -302,16 +450,25 @@ def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
         except ValueError:
             max_age_seconds = 1800.0
 
+    _refresh_progress_heartbeats()
     now = datetime.now(UTC)
     with _jobs_lock:
-        for j in _jobs.values():
+        for job_id, j in _jobs.items():
             if j.get("status") not in ("running", "queued", "pending"):
                 continue
-            started = j.get("started_at")
-            if not started:
+            future = _job_futures.get(job_id)
+            if future is not None and not future.done():
+                # A live worker/pending Future is stronger liveness evidence than
+                # wall age. This is essential for phased_push, whose configured
+                # inter-phase wait alone can legitimately reach 30 minutes.
+                continue
+            heartbeat = (
+                j.get("heartbeat_at") or j.get("started_at") or j.get("submitted_at")
+            )
+            if not heartbeat:
                 continue
             try:
-                dt = datetime.fromisoformat(str(started).rstrip("Z"))
+                dt = datetime.fromisoformat(str(heartbeat).rstrip("Z"))
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=UTC)
             except ValueError:
@@ -320,8 +477,9 @@ def _reap_stale_jobs(max_age_seconds: float | None = None) -> None:
                 j["status"] = "failed"
                 j["error"] = (
                     f"Job exceeded the {int(max_age_seconds)}s stale-job ceiling "
-                    "and was reaped (worker wedged or host starved). The release "
-                    "step is gated on validation, so re-run the failed set."
+                    "without a live Future or progress heartbeat and was reaped "
+                    "as an orphaned record. The release step is gated on "
+                    "validation, so re-run the failed set."
                 )
                 j["completed_at"] = now.isoformat() + "Z"
 
@@ -354,16 +512,25 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
     even at thousands of repositories (the full dump exceeds the MCP token limit
     and forces a file spill). ``summary=False`` adds the full ``jobs`` map.
     """
+    # Targeted polling must self-heal just like the roll-up. Otherwise callers
+    # following the documented job_id path can observe a wedged ``running`` job
+    # forever while only an unrelated global-status call reaps it.
+    _reap_stale_jobs()
     if not job_id:
         # Self-heal first: reap wedged 'running' jobs, then roll up over the
         # LATEST job per repo (not every historical job_id) so stale failures
         # and stale running entries from superseded cascade runs never linger.
-        _reap_stale_jobs()
         with _jobs_lock:
             if not _jobs:
                 return {"status": "empty", "message": "No background jobs found."}
 
-            counts = {"completed": 0, "running": 0, "failed": 0, "passed": 0}
+            counts = {
+                "completed": 0,
+                "running": 0,
+                "failed": 0,
+                "cancelled": 0,
+                "passed": 0,
+            }
             failed_projects: list[str] = []
             running_projects: list[str] = []
             failed_details: dict[str, Any] = {}
@@ -397,11 +564,15 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
                             "job_id": jid,
                             "failures": _job_failures(j),
                         }
+                elif st == "cancelled":
+                    counts["cancelled"] += 1
 
                 if not summary:
                     jd = {
                         "status": st,
                         "action": j["action"],
+                        "submitted_at": j.get("submitted_at", j["started_at"]),
+                        "heartbeat_at": j.get("heartbeat_at", j["started_at"]),
                         "started_at": j["started_at"],
                         "completed_at": j["completed_at"],
                     }
@@ -437,6 +608,8 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             "job_id": job_id,
             "status": job["status"],
             "action": job["action"],
+            "submitted_at": job.get("submitted_at", job["started_at"]),
+            "heartbeat_at": job.get("heartbeat_at", job["started_at"]),
             "started_at": job["started_at"],
             "completed_at": job["completed_at"],
         }
@@ -511,6 +684,8 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
                 response["failed_projects"] = sorted(phase_failed)
 
         if job["status"] == "completed" and job["result"] is not None:
+            response["outcome"] = "succeeded" if _job_passed(job) else "failed"
+            response["failures"] = _job_failures(job)
             if hasattr(job["result"], "to_markdown"):
                 try:
                     response["summary"] = job["result"].to_markdown()
@@ -535,7 +710,10 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             else:
                 response["result"] = str(job["result"])
         elif job["status"] == "failed":
+            response["outcome"] = "failed"
             response["error"] = job["error"]
+        elif job["status"] == "cancelled":
+            response["outcome"] = "cancelled"
 
         return response
 
@@ -678,7 +856,20 @@ def register_git_operations_tools(mcp: FastMCP):
     )
     async def rm_git(
         action: str = Field(
-            description="Action: 'clone', 'enumerate', 'pull', 'push', 'phased_push', 'add', 'commit', 'pre_commit', 'commit_code'. Legacy 'raw' is permanently retired. 'enumerate' lists all repos across a GitLab instance/GitHub org into an ingest manifest (command=vcs, projects=groups/orgs)."
+            description=(
+                "Action: 'clone', 'enumerate', 'pull', 'push', 'phased_push', "
+                "'add', 'commit', 'pre_commit', 'commit_code', 'status', or "
+                "'cancel'. "
+                "Use 'status' with job_id to poll any submitted rm_git job. "
+                "Use 'cancel' with job_id to cancel a queued job; a running job "
+                "is refused honestly because cooperative cancellation is not "
+                "supported. "
+                "Use 'commit_code', rather than separate add and commit jobs, "
+                "for the ordered stage → gate → commit operation. Legacy 'raw' "
+                "is permanently retired. 'enumerate' lists all repos across a "
+                "GitLab instance/GitHub org into an ingest manifest "
+                "(command=vcs, projects=groups/orgs)."
+            )
         ),
         command: str | None = Field(
             default=None,
@@ -716,6 +907,14 @@ def register_git_operations_tools(mcp: FastMCP):
             default=True,
             description="For 'commit_code': run pre-commit hooks before committing. Default True.",
         ),
+        job_id: str | None = Field(
+            default=None,
+            description="Background rm_git job id; required for action='status' or 'cancel'.",
+        ),
+        summary: bool = Field(
+            default=True,
+            description="For action='status': return compact progress by default; false includes full detail.",
+        ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
         ),
@@ -726,12 +925,34 @@ def register_git_operations_tools(mcp: FastMCP):
         if not isinstance(auto_start, bool):
             auto_start = True
 
-        git = get_git_instance(path=path, threads=threads)
-
         resolved = resolve_action(action, RM_GIT_ACTIONS, service="repository-manager")
         if isinstance(resolved, dict):
             return resolved
         action = resolved
+
+        if action == "status":
+            if not job_id:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message="job_id is required for 'status' action", code=1
+                    ),
+                )
+            return _get_job_status(job_id, summary=summary)
+
+        if action == "cancel":
+            if not job_id:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message="job_id is required for 'cancel' action", code=1
+                    ),
+                )
+            return _cancel_job(job_id)
+
+        git = get_git_instance(path=path, threads=threads)
 
         if action == "raw":
             del command

@@ -1,11 +1,13 @@
 import datetime
 import os
 import subprocess
+import threading
 from unittest.mock import patch
 
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+import repository_manager.repository_manager as repository_manager_module
 from repository_manager.models import (
     GitMetadata,
     GitResult,
@@ -313,6 +315,261 @@ def test_commit_code_stages_untracked_and_gates_on_precommit(
     mock_pre_commit.assert_called_once()  # hooks gated the commit
     assert any(c == "git add -A" for c in calls)  # untracked files staged
     assert any("commit" in c for c in calls)
+
+
+def test_commit_code_does_not_commit_before_staging_completes(
+    sample_workspace_yml, monkeypatch
+):
+    """The combined operation cannot race a commit ahead of its staging step."""
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    target = str(workspace_dir / "pipelines")
+    (workspace_dir / "pipelines" / ".git").mkdir(parents=True, exist_ok=True)
+
+    stage_started = threading.Event()
+    allow_stage = threading.Event()
+    commit_started = threading.Event()
+    staged = threading.Event()
+
+    def mock_call(command, path=None, **kwargs):
+        if command == "git status --porcelain":
+            return GitResult(
+                status="success",
+                data="M  changed.py" if staged.is_set() else " M changed.py",
+                metadata=get_mock_metadata(command),
+            )
+        if command == "git add -A":
+            stage_started.set()
+            assert allow_stage.wait(timeout=1)
+            staged.set()
+        if command.startswith("git commit -m"):
+            commit_started.set()
+        return GitResult(
+            status="success", data="ok", metadata=get_mock_metadata(command)
+        )
+
+    monkeypatch.setattr(git, "git_action", mock_call)
+    result: list[GitResult] = []
+    worker = threading.Thread(
+        target=lambda: result.append(
+            git.commit_code_project("feat: ordered", run_precommit=False, path=target)
+        )
+    )
+    worker.start()
+
+    assert stage_started.wait(timeout=1)
+    assert not commit_started.wait(timeout=0.05)
+    allow_stage.set()
+    worker.join(timeout=1)
+
+    assert not worker.is_alive()
+    assert result[0].status == "success"
+    assert commit_started.is_set()
+
+
+def test_commit_code_excludes_concurrent_commit_through_precommit(
+    sample_workspace_yml, monkeypatch
+):
+    """A second writer cannot enter while commit_code holds the repo lock."""
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    target = str(workspace_dir / "pipelines")
+    (workspace_dir / "pipelines" / ".git").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "pipelines" / ".pre-commit-config.yaml").write_text("repos: []\n")
+
+    precommit_started = threading.Event()
+    allow_precommit = threading.Event()
+    contender_started = threading.Event()
+    commit_commands: list[str] = []
+
+    def mock_call(command, path=None, **kwargs):
+        if command == "git status --porcelain":
+            data = "M  changed.py"
+        else:
+            data = "ok"
+        if command.startswith("git commit -m"):
+            commit_commands.append(command)
+        return GitResult(
+            status="success", data=data, metadata=get_mock_metadata(command)
+        )
+
+    def blocked_precommit(*args, **kwargs):
+        precommit_started.set()
+        assert allow_precommit.wait(timeout=1)
+        return GitResult(
+            status="success",
+            data="hooks passed",
+            metadata=get_mock_metadata("pre_commit"),
+        )
+
+    monkeypatch.setattr(git, "git_action", mock_call)
+    monkeypatch.setattr(git, "pre_commit", blocked_precommit)
+    results: dict[str, GitResult] = {}
+
+    def run_contender() -> None:
+        contender_started.set()
+        results["contender"] = git.commit_project("feat: contender", path=target)
+
+    compound = threading.Thread(
+        target=lambda: results.setdefault(
+            "compound",
+            git.commit_code_project("feat: compound", run_precommit=True, path=target),
+        )
+    )
+    contender = threading.Thread(target=run_contender)
+
+    compound.start()
+    assert precommit_started.wait(timeout=1)
+    contender.start()
+    assert contender_started.wait(timeout=1)
+    assert not commit_commands
+
+    allow_precommit.set()
+    compound.join(timeout=1)
+    contender.join(timeout=1)
+
+    assert not compound.is_alive()
+    assert not contender.is_alive()
+    assert [result.status for result in results.values()] == ["success", "success"]
+    assert "feat: compound" in commit_commands[0]
+    assert "feat: contender" in commit_commands[1]
+    assert (
+        os.path.realpath(target) not in repository_manager_module._REPO_MUTATION_LOCKS
+    )
+
+
+def test_commit_code_excludes_pull_but_not_unrelated_repo(
+    sample_workspace_yml, monkeypatch
+):
+    """A blocked compound commit excludes same-repo pull, not other paths."""
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    target = str(workspace_dir / "pipelines")
+    unrelated = str(workspace_dir / "other-repo")
+    (workspace_dir / "pipelines" / ".git").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "pipelines" / ".pre-commit-config.yaml").write_text("repos: []\n")
+    (workspace_dir / "other-repo" / ".git").mkdir(parents=True, exist_ok=True)
+
+    precommit_started = threading.Event()
+    allow_precommit = threading.Event()
+    pull_attempted = threading.Event()
+    mutation_commands: list[tuple[str, str]] = []
+
+    def mock_call(command, path=None, **kwargs):
+        mutation_commands.append((command, str(path)))
+        data = "M  changed.py" if command == "git status --porcelain" else "ok"
+        return GitResult(
+            status="success", data=data, metadata=get_mock_metadata(command)
+        )
+
+    def blocked_precommit(*args, **kwargs):
+        precommit_started.set()
+        assert allow_precommit.wait(timeout=1)
+        return GitResult(
+            status="success",
+            data="hooks passed",
+            metadata=get_mock_metadata("pre_commit"),
+        )
+
+    monkeypatch.setattr(git, "git_action", mock_call)
+    monkeypatch.setattr(git, "pre_commit", blocked_precommit)
+
+    def run_pull() -> None:
+        pull_attempted.set()
+        git.pull_project(path=target)
+
+    compound = threading.Thread(
+        target=git.commit_code_project,
+        kwargs={"message": "feat: compound", "run_precommit": True, "path": target},
+    )
+    pull = threading.Thread(target=run_pull)
+
+    compound.start()
+    assert precommit_started.wait(timeout=1)
+    unrelated_result = git.add_project(unrelated)
+    assert unrelated_result.status == "success"
+    assert ("git add -A", unrelated) in mutation_commands
+
+    pull.start()
+    assert pull_attempted.wait(timeout=1)
+    assert not any(command == "git pull" for command, _path in mutation_commands)
+
+    allow_precommit.set()
+    compound.join(timeout=1)
+    pull.join(timeout=1)
+
+    assert not compound.is_alive()
+    assert not pull.is_alive()
+    ordered = [
+        command
+        for command, path in mutation_commands
+        if path == target
+        and (command.startswith("git commit") or command == "git pull")
+    ]
+    assert ordered[0].startswith("git commit")
+    assert ordered[1] == "git pull"
+    assert not repository_manager_module._REPO_MUTATION_LOCKS
+
+
+def test_relative_workspace_clone_and_pull_share_destination_lock(
+    tmp_path, monkeypatch
+):
+    """Relative-root clone and pull serialize on the same physical destination."""
+    monkeypatch.chdir(tmp_path)
+    git = Git(path="workspace")
+    relative_target = os.path.join("workspace", "repo")
+    actual_target = str(tmp_path / "workspace" / "repo")
+    clone_started = threading.Event()
+    allow_clone = threading.Event()
+    pull_attempted = threading.Event()
+    commands: list[tuple[str, str]] = []
+
+    def mock_call(command, path=None, **kwargs):
+        commands.append((command, str(path)))
+        if command.startswith("git clone"):
+            clone_started.set()
+            assert allow_clone.wait(timeout=1)
+        return GitResult(
+            status="success", data="ok", metadata=get_mock_metadata(command)
+        )
+
+    monkeypatch.setattr(git, "git_action", mock_call)
+
+    def run_pull() -> None:
+        pull_attempted.set()
+        git.pull_project(path="repo")
+
+    clone = threading.Thread(
+        target=git.clone_repository,
+        args=("https://example.invalid/repo.git", relative_target),
+    )
+    pull = threading.Thread(target=run_pull)
+
+    clone.start()
+    assert clone_started.wait(timeout=1)
+    pull.start()
+    assert pull_attempted.wait(timeout=1)
+    assert not any(command == "git pull" for command, _path in commands)
+
+    allow_clone.set()
+    clone.join(timeout=1)
+    pull.join(timeout=1)
+
+    assert not clone.is_alive()
+    assert not pull.is_alive()
+    mutation_order = [
+        "clone" if command.startswith("git clone") else "pull"
+        for command, _path in commands
+        if command.startswith("git clone") or command == "git pull"
+    ]
+    assert mutation_order == ["clone", "pull"]
+    clone_command, clone_cwd = commands[0]
+    assert actual_target in clone_command
+    assert clone_cwd == str(tmp_path / "workspace")
+    assert not repository_manager_module._REPO_MUTATION_LOCKS
 
 
 @pytest.mark.parametrize(

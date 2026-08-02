@@ -7,7 +7,10 @@ multiple repositories in parallel using Python's multiprocessing capabilities.
 """
 
 import argparse
+import contextlib
 import datetime
+import functools
+import inspect
 import json
 import os
 import re
@@ -15,8 +18,9 @@ import shlex
 import subprocess
 import sys
 import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 __version__ = "3.0.0"
 
@@ -69,6 +73,67 @@ _DIAGNOSTIC_SECRET = re.compile(
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", re.DOTALL)
 _SHELL_CONTROL_TOKENS = {"&&", "||", ";", "|", "&", "(", ")"}
 _MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024
+_MutationResult = TypeVar("_MutationResult")
+
+
+class _RepoMutationLock:
+    """One re-entrant repository lock plus its holder/waiter reference count."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.users = 0
+
+
+_REPO_MUTATION_LOCKS: dict[str, _RepoMutationLock] = {}
+_REPO_MUTATION_LOCKS_GUARD = threading.Lock()
+
+
+@contextlib.contextmanager
+def _hold_repo_mutation(path: str) -> Iterator[None]:
+    """Serialize mutation of one resolved repository without leaking lock keys."""
+    key = os.path.realpath(path)
+    with _REPO_MUTATION_LOCKS_GUARD:
+        entry = _REPO_MUTATION_LOCKS.setdefault(key, _RepoMutationLock())
+        entry.users += 1
+    acquired = False
+    try:
+        entry.lock.acquire()
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            entry.lock.release()
+        with _REPO_MUTATION_LOCKS_GUARD:
+            entry.users -= 1
+            if entry.users == 0 and _REPO_MUTATION_LOCKS.get(key) is entry:
+                del _REPO_MUTATION_LOCKS[key]
+
+
+def _exclusive_repo_mutation(
+    method: Callable[..., _MutationResult],
+) -> Callable[..., _MutationResult]:
+    """Hold one repo lock across the complete decorated mutation method."""
+    method_signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    def wrapped(*args: Any, **kwargs: Any) -> _MutationResult:
+        bound = method_signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        manager = args[0]
+        if "target_path" in bound.arguments:
+            # clone_repository's contract names this as the destination path,
+            # already relative to the caller's cwd when it is not absolute. Do
+            # not feed a workspace-prefixed target through ``_resolve_path`` a
+            # second time (``workspace/workspace/repo``).
+            target_path = os.path.abspath(
+                os.path.expanduser(str(bound.arguments["target_path"]))
+            )
+        else:
+            target_path = manager._resolve_path(bound.arguments.get("path"))
+        with _hold_repo_mutation(target_path):
+            return method(*args, **kwargs)
+
+    return wrapped
 
 
 def _privacy_safe_diagnostic(value: object) -> str:
@@ -1150,6 +1215,7 @@ class Git:
                 )
             ]
 
+    @_exclusive_repo_mutation
     def clone_repository(self, url: str, target_path: str) -> GitResult:
         """
         Clone a single Git repository to a specific target path.
@@ -1161,6 +1227,7 @@ class Git:
         Returns:
             GitResult: The result of the Git clone command.
         """
+        target_path = os.path.abspath(os.path.expanduser(target_path))
         if not url:
             return GitResult(
                 status="error",
@@ -1214,6 +1281,7 @@ class Git:
         _run_post_hydration_mount_checks(self.path)
         return results
 
+    @_exclusive_repo_mutation
     def pull_project(self, path: str | None = None) -> GitResult:
         """
         Pull updates for a single Git project and optionally checkout the default branch.
@@ -1418,6 +1486,7 @@ class Git:
             ),
         )
 
+    @_exclusive_repo_mutation
     def push_project(self, path: str | None = None) -> GitResult:
         """
         Push committed updates and tags for a single clean Git project.
@@ -1570,6 +1639,7 @@ class Git:
         ) as executor:
             return list(executor.map(self.add_project, project_dirs))
 
+    @_exclusive_repo_mutation
     def add_project(self, path: str | None = None) -> GitResult:
         """
         Stage all changes (git add -A) for a single Git project.
@@ -1606,6 +1676,7 @@ class Git:
         ) as executor:
             return list(executor.map(commit_func, project_dirs))
 
+    @_exclusive_repo_mutation
     def commit_project(self, message: str, path: str | None = None) -> GitResult:
         """
         Commit staged changes (git commit -m "{message}") for a single Git project.
@@ -1645,6 +1716,7 @@ class Git:
         safe_msg = quote(message)
         return self.git_action(command=f"git commit -m {safe_msg}", path=target_path)
 
+    @_exclusive_repo_mutation
     def commit_code_project(
         self, message: str, run_precommit: bool = True, path: str | None = None
     ) -> GitResult:
@@ -1692,6 +1764,13 @@ class Git:
                 ),
             )
 
+        # The stage, optional gate, re-stage, and commit intentionally happen in
+        # this one call.  Callers must use this ordered operation instead of
+        # racing separately submitted ``add`` and ``commit`` background jobs.
+        stage_res = self.add_project(target_path)
+        if stage_res.status != "success":
+            return stage_res
+
         if run_precommit and os.path.exists(
             os.path.join(target_path, ".pre-commit-config.yaml")
         ):
@@ -1700,7 +1779,9 @@ class Git:
                 return pc_res
 
         # Stage again (pre-commit may have reformatted files) and commit.
-        self.git_action(command="git add -A", path=target_path)
+        stage_res = self.add_project(target_path)
+        if stage_res.status != "success":
+            return stage_res
         return self.commit_project(message, path=target_path)
 
     def commit_code_projects(
@@ -1782,6 +1863,7 @@ class Git:
             )
             self.threads = self.maximum_threads
 
+    @_exclusive_repo_mutation
     def pre_commit(
         self,
         run: bool = True,
@@ -2322,6 +2404,7 @@ class Git:
                 lowest = phase_num
         return lowest
 
+    @_exclusive_repo_mutation
     def bump_version(
         self,
         part: str,
