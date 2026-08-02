@@ -315,6 +315,42 @@ def test_commit_code_stages_untracked_and_gates_on_precommit(
     mock_pre_commit.assert_called_once()  # hooks gated the commit
     assert any(c == "git add -A" for c in calls)  # untracked files staged
     assert any("commit" in c for c in calls)
+    assert "commit_sha=" in res.data  # D-CDX-60: result names the resulting commit
+
+
+@patch("repository_manager.repository_manager.Git.pre_commit")
+@patch("repository_manager.repository_manager.Git.git_action")
+def test_commit_code_recognizes_a_linked_worktree_not_only_a_git_directory(
+    mock_git_action, mock_pre_commit, sample_workspace_yml
+):
+    """D-CDX-60: in a linked worktree ``.git`` is a gitdir-pointer FILE, not a
+    directory. The repo-validity check used to be ``os.path.isdir(.git)``,
+    which is False for a linked worktree and made commit_code silently skip a
+    perfectly valid, isolated worktree as "not a cloned Git repository"."""
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    target = str(workspace_dir / "pipelines")
+    (workspace_dir / "pipelines").mkdir(parents=True, exist_ok=True)
+    # The defining shape of a linked worktree: .git is a FILE.
+    (workspace_dir / "pipelines" / ".git").write_text(
+        "gitdir: /some/canonical/.git/worktrees/pipelines\n"
+    )
+
+    def mock_call(command, path=None, **kwargs):
+        data = "A  new_feature.py\n" if "status --porcelain" in command else "ok"
+        return GitResult(
+            status="success", data=data, metadata=get_mock_metadata(command)
+        )
+
+    mock_git_action.side_effect = mock_call
+    mock_pre_commit.return_value = GitResult(
+        status="success", data="hooks passed", metadata=get_mock_metadata("pre_commit")
+    )
+
+    res = git.commit_code_project("feat: x", run_precommit=False, path=target)
+    assert res.status == "success"
+    assert res.data != "Configured project is not a cloned Git repository"
 
 
 def test_commit_code_does_not_commit_before_staging_completes(
