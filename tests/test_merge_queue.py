@@ -810,3 +810,139 @@ def test_the_cli_returns_75_when_the_lease_is_held(
     )
     assert rm_mod._run_merge_queue_cli(args) == 75
     assert json.loads(capsys.readouterr().out)["deferred"] is True
+
+
+# ---------------------------------------------------------------------------
+# D-RMD-1 — the queue reported `landed` while the base ref never moved
+#
+# The original defect merged into whatever HEAD was, not into the declared base.
+# In agent-utilities the canonical checkout always sits on `main`, so "merge into
+# HEAD" coincidentally equalled "land on base" and seven audited landings were
+# genuinely correct -- luck, not correctness. These tests remove the luck.
+# ---------------------------------------------------------------------------
+def _parked_repo(tmp_path: Path, name: str = "parked") -> Path:
+    """A repo whose canonical checkout sits on a branch that is NOT the base.
+
+    This is the configuration au never had, and the one that turns D-RMD-1 from
+    an invisible coincidence into a silent false success.
+    """
+    repo = _init_repo(tmp_path / name)
+    _write_config(
+        repo,
+        """
+        base: main
+        gates:
+          - name: always-green
+            command: ["true"]
+            tier: fast
+            compare: exit
+        """,
+    )
+    _commit(repo, "init")
+    _branch_with(repo, "feat/x", {"x.txt": "x\n"}, "the candidate")
+    # An operator poking around / a bisect / a merge in progress: the canonical
+    # checkout is parked somewhere other than the base.
+    _run("git checkout -q -b parked-elsewhere main", repo)
+    return repo
+
+
+def test_landing_moves_the_DECLARED_base_not_whatever_head_is(tmp_path: Path) -> None:
+    """D-RMD-1: the ref that must move is `base`, never HEAD."""
+    repo = _parked_repo(tmp_path)
+    main_before = _run("git rev-parse refs/heads/main", repo)
+    parked_before = _run("git rev-parse refs/heads/parked-elsewhere", repo)
+    git = FakeGit(str(tmp_path), {"x": str(repo)})
+
+    mq.enqueue("feat/x", path=repo)
+    result = mq.run_queue(path=repo, prune=False, git=git)
+    outcome = result["outcomes"][0]
+    assert outcome["landed"] is True, outcome
+
+    main_after = _run("git rev-parse refs/heads/main", repo)
+    parked_after = _run("git rev-parse refs/heads/parked-elsewhere", repo)
+    # The declared base MOVED and now contains the candidate's work...
+    assert main_after != main_before, "main did not move -- this is D-RMD-1"
+    assert main_after == outcome["to"]
+    assert "the candidate" in _run("git log --oneline refs/heads/main", repo)
+    # ...and the branch that merely happened to be checked out did NOT.
+    assert parked_after == parked_before, "the checked-out branch was written instead"
+    assert outcome["method"].startswith("update-ref CAS")
+    assert outcome["verified"] is True
+
+
+def test_the_post_condition_catches_a_wrong_write_target_by_itself(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """★ The durable half: restore D-RMD-1's WRITE and prove the assertion still catches it.
+
+    The write target is put back exactly as it was -- `git merge --ff-only` into
+    whatever HEAD is -- while the post-condition is left in place. If the
+    assertion is doing real work, the queue must refuse rather than report a
+    landing that did not happen. This is the test that would have caught the
+    original bug, and it is the one that catches the next variant.
+    """
+    repo = _parked_repo(tmp_path, "parked2")
+    git = FakeGit(str(tmp_path), {"x": str(repo)})
+    real_run_git = mq._run_git
+
+    def _buggy_run_git(args, cwd, *, timeout=300):
+        # The original defect, verbatim: a CAS write to the declared ref becomes
+        # a merge into HEAD. Everything else -- including the post-condition's
+        # own `rev-parse` -- is left completely untouched.
+        if args[:1] == ["update-ref"]:
+            return real_run_git(["merge", "--ff-only", args[2]], cwd)
+        return real_run_git(args, cwd, timeout=timeout)
+
+    monkeypatch.setattr(mq, "_run_git", _buggy_run_git)
+    mq.enqueue("feat/x", path=repo)
+    with pytest.raises(mq.MergeQueueError, match="POST-CONDITION FAILED"):
+        mq.run_queue(path=repo, prune=False, git=git)
+
+    # And nothing was reported landed, so the guarded prune never ran and the
+    # candidate's branch still exists -- the evidence survives.
+    assert _run("git rev-parse --verify refs/heads/feat/x", repo)
+    assert [c.branch for c in mq.queued(repo)] == ["feat/x"]
+
+
+def test_landing_refuses_when_the_base_is_checked_out_in_another_worktree(
+    tmp_path: Path,
+) -> None:
+    """`update-ref` would desync that tree; git refuses this for checkout, not for us."""
+    repo = _parked_repo(tmp_path, "parked3")
+    other = tmp_path / "someone-elses-tree"
+    _run(f"git worktree add -q {other} main", repo)
+    git = FakeGit(str(tmp_path), {"x": str(repo)})
+
+    main_before = _run("git rev-parse refs/heads/main", repo)
+    mq.enqueue("feat/x", path=repo)
+    with pytest.raises(mq.MergeQueueError, match="checked out in"):
+        mq.run_queue(path=repo, prune=False, git=git)
+    assert _run("git rev-parse refs/heads/main", repo) == main_before
+
+
+def test_landing_refuses_a_base_ref_that_does_not_exist(tmp_path: Path) -> None:
+    """No silent fallback to HEAD -- that fallback IS D-RMD-1."""
+    repo = _parked_repo(tmp_path, "parked4")
+    git = FakeGit(str(tmp_path), {"x": str(repo)})
+    mq.enqueue("feat/x", base="release/9.9", path=repo)
+    with pytest.raises(mq.MergeQueueError, match="does not exist"):
+        mq.run_queue(base="release/9.9", path=repo, prune=False, git=git)
+
+
+def test_landing_still_works_when_canonical_IS_on_the_base(shell_repo: Path) -> None:
+    """The au-shaped configuration keeps its atomic ref+worktree update.
+
+    Without this the D-RMD-1 fix could regress the common case into a
+    ref-only update that leaves the canonical working tree stale -- and the
+    fleet hostPath-mounts that working tree.
+    """
+    _branch_with(shell_repo, "feat/y", {"y.txt": "fine\n"}, "y")
+    git = FakeGit(str(shell_repo.parent), {"x": str(shell_repo)})
+    mq.enqueue("feat/y", path=shell_repo)
+    outcome = mq.run_queue(path=shell_repo, prune=False, git=git)["outcomes"][0]
+    assert outcome["landed"] is True
+    assert outcome["method"].startswith("merge --ff-only")
+    assert outcome["verified"] is True
+    # The working tree moved too, not just the ref.
+    assert (shell_repo / "y.txt").is_file()
+    assert _run("git rev-parse HEAD", shell_repo) == outcome["to"]

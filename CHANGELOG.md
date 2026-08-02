@@ -27,6 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`WorktreeManager.delete_merged_branch()`** — public entry to the guarded ref deletion
   (merge-base re-checked at delete time, `refs/lane-backup/<branch>` anchor, `git branch -d` never
   `-D`) so the queue reuses that guard instead of reimplementing it (D-ORC-21).
+- **Landing writes the DECLARED base ref, and proves it moved (D-RMD-1)** — `land()` previously ran
+  `git merge --ff-only` in the canonical checkout, which merges into whatever `HEAD` is rather than
+  into the candidate's declared `base`. It now fully qualifies the ref (`refs/heads/<base>`), moves
+  it by `merge --ff-only` only when the canonical checkout genuinely holds that branch and otherwise
+  by a compare-and-swap `git update-ref <ref> <new> <expected-old>`, enforces fast-forward-only
+  against the BASE ref rather than `HEAD`, and refuses when the base is checked out in another
+  worktree. It then **re-reads the ref and asserts it holds the computed commit before anything is
+  reported `landed`** — the durable half, which catches a wrong write target even with the bug still
+  in place. Previously the queue could report `landed` while the base never moved, after which the
+  guarded prune deleted the branch *as landed*: silent, positive, and self-erasing. A non-existent
+  base ref is now refused once at `run_queue` entry with an actionable message.
 - **Pre-commit data-loss guard (D-ORC-37)** — `refuse_precommit_on_dirty_tree()` refuses to run any
   pre-commit gate against a tree holding uncommitted work (pre-commit checks unstaged changes out
   of the tree while hooks run; a crash in that window loses them, D-OB-12), and every gate run gets

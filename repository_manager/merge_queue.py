@@ -1402,51 +1402,178 @@ def _resolve_generated_file_conflict(
 
 
 # ---------------------------------------------------------------------------
-# Landing — the base ref only ever FAST-FORWARDS, under both guards
+# Landing — the DECLARED base ref only ever FAST-FORWARDS, under both guards
 # ---------------------------------------------------------------------------
-def land(repo: Path, commit: str, *, base: str, scope: LaneScope, git: Any = None) -> dict[str, Any]:
-    """Advance *base* in the canonical checkout to *commit*, fast-forward only.
+def _base_ref(base: str) -> str:
+    """The candidate's declared base as a fully-qualified ref.
 
-    ``commit``'s first parent is the current base tip by construction
-    (:func:`_build_chain` builds the chain that way), so this is always a
-    fast-forward and git updates the ref and the working tree in one atomic
-    operation. There is no window in which the canonical checkout holds a
-    half-applied merge, no conflict is ever resolved there, and ``--ff-only`` is
-    git's own refusal if any of that stops being true.
+    Never the bare name. ``git rev-parse main`` resolves through the whole
+    ``.git/refs`` search order, so a tag or a remote-tracking ref named ``main``
+    can answer a question that was asked about the local branch — and every
+    later step here (the CAS write, the post-condition) must name the SAME
+    object the batch was built on.
+    """
+    return base if base.startswith("refs/") else f"refs/heads/{base}"
+
+
+def _worktrees_holding(repo: Path, base: str) -> list[str]:
+    """Every worktree that currently has *base* checked out.
+
+    ``git update-ref`` will happily move a branch that a worktree has checked
+    out, leaving that worktree's index and working tree silently inconsistent
+    with its own HEAD — a lane working there would find its tree rewritten
+    underneath it. Git refuses this for ``branch -f``/``checkout``; it does not
+    for ``update-ref``, so the refusal has to be ours.
+    """
+    listing = _run_git(["worktree", "list", "--porcelain"], repo)
+    if not listing.ok:
+        return []
+    holders: list[str] = []
+    current = ""
+    for line in listing.out.splitlines():
+        if line.startswith("worktree "):
+            current = line[len("worktree ") :].strip()
+        elif line.strip() == f"branch {_base_ref(base)}":
+            holders.append(current)
+    return holders
+
+
+def land(repo: Path, commit: str, *, base: str, scope: LaneScope, git: Any = None) -> dict[str, Any]:
+    """Advance the **declared base ref** to *commit*, fast-forward only.
+
+    D-RMD-1 — **the bug this function is written against, and why it was
+    invisible.** This used to run ``git merge --ff-only <commit>`` in the
+    canonical checkout, which merges into whatever ``HEAD`` happens to be, not
+    into ``base``. In agent-utilities the canonical checkout always sits on
+    ``main``, so "merge into HEAD" *coincidentally* equalled "land on base" and
+    seven consecutive landings were audited as genuinely correct. That is luck,
+    not correctness, and the coincidence breaks precisely where this queue is
+    now going: a canonical checkout parked on another branch (a merge in
+    progress, a bisect, an operator poking around), a repo whose base is a
+    release branch or a fork, or any repo whose checkout convention differs
+    from au's.
+
+    **The failure mode was the worst kind — silent and positive.** The queue
+    reported ``landed``, the guarded prune then deleted the branch *as landed*,
+    and the work sat on a ref nobody looks at. A rejection is loud and
+    recoverable; this manufactured confidence and then destroyed the evidence.
+
+    So both halves are implemented, and the second is the durable one:
+
+    1. **Write the declared ref explicitly.** :func:`_base_ref` qualifies it, and
+       the ref is moved either by ``git merge --ff-only`` (only when the
+       canonical checkout genuinely has ``base`` checked out, so ref and working
+       tree move atomically together) or by a compare-and-swap ``git update-ref
+       <ref> <new> <expected-old>``. Fast-forward-only is enforced by asking
+       ``merge-base --is-ancestor`` of the BASE REF — not of ``HEAD`` — because
+       ``update-ref`` would otherwise happily rewind history.
+    2. ★ **Assert the post-condition.** After the write, the base ref is re-read
+       and must equal *commit*. This is what makes the fix durable rather than
+       merely correct today: it would have caught D-RMD-1 **even with the wrong
+       write target still in place**, and it catches the next variant of the
+       same mistake for free. A queue that reports ``landed`` without proving
+       the ref moved is the same defect family as a gate that reports green
+       while enforcing nothing.
 
     **Two guards, not one.** ``lanes.guarded_tree_mutation`` refuses a tree
     holding uncommitted work another lane owns.
     :func:`~repository_manager.canonical_guard.guarded_canonical_mutation`
     additionally takes repository-manager's own canonical lease, so this can
     never interleave with repository-manager's background sync — which has
-    destroyed ~20 minutes of a lane's work on a canonical tree before. Making
-    repository-manager the merge DRIVER raises the stakes on that guard, so it is
-    held here rather than trusted to callers.
+    destroyed ~20 minutes of a lane's work on a canonical tree before.
+
+    Note the deploy consequence of the CAS path: when the canonical checkout is
+    NOT on ``base``, the ref advances and the canonical *working tree* does not.
+    The fleet hostPath-mounts that working tree, so landing in that state moves
+    ``main`` without moving the deployed bytes — strictly safer than the
+    alternative, and the same merge/deploy decoupling the promotion ref exists
+    for.
     """
     canonical = scope.main_tree
-    current = _require_git(["rev-parse", base], repo)
+    ref = _base_ref(base)
+    before = _run_git(["rev-parse", "--verify", "--quiet", ref], repo)
+    if not before.ok or not before.out:
+        raise MergeQueueError(
+            f"refusing to land: the declared base ref {ref!r} does not exist in "
+            f"{repo}. The queue never falls back to HEAD — that fallback is "
+            "exactly D-RMD-1, which reported `landed` while the base never moved."
+        )
+    current = before.out
+    if current == commit:
+        return {"base": base, "ref": ref, "from": current, "to": commit, "method": "already-current"}
+    if not _run_git(["merge-base", "--is-ancestor", current, commit], repo).ok:
+        raise MergeQueueError(
+            f"refusing to land: {commit[:12]} is not a descendant of {ref} "
+            f"({current[:12]}), so advancing it would not be a fast-forward — "
+            f"{base} moved after the batch was built; the candidates stay queued "
+            "and the next run rebuilds against it"
+        )
+
+    head = _run_git(["symbolic-ref", "--quiet", "HEAD"], canonical)
+    canonical_on_base = head.ok and head.out.strip() == ref
+    holders = [h for h in _worktrees_holding(repo, base) if Path(h) != canonical]
+
     with guarded_tree_mutation(
         canonical, operation=f"land merge-queue batch onto {base}", owner=scope.lane
     ):
-        if git is not None:
-            with guarded_canonical_mutation(
-                git, str(canonical), canonical.name, f"fast-forward {base}"
-            ) as blocked:
-                if blocked is not None:
-                    raise MergeQueueError(
-                        f"canonical checkout refused the fast-forward: "
-                        f"{blocked.get('error')} — the candidates stay queued"
-                    )
+        if canonical_on_base:
+            method = "merge --ff-only (canonical is on the base)"
+            if git is not None:
+                with guarded_canonical_mutation(
+                    git, str(canonical), canonical.name, f"fast-forward {base}"
+                ) as blocked:
+                    if blocked is not None:
+                        raise MergeQueueError(
+                            f"canonical checkout refused the fast-forward: "
+                            f"{blocked.get('error')} — the candidates stay queued"
+                        )
+                    res = _run_git(["merge", "--ff-only", commit], canonical)
+            else:
                 res = _run_git(["merge", "--ff-only", commit], canonical)
+        elif holders:
+            # Someone else's tree is ON this branch. Moving the ref out from
+            # under it would desync their index and working tree — the same
+            # class of harm as resetting a canonical checkout mid-work.
+            raise MergeQueueError(
+                f"refusing to land on {base}: it is checked out in "
+                f"{', '.join(holders)}, and advancing the ref would leave that "
+                "working tree inconsistent with its own HEAD. The candidates stay "
+                "queued; free the branch or land from that tree."
+            )
         else:
-            res = _run_git(["merge", "--ff-only", commit], canonical)
+            # Compare-and-swap: the expected-old argument makes this atomic
+            # against a concurrent writer — if anything moved the ref since it
+            # was read, git refuses rather than clobbering.
+            method = "update-ref CAS (canonical is not on the base)"
+            res = _run_git(["update-ref", ref, commit, current], repo)
         if not res.ok:
             raise MergeQueueError(
-                f"fast-forward of {base} to {commit[:12]} refused by git: "
+                f"advancing {ref} to {commit[:12]} refused by git: "
                 f"{res.err or res.out} — {base} moved after the batch was built; the "
                 "candidates stay queued and the next run rebuilds against it"
             )
-    return {"base": base, "from": current, "to": commit}
+
+        # ★ THE POST-CONDITION (D-RMD-1's durable half). Re-read the ref and
+        # prove it holds the object we computed, BEFORE anyone reports `landed`
+        # and before the guarded prune deletes a branch on the strength of it.
+        after = _run_git(["rev-parse", "--verify", "--quiet", ref], repo)
+        if not after.ok or after.out != commit:
+            raise MergeQueueError(
+                f"POST-CONDITION FAILED: {ref} is {after.out[:12] or '<unreadable>'} "
+                f"after the write, not the computed {commit[:12]} (it was "
+                f"{current[:12]} before). NOTHING is reported as landed and no "
+                "branch is pruned — a queue that says `landed` without proving the "
+                "ref moved manufactures confidence and then deletes the evidence "
+                "(D-RMD-1). The candidates stay queued."
+            )
+    return {
+        "base": base,
+        "ref": ref,
+        "from": current,
+        "to": commit,
+        "method": method,
+        "verified": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1530,8 +1657,13 @@ def _build_chain(
     rather than poisoning it, so one lane's conflict never rejects seven innocent
     ones — unless the conflict is confined to declared generated files, in which
     case it is regenerated from the merged truth and the candidate proceeds.
+
+    The chain is rooted at the FULLY-QUALIFIED base ref (:func:`_base_ref`), the
+    same object :func:`land` compare-and-swaps from — a bare ``rev-parse main``
+    could resolve a tag or a remote-tracking ref instead, and the batch would
+    then be built on one object and landed against another (D-RMD-1's family).
     """
-    head = _require_git(["rev-parse", base], repo)
+    head = _require_git(["rev-parse", _base_ref(base)], repo)
     accepted: list[Candidate] = []
     conflicted: list[tuple[Candidate, TrialMerge]] = []
     for candidate in candidates:
@@ -1674,6 +1806,20 @@ def run_queue(
         from repository_manager.repository_manager import Git
 
         git = Git(path=str(repo.parent))
+
+    # Refuse a non-existent base ONCE, here, with the reason — rather than
+    # letting it surface as a raw `git rev-parse ... ambiguous argument` from
+    # deep inside the chain builder. Both refuse (there is no fallback to HEAD;
+    # that fallback IS D-RMD-1), but only one of them tells the caller what to do.
+    probe = _run_git(["rev-parse", "--verify", "--quiet", _base_ref(base)], repo)
+    if not probe.ok or not probe.out:
+        raise MergeQueueError(
+            f"refusing to drain the {repo.name} queue: the declared base ref "
+            f"{_base_ref(base)!r} does not exist. Check `base:` in "
+            f"{config.source} (or --queue-base). The queue never falls back to "
+            "whatever HEAD happens to be — that fallback reported `landed` while "
+            "the base never moved (D-RMD-1)."
+        )
     started = time.monotonic()
     with hold_lease(MERGE_LEASE, operation=f"drain the {repo.name} merge queue", path=scope.tree):
         batch = queued(scope.tree)[:batch_size]
