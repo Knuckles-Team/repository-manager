@@ -3657,6 +3657,58 @@ Examples:
         help="Switch all repos to their default branch (via origin/HEAD).",
     )
 
+    # CONCEPT:RM-LANE-DOCTOR — the lane lifecycle, executable.
+    # A deliberate sibling of the worktree verbs and the merge queue: a lane
+    # STARTS here (isolated worktree + partitioned environment), checks itself
+    # here while working, and FINISHES here by handing its branch to the queue.
+    group_lane = parser.add_argument_group(
+        "Lane Lifecycle (isolation preflight for concurrent agents and humans)"
+    )
+    group_lane.add_argument(
+        "--lane",
+        choices=["doctor", "start", "finish", "env"],
+        help=(
+            "'doctor' checks this tree's isolation and mutates nothing; 'start' "
+            "opens an isolated worktree and proves its partitions; 'env' prints "
+            "the shell exports; 'finish' preflights then enqueues the branch for "
+            "landing. Run 'doctor' whenever something behaves impossibly."
+        ),
+    )
+    group_lane.add_argument(
+        "--lane-path",
+        type=str,
+        default=None,
+        help="The lane's working tree for --lane doctor/env/finish (default: cwd).",
+    )
+    group_lane.add_argument(
+        "--lane-repo",
+        type=str,
+        default="",
+        help="Repository basename or path for --lane start.",
+    )
+    group_lane.add_argument(
+        "--lane-branch",
+        type=str,
+        default="",
+        help="Branch for --lane start/finish (finish defaults to the tree's HEAD).",
+    )
+    group_lane.add_argument(
+        "--lane-base",
+        type=str,
+        default="",
+        help="Base branch to fork from / land onto (default: main).",
+    )
+    group_lane.add_argument(
+        "--lane-shell",
+        action="store_true",
+        help='Print `export K=V` lines instead of JSON, for `eval "$(...)"`.',
+    )
+    group_lane.add_argument(
+        "--lane-force",
+        action="store_true",
+        help="For --lane finish: enqueue despite a blocking preflight check.",
+    )
+
     group_maintenance = parser.add_argument_group("Maintenance Lifecycle")
     group_maintenance.add_argument(
         "--install",
@@ -3805,6 +3857,13 @@ Examples:
         if args.manifest_check and not report.synchronized:
             raise SystemExit(1)
         return
+
+    # CONCEPT:RM-LANE-DOCTOR — handled before the bulk verbs and returning
+    # immediately: the lane verbs drive ONE tree and must not be combined with
+    # the workspace-wide operations below, whose --path/--repositories semantics
+    # are different.
+    if args.lane:
+        sys.exit(_run_lane_cli(args))
 
     git = Git(
         path=args.workspace
@@ -3999,6 +4058,31 @@ Examples:
             summary = git.generate_markdown_summary("Phased Push", push_results)
             logger.info(summary)
             git._export_report(summary, "push_report.md")
+
+
+def _run_lane_cli(args: argparse.Namespace) -> int:
+    """CONCEPT:RM-LANE-DOCTOR — marshal `--lane <action>` onto one action core.
+
+    A thin marshaller on purpose: the CLI and the ``rm_lane`` MCP tool both call
+    :func:`repository_manager.lane_doctor.dispatch`, so the two surfaces cannot
+    drift into disagreeing about what a lane's isolation requires.
+    """
+    from repository_manager import lane_doctor
+
+    result = lane_doctor.dispatch(
+        args.lane,
+        path=args.lane_path,
+        repo=args.lane_repo,
+        branch=args.lane_branch,
+        base=args.lane_base,
+        workspace=args.workspace,
+        force=args.lane_force,
+    )
+    if args.lane_shell and "shell" in result:
+        print(result["shell"])
+    else:
+        print(json.dumps(result, indent=2, default=str))
+    return 0 if result.get("ok", False) else 1
 
 
 if __name__ == "__main__":

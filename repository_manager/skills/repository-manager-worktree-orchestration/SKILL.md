@@ -32,6 +32,12 @@ disturbs in-flight work.
 - Remove a worktree and optionally its branch (`remove`), or prune stale admin pointers (`prune`).
 
 ## When NOT to use
+- **Running a unit of work as an isolated lane** (isolation exports, the traps, preflight,
+  finishing) → `repository-manager-lane-lifecycle`. That is the skill to reach for first;
+  this one is the raw verb surface underneath it.
+- **Landing a branch, gates, or conflict resolution** → `repository-manager-merge-and-reconcile`.
+- **Waves across many repos, mass audits and prunes, concurrency sizing** →
+  `repository-manager-fleet-scale-operations`.
 - Bulk clone / pull / push / commit across repositories → `repository-manager-bulk-git-operations`.
 - Install / build / validate / version-bump managed projects → `repository-manager-workspace-validation`.
 - Editing files inside a worktree — that is ordinary file work, not this tool.
@@ -90,6 +96,14 @@ rm_worktree(action="audit", prune_merged=true)
 - A dirty tree is always classified `active` and `remove` refuses it unless `force=true`.
 
 ## Related
+- **The lane lifecycle around these verbs** (`rm_lane`: start → doctor → finish) →
+  `repository-manager-lane-lifecycle`. Prefer `rm_lane(action="start")` over a bare
+  `rm_worktree(action="add")`: it also partitions the build/test/hook state and *proves*
+  the isolation, which a bare worktree does not.
+- **Landing and reconciling** (`rm_merge_queue`) → `repository-manager-merge-and-reconcile`.
+  Prefer the queue over `rm_worktree(action="merge")` into a shared base: the queue gates the
+  MERGED tree differentially, lands fast-forward-only under both guards, and prunes for you.
+- **Fleet-scale waves and audits** → `repository-manager-fleet-scale-operations`.
 - Enumerating + KG-ingesting repositories (`repository_ingest_repositories`) → the native ingestion tool.
 - **Composed by:** the universal-skills `workspace-validator` workflow uses these audits to decide which
   worktrees are safe to prune vs. in-flight.

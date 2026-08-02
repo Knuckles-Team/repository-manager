@@ -93,6 +93,50 @@ repository-manager --validate --bump patch --maintain --push
 The phased mechanics are documented in detail in
 [Phased Maintenance](phased_maintenance.md) and [Phased Push](phased_push.md).
 
+### Lane lifecycle (`CONCEPT:RM-LANE-DOCTOR`)
+
+When many agents and humans develop the same repositories at once, each unit of
+work runs as an isolated **lane**. The `--lane` verbs make that lifecycle
+executable rather than a convention:
+
+```bash
+# Open a lane: a worktree PLUS a partitioned cargo target dir, pytest basetemp,
+# TMPDIR and PRE_COMMIT_HOME -- and a preflight that proves the isolation.
+repository-manager --lane start --lane-repo agent-utilities --lane-branch lane/my-change
+
+# Adopt the environment in your shell.
+eval "$(repository-manager --lane env --lane-path . --lane-shell)"
+
+# Diagnose a lane that is behaving impossibly. Mutates nothing, answers in <1s.
+repository-manager --lane doctor --lane-path .
+
+# Close it out: blocking preflight, then hand the branch to the merge queue.
+repository-manager --lane finish --lane-path . --lane-base main
+```
+
+`doctor` is the one to reach for when a test fails in a way that cannot be true,
+a build will not go green, a merge keeps being refused, or work has gone missing.
+Each check reports its verdict, its evidence, and a **literal remedy command**;
+`fail` blocks `finish`, `warn` never does. What it checks, and why each check
+exists:
+
+| Check | Failure it exists to catch |
+|---|---|
+| `not-canonical` | editing a canonical checkout a background `git reset` can discard |
+| `no-worktree-venv` | a worktree-local `.venv` shadowing the workspace environment |
+| `cargo-partition` | a shared `CARGO_TARGET_DIR`, which corrupts concurrent builds rather than merely serializing them |
+| `precommit-home` | the shared pre-commit store, where a crash inside `staged_files_only()`'s window loses unstaged work to an orphaned patch |
+| `pytest-basetemp` | concurrent lanes contending on one pytest temp root |
+| `shared-stash-ref` | `refs/stash` — one ref shared by every worktree of the repository |
+| `test-runner` | `uv run pytest` silently resolving the *system* interpreter |
+| `canonical-clean` | a dirty canonical tree, which blocks **every** lane's landing |
+| `merge-queue-config` | a repository declaring no gates, which the queue refuses rather than defaults |
+| `base-drift` | reasoning about the branch tip when the merged tree is what lands |
+| `committed-work` | uncommitted work, the only kind a tree reset can take |
+
+The same action core backs the `rm_lane` MCP tool and
+`python -m repository_manager.lane_doctor`, so the surfaces cannot drift.
+
 ## Canonical manifest gate
 
 For a development bootstrap, the root `workspace.yml` is the only authority.
