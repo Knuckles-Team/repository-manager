@@ -171,6 +171,57 @@ DEFAULT_REPOSITORY_MANAGER_DEFAULT_BRANCH = to_boolean(
     _raw_branch if _raw_branch else "False"
 )
 
+# D-EGK-2 / D-EGK-1 (see reports/deferred/eg-kernel-0802.md): a canonical-checkout
+# refresh is the operation that can destroy epistemic_graph's compiled numeric
+# kernel (a gitignored .so nothing else regenerates) and it is the moment right
+# after which the entire *-mcp fleet's live hostPath mounts should be re-verified
+# -- both trees are hostPath-mounted straight into every pod, so "refreshed the
+# checkout" and "changed what every pod reads" are the same event here. Run both
+# checks best-effort after every pull_projects() batch: never let a check failure
+# break the pull itself, and never raise past this function.
+_MOUNT_CHECK_TIMEOUT_S = 90
+
+
+def _run_post_hydration_mount_checks(workspace_root: str) -> None:
+    """Best-effort: log loudly (never raise) if a post-pull mount check fails."""
+
+    checks = [
+        (
+            "D-EGK-2 mounted-kernel check",
+            Path(workspace_root)
+            / "agent-packages"
+            / "epistemic-graph"
+            / "scripts"
+            / "check_mounted_kernel.py",
+            [],
+        ),
+        (
+            "D-EGK-1 python-mount-parity check",
+            Path(workspace_root) / "scripts" / "check_python_mount_parity.py",
+            ["--mode", "live"],
+        ),
+    ]
+    for label, script, extra_args in checks:
+        if not script.is_file():
+            continue  # workspace doesn't carry this tree/tooling -- nothing to check
+        try:
+            result = subprocess.run(
+                [sys.executable, str(script), *extra_args],
+                capture_output=True,
+                text=True,
+                timeout=_MOUNT_CHECK_TIMEOUT_S,
+                check=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - a check must never break the pull
+            logger.warning(f"{label} could not run after hydration: {exc}")
+            continue
+        if result.returncode == 0:
+            logger.info(f"{label}: passed")
+        else:
+            logger.critical(
+                f"{label} FAILED after this hydration -- {result.stdout.strip()[-2000:]}"
+            )
+
 
 class Git:
     """A class to handle Git operations such as cloning and pulling repositories."""
@@ -1159,7 +1210,9 @@ class Git:
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.threads
         ) as executor:
-            return list(executor.map(self.pull_project, project_dirs))
+            results = list(executor.map(self.pull_project, project_dirs))
+        _run_post_hydration_mount_checks(self.path)
+        return results
 
     def pull_project(self, path: str | None = None) -> GitResult:
         """
