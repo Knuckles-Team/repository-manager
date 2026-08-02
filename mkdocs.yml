@@ -93,4 +93,5 @@ nav:
   - Usage (API / CLI / MCP): usage.md
   - Phased Maintenance: phased_maintenance.md
   - Phased Push: phased_push.md
+  - Merge Queue (universal): merge-queue.md
   - Concepts: concepts.md
