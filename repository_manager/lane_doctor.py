@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess  # nosec B404 - git/CLI orchestration is this module's entire job
 import sys
 from dataclasses import asdict, dataclass, field
@@ -270,6 +271,140 @@ def _check_no_local_venv(tree: Path) -> Check:
             else f"rm -rf {venv}   # then use the workspace runner, never a local venv"
         ),
         evidence={"venv": str(venv), "marker": str(marker)},
+    )
+
+
+#: A real ``uv sync --all-extras`` of any repository in this workspace resolves
+#: dozens to hundreds of transitive dependencies. D-CIP-19 found a live venv
+#: silently collapsed to 3-6 packages (an unrelated "alpha" project's
+#: environment had overwritten it) while ``no-worktree-venv`` above reported
+#: OK, because that check only verifies OWNERSHIP markers (the selection
+#: marker file, an executable interpreter) — none of which proves the
+#: environment those markers describe still has real content. This floor is
+#: deliberately low (never fails a legitimately small, dependency-light repo)
+#: — it exists to catch "near-empty", not to police dependency budgets.
+_MIN_PLAUSIBLE_PACKAGE_COUNT = 15
+
+
+def _venv_site_packages(venv: Path) -> Path | None:
+    lib = venv / "lib"
+    if not lib.is_dir():
+        return None
+    for python_dir in sorted(lib.glob("python3.*")):
+        sp = python_dir / "site-packages"
+        if sp.is_dir():
+            return sp
+    return None
+
+
+def _project_name(tree: Path) -> str | None:
+    """This repo's own ``[project].name`` from ``pyproject.toml``, if any."""
+    pyproject = tree / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    try:
+        import tomllib
+
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        name = data.get("project", {}).get("name")
+        if isinstance(name, str) and name:
+            return name
+    except Exception:  # pragma: no cover - malformed/unusual pyproject.toml
+        pass
+    # Regex fallback: tolerate a pyproject.toml tomllib cannot parse rather than
+    # silently skipping the ownership half of this check.
+    m = re.search(
+        r'(?m)^\s*name\s*=\s*"([^"]+)"',
+        pyproject.read_text(encoding="utf-8", errors="replace"),
+    )
+    return m.group(1) if m else None
+
+
+def _norm_pkg(s: str) -> str:
+    return re.sub(r"[-_.]+", "-", s.strip().lower())
+
+
+def _check_venv_package_count(tree: Path) -> Check:
+    """D-CIP-19: make doctor FAIL on an implausibly low resolved-package count.
+
+    Complements ``no-worktree-venv`` (provenance/markers) with a direct content
+    check: how many distributions actually resolved, and whether any of them
+    is this project's own. Both conditions independently reproduce the exact
+    live incident (a 3-6 package venv, all belonging to an unrelated project
+    named "alpha", reported OK by the marker-only check).
+    """
+    venv = tree / ".venv"
+    python = venv / "bin" / "python"
+    if not venv.is_dir() or not python.is_file():
+        return Check(
+            "venv-package-count",
+            SKIP,
+            "no usable venv to inspect (see no-worktree-venv)",
+        )
+
+    site_packages = _venv_site_packages(venv)
+    if site_packages is None:
+        return Check(
+            "venv-package-count",
+            FAIL,
+            f"{venv} has an interpreter but no lib/python*/site-packages directory at all "
+            "-- an empty or destroyed environment.",
+            remedy=f"rm -rf {venv}; python3 scripts/uv_workspace.py sync --all-extras",
+            evidence={"venv": str(venv)},
+        )
+
+    dist_names = sorted(
+        p.name
+        for p in site_packages.iterdir()
+        if p.is_dir()
+        and (p.name.endswith(".dist-info") or p.name.endswith(".egg-info"))
+    )
+    count = len(dist_names)
+
+    if count < _MIN_PLAUSIBLE_PACKAGE_COUNT:
+        return Check(
+            "venv-package-count",
+            FAIL,
+            f"{site_packages} resolved only {count} package(s) -- implausibly low for a "
+            "uv-managed workspace sync. D-CIP-19 found this exact shape live: 3-6 packages "
+            "where ~726 were expected, because an unrelated project's environment had "
+            "silently overwritten this worktree's own .venv. A healthy managed venv is "
+            f"never this thin (floor: {_MIN_PLAUSIBLE_PACKAGE_COUNT}).",
+            remedy=f"rm -rf {venv}; python3 scripts/uv_workspace.py sync --all-extras   "
+            "# then print sys.executable and the resolved count before trusting any test run",
+            evidence={
+                "venv": str(venv),
+                "resolved_count": count,
+                "distributions": dist_names,
+            },
+        )
+
+    project = _project_name(tree)
+    if project:
+        needle = _norm_pkg(project)
+        belongs = any(needle in _norm_pkg(n) for n in dist_names)
+        if not belongs:
+            return Check(
+                "venv-package-count",
+                FAIL,
+                f"{site_packages} resolved {count} package(s), but NONE of them is this "
+                f"project's own ({project!r}) -- the D-CIP-19 shape where a DIFFERENT "
+                "project's environment (there: one named 'alpha') silently overwrote this "
+                f"worktree's .venv. Sample of what is actually installed: {dist_names[:5]}",
+                remedy=f"rm -rf {venv}; python3 scripts/uv_workspace.py sync --all-extras",
+                evidence={
+                    "venv": str(venv),
+                    "resolved_count": count,
+                    "expected_project": project,
+                    "sample_distributions": dist_names[:10],
+                },
+            )
+
+    return Check(
+        "venv-package-count",
+        OK,
+        f"{site_packages} resolved {count} package(s)",
+        evidence={"venv": str(venv), "resolved_count": count},
     )
 
 
@@ -639,6 +774,7 @@ def diagnose(
     checks = [
         _check_not_canonical(tree, scope),
         _check_no_local_venv(tree),
+        _check_venv_package_count(tree),
         _check_cargo_partition(tree, environ),
         _check_precommit_home(tree, environ),
         _check_pytest_basetemp(environ),

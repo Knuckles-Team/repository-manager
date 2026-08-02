@@ -121,6 +121,79 @@ def test_no_local_venv_passes(worktree: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# venv-package-count — D-CIP-19: doctor reported healthy on a venv silently
+# overwritten by an unrelated project (3-6 packages instead of ~726). This
+# check inspects site-packages CONTENT directly, independent of the
+# ownership-marker check above.
+# ---------------------------------------------------------------------------
+def _write_pyproject(tree: Path, project_name: str) -> None:
+    (tree / "pyproject.toml").write_text(f'[project]\nname = "{project_name}"\n')
+
+
+def _make_venv(tree: Path) -> Path:
+    venv = tree / ".venv"
+    (venv / "bin").mkdir(parents=True)
+    python = venv / "bin" / "python"
+    python.write_text("#!/usr/bin/env python3\n")
+    python.chmod(0o755)
+    site_packages = venv / "lib" / "python3.12" / "site-packages"
+    site_packages.mkdir(parents=True)
+    return site_packages
+
+
+def test_a_near_empty_venv_is_refused(worktree: Path) -> None:
+    """Known-bad input #1: D-CIP-19's exact shape, an implausibly thin venv."""
+    _write_pyproject(worktree, "repository-manager")
+    site_packages = _make_venv(worktree)
+    for name in ("alpha-0.1.0.dist-info", "__editable__.alpha-0.1.0.dist-info"):
+        (site_packages / name).mkdir()
+
+    check = _named(lane_doctor.diagnose(worktree, env={}), "venv-package-count")
+
+    assert check["status"] == FAIL
+    assert check["evidence"]["resolved_count"] == 2
+    assert "implausibly low" in check["finding"]
+
+
+def test_a_venv_belonging_to_an_unrelated_project_is_refused(worktree: Path) -> None:
+    """Known-bad input #2: package COUNT looks fine, but none of it is this repo.
+
+    Reproduces the live D-CIP-19 incident precisely: the venv is not empty and
+    not obviously thin, it just belongs to a completely different project
+    ("alpha") that silently overwrote this worktree's own environment.
+    """
+    _write_pyproject(worktree, "repository-manager")
+    site_packages = _make_venv(worktree)
+    for i in range(20):
+        (site_packages / f"alpha-plugin-{i}-1.0.0.dist-info").mkdir()
+
+    check = _named(lane_doctor.diagnose(worktree, env={}), "venv-package-count")
+
+    assert check["status"] == FAIL
+    assert "NONE of them is this project's own" in check["finding"]
+    assert check["evidence"]["expected_project"] == "repository-manager"
+
+
+def test_a_healthy_venv_with_plausible_own_packages_passes(worktree: Path) -> None:
+    """Positive half: without it, an unconditional FAIL above would also pass."""
+    _write_pyproject(worktree, "repository-manager")
+    site_packages = _make_venv(worktree)
+    (site_packages / "repository_manager-0.1.0.dist-info").mkdir()
+    for i in range(20):
+        (site_packages / f"dep-{i}-1.0.0.dist-info").mkdir()
+
+    check = _named(lane_doctor.diagnose(worktree, env={}), "venv-package-count")
+
+    assert check["status"] == OK
+    assert check["evidence"]["resolved_count"] == 21
+
+
+def test_venv_package_count_skips_when_there_is_no_venv(worktree: Path) -> None:
+    check = _named(lane_doctor.diagnose(worktree, env={}), "venv-package-count")
+    assert check["status"] == SKIP
+
+
+# ---------------------------------------------------------------------------
 # cargo-partition — a shared CARGO_TARGET_DIR CORRUPTS concurrent builds
 # ---------------------------------------------------------------------------
 def test_a_shared_cargo_target_dir_is_refused(worktree: Path, tmp_path: Path) -> None:

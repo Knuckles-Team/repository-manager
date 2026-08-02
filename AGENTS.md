@@ -887,6 +887,40 @@ abandoned worktree (`D-PS-1`). What is closed is the *consequence* — even when
 occupancy detection is wrong, the branch ref survives, so the worst case is a
 directory to re-add rather than a lane's commits to hunt for in `git fsck`.
 
+**Never `pkill`/`kill` a process by command-line text on a shared host
+(`D-CDX-105`).** On 2026-08-02 a lane ran `pkill -f "git commit"` and
+`pkill -f "pre-commit"`, intending to interrupt only its own stalled commit
+attempt. Those patterns match **every concurrent lane's identically-named
+processes** — this SIGTERM'd sibling lanes' `git`/`pre-commit` processes
+mid-write, at least once. The visible symptom was not a crashed command but a
+**corrupted shared on-disk artifact**: the linked worktree's `.git/index`
+truncated to 1–12 tracked files (from ~4634), which silently breaks every
+subsequent `git status`/`add`/`commit`/`diff` in that worktree until repaired
+— across at least 8 sibling worktrees in one session. Working-tree file
+*contents* were never touched; only the index.
+
+- **Rule:** kill a process by the exact PID you spawned (`kill <pid>`,
+  `SIGTERM` first, `SIGKILL` only if it doesn't respond), never by a
+  command-line-text pattern (`pkill -f`, `pkill <name>`) on a host any other
+  lane might be running on. If you don't have the PID, don't kill it blind —
+  find it first (e.g. `ps -o pid,cmd --ppid <your-shell-pid>`), or leave it
+  and let it finish/time out.
+- **Recovery, if it happens anyway:** `cd <worktree> && git read-tree HEAD`
+  rebuilds the index from the branch's own `HEAD` — it never touches the
+  working directory, so no file content is lost. **Never** `git reset --hard`
+  or `git checkout .` for this: the working tree is intact and correct; only
+  the index is broken. Anything that was `git add`ed but not yet committed
+  will need to be re-staged (its content survives; only its staged/unstaged
+  status resets to match `HEAD`).
+- **A second, independent cause can look identical:** the same corruption
+  pattern kept recurring on a *rotating* set of different worktrees well
+  after one lane stopped issuing any such command, consistent with abrupt
+  OOM-kill under extreme concurrent-lane load rather than a stray `pkill`
+  alone — both are real and neither excuses the other. `lane doctor` does
+  not yet detect a truncated index directly; a cheap `git ls-files | wc -l`
+  sanity check against a known-good baseline count is the proposed guard
+  (tracked as the still-open half of `D-CDX-105`).
+
 <!-- BEGIN concept-coordination (generated) -->
 ## Concept-ID Coordination (multi-session)
 
