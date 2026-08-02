@@ -1833,7 +1833,13 @@ class Git:
         else:
             env["SKIP"] = "no-commit-to-branch"
         env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "4"
-        env["PYTEST_ADDOPTS"] = '-q --tb=short -m "not slow" --timeout=60'
+        lane_pytest_options = env.get("PYTEST_ADDOPTS", "").strip()
+        bounded_pytest_options = '-q --tb=short -m "not slow" --timeout=60'
+        env["PYTEST_ADDOPTS"] = " ".join(
+            option
+            for option in (lane_pytest_options, bounded_pytest_options)
+            if option
+        )
 
         result: GitResult | None = None
         if autoupdate:
