@@ -563,10 +563,18 @@ def enqueue(
         "enqueued": True,
         **candidate.to_record(),
         "note": (
-            "queued != landed. Nothing in this process drives the queue — a "
-            "scheduler or an operator must run `repository-manager "
-            "--merge-queue run` (or the rm_merge_queue MCP tool) before "
-            f"{branch!r} lands on {base!r}."
+            "queued != landed. D-MQR-7: this note used to say nothing drives "
+            "the queue -- that was true under D-ORC-20 and is false now. "
+            "`merge-queue-runner.timer` drains every repo with a queue store "
+            "automatically (~every 5 minutes, across agent-packages/, "
+            "services/, images/, and the infra roots): it gates the candidate "
+            "DIFFERENTIALLY against the base, lands it, and prunes the "
+            "worktree/branch. You do not need to run anything yourself — "
+            "watch it with `repository-manager --merge-queue status "
+            "--repo-path .`. Do NOT hand-drain with `--merge-queue run`: "
+            "concurrent lanes share one reconciliation-merge lease and a "
+            f"manual drain races the scheduler for no benefit before {branch!r} "
+            f"lands on {base!r}."
         ),
         "queue_depth": len(queued(scope.tree)),
     }
