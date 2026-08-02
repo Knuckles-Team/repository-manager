@@ -122,6 +122,35 @@ def test_list_reports_linked_worktree(repo):
     assert linked["linked"] is True
 
 
+def test_list_linked_status_is_independent_of_configured_worktree_root(
+    repo, monkeypatch
+):
+    """D-CDX-1: the local CLI and the deployed MCP server run with different
+    ``WORKTREE_ROOT`` values by design. The SAME real linked worktree must
+    report ``linked=True`` regardless of which root this process happens to
+    be configured with — the split-brain was git-truth being overridden by a
+    path-prefix guess tied to one process's own config."""
+    made = repo.wm.add("myrepo", "feat-x")
+    assert os.path.commonpath([made["path"], wt_mod.WORKTREE_ROOT]) == os.path.abspath(
+        wt_mod.WORKTREE_ROOT
+    )
+
+    # point WORKTREE_ROOT somewhere totally unrelated to where the worktree
+    # actually lives (simulating the other surface's differently configured
+    # root) — `linked` must still be computed correctly from git itself.
+    monkeypatch.setattr(wt_mod, "WORKTREE_ROOT", "/nonexistent/other-root")
+    listing = repo.wm.list_worktrees("myrepo")
+    linked = [w for w in listing["worktrees"] if w["branch"] == "feat-x"][0]
+    assert linked["linked"] is True
+
+    # and the canonical checkout itself must never be reported as linked,
+    # regardless of WORKTREE_ROOT either.
+    canonical_entry = [
+        w for w in listing["worktrees"] if os.path.abspath(w["path"]) == repo.path
+    ][0]
+    assert canonical_entry["linked"] is False
+
+
 def test_merge_back_to_main(repo):
     res = repo.wm.add("myrepo", "feat-x")
     (os.path.join(res["path"], "feature.txt"))

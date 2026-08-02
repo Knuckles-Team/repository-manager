@@ -560,3 +560,32 @@ def test_the_mcp_tool_is_registered_and_declares_every_action() -> None:
     assert "_run_lane_cli" in cli
     for action in lane_doctor.ACTIONS:
         assert f'"{action}"' in cli, f"--lane does not offer {action}"
+
+
+@pytest.mark.anyio
+async def test_rm_lane_is_a_live_registered_mcp_tool() -> None:
+    """D-CDX-1 (live catalog half): a source-level wiring proof that
+    `rm_lane` is actually reachable from a freshly built MCP server instance
+    - not merely present as a function definition. Auto-discovery
+    (`register_tool_surface(tools_module=...)`) picks up every
+    `register_<tag>_tools` callable in mcp_server.py by name; this proves the
+    real instantiation path reaches `rm_lane` with the full action set, the
+    same way `rm_git`/`rm_workspace` already do. If a live deployment's
+    catalog still omits it despite this passing, that deployment is running
+    older source than this checkout - a currency problem, not a wiring one.
+    """
+    from repository_manager.mcp_server import get_mcp_instance
+
+    mcp, _args, _mw, registered_tags = get_mcp_instance()
+    assert "project_management" in registered_tags
+
+    tools = await mcp.list_tools()
+    names = {t.name for t in tools}
+    assert "rm_lane" in names
+
+    rm_lane = next(t for t in tools if t.name == "rm_lane")
+    action_description = rm_lane.parameters["properties"]["action"]["description"]
+    for action in lane_doctor.ACTIONS:
+        assert f"'{action}'" in action_description, (
+            f"rm_lane's live action Field does not document {action!r}"
+        )

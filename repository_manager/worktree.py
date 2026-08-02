@@ -217,7 +217,25 @@ class WorktreeManager:
         }
 
     def list_worktrees(self, repo: str | None = None) -> dict[str, Any]:
-        """List worktrees for one repo, or across every workspace repo."""
+        """List worktrees for one repo, or across every workspace repo.
+
+        D-CDX-1 — ``linked`` used to be ``path.startswith(WORKTREE_ROOT)``, a
+        heuristic tied to THIS process's configured worktree root. Two
+        surfaces of this same package legitimately run with different roots
+        (the local CLI defaults to ``~/.local/state/.../worktrees``; the
+        deployed MCP server sets ``REPOSITORY_MANAGER_WORKTREE_ROOT=
+        /home/apps/worktrees``), so the identical lane came back
+        ``linked=false`` from one surface and ``linked=true`` from the other
+        for the SAME real linked worktree — a fact about git, misreported as
+        a fact about a config value neither surface is wrong to have set
+        differently. ``git worktree list`` already draws this line for free:
+        the first entry it prints for a repo is always that repo's own
+        (canonical) working tree; every entry after it is unconditionally a
+        linked worktree, regardless of which directory any of them happen to
+        live under. Comparing against the canonical path directly is the
+        deployment-agnostic ground truth ``WORKTREE_ROOT`` was only ever a
+        proxy for.
+        """
         repos = (
             [self.resolve_repo(repo)] if repo else list(self.git.project_map.values())
         )
@@ -227,12 +245,18 @@ class WorktreeManager:
             if not self._ok(res):
                 continue
             name = os.path.basename(canonical)
+            canonical_norm = os.path.abspath(canonical)
             cur: dict[str, Any] = {}
             for line in res.data.splitlines():
                 if line.startswith("worktree "):
                     if cur:
                         out.append(cur)
-                    cur = {"repo": name, "path": line[len("worktree ") :]}
+                    entry_path = line[len("worktree ") :]
+                    cur = {
+                        "repo": name,
+                        "path": entry_path,
+                        "linked": os.path.abspath(entry_path) != canonical_norm,
+                    }
                 elif line.startswith("branch "):
                     cur["branch"] = line[len("branch ") :].replace("refs/heads/", "")
                 elif line.startswith("HEAD "):
@@ -241,8 +265,6 @@ class WorktreeManager:
                     cur["branch"] = "(detached)"
             if cur:
                 out.append(cur)
-        for w in out:
-            w["linked"] = str(w.get("path", "")).startswith(WORKTREE_ROOT)
         return {"ok": True, "worktrees": out, "count": len(out)}
 
     def remove(

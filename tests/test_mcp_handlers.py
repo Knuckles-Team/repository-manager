@@ -1136,8 +1136,21 @@ def test_resolve_commit_code_target_names_exactly_one_repo_or_worktree(
     validated target - never silently expand to a workspace-wide fan-out, and
     never accept a path outside the configured roots or a non-git directory.
     """
-    import repository_manager.mcp_server as rm_mcp_server_mod
+    import importlib
+
     from repository_manager import worktree as wt_mod
+
+    # NOT `import repository_manager.mcp_server as X`: the package's
+    # __getattr__ (repository_manager/__init__.py's _expose_members) can
+    # clobber the `mcp_server` SUBMODULE name in the package namespace with
+    # the `mcp_server` FUNCTION mcp_server.py also defines (same name,
+    # exposed as a console-script entry point) once __getattr__ has fired at
+    # all in this process (e.g. after test_init_dynamics.py reloads the
+    # package) - a pre-existing name collision, unrelated to D-CDX-60, that
+    # `import ... as` resolves via attribute-walk and can silently hit.
+    # importlib.import_module() always resolves through sys.modules, never
+    # through that attribute walk.
+    rm_mcp_server_mod = importlib.import_module("repository_manager.mcp_server")
 
     ws = tmp_path / "workspace"
     ws.mkdir()
