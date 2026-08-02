@@ -1,0 +1,46 @@
+# Merge-queue gate declaration for `repository-manager`.
+#
+# The queue REFUSES a repo with no gate declaration rather than inventing gates
+# or defaulting to none — a queue that silently gates nothing is worse than one
+# that stops, because it launders unverified work as verified. This file is what
+# opts repository-manager into its own queue.
+#
+# Deliberately modest: repository-manager is the DRIVER of everyone else's
+# merges, so its own gates must be fast and dependency-light. A driver whose
+# gate suite is slow or flaky stalls every repo behind it.
+
+base: main
+batch_size: 8
+
+# A verdict is only ever a claim about the interpreter that produced it. Pinning
+# the signature makes that claim legible — the ambient `python3` instead of the
+# repo `.venv` produced ~80 false "environment-blocked" verdicts in one day here.
+environment_signature: ["python3", "-c", "import sys, sysconfig; print(sys.version, sysconfig.get_paths()['purelib'])"]
+
+gates:
+  # Syntax/import integrity. This repo is hostPath-mounted straight over the
+  # pod's site-packages, so a merge to main is a LIVE DEPLOY — an import error
+  # here crashloops the MCP server that drives every other repo's merges.
+  - id: import-smoke
+    run: python3 -c "import repository_manager, repository_manager.merge_queue, repository_manager.worktree, repository_manager.lane_doctor"
+    timeout: 120
+    compare: exit
+
+  # The queue's own tests. `compare: pytest-ids` is deliberate: judging by exit
+  # code alone would refuse every candidate the moment main carries one unrelated
+  # red test, which is exactly the deadlock that stranded 19 branches elsewhere.
+  - id: queue-tests
+    run: python3 -m pytest tests/ -q
+    timeout: 1800
+    compare: pytest-ids
+    when_changed:
+      - "repository_manager/**"
+      - "tests/**"
+
+# Generated views are regenerated from the merged tree rather than hand-resolved.
+# Hand-picking one side of a generated file is how a regeneration loop starts.
+regenerate_on_conflict:
+  paths:
+    - AGENTS.md
+    - README.md
+  regenerate: python3 -c "print('no generator wired yet for repository-manager; see D-RMQ-4')"
