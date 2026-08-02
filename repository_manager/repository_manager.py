@@ -1836,9 +1836,7 @@ class Git:
         lane_pytest_options = env.get("PYTEST_ADDOPTS", "").strip()
         bounded_pytest_options = '-q --tb=short -m "not slow" --timeout=60'
         env["PYTEST_ADDOPTS"] = " ".join(
-            option
-            for option in (lane_pytest_options, bounded_pytest_options)
-            if option
+            option for option in (lane_pytest_options, bounded_pytest_options) if option
         )
 
         result: GitResult | None = None
