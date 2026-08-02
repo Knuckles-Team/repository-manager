@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 import yaml  # type: ignore[import-untyped]
 
+import repository_manager.repository_manager as repository_manager_module
 from repository_manager.models import (
     GitMetadata,
     GitResult,
@@ -365,6 +366,80 @@ def test_commit_code_does_not_commit_before_staging_completes(
     assert not worker.is_alive()
     assert result[0].status == "success"
     assert commit_started.is_set()
+
+
+def test_commit_code_excludes_concurrent_commit_through_precommit(
+    sample_workspace_yml, monkeypatch
+):
+    """A second writer cannot enter while commit_code holds the repo lock."""
+    yml_path, workspace_dir = sample_workspace_yml
+    git = Git(path=str(workspace_dir))
+    git.load_projects_from_yaml(str(yml_path))
+    target = str(workspace_dir / "pipelines")
+    (workspace_dir / "pipelines" / ".git").mkdir(parents=True, exist_ok=True)
+    (workspace_dir / "pipelines" / ".pre-commit-config.yaml").write_text("repos: []\n")
+
+    precommit_started = threading.Event()
+    allow_precommit = threading.Event()
+    contender_started = threading.Event()
+    commit_commands: list[str] = []
+
+    def mock_call(command, path=None, **kwargs):
+        if command == "git status --porcelain":
+            data = "M  changed.py"
+        else:
+            data = "ok"
+        if command.startswith("git commit -m"):
+            commit_commands.append(command)
+        return GitResult(
+            status="success", data=data, metadata=get_mock_metadata(command)
+        )
+
+    def blocked_precommit(*args, **kwargs):
+        precommit_started.set()
+        assert allow_precommit.wait(timeout=1)
+        return GitResult(
+            status="success",
+            data="hooks passed",
+            metadata=get_mock_metadata("pre_commit"),
+        )
+
+    monkeypatch.setattr(git, "git_action", mock_call)
+    monkeypatch.setattr(git, "pre_commit", blocked_precommit)
+    results: dict[str, GitResult] = {}
+    compound = threading.Thread(
+        target=lambda: results.setdefault(
+            "compound",
+            git.commit_code_project("feat: compound", run_precommit=True, path=target),
+        )
+    )
+    contender = threading.Thread(
+        target=lambda: (
+            contender_started.set(),
+            results.setdefault(
+                "contender", git.commit_project("feat: contender", path=target)
+            ),
+        )
+    )
+
+    compound.start()
+    assert precommit_started.wait(timeout=1)
+    contender.start()
+    assert contender_started.wait(timeout=1)
+    assert not commit_commands
+
+    allow_precommit.set()
+    compound.join(timeout=1)
+    contender.join(timeout=1)
+
+    assert not compound.is_alive()
+    assert not contender.is_alive()
+    assert [result.status for result in results.values()] == ["success", "success"]
+    assert "feat: compound" in commit_commands[0]
+    assert "feat: contender" in commit_commands[1]
+    assert (
+        os.path.realpath(target) not in repository_manager_module._REPO_MUTATION_LOCKS
+    )
 
 
 @pytest.mark.parametrize(

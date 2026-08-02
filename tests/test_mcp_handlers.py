@@ -1,10 +1,14 @@
 import asyncio
+import concurrent.futures
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import repository_manager.mcp_server as mcp_server_module
 from repository_manager.mcp_server import (
     _get_job_status,
+    _job_futures,
     _jobs,
     _jobs_lock,
     _submit_job,
@@ -406,6 +410,69 @@ async def test_mcp_rm_git_status_exposes_submitted_job_and_failure():
     assert completed["status"] == "completed"
     assert completed["outcome"] == "failed"
     assert completed["failures"] == ["pre-commit gate failed"]
+
+
+@pytest.mark.anyio
+async def test_mcp_rm_git_cancels_queued_job_and_refuses_running_job(monkeypatch):
+    """Queued cancellation is terminal; active work is refused honestly."""
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    monkeypatch.setattr(mcp_server_module, "_executor", executor)
+    blocker_started = threading.Event()
+    release_blocker = threading.Event()
+    queued_ran = threading.Event()
+
+    def blocker():
+        blocker_started.set()
+        assert release_blocker.wait(timeout=2)
+        return "done"
+
+    def queued_work():
+        queued_ran.set()
+        return "should not run"
+
+    with _jobs_lock:
+        _jobs.clear()
+        _job_futures.clear()
+
+    try:
+        active = _submit_job("add", blocker)
+        assert blocker_started.wait(timeout=1)
+        queued = _submit_job("commit", queued_work)
+        with _jobs_lock:
+            assert queued["job_id"] in _job_futures
+
+        mcp, _, _, _ = get_mcp_instance()
+        tools = await mcp.list_tools()
+        rm_git = next(t for t in tools if t.name == "rm_git")
+
+        refused = await rm_git.fn(action="cancel", job_id=active["job_id"])
+        assert refused == {
+            "job_id": active["job_id"],
+            "status": "running",
+            "cancelled": False,
+            "message": (
+                "Job has started; cooperative cancellation is not supported, "
+                "so it remains running."
+            ),
+        }
+
+        cancelled = await rm_git.fn(action="cancel", job_id=queued["job_id"])
+        assert cancelled == {
+            "job_id": queued["job_id"],
+            "status": "cancelled",
+            "cancelled": True,
+        }
+        status = await rm_git.fn(action="status", job_id=queued["job_id"])
+        assert status["status"] == "cancelled"
+        assert status["outcome"] == "cancelled"
+        with _jobs_lock:
+            assert queued["job_id"] not in _job_futures
+    finally:
+        release_blocker.set()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    assert not queued_ran.is_set()
+    assert _get_job_status(queued["job_id"])["status"] == "cancelled"
 
 
 @pytest.mark.anyio

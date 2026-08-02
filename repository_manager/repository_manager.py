@@ -7,7 +7,10 @@ multiple repositories in parallel using Python's multiprocessing capabilities.
 """
 
 import argparse
+import contextlib
 import datetime
+import functools
+import inspect
 import json
 import os
 import re
@@ -15,8 +18,9 @@ import shlex
 import subprocess
 import sys
 import threading
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 __version__ = "3.0.0"
 
@@ -69,6 +73,58 @@ _DIAGNOSTIC_SECRET = re.compile(
 _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", re.DOTALL)
 _SHELL_CONTROL_TOKENS = {"&&", "||", ";", "|", "&", "(", ")"}
 _MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024
+_MutationResult = TypeVar("_MutationResult")
+
+
+class _RepoMutationLock:
+    """One re-entrant repository lock plus its holder/waiter reference count."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.users = 0
+
+
+_REPO_MUTATION_LOCKS: dict[str, _RepoMutationLock] = {}
+_REPO_MUTATION_LOCKS_GUARD = threading.Lock()
+
+
+@contextlib.contextmanager
+def _hold_repo_mutation(path: str) -> Iterator[None]:
+    """Serialize mutation of one resolved repository without leaking lock keys."""
+    key = os.path.realpath(path)
+    with _REPO_MUTATION_LOCKS_GUARD:
+        entry = _REPO_MUTATION_LOCKS.setdefault(key, _RepoMutationLock())
+        entry.users += 1
+    acquired = False
+    try:
+        entry.lock.acquire()
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            entry.lock.release()
+        with _REPO_MUTATION_LOCKS_GUARD:
+            entry.users -= 1
+            if entry.users == 0 and _REPO_MUTATION_LOCKS.get(key) is entry:
+                del _REPO_MUTATION_LOCKS[key]
+
+
+def _exclusive_repo_mutation(
+    method: Callable[..., _MutationResult],
+) -> Callable[..., _MutationResult]:
+    """Hold one repo lock across the complete decorated mutation method."""
+    method_signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    def wrapped(*args: Any, **kwargs: Any) -> _MutationResult:
+        bound = method_signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        manager = args[0]
+        target_path = manager._resolve_path(bound.arguments.get("path"))
+        with _hold_repo_mutation(target_path):
+            return method(*args, **kwargs)
+
+    return wrapped
 
 
 def _privacy_safe_diagnostic(value: object) -> str:
@@ -1570,6 +1626,7 @@ class Git:
         ) as executor:
             return list(executor.map(self.add_project, project_dirs))
 
+    @_exclusive_repo_mutation
     def add_project(self, path: str | None = None) -> GitResult:
         """
         Stage all changes (git add -A) for a single Git project.
@@ -1606,6 +1663,7 @@ class Git:
         ) as executor:
             return list(executor.map(commit_func, project_dirs))
 
+    @_exclusive_repo_mutation
     def commit_project(self, message: str, path: str | None = None) -> GitResult:
         """
         Commit staged changes (git commit -m "{message}") for a single Git project.
@@ -1645,6 +1703,7 @@ class Git:
         safe_msg = quote(message)
         return self.git_action(command=f"git commit -m {safe_msg}", path=target_path)
 
+    @_exclusive_repo_mutation
     def commit_code_project(
         self, message: str, run_precommit: bool = True, path: str | None = None
     ) -> GitResult:
@@ -1791,6 +1850,7 @@ class Git:
             )
             self.threads = self.maximum_threads
 
+    @_exclusive_repo_mutation
     def pre_commit(
         self,
         run: bool = True,

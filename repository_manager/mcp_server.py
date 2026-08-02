@@ -70,6 +70,7 @@ RM_GIT_ACTIONS = (
     "pre_commit",
     "commit_code",
     "status",
+    "cancel",
 )
 RM_WORKSPACE_ACTIONS = (
     "list",
@@ -168,6 +169,7 @@ def _get_max_workers():
 
 _executor = concurrent.futures.ThreadPoolExecutor(max_workers=_get_max_workers())
 _jobs: dict[str, dict[str, Any]] = {}
+_job_futures: dict[str, concurrent.futures.Future[Any]] = {}
 
 _jobs_lock = threading.RLock()
 
@@ -188,9 +190,10 @@ def _submit_job(
     now = datetime.now(UTC).isoformat() + "Z"
 
     job_entry: dict[str, Any] = {
-        "status": "running",
+        "status": "queued",
         "action": action,
-        "started_at": now,
+        "submitted_at": now,
+        "started_at": None,
         "completed_at": None,
         "result": None,
         "error": None,
@@ -202,21 +205,43 @@ def _submit_job(
         _jobs[job_id] = job_entry
 
     def _run() -> None:
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if job is None or job["status"] != "queued":
+                return
+            job["status"] = "running"
+            job["started_at"] = datetime.now(UTC).isoformat() + "Z"
         try:
             result = func(*args, **kwargs)
             with _jobs_lock:
-                _jobs[job_id]["status"] = "completed"
-                _jobs[job_id]["result"] = result
-                _jobs[job_id]["completed_at"] = datetime.now(UTC).isoformat() + "Z"
+                job = _jobs.get(job_id)
+                if job is not None and job["status"] == "running":
+                    job["status"] = "completed"
+                    job["result"] = result
+                    job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
         except Exception as exc:
             with _jobs_lock:
-                _jobs[job_id]["status"] = "failed"
-                _jobs[job_id]["error"] = (
-                    f"Background repository operation raised {type(exc).__name__}."
-                )
-                _jobs[job_id]["completed_at"] = datetime.now(UTC).isoformat() + "Z"
+                job = _jobs.get(job_id)
+                if job is not None and job["status"] == "running":
+                    job["status"] = "failed"
+                    job["error"] = (
+                        f"Background repository operation raised {type(exc).__name__}."
+                    )
+                    job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
 
-    _executor.submit(_run)
+    future = _executor.submit(_run)
+    with _jobs_lock:
+        _job_futures[job_id] = future
+
+    def _release_future(done: concurrent.futures.Future[Any]) -> None:
+        with _jobs_lock:
+            job = _jobs.get(job_id)
+            if done.cancelled() and job is not None and job["status"] == "queued":
+                job["status"] = "cancelled"
+                job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
+            _job_futures.pop(job_id, None)
+
+    future.add_done_callback(_release_future)
 
     return {
         "status": "submitted",
@@ -226,6 +251,42 @@ def _submit_job(
             f"Poll with the corresponding tool's status action using job_id='{job_id}'."
         ),
     }
+
+
+def _cancel_job(job_id: str) -> dict[str, Any]:
+    """Cancel a queued job, or honestly refuse once its worker has started."""
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return {"status": "error", "message": f"Job '{job_id}' not found."}
+
+        status = str(job["status"])
+        if status == "cancelled":
+            return {"job_id": job_id, "status": status, "cancelled": True}
+        if status in {"completed", "failed"}:
+            return {
+                "job_id": job_id,
+                "status": status,
+                "cancelled": False,
+                "message": "Job is already terminal and cannot be cancelled.",
+            }
+
+        future = _job_futures.get(job_id)
+        if future is not None and future.cancel():
+            job["status"] = "cancelled"
+            job["completed_at"] = datetime.now(UTC).isoformat() + "Z"
+            _job_futures.pop(job_id, None)
+            return {"job_id": job_id, "status": "cancelled", "cancelled": True}
+
+        return {
+            "job_id": job_id,
+            "status": str(job["status"]),
+            "cancelled": False,
+            "message": (
+                "Job has started; cooperative cancellation is not supported, "
+                "so it remains running."
+            ),
+        }
 
 
 def _job_failures(j: dict[str, Any]) -> list[str]:
@@ -381,7 +442,13 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
             if not _jobs:
                 return {"status": "empty", "message": "No background jobs found."}
 
-            counts = {"completed": 0, "running": 0, "failed": 0, "passed": 0}
+            counts = {
+                "completed": 0,
+                "running": 0,
+                "failed": 0,
+                "cancelled": 0,
+                "passed": 0,
+            }
             failed_projects: list[str] = []
             running_projects: list[str] = []
             failed_details: dict[str, Any] = {}
@@ -415,6 +482,8 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
                             "job_id": jid,
                             "failures": _job_failures(j),
                         }
+                elif st == "cancelled":
+                    counts["cancelled"] += 1
 
                 if not summary:
                     jd = {
@@ -557,6 +626,8 @@ def _get_job_status(job_id: str | None = None, summary: bool = True) -> dict[str
         elif job["status"] == "failed":
             response["outcome"] = "failed"
             response["error"] = job["error"]
+        elif job["status"] == "cancelled":
+            response["outcome"] = "cancelled"
 
         return response
 
@@ -701,8 +772,12 @@ def register_git_operations_tools(mcp: FastMCP):
         action: str = Field(
             description=(
                 "Action: 'clone', 'enumerate', 'pull', 'push', 'phased_push', "
-                "'add', 'commit', 'pre_commit', 'commit_code', or 'status'. "
+                "'add', 'commit', 'pre_commit', 'commit_code', 'status', or "
+                "'cancel'. "
                 "Use 'status' with job_id to poll any submitted rm_git job. "
+                "Use 'cancel' with job_id to cancel a queued job; a running job "
+                "is refused honestly because cooperative cancellation is not "
+                "supported. "
                 "Use 'commit_code', rather than separate add and commit jobs, "
                 "for the ordered stage → gate → commit operation. Legacy 'raw' "
                 "is permanently retired. 'enumerate' lists all repos across a "
@@ -748,7 +823,7 @@ def register_git_operations_tools(mcp: FastMCP):
         ),
         job_id: str | None = Field(
             default=None,
-            description="Background rm_git job id to inspect; required for action='status'.",
+            description="Background rm_git job id; required for action='status' or 'cancel'.",
         ),
         summary: bool = Field(
             default=True,
@@ -779,6 +854,17 @@ def register_git_operations_tools(mcp: FastMCP):
                     ),
                 )
             return _get_job_status(job_id, summary=summary)
+
+        if action == "cancel":
+            if not job_id:
+                return GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message="job_id is required for 'cancel' action", code=1
+                    ),
+                )
+            return _cancel_job(job_id)
 
         git = get_git_instance(path=path, threads=threads)
 
