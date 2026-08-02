@@ -1734,8 +1734,13 @@ class Git:
         target_path = self._resolve_path(path)
 
         # Un-cloned / missing repo (e.g. a workspace.yml entry not pulled): skip
-        # gracefully — a missing dir must never abort the whole batch.
-        if not os.path.isdir(os.path.join(target_path, ".git")):
+        # gracefully — a missing dir must never abort the whole batch. D-CDX-60:
+        # ``.git`` is a FILE (a gitdir pointer), not a directory, in a linked
+        # worktree — an `isdir` check here wrongly reported a valid isolated
+        # worktree as "not a cloned Git repository" and skipped it silently.
+        # ``os.path.exists`` accepts either shape, matching the check at
+        # `_resolve_path`'s sibling validation above.
+        if not os.path.exists(os.path.join(target_path, ".git")):
             return GitResult(
                 status="skipped",
                 data="Configured project is not a cloned Git repository",
@@ -1782,7 +1787,24 @@ class Git:
         stage_res = self.add_project(target_path)
         if stage_res.status != "success":
             return stage_res
-        return self.commit_project(message, path=target_path)
+        result = self.commit_project(message, path=target_path)
+        if result.status == "success":
+            # D-CDX-60 acceptance: a truthful commit_code result names BOTH the
+            # resolved repository/worktree it acted on (already carried by
+            # metadata.workspace) AND the resulting commit SHA, so a caller can
+            # verify what actually happened rather than trust a bare "success".
+            sha_res = self.git_action(
+                command="git rev-parse HEAD", path=target_path, quiet=True
+            )
+            if sha_res.status == "success" and sha_res.data.strip():
+                result = result.model_copy(
+                    update={
+                        "data": (
+                            f"{result.data}\ncommit_sha={sha_res.data.strip()}"
+                        )
+                    }
+                )
+        return result
 
     def commit_code_projects(
         self,
