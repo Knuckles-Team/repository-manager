@@ -34,6 +34,7 @@ This is the isolation layer only.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess  # nosec B404 - git/CLI orchestration is this module's entire job
@@ -132,13 +133,47 @@ def _lane_scope(tree: Path) -> Any:
 
 
 def _lane_temp_root(tree: Path) -> Path | None:
-    """This lane's private temp root (``~/.al/<token>``), or ``None``."""
-    try:
-        from agent_utilities.governance import lanes
+    """This lane's private, host-valid temp root, or ``None`` (D-CDX-40).
 
-        return lanes.partitioned_paths(tree).scratch_dir.parent
-    except Exception:  # pragma: no cover - environment-dependent
+    Mirrors what :func:`lane_exports` actually creates
+    (:func:`_host_valid_lane_temp_root`, anchored at the worktree — not
+    ``agent_utilities.governance.lanes.partitioned_paths()``'s
+    ``$HOME``-anchored root) so this hint and the real export never diverge.
+    """
+    scope = _lane_scope(tree)
+    if scope is None:
         return None
+    return _host_valid_lane_temp_root(tree, scope)
+
+
+def _host_valid_lane_temp_root(tree: Path, scope: Any) -> Path:
+    """A per-lane temp root that is valid for WHOEVER operates on ``tree``.
+
+    D-CDX-40 — ``agent_utilities.governance.lanes.partitioned_paths()`` roots
+    per-lane temp state (pytest basetemp / TMPDIR / pre-commit store) at
+    ``Path.home() / ".al" / <token>`` — a deliberate choice for short AF_UNIX
+    socket paths (see that function's docstring), correct when the process
+    resolving the path and the process using it share one ``$HOME``. That
+    assumption holds for the local CLI but not the MCP surface:
+    repository-manager-mcp resolves it in the *provider's* identity/container
+    (verified live: exports rooted at ``/home/rm/.al/<hash>`` from a container
+    running as user ``rm``, HOME=``/home/rm``), which a host caller running as
+    a different user does not have — every one of 30 focused fan-out tests
+    ERRORed with ``FileNotFoundError`` applying that basetemp on the host; the
+    same tests passed 30/30 against a host-valid ``/tmp``-rooted basetemp.
+
+    Anchoring at the worktree's own PARENT directory instead uses a path both
+    the provider and the caller already agree on: it is the literal
+    filesystem location of the lane's worktree. Whichever identity can reach
+    ``tree`` at all (the only identity for which these exports are relevant)
+    can create and use a sibling directory next to it — unlike ``$HOME``,
+    which is a property of the *process*, not the *worktree*.
+    """
+    token = hashlib.sha1(
+        f"{getattr(scope, 'common_dir', tree)}:{getattr(scope, 'lane', tree.name)}".encode(),
+        usedforsecurity=False,
+    ).hexdigest()[:12]
+    return tree.parent / f".al-{token}"
 
 
 # ---------------------------------------------------------------------------
@@ -152,23 +187,30 @@ def lane_exports(path: Path | str | None = None) -> dict[str, str]:
     resource and the one whose absence is *silent* — a shared store does not
     fail, it just occasionally eats a lane's unstaged work. Resolving it in the
     same call that creates the worktree means no lane can start without it.
+
+    The pytest basetemp / TMPDIR / pre-commit store paths are deliberately
+    resolved via :func:`_host_valid_lane_temp_root`, NOT
+    ``agent_utilities.governance.lanes.partitioned_paths()`` — see D-CDX-40 in
+    that function's docstring. ``CARGO_TARGET_DIR`` is unaffected: it was
+    already tree-relative (``tree / "target-isolated"``) and therefore always
+    host-valid.
     """
     tree = _resolve_tree(path)
     exports: dict[str, str] = {}
-    try:
-        from agent_utilities.governance import lanes
-
-        parts = lanes.partitioned_paths(tree)
-    except Exception:  # pragma: no cover - environment-dependent
+    scope = _lane_scope(tree)
+    if scope is None:
         return exports
 
-    temp_root = parts.scratch_dir.parent
+    temp_root = _host_valid_lane_temp_root(tree, scope)
+    temp_root.mkdir(parents=True, exist_ok=True)
+    scratch_dir = temp_root / "scratch"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
     precommit_home = temp_root / "pre-commit"
     precommit_home.mkdir(parents=True, exist_ok=True)
 
-    exports["CARGO_TARGET_DIR"] = str(parts.cargo_target_dir)
-    exports["TMPDIR"] = str(parts.scratch_dir)
-    exports["PYTEST_ADDOPTS"] = f"--basetemp={parts.pytest_basetemp}"
+    exports["CARGO_TARGET_DIR"] = str(tree / "target-isolated")
+    exports["TMPDIR"] = str(scratch_dir)
+    exports["PYTEST_ADDOPTS"] = f"--basetemp={temp_root / 'pytest'}"
     exports["PRE_COMMIT_HOME"] = str(precommit_home)
     return exports
 
@@ -696,11 +738,29 @@ ACTIONS = ("doctor", "start", "finish", "env")
 
 
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
-    """One action core, shared by the CLI and the MCP tool so they cannot drift."""
+    """One action core, shared by the CLI and the MCP tool so they cannot drift.
+
+    D-CDX-61 — ``doctor`` accepts an explicit ``env`` (the CALLER's own
+    exported environment) precisely because a remote caller's environment is
+    not the dispatching process's. Local CLI use needs nothing here: when
+    ``env`` is omitted, :func:`diagnose` still defaults to the live
+    ``os.environ`` of whichever process is running — correct exactly when the
+    caller and the resolving process are the same one. It stops being correct
+    the moment ``doctor`` is reached over the MCP surface: repository-manager-
+    mcp's ``os.environ`` is the PROVIDER's process environment, not the lane
+    process that actually exported ``PRE_COMMIT_HOME``/``CARGO_TARGET_DIR`` —
+    reading server globals there manufactured a blocker for a healthy lane
+    (PRE_COMMIT_HOME reported as the shared default because the provider
+    process never had the caller's export at all) that the source-backed
+    local doctor never saw for the identical tree. Passing ``env`` closes
+    that: the MCP tool accepts the caller's declared environment and
+    evaluates the checks against it, the same evidence the local doctor uses.
+    """
     if action == "doctor":
         return diagnose(
             kwargs.get("path"),
             base=kwargs.get("base") or "main",
+            env=kwargs.get("env"),
         )
     if action == "env":
         exports = lane_exports(kwargs.get("path"))

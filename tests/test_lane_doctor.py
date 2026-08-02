@@ -436,6 +436,104 @@ def test_exports_satisfy_the_checks_they_exist_to_satisfy(worktree: Path) -> Non
         assert _named(report, name)["status"] == OK
 
 
+# ---------------------------------------------------------------------------
+# D-CDX-40 — lane_exports() must be usable by whoever can reach the worktree,
+# never rooted at the resolving PROCESS's $HOME (which differs between the
+# repository-manager-mcp provider's container and a host caller).
+# ---------------------------------------------------------------------------
+def test_lane_exports_do_not_depend_on_home(
+    worktree: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point $HOME somewhere the exports must NOT land, and somewhere that
+    does not even exist - reproducing 'provider HOME != caller HOME'."""
+    unreachable_home = tmp_path / "provider-only-home-does-not-exist-for-caller"
+    monkeypatch.setenv("HOME", str(unreachable_home))
+
+    exports = lane_doctor.lane_exports(worktree)
+
+    assert not unreachable_home.exists(), (
+        "lane_exports must not create anything under $HOME"
+    )
+    for key in ("TMPDIR", "PRE_COMMIT_HOME"):
+        assert str(unreachable_home) not in exports[key]
+        assert Path(exports[key]).is_dir()
+    basetemp = exports["PYTEST_ADDOPTS"].removeprefix("--basetemp=")
+    assert str(unreachable_home) not in basetemp
+
+
+def test_lane_exports_are_anchored_at_the_worktree_not_the_provider_identity(
+    worktree: Path,
+) -> None:
+    """The concrete D-CDX-40 shape: exports resolved for this tree must be
+    usable by ANY identity that can reach the tree - proven here by anchoring
+    under the tree's own parent rather than any process-identity directory."""
+    exports = lane_doctor.lane_exports(worktree)
+    for key in ("TMPDIR", "PRE_COMMIT_HOME"):
+        assert Path(exports[key]).resolve().is_relative_to(worktree.parent.resolve())
+    basetemp = exports["PYTEST_ADDOPTS"].removeprefix("--basetemp=")
+    assert Path(basetemp).parent.resolve().is_relative_to(worktree.parent.resolve())
+
+
+# ---------------------------------------------------------------------------
+# D-CDX-61 — the remote (MCP) doctor must evaluate PRE_COMMIT_HOME etc.
+# against the CALLER's declared environment, not the resolving process's own
+# os.environ, and must reach the identical verdict the local CLI doctor does
+# for the same tree and the same declared environment.
+# ---------------------------------------------------------------------------
+def test_doctor_dispatch_uses_the_explicitly_passed_env_not_process_globals(
+    worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Simulate the live incident: the RESOLVING PROCESS's own os.environ is
+    unset/wrong (as repository-manager-mcp's container environment genuinely
+    is relative to a host lane), while the CALLER's declared environment is
+    correctly partitioned. dispatch(env=...) must honor the latter."""
+    monkeypatch.delenv("PRE_COMMIT_HOME", raising=False)
+    monkeypatch.delenv("CARGO_TARGET_DIR", raising=False)
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+
+    caller_env = lane_doctor.lane_exports(worktree)  # the caller's real exports
+    report = lane_doctor.dispatch("doctor", path=str(worktree), env=caller_env)
+
+    assert report["ok"] is True
+    assert _named(report, "precommit-home")["status"] == OK
+    assert _named(report, "cargo-partition")["status"] == OK
+    assert _named(report, "pytest-basetemp")["status"] == OK
+
+
+def test_doctor_dispatch_without_explicit_env_falls_back_to_process_globals(
+    worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unchanged local-CLI shape: omitting env still reads process os.environ
+    (correct there, since the dispatching process IS the caller)."""
+    monkeypatch.delenv("PRE_COMMIT_HOME", raising=False)
+    report = lane_doctor.dispatch("doctor", path=str(worktree))
+    assert _named(report, "precommit-home")["status"] == FAIL
+
+
+def test_local_cli_and_mcp_doctor_agree_for_a_healthy_lane(worktree: Path) -> None:
+    """MCP/CLI parity, healthy case: local diagnose(env=X) and
+    dispatch("doctor", env=X) (the MCP tool's own action core) must return the
+    same blocker set for identical inputs."""
+    exports = lane_doctor.lane_exports(worktree)
+    local = lane_doctor.diagnose(worktree, env=exports)
+    remote = lane_doctor.dispatch("doctor", path=str(worktree), env=exports)
+    assert local["ok"] == remote["ok"] is True
+    assert local["blocking"] == remote["blocking"] == []
+
+
+def test_local_cli_and_mcp_doctor_agree_for_a_deliberately_bad_lane(
+    worktree: Path,
+) -> None:
+    """MCP/CLI parity, unhealthy case: a lane with the shared PRE_COMMIT_HOME
+    declared must be caught identically by both call shapes."""
+    bad_env = {"PRE_COMMIT_HOME": str(Path.home() / ".cache" / "pre-commit")}
+    local = lane_doctor.diagnose(worktree, env=bad_env)
+    remote = lane_doctor.dispatch("doctor", path=str(worktree), env=bad_env)
+    assert local["ok"] == remote["ok"] is False
+    assert local["blocking"] == remote["blocking"]
+    assert "precommit-home" in local["blocking"]
+
+
 def test_dispatch_rejects_an_unknown_action() -> None:
     assert lane_doctor.dispatch("teleport")["ok"] is False
 

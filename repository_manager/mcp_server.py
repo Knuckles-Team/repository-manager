@@ -1435,6 +1435,17 @@ def register_project_management_tools(mcp: FastMCP):
             default=False,
             description="For 'finish': enqueue despite a blocking preflight check. Recorded in the result.",
         ),
+        env: dict[str, str] | None = Field(
+            default=None,
+            description=(
+                "For 'doctor': the CALLER's own exported environment (at least "
+                "PRE_COMMIT_HOME/CARGO_TARGET_DIR/PYTEST_ADDOPTS). Required for a "
+                "truthful remote check (D-CDX-61) — this server process's own "
+                "environment is not the lane process's, so omitting this "
+                "evaluates the checks against server-internal state that has "
+                "nothing to do with what the caller will actually run with."
+            ),
+        ),
         ctx: Context | None = Field(
             default=None, description="MCP context for progress reporting"
         ),
@@ -1473,6 +1484,7 @@ def register_project_management_tools(mcp: FastMCP):
             branch=branch,
             base=base,
             force=force,
+            env=env,
         )
 
     @mcp.tool(tags={"workspace_management", "project_manager"})
