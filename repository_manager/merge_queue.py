@@ -1513,7 +1513,10 @@ def _push_landed_base(
     try:
         push_result = git.push_project(path=str(canonical))
     except Exception as exc:  # pragma: no cover - defensive: push must never raise
-        return {"pushed": False, "push_error": f"push_project raised {type(exc).__name__}: {exc}"}
+        return {
+            "pushed": False,
+            "push_error": f"push_project raised {type(exc).__name__}: {exc}",
+        }
     if getattr(push_result, "status", None) == "success":
         return {"pushed": True}
     err = getattr(push_result, "error", None)
