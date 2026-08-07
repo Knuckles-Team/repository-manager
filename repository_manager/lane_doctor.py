@@ -797,6 +797,51 @@ def _check_test_runner(tree: Path, scope: Any) -> Check:
     return Check("test-runner", SKIP, "no scripts/uv_workspace.py in this repository")
 
 
+def _check_precommit_hook_installed(tree: Path) -> Check:
+    """D-ORC-45: THE ACTUAL DEFECT IS THE SILENCE, not the missing hook. Two
+    lanes independently assumed ``git commit`` gated their work here and were
+    wrong, because nothing anywhere told them otherwise -- gate coverage was
+    only the merge queue's own gates plus whatever a lane happened to run by
+    hand. This makes that absence (or presence) loud instead. Deliberately
+    does NOT install a hook: ~20 lanes can be live at once, and a hook that
+    starts stashing unstaged work into pre-commit's SHARED, unpartitioned
+    store mid-wave is the D-OB-12 data-loss shape.
+    """
+    code, hooks_path_out = _git(["rev-parse", "--git-path", "hooks"], tree)
+    hooks_dir = (
+        (tree / hooks_path_out.strip()).resolve()
+        if code == 0 and hooks_path_out.strip()
+        else None
+    )
+    hook = (hooks_dir / "pre-commit") if hooks_dir else None
+    installed = bool(hook and hook.is_file() and os.access(hook, os.X_OK))
+    if installed:
+        return Check(
+            "precommit-hook",
+            WARN,
+            f"a pre-commit git hook IS installed at {hook} -- `git commit` in "
+            "this tree runs it. Do not assume it is current: a hand-generated "
+            "hook can hardcode a stale interpreter path (D-PCG-1) that crashes "
+            "or silently no-ops rather than gating anything.",
+            remedy=(
+                "inspect the hook's INSTALL_PYTHON line against this lane's own "
+                "interpreter; reinstall with `pre-commit install` if it looks stale"
+            ),
+            evidence={"hook": str(hook)},
+        )
+    return Check(
+        "precommit-hook",
+        WARN,
+        "no pre-commit git hook is installed (core.hooksPath unset, "
+        "<git-common-dir>/hooks/pre-commit absent) -- `git commit` in this "
+        "tree runs ZERO hooks. Gate coverage is ONLY the merge queue's own "
+        "gates plus whatever you ran by hand; do not assume a commit was "
+        "gated.",
+        remedy="run gates by hand before committing: `pre-commit run --files <changed>`",
+        evidence={"hooks_dir": str(hooks_dir) if hooks_dir else ""},
+    )
+
+
 def diagnose(
     path: Path | str | None = None,
     *,
@@ -822,6 +867,7 @@ def diagnose(
         _check_pytest_basetemp(environ),
         _check_stash_ref(tree, scope),
         _check_test_runner(tree, scope),
+        _check_precommit_hook_installed(tree),
         _check_canonical_clean(scope),
         _check_canonical_is_worktree(scope),
         _check_merge_queue_config(tree, scope),

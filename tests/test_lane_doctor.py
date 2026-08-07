@@ -295,6 +295,32 @@ def test_a_sibling_lanes_stash_is_visible_from_this_worktree(
 
 
 # ---------------------------------------------------------------------------
+# precommit-hook — D-ORC-45: the actual defect is the SILENCE, not the
+# missing hook. Make its presence/absence loud; never install one here.
+# ---------------------------------------------------------------------------
+def test_no_precommit_hook_installed_is_reported_not_silent(worktree: Path) -> None:
+    check = _named(lane_doctor.diagnose(worktree, env={}), "precommit-hook")
+    assert check["status"] == WARN
+    assert "ZERO hooks" in check["finding"]
+    assert "pre-commit run --files" in check["remedy"]
+
+
+def test_an_installed_precommit_hook_is_reported(worktree: Path) -> None:
+    hooks_dir = Path(_git(["rev-parse", "--git-path", "hooks"], worktree))
+    if not hooks_dir.is_absolute():
+        hooks_dir = worktree / hooks_dir
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook = hooks_dir / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 0\n")
+    hook.chmod(0o755)
+
+    check = _named(lane_doctor.diagnose(worktree, env={}), "precommit-hook")
+    assert check["status"] == WARN
+    assert "IS installed" in check["finding"]
+    assert check["evidence"]["hook"] == str(hook)
+
+
+# ---------------------------------------------------------------------------
 # pytest-basetemp
 # ---------------------------------------------------------------------------
 def test_a_missing_basetemp_is_flagged(worktree: Path) -> None:
