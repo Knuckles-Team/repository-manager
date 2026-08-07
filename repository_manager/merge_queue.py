@@ -1451,6 +1451,82 @@ def _resolve_generated_file_conflict(
 
 
 # ---------------------------------------------------------------------------
+# Push-on-land (D-W3WPS-3) — wires the EXISTING gated push path, never a new one
+# ---------------------------------------------------------------------------
+def _push_landed_base(
+    canonical: Path,
+    *,
+    base: str,
+    canonical_on_base: bool,
+    git: Any,
+) -> dict[str, Any]:
+    """Push the just-advanced base ref, honestly reporting whether it shipped.
+
+    D-W3WPS-3: ``land`` used to report ``landed: true`` after only fast-forwarding
+    the LOCAL canonical checkout, never touching the remote — 78 repos ended up
+    with unpushed "landed" work. This closes that gap by reusing the EXISTING
+    gated push path (:meth:`Git.push_project`, which already runs
+    ``_gate_before_push`` — the repo's own pre-commit gates minus full pytest —
+    plus its GH013/divergent-remote/tag-conflict handling) rather than
+    re-implementing any push logic here.
+
+    ``push_project`` pushes whichever branch the target working tree currently
+    has checked out (plain ``git push --follow-tags``, no explicit refspec) —
+    correct only when the canonical checkout genuinely IS on ``base`` (the
+    ``merge --ff-only`` landing method, :func:`land`'s common/au-shaped case).
+    When landing instead took the compare-and-swap path (canonical parked on
+    some other branch — a bisect, an operator poking around, a merge in
+    progress), pushing through that checkout would push the WRONG branch, so
+    the push is deliberately DEFERRED rather than guessed at: ``pushed: False``
+    with a reason, never silent, never a guess. A later ``phased_push`` (or a
+    manual push once the canonical is back on ``base``) picks it up.
+
+    Sync, not batched: this pushes the ONE repo :func:`land` just fast-forwarded,
+    immediately, inline with the landing call. ``phased_push``'s phase ordering
+    exists for the fleet-wide *release* workflow (coordinated version-bump
+    pushes across interdependent packages, where a downstream repo's pin must
+    not reach a remote before the upstream version it names does) — a plain
+    merge-queue landing publishes a branch's own commits, not a version bump, so
+    there is no cross-repo pin for immediate publication to violate. Should the
+    queue ever land version-bump commits, that is the moment to route through
+    ``phased_push`` instead; forcing every landing through fleet-wide phase
+    bookkeeping today would be scope the defect never asked for.
+
+    A push failure never fails the landing — the local ref genuinely did
+    fast-forward, and reporting that as a failure too would misrepresent what
+    happened. Landed-but-unpushed is a legitimate, visible intermediate state
+    (network blip, GH013, a diverged remote needing a reviewed sync), not
+    something to hide behind a single ambiguous flag.
+    """
+    if git is None or not hasattr(git, "push_project"):
+        return {"pushed": False, "push_error": "no push-capable git handle provided"}
+    if not canonical_on_base:
+        return {
+            "pushed": False,
+            "push_error": (
+                f"canonical checkout is not on {base} (landed via compare-and-swap "
+                "update-ref); push deferred to avoid pushing whichever branch that "
+                "checkout has checked out -- push_project/phased_push against the "
+                f"canonical checkout once it is back on {base}"
+            ),
+        }
+    try:
+        push_result = git.push_project(path=str(canonical))
+    except Exception as exc:  # pragma: no cover - defensive: push must never raise
+        return {"pushed": False, "push_error": f"push_project raised {type(exc).__name__}: {exc}"}
+    if getattr(push_result, "status", None) == "success":
+        return {"pushed": True}
+    err = getattr(push_result, "error", None)
+    message = (
+        getattr(err, "message", None)
+        or (str(err) if err is not None else None)
+        or getattr(push_result, "data", None)
+        or "push_project failed"
+    )
+    return {"pushed": False, "push_error": str(message)}
+
+
+# ---------------------------------------------------------------------------
 # Landing — the DECLARED base ref only ever FAST-FORWARDS, under both guards
 # ---------------------------------------------------------------------------
 def _base_ref(base: str) -> str:
@@ -1539,6 +1615,15 @@ def land(
     ``main`` without moving the deployed bytes — strictly safer than the
     alternative, and the same merge/deploy decoupling the promotion ref exists
     for.
+
+    **D-W3WPS-3 — landing now also pushes, honestly.** This used to return
+    ``landed: true`` after only fast-forwarding the LOCAL canonical checkout,
+    never the remote — 78 repos ended up "landed" with nothing shipped. The
+    returned dict now ALSO carries ``pushed`` (bool) and, when ``False``,
+    ``push_error`` explaining why — see :func:`_push_landed_base`. A push
+    failure never raises out of this function: the fast-forward genuinely
+    happened, so it is reported as such; landed-but-unpushed is a legitimate,
+    visible state, not a reason to pretend the landing itself failed.
     """
     canonical = scope.main_tree
     ref = _base_ref(base)
@@ -1550,13 +1635,19 @@ def land(
             "exactly D-RMD-1, which reported `landed` while the base never moved."
         )
     current = before.out
+    head = _run_git(["symbolic-ref", "--quiet", "HEAD"], canonical)
+    canonical_on_base = head.ok and head.out.strip() == ref
     if current == commit:
+        push = _push_landed_base(
+            canonical, base=base, canonical_on_base=canonical_on_base, git=git
+        )
         return {
             "base": base,
             "ref": ref,
             "from": current,
             "to": commit,
             "method": "already-current",
+            **push,
         }
     if not _run_git(["merge-base", "--is-ancestor", current, commit], repo).ok:
         raise MergeQueueError(
@@ -1566,8 +1657,6 @@ def land(
             "and the next run rebuilds against it"
         )
 
-    head = _run_git(["symbolic-ref", "--quiet", "HEAD"], canonical)
-    canonical_on_base = head.ok and head.out.strip() == ref
     holders = [h for h in _worktrees_holding(repo, base) if Path(h) != canonical]
 
     with guarded_tree_mutation(
@@ -1623,6 +1712,13 @@ def land(
                 "ref moved manufactures confidence and then deletes the evidence "
                 "(D-RMD-1). The candidates stay queued."
             )
+    # Push AFTER the guarded block has released its lease — push_project takes
+    # its own (in-process, re-entrant-safe but unnecessary to nest) mutation
+    # lock, and pushing a ref is not a tree mutation the canonical-checkout
+    # guards above are protecting against.
+    push = _push_landed_base(
+        canonical, base=base, canonical_on_base=canonical_on_base, git=git
+    )
     return {
         "base": base,
         "ref": ref,
@@ -1630,6 +1726,7 @@ def land(
         "to": commit,
         "method": method,
         "verified": True,
+        **push,
     }
 
 
@@ -1910,7 +2007,16 @@ def run_queue(
             if candidate is None:
                 continue
             if outcome["landed"]:
-                _record_state(candidate, LANDED, "", scope.tree)
+                # `landed` and `pushed` are deliberately distinct, honest fields
+                # (D-W3WPS-3) -- record push status in `reason` too so it stays
+                # visible durably via `status`/`queue_report`'s "recent" list,
+                # not only in this one-time `run` response.
+                landed_reason = (
+                    "pushed"
+                    if outcome.get("pushed")
+                    else f"landed, NOT pushed: {outcome.get('push_error', 'unknown')}"
+                )
+                _record_state(candidate, LANDED, landed_reason, scope.tree)
                 if prune:
                     outcome["prune"] = prune_landed(
                         candidate, repo=repo, base=base, git=git
@@ -1923,6 +2029,10 @@ def run_queue(
         "drained": len(outcomes),
         "landed": sum(1 for o in outcomes if o["landed"]),
         "rejected": sum(1 for o in outcomes if not o["landed"]),
+        "pushed": sum(1 for o in outcomes if o.get("pushed")),
+        "landed_unpushed": sum(
+            1 for o in outcomes if o["landed"] and not o.get("pushed")
+        ),
         "outcomes": outcomes,
         "seconds": round(time.monotonic() - started, 2),
     }

@@ -929,6 +929,100 @@ def test_landing_refuses_a_base_ref_that_does_not_exist(tmp_path: Path) -> None:
         mq.run_queue(base="release/9.9", path=repo, prune=False, git=git)
 
 
+# ---------------------------------------------------------------------------
+# D-W3WPS-3 -- `landed: true` used to mean only "the LOCAL canonical checkout's
+# base ref moved", never "reached the remote". 78 repos ended up "landed" with
+# nothing shipped. These pin the fix: a real bare repo stands in for GitHub, and
+# the defect-pinning assertion below checks the REMOTE ref, not any new field --
+# reverting the push wiring in `land`/`_push_landed_base` turns it red on its own.
+# ---------------------------------------------------------------------------
+def test_landing_pushes_to_the_remote_not_just_local_main(tmp_path: Path) -> None:
+    """Landing must reach the remote -- through the EXISTING gated push path.
+
+    Uses the real ``repository_manager.repository_manager.Git`` (not the
+    ``FakeGit`` test stand-in) so this exercises the actual production call
+    ``land`` makes: ``Git.push_project`` -> ``_gate_before_push`` (a no-op here;
+    the repo has no ``.pre-commit-config.yaml``) -> ``git push --follow-tags``.
+    """
+    from repository_manager.repository_manager import Git
+
+    repo = _init_repo(tmp_path / "pushrepo")
+    _write_config(
+        repo,
+        """
+        base: main
+        gates:
+          - name: always-green
+            command: ["true"]
+            tier: fast
+            compare: exit
+        """,
+    )
+    _commit(repo, "init")
+    _branch_with(repo, "feat/pushme", {"pushed.txt": "yes\n"}, "the candidate")
+
+    # A local bare repo stands in for the GitHub remote.
+    remote = tmp_path / "remote.git"
+    _run(f"git init -q --bare {remote}", tmp_path)
+    _run(f"git remote add origin {remote}", repo)
+    _run("git push -q -u origin main", repo)
+
+    local_before = _run("git rev-parse refs/heads/main", repo)
+    remote_before = _run("git rev-parse refs/heads/main", remote)
+    assert remote_before == local_before, "test setup: remote must start in sync"
+
+    git = Git(path=str(tmp_path))
+    mq.enqueue("feat/pushme", path=repo)
+    outcome = mq.run_queue(path=repo, prune=False, git=git)["outcomes"][0]
+
+    assert outcome["landed"] is True, outcome
+    local_after = _run("git rev-parse refs/heads/main", repo)
+    assert local_after != local_before  # sanity: the fast-forward really happened
+
+    # ★ The defect-pinning assertion: the commit reached the REMOTE, not just
+    # the local canonical checkout. This is checked independently of any new
+    # response field, so it fails on its own if the push wiring is reverted.
+    remote_after = _run("git rev-parse refs/heads/main", remote)
+    assert remote_after == local_after, (
+        "landed commit never reached the remote -- this is D-W3WPS-3"
+    )
+
+    # The new, honest, distinct field.
+    assert outcome["pushed"] is True, outcome
+
+
+def test_landing_defers_the_push_when_canonical_is_not_on_the_base(
+    tmp_path: Path,
+) -> None:
+    """The CAS landing path must never push the WRONG branch.
+
+    ``push_project`` pushes whatever branch the target working tree currently
+    has checked out. When the canonical checkout is parked elsewhere (the CAS
+    landing path -- see ``_parked_repo``), pushing through it would silently
+    push the wrong branch, so the push must be deferred and visibly reported,
+    never attempted with a guess.
+    """
+    from repository_manager.repository_manager import Git
+
+    repo = _parked_repo(tmp_path, "parked-push")
+    remote = tmp_path / "remote-parked.git"
+    _run(f"git init -q --bare {remote}", tmp_path)
+    _run(f"git remote add origin {remote}", repo)
+    _run("git push -q -u origin main", repo)
+    remote_before = _run("git rev-parse refs/heads/main", remote)
+
+    git = Git(path=str(tmp_path))
+    mq.enqueue("feat/x", path=repo)
+    outcome = mq.run_queue(path=repo, prune=False, git=git)["outcomes"][0]
+
+    assert outcome["landed"] is True, outcome
+    assert outcome["method"].startswith("update-ref CAS")
+    assert outcome["pushed"] is False, outcome
+    assert "push_error" in outcome and outcome["push_error"]
+    # The remote must NOT have been touched -- no wrong-branch push.
+    assert _run("git rev-parse refs/heads/main", remote) == remote_before
+
+
 def test_landing_still_works_when_canonical_IS_on_the_base(shell_repo: Path) -> None:
     """The au-shaped configuration keeps its atomic ref+worktree update.
 
