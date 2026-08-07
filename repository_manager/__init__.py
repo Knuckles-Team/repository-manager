@@ -13,10 +13,29 @@ OPTIONAL_MODULES = {
     "repository_manager.mcp_server": "mcp",
 }
 
+# D-SKC-4: a submodule's own basename (e.g. "mcp_server") is reserved and is
+# never bound as a package-global by ``_expose_members``, even though
+# ``mcp_server.py`` happens to export a public function of the exact same
+# name (its CLI entrypoint, ``def mcp_server() -> None``, wired directly via
+# ``[project.scripts]`` module:attr -- never through this package's
+# namespace). Binding that function into ``repository_manager`` globals
+# would SHADOW the ``repository_manager.mcp_server`` MODULE for any later
+# ``from repository_manager import mcp_server``, and because the optional
+# modules are only exposed lazily (the first time ANY missing attribute is
+# looked up via ``__getattr__``, not only an ``mcp_server``-named one),
+# whether the shadowing had already happened depended on which attributes
+# an earlier import/test in the SAME process touched first -- a gate whose
+# verdict depended on invocation order rather than on the code.
+_RESERVED_SUBMODULE_NAMES = frozenset(
+    module_name.rsplit(".", 1)[-1] for module_name in (*CORE_MODULES, *OPTIONAL_MODULES)
+)
+
 
 def _expose_members(module):
     """Expose public classes and functions from a module into globals and __all__."""
     for name, obj in inspect.getmembers(module):
+        if name in _RESERVED_SUBMODULE_NAMES:
+            continue
         if (inspect.isclass(obj) or inspect.isfunction(obj)) and not name.startswith(
             "_"
         ):
