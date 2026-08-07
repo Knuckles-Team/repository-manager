@@ -235,3 +235,138 @@ def test_class_status_reports_live_holder(repo: Path):
         assert report["holder"]["operation"] == "x"
     report = tq.class_status("merge-drain", repo)
     assert report["holder"] is None
+
+
+# ---------------------------------------------------------------------------
+# D-CDX-12 — GLOBAL scope must genuinely be host-wide: two DIFFERENT
+# repositories contending for the SAME GLOBAL class must exclude each other,
+# not silently get two independent per-repository lease files.
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def isolated_global_arbitration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Redirect the host-wide GLOBAL-lease root to a throwaway directory so
+    these tests can never collide with (or be polluted by) a REAL concurrent
+    lane's actual `uv-sync` lock on this shared host.
+    """
+    root = tmp_path / "global-arbitration"
+
+    def _fake_workspace_arbitration_dir() -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    monkeypatch.setattr(tq, "workspace_arbitration_dir", _fake_workspace_arbitration_dir)
+    return root
+
+
+@pytest.fixture
+def two_repos(tmp_path: Path) -> tuple[Path, Path]:
+    a = tmp_path / "repo-a"
+    b = tmp_path / "repo-b"
+    for r in (a, b):
+        r.mkdir()
+        _run("git init -q -b main", r)
+        _run("git config user.email t@t.io && git config user.name t", r)
+        _run("git config commit.gpgsign false", r)
+        (r / "README.md").write_text("hi\n")
+        _run("git add -A && git commit -q -m init", r)
+    return a, b
+
+
+def test_global_scope_lease_excludes_a_different_repository(
+    two_repos: tuple[Path, Path], isolated_global_arbitration: Path
+):
+    """The literal D-CDX-12 reproduction: before the fix, `hold_lease`'s
+    per-repository default meant two DIFFERENT repos got two DIFFERENT lease
+    files for the SAME declared GLOBAL "uv-sync" class and could both hold
+    "slot 0" at once. Prove the barrier now actually holds across repos.
+    """
+    repo_a, repo_b = two_repos
+    assert tq.EXECUTION_CLASSES["uv-sync"].scope == tq.Scope.GLOBAL
+
+    with tq.acquire("uv-sync", operation="sync in repo-a", path=repo_a, colocated=True):
+        # repo_a already holds one of the shared pool's slots; every
+        # REMAINING slot in that SAME host-wide pool is contended from
+        # repo_b too.
+        pool_size = tq.EXECUTION_CLASSES["uv-sync"].pool_size
+        held = []
+        for _ in range(pool_size - 1):
+            cm = tq.acquire(
+                "uv-sync", operation="sync in repo-b", path=repo_b, colocated=True
+            )
+            reservation = cm.__enter__()
+            held.append((cm, reservation))
+        with pytest.raises(tq.TaskQueueError, match="no free slot"):
+            with tq.acquire(
+                "uv-sync", operation="one too many", path=repo_b, colocated=True
+            ):
+                pass
+        for cm, _r in held:
+            cm.__exit__(None, None, None)
+
+    # released — repo_b can now acquire every slot again.
+    with tq.acquire("uv-sync", operation="sync in repo-b again", path=repo_b, colocated=True):
+        pass
+
+
+def test_global_scope_lease_file_lives_under_the_host_wide_root_not_either_repo(
+    two_repos: tuple[Path, Path], isolated_global_arbitration: Path
+):
+    repo_a, repo_b = two_repos
+    with tq.acquire("uv-sync", operation="x", path=repo_a, colocated=True):
+        lease_files = list(isolated_global_arbitration.rglob("*.lease"))
+        assert len(lease_files) == 1, lease_files
+        # never under either repository's own --git-common-dir.
+        for repo in (repo_a, repo_b):
+            git_common = Path(tq.lane_scope(repo).common_dir)
+            assert not str(lease_files[0]).startswith(str(git_common))
+
+
+def test_repo_scoped_class_remains_independent_per_repository(
+    two_repos: tuple[Path, Path],
+):
+    """Control case: a REPO-scoped class (e.g. "merge-drain") must NOT be
+    shared across repositories — only GLOBAL classes are host-wide."""
+    repo_a, repo_b = two_repos
+    with tq.acquire("merge-drain", operation="x", path=repo_a, colocated=True):
+        # a different repo's SAME class name is unaffected.
+        with tq.acquire("merge-drain", operation="y", path=repo_b, colocated=True):
+            pass
+
+
+def test_global_class_status_reads_the_same_host_wide_holder_from_either_repo(
+    two_repos: tuple[Path, Path], isolated_global_arbitration: Path
+):
+    repo_a, repo_b = two_repos
+    with tq.acquire("uv-sync", operation="x", path=repo_a, colocated=True):
+        status_from_a = tq.class_status("uv-sync", repo_a)
+        status_from_b = tq.class_status("uv-sync", repo_b)
+        assert status_from_a["slots"] == status_from_b["slots"]
+        assert any(s["holder"] is not None for s in status_from_a["slots"])
+
+
+# ---------------------------------------------------------------------------
+# D-CDX-14 — owner identity must be persisted and readable from status, for
+# BOTH a repo-scoped and a GLOBAL-scoped class.
+# ---------------------------------------------------------------------------
+def test_owner_identity_is_persisted_for_a_repo_scoped_class(repo: Path):
+    owner = {"fleet": "codex", "session": "codex-session-1"}
+    with tq.acquire(
+        "merge-drain", operation="x", path=repo, colocated=True, owner=owner
+    ) as reservation:
+        assert reservation.owner == owner
+        status = tq.class_status("merge-drain", repo)
+        assert status["holder"]["owner"] == owner
+
+
+def test_owner_identity_is_persisted_for_a_global_scoped_class(
+    repo: Path, isolated_global_arbitration: Path
+):
+    owner = {"fleet": "claude", "session": "claude-session-1"}
+    with tq.acquire(
+        "uv-sync", operation="x", path=repo, colocated=True, owner=owner
+    ) as reservation:
+        assert reservation.owner == owner
+        status = tq.class_status("uv-sync", repo)
+        held = [s for s in status["slots"] if s["holder"] is not None]
+        assert len(held) == 1
+        assert held[0]["holder"]["owner"] == owner

@@ -217,7 +217,25 @@ class WorktreeManager:
         }
 
     def list_worktrees(self, repo: str | None = None) -> dict[str, Any]:
-        """List worktrees for one repo, or across every workspace repo."""
+        """List worktrees for one repo, or across every workspace repo.
+
+        D-CDX-1 — ``linked`` used to be ``path.startswith(WORKTREE_ROOT)``, a
+        heuristic tied to THIS process's configured worktree root. Two
+        surfaces of this same package legitimately run with different roots
+        (the local CLI defaults to ``~/.local/state/.../worktrees``; the
+        deployed MCP server sets ``REPOSITORY_MANAGER_WORKTREE_ROOT=
+        /home/apps/worktrees``), so the identical lane came back
+        ``linked=false`` from one surface and ``linked=true`` from the other
+        for the SAME real linked worktree — a fact about git, misreported as
+        a fact about a config value neither surface is wrong to have set
+        differently. ``git worktree list`` already draws this line for free:
+        the first entry it prints for a repo is always that repo's own
+        (canonical) working tree; every entry after it is unconditionally a
+        linked worktree, regardless of which directory any of them happen to
+        live under. Comparing against the canonical path directly is the
+        deployment-agnostic ground truth ``WORKTREE_ROOT`` was only ever a
+        proxy for.
+        """
         repos = (
             [self.resolve_repo(repo)] if repo else list(self.git.project_map.values())
         )
@@ -227,12 +245,18 @@ class WorktreeManager:
             if not self._ok(res):
                 continue
             name = os.path.basename(canonical)
+            canonical_norm = os.path.abspath(canonical)
             cur: dict[str, Any] = {}
             for line in res.data.splitlines():
                 if line.startswith("worktree "):
                     if cur:
                         out.append(cur)
-                    cur = {"repo": name, "path": line[len("worktree ") :]}
+                    entry_path = line[len("worktree ") :]
+                    cur = {
+                        "repo": name,
+                        "path": entry_path,
+                        "linked": os.path.abspath(entry_path) != canonical_norm,
+                    }
                 elif line.startswith("branch "):
                     cur["branch"] = line[len("branch ") :].replace("refs/heads/", "")
                 elif line.startswith("HEAD "):
@@ -241,8 +265,6 @@ class WorktreeManager:
                     cur["branch"] = "(detached)"
             if cur:
                 out.append(cur)
-        for w in out:
-            w["linked"] = str(w.get("path", "")).startswith(WORKTREE_ROOT)
         return {"ok": True, "worktrees": out, "count": len(out)}
 
     def remove(
@@ -253,29 +275,83 @@ class WorktreeManager:
         delete_branch: bool = False,
         base: str = "main",
     ) -> dict[str, Any]:
-        """Remove a worktree (and prune); refuses a dirty tree unless ``force``.
+        """Remove a worktree (and prune); refuses an occupied lane unconditionally.
 
-        ``force`` covers the *directory*, which is recoverable — the branch still
-        points at the work. It never covers the *ref*: ``delete_branch`` goes
-        through :meth:`_delete_merged_branch`, so an explicit removal request
-        cannot orphan commits either, and reports ``branch_kept_reason`` when it
-        declines (CONCEPT:RM-PRUNE-GUARD).
+        D-CDX-15 — **this used to be the one destructive worktree path that
+        never asked the lane protocol whether anyone was still working here.**
+        :meth:`audit`'s ``prune_merged`` path always re-justified a removal
+        through :func:`repository_manager.prune_guard.guarded_worktree_prune`
+        (CONCEPT:RM-PRUNE-GUARD); this direct entry point (reachable from
+        ``rm_worktree action=remove`` with caller-controlled ``force``) did
+        not, so a caller passing ``force=True`` bypassed occupancy detection
+        entirely — the exact gap named by "existing canonical-tree guards do
+        not protect lane branches from this failure mode". It now runs the
+        SAME guard first and refuses (rather than mutating) whenever a lane
+        still holds this worktree: a merge/rebase in progress, uncommitted
+        work, or a live lease. ``force`` still exists, but its scope is
+        narrowed to what the docstring always claimed — it only overrides
+        *git's own* dirty-tree refusal once the lane-occupancy guard has
+        already cleared the tree; it can never bypass that guard.
+
+        ``delete_branch`` goes through :meth:`_delete_merged_branch`, so an
+        explicit removal request cannot orphan commits either, and reports
+        ``branch_kept_reason`` when it declines.
+
+        Honesty note (the hard constraint on this class of fix): the
+        occupancy check is an ``flock``-backed lease in this workspace's
+        shared arbitration directory — it arbitrates actors *on this host*
+        that go through this code path or the lane protocol's own primitives.
+        It gives no guarantee against a process on a different host, or any
+        process that mutates the branch/worktree with raw git and never
+        touches the lease file.
         """
         canonical = self.resolve_repo(repo)
         if not canonical:
             return {"ok": False, "error": f"repo not found: {repo}"}
         wt = self.worktree_path(repo, branch)
-        flag = " --force" if force else ""
-        res = self._run(f"git worktree remove{flag} {shlex.quote(wt)}", canonical)
-        if not self._ok(res):
-            return {"ok": False, "error": res.error.message if res.error else res.data}
-        self._run("git worktree prune", canonical, quiet=True)
-        deleted = False
-        reason = anchor = ""
-        if delete_branch:
-            deleted, reason, anchor = self._delete_merged_branch(
-                canonical, branch, base
-            )
+        if prune_guard.worktree_is_locked(wt):
+            return {
+                "ok": False,
+                "repo": repo,
+                "branch": branch,
+                "skipped": True,
+                "reason": "worktree-locked",
+                "error": (
+                    f"refused to remove worktree {wt!r}: git's own worktree "
+                    "lock is set"
+                ),
+            }
+        with prune_guard.guarded_worktree_prune(
+            wt, operation="rm_worktree remove"
+        ) as held:
+            if held is not None:
+                return {
+                    "ok": False,
+                    "repo": repo,
+                    "branch": branch,
+                    "skipped": True,
+                    "reason": "lane-occupied",
+                    "error": (
+                        f"refused to remove worktree {wt!r}: {held}. "
+                        "`force` only overrides git's own dirty-tree check, "
+                        "never lane occupancy - let the owning lane finish "
+                        "or withdraw first."
+                    ),
+                }
+            flag = " --force" if force else ""
+            res = self._run(f"git worktree remove{flag} {shlex.quote(wt)}", canonical)
+            if not self._ok(res):
+                return {
+                    "ok": False,
+                    "error": res.error.message if res.error else res.data,
+                }
+            self._run("git worktree prune", canonical, quiet=True)
+            deleted = False
+            reason = anchor = ""
+            if delete_branch:
+                deleted, reason, anchor = self._delete_merged_branch(
+                    canonical, branch, base
+                )
         out: dict[str, Any] = {
             "ok": True,
             "repo": repo,
@@ -288,6 +364,92 @@ class WorktreeManager:
         if anchor:
             out["branch_anchor"] = anchor
         return out
+
+    def reset_branch(
+        self, repo: str, branch: str, target: str = "main"
+    ) -> dict[str, Any]:
+        """The ONE sanctioned way to move a lane branch's tip — guarded, always.
+
+        D-CDX-15 — no code path in this package ever did this before (the
+        recorded incident's "reset: moving to main" reflog entry was produced
+        by something outside this package), but the acceptance criteria is to
+        *require* a lease/occupancy check "before any automated lane reset" —
+        i.e. provide the missing guarded primitive so any future lane-recycle
+        or reclaim feature has exactly one, protected, path to reach for
+        instead of a raw ``git reset --hard``. Refuses unconditionally when:
+
+        1. a lane still occupies the worktree (same check as :meth:`remove`), or
+        2. the branch carries commits that are not yet reachable from
+           ``target`` — i.e. resetting would make them unreachable from any
+           ref this branch still names. This is the literal "occupied
+           worktree with unmerged commits is refused rather than reset" case.
+
+        There is deliberately no ``force`` override for either refusal — that
+        would recreate the exact defect this closes. A branch that is already
+        an ancestor of ``target`` (nothing to lose) resets without friction;
+        anything else must be landed or explicitly deleted first.
+        """
+        canonical = self.resolve_repo(repo)
+        if not canonical:
+            return {"ok": False, "error": f"repo not found: {repo}"}
+        wt = self.worktree_path(repo, branch)
+        if os.path.isdir(wt):
+            with prune_guard.guarded_worktree_prune(
+                wt, operation="rm_worktree reset_branch"
+            ) as held:
+                if held is not None:
+                    return {
+                        "ok": False,
+                        "repo": repo,
+                        "branch": branch,
+                        "skipped": True,
+                        "reason": "lane-occupied",
+                        "error": (
+                            f"refused to reset branch {branch!r}: {held}. "
+                            "a lane reset never overrides occupancy."
+                        ),
+                    }
+        ancestor = self._run(
+            f"git merge-base --is-ancestor {shlex.quote(branch)} "
+            f"{shlex.quote(target)}",
+            canonical,
+            quiet=True,
+        )
+        if not self._ok(ancestor):
+            return {
+                "ok": False,
+                "repo": repo,
+                "branch": branch,
+                "target": target,
+                "skipped": True,
+                "reason": "unmerged-commits",
+                "error": (
+                    f"refused to reset {branch!r} to {target!r}: {branch!r} "
+                    f"has commits not reachable from {target!r} - resetting "
+                    "would make them unreachable from any ref this branch "
+                    "still names. Land or explicitly discard them first."
+                ),
+            }
+        target_sha = self._run(
+            f"git rev-parse --verify --quiet {shlex.quote(target)}",
+            canonical,
+            quiet=True,
+        )
+        if not self._ok(target_sha) or not target_sha.data.strip():
+            return {"ok": False, "error": f"target {target!r} is not resolvable"}
+        new_sha = target_sha.data.strip()
+        res = self._run(
+            f"git update-ref refs/heads/{shlex.quote(branch)} {shlex.quote(new_sha)}",
+            canonical,
+        )
+        return {
+            "ok": self._ok(res),
+            "repo": repo,
+            "branch": branch,
+            "target": target,
+            "new_sha": new_sha,
+            "output": res.data,
+        }
 
     def merge(
         self, repo: str, branch: str, into: str = "main", no_ff: bool = True
@@ -322,21 +484,59 @@ class WorktreeManager:
     def sync(
         self, repo: str, branch: str, base: str = "main", strategy: str = "rebase"
     ) -> dict[str, Any]:
-        """Bring a worktree branch up to date with ``base`` (rebase or merge)."""
+        """Bring a worktree branch up to date with ``base`` (rebase or merge).
+
+        D-CDX-29 — **the authoritative ref is the local ``base`` branch, never
+        ``origin/<base>``.** A linked worktree shares its canonical repo's
+        object store and refs (everything except ``HEAD``/index/per-worktree
+        config), so ``refs/heads/<base>`` is visible from the worktree exactly
+        as the merge queue left it — every landing in this workspace advances
+        it with a local, fast-forward-only ``git update-ref``
+        (:func:`repository_manager.merge_queue.land`) and never requires a
+        push. ``origin/<base>`` is a remote-tracking ref that only moves on an
+        explicit push; in this all-local workflow it routinely sits behind
+        local ``base`` by however many landings have not been pushed (proven
+        live: local ``main`` at a merge-queue commit, ``origin/main`` still
+        many commits behind it). Rebasing a lane branch onto that stale ref
+        silently drops every commit that only exists on local ``base`` from
+        the lane's ancestry — the exact "reverts landed work" failure mode
+        this item was opened against. The fetch below stays best-effort (it
+        keeps ``origin/<base>`` itself from drifting further and is harmless
+        if offline); it is never the rebase/merge target.
+        """
         canonical = self.resolve_repo(repo)
         if not canonical:
             return {"ok": False, "error": f"repo not found: {repo}"}
         wt = self.worktree_path(repo, branch)
         if not os.path.isdir(wt):
             return {"ok": False, "error": f"no worktree at {wt}"}
+        # Best-effort only: refreshes the remote-tracking ref for anyone who
+        # later wants it, but is never itself the sync target (see above).
         self._run(f"git fetch origin {shlex.quote(base)}", wt, quiet=True)
+        base_ref = f"refs/heads/{base}"
+        resolved = self._run(
+            f"git rev-parse --verify --quiet {shlex.quote(base_ref)}", wt, quiet=True
+        )
+        if not self._ok(resolved) or not resolved.data.strip():
+            return {
+                "ok": False,
+                "repo": repo,
+                "branch": branch,
+                "error": (
+                    f"authoritative ref {base_ref!r} is not resolvable from "
+                    f"worktree {wt!r} - it must be a linked worktree of "
+                    f"{canonical!r} sharing its refs; refusing to fall back "
+                    "to a possibly-stale origin/<base>"
+                ),
+            }
         op = "merge" if strategy == "merge" else "rebase"
-        res = self._run(f"git {op} origin/{shlex.quote(base)}", wt)
+        res = self._run(f"git {op} {shlex.quote(base_ref)}", wt)
         return {
             "ok": self._ok(res),
             "repo": repo,
             "branch": branch,
             "strategy": op,
+            "base_ref": base_ref,
             "output": res.data,
         }
 

@@ -90,6 +90,7 @@ RM_WORKTREE_ACTIONS = (
     "prune",
     "bulk_add",
     "audit",
+    "reset_branch",
 )
 RM_MERGE_QUEUE_ACTIONS = (
     "enqueue",
@@ -783,6 +784,44 @@ def _resolve_repo_dir(git: Git, spec: str) -> str:
     return flat
 
 
+def _resolve_commit_code_target(path: str) -> tuple[str | None, str | None]:
+    """Resolve an explicit ``path`` to the ONE commit_code target, or an error.
+
+    D-CDX-60 — ``commit_code``'s ``path`` argument used to be spent entirely on
+    constructing the ``Git`` workspace instance (:func:`get_git_instance`); the
+    actual set of repos it committed in came only from ``projects``, which
+    defaults to a full workspace fan-out
+    (``Git.commit_code_projects(project_dirs=None)`` → ``self.project_map``).
+    A caller naming an explicit isolated worktree — with no ``projects``
+    filter — got a false-success job that quietly committed nothing there and
+    fanned out elsewhere instead. This makes an explicit ``path`` (with no
+    ``projects`` override) mean exactly what it says: commit code in this ONE
+    repository/worktree, nothing else.
+
+    Returns ``(resolved_path, None)`` on success or ``(None, error_message)``.
+    Refuses a path outside the configured workspace root or worktree root (no
+    escaping to arbitrary host paths) and a path that is not itself a git
+    repository or linked worktree.
+    """
+    from repository_manager.worktree import WORKTREE_ROOT
+
+    resolved = os.path.abspath(os.path.expanduser(path))
+    roots = [os.path.abspath(DEFAULT_WORKSPACE), WORKTREE_ROOT]
+    if not any(
+        resolved == root or resolved.startswith(root + os.sep) for root in roots
+    ):
+        return None, (
+            f"path {resolved!r} is outside the configured workspace roots "
+            f"({', '.join(roots)}); refusing to commit_code there"
+        )
+    if not os.path.exists(os.path.join(resolved, ".git")):
+        return None, (
+            f"path {resolved!r} is not a git repository or linked worktree "
+            "(no .git present)"
+        )
+    return resolved, None
+
+
 # ---------------------------------------------------------------------------
 # MCP Tool Registration
 # ---------------------------------------------------------------------------
@@ -1103,6 +1142,18 @@ def register_git_operations_tools(mcp: FastMCP):
             if not isinstance(run_precommit, bool):
                 run_precommit = True
             cc_dirs = _resolve_dirs(projects)
+            if cc_dirs is None and path:
+                # D-CDX-60: an explicit path with no 'projects' filter names
+                # exactly one target - never fan out across the discovered
+                # workspace project_map.
+                target, err = _resolve_commit_code_target(path)
+                if err:
+                    return GitResult(
+                        status="error",
+                        data="",
+                        error=GitError(message=err, code=1),
+                    )
+                cc_dirs = [target]
             return _submit_job(
                 "commit_code",
                 git.commit_code_projects,
@@ -1384,6 +1435,17 @@ def register_project_management_tools(mcp: FastMCP):
             default=False,
             description="For 'finish': enqueue despite a blocking preflight check. Recorded in the result.",
         ),
+        env: dict[str, str] | None = Field(
+            default=None,
+            description=(
+                "For 'doctor': the CALLER's own exported environment (at least "
+                "PRE_COMMIT_HOME/CARGO_TARGET_DIR/PYTEST_ADDOPTS). Required for a "
+                "truthful remote check (D-CDX-61) — this server process's own "
+                "environment is not the lane process's, so omitting this "
+                "evaluates the checks against server-internal state that has "
+                "nothing to do with what the caller will actually run with."
+            ),
+        ),
         ctx: Context | None = Field(
             default=None, description="MCP context for progress reporting"
         ),
@@ -1422,12 +1484,13 @@ def register_project_management_tools(mcp: FastMCP):
             branch=branch,
             base=base,
             force=force,
+            env=env,
         )
 
     @mcp.tool(tags={"workspace_management", "project_manager"})
     async def rm_worktree(
         action: str = Field(
-            description="Action: 'add', 'list', 'remove', 'merge', 'sync', 'prune', 'bulk_add', 'audit'."
+            description="Action: 'add', 'list', 'remove', 'merge', 'sync', 'prune', 'bulk_add', 'audit', 'reset_branch'."
         ),
         repo: str | None = Field(
             default=None,
@@ -1440,14 +1503,21 @@ def register_project_management_tools(mcp: FastMCP):
         base: str = Field(
             default="main", description="Base branch to fork from / sync against."
         ),
-        into: str = Field(default="main", description="Target branch for 'merge'."),
+        into: str = Field(
+            default="main",
+            description="Target branch for 'merge', or the reset target for 'reset_branch'.",
+        ),
         adopt: bool = Field(
             default=False,
             description="For 'add': stash the canonical checkout's uncommitted WIP and replay it onto the new branch.",
         ),
         force: bool = Field(
             default=False,
-            description="For 'remove': remove even if the worktree is dirty.",
+            description=(
+                "For 'remove': override git's own dirty-tree refusal once "
+                "lane occupancy has already cleared (never bypasses "
+                "occupancy itself, D-CDX-15)."
+            ),
         ),
         delete_branch: bool = Field(
             default=False, description="For 'remove': also delete the branch."
@@ -1525,6 +1595,8 @@ def register_project_management_tools(mcp: FastMCP):
             )
         if action == "merge":
             return await run_blocking(wm.merge, repo, branch, into=into)
+        if action == "reset_branch":
+            return await run_blocking(wm.reset_branch, repo, branch, target=into)
         if action == "sync":
             return await run_blocking(
                 wm.sync, repo, branch, base=base, strategy=strategy

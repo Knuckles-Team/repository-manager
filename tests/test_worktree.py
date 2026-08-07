@@ -122,6 +122,35 @@ def test_list_reports_linked_worktree(repo):
     assert linked["linked"] is True
 
 
+def test_list_linked_status_is_independent_of_configured_worktree_root(
+    repo, monkeypatch
+):
+    """D-CDX-1: the local CLI and the deployed MCP server run with different
+    ``WORKTREE_ROOT`` values by design. The SAME real linked worktree must
+    report ``linked=True`` regardless of which root this process happens to
+    be configured with — the split-brain was git-truth being overridden by a
+    path-prefix guess tied to one process's own config."""
+    made = repo.wm.add("myrepo", "feat-x")
+    assert os.path.commonpath([made["path"], wt_mod.WORKTREE_ROOT]) == os.path.abspath(
+        wt_mod.WORKTREE_ROOT
+    )
+
+    # point WORKTREE_ROOT somewhere totally unrelated to where the worktree
+    # actually lives (simulating the other surface's differently configured
+    # root) — `linked` must still be computed correctly from git itself.
+    monkeypatch.setattr(wt_mod, "WORKTREE_ROOT", "/nonexistent/other-root")
+    listing = repo.wm.list_worktrees("myrepo")
+    linked = [w for w in listing["worktrees"] if w["branch"] == "feat-x"][0]
+    assert linked["linked"] is True
+
+    # and the canonical checkout itself must never be reported as linked,
+    # regardless of WORKTREE_ROOT either.
+    canonical_entry = [
+        w for w in listing["worktrees"] if os.path.abspath(w["path"]) == repo.path
+    ][0]
+    assert canonical_entry["linked"] is False
+
+
 def test_merge_back_to_main(repo):
     res = repo.wm.add("myrepo", "feat-x")
     (os.path.join(res["path"], "feature.txt"))
@@ -699,3 +728,166 @@ def test_delete_removes_only_the_anchor_it_created_when_git_refuses(repo):
     assert deleted is False
     # no anchor existed before, so none is left behind
     assert _ref(repo.path, "refs/lane-backup/feat-held2") == ""
+
+
+# ---------------------------------------------------------------------------
+# D-CDX-29 — sync() must rebase/merge onto the AUTHORITATIVE local base, never
+# a possibly-stale `origin/<base>` remote-tracking ref. Proven both ways: the
+# OLD behavior (rebase onto origin/<base>) silently drops a commit that only
+# exists on local main; the NEW behavior (rebase onto the local branch ref,
+# shared via the linked worktree's git dir) keeps it.
+# ---------------------------------------------------------------------------
+
+
+def _add_origin_with_stale_main(repo_path, tmp_root):
+    """Give ``repo_path`` a real ``origin`` remote, then advance LOCAL main
+    only — reproducing this workspace's actual state (local main ahead of a
+    never-pushed origin/main) inside a disposable fixture repo."""
+    bare = os.path.join(tmp_root, "origin.git")
+    _run(f"git clone --bare {repo_path} {bare}", tmp_root)
+    _run(f"git remote add origin {bare}", repo_path)
+    _run("git fetch origin", repo_path)
+    # advance LOCAL main only - never pushed, exactly like a merge-queue
+    # landing in this workspace's all-local fast-forward model.
+    _commit_in(repo_path, "landed.txt", "landed-only-on-local-main")
+    landed_sha = _ref(repo_path, "refs/heads/main")
+    origin_sha = _ref(repo_path, "refs/remotes/origin/main")
+    assert landed_sha != origin_sha, "fixture must reproduce local-ahead-of-origin"
+    return landed_sha
+
+
+def test_sync_rebases_onto_local_main_not_stale_origin_main(repo, tmp_path):
+    """NEW behavior: local main is authoritative. A lane branch forked BEFORE
+    the landing must pick it up on sync, even though origin/main never saw it."""
+    made = repo.wm.add("myrepo", "feat-sync")
+    landed_sha = _add_origin_with_stale_main(repo.path, str(tmp_path))
+
+    result = repo.wm.sync("myrepo", "feat-sync")
+    assert result["ok"], result
+    assert result["base_ref"] == "refs/heads/main"
+
+    log = subprocess.run(
+        "git log --format=%H", shell=True, cwd=made["path"],
+        capture_output=True, text=True,
+    ).stdout
+    assert landed_sha in log.splitlines(), (
+        "sync() must carry forward a commit that only exists on local main"
+    )
+
+
+def test_old_stale_origin_rebase_would_have_dropped_the_landed_commit(repo, tmp_path):
+    """Same fixture, but re-run literally what the OLD code did (rebase onto
+    origin/<base> after a best-effort fetch) to prove the failure this item
+    was opened against was real, not hypothetical."""
+    made = repo.wm.add("myrepo", "feat-sync-old")
+    landed_sha = _add_origin_with_stale_main(repo.path, str(tmp_path))
+
+    # the exact OLD implementation: fetch, then rebase onto origin/<base>.
+    _run("git fetch origin main", made["path"])
+    old_rebase = subprocess.run(
+        "git rebase origin/main", shell=True, cwd=made["path"],
+        capture_output=True, text=True,
+    )
+    assert old_rebase.returncode == 0, old_rebase.stdout + old_rebase.stderr
+
+    log = subprocess.run(
+        "git log --format=%H", shell=True, cwd=made["path"],
+        capture_output=True, text=True,
+    ).stdout
+    assert landed_sha not in log.splitlines(), (
+        "this reproduces the defect: the OLD rebase-onto-origin/main target "
+        "silently drops a commit that only ever landed on local main"
+    )
+
+
+def test_sync_refuses_when_base_ref_is_not_resolvable_from_the_worktree(repo):
+    """A worktree that is not genuinely linked to the canonical repo (refs not
+    shared) must be refused rather than silently falling back to origin."""
+    made = repo.wm.add("myrepo", "feat-detached")
+    # simulate a broken/unlinked worktree: delete the local base ref entirely
+    # is not realistic for a linked worktree (refs are shared), so instead
+    # assert the refusal path by asking for a base that never existed.
+    result = repo.wm.sync("myrepo", "feat-detached", base="no-such-base")
+    assert result["ok"] is False
+    assert "not resolvable" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# D-CDX-15 — no destructive worktree/branch mutation may bypass lane
+# occupancy detection, even with force=True. Two primitives:
+# `remove()` (hardened) and `reset_branch()` (new, the sanctioned way to move
+# a lane branch's tip).
+# ---------------------------------------------------------------------------
+
+
+def test_remove_refuses_an_occupied_worktree_even_with_force(repo):
+    """The exact D-CDX-15 shape: a lane just committed (so the worktree is
+    clean) and holds a live lease - `force=True` must not bypass it."""
+    lanes = pytest.importorskip("agent_utilities.governance.lanes")
+    made = repo.wm.add("myrepo", "rm-buildbroker-0802")
+    _commit_in(made["path"], "wip.txt", "fresh-wip-commit")
+
+    with lanes.hold_lease(
+        "build-broker-job", operation="running build", path=made["path"]
+    ):
+        result = repo.wm.remove("myrepo", "rm-buildbroker-0802", force=True)
+
+    assert result["ok"] is False
+    assert result["reason"] == "lane-occupied"
+    assert os.path.isdir(made["path"]), "occupied worktree must survive"
+    assert "rm-buildbroker-0802" in _branches(repo.path)
+
+
+def test_remove_still_works_on_a_genuinely_abandoned_worktree(repo):
+    """The guard must not become a universal refusal - an unoccupied worktree
+    with no lease and no uncommitted work removes exactly as before."""
+    made = repo.wm.add("myrepo", "feat-abandoned")
+    result = repo.wm.remove("myrepo", "feat-abandoned", force=True)
+    assert result["ok"] is True
+    assert not os.path.isdir(made["path"])
+
+
+def test_reset_branch_refuses_an_occupied_worktree_with_unmerged_commits(repo):
+    """The literal acceptance criterion: an occupied worktree with unmerged
+    commits is refused rather than reset."""
+    lanes = pytest.importorskip("agent_utilities.governance.lanes")
+    made = repo.wm.add("myrepo", "rm-buildbroker-0802")
+    _commit_in(made["path"], "wip.txt", "five-wip-commits")
+    tip_before = _ref(repo.path, "refs/heads/rm-buildbroker-0802")
+
+    with lanes.hold_lease(
+        "build-broker-job", operation="running build", path=made["path"]
+    ):
+        result = repo.wm.reset_branch("myrepo", "rm-buildbroker-0802", target="main")
+
+    assert result["ok"] is False
+    assert result["reason"] == "lane-occupied"
+    assert _ref(repo.path, "refs/heads/rm-buildbroker-0802") == tip_before
+
+
+def test_reset_branch_refuses_unmerged_commits_even_when_unoccupied(repo):
+    """Occupancy is only half the picture: even with no live lease, resetting
+    a branch that carries commits not reachable from the target would make
+    them unreachable from any ref this branch still names - refused."""
+    made = repo.wm.add("myrepo", "feat-unmerged-reset")
+    _commit_in(made["path"], "wip.txt", "unlanded-work")
+    tip_before = _ref(repo.path, "refs/heads/feat-unmerged-reset")
+
+    result = repo.wm.reset_branch("myrepo", "feat-unmerged-reset", target="main")
+
+    assert result["ok"] is False
+    assert result["reason"] == "unmerged-commits"
+    assert _ref(repo.path, "refs/heads/feat-unmerged-reset") == tip_before
+
+
+def test_reset_branch_succeeds_when_branch_is_already_an_ancestor_of_target(repo):
+    """The safe case: a branch with nothing unlanded (already merged or never
+    diverged) can be reset without friction."""
+    _merged_worktree(repo.wm, "feat-safe-reset")
+    main_tip = _ref(repo.path, "refs/heads/main")
+
+    result = repo.wm.reset_branch("myrepo", "feat-safe-reset", target="main")
+
+    assert result["ok"] is True
+    assert result["new_sha"] == main_tip
+    assert _ref(repo.path, "refs/heads/feat-safe-reset") == main_tip

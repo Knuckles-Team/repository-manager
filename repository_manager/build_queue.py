@@ -67,6 +67,8 @@ from typing import Any
 import yaml
 from agent_utilities.governance.lanes import (
     LaneArbitrationError,
+    LeaseUnavailable,
+    hold_lease,
     lane_scope,
 )
 
@@ -458,8 +460,21 @@ def request(
             "built_at": manifest.get("built_at"),
         }
 
-    existing = tq.find_task("build", digest, path=scope.tree)
-    if existing and existing.state == tq.RUNNING:
+    # D-CDX-13 — the check ("is a build for this key already running?") and
+    # the enqueue ("mark one running") used to be two separate, unlocked
+    # steps: read `find_task` here, then (only inside `_build()`, further
+    # down the call) `enqueue_task` + `record_state(RUNNING)`. Two same-key
+    # callers could both observe "nothing running" before either one
+    # appended its RUNNING record, both fall through, and both build and
+    # publish — the exact duplicate-build/disk-waste event this cache exists
+    # to prevent, with no test proving the barrier held under concurrency.
+    # `_claim_build_task` makes the check-then-claim ATOMIC under a short,
+    # key-scoped exclusive lease — held only for that instant, never for the
+    # build's duration, so it never contends with the separate POOL-capacity
+    # "build" execution class that still serializes the actual heavy compute
+    # step below.
+    claim = _claim_build_task(digest, spec, key, path=scope.tree)
+    if not claim.is_new:
         waited = _wait_for_task(digest, scope.tree, timeout=wait_timeout)
         if waited:
             manifest = _read_manifest(digest, scope.tree)
@@ -475,14 +490,113 @@ def request(
                     "built_at": manifest.get("built_at"),
                 }
         # The in-flight build finished without producing a valid manifest
-        # (it failed) or never finished within wait_timeout — fall through
-        # and try building ourselves rather than getting stuck.
+        # (it failed) or never finished within wait_timeout. Try to claim it
+        # ourselves now (atomically, same as above) rather than getting stuck
+        # OR blindly re-building without re-checking for a fresher claim.
+        claim = _claim_build_task(digest, spec, key, path=scope.tree)
+        if not claim.is_new:
+            # Someone else claimed it again in the interim — one more wait,
+            # then give up cleanly rather than looping forever.
+            waited = _wait_for_task(digest, scope.tree, timeout=wait_timeout)
+            manifest = _read_manifest(digest, scope.tree) if waited else None
+            if manifest and _manifest_is_valid(manifest, scope.tree):
+                return {
+                    "ok": True,
+                    "cached": True,
+                    "degraded": False,
+                    "waited": True,
+                    "key": digest,
+                    "components": key.components(),
+                    "artifacts": manifest["artifacts"],
+                    "built_at": manifest.get("built_at"),
+                }
+            raise BuildQueueError(
+                f"build {digest!r} did not complete after two wait cycles "
+                f"({wait_timeout}s each) and this caller could not claim it"
+            )
 
     result = _build(
-        scope.tree, spec, key, cache_digest=digest, colocated=colocated, owner=owner
+        scope.tree,
+        spec,
+        key,
+        cache_digest=digest,
+        colocated=colocated,
+        owner=owner,
+        task=claim.task,
     )
     result["degraded"] = False
     return result
+
+
+@dataclass(frozen=True)
+class _BuildClaim:
+    """Outcome of :func:`_claim_build_task`."""
+
+    #: True iff THIS caller now owns the RUNNING task record and must build.
+    is_new: bool
+    task: tq.Task | None
+
+
+def _claim_build_task(
+    digest: str, spec: BuildSpec, key: CacheKey, *, path: Path
+) -> _BuildClaim:
+    """Atomically decide who builds key *digest* — the fix for D-CDX-13.
+
+    Holds a short-lived, KEY-SCOPED exclusive lease (``build-claim-<digest>``,
+    distinct from the POOL-capacity ``"build"`` execution class) around the
+    read-then-append transition: re-check for an already-RUNNING task for
+    this exact digest, and if none exists, enqueue + mark RUNNING before
+    releasing the lease — so a second caller for the SAME key can only ever
+    observe one of "already running" (never appends its own) or "I'm the
+    claimant" (appended exactly once), never the gap between them.
+
+    Honesty note (the hard constraint on this fix): the lease is an
+    ``fcntl.flock`` in this workspace's shared arbitration directory. It
+    arbitrates callers ON THIS HOST that go through :func:`request` — same
+    scope as every other lease in this module and in :mod:`task_queue`. It
+    gives no guarantee against a build-broker request issued from a
+    different host, or any process that appends a ``"build"`` task record
+    directly without going through this function.
+    """
+    lease_name = f"build-claim-{digest}"
+    try:
+        with hold_lease(
+            lease_name, operation=f"claim build {key.repo}:{spec.name}", ttl_seconds=30,
+            path=path,
+        ):
+            existing = tq.find_task("build", digest, path=path)
+            if existing and existing.state == tq.RUNNING:
+                return _BuildClaim(is_new=False, task=None)
+            task = tq.enqueue_task(
+                digest,
+                "build",
+                repo=key.repo,
+                payload={"spec": spec.name, "components": key.components()},
+                path=path,
+            )
+            task = tq.record_state(task, tq.RUNNING, "", path=path)
+            return _BuildClaim(is_new=True, task=task)
+    except LeaseUnavailable:
+        # Another request is mid-claim for this EXACT key right now. It will
+        # have appended its RUNNING record within a few filesystem ops (not
+        # the build itself), so wait to actually OBSERVE it rather than
+        # assuming it is already there: `_wait_for_task` treats "no task
+        # record found" as "done waiting" (a legitimate fast-exit for a task
+        # that genuinely finished), so returning immediately here — before
+        # the winner has actually written anything — made the very next
+        # `find_task` see nothing, exit the wait instantly, and give up
+        # without ever observing the real build.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            existing = tq.find_task("build", digest, path=path)
+            if existing is not None:
+                return _BuildClaim(is_new=False, task=None)
+            time.sleep(0.05)
+        # The winner should have written its record in well under 2s (a
+        # lease + two FragmentStore appends); if it somehow has not, treat
+        # this the same as any other "nothing running" observation and let
+        # the caller's own claim attempt decide.
+        return _BuildClaim(is_new=False, task=None)
 
 
 def _wait_for_task(task_id: str, path: Path | str, *, timeout: int) -> bool:
@@ -503,16 +617,25 @@ def _build(
     cache_digest: str | None,
     colocated: bool,
     owner: dict[str, Any] | None,
+    task: tq.Task | None = None,
 ) -> dict[str, Any]:
-    task_id = cache_digest or f"degraded-{spec.name}-{_now()}"
-    task = tq.enqueue_task(
-        task_id,
-        "build",
-        repo=key.repo,
-        payload={"spec": spec.name, "components": key.components()},
-        path=tree,
-    )
-    task = tq.record_state(task, tq.RUNNING, "", path=tree)
+    """Run the build and publish artifacts. ``task`` is the RUNNING record —
+    when the caller already claimed it via :func:`_claim_build_task` (the
+    cacheable path), it is passed in and reused as-is so this function never
+    appends a second, redundant task record for the same key (D-CDX-13).
+    The degraded (uncacheable) path has no key to claim against and still
+    enqueues its own task here, exactly as before.
+    """
+    if task is None:
+        task_id = cache_digest or f"degraded-{spec.name}-{_now()}"
+        task = tq.enqueue_task(
+            task_id,
+            "build",
+            repo=key.repo,
+            payload={"spec": spec.name, "components": key.components()},
+            path=tree,
+        )
+        task = tq.record_state(task, tq.RUNNING, "", path=tree)
     started = time.monotonic()
     try:
         with tq.acquire(

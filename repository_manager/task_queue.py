@@ -99,13 +99,16 @@ to be enforced.
 
 from __future__ import annotations
 
+import fcntl
+import inspect
 import json
 import os
+import re
 import socket
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -120,7 +123,10 @@ from agent_utilities.governance.lanes import (
     lane_scope,
     lease_status,
     partitioned_paths,
+    workspace_arbitration_dir,
 )
+
+_LEASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 class TaskQueueError(LaneArbitrationError):
@@ -456,6 +462,178 @@ def _lease_name_for(
     return base if slot is None else f"{base}-slot-{slot}"
 
 
+#: D-CDX-14 lands as two independently merged changes across two
+#: repositories: agent-utilities' ``hold_lease`` gains an ``owner`` kwarg,
+#: and this module starts passing it. Detect support once rather than
+#: hard-depending on merge order — an older ``agent-utilities`` still works,
+#: it just does not persist ``owner`` into the lease record yet.
+_HOLD_LEASE_ACCEPTS_OWNER = "owner" in inspect.signature(hold_lease).parameters
+
+
+def _hold_repo_lease(
+    lease_name: str,
+    *,
+    operation: str,
+    ttl_seconds: int,
+    path: Path,
+    owner: dict[str, Any] | None,
+):
+    if _HOLD_LEASE_ACCEPTS_OWNER:
+        return hold_lease(
+            lease_name, operation=operation, ttl_seconds=ttl_seconds, path=path,
+            owner=owner,
+        )
+    return hold_lease(lease_name, operation=operation, ttl_seconds=ttl_seconds, path=path)
+
+
+def _global_lease_dir() -> Path:
+    """Host-wide lease directory for GLOBAL-scope execution classes (D-CDX-12).
+
+    ``ExecutionClass(scope=Scope.GLOBAL)`` declares a resource contended by
+    every worktree of every repository on the host (the shared dependency
+    cache, in the ``"uv-sync"`` case) — but
+    ``agent_utilities.governance.lanes.hold_lease(path=...)`` only escapes its
+    default PER-REPOSITORY lease directory (``lane_scope(path).arbitration_dir``,
+    that repo's own ``--git-common-dir``) for a lease NAME registered
+    ``scope: workspace`` in that package's ``lane_resources.yaml``. This
+    ledger's GLOBAL lease names are generated dynamically
+    (``global-<class>``, ``global-<class>-slot-<N>`` — see
+    :func:`_lease_name_for`) and were never registered there, so every
+    ``acquire()`` call for a GLOBAL class silently fell through to the
+    repo-scoped branch: two ``uv-sync`` acquisitions in two DIFFERENT
+    repositories got two DIFFERENT lease files under two different
+    ``--git-common-dir``s and could both hold "slot 0" of the SAME declared
+    host-wide pool at once — the exact concurrent-``uv-sync`` event (D-W2T-3)
+    this class exists to prevent, with no cross-repository regression test
+    proving the barrier actually held.
+
+    Rather than hand-registering one YAML row per dynamically generated name
+    (silently wrong again the next time ``pool_size`` changes or a new
+    GLOBAL class is declared), GLOBAL leases are stored directly under
+    agent-utilities' own host-wide arbitration root
+    (:func:`agent_utilities.governance.lanes.workspace_arbitration_dir`) — the
+    SAME directory the ``dependency-lock`` resource (a genuinely
+    ``scope: workspace`` row) already uses — bypassing the name-classification
+    lookup entirely for this always-host-wide case.
+    """
+    path = workspace_arbitration_dir() / "leases"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _global_holder_alive(holder: dict[str, Any]) -> bool:
+    """Same liveness rule as ``agent_utilities.governance.lanes._holder_is_live``
+    (unexpired, and — for a same-host holder — its process still running);
+    duplicated locally because that check is private to a module whose
+    directory-selection logic this function deliberately bypasses.
+    """
+    expires = holder.get("expires_at")
+    if expires:
+        try:
+            if datetime.fromisoformat(str(expires)) < datetime.now(UTC):
+                return False
+        except ValueError:
+            return False
+    if holder.get("host") != socket.gethostname():
+        # A different host: expiry is the only evidence available, and it
+        # says live. (Same honesty limit as every lease in this ecosystem —
+        # see the module docstring's "Co-location is not optional" section.)
+        return True
+    pid = holder.get("pid")
+    if not isinstance(pid, int):
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+@contextmanager
+def _hold_global_lease(
+    name: str, *, operation: str, ttl_seconds: int, owner: dict[str, Any] | None = None
+) -> Iterator[dict[str, Any]]:
+    """Same holder/expiry/reclaim contract as ``lanes.hold_lease`` — raise
+    :class:`LeaseUnavailable` rather than block; a dead holder's lease is
+    reclaimed automatically — but stored unconditionally under
+    :func:`_global_lease_dir`, independent of the caller's own repository
+    (D-CDX-12). Threads ``owner`` (D-CDX-14) into the record exactly like
+    ``lanes.hold_lease`` does.
+    """
+    lease_file = _global_lease_dir() / f"{_LEASE_SAFE_RE.sub('-', name)}.lease"
+    mutex_file = lease_file.with_suffix(".mutex")
+    now = datetime.now(UTC)
+    record: dict[str, Any] = {
+        "name": name,
+        "operation": operation,
+        "pid": os.getpid(),
+        "host": socket.gethostname(),
+        "acquired_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=ttl_seconds)).isoformat(),
+    }
+    if owner:
+        record["owner"] = dict(owner)
+    fd = os.open(str(mutex_file), os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            if lease_file.exists():
+                holder = json.loads(lease_file.read_text(encoding="utf-8"))
+                if _global_holder_alive(holder):
+                    raise LeaseUnavailable(name, holder)
+            lease_file.write_text(
+                json.dumps(record, indent=2) + "\n", encoding="utf-8"
+            )
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+    try:
+        yield record
+    finally:
+        fd = os.open(str(mutex_file), os.O_CREAT | os.O_WRONLY, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                if lease_file.exists():
+                    current = json.loads(lease_file.read_text(encoding="utf-8"))
+                    if (
+                        current.get("pid") == record["pid"]
+                        and current.get("acquired_at") == record["acquired_at"]
+                    ):
+                        lease_file.unlink()
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _global_lease_status(name: str) -> dict[str, Any] | None:
+    """Read-side counterpart to :func:`_hold_global_lease` — the live holder
+    of a GLOBAL-scope lease, or ``None`` when free. Mirrors
+    ``lanes.lease_status`` but reads from :func:`_global_lease_dir`.
+    """
+    lease_file = _global_lease_dir() / f"{_LEASE_SAFE_RE.sub('-', name)}.lease"
+    mutex_file = lease_file.with_suffix(".mutex")
+    fd = os.open(str(mutex_file), os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            if not lease_file.exists():
+                return None
+            holder = json.loads(lease_file.read_text(encoding="utf-8"))
+            if _global_holder_alive(holder):
+                return holder
+            lease_file.unlink()
+            return None
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
 @contextmanager
 def acquire(
     name: str,
@@ -517,11 +695,25 @@ def acquire(
             "same-node arbiter because it is pinned there."
         )
 
+    # GLOBAL-scope leases route through this ledger's own host-wide storage
+    # (D-CDX-12) instead of `lanes.hold_lease`'s per-repository default,
+    # which only escapes to the host-wide root for a NAME registered
+    # `scope: workspace` in agent-utilities' own lane_resources.yaml — a
+    # registry this ledger's dynamically-generated GLOBAL names never
+    # satisfy. See :func:`_global_lease_dir` for the full incident.
+    is_global = execution_class.scope == Scope.GLOBAL
+
     if execution_class.policy == Policy.EXCLUSIVE:
         lease_name = _lease_name_for(execution_class, scope, None)
-        with hold_lease(
-            lease_name, operation=operation, ttl_seconds=ttl, path=scope.tree
-        ) as record:
+        cm = (
+            _hold_global_lease(lease_name, operation=operation, ttl_seconds=ttl, owner=owner)
+            if is_global
+            else _hold_repo_lease(
+                lease_name, operation=operation, ttl_seconds=ttl, path=scope.tree,
+                owner=owner,
+            )
+        )
+        with cm as record:
             yield Reservation(
                 execution_class=name,
                 scope=execution_class.scope,
@@ -539,9 +731,17 @@ def acquire(
     for slot in range(execution_class.pool_size):
         lease_name = _lease_name_for(execution_class, scope, slot)
         try:
-            with hold_lease(
-                lease_name, operation=operation, ttl_seconds=ttl, path=scope.tree
-            ) as record:
+            cm = (
+                _hold_global_lease(
+                    lease_name, operation=operation, ttl_seconds=ttl, owner=owner
+                )
+                if is_global
+                else _hold_repo_lease(
+                    lease_name, operation=operation, ttl_seconds=ttl, path=scope.tree,
+                    owner=owner,
+                )
+            )
+            with cm as record:
                 yield Reservation(
                     execution_class=name,
                     scope=execution_class.scope,
@@ -568,6 +768,7 @@ def class_status(name: str, path: Path | str | None = None) -> dict[str, Any]:
     """
     execution_class = _resolve_class(name)
     scope = lane_scope(path)
+    is_global = execution_class.scope == Scope.GLOBAL
     if execution_class.policy == Policy.PARTITION:
         return {
             "class": name,
@@ -576,13 +777,23 @@ def class_status(name: str, path: Path | str | None = None) -> dict[str, Any]:
         }
     if execution_class.policy == Policy.EXCLUSIVE:
         lease_name = _lease_name_for(execution_class, scope, None)
+        holder = (
+            _global_lease_status(lease_name)
+            if is_global
+            else lease_status(lease_name, scope.tree)
+        )
         return {
             "class": name,
             "policy": execution_class.policy.value,
-            "holder": lease_status(lease_name, scope.tree),
+            "holder": holder,
         }
     slots = []
     for slot in range(execution_class.pool_size):
         lease_name = _lease_name_for(execution_class, scope, slot)
-        slots.append({"slot": slot, "holder": lease_status(lease_name, scope.tree)})
+        holder = (
+            _global_lease_status(lease_name)
+            if is_global
+            else lease_status(lease_name, scope.tree)
+        )
+        slots.append({"slot": slot, "holder": holder})
     return {"class": name, "policy": execution_class.policy.value, "slots": slots}

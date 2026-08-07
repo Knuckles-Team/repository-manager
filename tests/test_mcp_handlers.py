@@ -1127,3 +1127,67 @@ def test_resolve_repo_dir_honors_nested_workspace_layout(tmp_path):
     assert _resolve_repo_dir(git, "flatrepo") == str(ws / "flatrepo")
     # unknown name -> flat-join fallback (prior error surface preserved)
     assert _resolve_repo_dir(git, "ghost") == str(ws / "ghost")
+
+
+def test_resolve_commit_code_target_names_exactly_one_repo_or_worktree(
+    tmp_path, monkeypatch
+):
+    """D-CDX-60: an explicit commit_code ``path`` must resolve to exactly one
+    validated target - never silently expand to a workspace-wide fan-out, and
+    never accept a path outside the configured roots or a non-git directory.
+    """
+    import importlib
+
+    from repository_manager import worktree as wt_mod
+
+    # NOT `import repository_manager.mcp_server as X`: the package's
+    # __getattr__ (repository_manager/__init__.py's _expose_members) can
+    # clobber the `mcp_server` SUBMODULE name in the package namespace with
+    # the `mcp_server` FUNCTION mcp_server.py also defines (same name,
+    # exposed as a console-script entry point) once __getattr__ has fired at
+    # all in this process (e.g. after test_init_dynamics.py reloads the
+    # package) - a pre-existing name collision, unrelated to D-CDX-60, that
+    # `import ... as` resolves via attribute-walk and can silently hit.
+    # importlib.import_module() always resolves through sys.modules, never
+    # through that attribute walk.
+    rm_mcp_server_mod = importlib.import_module("repository_manager.mcp_server")
+
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    worktree_root = tmp_path / "worktrees"
+    worktree_root.mkdir()
+    monkeypatch.setattr(rm_mcp_server_mod, "DEFAULT_WORKSPACE", str(ws))
+    monkeypatch.setattr(wt_mod, "WORKTREE_ROOT", str(worktree_root))
+
+    # a real linked-worktree shape: .git is a FILE, not a directory, and it
+    # lives under the configured worktree root.
+    isolated = worktree_root / "agent-utilities" / "codex__timeseries-boundary"
+    isolated.mkdir(parents=True)
+    (isolated / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
+
+    resolved, err = rm_mcp_server_mod._resolve_commit_code_target(str(isolated))
+    assert err is None
+    assert resolved == str(isolated.resolve())
+
+    # a repo under the configured workspace root also resolves.
+    in_ws = ws / "some-repo"
+    in_ws.mkdir()
+    (in_ws / ".git").mkdir()
+    resolved2, err2 = rm_mcp_server_mod._resolve_commit_code_target(str(in_ws))
+    assert err2 is None
+    assert resolved2 == str(in_ws.resolve())
+
+    # outside both configured roots -> refused, never silently accepted.
+    outside = tmp_path / "outside" / "not-configured"
+    outside.mkdir(parents=True)
+    (outside / ".git").mkdir()
+    resolved3, err3 = rm_mcp_server_mod._resolve_commit_code_target(str(outside))
+    assert resolved3 is None
+    assert "outside the configured workspace roots" in err3
+
+    # inside a configured root but not a git repo -> refused.
+    not_git = ws / "not-a-repo"
+    not_git.mkdir()
+    resolved4, err4 = rm_mcp_server_mod._resolve_commit_code_target(str(not_git))
+    assert resolved4 is None
+    assert "not a git repository" in err4

@@ -155,6 +155,65 @@ def test_second_identical_request_is_served_from_cache_without_rebuilding(
     assert Path(artifact["stored_at"]).read_text().strip() == "payload"
 
 
+def test_two_concurrent_same_key_requests_build_exactly_once(tmp_path: Path):
+    """D-CDX-13: the check-then-enqueue race, reproduced with two REAL threads.
+
+    Before the fix, `request()` read `find_task` unlocked, and only
+    `_build()` (further down the SAME call) appended the RUNNING task record
+    — so two same-key callers could both observe "nothing running" before
+    either one appended, both build, and both publish. A slow build command
+    widens that window to make the race deterministic rather than a coin
+    flip; the counter file proves how many times the command actually ran.
+    """
+    import threading
+
+    counter = tmp_path / "counter.txt"
+    root = _init_repo(tmp_path / "repo")
+    (root / "src.txt").write_text("v1\n")
+    (root / bq.CONFIG_FILENAME).write_text(
+        textwrap.dedent(
+            f"""
+            base: main
+            specs:
+              - name: widget
+                command: ["bash", "-c", "sleep 0.5; echo built >> {counter}; echo payload > out.txt"]
+                workdir: "."
+                cache_key_paths: ["src.txt"]
+                artifacts: ["out.txt"]
+                timeout: 30
+            """
+        )
+    )
+    _commit(root)
+
+    results: list[dict] = []
+    barrier = threading.Barrier(2)
+
+    def _caller() -> None:
+        barrier.wait(timeout=5)  # maximize the odds both hit the check together
+        results.append(bq.request(repo_path=root, spec_name="widget", colocated=True))
+
+    threads = [threading.Thread(target=_caller) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+        assert not t.is_alive(), "a build request thread hung"
+
+    assert len(results) == 2
+    assert all(r["ok"] for r in results), results
+    assert len({r["key"] for r in results}) == 1, "both requests computed the same key"
+    lines = counter.read_text().splitlines() if counter.exists() else []
+    assert len(lines) == 1, (
+        f"the build command must have run exactly once, ran {len(lines)} times: {results}"
+    )
+    # exactly one caller actually built it; the other reused/waited for it.
+    assert sum(1 for r in results if r["cached"] is False) == 1
+    for r in results:
+        assert r["artifacts"], r
+        assert Path(r["artifacts"][0]["stored_at"]).read_text().strip() == "payload"
+
+
 def test_a_changed_tree_busts_the_cache_and_rebuilds(repo: Path, counter: Path):
     first = bq.request(repo_path=repo, spec_name="widget", colocated=True)
     (repo / "src.txt").write_text("v2\n")
