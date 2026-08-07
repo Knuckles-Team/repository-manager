@@ -170,8 +170,10 @@ def test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate(tmp_path: Path) -
     _branch_with(
         repo,
         "feat/broken",
-        {"src/other.rs": "pub fn broken() -> i32 { \"not an int\" }\n",
-         "src/lib.rs": "pub mod other;\npub fn one() -> i32 { 1 }\n"},
+        {
+            "src/other.rs": 'pub fn broken() -> i32 { "not an int" }\n',
+            "src/lib.rs": "pub mod other;\npub fn one() -> i32 { 1 }\n",
+        },
         "add a type error",
     )
 
@@ -259,13 +261,17 @@ def test_the_cargo_gate_is_differential_not_absolute(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Behaviour 1 — differential gating, and its FAIL-CLOSED half
 # ---------------------------------------------------------------------------
-def test_a_new_violation_blocks_and_a_pre_existing_one_does_not(shell_repo: Path) -> None:
+def test_a_new_violation_blocks_and_a_pre_existing_one_does_not(
+    shell_repo: Path,
+) -> None:
     repo = shell_repo
     (repo / "already_bad.txt").write_text("BROKEN on main\n")
     _commit(repo, "main is legitimately red")
 
     _branch_with(repo, "feat/innocent", {"new.txt": "all fine\n"}, "touch nothing bad")
-    _branch_with(repo, "feat/guilty", {"guilty.txt": "BROKEN here\n"}, "add a violation")
+    _branch_with(
+        repo, "feat/guilty", {"guilty.txt": "BROKEN here\n"}, "add a violation"
+    )
 
     git = FakeGit(str(repo.parent), {"x": str(repo)})
     mq.enqueue("feat/innocent", path=repo)
@@ -362,15 +368,21 @@ def test_a_terminal_record_from_another_lane_supersedes_the_queued_one(
     store = mq.queue_store(shell_repo)
     store.append(
         mq.Candidate(
-            branch="feat/x", lane="lane-foo", enqueued_at="2026-08-01T10:00:00+00:00",
-            state=mq.QUEUED, recorded_at="2026-08-01T10:00:00+00:00",
+            branch="feat/x",
+            lane="lane-foo",
+            enqueued_at="2026-08-01T10:00:00+00:00",
+            state=mq.QUEUED,
+            recorded_at="2026-08-01T10:00:00+00:00",
         ).to_record(),
         lane="lane-foo",
     )
     store.append(
         mq.Candidate(
-            branch="feat/x", lane="lane-foo", enqueued_at="2026-08-01T10:00:00+00:00",
-            state=mq.LANDED, recorded_at="2026-08-01T11:00:00+00:00",
+            branch="feat/x",
+            lane="lane-foo",
+            enqueued_at="2026-08-01T10:00:00+00:00",
+            state=mq.LANDED,
+            recorded_at="2026-08-01T11:00:00+00:00",
         ).to_record(),
         lane="canonical",  # sorts BEFORE "lane-foo"
     )
@@ -381,14 +393,26 @@ def test_a_terminal_record_from_another_lane_supersedes_the_queued_one(
     # And the raw fold-order default would have got it wrong — pin the bug itself
     # so this test cannot pass against the defect it claims to catch.
     group = [
-        {"id": "feat/x", "state": mq.LANDED, "recorded_at": "2026-08-01T11:00:00+00:00"},
-        {"id": "feat/x", "state": mq.QUEUED, "recorded_at": "2026-08-01T10:00:00+00:00"},
+        {
+            "id": "feat/x",
+            "state": mq.LANDED,
+            "recorded_at": "2026-08-01T11:00:00+00:00",
+        },
+        {
+            "id": "feat/x",
+            "state": mq.QUEUED,
+            "recorded_at": "2026-08-01T10:00:00+00:00",
+        },
     ]  # canonical's record first, exactly as sorted-lane iteration would yield
-    assert group[-1]["state"] == mq.QUEUED, "precondition: naive group[-1] is the stale one"
+    assert group[-1]["state"] == mq.QUEUED, (
+        "precondition: naive group[-1] is the stale one"
+    )
     assert mq._resolve_latest_candidate_record(group)["state"] == mq.LANDED
 
 
-def test_records_with_no_recorded_at_degrade_instead_of_crashing(shell_repo: Path) -> None:
+def test_records_with_no_recorded_at_degrade_instead_of_crashing(
+    shell_repo: Path,
+) -> None:
     group = [{"id": "a", "state": mq.QUEUED}, {"id": "a", "state": mq.LANDED}]
     assert mq._resolve_latest_candidate_record(group)["state"] == mq.LANDED
 
@@ -426,8 +450,12 @@ def test_a_conflict_confined_to_generated_files_is_regenerated_not_rejected(
 
     # Two branches each add a source file AND their own stale regeneration of the
     # derived index — a textbook add/add conflict on a purely-derived file.
-    _branch_with(repo, "feat/b", {"src/b.txt": "b\n", "INDEX.md": "a.txt\nb.txt\n"}, "add b")
-    _branch_with(repo, "feat/c", {"src/c.txt": "c\n", "INDEX.md": "a.txt\nc.txt\n"}, "add c")
+    _branch_with(
+        repo, "feat/b", {"src/b.txt": "b\n", "INDEX.md": "a.txt\nb.txt\n"}, "add b"
+    )
+    _branch_with(
+        repo, "feat/c", {"src/c.txt": "c\n", "INDEX.md": "a.txt\nc.txt\n"}, "add c"
+    )
 
     git = FakeGit(str(tmp_path), {"x": str(repo)})
     mq.enqueue("feat/b", path=repo)
@@ -438,10 +466,14 @@ def test_a_conflict_confined_to_generated_files_is_regenerated_not_rejected(
     assert (repo / "INDEX.md").read_text() == "a.txt\nb.txt\nc.txt\n"
 
 
-def test_a_conflict_touching_a_handwritten_file_is_still_rejected(tmp_path: Path) -> None:
+def test_a_conflict_touching_a_handwritten_file_is_still_rejected(
+    tmp_path: Path,
+) -> None:
     """Regeneration is deliberately narrow — it never resolves a real conflict."""
     repo = _init_repo(tmp_path / "mixedrepo")
-    (repo / "gen.py").write_text("import pathlib; pathlib.Path('INDEX.md').write_text('x\\n')")
+    (repo / "gen.py").write_text(
+        "import pathlib; pathlib.Path('INDEX.md').write_text('x\\n')"
+    )
     (repo / "INDEX.md").write_text("start\n")
     (repo / "hand.txt").write_text("original\n")
     _write_config(
@@ -518,9 +550,15 @@ def test_prune_removes_a_clean_worktree_and_anchors_the_branch(
     # commits are recoverable even after the ref is gone.
     assert prune["branch_anchor"] == "refs/lane-backup/feat-clean"
     assert _run(f"git rev-parse {prune['branch_anchor']}", repo) == tip
-    assert subprocess.run(
-        "git rev-parse --verify feat/clean", shell=True, cwd=repo, capture_output=True
-    ).returncode != 0
+    assert (
+        subprocess.run(
+            "git rev-parse --verify feat/clean",
+            shell=True,
+            cwd=repo,
+            capture_output=True,
+        ).returncode
+        != 0
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -588,7 +626,9 @@ def test_dropping_a_declared_gate_is_a_refusal(shell_repo: Path) -> None:
 def test_a_repo_with_no_config_is_refused_not_defaulted(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path / "unconfigured")
     _commit(repo, "init")
-    with pytest.raises(mq.MergeQueueError, match="has not declared its merge-queue gates"):
+    with pytest.raises(
+        mq.MergeQueueError, match="has not declared its merge-queue gates"
+    ):
         mq.load_config(repo)
 
 
@@ -605,10 +645,12 @@ def test_generated_files_without_regenerators_is_rejected(tmp_path: Path) -> Non
 def test_duplicate_gate_names_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(mq.MergeQueueError, match="duplicate gate name"):
         mq.parse_config(
-            {"gates": [
-                {"name": "x", "command": ["true"]},
-                {"name": "x", "command": ["false"]},
-            ]}
+            {
+                "gates": [
+                    {"name": "x", "command": ["true"]},
+                    {"name": "x", "command": ["false"]},
+                ]
+            }
         )
 
 
@@ -624,9 +666,7 @@ def test_the_shipped_presets_parse(tmp_path: Path) -> None:
     found = sorted(presets.glob("*.mergequeue.yaml"))
     assert found, "no presets shipped"
     for preset in found:
-        config = mq.parse_config(
-            yaml.safe_load(preset.read_text()), source=str(preset)
-        )
+        config = mq.parse_config(yaml.safe_load(preset.read_text()), source=str(preset))
         assert config.gates, f"{preset.name} declares no gates"
     names = {p.name for p in found}
     assert "epistemic-graph.mergequeue.yaml" in names, (
@@ -637,7 +677,9 @@ def test_the_shipped_presets_parse(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Pre-commit safety (D-ORC-37)
 # ---------------------------------------------------------------------------
-def test_a_precommit_gate_refuses_a_tree_holding_uncommitted_work(tmp_path: Path) -> None:
+def test_a_precommit_gate_refuses_a_tree_holding_uncommitted_work(
+    tmp_path: Path,
+) -> None:
     """A central driver never runs pre-commit against someone else's dirty tree.
 
     pre-commit writes unstaged changes to a patch file and checks them out of the
@@ -690,7 +732,9 @@ def test_the_queue_gives_any_precommit_gate_its_own_store(shell_repo: Path) -> N
 
     scope = lane_scope(shell_repo)
     assert "PRE_COMMIT_HOME" in seen
-    assert seen["PRE_COMMIT_HOME"].startswith(str(partitioned_paths(scope.tree).scratch_dir))
+    assert seen["PRE_COMMIT_HOME"].startswith(
+        str(partitioned_paths(scope.tree).scratch_dir)
+    )
     assert seen["PRE_COMMIT_HOME"] != os.path.expanduser("~/.cache/pre-commit")
 
 
@@ -702,7 +746,9 @@ def test_two_repositories_have_completely_independent_queues(
 ) -> None:
     """Per-repo by construction, not by a `repo` key someone must remember to set."""
     other = _init_repo(tmp_path / "otherrepo")
-    _write_config(other, "base: main\ngates: [{name: t, command: ['true'], compare: exit}]\n")
+    _write_config(
+        other, "base: main\ngates: [{name: t, command: ['true'], compare: exit}]\n"
+    )
     _commit(other, "init")
     _branch_with(other, "feat/other", {"o.txt": "o\n"}, "o")
     _branch_with(shell_repo, "feat/shell", {"s.txt": "s\n"}, "s")
@@ -714,12 +760,117 @@ def test_two_repositories_have_completely_independent_queues(
     assert mq.queue_store(other).root != mq.queue_store(shell_repo).root
 
 
-def test_dispatch_routes_every_verb_and_names_the_unknown_ones(shell_repo: Path) -> None:
+def test_dispatch_routes_every_verb_and_names_the_unknown_ones(
+    shell_repo: Path,
+) -> None:
     """One action core; the CLI and the MCP tool are both thin over it."""
     assert mq.dispatch("status", path=shell_repo)["depth"] == 0
     assert mq.dispatch("config", path=shell_repo)["gates"][0]["name"] == "no-broken"
     bad = mq.dispatch("nope", path=shell_repo)
     assert bad["ok"] is False and "run" in bad["actions"]
+
+
+# ---------------------------------------------------------------------------
+# D-W4RCA-1 (w4-rca-drain-deadlock, 2026-08-07) — a KILLED drain must not
+# strand a candidate.
+#
+# Filed against a real incident: `merge_queue_runner.sh`'s outer `timeout`
+# SIGTERM'd `python3 -m repository_manager.merge_queue run` twice in one
+# session (epistemic-graph's declared gates legitimately exceeded the
+# runner's flat ceiling under host load — see the runner script's own
+# D-W4RCA-1 comment), and both times the candidate (`w3-viz-v1`) was
+# re-enqueued by an operator who read "queue depth 0" as "the candidate
+# vanished." Reading the ACTUAL on-disk fragment files
+# (`<git-common-dir>/agent-lanes/merge-queue/*.yaml`) after those incidents
+# showed every state transition intact — the append-only FragmentStore never
+# lost a record. This test is that finding made mechanical: it kills a REAL
+# `run_queue` process (SIGKILL, not a mocked interruption — an uncatchable
+# signal is the only way to prove nothing in a `finally:` block is doing the
+# real work) while its one declared gate is genuinely still running a
+# subprocess, and asserts the candidate is neither stranded, nor silently
+# marked landed, nor silently marked rejected — it stays exactly `queued`,
+# because the ONLY code that can change that is `_record_state`, which never
+# ran. A second, un-killed `run_queue()` call then proves the interruption is
+# fully self-healing: the stale lease (its holder process is provably dead)
+# is reclaimed automatically and the SAME candidate lands normally, with no
+# manual repair step.
+# ---------------------------------------------------------------------------
+def test_a_killed_drain_does_not_strand_the_candidate(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path / "killrepo")
+    # A gate that is genuinely still running a subprocess ~1.5s after `run`
+    # starts (long enough to reliably land the SIGKILL mid-gate on any CI
+    # host), and would pass cleanly if allowed to finish.
+    (repo / "slow_gate.sh").write_text("#!/bin/sh\nsleep 4\nexit 0\n")
+    os.chmod(repo / "slow_gate.sh", 0o755)
+    _write_config(
+        repo,
+        """
+        base: main
+        gates:
+          - name: slow-but-clean
+            command: ["./slow_gate.sh"]
+            tier: fast
+            timeout: 60
+            compare: exit
+        """,
+    )
+    _commit(repo, "init")
+    _branch_with(repo, "feat/slow", {"x.txt": "x\n"}, "add x")
+
+    mq.enqueue("feat/slow", path=repo)
+    assert [c.branch for c in mq.queued(repo)] == ["feat/slow"]
+    pre_kill_records = len(mq.queue_store(repo).fold())
+
+    pkg_root = str(Path(__file__).resolve().parents[1])
+    driver_src = (
+        f"import sys; sys.path.insert(0, {pkg_root!r})\n"
+        "from repository_manager import merge_queue as mq\n"
+        f"mq.run_queue(path={str(repo)!r}, prune=False)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", driver_src],
+        cwd=str(repo),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        # Give the driver time to acquire the lease and start the gate's
+        # `sleep 4` subprocess -- 1.5s is comfortably inside that 4s window.
+        import time
+
+        time.sleep(1.5)
+        assert proc.poll() is None, "the drain finished before it could be killed"
+        proc.kill()  # SIGKILL -- uncatchable; no `finally:` in the killed
+        # process can run. This is the whole point: it proves durability is a
+        # property of the ON-DISK APPEND, not of any cleanup code path.
+        proc.wait(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=10)
+
+    # THE ASSERTION: the append-only store was never rewritten wholesale, and
+    # no NEW terminal record was written for a candidate the killed process
+    # never finished judging -- it is exactly where `enqueue` left it.
+    assert [c.branch for c in mq.queued(repo)] == ["feat/slow"], (
+        "a killed drain must never strand OR silently resolve a candidate"
+    )
+    candidate = mq.queued(repo)[0]
+    assert candidate.state == mq.QUEUED
+    # No phantom record was appended by the killed process either -- the
+    # fragment file has exactly the one record `enqueue` wrote, not a
+    # partially-written or duplicated one.
+    assert len(mq.queue_store(repo).fold()) == pre_kill_records
+
+    # Self-healing: the stale lease (holder process is provably dead) is
+    # reclaimed automatically, and a completely ordinary, un-killed run lands
+    # the SAME candidate with no manual repair.
+    git = FakeGit(str(tmp_path), {"x": str(repo)})
+    result = mq.run_queue(path=repo, prune=False, git=git)
+    assert result["landed"] == 1, result
+    assert mq.queued(repo) == []
+    log = _run("git log --oneline main", repo)
+    assert "add x" in log
 
 
 # ---------------------------------------------------------------------------
