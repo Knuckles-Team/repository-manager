@@ -186,6 +186,82 @@ def test_adopt_moves_wip_onto_branch(repo):
     assert status == ""
 
 
+# ── shared refs/stash safety (CONCEPT:RM-STASH-GUARD, registry D-CP-1) ────
+# ``add(adopt=True)`` used to push onto the shared ``refs/stash`` stack and
+# pop it back later; any concurrent stash push elsewhere in this ``.git``
+# (another worktree, another repository-manager op, a human) in that window
+# could cross or bury a lane's WIP. It now moves through a private ref
+# (`repository_manager.stash_guard`) and never leaves anything on the shared
+# stack once `add` returns.
+
+
+def test_adopt_never_leaves_anything_on_the_shared_stash_stack(repo):
+    open(os.path.join(repo.path, "wip.txt"), "w").write("work in progress")
+    res = repo.wm.add("myrepo", "feat-adopt-clean", adopt=True)
+    assert res["ok"] and res["adopted"]
+    stash_list = subprocess.run(
+        "git stash list", shell=True, cwd=repo.path, capture_output=True, text=True
+    ).stdout.strip()
+    assert stash_list == ""  # the shared stack was never left holding our WIP
+    # and the private ref it briefly used is cleaned up too
+    private_refs = subprocess.run(
+        "git for-each-ref refs/lane/rm-adopt-stash",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert private_refs == ""
+
+
+def test_adopt_surfaces_the_recovery_ref_instead_of_losing_wip_when_blocked(repo):
+    """If the canonical tree is dirtied again by something else between the
+    WIP capture and the park-checkout step (the guarded_canonical_mutation
+    dirty check), `add` must not silently drop the captured WIP: it attempts
+    to restore it onto canonical, and if even that conflicts, it reports the
+    private ref by name so nothing is lost to a swallowed error."""
+    _run("git checkout -b feat-adopt-blocked", repo.path)
+    open(os.path.join(repo.path, "wip.txt"), "w").write("lane's real WIP")
+
+    from repository_manager import worktree as wt_mod
+
+    original_run = repo.wm._run
+
+    def _run_with_late_dirty(cmd, path, quiet=False):
+        result = original_run(cmd, path, quiet=quiet)
+        if cmd.startswith("git rev-parse --abbrev-ref HEAD"):
+            # Something else dirties canonical again right after the WIP was
+            # already captured onto its private ref -- simulating a second
+            # actor touching canonical in the narrow window before the
+            # park-checkout guard re-checks.
+            open(os.path.join(path, "someone-elses-file.txt"), "w").write("not ours")
+        return result
+
+    import unittest.mock as mock
+
+    with mock.patch.object(wt_mod.WorktreeManager, "_run", autospec=True) as patched:
+        patched.side_effect = lambda self, cmd, path, quiet=False: _run_with_late_dirty(
+            cmd, path, quiet=quiet
+        )
+        res = repo.wm.add("myrepo", "feat-adopt-blocked", adopt=True)
+
+    assert res["ok"] is False
+    assert res["reason"] == "dirty-canonical-checkout"
+    # the WIP is not lost: either it made it back onto canonical, or its
+    # private ref is named for manual recovery -- never silently gone.
+    if "stash_ref" in res:
+        stash_list = subprocess.run(
+            f"git rev-parse --verify --quiet {res['stash_ref']}",
+            shell=True,
+            cwd=repo.path,
+            capture_output=True,
+            text=True,
+        )
+        assert stash_list.returncode == 0, "recovery ref must still resolve"
+    else:
+        assert open(os.path.join(repo.path, "wip.txt")).read() == "lane's real WIP"
+
+
 def test_unknown_repo_errors(repo):
     res = repo.wm.add("nonexistent", "feat-x")
     assert res["ok"] is False and "not found" in res["error"]

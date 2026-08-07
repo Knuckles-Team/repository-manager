@@ -21,7 +21,12 @@ reported instead of silently clobbered. Symmetrically, every *destructive* step
 against a linked worktree — removing the directory, deleting the branch ref —
 goes through :mod:`repository_manager.prune_guard` (CONCEPT:RM-PRUNE-GUARD), so
 a worktree an active lane still holds is skipped and a branch ref is only ever
-deleted when git itself agrees its commits survive the deletion.
+deleted when git itself agrees its commits survive the deletion. ``add``'s
+``adopt=True`` WIP hand-off never touches the shared ``refs/stash`` stack for
+longer than one git plumbing call — it goes through
+:mod:`repository_manager.stash_guard` (CONCEPT:RM-STASH-GUARD, registry
+``D-CP-1``), which parks the WIP on a private ref instead, so a concurrent
+stash push/pop elsewhere in this shared ``.git`` can never cross with it.
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ import shlex
 import time
 from typing import Any, Protocol
 
-from repository_manager import prune_guard
+from repository_manager import prune_guard, stash_guard
 from repository_manager.canonical_guard import guarded_canonical_mutation
 
 
@@ -140,8 +145,11 @@ class WorktreeManager:
         Idempotent: returns the existing path if the worktree is already there.
         Parks the canonical checkout on ``base`` if it currently holds ``branch``
         (a branch can only be checked out once). With ``adopt=True``, any
-        uncommitted changes in the canonical tree are stashed and replayed onto
-        the new branch in the worktree (the "move my WIP onto a branch" flow).
+        uncommitted changes in the canonical tree are moved onto the new branch
+        in the worktree (the "move my WIP onto a branch" flow) via
+        :mod:`repository_manager.stash_guard` (CONCEPT:RM-STASH-GUARD) — a
+        private ref, never the shared ``refs/stash`` stack, so a concurrent
+        stash push/pop elsewhere in this ``.git`` can never cross with it.
         """
         if not repo or not branch:
             return {"ok": False, "error": "repo and branch are required"}
@@ -163,12 +171,28 @@ class WorktreeManager:
         # Best-effort: make sure base is current (ignore failures, e.g. offline).
         self._run(f"git fetch origin {shlex.quote(base)}", canonical, quiet=True)
 
-        adopted = False
+        stash_ref: str | None = None
         if adopt:
-            st = self._run("git status --porcelain", canonical, quiet=True)
-            if self._ok(st) and st.data.strip():
-                self._run('git stash push -u -m "rm_worktree adopt"', canonical)
-                adopted = True
+            capture = stash_guard.capture_wip(self.git, canonical, label=_slug(branch))
+            if not capture["ok"]:
+                return {
+                    "ok": False,
+                    "error": f"could not adopt WIP: {capture['error']}",
+                }
+            stash_ref = capture["ref"]  # None when the canonical tree was clean
+
+        def _restore_onto_canonical_and_return(out: dict[str, Any]) -> dict[str, Any]:
+            """Bail out of ``add`` while a captured WIP still needs a home."""
+            if stash_ref is None:
+                return out
+            restore = stash_guard.apply_and_clear(self.git, canonical, stash_ref)
+            if not restore["ok"]:
+                out = {
+                    **out,
+                    "stash_ref": stash_ref,
+                    "stash_recovery_error": restore["error"],
+                }
+            return out
 
         cur = self._run("git rev-parse --abbrev-ref HEAD", canonical, quiet=True)
         if self._ok(cur) and cur.data.strip() == branch:
@@ -179,9 +203,9 @@ class WorktreeManager:
                 "park canonical checkout off requested branch",
             ) as blocked:
                 if blocked is not None:
-                    if adopted:  # restore the stash we already took
-                        self._run("git stash pop", canonical)
-                    return {**blocked, "branch": branch}
+                    return _restore_onto_canonical_and_return(
+                        {**blocked, "branch": branch}
+                    )
                 self._run(f"git checkout {shlex.quote(base)}", canonical)
 
         exists = self._run(
@@ -195,17 +219,22 @@ class WorktreeManager:
             cmd = f"git worktree add {shlex.quote(wt)} -b {shlex.quote(branch)} {shlex.quote(base)}"
         res = self._run(cmd, canonical)
         if not self._ok(res):
-            if adopted:  # restore the stash we took
-                self._run("git stash pop", canonical)
-            return {
-                "ok": False,
-                "path": wt,
-                "error": res.error.message if res.error else res.data,
-            }
+            return _restore_onto_canonical_and_return(
+                {
+                    "ok": False,
+                    "path": wt,
+                    "error": res.error.message if res.error else res.data,
+                }
+            )
 
-        if adopted:
-            pop = self._run("git stash pop", wt)
-            adopted = self._ok(pop)
+        adopted = False
+        out: dict[str, Any] = {}
+        if stash_ref is not None:
+            applied = stash_guard.apply_and_clear(self.git, wt, stash_ref)
+            adopted = applied["ok"]
+            if not applied["ok"]:
+                out["stash_ref"] = stash_ref
+                out["stash_recovery_error"] = applied["error"]
         return {
             "ok": True,
             "repo": repo,
@@ -214,6 +243,7 @@ class WorktreeManager:
             "base": base,
             "created": True,
             "adopted": adopted,
+            **out,
         }
 
     def list_worktrees(self, repo: str | None = None) -> dict[str, Any]:

@@ -1509,7 +1509,7 @@ def register_project_management_tools(mcp: FastMCP):
         ),
         adopt: bool = Field(
             default=False,
-            description="For 'add': stash the canonical checkout's uncommitted WIP and replay it onto the new branch.",
+            description="For 'add': move the canonical checkout's uncommitted WIP onto the new branch via a private ref (never the shared refs/stash stack).",
         ),
         force: bool = Field(
             default=False,
