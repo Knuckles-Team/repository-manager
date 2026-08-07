@@ -1673,6 +1673,17 @@ def register_project_management_tools(mcp: FastMCP):
         ``run`` holds that repository's ``reconciliation-merge`` LEASE. If another
         runner holds it the call returns ``deferred: true`` with the holder —
         **defer, do not retry in a loop**.
+
+        **``landed`` vs ``pushed`` (D-W3WPS-3).** Each outcome carries both,
+        separately: ``landed`` means the declared base ref fast-forwarded in the
+        LOCAL canonical checkout (proven by re-reading it); ``pushed`` means that
+        commit also reached the configured remote via the repo's own gated push
+        path (``_gate_before_push`` + ``push_project`` — the same pre-commit
+        gates and GH013/divergent-remote handling a manual push gets). A push
+        failure never fails the landing — ``landed: true, pushed: false`` is a
+        legitimate, visible intermediate state (network blip, a diverged
+        remote); check ``push_error`` on the outcome for why. The queue's own
+        ``run`` summary also reports ``pushed``/``landed_unpushed`` counts.
         """
         from agent_utilities.governance.lanes import (
             LaneArbitrationError,
