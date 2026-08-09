@@ -155,11 +155,28 @@ def test_repository_identity_includes_canonical_root_for_same_basename(tmp_path:
 def test_duplicate_allocation_is_idempotent_but_changed_input_refuses(tmp_path: Path) -> None:
     registry = _registry(tmp_path / "lanes.sqlite", clock=Clock())
     first = _allocate(registry, tmp_path / "repo")
+    assert first.repository_basename == "repo"
     repeated = _allocate(registry, tmp_path / "repo")
     assert repeated.lane_id == first.lane_id
     assert repeated.fence == first.fence
     with pytest.raises(LaneConflictError):
         _allocate(registry, tmp_path / "repo", branch="feature/changed")
+
+
+def test_projection_scopes_request_key_by_repository(tmp_path: Path) -> None:
+    store = tmp_path / "lanes.sqlite"
+    authority = FakeDurableLaneAuthority(clock=Clock())
+    registry = LaneRegistry(store, clock=Clock(), authority=authority)
+    first = _allocate(registry, tmp_path / "one", request_id="request:same")
+    second = _allocate(registry, tmp_path / "two", request_id="request:same")
+    assert first.repository_id != second.repository_id
+
+    projection = LaneRegistry(store, clock=Clock())
+    try:
+        projected_ids = {record.lane_id for record in projection.list_records()}
+    finally:
+        projection.close()
+    assert projected_ids == {first.lane_id, second.lane_id}
 
 
 def test_managed_mutation_fails_closed_without_durable_authority(tmp_path: Path) -> None:
@@ -504,6 +521,65 @@ def test_successful_cleanup_uses_guarded_remove_and_is_reconciliation_visible(
         [{"path": str(lane_path.resolve()), "branch": "feature/one"}]
     )
     assert any(item.classification == ReconciliationClass.STATE_MISMATCH for item in findings)
+
+
+def test_quarantined_lane_without_receipt_cannot_claim_removal(
+    tmp_path: Path,
+) -> None:
+    clock = Clock(NOW + timedelta(hours=2))
+    path = tmp_path / "repo"
+    (path / "lane").mkdir(parents=True)
+    registry = _registry(tmp_path / "lanes.sqlite", clock=clock)
+    record = _allocate(registry, path)
+    record = registry.activate(record.lane_id, owner_id="agent:one", fence=record.fence)
+    record = registry.heartbeat(
+        record.lane_id,
+        owner_id="agent:one",
+        fence=record.fence,
+        now=NOW - timedelta(hours=2),
+    )
+    record = registry.record_cleanup_anchor(
+        record.lane_id,
+        "refs/lane-backup/feature",
+        owner_id="agent:one",
+        fence=record.fence,
+        now=NOW - timedelta(hours=2),
+    )
+    authority = CleanupAuthority()
+    manager = FakeWorktreeManager()
+    reclaimer = LaneReclaimer(
+        registry,
+        worktree_manager=manager,
+        git=ReadOnlyGit(),
+        process_probe=lambda _lane: False,
+        job_probe=lambda _lane: False,
+        candidate_probe=lambda _lane: False,
+        concept_probe=lambda _lane: False,
+        occupancy_probe=lambda _lane: False,
+        cleanup_authority=authority,
+        clock=clock,
+    )
+    preview = reclaimer.plan_cleanup(
+        record.lane_id,
+        owner_id="agent:one",
+        fence=record.fence,
+    )
+    registry.quarantine(
+        record.lane_id,
+        owner_id="agent:one",
+        fence=record.fence,
+        reason="operator quarantine before cleanup receipt",
+    )
+    durable = reclaimer.request_cleanup(preview, submit=authority.submit)
+
+    result = reclaimer.execute_cleanup(durable)
+
+    assert result["ok"] is False
+    assert result["reconciliation_pending"] is True
+    assert result["removal_performed"] is False
+    assert manager.calls == []
+    assert (path / "lane").is_dir()
+    assert registry.require(record.lane_id).state == LaneLifecycleState.QUARANTINED
 
 
 def test_cleanup_never_claims_success_before_durable_receipt_and_retries_by_receipt(

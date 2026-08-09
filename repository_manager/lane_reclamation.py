@@ -749,7 +749,18 @@ class LaneReclaimer:
         if current.state == LaneLifecycleState.QUARANTINED:
             if not self._cleanup_job_current(plan, current):
                 raise CleanupRefused(plan)
-            return {"ok": True, "idempotent": True, "lane_id": current.lane_id}
+            # Quarantine is a lifecycle state, not proof that the guarded
+            # remove completed. A lane may be quarantined after an operator
+            # action or an earlier failed cleanup, so only an exact durable
+            # removal receipt can authorize an idempotent success above.
+            return {
+                "ok": False,
+                "idempotent": False,
+                "lane_id": current.lane_id,
+                "reason": "quarantined lane lacks exact durable removal receipt",
+                "reconciliation_pending": True,
+                "removal_performed": False,
+            }
         if current.state not in {
             LaneLifecycleState.ALLOCATING,
             LaneLifecycleState.ACTIVE,

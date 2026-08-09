@@ -593,7 +593,7 @@ class LaneRegistry:
     _SCHEMA = """
     CREATE TABLE IF NOT EXISTS lanes (
         lane_id TEXT PRIMARY KEY,
-        request_key TEXT NOT NULL UNIQUE,
+        request_key TEXT NOT NULL,
         input_digest TEXT NOT NULL,
         repository_id TEXT NOT NULL,
         repository_path TEXT NOT NULL,
@@ -611,6 +611,8 @@ class LaneRegistry:
         observed_disk_bytes INTEGER NOT NULL,
         payload TEXT NOT NULL
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS lanes_request_identity
+      ON lanes(repository_id, request_key);
     CREATE UNIQUE INDEX IF NOT EXISTS lanes_active_branch
       ON lanes(repository_id, branch)
       WHERE state IN ('allocating', 'active', 'submitted', 'expired');
@@ -915,7 +917,10 @@ class LaneRegistry:
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         with self._lock:
             rows = self._connection.execute(
-                "SELECT payload FROM lanes" + where + " ORDER BY created_at, lane_id",
+                # ``created_at`` lives in the immutable JSON payload; rowid
+                # preserves projection insertion order without pretending the
+                # local table is the durable authority.
+                "SELECT payload FROM lanes" + where + " ORDER BY rowid, lane_id",
                 values,
             ).fetchall()
         return tuple(LaneRecord.model_validate_json(row["payload"]) for row in rows)
