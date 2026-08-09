@@ -675,7 +675,10 @@ def test_the_mcp_tool_is_registered_and_declares_every_action() -> None:
     """The CLI and the MCP tool are thin marshallers over one action core, so
     an action that exists in one and not the other is a defect, not a gap."""
     source = (
-        Path(__file__).resolve().parents[1] / "repository_manager" / "mcp_server.py"
+        Path(__file__).resolve().parents[1]
+        / "repository_manager"
+        / "mcp_tools"
+        / "lane.py"
     ).read_text()
     assert "async def rm_lane(" in source
     assert "lane_doctor.ACTIONS" in source
@@ -683,9 +686,9 @@ def test_the_mcp_tool_is_registered_and_declares_every_action() -> None:
     cli = (
         Path(__file__).resolve().parents[1]
         / "repository_manager"
-        / "repository_manager.py"
+        / "cli_commands"
+        / "parser.py"
     ).read_text()
-    assert "_run_lane_cli" in cli
     for action in lane_doctor.ACTIONS:
         assert f'"{action}"' in cli, f"--lane does not offer {action}"
 
