@@ -1,4 +1,4 @@
-# Workspace release-plan checkpoint 1
+# Workspace release-plan checkpoints 1–2
 
 `repository_manager.development.workspace_release` is the pure C-11 planning
 boundary for the workspace release DAG. It records canonical repository and
@@ -37,3 +37,33 @@ Checkpoint 1 intentionally does not rewrite floors, execute validation/build/
 landing/push stages, create WorkItems, edit `workspace.yml`, or wire MCP/CLI
 surfaces. Those effects belong to later RMDD-18 checkpoints and their owning
 integration lanes.
+
+## Selected-change closure and phase shadowing (checkpoint 2)
+
+`repository_manager.development.workspace_selection` derives a frozen selected
+subgraph from explicit canonical `changed_projects` and optional explicit
+`selected_projects`. `InclusionMode.NONE`, `DIRECT`, and `TRANSITIVE` independently
+control dependency/upstream and dependent/downstream closure. Every known project
+gets a deterministic explanation: changed/explicit roots and traversal witnesses
+for included projects, or an explicit excluded reason. Package edges, including
+same-project package edges, are retained; only cross-project edges participate in
+the project DAG. Groups are dependency-first and deterministic, so independent
+projects remain parallel.
+
+Unknown roots, duplicate or contradictory policy IDs, malformed graph edges, and
+cycles fail closed before a closure is returned. Policy and closure collections,
+references, explanations, and digests are bounded and immutable. The closure
+digest and explanations are independent of input project/edge iteration order.
+
+`derive_phase_view` and `compare_legacy_phases` project a `LegacyPhaseManifest` into the same canonical
+identity space without rewriting it. Canonical references resolve directly;
+historical bare references resolve only for a unique basename owner. Same-basename
+repositories produce an `AMBIGUOUS_PROJECT` diagnostic. The read-only report
+contains derived/manual phase views, membership/order/bulk-flag diagnostics,
+exact equality, and a deterministic SHA-256 report digest. Legacy phase reference
+order is preserved for comparison, while duplicate references are refused by the
+bounded manifest reader. No comparator path executes code, invokes a subprocess or
+network, or mutates a manifest.
+
+Checkpoint 2 still does not rewrite floors, plan versions, execute stages, create
+WorkItems, restart/resume, edit workspace manifests, or wire MCP/CLI surfaces.

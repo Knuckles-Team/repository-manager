@@ -1623,6 +1623,14 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
         if not isinstance(projects, (list, tuple)):
             raise WorkspaceReleaseError(f"phase {index} projects must be a sequence")
         refs.extend(_bounded_text(item, f"phase {index} project") for item in projects)
+        if len(refs) > MAX_PROJECTS:
+            raise WorkspaceReleaseError(
+                f"phase {index} projects exceed the project bound"
+            )
+        if len(refs) != len(set(refs)):
+            raise WorkspaceReleaseError(
+                f"phase {index} project references must be unique"
+            )
         wait = raw.get("wait_minutes", 0)
         if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0:
             raise WorkspaceReleaseError(
@@ -1636,7 +1644,7 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
             LegacyPhase(
                 name=name,
                 phase=phase,
-                project_references=tuple(sorted(set(refs))),
+                project_references=tuple(refs),
                 bulk_bump=bulk_bump,
                 bulk_push=bulk_push,
                 wait_minutes=wait,
