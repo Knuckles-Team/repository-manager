@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, MutableSequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -179,16 +179,38 @@ def _bounded_bool(value: object, field_name: str) -> bool:
 def _bounded_sequence(
     value: object, field_name: str, *, max_items: int
 ) -> tuple[object, ...]:
-    """Copy one collection while refusing strings, mappings, and overflows."""
+    """Copy one collection with bounded iteration and privacy-safe failures."""
 
     if isinstance(value, (str, bytes, bytearray, Mapping)) or not isinstance(
         value, Iterable
     ):
         raise WorkspaceReleaseError(f"{field_name} must be a sequence")
-    result = tuple(value)
-    if len(result) > max_items:
-        raise WorkspaceReleaseError(f"{field_name} exceeds the bounded item count")
-    return result
+    if isinstance(value, MutableSequence) and type(value) not in (list, tuple):
+        raise WorkspaceReleaseError(f"{field_name} must be a sequence")
+
+    try:
+        iterator = iter(value)
+    except Exception:
+        raise WorkspaceReleaseError(f"{field_name} items could not be read") from None
+
+    result: list[object] = []
+    for _ in range(max_items):
+        try:
+            result.append(next(iterator))
+        except StopIteration:
+            return tuple(result)
+        except Exception:
+            raise WorkspaceReleaseError(
+                f"{field_name} items could not be read"
+            ) from None
+
+    try:
+        next(iterator)
+    except StopIteration:
+        return tuple(result)
+    except Exception:
+        raise WorkspaceReleaseError(f"{field_name} items could not be read") from None
+    raise WorkspaceReleaseError(f"{field_name} exceeds the bounded item count")
 
 
 def _typed_sequence(
@@ -955,6 +977,99 @@ class DependencyGraph:
     parallel_groups: tuple[tuple[str, ...], ...]
     digest: str
 
+    def __post_init__(self) -> None:
+        projects = _typed_sequence(
+            self.projects,
+            "graph projects",
+            ProjectRecord,
+            max_items=MAX_PROJECTS,
+        )
+        packages = _typed_sequence(
+            self.packages,
+            "graph packages",
+            PackageRecord,
+            max_items=MAX_PACKAGES,
+        )
+        edges = _typed_sequence(
+            self.edges,
+            "graph edges",
+            DependencyEdge,
+            max_items=MAX_EDGES,
+        )
+        project_edge_values = _bounded_sequence(
+            self.project_edges,
+            "graph project edges",
+            max_items=MAX_EDGES,
+        )
+        project_edges: list[tuple[str, str]] = []
+        project_edge_set: set[tuple[str, str]] = set()
+        for index, raw_pair in enumerate(project_edge_values):
+            pair = _bounded_sequence(
+                raw_pair,
+                f"graph project edge {index}",
+                max_items=2,
+            )
+            if len(pair) != 2 or any(not isinstance(item, str) for item in pair):
+                raise WorkspaceReleaseError(
+                    "graph project edges must contain two string endpoints"
+                )
+            dependent, dependency = cast(tuple[str, str], pair)
+            canonical_pair = (
+                canonical_repository_id(dependent),
+                canonical_repository_id(dependency),
+            )
+            if canonical_pair[0] == canonical_pair[1]:
+                raise WorkspaceReleaseError(
+                    "graph project edges must not contain self edges"
+                )
+            if canonical_pair in project_edge_set:
+                raise WorkspaceReleaseError("graph project edges must not duplicate")
+            project_edge_set.add(canonical_pair)
+            project_edges.append(canonical_pair)
+
+        group_values = _bounded_sequence(
+            self.parallel_groups,
+            "graph parallel groups",
+            max_items=MAX_PROJECTS,
+        )
+        groups: list[tuple[str, ...]] = []
+        grouped_projects: set[str] = set()
+        for index, raw_group in enumerate(group_values):
+            group = _bounded_sequence(
+                raw_group,
+                f"graph parallel group {index}",
+                max_items=MAX_PROJECTS,
+            )
+            if not group or any(not isinstance(item, str) for item in group):
+                raise WorkspaceReleaseError(
+                    "graph parallel groups must contain non-empty string groups"
+                )
+            members = tuple(canonical_repository_id(cast(str, item)) for item in group)
+            if members != tuple(sorted(members)):
+                raise WorkspaceReleaseError(
+                    "graph parallel group members must be canonical and ordered"
+                )
+            if len(members) != len(set(members)) or set(members) & grouped_projects:
+                raise WorkspaceReleaseError(
+                    "graph parallel groups must not duplicate projects"
+                )
+            grouped_projects.update(members)
+            groups.append(members)
+
+        digest = _bounded_text(self.digest, "graph digest", max_length=64)
+        if re.fullmatch(r"[0-9a-fA-F]{64}", digest) is None:
+            raise WorkspaceReleaseError("graph digest must be a SHA-256 digest")
+        object.__setattr__(
+            self, "projects", tuple(sorted(projects, key=lambda item: item.project_id))
+        )
+        object.__setattr__(
+            self, "packages", tuple(sorted(packages, key=lambda item: item.key.value))
+        )
+        object.__setattr__(self, "edges", tuple(sorted(edges, key=_edge_sort_key)))
+        object.__setattr__(self, "project_edges", tuple(sorted(project_edges)))
+        object.__setattr__(self, "parallel_groups", tuple(groups))
+        object.__setattr__(self, "digest", digest.lower())
+
     def canonical_payload(self) -> dict[str, object]:
         return {
             "projects": [_project_payload(project) for project in self.projects],
@@ -976,12 +1091,57 @@ class LegacyPhase:
     bulk_push: bool = False
     wait_minutes: int = 0
 
+    def __post_init__(self) -> None:
+        name = _bounded_text(self.name, "phase name")
+        if (
+            isinstance(self.phase, bool)
+            or not isinstance(self.phase, int)
+            or self.phase < 1
+        ):
+            raise WorkspaceReleaseError("phase number must be positive")
+        references = _bounded_sequence(
+            self.project_references,
+            "phase project references",
+            max_items=MAX_PROJECTS,
+        )
+        if any(not isinstance(item, str) for item in references):
+            raise WorkspaceReleaseError("phase project references must be strings")
+        normalized_references = tuple(
+            _bounded_text(item, "phase project reference")
+            for item in cast(tuple[str, ...], references)
+        )
+        if len(normalized_references) != len(set(normalized_references)):
+            raise WorkspaceReleaseError("phase project references must be unique")
+        if not isinstance(self.bulk_bump, bool) or not isinstance(self.bulk_push, bool):
+            raise WorkspaceReleaseError("phase bulk flags must be booleans")
+        if (
+            isinstance(self.wait_minutes, bool)
+            or not isinstance(self.wait_minutes, int)
+            or self.wait_minutes < 0
+        ):
+            raise WorkspaceReleaseError("phase wait_minutes must be non-negative")
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "project_references", normalized_references)
+
 
 @dataclass(frozen=True, slots=True)
 class LegacyPhaseManifest:
     """Immutable view of the current phase manifest during shadow operation."""
 
     phases: tuple[LegacyPhase, ...]
+
+    def __post_init__(self) -> None:
+        phases = _typed_sequence(
+            self.phases,
+            "phase manifest phases",
+            LegacyPhase,
+            max_items=MAX_PLAN_STAGES,
+        )
+        object.__setattr__(
+            self,
+            "phases",
+            tuple(sorted(phases, key=lambda item: (item.phase, item.name))),
+        )
 
 
 def _package_payload(package: PackageRecord) -> dict[str, object]:
@@ -1214,7 +1374,14 @@ def build_dependency_graph(
     one refusal before any later mutation path is considered.
     """
 
-    project_values = tuple(projects)
+    project_values = cast(
+        tuple[ProjectRecord, ...],
+        _bounded_sequence(
+            projects,
+            "workspace projects",
+            max_items=MAX_PROJECTS,
+        ),
+    )
     if any(not isinstance(project, ProjectRecord) for project in project_values):
         raise WorkspaceReleaseError("workspace projects must be ProjectRecord values")
     project_values = tuple(
@@ -1239,7 +1406,14 @@ def build_dependency_graph(
     )
     if len(project_values) > MAX_PROJECTS:
         raise WorkspaceReleaseError("workspace project count exceeds the bound")
-    overlay_values = tuple(overlay_edges)
+    overlay_values = cast(
+        tuple[DependencyEdge, ...],
+        _bounded_sequence(
+            overlay_edges,
+            "workspace overlay edges",
+            max_items=MAX_EDGES,
+        ),
+    )
     if any(not isinstance(edge, DependencyEdge) for edge in overlay_values):
         raise WorkspaceReleaseError(
             "workspace overlay edges must be DependencyEdge values"
@@ -1570,6 +1744,55 @@ def _cycle_path(
     return tuple(sorted(remaining))
 
 
+def _bounded_mapping_keys(
+    value: Mapping[str, object],
+    field_name: str,
+    allowed: frozenset[str],
+) -> tuple[str, ...]:
+    """Validate mapping keys without sorting or materializing untrusted input."""
+
+    keys: list[str] = []
+    try:
+        iterator = iter(value)
+        for index, key in enumerate(iterator):
+            if index >= len(allowed):
+                raise WorkspaceReleaseError(f"{field_name} has too many keys")
+            if (
+                type(key) is not str
+                or not key
+                or key.strip() != key
+                or len(key) > MAX_STRING_LENGTH
+                or any(ord(char) < 0x20 or ord(char) == 0x7F for char in key)
+            ):
+                raise WorkspaceReleaseError(
+                    f"{field_name} keys must be bounded strings"
+                )
+            if key in keys:
+                raise WorkspaceReleaseError(f"{field_name} contains duplicate keys")
+            keys.append(key)
+    except WorkspaceReleaseError:
+        raise
+    except Exception:
+        raise WorkspaceReleaseError(f"{field_name} keys could not be read") from None
+    if any(key not in allowed for key in keys):
+        raise WorkspaceReleaseError(f"{field_name} has unsupported fields")
+    return tuple(keys)
+
+
+def _safe_mapping_get(
+    value: Mapping[str, object],
+    key: str,
+    default: object,
+    field_name: str,
+) -> object:
+    """Read one validated mapping value without exposing mapping exceptions."""
+
+    try:
+        return value.get(key, default)
+    except Exception:
+        raise WorkspaceReleaseError(f"{field_name} values could not be read") from None
+
+
 def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManifest:
     """Copy the current phase manifest into an immutable compatibility view.
 
@@ -1578,65 +1801,86 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
     the later shadow comparator; those strings are never used as graph keys.
     """
 
-    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
+    if not isinstance(value, Mapping):
         raise WorkspaceReleaseError("phase manifest keys must be strings")
-    allowed = {"description", "phases"}
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        raise WorkspaceReleaseError(
-            f"phase manifest has unsupported fields: {', '.join(unknown)}"
-        )
-    phases_value = value.get("phases", ())
-    if not isinstance(phases_value, (list, tuple)):
+    allowed = frozenset({"description", "phases"})
+    _bounded_mapping_keys(value, "phase manifest", allowed)
+    phases_value = _safe_mapping_get(value, "phases", (), "phase manifest")
+    if type(phases_value) not in (list, tuple):
         raise WorkspaceReleaseError("phase manifest phases must be a sequence")
-    if len(phases_value) > MAX_PLAN_STAGES:
-        raise WorkspaceReleaseError("phase manifest exceeds the stage bound")
+    phase_values = _bounded_sequence(
+        phases_value,
+        "phase manifest phases",
+        max_items=MAX_PLAN_STAGES,
+    )
     phases: list[LegacyPhase] = []
-    phase_keys = {
-        "name",
-        "phase",
-        "project",
-        "projects",
-        "bulk_bump",
-        "bulk_push",
-        "wait_minutes",
-        "updates",
-        "exclude",
-    }
-    for index, raw in enumerate(phases_value):
+    total_project_references = 0
+    phase_keys = frozenset(
+        {
+            "name",
+            "phase",
+            "project",
+            "projects",
+            "bulk_bump",
+            "bulk_push",
+            "wait_minutes",
+            "updates",
+            "exclude",
+        }
+    )
+    for index, raw in enumerate(phase_values):
         if not isinstance(raw, Mapping):
             raise WorkspaceReleaseError(f"phase {index} must be a mapping")
-        unsupported = sorted(set(raw) - phase_keys)
-        if unsupported:
-            raise WorkspaceReleaseError(
-                f"phase {index} has unsupported fields: {', '.join(unsupported)}"
-            )
-        name = _bounded_text(raw.get("name", f"phase-{index + 1}"), "phase name")
-        phase = raw.get("phase", index + 1)
+        _bounded_mapping_keys(raw, f"phase {index}", phase_keys)
+        name = _bounded_text(
+            _safe_mapping_get(raw, "name", f"phase-{index + 1}", f"phase {index}"),
+            "phase name",
+        )
+        phase = _safe_mapping_get(raw, "phase", index + 1, f"phase {index}")
         if isinstance(phase, bool) or not isinstance(phase, int) or phase < 1:
             raise WorkspaceReleaseError(f"phase {index} number must be positive")
-        project = raw.get("project")
-        projects = raw.get("projects", ())
+        project = _safe_mapping_get(raw, "project", None, f"phase {index}")
+        projects = _safe_mapping_get(raw, "projects", (), f"phase {index}")
         refs: list[str] = []
         if project is not None:
             refs.append(_bounded_text(project, f"phase {index} project"))
-        if not isinstance(projects, (list, tuple)):
+        if type(projects) not in (list, tuple):
             raise WorkspaceReleaseError(f"phase {index} projects must be a sequence")
-        refs.extend(_bounded_text(item, f"phase {index} project") for item in projects)
-        wait = raw.get("wait_minutes", 0)
+        project_values = _bounded_sequence(
+            projects,
+            f"phase {index} projects",
+            max_items=MAX_PROJECTS,
+        )
+        refs.extend(
+            _bounded_text(item, f"phase {index} project") for item in project_values
+        )
+        if len(refs) > MAX_PROJECTS:
+            raise WorkspaceReleaseError(
+                f"phase {index} projects exceed the project bound"
+            )
+        total_project_references += len(refs)
+        if total_project_references > MAX_EDGES:
+            raise WorkspaceReleaseError(
+                "phase manifest project references exceed the bounded total"
+            )
+        if len(refs) != len(set(refs)):
+            raise WorkspaceReleaseError(
+                f"phase {index} project references must be unique"
+            )
+        wait = _safe_mapping_get(raw, "wait_minutes", 0, f"phase {index}")
         if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0:
             raise WorkspaceReleaseError(
                 f"phase {index} wait_minutes must be non-negative"
             )
-        bulk_bump = raw.get("bulk_bump", False)
-        bulk_push = raw.get("bulk_push", False)
+        bulk_bump = _safe_mapping_get(raw, "bulk_bump", False, f"phase {index}")
+        bulk_push = _safe_mapping_get(raw, "bulk_push", False, f"phase {index}")
         if not isinstance(bulk_bump, bool) or not isinstance(bulk_push, bool):
             raise WorkspaceReleaseError(f"phase {index} bulk flags must be booleans")
         phases.append(
             LegacyPhase(
                 name=name,
                 phase=phase,
-                project_references=tuple(sorted(set(refs))),
+                project_references=tuple(refs),
                 bulk_bump=bulk_bump,
                 bulk_push=bulk_push,
                 wait_minutes=wait,
