@@ -12,6 +12,7 @@
 # implementation detail.
 
 base: main
+schema_version: 2
 
 specs:
   - name: web-build
@@ -44,5 +45,21 @@ specs:
     # trusting the directory's mere existence on a later cache hit.
     artifacts:
       - "dist/**/*"
+
+    resource_class: frontend-build
+    resources:
+      cpu_weight: 8
+      memory_mb: 8192
+      disk_mb: 4096
+      process_slots: 1
+    placement:
+      anti_affinity: [frontend-build]
+    artifact_contract:
+      patterns: ["dist/**/*"]
+      required: true
+      publish: true
+      retention: content-addressed
+    stage: feedback
+    generation_compatible: true
 
     timeout: 900

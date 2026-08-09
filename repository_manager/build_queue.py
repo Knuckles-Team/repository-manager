@@ -57,7 +57,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import stat
 import subprocess  # nosec B404 - fixed argv, never shell=True
 import time
 from dataclasses import dataclass, field
@@ -77,7 +79,7 @@ from repository_manager.config_schema import (
     ConfigSchemaError,
     Placement,
     ResourceRequest,
-    load_yaml_mapping,
+    load_yaml_mapping_text,
     parse_build_config,
 )
 from repository_manager.merge_queue import (
@@ -90,10 +92,154 @@ from repository_manager.merge_queue import (
 CONFIG_FILENAME = ".buildcache.yaml"
 ARTIFACT_STORE_DIRNAME = "build-cache"
 EXECUTION_CLASS = "build"
+_MAX_MANIFEST_BYTES = 1 << 20
+_MAX_CONFIG_BYTES = 1 << 20
+_MAX_LEGACY_ARTIFACTS = 4096
+_MAX_LEGACY_ARTIFACT_BYTES = 64 * 1024 * 1024 * 1024
+_MAX_LEGACY_SCAN_ENTRIES = 10_000
+_MAX_LEGACY_SCAN_FILES = 100_000
 
 
 class BuildQueueError(LaneArbitrationError):
     """A build-broker operation refused, carrying the reason a caller must act on."""
+
+
+def _read_bounded_regular_file(path: Path, limit: int) -> bytes:
+    """Read one bounded regular file without following a symlink swap."""
+
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise BuildQueueError(f"file is not regular: {path}")
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            raw = handle.read(limit + 1)
+        if len(raw) > limit:
+            raise BuildQueueError(f"file exceeds the durable bound: {path}")
+        return raw
+    except OSError as exc:
+        raise BuildQueueError(f"could not read {path}: {exc}") from exc
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+def _reject_symlink_path(path: Path) -> None:
+    """Reject symlink components before a migration-only file operation."""
+
+    absolute = Path(os.path.abspath(path))
+    current = Path(absolute.anchor)
+    for component in absolute.parts[1:]:
+        current /= component
+        if current.is_symlink():
+            raise BuildQueueError(f"symlink component is not allowed: {current}")
+
+
+def _copy_legacy_file_no_follow(
+    source: Path,
+    destination: Path,
+    *,
+    max_bytes: int | None = None,
+) -> int:
+    """Copy a compatibility artifact through bounded no-follow descriptors."""
+
+    _reject_symlink_path(source)
+    source_descriptor: int | None = None
+    destination_descriptor: int | None = None
+    try:
+        source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        source_stat = os.fstat(source_descriptor)
+        if not stat.S_ISREG(source_stat.st_mode):
+            raise BuildQueueError(f"legacy artifact is not a regular file: {source}")
+        if max_bytes is not None and source_stat.st_size > max_bytes:
+            raise BuildQueueError("legacy artifacts exceed the bounded migration size")
+        _reject_symlink_path(destination.parent)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination_descriptor = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        copied = 0
+        with os.fdopen(source_descriptor, "rb") as source_handle:
+            source_descriptor = None
+            with os.fdopen(destination_descriptor, "wb") as destination_handle:
+                destination_descriptor = None
+                while True:
+                    chunk = source_handle.read(1 << 20)
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    if max_bytes is not None and copied > max_bytes:
+                        raise BuildQueueError(
+                            "legacy artifacts exceed the bounded migration size"
+                        )
+                    destination_handle.write(chunk)
+                destination_handle.flush()
+                os.fsync(destination_handle.fileno())
+        final_source = os.stat(source, follow_symlinks=False)
+        if (
+            final_source.st_dev != source_stat.st_dev
+            or final_source.st_ino != source_stat.st_ino
+            or final_source.st_size != copied
+        ):
+            raise BuildQueueError("legacy artifact changed while it was copied")
+        return copied
+    except OSError as exc:
+        raise BuildQueueError(f"could not copy legacy artifact {source}") from exc
+    finally:
+        for descriptor in (source_descriptor, destination_descriptor):
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+
+
+def _bounded_legacy_tree_size(path: Path) -> int:
+    """Bounded no-follow byte accounting for compatibility GC."""
+
+    _reject_symlink_path(path)
+    if path.is_symlink() or not path.is_dir():
+        raise BuildQueueError("legacy artifact entry is not a directory")
+    pending = [path]
+    entries = files = total = 0
+    while pending:
+        current = pending.pop()
+        try:
+            iterator = os.scandir(current)
+        except OSError as exc:
+            raise BuildQueueError(
+                "legacy artifact scan could not read a directory"
+            ) from exc
+        with iterator:
+            for child in iterator:
+                entries += 1
+                if entries > _MAX_LEGACY_SCAN_ENTRIES:
+                    raise BuildQueueError(
+                        "legacy artifact scan exceeds its entry bound"
+                    )
+                if child.is_symlink():
+                    raise BuildQueueError("legacy artifact scan found a symlink")
+                if child.is_dir(follow_symlinks=False):
+                    pending.append(Path(child.path))
+                    continue
+                if not child.is_file(follow_symlinks=False):
+                    raise BuildQueueError(
+                        "legacy artifact scan found a non-regular entry"
+                    )
+                files += 1
+                if files > _MAX_LEGACY_SCAN_FILES:
+                    raise BuildQueueError("legacy artifact scan exceeds its file bound")
+                total += child.stat(follow_symlinks=False).st_size
+                if total > _MAX_LEGACY_ARTIFACT_BYTES:
+                    raise BuildQueueError("legacy artifact scan exceeds its byte bound")
+    return total
 
 
 # ---------------------------------------------------------------------------
@@ -213,9 +359,10 @@ def load_config(tree: Path | str) -> BuildConfig:
             "and 'this repo builds nothing' must not be the same value)."
         )
     try:
-        data = load_yaml_mapping(str(config_path))
+        raw = _read_bounded_regular_file(config_path, _MAX_CONFIG_BYTES)
+        data = load_yaml_mapping_text(raw.decode("utf-8"), source=str(config_path))
         return parse_config(data, source=str(config_path))
-    except ConfigSchemaError as exc:
+    except (ConfigSchemaError, UnicodeDecodeError, BuildQueueError) as exc:
         raise BuildQueueError(str(exc)) from exc
 
 
@@ -232,6 +379,14 @@ class CacheKey:
     feature_set: str = ""
     toolchain_fingerprint: str = ""
     target_triple: str = ""
+    # RMDD-10 extends the historical key without invalidating old manifests.
+    # ``generation_id`` is retained as an opaque correlation while the digest
+    # is what participates in the content address.
+    config_digest: str = ""
+    spec_digest: str = ""
+    generation_id: str = ""
+    generation_digest: str = ""
+    key_version: str = "v2"
     degraded_reason: str = ""
 
     @property
@@ -242,6 +397,29 @@ class CacheKey:
     def digest(self) -> str:
         if not self.computable:
             raise BuildQueueError("a degraded CacheKey has no digest — never cache it")
+        payload = json.dumps(
+            {
+                "key_version": self.key_version,
+                "repo": self.repo,
+                "spec": self.spec,
+                "tree_sha": self.tree_sha,
+                "feature_set": self.feature_set,
+                "toolchain_fingerprint": self.toolchain_fingerprint,
+                "target_triple": self.target_triple,
+                "config_digest": self.config_digest,
+                "spec_digest": self.spec_digest,
+                "generation_digest": self.generation_digest,
+            },
+            sort_keys=True,
+        )
+        return f"{self.key_version}:{hashlib.sha256(payload.encode()).hexdigest()[:32]}"
+
+    @property
+    def legacy_digest(self) -> str:
+        """Return the pre-RMDD-10 key used by existing cache manifests."""
+
+        if not self.computable:
+            raise BuildQueueError("a degraded CacheKey has no legacy digest")
         payload = json.dumps(
             {
                 "repo": self.repo,
@@ -256,6 +434,23 @@ class CacheKey:
         return hashlib.sha256(payload.encode()).hexdigest()[:32]
 
     def components(self) -> dict[str, str]:
+        return {
+            "key_version": self.key_version,
+            "repo": self.repo,
+            "spec": self.spec,
+            "tree_sha": self.tree_sha,
+            "feature_set": self.feature_set,
+            "toolchain_fingerprint": self.toolchain_fingerprint,
+            "target_triple": self.target_triple,
+            "config_digest": self.config_digest,
+            "spec_digest": self.spec_digest,
+            "generation_id": self.generation_id,
+            "generation_digest": self.generation_digest,
+        }
+
+    def legacy_components(self) -> dict[str, str]:
+        """Project only the v1 fields for migration/explain compatibility."""
+
         return {
             "repo": self.repo,
             "spec": self.spec,
@@ -307,7 +502,128 @@ def _target_triple(spec: BuildSpec) -> str:
     return f"{platform.system()}-{platform.machine()}".lower()
 
 
-def compute_cache_key(repo: Path, spec: BuildSpec, *, repo_name: str) -> CacheKey:
+def stable_repository_id(path: Path | str) -> str:
+    """Return the C-01 repository identity, never a display basename.
+
+    Workspace-relative paths are readable and stable across worktree lanes;
+    repositories outside the configured workspace use a deterministic path
+    digest.  Either form keeps two repositories with the same basename
+    distinct without introducing a second identity registry.
+    """
+
+    resolved = Path(path).expanduser().resolve(strict=False)
+    identity_root = resolved
+    try:
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(resolved),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        common = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=str(resolved),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if top.returncode == 0 and common.returncode == 0:
+            common_dir = Path(common.stdout.strip()).resolve(strict=False)
+            identity_root = (
+                common_dir.parent
+                if common_dir.name == ".git"
+                else Path(top.stdout.strip()).resolve(strict=False)
+            )
+    except (OSError, subprocess.SubprocessError):
+        pass
+    workspace_root: Path | None = None
+    configured = os.environ.get("AGENT_UTILITIES_WORKSPACE_ROOT")
+    candidates = [Path(configured).expanduser().resolve()] if configured else []
+    candidates.extend(
+        parent
+        for parent in (identity_root, *identity_root.parents)
+        if (parent / "workspace.yml").is_file()
+    )
+    for candidate in candidates:
+        if candidate.is_dir() and (candidate / "workspace.yml").is_file():
+            workspace_root = candidate
+            break
+    if workspace_root is not None:
+        try:
+            relative = identity_root.relative_to(workspace_root)
+        except ValueError:
+            relative = None
+        if relative is not None:
+            return f"repository:{relative.as_posix()}"
+    digest = hashlib.sha256(str(identity_root).encode("utf-8")).hexdigest()[:24]
+    return f"repository:path:{digest}"
+
+
+def _spec_digest(spec: BuildSpec) -> str:
+    """Hash the full runtime spec, excluding its machine-specific source path."""
+
+    payload = {
+        "name": spec.name,
+        "command": list(spec.command),
+        "workdir": spec.workdir,
+        "toolchain_fingerprint": list(spec.toolchain_fingerprint),
+        "cache_key_paths": list(spec.cache_key_paths),
+        "artifacts": list(spec.artifacts),
+        "timeout": spec.timeout,
+        "target_triple": spec.target_triple,
+        "resource_class": spec.resource_class,
+        "resources": {
+            "cpu_weight": spec.resources.cpu_weight,
+            "memory_mb": spec.resources.memory_mb,
+            "disk_mb": spec.resources.disk_mb,
+            "process_slots": spec.resources.process_slots,
+        },
+        "disk_estimate_mb": spec.disk_estimate_mb,
+        "placement": {
+            "required_labels": list(spec.placement.required_labels),
+            "preferred_host": spec.placement.preferred_host,
+            "required_host": spec.placement.required_host,
+            "anti_affinity": list(spec.placement.anti_affinity),
+        },
+        "artifact_contract": {
+            "patterns": list(spec.artifact_contract.patterns),
+            "required": spec.artifact_contract.required,
+            "publish": spec.artifact_contract.publish,
+            "retention": spec.artifact_contract.retention,
+        },
+        "stage": spec.stage,
+        "generation_compatible": spec.generation_compatible,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _config_digest(repo: Path) -> str:
+    config_path = repo / CONFIG_FILENAME
+    try:
+        data = _read_bounded_regular_file(config_path, _MAX_CONFIG_BYTES)
+    except BuildQueueError as exc:
+        raise BuildQueueError(f"could not read {config_path}: {exc}") from exc
+    return hashlib.sha256(data).hexdigest()
+
+
+def _generation_digest(generation_id: str | None) -> str:
+    if not generation_id:
+        return ""
+    return hashlib.sha256(generation_id.encode("utf-8")).hexdigest()
+
+
+def compute_cache_key(
+    repo: Path,
+    spec: BuildSpec,
+    *,
+    repo_name: str,
+    generation_id: str | None = None,
+    config_digest: str | None = None,
+) -> CacheKey:
     """Compute (or explain why it cannot compute) this request's content-address.
 
     Every failure mode names itself in ``degraded_reason`` rather than
@@ -336,6 +652,10 @@ def compute_cache_key(repo: Path, spec: BuildSpec, *, repo_name: str) -> CacheKe
         feature_set=" ".join(spec.command),
         toolchain_fingerprint=fingerprint or "unpinned",
         target_triple=_target_triple(spec),
+        config_digest=config_digest or _config_digest(repo),
+        spec_digest=_spec_digest(spec),
+        generation_id=generation_id or "",
+        generation_digest=_generation_digest(generation_id),
     )
 
 
@@ -357,68 +677,245 @@ def _read_manifest(
     key_digest: str, path: Path | str | None = None
 ) -> dict[str, Any] | None:
     manifest_path = _manifest_path(key_digest, path)
-    if not manifest_path.exists():
-        return None
     try:
-        return json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        raw = _read_bounded_regular_file(manifest_path, _MAX_MANIFEST_BYTES)
+        value = json.loads(raw.decode("utf-8"))
+    except (BuildQueueError, UnicodeDecodeError, json.JSONDecodeError):
         return None
+    return value if isinstance(value, dict) else None
+
+
+def _artifact_path_is_safe(root: Path, candidate: Path) -> bool:
+    """Require a stored artifact below root with no symlink components."""
+
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError:
+        return False
+    current = root
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            return False
+    return True
 
 
 def _manifest_is_valid(
-    manifest: dict[str, Any], path: Path | str | None = None
+    manifest: dict[str, Any],
+    path: Path | str | None = None,
+    key_digest: str | None = None,
 ) -> bool:
     """A manifest is only a hit if every artifact it lists is STILL on disk with
     the recorded checksum — gc or an out-of-band deletion must degrade to a
     miss, never to serving a dangling reference.
     """
-    for entry in manifest.get("artifacts", []):
-        artifact_path = Path(entry["stored_at"])
-        if not artifact_path.is_file():
+    # RMDD-10 manifests are published before terminal WorkItem commit.  A
+    # restart must not serve that intermediate state as a cache hit.  Legacy
+    # manifests have no schema/state marker and remain readable during the
+    # explicit migration window.
+    expected_key = key_digest or manifest.get("key")
+    if manifest.get("schema") == "build-artifact:v2" and (
+        manifest.get("publication_state") != "committed"
+        or not isinstance(expected_key, str)
+        or manifest.get("key") != expected_key
+    ):
+        return False
+    expected_root: Path | None = None
+    if path is not None and isinstance(expected_key, str) and expected_key:
+        try:
+            key_dir = _artifact_root(path) / expected_key
+            artifacts_dir = key_dir / "artifacts"
+            if key_dir.is_symlink() or artifacts_dir.is_symlink():
+                return False
+            expected_root = artifacts_dir.resolve(strict=True)
+        except (OSError, ValueError):
             return False
-        if _sha256_file(artifact_path) != entry["sha256"]:
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts or len(artifacts) > 4096:
+        return False
+    total_bytes = 0
+    for entry in artifacts:
+        if not isinstance(entry, dict):
+            return False
+        try:
+            artifact_path = Path(entry["stored_at"])
+        except (KeyError, TypeError):
+            return False
+        if expected_root is not None:
+            try:
+                if not _artifact_path_is_safe(expected_root, artifact_path):
+                    return False
+                artifact_path.resolve(strict=True).relative_to(expected_root)
+            except (OSError, ValueError):
+                return False
+        try:
+            artifact_stat = os.stat(artifact_path, follow_symlinks=False)
+            if not stat.S_ISREG(artifact_stat.st_mode):
+                return False
+            checksum = entry["sha256"]
+            if not isinstance(checksum, str) or len(checksum) > 256:
+                return False
+            declared_bytes = int(entry.get("bytes", artifact_stat.st_size))
+            if (
+                isinstance(entry.get("bytes"), bool)
+                or declared_bytes < 0
+                or declared_bytes > _MAX_LEGACY_ARTIFACT_BYTES
+                or artifact_stat.st_size != declared_bytes
+            ):
+                return False
+        except (KeyError, OSError, TypeError, ValueError):
+            return False
+        total_bytes += declared_bytes
+        if total_bytes > _MAX_LEGACY_ARTIFACT_BYTES:
+            return False
+        try:
+            if _sha256_file(artifact_path, max_bytes=declared_bytes) != checksum:
+                return False
+        except (BuildQueueError, OSError):
             return False
     return True
 
 
-def _sha256_file(path: Path) -> str:
+def _migrate_legacy_manifest(
+    key: CacheKey, manifest: dict[str, Any], path: Path | str | None = None
+) -> dict[str, Any]:
+    """Return a read-only v2 compatibility projection of a v1 manifest.
+
+    The projection deliberately is *not* written under the v2 key: a v2 alias
+    pointing at v1 bytes would become a dangling cache hit when legacy GC runs.
+    New durable publications own their bytes under the immutable v2 directory;
+    old bytes remain readable only through this explicit migration window.
+    """
+
+    migrated = dict(manifest)
+    migrated.update(
+        {
+            "key": key.digest,
+            "schema": "build-artifact:v2",
+            "publication_state": "committed",
+            "migration": "legacy-v1-key-compatible",
+            "migrated_from": key.legacy_digest,
+            "components": key.components(),
+        }
+    )
+    return migrated
+
+
+def _cache_manifest(
+    key: CacheKey, path: Path | str | None = None
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Read a v2 hit, or return a non-owning v1 compatibility projection."""
+
+    current = _read_manifest(key.digest, path)
+    if current is not None and _manifest_is_valid(current, path, key.digest):
+        return current, None
+    # Read paths never mutate the cache.  In particular, a v2 ``published``
+    # manifest is the live producer's crash-recovery evidence until the
+    # durable WorkItem commits it; only the authority-aware artifact store may
+    # quarantine it after proving the exact owner/fence is stale.
+    legacy = _read_manifest(key.legacy_digest, path)
+    if legacy is not None and _manifest_is_valid(legacy, path, key.legacy_digest):
+        return _migrate_legacy_manifest(key, legacy, path), key.legacy_digest
+    return None, None
+
+
+def _sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            initial = os.fstat(handle.fileno())
+            if not stat.S_ISREG(initial.st_mode):
+                raise BuildQueueError(f"artifact is not a regular file: {path}")
+            if max_bytes is not None and initial.st_size > max_bytes:
+                raise BuildQueueError("artifact exceeds its bounded byte limit")
+            copied = 0
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                copied += len(chunk)
+                if max_bytes is not None and copied > max_bytes:
+                    raise BuildQueueError("artifact exceeds its bounded byte limit")
+                digest.update(chunk)
+            final = os.fstat(handle.fileno())
+            if (
+                final.st_dev != initial.st_dev
+                or final.st_ino != initial.st_ino
+                or final.st_size != copied
+            ):
+                raise BuildQueueError("artifact changed while it was checksummed")
+    except OSError as exc:
+        raise BuildQueueError(f"could not checksum artifact {path}") from exc
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
     return digest.hexdigest()
 
 
 def _publish_artifacts(
     build_tree: Path, spec: BuildSpec, key_digest: str, path: Path | str | None = None
 ) -> list[dict[str, Any]]:
-    workdir = build_tree / spec.workdir
+    raw_workdir = build_tree / spec.workdir
+    _reject_symlink_path(raw_workdir)
+    workdir = raw_workdir.resolve(strict=True)
+    tree = Path(build_tree).resolve(strict=True)
+    try:
+        workdir.relative_to(tree)
+    except ValueError as exc:
+        raise BuildQueueError("legacy artifact workdir escapes the build tree") from exc
     dest_dir = _artifact_root(path) / key_digest / "artifacts"
+    _reject_symlink_path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     published: list[dict[str, Any]] = []
+    total_bytes = 0
+    try:
+        from repository_manager.build_artifacts import (
+            ArtifactStoreError,
+            _bounded_matching_files,
+        )
+
+        matches_by_pattern = _bounded_matching_files(
+            workdir,
+            tuple(spec.artifacts),
+            max_entries=_MAX_LEGACY_SCAN_ENTRIES,
+            max_files=_MAX_LEGACY_ARTIFACTS,
+            max_bytes=_MAX_LEGACY_ARTIFACT_BYTES,
+        )
+    except ArtifactStoreError as exc:
+        raise BuildQueueError(str(exc)) from exc
     for pattern in spec.artifacts:
-        matches = sorted(str(p) for p in workdir.glob(pattern) if p.is_file())
+        matches = matches_by_pattern[pattern]
         if not matches:
             raise BuildQueueError(
                 f"build spec {spec.name!r} declared artifact pattern {pattern!r} "
                 "but the build produced no file matching it — a build that "
                 "silently produces nothing is a failure, not a success."
             )
-        for match in matches:
-            src = Path(match)
+        for src in matches:
             relative = src.relative_to(workdir)
             dest = dest_dir / relative
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
+            copied = _copy_legacy_file_no_follow(
+                src,
+                dest,
+                max_bytes=_MAX_LEGACY_ARTIFACT_BYTES - total_bytes,
+            )
+            total_bytes += copied
+            if total_bytes > _MAX_LEGACY_ARTIFACT_BYTES:
+                raise BuildQueueError("legacy artifact bytes exceed their bound")
             published.append(
                 {
                     "pattern": pattern,
                     "relative_path": str(relative),
                     "stored_at": str(dest),
                     "sha256": _sha256_file(dest),
-                    "bytes": dest.stat().st_size,
+                    "bytes": copied,
                 }
             )
+            if len(published) > _MAX_LEGACY_ARTIFACTS:
+                raise BuildQueueError("legacy artifact count exceeds its bound")
     return published
 
 
@@ -432,8 +929,22 @@ def request(
     colocated: bool = False,
     owner: dict[str, Any] | None = None,
     wait_timeout: int = 60,
+    generation_id: str | None = None,
+    job_service: Any | None = None,
+    build_service: Any | None = None,
+    tenant_id: str = "",
+    owner_id: str = "",
+    session_id: str = "",
 ) -> dict[str, Any]:
-    """Serve a build from cache, or build it and publish the result.
+    """Submit a durable build, or use the legacy synchronous compatibility path.
+
+    When ``job_service``/``build_service`` is supplied, a cache miss returns
+    immediately with the existing durable RepositoryJobService WorkItem ID.
+    The worker owns resource admission, materialization, execution, and
+    publication.  The no-service path remains intentionally synchronous for
+    pre-RMDD-20 CLI/MCP compatibility; it is not production authority and is
+    kept only so old callers can migrate without invalidating existing cache
+    keys or artifacts.
 
     Two requests for the SAME computable key: the second waits (bounded by
     ``wait_timeout``) on the first's in-flight :class:`~task_queue.Task` and
@@ -442,11 +953,35 @@ def request(
     to the ``"build"`` execution class's pool cap; identical keys serialise
     through the Task check below, not through the pool.
     """
+    if build_service is not None or job_service is not None:
+        from repository_manager.build_service import BuildService
+
+        service = build_service or BuildService(
+            job_service,
+            tenant_id=tenant_id or "repository-manager",
+            owner_id=owner_id
+            or (owner.get("owner_id") if isinstance(owner, dict) else "")
+            or "repository-manager",
+            session_id=session_id
+            or (owner.get("session") if isinstance(owner, dict) else "")
+            or "build-request",
+        )
+        return service.submit(
+            repo_path=repo_path,
+            spec_name=spec_name,
+            generation_id=generation_id,
+        )
+
     scope = lane_scope(repo_path)
     config = load_config(scope.tree)
     spec = config.spec(spec_name)
-    repo_name = scope.main_tree.name
-    key = compute_cache_key(scope.tree, spec, repo_name=repo_name)
+    repo_name = stable_repository_id(scope.main_tree)
+    key = compute_cache_key(
+        scope.tree,
+        spec,
+        repo_name=repo_name,
+        generation_id=generation_id,
+    )
 
     if not key.computable:
         result = _build(
@@ -458,8 +993,10 @@ def request(
         return result
 
     digest = key.digest
-    manifest = _read_manifest(digest, scope.tree)
-    if manifest and _manifest_is_valid(manifest, scope.tree):
+    manifest, migrated_from = _cache_manifest(key, scope.tree)
+    if manifest and (
+        migrated_from is not None or _manifest_is_valid(manifest, scope.tree, digest)
+    ):
         return {
             "ok": True,
             "cached": True,
@@ -468,6 +1005,7 @@ def request(
             "components": key.components(),
             "artifacts": manifest["artifacts"],
             "built_at": manifest.get("built_at"),
+            **({"migrated_from": migrated_from} if migrated_from else {}),
         }
 
     # D-CDX-13 — the check ("is a build for this key already running?") and
@@ -488,7 +1026,7 @@ def request(
         waited = _wait_for_task(digest, scope.tree, timeout=wait_timeout)
         if waited:
             manifest = _read_manifest(digest, scope.tree)
-            if manifest and _manifest_is_valid(manifest, scope.tree):
+            if manifest and _manifest_is_valid(manifest, scope.tree, digest):
                 return {
                     "ok": True,
                     "cached": True,
@@ -509,7 +1047,7 @@ def request(
             # then give up cleanly rather than looping forever.
             waited = _wait_for_task(digest, scope.tree, timeout=wait_timeout)
             manifest = _read_manifest(digest, scope.tree) if waited else None
-            if manifest and _manifest_is_valid(manifest, scope.tree):
+            if manifest and _manifest_is_valid(manifest, scope.tree, digest):
                 return {
                     "ok": True,
                     "cached": True,
@@ -739,17 +1277,19 @@ def status(
         manifest = _read_manifest(key, scope.tree)
         task = tq.find_task("build", key, path=scope.tree)
         return {
-            "repo": scope.main_tree.name,
+            "repo": stable_repository_id(scope.main_tree),
             "key": key,
-            "cached": bool(manifest and _manifest_is_valid(manifest, scope.tree)),
+            "cached": bool(manifest and _manifest_is_valid(manifest, scope.tree, key)),
             "manifest": manifest,
             "task": task.to_record() if task else None,
         }
     config = load_config(scope.tree)
     spec = config.spec(spec_name)
-    computed = compute_cache_key(scope.tree, spec, repo_name=scope.main_tree.name)
+    computed = compute_cache_key(
+        scope.tree, spec, repo_name=stable_repository_id(scope.main_tree)
+    )
     return {
-        "repo": scope.main_tree.name,
+        "repo": stable_repository_id(scope.main_tree),
         "spec": spec.name,
         "computable": computed.computable,
         "degraded_reason": computed.degraded_reason,
@@ -762,9 +1302,9 @@ def status(
 def artifact_paths(*, repo_path: Path | str | None = None, key: str) -> dict[str, Any]:
     scope = lane_scope(repo_path)
     manifest = _read_manifest(key, scope.tree)
-    if manifest is None:
+    if manifest is None or not _manifest_is_valid(manifest, scope.tree, key):
         raise BuildQueueError(
-            f"no cached build for key {key!r} in {scope.main_tree.name}"
+            f"no committed cached build for key {key!r} in {scope.main_tree.name}"
         )
     return {"key": key, "artifacts": manifest.get("artifacts", [])}
 
@@ -781,7 +1321,9 @@ def explain(
     scope = lane_scope(repo_path)
     config = load_config(scope.tree)
     spec = config.spec(spec_name)
-    current = compute_cache_key(scope.tree, spec, repo_name=scope.main_tree.name)
+    current = compute_cache_key(
+        scope.tree, spec, repo_name=stable_repository_id(scope.main_tree)
+    )
     manifest = _read_manifest(key, scope.tree)
     if manifest is None:
         return {
@@ -833,16 +1375,46 @@ def gc(
     scope = lane_scope(repo_path)
     root = _artifact_root(scope.tree)
     entries: list[tuple[str, dict[str, Any]]] = []
-    for entry_dir in sorted(root.iterdir()) if root.is_dir() else []:
-        manifest = _read_manifest(entry_dir.name, scope.tree)
-        if manifest:
-            entries.append((entry_dir.name, manifest))
+    scan_error: str | None = None
+    try:
+        iterator = os.scandir(root)
+    except OSError as exc:
+        iterator = None
+        scan_error = str(exc)
+    if iterator is not None:
+        with iterator:
+            scanned = 0
+            for entry in iterator:
+                scanned += 1
+                if scanned > _MAX_LEGACY_SCAN_ENTRIES:
+                    scan_error = "legacy cache scan exceeds its entry bound"
+                    break
+                if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                    continue
+                manifest = _read_manifest(entry.name, scope.tree)
+                if manifest:
+                    entries.append((entry.name, manifest))
+    if scan_error is not None:
+        return {
+            "repo": stable_repository_id(scope.main_tree),
+            "removed": [],
+            "kept": [digest for digest, _ in entries],
+            "reclaimed_bytes": 0,
+            "errors": [scan_error],
+        }
     entries.sort(key=lambda pair: pair[1].get("built_at", ""), reverse=True)
     keep_ids = {digest for digest, _ in entries[:keep_recent]}
     cutoff = time.time() - max_age_days * 86400
     removed: list[str] = []
     kept: list[str] = []
+    reclaimed_bytes = 0
     for digest, manifest in entries:
+        if manifest.get("schema") == "build-artifact:v2":
+            # Durable WorkItems are not represented in the compatibility task
+            # queue.  Without an authority probe this surface must never
+            # reclaim their live or waiting publications.
+            kept.append(digest)
+            continue
         task = tq.find_task("build", digest, path=scope.tree)
         if task is not None and task.state == tq.RUNNING:
             kept.append(digest)
@@ -855,21 +1427,25 @@ def gc(
             import datetime as _dt
 
             age_ok = _dt.datetime.fromisoformat(built_at).timestamp() < cutoff
-        except ValueError:
+        except (TypeError, ValueError):
             age_ok = True  # unparsable timestamp: treat as old enough to reclaim
         if not age_ok:
             kept.append(digest)
             continue
         entry_dir = root / digest
-        total_bytes = sum(f.stat().st_size for f in entry_dir.rglob("*") if f.is_file())
+        try:
+            total_bytes = _bounded_legacy_tree_size(entry_dir)
+        except BuildQueueError:
+            kept.append(digest)
+            continue
         shutil.rmtree(entry_dir, ignore_errors=True)
         removed.append(digest)
-        gc.reclaimed_bytes = getattr(gc, "reclaimed_bytes", 0) + total_bytes  # type: ignore[attr-defined]
+        reclaimed_bytes += total_bytes
     return {
-        "repo": scope.main_tree.name,
+        "repo": stable_repository_id(scope.main_tree),
         "removed": removed,
         "kept": kept,
-        "reclaimed_bytes": getattr(gc, "reclaimed_bytes", 0),
+        "reclaimed_bytes": reclaimed_bytes,
     }
 
 
@@ -883,6 +1459,12 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
             spec_name=kwargs.get("spec", "") or "",
             colocated=bool(kwargs.get("colocated", False)),
             wait_timeout=int(kwargs.get("wait_timeout") or 60),
+            generation_id=kwargs.get("generation_id"),
+            job_service=kwargs.get("job_service"),
+            build_service=kwargs.get("build_service"),
+            tenant_id=kwargs.get("tenant_id", "") or "",
+            owner_id=kwargs.get("owner_id", "") or "",
+            session_id=kwargs.get("session_id", "") or "",
         ),
         "status": lambda: status(
             repo_path=kwargs.get("path"),
