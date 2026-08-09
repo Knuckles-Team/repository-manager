@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import os
+import hashlib
+import io
 import signal
 import sys
 import threading
@@ -67,6 +68,115 @@ def test_bounded_log_sink_streams_redacted_tail_without_growth() -> None:
     assert snapshot.truncated
     assert snapshot.tail == b"-tail"
     assert sink.tail_text("stdout") == "-tail"
+
+
+def test_bounded_log_sink_redacts_secrets_across_one_byte_boundaries() -> None:
+    secret = b"boundary-secret"
+    output = b"prefix-" + secret + b"-suffix"
+    written: list[tuple[str, bytes]] = []
+    sink = BoundedLogSink(
+        max_stdout_bytes=4096,
+        max_stderr_bytes=4096,
+        terminal_tail_bytes=4096,
+        writer=lambda stream, chunk: written.append((stream, chunk)),
+        redactions=(secret.decode(),),
+    )
+
+    for byte in output:
+        sink.write("stdout", bytes((byte,)))
+    for byte in b"err-" + secret + b"-end":
+        sink.write("stderr", bytes((byte,)))
+    sink.close()
+
+    stdout_written = b"".join(chunk for stream, chunk in written if stream == "stdout")
+    stderr_written = b"".join(chunk for stream, chunk in written if stream == "stderr")
+    stdout_snapshot = sink.snapshot("stdout")
+    stderr_snapshot = sink.snapshot("stderr")
+    assert secret not in stdout_written
+    assert secret not in stderr_written
+    assert secret not in stdout_snapshot.tail
+    assert secret not in stderr_snapshot.tail
+    assert secret not in sink.tail_bytes("stdout")
+    assert secret not in sink.tail_bytes("stderr")
+    assert stdout_snapshot.total_bytes == len(output)
+    assert stderr_snapshot.total_bytes == len(b"err-" + secret + b"-end")
+    assert stdout_snapshot.content_address == hashlib.sha256(stdout_written).hexdigest()
+    assert stderr_snapshot.content_address == hashlib.sha256(stderr_written).hexdigest()
+
+
+def test_bounded_log_sink_abort_discards_unresolved_redaction_overlap() -> None:
+    secret = b"boundary-secret"
+    written: list[bytes] = []
+    sink = BoundedLogSink(
+        max_stdout_bytes=4096,
+        terminal_tail_bytes=4096,
+        writer=lambda _stream, chunk: written.append(chunk),
+        redactions=(secret.decode(),),
+    )
+
+    sink.write("stdout", b"prefix-" + secret[:8])
+    sink.abort()
+    sink.close()
+
+    assert b"".join(written) == b"prefix-"
+    assert sink.tail_bytes("stdout") == b"prefix-"
+    assert secret not in b"".join(written)
+    assert secret not in sink.tail_bytes("stdout")
+
+
+class _OneByteReader(io.BytesIO):
+    """Popen-like reader that adversarially splits every output byte."""
+
+    def read(self, _size: int | None = None) -> bytes:
+        return super().read(1)
+
+
+def test_injected_log_sink_redacts_reader_boundaries_and_result_tails(
+    tmp_path: Path,
+) -> None:
+    credential = "injected-boundary-secret"
+    raw_stdout = f"prefix-{credential}-suffix\n".encode()
+    raw_stderr = f"error-{credential}-end\n".encode()
+    fake_process = FakeProcess(stdout=b"", stderr=b"")
+    fake_process.stdout = _OneByteReader(raw_stdout)
+    fake_process.stderr = _OneByteReader(raw_stderr)
+    supervisor = ProcessSupervisor(
+        popen_factory=lambda *_args, **_kwargs: fake_process,
+    )
+    written: list[tuple[str, bytes]] = []
+    injected_sink = BoundedLogSink(
+        max_stdout_bytes=4096,
+        max_stderr_bytes=4096,
+        terminal_tail_bytes=4096,
+        writer=lambda stream, chunk: written.append((stream, chunk)),
+    )
+    result = LocalExecutor(
+        (tmp_path,),
+        environment={"RMDD_SECRET": credential},
+        inherit_environment=False,
+        supervisor=supervisor,
+    ).run(
+        _command(tmp_path, "fake", environment_refs=("RMDD_SECRET",)),
+        log_sink=injected_sink,
+    )
+
+    stdout_written = b"".join(chunk for stream, chunk in written if stream == "stdout")
+    stderr_written = b"".join(chunk for stream, chunk in written if stream == "stderr")
+    assert result.outcome == ExecutionOutcome.SUCCEEDED
+    assert credential not in stdout_written.decode()
+    assert credential not in stderr_written.decode()
+    assert credential not in result.stdout_tail
+    assert credential not in result.stderr_tail
+    assert credential not in injected_sink.tail_text("stdout")
+    assert credential not in injected_sink.tail_text("stderr")
+    assert (
+        injected_sink.snapshot("stdout").content_address
+        == hashlib.sha256(stdout_written).hexdigest()
+    )
+    assert (
+        injected_sink.snapshot("stderr").content_address
+        == hashlib.sha256(stderr_written).hexdigest()
+    )
 
 
 def test_cancellation_is_idempotent_and_preserves_first_reason() -> None:

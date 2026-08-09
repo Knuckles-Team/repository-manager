@@ -10,6 +10,8 @@ from .bounded_log import (
     LogSink,
     LogSinkClosed,
     LogSnapshot,
+    RedactingLogSink,
+    StreamingRedactor,
     StreamName,
 )
 from .cancellation import CancellationSnapshot, CancellationToken
@@ -39,9 +41,11 @@ __all__ = [
     "LogSink",
     "LogSinkClosed",
     "LogSnapshot",
+    "RedactingLogSink",
     "ProcessLike",
     "ProcessSupervisor",
     "RealClock",
     "StreamName",
+    "StreamingRedactor",
     "TerminationReport",
 ]

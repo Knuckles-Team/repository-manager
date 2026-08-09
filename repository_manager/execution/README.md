@@ -37,9 +37,16 @@ before the optional `publish` callback.  Fence loss calls the log sink's
 `BoundedLogSink` streams at most the configured per-stream capture limit to an
 injected writer and retains only a bounded UTF-8 terminal tail.  Environment
 references are resolved by `ApprovedEnvironment`; selected values and common
-credential-named inherited variables are redacted before output reaches the
-writer or result tail.  Full content-addressed log publication is deliberately
-left to the later artifact/provenance consumers.
+credential-named inherited variables are redacted by a per-stream streaming
+scanner before output reaches the writer, digest, or result tail.  The scanner
+holds at most `max_secret_length - 1` bytes of unresolved overlap, flushes that
+overlap on normal close, and drops it on abort so a quarantined attempt cannot
+release a split credential.  `total_bytes` remains the raw bytes read from the
+child; retained/discarded counters, the digest, and the tail describe the
+redacted byte stream, preserving the existing counter meaning while making
+replacement-marker length explicit.  An injected `LogSink` receives the same
+boundary-safe wrapper in `LocalExecutor`.  Full content-addressed log
+publication is deliberately left to the later artifact/provenance consumers.
 
 `FakeClock`, `FakeProcess`, and `FakeExecutor` are deterministic fixtures for
 the scheduler, WorkItem, and remote adapter lanes.  They do not bypass the

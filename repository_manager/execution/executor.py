@@ -19,7 +19,7 @@ from repository_manager.development import (
     RefusalCode,
 )
 
-from .bounded_log import BoundedLogSink, LogSink, StreamName
+from .bounded_log import BoundedLogSink, LogSink, RedactingLogSink, StreamName
 from .cancellation import CancellationToken
 from .process_supervisor import ProcessLike, ProcessSupervisor
 
@@ -131,35 +131,6 @@ class ExecutionRefused(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
-
-
-class _LogAdapter:
-    """Add redaction to arbitrary injected log sinks."""
-
-    def __init__(self, sink: LogSink, secrets: Sequence[str]) -> None:
-        self._sink = sink
-        self._redactions = tuple(
-            sorted(
-                {secret.encode("utf-8") for secret in secrets if secret},
-                key=len,
-                reverse=True,
-            )
-        )
-
-    def write(self, stream: StreamName, chunk: bytes) -> None:
-        redacted = chunk
-        for secret in self._redactions:
-            redacted = redacted.replace(secret, b"[REDACTED]")
-        self._sink.write(stream, redacted)
-
-    def close(self) -> None:
-        self._sink.close()
-
-    def abort(self) -> None:
-        self._sink.abort()
-
-    def tail_text(self, stream: StreamName) -> str:
-        return self._sink.tail_text(stream)
 
 
 class LocalExecutor:
@@ -288,7 +259,7 @@ class LocalExecutor:
             redactions=secrets,
         )
         if log_sink is not None:
-            sink = _LogAdapter(log_sink, secrets)
+            sink = RedactingLogSink(log_sink, secrets)
 
         if token.is_cancelled():
             return self._finish_without_process(
