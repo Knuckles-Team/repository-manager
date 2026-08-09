@@ -50,7 +50,9 @@ from repository_manager.resource_scheduler import (
     reservation_id_for,
 )
 
-NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
+# Keep the shared scenario clock ahead of the in-memory native port's
+# wall-clock liveness checks while leaving every scheduler decision explicit.
+NOW = datetime(2100, 1, 1, 12, 0, tzinfo=UTC)
 
 
 def _host(
