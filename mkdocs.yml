@@ -94,4 +94,5 @@ nav:
   - Phased Maintenance: phased_maintenance.md
   - Phased Push: phased_push.md
   - Merge Queue (universal): merge-queue.md
+  - Adapter boundaries: adapter-extraction.md
   - Concepts: concepts.md
