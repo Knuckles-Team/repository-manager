@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
+import repository_manager.development.jobs as jobs
 from repository_manager.development.enums import JobState
 from repository_manager.development.jobs import (
     DurableJobView,
@@ -25,6 +26,7 @@ from repository_manager.development.jobs import (
 from repository_manager.development.payloads import (
     BuildExecutionDescriptor,
     RepositoryOperationPayload,
+    cache_key_digest_from_components,
     canonical_payload_json,
 )
 
@@ -100,6 +102,23 @@ def test_golden_payload_and_closed_type_adapter_match_au() -> None:
         BuildExecutionDescriptor.model_validate({**raw, "unknown": "rejected"})
 
 
+def test_cache_digest_does_not_authorize_a_mismatched_tree_component() -> None:
+    raw = _payload()
+    raw.pop("payload_digest", None)
+    components = {
+        str(item["name"]): str(item["value"])
+        for item in raw["cache_key_components"]
+        if isinstance(item, dict)
+    }
+    components["tree_sha"] = "f" * 40
+    raw["cache_key_components"] = [
+        {"name": name, "value": value} for name, value in components.items()
+    ]
+    raw["cache_key_digest"] = cache_key_digest_from_components(components)
+    with pytest.raises((ValidationError, ValueError), match="tree"):
+        BuildExecutionDescriptor.model_validate(raw)
+
+
 @pytest.mark.parametrize(
     "update",
     [
@@ -171,6 +190,71 @@ def test_fake_typed_input_conflict_and_tamper_fail_closed() -> None:
     port.execution_inputs[submitted.job.job_id] = tampered  # type: ignore[assignment]
     with pytest.raises(RepositoryJobServiceError) as exc_info:
         service.get_exact_execution_input(submitted.job.job_id, auth=_auth())
+    assert exc_info.value.code == RepositoryJobServiceCode.INPUT_CONFLICT.value
+
+
+def test_typed_build_repair_preserves_exact_input_and_replays_idempotently() -> None:
+    port = FakeRepositoryJobPort()
+    service = RepositoryJobService(port)
+    source = service.submit(
+        _request(_payload(), key="typed-repair"), auth=_auth(), now=NOW
+    )
+    _terminal(port, source.job.job_id)
+
+    observation = ReconciliationObservation(
+        job_id=source.job.job_id,
+        worktree_present=False,
+        observed_at=NOW,
+    )
+    first = service.reconcile(observation, auth=_auth(), enqueue_repairs=True, now=NOW)
+    proposal = first.findings[0].repair
+    assert proposal is not None and proposal.enqueued_job_id is not None
+    repaired = port.rows[proposal.enqueued_job_id]
+    assert repaired.operation == "build"
+    assert repaired.correlation_id == source.job.job_id
+    assert repaired.retry_class == "reconciliation"
+    exact = service.get_exact_execution_input(proposal.enqueued_job_id, auth=_auth())
+    assert exact is not None
+    assert exact.payload_digest == _payload()["payload_digest"]
+    assert exact.model_dump(mode="json", exclude_none=False) == _payload()
+
+    repair_request = jobs._repair_request_mapping(
+        source.job,
+        proposal,
+        owner_id="owner-a",
+        session_id="session-a",
+        operation_payload=exact,
+    )
+    assert repair_request["operation"] == "build"
+    assert repair_request["correlation_id"] == source.job.job_id
+    assert repair_request["repair_intent_digest"] == repair_request["input_digest"]
+    assert repair_request["operation_payload"] == exact.model_dump(
+        mode="json", exclude_none=False
+    )
+
+    replay = service.reconcile(
+        observation.model_copy(update={"observed_at": NOW.replace(second=1)}),
+        auth=_auth(),
+        enqueue_repairs=True,
+        now=NOW.replace(second=1),
+    )
+    replay_proposal = replay.findings[0].repair
+    assert replay_proposal is not None
+    assert replay_proposal.enqueued_job_id == proposal.enqueued_job_id
+    assert len(port.rows) == 2
+
+    changed = BuildExecutionDescriptor.model_validate(_payload()).model_copy(
+        update={"argv": ("cargo", "check")}
+    )
+    changed_request = jobs._repair_request_mapping(
+        source.job,
+        proposal,
+        owner_id="owner-a",
+        session_id="session-a",
+        operation_payload=changed,
+    )
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        port.submit(changed_request, now=NOW)
     assert exc_info.value.code == RepositoryJobServiceCode.INPUT_CONFLICT.value
 
 

@@ -1228,11 +1228,20 @@ def _repair_request_mapping(
         "classifications": tuple(proposal.classifications),
     }
     repair_intent_digest = canonical_digest(repair_intent)
+    # A typed build repair is still an executable build input.  The repair
+    # identity/intent remains deterministic in its request id, idempotency
+    # key, correlation, retry class, and intent digest; only the operation
+    # discriminator stays build so the closed payload union remains valid.
+    repair_operation = (
+        "build"
+        if job.operation == "build" and operation_payload is not None
+        else _REPAIR_OPERATION
+    )
     request.update(
         {
             "request_id": f"repair:{proposal.repair_id}:request",
             "idempotency_key": proposal.idempotency_key,
-            "operation": _REPAIR_OPERATION,
+            "operation": repair_operation,
             "session_id": session_id or job.session_id,
             "correlation_id": job.job_id,
             "retry_class": "reconciliation",
