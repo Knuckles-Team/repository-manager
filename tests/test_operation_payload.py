@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 import repository_manager.development.jobs as jobs
 from repository_manager.development.enums import JobState
@@ -389,10 +389,6 @@ def test_service_revalidates_malformed_authority_summary() -> None:
 def test_production_submit_and_exact_read_accept_foreign_au_model(monkeypatch) -> None:
     raw_payload = _payload()
 
-    class ForeignAUPayload(BaseModel):
-        model_config = ConfigDict(extra="allow")
-
-    foreign_payload = ForeignAUPayload.model_validate(raw_payload)
     job_id = "rmjob:11111111-1111-1111-1111-111111111111"
     view_raw = {
         "contract_version": "1",
@@ -428,13 +424,6 @@ def test_production_submit_and_exact_read_accept_foreign_au_model(monkeypatch) -
             calls["get"] = kwargs
             return SimpleNamespace(model_dump=lambda **_: view_raw)
 
-        @staticmethod
-        def get_repository_operation_payload(
-            *_args: object, **kwargs: object
-        ) -> object:
-            calls["exact"] = kwargs
-            return foreign_payload
-
     monkeypatch.setattr(
         GraphRepositoryJobPort,
         "_authority_module",
@@ -446,12 +435,13 @@ def test_production_submit_and_exact_read_accept_foreign_au_model(monkeypatch) -
 
     assert result.job.operation_payload_digest == raw_payload["payload_digest"]
     assert "operation_payload" not in result.job.model_dump(mode="json")
-    exact = port.get_exact_execution_input(
-        job_id, tenant_id="tenant-a", owner_id="owner-a"
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        port.get_exact_execution_input(job_id, tenant_id="tenant-a", owner_id="owner-a")
+    assert (
+        exc_info.value.code
+        == RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE.value
     )
-    assert isinstance(exact, BuildExecutionDescriptor)
-    assert exact.payload_digest == raw_payload["payload_digest"]
-    assert calls["exact"] == {"tenant": "tenant-a", "owner_id": "owner-a"}
+    assert "exact" not in calls
 
 
 def test_unexpected_authority_exception_text_stays_internal(monkeypatch) -> None:

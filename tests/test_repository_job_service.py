@@ -704,6 +704,18 @@ def test_production_submission_requires_trusted_profile_registry() -> None:
     assert exc_info.value.code == RepositoryJobServiceCode.INTERNAL.value
 
 
+def test_production_exact_input_refuses_before_public_row_lookup() -> None:
+    service = RepositoryJobService(GraphRepositoryJobPort(object()))
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        service.get_exact_execution_input(
+            "rmjob:11111111-1111-1111-1111-111111111111", auth=_auth()
+        )
+    assert (
+        exc_info.value.code
+        == RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE.value
+    )
+
+
 def test_production_submission_persists_resolved_admission_projection() -> None:
     prepared = GraphRepositoryJobPort(
         object(), profiles=default_resource_profiles()

@@ -103,6 +103,9 @@ class RepositoryJobServiceCode(StrEnum):
     DUPLICATE = RefusalCode.DUPLICATE_REQUEST.value
     INPUT_CONFLICT = "input_conflict"
     TYPED_EXECUTION_PAYLOAD_REQUIRED = "typed_execution_payload_required"
+    TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE = (
+        "typed_execution_payload_authority_unavailable"
+    )
     RECONCILIATION_REQUIRED = RefusalCode.RECONCILIATION_REQUIRED.value
     INTERNAL = RefusalCode.INTERNAL_ERROR.value
 
@@ -130,6 +133,9 @@ _SAFE_ERROR_MESSAGES: Mapping[RepositoryJobServiceCode, str] = {
     RepositoryJobServiceCode.DUPLICATE: "repository job idempotency key conflicts with immutable input",
     RepositoryJobServiceCode.INPUT_CONFLICT: "repository execution input conflicts with durable state",
     RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED: "typed repository execution input is required",
+    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE: (
+        "typed repository execution input authority is unavailable"
+    ),
     RepositoryJobServiceCode.RECONCILIATION_REQUIRED: "repository job requires reconciliation",
     RepositoryJobServiceCode.INTERNAL: "repository job authority failed",
 }
@@ -703,6 +709,10 @@ def _translate_authority_error(
     if is_conflict or is_authority_error:
         if "typed_execution_payload_required" in lowered:
             code = RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED
+        elif "typed_execution_payload_authority_unavailable" in lowered:
+            code = (
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+            )
         elif "input_conflict" in lowered:
             code = RepositoryJobServiceCode.INPUT_CONFLICT
         elif is_conflict:
@@ -902,6 +912,11 @@ class GraphRepositoryJobPort:
             deduplicated=bool(raw.get("deduplicated", False)),
         )
 
+    def has_execution_input_authority(self) -> bool:
+        """Report the absent EG-native capability port without probing rows."""
+
+        return False
+
     def get_exact_execution_input(
         self,
         job_id: str,
@@ -909,37 +924,22 @@ class GraphRepositoryJobPort:
         tenant_id: str,
         owner_id: str,
     ) -> BuildExecutionDescriptor | None:
-        """Read the typed body through AU's narrow authenticated seam.
+        """Refuse until EG supplies a verified opaque capability operation.
 
-        The ordinary ``get`` projection intentionally carries only the
-        operation-payload summary.  This method delegates the body read to AU
-        so tenant/owner checks, legacy refusal, and persistence tamper checks
-        remain authoritative; RM revalidates the returned model once more at
-        its own boundary before exposing it to a caller.
+        The old tenant/owner adapter accepted a caller-controlled owner string
+        and therefore could impersonate the submitter.  Public views remain
+        available, but no production Graph port may read executable bytes
+        until the native capability-aware port is injected.
         """
 
-        authority = self._authority_module()
-        try:
-            payload = authority.get_repository_operation_payload(
-                self.engine,
-                job_id,
-                tenant=tenant_id,
-                owner_id=owner_id,
-            )
-            if payload is None:
-                return None
-            try:
-                return operation_payload_from_mapping(payload)
-            except (TypeError, ValueError) as exc:
-                raise RepositoryJobServiceError(
-                    RepositoryJobServiceCode.INPUT_CONFLICT,
-                    _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
-                    job_id=job_id,
-                ) from exc
-        except RepositoryJobServiceError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - translate authority contract errors
-            raise _translate_authority_error(authority, exc) from exc
+        del tenant_id, owner_id
+        raise RepositoryJobServiceError(
+            RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+            _SAFE_ERROR_MESSAGES[
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+            ],
+            job_id=job_id,
+        )
 
     # Compatibility spelling for callers that use the shorter contract name;
     # both paths retain the exact same authorization and validation boundary.
@@ -1402,12 +1402,36 @@ class RepositoryJobService:
     ) -> BuildExecutionDescriptor | None:
         """Return the exact typed build body inside the authenticated scope.
 
-        Scope is established from the ordinary projection first, so a caller
-        cannot use this body-bearing method as a tenant/owner existence oracle.
-        The port result is revalidated and bound to the immutable projection
-        before it leaves the service.
+        A production port must report a native capability authority before any
+        public-row lookup; otherwise this method fails closed.  Test ports may
+        retain the legacy tenant/owner-shaped protocol, and their result is
+        still revalidated and bound to the immutable projection before it
+        leaves the service.
         """
 
+        capability_available = getattr(
+            self._port, "has_execution_input_authority", None
+        )
+        if callable(capability_available):
+            try:
+                if not capability_available():
+                    raise RepositoryJobServiceError(
+                        RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+                        _SAFE_ERROR_MESSAGES[
+                            RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+                        ],
+                        job_id=job_id,
+                    )
+            except RepositoryJobServiceError:
+                raise
+            except Exception as exc:
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+                    _SAFE_ERROR_MESSAGES[
+                        RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+                    ],
+                    job_id=job_id,
+                ) from exc
         view = self._visible(job_id, auth)
         try:
             payload = self._port.get_exact_execution_input(

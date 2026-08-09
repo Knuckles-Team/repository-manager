@@ -152,14 +152,20 @@ class BuildAuthority(Protocol):
 
     def heartbeat(self, job_id: str, claim: Mapping[str, Any]) -> bool: ...
 
-    def is_current(self, job_id: str, claim: Mapping[str, Any]) -> bool: ...
+    def has_execution_input_authority(self) -> bool: ...
+
+    def execution_input_capability(
+        self, job_id: str, claim: Mapping[str, Any]
+    ) -> str | None: ...
+
+    def is_current(self, job_id: str, capability: str) -> bool: ...
 
     def terminal_matches(
         self, job_id: str, claim: Mapping[str, Any], *, result_ref: str
     ) -> bool: ...
 
     def get_exact_execution_input(
-        self, job_id: str, *, claim: Mapping[str, Any]
+        self, job_id: str, *, capability: str
     ) -> BuildExecutionDescriptor | Mapping[str, Any] | None: ...
 
     def commit(
@@ -193,6 +199,58 @@ def _claim_attempt(claim: Mapping[str, Any], view: DurableJobView) -> int:
         raise BuildWorkerError(
             "durable build claim included an invalid attempt"
         ) from exc
+
+
+_MAX_EXECUTION_CAPABILITY_BYTES = 4096
+
+
+class NativeExecutionInputAuthority(Protocol):
+    """Injected native capability authority for private WorkItem input.
+
+    The token is opaque to RM.  This protocol is an adapter seam, not a wire
+    DTO: the future EG-native implementation authenticates the principal,
+    current lease/fence, and expiry before returning or verifying anything.
+    """
+
+    def issue_execution_input_capability(
+        self, job_id: str, *, tenant: str, claim: Mapping[str, Any]
+    ) -> str | None: ...
+
+    def read_exact_execution_input(
+        self, job_id: str, *, tenant: str, capability: str
+    ) -> object: ...
+
+    def verify_current_execution_capability(
+        self, job_id: str, *, tenant: str, capability: str
+    ) -> bool: ...
+
+
+def _opaque_execution_capability(value: object) -> str | None:
+    """Only bound an opaque native token; never inspect its contents."""
+
+    if not isinstance(value, str) or not value or value.strip() != value:
+        return None
+    if len(value.encode("utf-8")) > _MAX_EXECUTION_CAPABILITY_BYTES:
+        return None
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        return None
+    return value
+
+
+def _safe_execution_input_message(
+    code: RepositoryJobServiceCode,
+) -> str:
+    return {
+        RepositoryJobServiceCode.INPUT_CONFLICT: (
+            "repository execution input conflicts with durable state"
+        ),
+        RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED: (
+            "typed repository execution input is required"
+        ),
+        RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE: (
+            "typed repository execution input authority is unavailable"
+        ),
+    }.get(code, "typed repository execution input authority is unavailable")
 
 
 def _validate_claim_identity(
@@ -405,12 +463,20 @@ def _terminal_matches(
 class GraphBuildAuthority:
     """Production adapter over the existing Agent Utilities WorkItem verbs."""
 
-    def __init__(self, engine: Any, *, tenant_id: str, token: str) -> None:
+    def __init__(
+        self,
+        engine: Any,
+        *,
+        tenant_id: str,
+        token: str,
+        execution_input_authority: NativeExecutionInputAuthority | None = None,
+    ) -> None:
         if not tenant_id.strip() or not token.strip():
             raise ValueError("tenant_id and token must be non-blank")
         self.engine = engine
         self.tenant_id = tenant_id
         self.token = token
+        self.execution_input_authority = execution_input_authority
 
     @staticmethod
     def _authority() -> Any:
@@ -429,51 +495,87 @@ class GraphBuildAuthority:
 
         return GraphRepositoryJobPort._view(view)  # noqa: SLF001 - adapter boundary
 
-    def get_exact_execution_input(
-        self, job_id: str, *, claim: Mapping[str, Any]
-    ) -> BuildExecutionDescriptor | None:
-        """Read executable bytes only under the current native worker claim."""
+    def has_execution_input_authority(self) -> bool:
+        port = self.execution_input_authority
+        return port is not None and all(
+            callable(getattr(port, method, None))
+            for method in (
+                "issue_execution_input_capability",
+                "read_exact_execution_input",
+                "verify_current_execution_capability",
+            )
+        )
 
-        authority = self._authority()
-        reader = getattr(authority, "get_repository_operation_payload_for_claim", None)
-        if not callable(reader):
+    def execution_input_capability(
+        self, job_id: str, claim: Mapping[str, Any]
+    ) -> str | None:
+        port = self.execution_input_authority
+        if not self.has_execution_input_authority() or port is None:
+            return None
+        try:
+            return _opaque_execution_capability(
+                port.issue_execution_input_capability(
+                    job_id,
+                    tenant=self.tenant_id,
+                    claim=claim,
+                )
+            )
+        except Exception:
+            return None
+
+    def get_exact_execution_input(
+        self, job_id: str, *, capability: str
+    ) -> BuildExecutionDescriptor | None:
+        """Read bytes only through the injected native opaque-capability port."""
+
+        port = self.execution_input_authority
+        opaque_capability = _opaque_execution_capability(capability)
+        if (
+            not self.has_execution_input_authority()
+            or port is None
+            or opaque_capability is None
+        ):
             raise RepositoryJobServiceError(
-                RepositoryJobServiceCode.INTERNAL,
-                "repository job authority lacks claim-bound exact-input support",
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+                "typed repository execution input authority is unavailable",
                 job_id=job_id,
             )
         try:
-            return reader(
-                self.engine,
+            raw_payload = port.read_exact_execution_input(
                 job_id,
                 tenant=self.tenant_id,
-                claim=claim,
+                capability=opaque_capability,
             )
-        except getattr(authority, "RepositoryWorkItemConflict", ()) as exc:
+        except RepositoryJobServiceError as exc:
+            safe_codes = {
+                RepositoryJobServiceCode.INPUT_CONFLICT,
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED,
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+            }
+            code = (
+                RepositoryJobServiceCode(exc.code)
+                if exc.code in {item.value for item in safe_codes}
+                else RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+            )
+            raise RepositoryJobServiceError(
+                code,
+                _safe_execution_input_message(code),
+                job_id=job_id,
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - native errors are private
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+                "typed repository execution input authority is unavailable",
+                job_id=job_id,
+            ) from exc
+        if raw_payload is None:
+            return None
+        try:
+            return operation_payload_from_mapping(raw_payload)
+        except (TypeError, ValueError) as exc:
             raise RepositoryJobServiceError(
                 RepositoryJobServiceCode.INPUT_CONFLICT,
                 "repository execution input conflicts with durable state",
-                job_id=job_id,
-            ) from exc
-        except getattr(authority, "RepositoryWorkItemError", ()) as exc:
-            if (
-                type(exc) is getattr(authority, "RepositoryWorkItemError", None)
-                and str(exc) == "typed_execution_payload_required"
-            ):
-                raise RepositoryJobServiceError(
-                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED,
-                    "typed repository execution input is required",
-                    job_id=job_id,
-                ) from exc
-            raise RepositoryJobServiceError(
-                RepositoryJobServiceCode.UNAUTHORIZED,
-                "repository job is not authorized for this worker claim",
-                job_id=job_id,
-            ) from exc
-        except Exception as exc:  # noqa: BLE001 - never classify arbitrary text
-            raise RepositoryJobServiceError(
-                RepositoryJobServiceCode.INTERNAL,
-                "repository job authority failed",
                 job_id=job_id,
             ) from exc
 
@@ -497,12 +599,25 @@ class GraphBuildAuthority:
             )
         )
 
-    def is_current(self, job_id: str, claim: Mapping[str, Any]) -> bool:
-        view = self.get(job_id)
-        if view is None or view.state not in {JobState.LEASED, JobState.RUNNING}:
+    def is_current(self, job_id: str, capability: str) -> bool:
+        port = self.execution_input_authority
+        opaque_capability = _opaque_execution_capability(capability)
+        if (
+            not self.has_execution_input_authority()
+            or port is None
+            or opaque_capability is None
+        ):
             return False
-        current = view.lease_fence
-        return current is not None and current == _claim_fence(claim)
+        try:
+            return bool(
+                port.verify_current_execution_capability(
+                    job_id,
+                    tenant=self.tenant_id,
+                    capability=opaque_capability,
+                )
+            )
+        except Exception:
+            return False
 
     def terminal_matches(
         self, job_id: str, claim: Mapping[str, Any], *, result_ref: str
@@ -764,7 +879,7 @@ class BuildWorker:
         published = False
         terminal_committed = False
         try:
-            scope, spec, key, payload = self._execution_plan(
+            scope, spec, key, payload, execution_capability = self._execution_plan(
                 view,
                 repo_path=repo_path,
                 spec_name=spec_name,
@@ -825,6 +940,7 @@ class BuildWorker:
                     spec,
                     payload,
                     token,
+                    execution_capability,
                     reservation_id=reservation_id,
                 )
 
@@ -854,7 +970,9 @@ class BuildWorker:
                     worker_id=self.worker_id,
                     fence=fence,
                     cancellation=token,
-                    fence_check=lambda: self.authority.is_current(job_id, actual_claim),
+                    fence_check=lambda: self.authority.is_current(
+                        job_id, execution_capability
+                    ),
                     heartbeat=lambda: self.authority.heartbeat(job_id, actual_claim),
                 )
                 if result.outcome != ExecutionOutcome.SUCCEEDED:
@@ -878,7 +996,9 @@ class BuildWorker:
                 )
                 store.publish(
                     staged,
-                    fence_check=lambda: self.authority.is_current(job_id, actual_claim),
+                    fence_check=lambda: self.authority.is_current(
+                        job_id, execution_capability
+                    ),
                 )
                 published = True
             result_ref = _result_ref(key.digest, fence)
@@ -1241,7 +1361,13 @@ class BuildWorker:
         repo_path: Path | str,
         spec_name: str,
         claim: Mapping[str, Any] | None = None,
-    ) -> tuple[Any, bq.BuildSpec, bq.CacheKey | None, BuildExecutionDescriptor]:
+    ) -> tuple[
+        Any,
+        bq.BuildSpec,
+        bq.CacheKey | None,
+        BuildExecutionDescriptor,
+        str,
+    ]:
         scope = bq.lane_scope(repo_path)
         if view.repository_id != bq.stable_repository_id(scope.main_tree):
             raise BuildWorkerError(
@@ -1251,32 +1377,59 @@ class BuildWorker:
             raise BuildWorkerError(
                 "durable build WorkItem operation is not a build operation"
             )
-        if claim is not None:
-            _validate_claim_identity(view.job_id, view, claim)
-            try:
-                current = self.authority.is_current(view.job_id, claim)
-            except Exception as exc:
-                raise BuildWorkerError(
-                    "durable build claim could not be verified"
-                ) from exc
-            if not current:
-                raise BuildWorkerError("durable build claim fence is stale")
-        else:
+        if claim is None:
             # Every executable-input read is claim-bound.  Terminal recovery
             # uses only durable result/artifact evidence and never calls this
             # planner without a live native fence.
             raise BuildWorkerError("durable build exact input requires a current claim")
+        _validate_claim_identity(view.job_id, view, claim)
+        has_authority = getattr(self.authority, "has_execution_input_authority", None)
+        try:
+            available = callable(has_authority) and bool(has_authority())
+        except Exception:
+            available = False
+        if not available:
+            raise BuildWorkerError(
+                "typed_execution_payload_authority_unavailable",
+                refusal_code="typed_execution_payload_authority_unavailable",
+            )
+        capability_factory = getattr(self.authority, "execution_input_capability", None)
+        if not callable(capability_factory):
+            raise BuildWorkerError(
+                "typed_execution_payload_authority_unavailable",
+                refusal_code="typed_execution_payload_authority_unavailable",
+            )
+        try:
+            capability = _opaque_execution_capability(
+                capability_factory(view.job_id, claim)
+            )
+        except Exception as exc:
+            raise BuildWorkerError(
+                "typed_execution_payload_authority_unavailable",
+                refusal_code="typed_execution_payload_authority_unavailable",
+            ) from exc
+        if capability is None:
+            raise BuildWorkerError(
+                "typed_execution_payload_authority_unavailable",
+                refusal_code="typed_execution_payload_authority_unavailable",
+            )
+        try:
+            current = self.authority.is_current(view.job_id, capability)
+        except Exception as exc:
+            raise BuildWorkerError(
+                "typed_execution_payload_authority_unavailable",
+                refusal_code="typed_execution_payload_authority_unavailable",
+            ) from exc
+        if not current:
+            raise BuildWorkerError("durable build claim fence is stale")
         get_exact = getattr(self.authority, "get_exact_execution_input", None)
         if not callable(get_exact):
             raise BuildWorkerError(
-                "durable build authority lacks the authenticated exact-input extension"
+                "typed_execution_payload_authority_unavailable",
+                refusal_code="typed_execution_payload_authority_unavailable",
             )
         try:
-            if claim is None:
-                raise BuildWorkerError(
-                    "durable build exact input requires a current claim"
-                )
-            raw_payload = get_exact(view.job_id, claim=claim)
+            raw_payload = get_exact(view.job_id, capability=capability)
         except RepositoryJobServiceError as exc:
             code = exc.code
             if code == "typed_execution_payload_required":
@@ -1289,6 +1442,11 @@ class BuildWorker:
                     "input_conflict: persisted build payload is invalid",
                     refusal_code="invalid_request",
                 ) from exc
+            if code == "typed_execution_payload_authority_unavailable":
+                raise BuildWorkerError(
+                    "typed_execution_payload_authority_unavailable",
+                    refusal_code="typed_execution_payload_authority_unavailable",
+                ) from exc
             raise BuildWorkerError(
                 "durable build exact execution input could not be authorized"
             ) from exc
@@ -1298,7 +1456,8 @@ class BuildWorker:
             ) from exc
         if raw_payload is None:
             raise BuildWorkerError(
-                "durable build WorkItem has no typed execution payload; resubmit"
+                "typed_execution_payload_required: resubmit build",
+                refusal_code="invalid_request",
             )
         try:
             payload = operation_payload_from_mapping(raw_payload)
@@ -1307,7 +1466,7 @@ class BuildWorker:
                 "durable build operation payload is invalid"
             ) from exc
         try:
-            current_after_read = self.authority.is_current(view.job_id, claim)
+            current_after_read = self.authority.is_current(view.job_id, capability)
         except Exception as exc:
             raise BuildWorkerError(
                 "durable build claim could not be reverified after exact input read"
@@ -1479,7 +1638,7 @@ class BuildWorker:
             raise BuildWorkerError(
                 "build payload toolchain digest disagrees with its key"
             )
-        return scope, spec, key, payload
+        return scope, spec, key, payload, capability
 
     def cancel(self, job_id: str, *, reason: str = "cancelled by owner") -> bool:
         token = self._cancellations.get(job_id)
@@ -1823,6 +1982,7 @@ class BuildWorker:
         spec: bq.BuildSpec,
         payload: BuildExecutionDescriptor,
         token: CancellationToken,
+        execution_capability: str,
         reservation_id: str | None,
     ) -> dict[str, Any]:
         """Build an uncacheable request without publishing cache bytes.
@@ -1871,7 +2031,9 @@ class BuildWorker:
                 worker_id=self.worker_id,
                 fence=fence,
                 cancellation=token,
-                fence_check=lambda: self.authority.is_current(job_id, claim),
+                fence_check=lambda: self.authority.is_current(
+                    job_id, execution_capability
+                ),
                 heartbeat=lambda: self.authority.heartbeat(job_id, claim),
             )
         result_ref: str | None = None
@@ -2093,4 +2255,5 @@ __all__ = [
     "BuildWorker",
     "BuildWorkerError",
     "GraphBuildAuthority",
+    "NativeExecutionInputAuthority",
 ]

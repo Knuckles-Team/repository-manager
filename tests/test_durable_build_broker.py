@@ -36,6 +36,8 @@ from repository_manager.development.jobs import (
     DurableJobView,
     FakeRepositoryJobPort,
     RepositoryJobService,
+    RepositoryJobServiceCode,
+    RepositoryJobServiceError,
 )
 from repository_manager.development.payloads import cache_key_digest_from_components
 from repository_manager.reservations import InMemoryWorkItemReservationPort
@@ -403,9 +405,22 @@ def test_two_services_share_one_job_and_fresh_worker_reads_frozen_descriptor(
         def get(self, job_id: str) -> object:
             return typed.port.rows[job_id]
 
-        def get_exact_execution_input(self, job_id: str, *, claim: object) -> object:
-            if not isinstance(claim, dict) or claim.get("fence") != "f1":
-                raise RuntimeError("stale worker claim")
+        execution_capability = "test-execution-capability"
+
+        def has_execution_input_authority(self) -> bool:
+            return True
+
+        def execution_input_capability(self, job_id: str, claim: object) -> str | None:
+            del job_id
+            return (
+                Authority.execution_capability
+                if isinstance(claim, dict) and claim.get("fence") == "f1"
+                else None
+            )
+
+        def get_exact_execution_input(self, job_id: str, *, capability: str) -> object:
+            if capability != Authority.execution_capability:
+                raise RuntimeError("stale worker capability")
             return typed.exact(job_id, owner_id=view.owner_id)
 
         def claim(self, job_id: str, *, token: str) -> dict[str, object]:
@@ -417,9 +432,9 @@ def test_two_services_share_one_job_and_fresh_worker_reads_frozen_descriptor(
                 "fence": "f1",
             }
 
-        def is_current(self, job_id: str, claim: object) -> bool:
-            del job_id, claim
-            return True
+        def is_current(self, job_id: str, capability: str) -> bool:
+            del job_id
+            return capability == Authority.execution_capability
 
     worker = BuildWorker(Authority(), None)
     # Mutating the caller config after submission cannot change the frozen
@@ -430,7 +445,7 @@ def test_two_services_share_one_job_and_fresh_worker_reads_frozen_descriptor(
     )
     authority = worker.authority
     claim = authority.claim(view.job_id, token="test")
-    _scope, spec, key, payload = worker._execution_plan(  # noqa: SLF001
+    _scope, spec, key, payload, _capability = worker._execution_plan(  # noqa: SLF001
         view, repo_path=repo, spec_name="test-build", claim=claim
     )
     assert spec.command == ("python3", "build_script.py")
@@ -916,14 +931,26 @@ def _worker_fixture(
             self.row = row
             self.typed = typed
             self.commits: list[dict[str, object]] = []
+            self.execution_capability = "test-execution-capability"
 
         def get(self, job_id: str) -> DurableJobView:
             assert job_id == self.row.job_id
             return self.row
 
-        def get_exact_execution_input(self, job_id: str, *, claim: object) -> object:
-            if not isinstance(claim, dict) or claim.get("fence") != "f1":
-                raise RuntimeError("stale worker claim")
+        def has_execution_input_authority(self) -> bool:
+            return True
+
+        def execution_input_capability(self, job_id: str, claim: object) -> str | None:
+            del job_id
+            return (
+                self.execution_capability
+                if isinstance(claim, dict) and claim.get("fence") == "f1"
+                else None
+            )
+
+        def get_exact_execution_input(self, job_id: str, *, capability: str) -> object:
+            if capability != self.execution_capability:
+                raise RuntimeError("stale worker capability")
             return typed.exact(job_id, owner_id=self.row.owner_id)
 
         def claim(self, job_id: str, *, token: str) -> dict[str, object]:
@@ -943,9 +970,12 @@ def _worker_fixture(
                 "fence": "f1",
             }
 
-        def is_current(self, job_id: str, claim: object) -> bool:
+        def is_current(self, job_id: str, capability: str) -> bool:
             del job_id
-            return self.row.state is JobState.LEASED and claim["fence"] == "f1"
+            return (
+                self.row.state is JobState.LEASED
+                and capability == self.execution_capability
+            )
 
         def heartbeat(self, job_id: str, claim: object) -> bool:
             del job_id, claim
@@ -1037,9 +1067,9 @@ def test_stale_claim_fence_never_reads_exact_payload(
     reads: list[str] = []
     original_exact = authority.get_exact_execution_input
 
-    def observe_exact(job_id: str, *, claim: object) -> object:
+    def observe_exact(job_id: str, *, capability: str) -> object:
         reads.append(job_id)
-        return original_exact(job_id, claim=claim)
+        return original_exact(job_id, capability=capability)
 
     authority.get_exact_execution_input = observe_exact  # type: ignore[method-assign]
     authority.is_current = lambda _job_id, _claim: False  # type: ignore[method-assign]
@@ -1059,10 +1089,10 @@ def test_claim_fence_is_rechecked_after_exact_read_before_admission(
     checks = 0
     original_is_current = authority.is_current
 
-    def stale_after_read(job_id: str, claim: object) -> bool:
+    def stale_after_read(job_id: str, capability: str) -> bool:
         nonlocal checks
         checks += 1
-        return checks == 1 and original_is_current(job_id, claim)
+        return checks == 1 and original_is_current(job_id, capability)
 
     authority.is_current = stale_after_read  # type: ignore[method-assign]
 
@@ -1349,7 +1379,7 @@ def test_worker_rejects_forged_cache_key_identity_before_admission(
         updates["target_triple"] = components[component]
     forged_payload = payload.model_copy(update=updates)
     authority.get_exact_execution_input = (  # type: ignore[method-assign]
-        lambda _job_id, *, claim: forged_payload
+        lambda _job_id, *, capability: forged_payload
     )
 
     class NeverScheduler:
@@ -1370,9 +1400,7 @@ def test_worker_rejects_forged_cache_key_identity_before_admission(
     )
 
 
-def test_graph_authority_exact_read_uses_claim_not_submitter_owner(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_graph_authority_exact_read_requires_opaque_native_capability() -> None:
     raw_payload = BuildExecutionDescriptor.model_validate(
         json.loads(
             Path("tests/fixtures/rmdd_29_operation_payload.json").read_text(
@@ -1382,29 +1410,126 @@ def test_graph_authority_exact_read_uses_claim_not_submitter_owner(
     )
     calls: dict[str, object] = {}
 
-    class Authority:
-        @staticmethod
-        def get_repository_operation_payload_for_claim(
-            *_args: object, **kwargs: object
+    class NativeAuthority:
+        def issue_execution_input_capability(
+            self, job_id: str, *, tenant: str, claim: object
+        ) -> str:
+            del job_id, tenant, claim
+            return "opaque-test-capability"
+
+        def read_exact_execution_input(
+            self, job_id: str, *, tenant: str, capability: str
         ) -> object:
-            calls.update(kwargs)
+            calls.update(job_id=job_id, tenant=tenant, capability=capability)
             return raw_payload
 
-    monkeypatch.setattr(
-        GraphBuildAuthority,
-        "_authority",
-        staticmethod(lambda: Authority),
+        def verify_current_execution_capability(
+            self, job_id: str, *, tenant: str, capability: str
+        ) -> bool:
+            del job_id, tenant
+            return capability == "opaque-test-capability"
+
+    job_id = "rmjob:11111111-1111-1111-1111-111111111111"
+    exact = GraphBuildAuthority(
+        object(),
+        tenant_id="tenant-a",
+        token="worker-a",
+        execution_input_authority=NativeAuthority(),
     )
-    claim = {
-        "job_id": "rmjob:11111111-1111-1111-1111-111111111111",
-        "work_item_id": "workitem:repository_manager:11111111-1111-1111-1111-111111111111",
-        "attempt": 1,
-        "fence": "f1",
-        "_native": True,
+    assert (
+        exact.get_exact_execution_input(job_id, capability="opaque-test-capability")
+        == raw_payload
+    )
+    assert calls == {
+        "job_id": job_id,
+        "tenant": "tenant-a",
+        "capability": "opaque-test-capability",
     }
+
+
+def test_graph_authority_without_native_port_fails_before_exact_read() -> None:
     exact = GraphBuildAuthority(object(), tenant_id="tenant-a", token="worker-a")
-    assert exact.get_exact_execution_input(claim["job_id"], claim=claim) == raw_payload
-    assert calls == {"tenant": "tenant-a", "claim": claim}
+    assert exact.has_execution_input_authority() is False
+    assert (
+        exact.is_current("rmjob:11111111-1111-1111-1111-111111111111", "copied-fence")
+        is False
+    )
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        exact.get_exact_execution_input(
+            "rmjob:11111111-1111-1111-1111-111111111111",
+            capability="copied-fence",
+        )
+    assert (
+        exc_info.value.code
+        == RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE.value
+    )
+
+
+def test_graph_authority_native_error_text_is_private_and_fail_closed() -> None:
+    class ExplodingNative:
+        def issue_execution_input_capability(
+            self, job_id: str, *, tenant: str, claim: object
+        ) -> str:
+            del job_id, tenant, claim
+            return "opaque-test-capability"
+
+        def read_exact_execution_input(
+            self, job_id: str, *, tenant: str, capability: str
+        ) -> object:
+            del job_id, tenant, capability
+            raise RuntimeError("input_conflict secret=private-command")
+
+        def verify_current_execution_capability(
+            self, job_id: str, *, tenant: str, capability: str
+        ) -> bool:
+            del job_id, tenant, capability
+            return True
+
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        GraphBuildAuthority(
+            object(),
+            tenant_id="tenant-a",
+            token="worker-a",
+            execution_input_authority=ExplodingNative(),
+        ).get_exact_execution_input(
+            "rmjob:11111111-1111-1111-1111-111111111111",
+            capability="opaque-test-capability",
+        )
+    assert (
+        exc_info.value.code
+        == RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE.value
+    )
+    assert "private-command" not in str(exc_info.value)
+
+
+def test_worker_without_native_authority_refuses_before_exact_or_admission(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+    exact_reads = 0
+
+    def forbidden_exact(*args: object, **kwargs: object) -> object:
+        nonlocal exact_reads
+        del args, kwargs
+        exact_reads += 1
+        raise AssertionError("authority-unavailable path must not read exact input")
+
+    authority.has_execution_input_authority = lambda: False  # type: ignore[method-assign]
+    authority.get_exact_execution_input = forbidden_exact  # type: ignore[method-assign]
+
+    class NeverScheduler:
+        def admit(self, request: object) -> object:
+            del request
+            raise AssertionError("authority-unavailable path must precede admission")
+
+    result = BuildWorker(
+        authority,
+        NeverScheduler(),  # type: ignore[arg-type]
+        artifact_store=store,
+    ).run_job(authority.row.job_id, repo_path=repo, spec_name="test-build")
+    assert result["refusal_code"] == ("typed_execution_payload_authority_unavailable")
+    assert exact_reads == 0
 
 
 def test_worker_does_not_fail_after_success_commit_response_is_lost(
