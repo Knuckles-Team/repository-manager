@@ -109,6 +109,14 @@ from agent_utilities.governance.lanes import (
 )
 
 from repository_manager.canonical_guard import guarded_canonical_mutation
+from repository_manager.config_schema import (
+    ConfigSchemaError,
+    ResourceRequest,
+    load_yaml_mapping,
+    load_yaml_mapping_text,
+    parse_merge_config,
+    runtime_tier,
+)
 
 #: The per-repository gate declaration. Its ABSENCE is a refusal, not a default:
 #: a queue that invents gates for a repository that declared none would be a gate
@@ -253,6 +261,14 @@ class GateSpec:
     #: queue that gets bypassed. Exceeding the BASELINE budget is always a
     #: refusal regardless — see point 1 in the module docstring.
     on_timeout: str = "fail"
+    #: Explicit v2 validation stage. ``tier`` remains the compatibility
+    #: projection used by the current queue; staged consumers use this field.
+    stage: str = "integration"
+    baseline_mode: str = "differential"
+    path_exclude: tuple[str, ...] = ()
+    resource_class: str = "light-check"
+    resources: ResourceRequest = field(default_factory=ResourceRequest)
+    artifact_dependencies: tuple[str, ...] = ()
 
     @property
     def effective_baseline_timeout(self) -> int:
@@ -294,6 +310,7 @@ class QueueConfig:
     #: Where the config was read from — reported in every result so an operator
     #: can see WHICH declaration produced a verdict.
     source: str = ""
+    schema_version: int = 2
 
     def fast_gates(self) -> tuple[GateSpec, ...]:
         return tuple(g for g in self.gates if g.tier == "fast")
@@ -321,77 +338,39 @@ def parse_config(data: dict[str, Any], *, source: str = "") -> QueueConfig:
     without a filesystem — and so a bad config fails LOUDLY at parse time with
     the offending key named, rather than at gate time with a confusing traceback.
     """
-    gates: list[GateSpec] = []
-    for index, raw in enumerate(data.get("gates") or []):
-        if not isinstance(raw, dict):
-            raise MergeQueueError(
-                f"{source or CONFIG_FILENAME}: gates[{index}] is not a mapping"
-            )
-        name = str(raw.get("name") or "").strip()
-        if not name:
-            raise MergeQueueError(
-                f"{source or CONFIG_FILENAME}: gates[{index}] has no name"
-            )
-        compare = str(raw.get("compare", "lines"))
-        if compare not in {"exit", "lines", "pytest-ids"}:
-            raise MergeQueueError(
-                f"{source or CONFIG_FILENAME}: gate {name!r} declares compare="
-                f"{compare!r}; supported: exit, lines, pytest-ids"
-            )
-        tier = str(raw.get("tier", "fast"))
-        if tier not in {"fast", "slow"}:
-            raise MergeQueueError(
-                f"{source or CONFIG_FILENAME}: gate {name!r} declares tier={tier!r}; "
-                "supported: fast, slow"
-            )
-        on_timeout = str(raw.get("on_timeout", "fail"))
-        if on_timeout not in {"fail", "defer"}:
-            raise MergeQueueError(
-                f"{source or CONFIG_FILENAME}: gate {name!r} declares on_timeout="
-                f"{on_timeout!r}; supported: fail, defer"
-            )
-        gates.append(
-            GateSpec(
-                name=name,
-                command=_as_argv(raw.get("command"), where=f"gate {name!r}"),
-                tier=tier,
-                timeout=int(raw.get("timeout", 300)),
-                baseline_timeout=int(raw.get("baseline_timeout", 0)),
-                compare=compare,
-                when_changed=tuple(str(p) for p in raw.get("when_changed") or ()),
-                keep_lines=tuple(str(p) for p in raw.get("keep_lines") or ()),
-                ignore_lines=tuple(str(p) for p in raw.get("ignore_lines") or ()),
-                on_timeout=on_timeout,
-            )
+    try:
+        schema = parse_merge_config(data, source=source)
+    except ConfigSchemaError as exc:
+        raise MergeQueueError(str(exc)) from exc
+    gates = tuple(
+        GateSpec(
+            name=gate.name,
+            command=gate.command,
+            tier=runtime_tier(gate.stage),
+            timeout=gate.timeout,
+            baseline_timeout=gate.baseline_timeout,
+            compare=gate.compare,
+            when_changed=gate.path_selection.include,
+            keep_lines=gate.keep_lines,
+            ignore_lines=gate.ignore_lines,
+            on_timeout=gate.on_timeout,
+            stage=gate.stage,
+            baseline_mode=gate.baseline_mode,
+            path_exclude=gate.path_selection.exclude,
+            resource_class=gate.resource_class,
+            resources=gate.resources,
+            artifact_dependencies=gate.artifact_dependencies,
         )
-    names = [g.name for g in gates]
-    duplicates = sorted({n for n in names if names.count(n) > 1})
-    if duplicates:
-        raise MergeQueueError(
-            f"{source or CONFIG_FILENAME}: duplicate gate name(s) {duplicates} — "
-            "a gate name keys its own baseline cache and must be unique"
-        )
-    regenerate = tuple(
-        _as_argv(cmd, where="regenerate") for cmd in data.get("regenerate") or ()
+        for gate in schema.gates
     )
-    generated = frozenset(str(p) for p in data.get("generated_files") or ())
-    if generated and not regenerate:
-        raise MergeQueueError(
-            f"{source or CONFIG_FILENAME}: generated_files are declared but no "
-            "`regenerate` commands are — regenerate-on-land would then resolve a "
-            "conflict by leaving both sides' stale copies, which is worse than "
-            "rejecting it. Declare the generators or drop generated_files."
-        )
-    env_sig = data.get("environment_signature")
     return QueueConfig(
-        base=str(data.get("base", "main")),
-        batch_size=int(data.get("batch_size", DEFAULT_BATCH_SIZE)),
-        gates=tuple(gates),
-        generated_files=generated,
-        regenerate=regenerate,
-        environment_signature=_as_argv(env_sig, where="environment_signature")
-        if env_sig
-        else (),
+        base=schema.base,
+        batch_size=schema.batch_size,
+        schema_version=schema.schema_version,
+        gates=gates,
+        generated_files=schema.generated.files,
+        regenerate=schema.generated.regenerate,
+        environment_signature=schema.environment_signature,
         source=source,
     )
 
@@ -417,15 +396,11 @@ def load_config(tree: Path | str) -> QueueConfig:
             "defaulting to none; add the file (see "
             "repository_manager/mergequeue_presets/) and re-run."
         )
-    import yaml
-
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        raise MergeQueueError(f"{path} is not valid YAML: {exc}") from exc
-    if not isinstance(data, dict):
-        raise MergeQueueError(f"{path} must contain a mapping at the top level")
-    return parse_config(data, source=str(path))
+        data = load_yaml_mapping(str(path))
+        return parse_config(data, source=str(path))
+    except ConfigSchemaError as exc:
+        raise MergeQueueError(str(exc)) from exc
 
 
 def config_at_ref(repo: Path, ref: str) -> QueueConfig | None:
@@ -438,12 +413,11 @@ def config_at_ref(repo: Path, ref: str) -> QueueConfig | None:
     res = _run_git(["show", f"{ref}:{CONFIG_FILENAME}"], repo)
     if not res.ok:
         return None
-    import yaml
-
-    data = yaml.safe_load(res.out) or {}
-    if not isinstance(data, dict):
-        raise MergeQueueError(f"{CONFIG_FILENAME} on {ref} is not a mapping")
-    return parse_config(data, source=f"{ref}:{CONFIG_FILENAME}")
+    try:
+        data = load_yaml_mapping_text(res.out, source=f"{ref}:{CONFIG_FILENAME}")
+        return parse_config(data, source=f"{ref}:{CONFIG_FILENAME}")
+    except ConfigSchemaError as exc:
+        raise MergeQueueError(str(exc)) from exc
 
 
 def _dropped_gates(merged: QueueConfig, base: QueueConfig | None) -> list[str]:

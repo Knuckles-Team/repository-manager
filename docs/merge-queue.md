@@ -68,6 +68,12 @@ flowchart TD
 
 ## `.mergequeue.yaml`
 
+The declaration is versioned and migratable. New repositories should use
+`schema_version: 2`; the typed parser still accepts the legacy `tier: fast|slow`
+shape during the compatibility window and maps it to explicit integration or
+certification stages. See [Configuration schemas and migration](config-schema-migration.md)
+for the complete gate/resource/path/artifact contract and guarded atomic migration.
+
 ```yaml
 base: main
 batch_size: 8
