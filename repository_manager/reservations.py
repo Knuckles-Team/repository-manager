@@ -15,7 +15,7 @@ import json
 import os
 import tempfile
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -516,8 +516,9 @@ class InMemoryWorkItemReservationPort:
     stale workers cannot release or reclaim a newer attempt.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Callable[[], datetime] | None = None) -> None:
         self._lock = RLock()
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._claims: dict[str, WorkItemClaim] = {}
         self._links: dict[str, tuple[str, int, str]] = {}
         self._attempt_links: dict[tuple[str, int], str] = {}
@@ -529,11 +530,16 @@ class InMemoryWorkItemReservationPort:
         self._disk_watermarks: dict[tuple[str, str], tuple[int | None, int | None]] = {}
         self._fairness_state: FairnessStatePort | None = None
 
+    def _now(self) -> datetime:
+        """Return the fixture's authoritative UTC time for liveness checks."""
+
+        return self._clock().astimezone(UTC)
+
     def register_capacity(self, host_id: str, total: ResourceVector) -> bool:
         """Configure a complete default authoritative host for simulations."""
 
         with self._lock:
-            now = datetime.now(UTC)
+            now = self._now()
             return self.register_capacity_view(
                 CapacityView(
                     host_id=host_id,
@@ -610,7 +616,7 @@ class InMemoryWorkItemReservationPort:
             reserved=reserved,
             available=available,
             heartbeat_at=base.heartbeat_at,
-            heartbeat_fresh=datetime.now(UTC) - base.heartbeat_at
+            heartbeat_fresh=self._now() - base.heartbeat_at
             <= timedelta(seconds=base.heartbeat_ttl_seconds),
             observed_disk_free_mib=base.observed_disk_free_mib,
             heartbeat_ttl_seconds=base.heartbeat_ttl_seconds,
@@ -639,7 +645,7 @@ class InMemoryWorkItemReservationPort:
     ) -> WorkItemClaim:
         if attempt < 1 or ttl_seconds < 1:
             raise ReservationError("attempt and ttl_seconds must be positive")
-        at = (now or datetime.now(UTC)).astimezone(UTC)
+        at = (now or self._now()).astimezone(UTC)
         claim = WorkItemClaim(
             work_item_id=work_item_id,
             attempt=attempt,
@@ -695,7 +701,7 @@ class InMemoryWorkItemReservationPort:
             current = self._claims.get(work_item_id)
             if current is None:
                 return
-            at = (now or datetime.now(UTC)).astimezone(UTC)
+            at = (now or self._now()).astimezone(UTC)
             self._claims[work_item_id] = replace(current, expires_at=at)
 
     def complete(self, work_item_id: str) -> None:
@@ -719,7 +725,7 @@ class InMemoryWorkItemReservationPort:
                 and current.attempt == attempt
                 and current.fence == fence
                 and not current.terminal
-                and current.is_live()
+                and current.is_live(self._now())
             )
 
     def query_reservation(
@@ -951,7 +957,8 @@ class InMemoryWorkItemReservationPort:
                 current_claim.attempt != attempt or current_claim.fence != fence
             ):
                 return FenceDecision.STALE
-            if not current_claim.terminal and not current_claim.is_live():
+            release_at = self._now()
+            if not current_claim.terminal and not current_claim.is_live(release_at):
                 return FenceDecision.STALE
             current = self._records.get(reservation_id)
             if current is None:
@@ -983,6 +990,7 @@ class InMemoryWorkItemReservationPort:
             self._records[reservation_id] = current.with_state(
                 ReservationState.RELEASED,
                 reason="native release committed",
+                at=release_at,
             )
             held = current
             self._attempt_links[(work_item_id, attempt)] = reservation_id
@@ -1078,7 +1086,7 @@ class InMemoryWorkItemReservationPort:
                 fence,
             ):
                 return FenceDecision.CONFLICT
-            check_at = (now or datetime.now(UTC)).astimezone(UTC)
+            check_at = (now or self._now()).astimezone(UTC)
             if current.attempt != attempt or current.fence != fence:
                 return FenceDecision.STALE
             if current.expires_at > check_at:

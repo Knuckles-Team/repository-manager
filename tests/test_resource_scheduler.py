@@ -35,6 +35,7 @@ from repository_manager.reservations import (
     InMemoryReservationStore,
     InMemoryWorkItemReservationPort,
     JsonReservationStore,
+    ReservationRecord,
 )
 from repository_manager.resource_profiles import (
     ResourceProfile,
@@ -50,9 +51,11 @@ from repository_manager.resource_scheduler import (
     reservation_id_for,
 )
 
-# Keep the shared scenario clock ahead of the in-memory native port's
-# wall-clock liveness checks while leaving every scheduler decision explicit.
-NOW = datetime(2100, 1, 1, 12, 0, tzinfo=UTC)
+NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
+
+
+def _port() -> InMemoryWorkItemReservationPort:
+    return InMemoryWorkItemReservationPort(clock=lambda: NOW)
 
 
 def _host(
@@ -88,7 +91,7 @@ def _scheduler(
     fairness: FairnessSelector | None = None,
     profiles: ResourceProfileRegistry | None = None,
 ) -> tuple[ResourceScheduler, InMemoryWorkItemReservationPort]:
-    port = port or InMemoryWorkItemReservationPort()
+    port = port or _port()
     scheduler = ResourceScheduler(
         capacity=CapacityInventory(hosts),
         work_item_port=port,
@@ -127,6 +130,69 @@ def _request(
     )
 
 
+def test_in_memory_port_clock_controls_liveness_and_lifecycle_timestamps():
+    current = [NOW]
+    port = InMemoryWorkItemReservationPort(clock=lambda: current[0])
+    scheduler, _ = _scheduler(
+        _host("local", heartbeat_ttl_seconds=10),
+        port=port,
+    )
+    port.claim("wi", fence="f", ttl_seconds=100_000)
+    port.claim("expiring", fence="ef", ttl_seconds=10)
+    port.claim("reclaim", fence="rf", ttl_seconds=10_000)
+    assert port.is_current("expiring", 1, "ef")
+    authoritative = port._authoritative_view("local")
+    assert authoritative is not None
+    assert authoritative.heartbeat_fresh
+
+    decision = scheduler.admit(_request("wi", "f"), now=NOW)
+    assert decision.admitted
+    reclaim_decision = scheduler.admit(_request("reclaim", "rf"), now=NOW)
+    assert reclaim_decision.admitted
+    assert reclaim_decision.reservation is not None
+    assert (
+        port.atomic_reclaim(
+            work_item_id="reclaim",
+            attempt=1,
+            fence="rf",
+            reservation_id=reclaim_decision.reservation_id,
+            reservation=reclaim_decision.reservation,
+        )
+        == FenceDecision.STALE
+    )
+
+    current[0] = NOW + timedelta(seconds=10_001)
+    assert not port.is_current("expiring", 1, "ef")
+    authoritative = port._authoritative_view("local")
+    assert authoritative is not None
+    assert not authoritative.heartbeat_fresh
+    assert (
+        port.atomic_reclaim(
+            work_item_id="reclaim",
+            attempt=1,
+            fence="rf",
+            reservation_id=reclaim_decision.reservation_id,
+            reservation=reclaim_decision.reservation,
+        )
+        == FenceDecision.ACCEPTED
+    )
+    assert scheduler.release(
+        decision.reservation_id,
+        work_item_id="wi",
+        attempt=1,
+        fence="f",
+    )
+    native = port.query_reservation(
+        reservation_id=decision.reservation_id,
+        work_item_id="wi",
+        attempt=1,
+        fence="f",
+        for_lifecycle=True,
+    )
+    assert isinstance(native, ReservationRecord)
+    assert native.released_at == current[0]
+
+
 def test_unknown_profile_fails_closed_before_native_reservation():
     scheduler, port = _scheduler(_host("local"))
     port.claim("wi", fence="f")
@@ -137,7 +203,7 @@ def test_unknown_profile_fails_closed_before_native_reservation():
 
 
 def test_native_work_item_extension_rejects_metadata_policy_mismatch():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     scheduler, _ = _scheduler(_host("local"), port=port)
     expected = ResourceVector(1, 256, 256, 1)
     port.claim(
@@ -281,7 +347,7 @@ def test_independent_light_jobs_fit_until_exact_capacity_and_release():
 
 
 def test_native_capacity_fake_is_atomic_under_concurrent_claims():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     scheduler, _ = _scheduler(
         _host("local", cpu=2, memory=512, disk=512, processes=2), port=port
     )
@@ -299,6 +365,9 @@ def test_native_capacity_fake_is_atomic_under_concurrent_claims():
 
 def test_native_policy_refusal_is_not_misreported_as_fence_conflict():
     class PolicyRefusingPort(InMemoryWorkItemReservationPort):
+        def __init__(self):
+            super().__init__(clock=lambda: NOW)
+
         def atomic_reserve(self, **kwargs):  # type: ignore[no-untyped-def]
             return FenceDecision.ANTI_AFFINITY
 
@@ -399,7 +468,7 @@ def test_all_native_fence_decisions_preserve_scheduler_reason_vocabulary(
 ):
     class DecisionPort(InMemoryWorkItemReservationPort):
         def __init__(self):
-            super().__init__()
+            super().__init__(clock=lambda: NOW)
             self.authoritative_record = None
 
         def query_reservation(self, **kwargs):  # type: ignore[no-untyped-def]
@@ -481,7 +550,7 @@ def test_fairness_selection_is_pure_and_native_admission_records_once():
     assert second_selector.choose(candidates, now=NOW)[0].candidate_id == "a"
     assert state.served("tenant-a") == 0
 
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     deferred_selector = FairnessSelector(state=state)
     deferred, _ = _scheduler(
         _host("local", cpu=0, memory=256, disk=256, processes=0),
@@ -500,7 +569,7 @@ def test_fairness_selection_is_pure_and_native_admission_records_once():
     assert not deferred.admit(deferred_request, now=NOW).admitted
     assert state.served("tenant-a") == 0
 
-    admitted_port = InMemoryWorkItemReservationPort()
+    admitted_port = _port()
     admitted_selector = FairnessSelector(state=state)
     admitted, _ = _scheduler(
         _host("local", cpu=4, memory=1_024, disk=1_024, processes=4),
@@ -680,7 +749,7 @@ def test_remote_target_selects_remote_record_without_local_lease():
 
 
 def test_expired_reservation_reclaims_only_when_native_fence_still_authorizes():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     scheduler, _ = _scheduler(_host("local"), port=port)
     port.claim("wi", fence="f", ttl_seconds=10, now=NOW)
     decision = scheduler.admit(_request("wi", "f", reservation_id="r"), now=NOW)
@@ -694,7 +763,7 @@ def test_expired_reservation_reclaims_only_when_native_fence_still_authorizes():
 
 
 def test_superseded_attempt_can_be_reclaimed_by_current_authority_not_stale_worker():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     scheduler, _ = _scheduler(_host("local"), port=port)
     port.claim("wi", attempt=1, fence="f1", ttl_seconds=100, now=NOW)
     decision = scheduler.admit(_request("wi", "f1", reservation_id="old"), now=NOW)
@@ -711,7 +780,7 @@ def test_superseded_attempt_can_be_reclaimed_by_current_authority_not_stale_work
 def test_json_store_survives_service_recreation(tmp_path: Path):
     path = tmp_path / "reservations.json"
     store = JsonReservationStore(path)
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     scheduler, _ = _scheduler(_host("local"), port=port, store=store)
     port.claim("wi", fence="f")
     decision = scheduler.admit(_request("wi", "f", reservation_id="persisted"), now=NOW)
@@ -725,7 +794,7 @@ def test_scheduler_recreation_rehydrates_capacity_and_releases_through_native_po
     tmp_path: Path,
 ):
     path = tmp_path / "reservations.json"
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     first, _ = _scheduler(
         _host("local", cpu=2, memory=512, disk=512, processes=2),
         port=port,
@@ -753,7 +822,7 @@ def test_reservation_identity_is_stable_per_work_item_attempt():
 
 
 def test_native_idempotency_deduplicates_across_missing_projection_and_preserves_link():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     first, _ = _scheduler(
         _host("local", cpu=4, memory=1_024, disk=1_024, processes=4),
         port=port,
@@ -785,7 +854,7 @@ def test_local_active_projection_never_authorizes_when_native_query_is_missing()
         def query_reservation(self, **kwargs):  # type: ignore[no-untyped-def]
             return FenceDecision.NOT_FOUND
 
-    port = NativeQueryMissingPort()
+    port = NativeQueryMissingPort(clock=lambda: NOW)
     scheduler, _ = _scheduler(
         _host("local", cpu=4, memory=1_024, disk=1_024, processes=4), port=port
     )
@@ -811,7 +880,7 @@ def test_release_tombstone_and_local_projection_retry_are_idempotent():
                 raise OSError("simulated release projection outage")
             super().update(record)
 
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     store = FailOnceUpdateStore()
     scheduler, _ = _scheduler(
         _host("local", cpu=4, memory=1_024, disk=1_024, processes=4),
@@ -847,7 +916,7 @@ def test_release_tombstone_and_local_projection_retry_are_idempotent():
 
 
 def test_terminal_commit_can_release_exact_attempt_and_terminal_retry_is_idempotent():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     scheduler, _ = _scheduler(_host("local"), port=port)
     port.claim("wi", fence="f", ttl_seconds=10_000, now=NOW)
     admitted = scheduler.admit(_request("wi", "f"), now=NOW)
@@ -877,7 +946,7 @@ def test_terminal_commit_can_release_exact_attempt_and_terminal_retry_is_idempot
 
 
 def test_explain_only_is_non_executable_preview_without_native_reservation():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     scheduler, _ = _scheduler(_host("local"), port=port)
     port.claim("wi", fence="f", ttl_seconds=10_000, now=NOW)
     preview = scheduler.admit(_request("wi", "f"), now=NOW, explain_only=True)
@@ -901,7 +970,7 @@ def test_reclaim_tombstone_and_local_projection_retry_are_idempotent():
                 raise OSError("simulated reclaim projection outage")
             super().update(record)
 
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     store = FailOnceUpdateStore()
     scheduler, _ = _scheduler(
         _host("local", cpu=4, memory=1_024, disk=1_024, processes=4),
@@ -924,7 +993,7 @@ def test_reclaim_tombstone_and_local_projection_retry_are_idempotent():
 
 
 def test_reclaim_input_conflict_is_atomic_and_preserves_native_hold():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     scheduler, _ = _scheduler(_host("local"), port=port)
     port.claim("wi", fence="f", ttl_seconds=10, now=NOW)
     admitted = scheduler.admit(_request("wi", "f"), now=NOW)
@@ -974,7 +1043,7 @@ def test_projection_write_failure_leaves_native_hold_for_retry_without_double_de
                 raise OSError("simulated projection outage")
             super().put(record)
 
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     state = InMemoryFairnessState()
     store = FailOnceStore()
     scheduler, _ = _scheduler(
@@ -1000,7 +1069,7 @@ def test_projection_write_failure_leaves_native_hold_for_retry_without_double_de
 
 
 def test_changed_input_conflict_cannot_compensation_release_native_original():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     first, _ = _scheduler(
         _host("local", cpu=4, memory=1_024, disk=1_024, processes=4),
         port=port,
@@ -1029,7 +1098,7 @@ def test_changed_input_conflict_cannot_compensation_release_native_original():
 
 
 def test_native_disk_policy_rechecks_held_disk_when_replica_projection_is_missing():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     first, _ = _scheduler(
         _host("local", cpu=8, memory=8_192, disk=1_000, processes=8),
         port=port,
@@ -1060,7 +1129,7 @@ def test_native_disk_policy_rechecks_held_disk_when_replica_projection_is_missin
 
 
 def test_native_concurrency_and_exclusivity_recheck_missing_replica_projection():
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     first, _ = _scheduler(
         _host("local", cpu=64, memory=100_000, disk=100_000, processes=32),
         port=port,
@@ -1096,7 +1165,7 @@ def test_native_concurrency_and_exclusivity_recheck_missing_replica_projection()
             repository_exclusive=True,
         )
     )
-    exclusive_port = InMemoryWorkItemReservationPort()
+    exclusive_port = _port()
     exclusive_first, _ = _scheduler(
         _host("local", cpu=64, memory=100_000, disk=100_000, processes=32),
         port=exclusive_port,
@@ -1152,7 +1221,7 @@ def test_repository_and_branch_exclusivity_are_global_across_hosts(
             branch_exclusive=branch_exclusive,
         )
     )
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     first, _ = _scheduler(
         _host("host-a"), _host("host-b"), port=port, profiles=profiles
     )
@@ -1218,7 +1287,7 @@ def test_capacity_refresh_is_monotonic_and_preserves_held_accounting():
     assert inventory.get("local").version == 2
     assert inventory.get("local").state == HostState.DRAINING
 
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     scheduler, _ = _scheduler(
         _host("native", cpu=4, memory=1_024, disk=1_024), port=port
     )
@@ -1304,7 +1373,7 @@ def test_restart_restores_held_accounting_on_ineligible_host(
     tmp_path: Path, state: HostState, heartbeat_at: datetime
 ):
     path = tmp_path / f"{state.value}-reservations.json"
-    port = InMemoryWorkItemReservationPort()
+    port = _port()
     first, _ = _scheduler(
         _host("local", cpu=2, memory=512, disk=512, processes=2),
         port=port,
