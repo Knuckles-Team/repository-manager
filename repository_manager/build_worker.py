@@ -214,6 +214,24 @@ def _result_ref(key: str, fence: str) -> str:
     return f"build-manifest:{key}:fence:{fence}"
 
 
+def _degraded_result_ref(job_id: str, fence: str) -> str:
+    """Bind a degraded terminal result to its exact job and fence."""
+
+    return f"build-degraded:{job_id}:fence:{fence}"
+
+
+def _degraded_fence(result_ref: str | None, job_id: str) -> str | None:
+    """Extract a strictly job-bound degraded result fence."""
+
+    if not isinstance(result_ref, str):
+        return None
+    prefix = f"build-degraded:{job_id}:fence:"
+    if not result_ref.startswith(prefix):
+        return None
+    fence = result_ref[len(prefix) :]
+    return fence if fence.strip() == fence and fence else None
+
+
 def _as_view(value: DurableJobView | Mapping[str, Any] | None) -> DurableJobView:
     if value is None:
         raise BuildWorkerError("durable build WorkItem was not found")
@@ -1263,6 +1281,18 @@ class BuildWorker:
                     "cacheable descriptor has no immutable key components"
                 )
             key = _key_from_components(components)
+            expected_components = {
+                "repo": view.repository_id,
+                "spec": snapshot_spec.name,
+                "feature_set": " ".join(snapshot_spec.command),
+                "target_triple": bq._target_triple(snapshot_spec),  # noqa: SLF001
+            }
+            for component, expected in expected_components.items():
+                if getattr(key, component) != expected:
+                    raise BuildWorkerError(
+                        "persisted build key "
+                        f"{component} component disagrees with the submitted snapshot"
+                    )
             if descriptor.get("cache_key") != key.digest:
                 raise BuildWorkerError(
                     "persisted build key does not match its components"
@@ -1394,6 +1424,40 @@ class BuildWorker:
 
         if key is None:
             if view.state is JobState.SUCCEEDED:
+                degraded_result_ref = view.result_ref
+                degraded_fence = _degraded_fence(degraded_result_ref, job_id)
+                if (
+                    view.job_id != job_id
+                    or view.attempt < 1
+                    or degraded_fence is None
+                    or (
+                        view.lease_fence is not None
+                        and view.lease_fence != degraded_fence
+                    )
+                    or not _terminal_matches(
+                        self.authority,
+                        job_id,
+                        {
+                            "job_id": view.job_id,
+                            "work_item_id": view.work_item_id,
+                            "attempt": view.attempt,
+                            "fence": degraded_fence,
+                        },
+                        result_ref=degraded_result_ref or "",
+                    )
+                ):
+                    return with_reconciliation(
+                        {
+                            "ok": False,
+                            "recovered": False,
+                            "state": view.state.value,
+                            "degraded": True,
+                            "error": (
+                                "succeeded degraded WorkItem has no exact "
+                                "job/fence terminal result proof"
+                            ),
+                        }
+                    )
                 return with_reconciliation(
                     {
                         "ok": True,
@@ -1401,6 +1465,7 @@ class BuildWorker:
                         "state": view.state.value,
                         "degraded": True,
                         "degraded_reason": descriptor.get("degraded_reason"),
+                        "result_ref": degraded_result_ref,
                     }
                 )
             return with_reconciliation(
@@ -1655,10 +1720,11 @@ class BuildWorker:
                 fence_check=lambda: self.authority.is_current(job_id, claim),
                 heartbeat=lambda: self.authority.heartbeat(job_id, claim),
             )
+        result_ref: str | None = None
         if result.outcome == ExecutionOutcome.SUCCEEDED:
-            result_ref = f"build-degraded:{job_id}:fence:{fence}"
+            result_ref = _degraded_result_ref(job_id, fence)
             try:
-                self.authority.commit(
+                commit_result = self.authority.commit(
                     job_id,
                     claim,
                     outcome="succeeded",
@@ -1679,6 +1745,24 @@ class BuildWorker:
                         reservation_id=reservation_id,
                     )
                 raise
+            if str(commit_result) not in {"None", "committed", "noop", "succeeded"}:
+                if _terminal_matches(
+                    self.authority, job_id, claim, result_ref=result_ref
+                ):
+                    return self._reconciliation_pending(
+                        job_id,
+                        view,
+                        key=None,
+                        error=(
+                            "durable degraded WorkItem success commit returned "
+                            f"{commit_result!r}"
+                        ),
+                        reservation_id=reservation_id,
+                    )
+                raise BuildWorkerError(
+                    "durable degraded WorkItem success commit returned "
+                    f"{commit_result!r}"
+                )
             state = "succeeded"
             ok = True
         else:
@@ -1722,6 +1806,7 @@ class BuildWorker:
                 "degraded_reason", "dirty-tree-or-unfingerprintable-toolchain"
             ),
             "cached": False,
+            "result_ref": result_ref,
             "reservation_id": reservation_id,
         }
 

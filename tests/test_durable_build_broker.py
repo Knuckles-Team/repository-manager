@@ -19,8 +19,10 @@ from repository_manager.build_artifacts import (
     BuildArtifactStore,
 )
 from repository_manager.build_service import (
+    BuildExecutionDescriptor,
     BuildService,
     BuildServiceError,
+    descriptor_input_digest,
     dirty_snapshot_digest,
 )
 from repository_manager.build_worker import BuildWorker, BuildWorkerError
@@ -1043,6 +1045,126 @@ def test_worker_reports_reconciliation_after_terminal_commit_finalize_failure(
     )
     assert recovered["ok"] is True
     assert staged.stage_dir.exists()
+
+
+def test_degraded_success_commit_response_must_be_accepted(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(
+        tmp_path, store, toolchain="import sys; sys.exit(1)"
+    )
+    original_commit = authority.commit
+
+    def unacknowledged_commit(job_id: str, claim: object, **kwargs: object) -> str:
+        if kwargs.get("outcome") == "succeeded":
+            return "not-committed"
+        return original_commit(job_id, claim, **kwargs)
+
+    authority.commit = unacknowledged_commit  # type: ignore[method-assign]
+    result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["ok"] is False
+    assert result["state"] == JobState.FAILED.value
+    assert authority.row.state is JobState.FAILED
+    assert all(item["outcome"] != "succeeded" for item in authority.commits)
+
+
+def test_degraded_success_commit_ack_loss_reports_reconciliation(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(
+        tmp_path, store, toolchain="import sys; sys.exit(1)"
+    )
+    original_commit = authority.commit
+
+    def commit_then_lose_response(job_id: str, claim: object, **kwargs: object) -> str:
+        result = original_commit(job_id, claim, **kwargs)
+        if kwargs.get("outcome") == "succeeded":
+            raise RuntimeError("degraded success response lost after durable commit")
+        return result
+
+    authority.commit = commit_then_lose_response  # type: ignore[method-assign]
+    result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["ok"] is False
+    assert result["state"] == JobState.SUCCEEDED.value
+    assert result["reconciliation_pending"] is True
+    assert authority.row.state is JobState.SUCCEEDED
+    assert [item["outcome"] for item in authority.commits] == ["succeeded"]
+
+
+def test_degraded_recover_requires_exact_terminal_result_ref(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(
+        tmp_path, store, toolchain="import sys; sys.exit(1)"
+    )
+    result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["ok"] is True
+    assert result["result_ref"] == (f"build-degraded:{authority.row.job_id}:fence:f1")
+    recovered = BuildWorker(authority, scheduler, artifact_store=store).recover(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert recovered["ok"] is True
+    assert recovered["recovered"] is True
+
+    authority.row = authority.row.model_copy(
+        update={
+            "result_ref": f"build-degraded:{authority.row.job_id}:fence:f2",
+        }
+    )
+    forged = BuildWorker(authority, scheduler, artifact_store=store).recover(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert forged["ok"] is False
+    assert "exact job/fence" in forged["error"]
+
+    authority.row = authority.row.model_copy(update={"result_ref": None})
+    missing = BuildWorker(authority, scheduler, artifact_store=store).recover(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert missing["ok"] is False
+    assert "exact job/fence" in missing["error"]
+
+
+@pytest.mark.parametrize("component", ["repo", "spec", "feature_set", "target_triple"])
+def test_worker_rejects_forged_cache_key_identity_before_admission(
+    tmp_path: Path, component: str
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+    descriptor = authority.get_build_descriptor(authority.row.job_id)
+    assert isinstance(descriptor, BuildExecutionDescriptor)
+    components = dict(descriptor.key_components)
+    components[component] = f"forged-{component}"
+    forged_key = bq.CacheKey(**components)
+    body = descriptor.model_dump(mode="python")
+    body["key_components"] = components
+    body["cache_key"] = forged_key.digest
+    body["input_digest"] = descriptor_input_digest(body)
+    forged_descriptor = BuildExecutionDescriptor.model_validate(body)
+    authority.get_build_descriptor = lambda _job_id: forged_descriptor  # type: ignore[method-assign]
+
+    class NeverScheduler:
+        def admit(self, request: object) -> object:
+            del request
+            raise AssertionError("forged key must be rejected before admission")
+
+    result = BuildWorker(
+        authority,
+        NeverScheduler(),  # type: ignore[arg-type]
+        artifact_store=store,
+    ).run_job(authority.row.job_id, repo_path=repo, spec_name="test-build")
+    assert result["state"] == JobState.FAILED.value
+    assert "persisted build key" in result["error"]
+    assert component in result["error"]
 
 
 def test_worker_does_not_fail_after_success_commit_response_is_lost(
