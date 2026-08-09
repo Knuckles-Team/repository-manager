@@ -183,7 +183,9 @@ class FakeDurableLaneAuthority:
             LaneLifecycleState.REJECTED: set(),
         }.get(current, set())
 
-    def _authorize(self, record: LaneRecord, owner_id: str | None, fence: str | None) -> None:
+    def _authorize(
+        self, record: LaneRecord, owner_id: str | None, fence: str | None
+    ) -> None:
         if record.state == LaneLifecycleState.OBSERVED_LEGACY:
             raise LaneAuthorizationError("observed legacy lane has no managed owner")
         if owner_id != record.owner_id or fence != record.fence:
@@ -252,7 +254,9 @@ class FakeDurableLaneAuthority:
                 )
                 for item in self._records.values()
             ):
-                raise LaneConflictError("repository branch or worktree is already reserved")
+                raise LaneConflictError(
+                    "repository branch or worktree is already reserved"
+                )
             decision = self._quota.check(
                 (item for item in self._records.values() if self._active(item)),
                 owner_id=str(request["owner_id"]),
@@ -301,7 +305,12 @@ class FakeDurableLaneAuthority:
 
     def list_records(self) -> tuple[LaneRecord, ...]:
         with self._lock:
-            return tuple(sorted(self._records.values(), key=lambda item: (item.created_at, item.lane_id)))
+            return tuple(
+                sorted(
+                    self._records.values(),
+                    key=lambda item: (item.created_at, item.lane_id),
+                )
+            )
 
     def transition(
         self,
@@ -319,14 +328,18 @@ class FakeDurableLaneAuthority:
             if record is None:
                 raise LaneRegistryError(f"unknown lane: {lane_id}")
             self._authorize(record, owner_id, fence)
-            target = LaneLifecycleState(target) if target is not None else {
-                "activate": LaneLifecycleState.ACTIVE,
-                "submit": LaneLifecycleState.SUBMITTED,
-                "finish": LaneLifecycleState.LANDED,
-                "abort": LaneLifecycleState.ABORTED,
-                "expire": LaneLifecycleState.EXPIRED,
-                "quarantine": LaneLifecycleState.QUARANTINED,
-            }.get(operation)
+            target = (
+                LaneLifecycleState(target)
+                if target is not None
+                else {
+                    "activate": LaneLifecycleState.ACTIVE,
+                    "submit": LaneLifecycleState.SUBMITTED,
+                    "finish": LaneLifecycleState.LANDED,
+                    "abort": LaneLifecycleState.ABORTED,
+                    "expire": LaneLifecycleState.EXPIRED,
+                    "quarantine": LaneLifecycleState.QUARANTINED,
+                }.get(operation)
+            )
             if target is None:
                 raise LaneTransitionError(f"unknown lane operation: {operation}")
             if record.state == target:
@@ -369,7 +382,9 @@ class FakeDurableLaneAuthority:
                 LaneLifecycleState.ACTIVE,
                 LaneLifecycleState.SUBMITTED,
             }:
-                raise LaneTransitionError(f"lane in state {record.state.value} cannot heartbeat")
+                raise LaneTransitionError(
+                    f"lane in state {record.state.value} cannot heartbeat"
+                )
             values = dict(updates)
             values.update(
                 {
@@ -384,7 +399,9 @@ class FakeDurableLaneAuthority:
             self._event(updated, "heartbeat", owner_id)
             return updated
 
-    def observe_legacy(self, request: Mapping[str, Any], *, now: datetime) -> LaneRecord:
+    def observe_legacy(
+        self, request: Mapping[str, Any], *, now: datetime
+    ) -> LaneRecord:
         with self._lock:
             key = str(request["request_key"])
             index_key = (str(request["repository_id"]), key)
@@ -392,7 +409,9 @@ class FakeDurableLaneAuthority:
             if existing_id is not None:
                 existing = self._records[existing_id]
                 if existing.input_digest != request["input_digest"]:
-                    raise LaneConflictError("legacy observation key conflicts with durable input")
+                    raise LaneConflictError(
+                        "legacy observation key conflicts with durable input"
+                    )
                 return existing
             record = LaneRecord(
                 lane_id=str(request["lane_id"]),
@@ -454,12 +473,15 @@ class FakeDurableLaneAuthority:
                 self._active(item)
                 and item.lane_id != lane_id
                 and (
-                    (item.repository_id, item.branch) == (record.repository_id, record.branch)
+                    (item.repository_id, item.branch)
+                    == (record.repository_id, record.branch)
                     or item.worktree_path == record.worktree_path
                 )
                 for item in self._records.values()
             ):
-                raise LaneConflictError("repository branch or worktree is already reserved")
+                raise LaneConflictError(
+                    "repository branch or worktree is already reserved"
+                )
             self._records[lane_id] = updated
             self._event(updated, "adopt", operator_id)
             return updated
@@ -480,7 +502,9 @@ class FakeDurableLaneAuthority:
             self._authorize(record, owner_id, fence)
             updated = record.model_copy(
                 update={
-                    "cleanup_anchors": tuple(sorted(set(record.cleanup_anchors + (anchor,)))),
+                    "cleanup_anchors": tuple(
+                        sorted(set(record.cleanup_anchors + (anchor,)))
+                    ),
                     "version": record.version + 1,
                     "last_transition": "anchor",
                     "heartbeat_at": now,
@@ -522,7 +546,9 @@ class NativeLaneAuthorityAdapter:
     )
 
     def __init__(self, native: Any) -> None:
-        missing = [name for name in self._REQUIRED if not callable(getattr(native, name, None))]
+        missing = [
+            name for name in self._REQUIRED if not callable(getattr(native, name, None))
+        ]
         if missing:
             raise LaneRegistryError(
                 "native durable lane authority is unavailable; missing: "
@@ -653,9 +679,15 @@ class LaneRegistry:
         # ``authority`` is intentionally explicit.  A local SQLite file is a
         # projection for status/restart tests only; it is never allowed to
         # authorize a managed allocation or transition.
-        if authority is not None and durable_authority is not None and authority is not durable_authority:
+        if (
+            authority is not None
+            and durable_authority is not None
+            and authority is not durable_authority
+        ):
             raise ValueError("authority and durable_authority must identify one object")
-        self.authority = durable_authority if durable_authority is not None else authority
+        self.authority = (
+            durable_authority if durable_authority is not None else authority
+        )
         self.store_path = self._resolve_store_path(store_path)
         self._connection = self._open(self.store_path)
         self._lock = RLock()
@@ -824,8 +856,10 @@ class LaneRegistry:
     ) -> tuple[str, str, str | None]:
         if isinstance(repository, Mapping):
             values = repository
-            path_value = repository_path or values.get("canonical_path") or values.get(
-                "repository_path"
+            path_value = (
+                repository_path
+                or values.get("canonical_path")
+                or values.get("repository_path")
             )
             if not path_value:
                 raise ValueError("repository identity requires canonical_path")
@@ -833,14 +867,21 @@ class LaneRegistry:
             repository_value = values.get("repository_id")
             origin_value = values.get("origin") if origin is None else origin
             return (
-                str(repository_value or repository_id_for(canonical, origin=origin_value)),
+                str(
+                    repository_value
+                    or repository_id_for(canonical, origin=origin_value)
+                ),
                 canonical,
                 None if origin_value is None else str(origin_value),
             )
         if hasattr(repository, "canonical_path"):
-            canonical = str(Path(repository.canonical_path).expanduser().resolve(strict=False))
+            canonical = str(
+                Path(repository.canonical_path).expanduser().resolve(strict=False)
+            )
             repository_value = str(getattr(repository, "repository_id", ""))
-            origin_value = origin if origin is not None else getattr(repository, "origin", None)
+            origin_value = (
+                origin if origin is not None else getattr(repository, "origin", None)
+            )
             return (
                 repository_value or repository_id_for(canonical, origin=origin_value),
                 canonical,
@@ -884,7 +925,9 @@ class LaneRegistry:
         if self.authority is not None:
             records = list(self._authority_records())
             if repository_id is not None:
-                records = [item for item in records if item.repository_id == repository_id]
+                records = [
+                    item for item in records if item.repository_id == repository_id
+                ]
             if owner_id is not None:
                 records = [item for item in records if item.owner_id == owner_id]
             normalized_states = tuple(
@@ -894,7 +937,9 @@ class LaneRegistry:
                 records = [item for item in records if item.state in normalized_states]
             elif not include_terminal:
                 records = [item for item in records if item.state in ACTIVE_STATES]
-            return tuple(sorted(records, key=lambda item: (item.created_at, item.lane_id)))
+            return tuple(
+                sorted(records, key=lambda item: (item.created_at, item.lane_id))
+            )
         clauses: list[str] = []
         values: list[Any] = []
         if repository_id is not None:
@@ -954,7 +999,9 @@ class LaneRegistry:
         except AttributeError:
             setter = None
         if not callable(setter):
-            raise LaneRegistryError("durable authority does not support rollback control")
+            raise LaneRegistryError(
+                "durable authority does not support rollback control"
+            )
         result = bool(setter(enabled))
         with self._lock:
             self._connection.execute(
@@ -1140,11 +1187,20 @@ class LaneRegistry:
         worktree = (
             str(Path(worktree_path).expanduser().resolve(strict=False))
             if worktree_path is not None
-            else str((Path(canonical).parent / ".repository-manager-lanes" / branch).resolve())
+            else str(
+                (
+                    Path(canonical).parent / ".repository-manager-lanes" / branch
+                ).resolve()
+            )
         )
         concept_tuple = tuple(sorted(set(concept_ids)))
         job_tuple = tuple(sorted(set(active_job_ids)))
-        budget = max(1, disk_budget_bytes if disk_budget_bytes is not None else predicted_disk_bytes)
+        budget = max(
+            1,
+            disk_budget_bytes
+            if disk_budget_bytes is not None
+            else predicted_disk_bytes,
+        )
         immutable = self._immutable_payload(
             repository_id=repository_value,
             repository_path=canonical,
@@ -1277,7 +1333,9 @@ class LaneRegistry:
     ) -> LaneRecord:
         updates = {}
         if worktree_path is not None:
-            updates["worktree_path"] = str(Path(worktree_path).expanduser().resolve(strict=False))
+            updates["worktree_path"] = str(
+                Path(worktree_path).expanduser().resolve(strict=False)
+            )
         return self._transition(
             lane_id,
             LaneLifecycleState.ACTIVE,
@@ -1382,7 +1440,11 @@ class LaneRegistry:
             owner_id=owner_id,
             fence=fence,
             now=now,
-            updates={"active_job_ids": (), "active_candidate_id": None, "last_error": reason},
+            updates={
+                "active_job_ids": (),
+                "active_candidate_id": None,
+                "last_error": reason,
+            },
         )
 
     def expire(
@@ -1420,7 +1482,11 @@ class LaneRegistry:
             owner_id=owner_id,
             fence=fence,
             now=now,
-            updates={"active_job_ids": (), "active_candidate_id": None, "last_error": reason},
+            updates={
+                "active_job_ids": (),
+                "active_candidate_id": None,
+                "last_error": reason,
+            },
         )
 
     def adopt(
@@ -1436,7 +1502,9 @@ class LaneRegistry:
         """Explicitly claim an ``observed_legacy`` record."""
 
         if not operator_id:
-            raise LaneAuthorizationError("legacy adoption requires explicit operator_id")
+            raise LaneAuthorizationError(
+                "legacy adoption requires explicit operator_id"
+            )
         current_time = self._now(now)
         authority = self._require_authority()
         try:
@@ -1444,7 +1512,9 @@ class LaneRegistry:
         except AttributeError:
             adopter = None
         if not callable(adopter):
-            raise LaneRegistryError("durable authority does not support legacy adoption")
+            raise LaneRegistryError(
+                "durable authority does not support legacy adoption"
+            )
         updated = adopter(
             lane_id,
             owner_id=owner_id,
@@ -1490,7 +1560,9 @@ class LaneRegistry:
         except AttributeError:
             observer = None
         if not callable(observer):
-            raise LaneRegistryError("durable authority does not support legacy observation")
+            raise LaneRegistryError(
+                "durable authority does not support legacy observation"
+            )
         record = observer(
             {
                 "lane_id": lane_id,
@@ -1575,7 +1647,9 @@ class LaneRegistry:
         except AttributeError:
             recorder = None
         if not callable(recorder):
-            raise LaneRegistryError("durable authority does not support cleanup anchors")
+            raise LaneRegistryError(
+                "durable authority does not support cleanup anchors"
+            )
         updated = recorder(
             lane_id,
             anchor,
@@ -1597,7 +1671,9 @@ class LaneRegistry:
 
     def quota_status(self) -> dict[str, object]:
         authority_quota = getattr(self.authority, "quota", None)
-        quota = authority_quota if isinstance(authority_quota, LaneQuota) else self.quota
+        quota = (
+            authority_quota if isinstance(authority_quota, LaneQuota) else self.quota
+        )
         usage = quota.usage(self.list_records(include_terminal=False))
         return {
             "usage": usage.as_dict(),
@@ -1605,7 +1681,9 @@ class LaneRegistry:
             "allocation_enabled": self.allocation_enabled(),
         }
 
-    def safe_commit(self, lane_id: str, *, owner_id: str, fence: str, **kwargs: Any) -> dict[str, Any]:
+    def safe_commit(
+        self, lane_id: str, *, owner_id: str, fence: str, **kwargs: Any
+    ) -> dict[str, Any]:
         """Route lane commits through the C-12 primitive."""
 
         record = self.require(lane_id)

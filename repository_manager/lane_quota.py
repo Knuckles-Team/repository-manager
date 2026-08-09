@@ -111,9 +111,7 @@ class DiskAccountingProbe:
             else:
                 self._cache.pop(str(Path(path).expanduser().absolute()), None)
 
-    def _measure_uncached(
-        self, root: Path, *, now: datetime | None
-    ) -> DiskUsage:
+    def _measure_uncached(self, root: Path, *, now: datetime | None) -> DiskUsage:
         observed_at = (now or datetime.now(UTC)).astimezone(UTC)
         if root.is_symlink():
             return DiskUsage(
@@ -331,10 +329,26 @@ class LaneQuota:
         current = self.usage(records)
         next_total = current.total_active + 1
         scopes = (
-            ("agent", self.policy.max_per_agent, (current.by_agent.get(owner_id or "", 0) + 1)),
-            ("session", self.policy.max_per_session, (current.by_session.get(session_id or "", 0) + 1)),
-            ("repository", self.policy.max_per_repository, (current.by_repository.get(repository_id, 0) + 1)),
-            ("host", self.policy.max_per_host, (current.by_host.get(host_id or "", 0) + 1)),
+            (
+                "agent",
+                self.policy.max_per_agent,
+                (current.by_agent.get(owner_id or "", 0) + 1),
+            ),
+            (
+                "session",
+                self.policy.max_per_session,
+                (current.by_session.get(session_id or "", 0) + 1),
+            ),
+            (
+                "repository",
+                self.policy.max_per_repository,
+                (current.by_repository.get(repository_id, 0) + 1),
+            ),
+            (
+                "host",
+                self.policy.max_per_host,
+                (current.by_host.get(host_id or "", 0) + 1),
+            ),
             ("total", self.policy.max_total_active, next_total),
         )
         for scope, limit, value in scopes:

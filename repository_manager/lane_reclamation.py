@@ -69,9 +69,7 @@ class ExpiryCandidate:
 
     @property
     def refusal_codes(self) -> tuple[str, ...]:
-        return tuple(
-            check.name for check in self.checks if not check.allowed
-        )
+        return tuple(check.name for check in self.checks if not check.allowed)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -144,10 +142,7 @@ class CleanupRefused(ValueError):
         code = plan.assessment.refusal_codes
         if not code and plan.preview_only:
             code = ("durable_cleanup_job",)
-        super().__init__(
-            "lane cleanup refused: "
-            + ", ".join(code or ("unknown",))
-        )
+        super().__init__("lane cleanup refused: " + ", ".join(code or ("unknown",)))
 
 
 class ReconciliationClass(StrEnum):
@@ -257,7 +252,8 @@ class LaneReclaimer:
             return SafetyCheck(
                 "live_process",
                 False,
-                ReclamationReason.LIVE_PROCESS.value + ": liveness evidence unavailable",
+                ReclamationReason.LIVE_PROCESS.value
+                + ": liveness evidence unavailable",
             )
         try:
             alive = self.process_probe(lane)
@@ -334,7 +330,7 @@ class LaneReclaimer:
 
     def _check_anchor(self, lane: LaneRecord) -> SafetyCheck:
         anchors = lane.cleanup_anchors or (
-            "refs/lane-backup/" + lane.branch.replace("/", "-") ,
+            "refs/lane-backup/" + lane.branch.replace("/", "-"),
         )
         tip_ok, tip = self._git(
             "git rev-parse --verify --quiet "
@@ -346,14 +342,21 @@ class LaneReclaimer:
             return SafetyCheck(
                 "backup_anchor",
                 False,
-                ReclamationReason.MISSING_BACKUP_ANCHOR.value + ": lane tip unavailable",
+                ReclamationReason.MISSING_BACKUP_ANCHOR.value
+                + ": lane tip unavailable",
                 {"anchors": list(anchors), "lane_tip": tip_sha},
             )
         for anchor in anchors:
-            if not isinstance(anchor, str) or not anchor.strip() or anchor != anchor.strip():
+            if (
+                not isinstance(anchor, str)
+                or not anchor.strip()
+                or anchor != anchor.strip()
+            ):
                 continue
             is_ref = bool(
-                re.fullmatch(r"refs/(?:lane-backup|heads|tags|remotes)/[A-Za-z0-9._/-]+", anchor)
+                re.fullmatch(
+                    r"refs/(?:lane-backup|heads|tags|remotes)/[A-Za-z0-9._/-]+", anchor
+                )
                 and ".." not in anchor
                 and "//" not in anchor
             )
@@ -430,9 +433,13 @@ class LaneReclaimer:
                 else (
                     ReclamationReason.ACTIVE_JOB.value
                     if job_claimed
-                    else ReclamationReason.ACTIVE_JOB.value + ": claim evidence unavailable"
+                    else ReclamationReason.ACTIVE_JOB.value
+                    + ": claim evidence unavailable"
                 ),
-                {"job_ids": list(lane.active_job_ids), "evidence_available": not job_unknown},
+                {
+                    "job_ids": list(lane.active_job_ids),
+                    "evidence_available": not job_unknown,
+                },
             ),
             SafetyCheck(
                 "active_candidate",
@@ -442,9 +449,13 @@ class LaneReclaimer:
                 else (
                     ReclamationReason.ACTIVE_CANDIDATE.value
                     if candidate_claimed
-                    else ReclamationReason.ACTIVE_CANDIDATE.value + ": claim evidence unavailable"
+                    else ReclamationReason.ACTIVE_CANDIDATE.value
+                    + ": claim evidence unavailable"
                 ),
-                {"candidate_id": lane.active_candidate_id, "evidence_available": not candidate_unknown},
+                {
+                    "candidate_id": lane.active_candidate_id,
+                    "evidence_available": not candidate_unknown,
+                },
             ),
             SafetyCheck(
                 "concept_claim",
@@ -454,9 +465,13 @@ class LaneReclaimer:
                 else (
                     ReclamationReason.CONCEPT_CLAIM.value
                     if concept_claimed
-                    else ReclamationReason.CONCEPT_CLAIM.value + ": claim evidence unavailable"
+                    else ReclamationReason.CONCEPT_CLAIM.value
+                    + ": claim evidence unavailable"
                 ),
-                {"concept_ids": list(lane.concept_ids), "evidence_available": not concept_unknown},
+                {
+                    "concept_ids": list(lane.concept_ids),
+                    "evidence_available": not concept_unknown,
+                },
             ),
         )
 
@@ -482,7 +497,9 @@ class LaneReclaimer:
         checks.extend(self._check_claims(lane))
         checks.append(self._check_anchor(lane))
         checks.append(self._check_occupied(lane))
-        return ExpiryCandidate(lane, all(check.allowed for check in checks), tuple(checks))
+        return ExpiryCandidate(
+            lane, all(check.allowed for check in checks), tuple(checks)
+        )
 
     def select_expiry_candidates(
         self,
@@ -577,7 +594,11 @@ class LaneReclaimer:
         """Verify the separate cleanup WorkItem lease immediately before remove."""
 
         authority = self.cleanup_authority
-        if authority is None or not plan.requested_job_id or not plan.requested_job_fence:
+        if (
+            authority is None
+            or not plan.requested_job_id
+            or not plan.requested_job_fence
+        ):
             return False
         checker = getattr(authority, "is_current", None)
         if checker is None:
@@ -612,7 +633,11 @@ class LaneReclaimer:
         """Return true only for an exact durable removal receipt."""
 
         authority = self.cleanup_authority
-        if authority is None or not plan.requested_job_id or not plan.requested_job_fence:
+        if (
+            authority is None
+            or not plan.requested_job_id
+            or not plan.requested_job_fence
+        ):
             return False
         getter = getattr(authority, "get_removal_receipt", None)
         if not callable(getter):
@@ -702,7 +727,8 @@ class LaneReclaimer:
             else (
                 ReclamationReason.OCCUPIED.value
                 if locked is True
-                else ReclamationReason.OCCUPIED.value + ": occupancy evidence unavailable"
+                else ReclamationReason.OCCUPIED.value
+                + ": occupancy evidence unavailable"
             ),
         )
 
@@ -715,7 +741,9 @@ class LaneReclaimer:
         checks.append(self._check_occupied(lane))
         return tuple(checks)
 
-    def execute_cleanup(self, plan: CleanupPlan, *, now: datetime | None = None) -> dict[str, Any]:
+    def execute_cleanup(
+        self, plan: CleanupPlan, *, now: datetime | None = None
+    ) -> dict[str, Any]:
         """Re-check and remove through the existing guarded worktree adapter."""
 
         if not plan.executable:
@@ -943,8 +971,10 @@ class LaneReclaimer:
             )
         for item in observed:
             path = str(item.get("path", ""))
-            if path and path not in matched and not any(
-                finding.details.get("path") == path for finding in findings
+            if (
+                path
+                and path not in matched
+                and not any(finding.details.get("path") == path for finding in findings)
             ):
                 findings.append(
                     ReconciliationFinding(

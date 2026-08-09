@@ -184,7 +184,9 @@ class LaneRecord(BaseModel):
     )
     @classmethod
     def validate_optional_text(cls, value: str | None, info: Any) -> str | None:
-        return None if value is None or value == "" else _nonblank(value, info.field_name)
+        return (
+            None if value is None or value == "" else _nonblank(value, info.field_name)
+        )
 
     @field_validator("repository_path", "worktree_path")
     @classmethod
@@ -277,9 +279,7 @@ class LaneRecord(BaseModel):
         return lane_id_for(repository_id, request_key)
 
     @classmethod
-    def new_expiry(
-        cls, heartbeat_at: datetime, ttl_seconds: int
-    ) -> datetime:
+    def new_expiry(cls, heartbeat_at: datetime, ttl_seconds: int) -> datetime:
         return heartbeat_at.astimezone(UTC) + timedelta(seconds=ttl_seconds)
 
 
