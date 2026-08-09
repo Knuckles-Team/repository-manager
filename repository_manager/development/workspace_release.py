@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, MutableSequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -179,16 +179,38 @@ def _bounded_bool(value: object, field_name: str) -> bool:
 def _bounded_sequence(
     value: object, field_name: str, *, max_items: int
 ) -> tuple[object, ...]:
-    """Copy one collection while refusing strings, mappings, and overflows."""
+    """Copy one collection with bounded iteration and privacy-safe failures."""
 
     if isinstance(value, (str, bytes, bytearray, Mapping)) or not isinstance(
         value, Iterable
     ):
         raise WorkspaceReleaseError(f"{field_name} must be a sequence")
-    result = tuple(value)
-    if len(result) > max_items:
-        raise WorkspaceReleaseError(f"{field_name} exceeds the bounded item count")
-    return result
+    if isinstance(value, MutableSequence) and type(value) not in (list, tuple):
+        raise WorkspaceReleaseError(f"{field_name} must be a sequence")
+
+    try:
+        iterator = iter(value)
+    except Exception:
+        raise WorkspaceReleaseError(f"{field_name} items could not be read") from None
+
+    result: list[object] = []
+    for _ in range(max_items):
+        try:
+            result.append(next(iterator))
+        except StopIteration:
+            return tuple(result)
+        except Exception:
+            raise WorkspaceReleaseError(
+                f"{field_name} items could not be read"
+            ) from None
+
+    try:
+        next(iterator)
+    except StopIteration:
+        return tuple(result)
+    except Exception:
+        raise WorkspaceReleaseError(f"{field_name} items could not be read") from None
+    raise WorkspaceReleaseError(f"{field_name} exceeds the bounded item count")
 
 
 def _typed_sequence(
@@ -1352,7 +1374,14 @@ def build_dependency_graph(
     one refusal before any later mutation path is considered.
     """
 
-    project_values = tuple(projects)
+    project_values = cast(
+        tuple[ProjectRecord, ...],
+        _bounded_sequence(
+            projects,
+            "workspace projects",
+            max_items=MAX_PROJECTS,
+        ),
+    )
     if any(not isinstance(project, ProjectRecord) for project in project_values):
         raise WorkspaceReleaseError("workspace projects must be ProjectRecord values")
     project_values = tuple(
@@ -1377,7 +1406,14 @@ def build_dependency_graph(
     )
     if len(project_values) > MAX_PROJECTS:
         raise WorkspaceReleaseError("workspace project count exceeds the bound")
-    overlay_values = tuple(overlay_edges)
+    overlay_values = cast(
+        tuple[DependencyEdge, ...],
+        _bounded_sequence(
+            overlay_edges,
+            "workspace overlay edges",
+            max_items=MAX_EDGES,
+        ),
+    )
     if any(not isinstance(edge, DependencyEdge) for edge in overlay_values):
         raise WorkspaceReleaseError(
             "workspace overlay edges must be DependencyEdge values"
@@ -1770,10 +1806,13 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
     allowed = frozenset({"description", "phases"})
     _bounded_mapping_keys(value, "phase manifest", allowed)
     phases_value = _safe_mapping_get(value, "phases", (), "phase manifest")
-    if not isinstance(phases_value, (list, tuple)):
+    if type(phases_value) not in (list, tuple):
         raise WorkspaceReleaseError("phase manifest phases must be a sequence")
-    if len(phases_value) > MAX_PLAN_STAGES:
-        raise WorkspaceReleaseError("phase manifest exceeds the stage bound")
+    phase_values = _bounded_sequence(
+        phases_value,
+        "phase manifest phases",
+        max_items=MAX_PLAN_STAGES,
+    )
     phases: list[LegacyPhase] = []
     total_project_references = 0
     phase_keys = frozenset(
@@ -1789,7 +1828,7 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
             "exclude",
         }
     )
-    for index, raw in enumerate(phases_value):
+    for index, raw in enumerate(phase_values):
         if not isinstance(raw, Mapping):
             raise WorkspaceReleaseError(f"phase {index} must be a mapping")
         _bounded_mapping_keys(raw, f"phase {index}", phase_keys)
@@ -1805,13 +1844,16 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
         refs: list[str] = []
         if project is not None:
             refs.append(_bounded_text(project, f"phase {index} project"))
-        if not isinstance(projects, (list, tuple)):
+        if type(projects) not in (list, tuple):
             raise WorkspaceReleaseError(f"phase {index} projects must be a sequence")
-        if len(projects) > MAX_PROJECTS:
-            raise WorkspaceReleaseError(
-                f"phase {index} projects exceed the project bound"
-            )
-        refs.extend(_bounded_text(item, f"phase {index} project") for item in projects)
+        project_values = _bounded_sequence(
+            projects,
+            f"phase {index} projects",
+            max_items=MAX_PROJECTS,
+        )
+        refs.extend(
+            _bounded_text(item, f"phase {index} project") for item in project_values
+        )
         if len(refs) > MAX_PROJECTS:
             raise WorkspaceReleaseError(
                 f"phase {index} projects exceed the project bound"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from collections.abc import Iterator
 from dataclasses import replace
 from typing import cast
 
@@ -765,6 +766,31 @@ class _UnorderablePrivateKey:
         return "PRIVATE-KEY-SHOULD-NOT-LEAK"
 
 
+def _failing_sequence(item: object) -> Iterator[object]:
+    yield item
+    raise RuntimeError("SECRET")
+
+
+class _ExplodingList(list[object]):
+    def __iter__(self) -> Iterator[object]:
+        raise RuntimeError("LIST-ITER-SECRET")
+
+    def __len__(self) -> int:
+        raise RuntimeError("LIST-LEN-SECRET")
+
+
+class _MappingReturningExplodingList(dict[str, object]):
+    def get(self, key: str, default: object = None) -> object:
+        if key in {"phases", "projects"}:
+            return _ExplodingList()
+        return super().get(key, default)
+
+
+class _ExplodingGetMapping(dict[str, object]):
+    def get(self, key: str, default: object = None) -> object:
+        raise RuntimeError("GET-SECRET")
+
+
 @pytest.mark.parametrize(
     "mapping",
     [
@@ -783,6 +809,92 @@ def test_phase_parser_rejects_malformed_keys_without_repr_or_value_leaks(
     message = str(captured.value)
     assert "PRIVATE" not in message
     assert "Unorderable" not in message
+
+
+def test_legacy_phase_rejects_failing_generator_without_exception_leaks() -> None:
+    with pytest.raises(WorkspaceReleaseError) as captured:
+        LegacyPhase(
+            name="phase",
+            phase=1,
+            project_references=_failing_sequence("leaf"),  # type: ignore[arg-type]
+        )
+
+    assert str(captured.value) == "phase project references items could not be read"
+    assert captured.value.__cause__ is None
+    assert "SECRET" not in str(captured.value)
+
+
+def test_legacy_phase_manifest_rejects_failing_generator_without_exception_leaks() -> (
+    None
+):
+    phase = LegacyPhase(name="phase", phase=1, project_references=("leaf",))
+    with pytest.raises(WorkspaceReleaseError) as captured:
+        LegacyPhaseManifest(
+            phases=_failing_sequence(phase),  # type: ignore[arg-type]
+        )
+
+    assert str(captured.value) == "phase manifest phases items could not be read"
+    assert captured.value.__cause__ is None
+    assert "SECRET" not in str(captured.value)
+
+
+def test_dependency_graph_rejects_failing_generator_without_exception_leaks() -> None:
+    project = _project("packages/failing", _package("packages/failing", "failing"))
+    with pytest.raises(WorkspaceReleaseError) as captured:
+        build_dependency_graph(_failing_sequence(project))  # type: ignore[arg-type]
+
+    assert str(captured.value) == "workspace projects items could not be read"
+    assert captured.value.__cause__ is None
+    assert "SECRET" not in str(captured.value)
+
+
+def test_phase_parser_rejects_failing_mapping_get_without_exception_leaks() -> None:
+    with pytest.raises(WorkspaceReleaseError) as captured:
+        phase_manifest_from_mapping(_ExplodingGetMapping())
+
+    assert str(captured.value) == "phase manifest values could not be read"
+    assert captured.value.__cause__ is None
+    assert "GET-SECRET" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("mapping", "message"),
+    [
+        (
+            {"phases": _ExplodingList()},
+            "phase manifest phases must be a sequence",
+        ),
+        (
+            {
+                "phases": [
+                    {
+                        "name": "phase",
+                        "phase": 1,
+                        "projects": _ExplodingList(),
+                    }
+                ]
+            },
+            "phase 0 projects must be a sequence",
+        ),
+        (
+            _MappingReturningExplodingList(),
+            "phase manifest phases must be a sequence",
+        ),
+        (
+            {"phases": [_MappingReturningExplodingList()]},
+            "phase 0 projects must be a sequence",
+        ),
+    ],
+)
+def test_phase_parser_rejects_malicious_list_subclasses_without_len_or_iteration_leaks(
+    mapping: object, message: str
+) -> None:
+    with pytest.raises(WorkspaceReleaseError) as captured:
+        phase_manifest_from_mapping(mapping)  # type: ignore[arg-type]
+
+    assert str(captured.value) == message
+    assert captured.value.__cause__ is None
+    assert "LIST-" not in str(captured.value)
 
 
 def test_frozen_legacy_models_copy_lists_and_consume_generators_once() -> None:
