@@ -158,6 +158,14 @@ def test_withdraw_known_task(repo: Path):
 # ---------------------------------------------------------------------------
 # ExecutionClass — scope + policy, colocation gate, pool bound
 # ---------------------------------------------------------------------------
+def test_legacy_build_maps_to_heavy_rust_profile_not_frontend_serialization():
+    build = tq.EXECUTION_CLASSES["build"]
+    assert build.policy is tq.Policy.POOL
+    assert build.pool_size == 4
+    assert build.resource_profile == "rust-build"
+    assert tq.EXECUTION_CLASSES["frontend-build"].resource_profile == "frontend-build"
+
+
 def test_unknown_execution_class_refuses_rather_than_inventing_a_policy(repo: Path):
     with pytest.raises(tq.TaskQueueError, match="unknown execution class"):
         with tq.acquire("nonexistent-class", operation="x", path=repo, colocated=True):
@@ -243,7 +251,9 @@ def test_class_status_reports_live_holder(repo: Path):
 # not silently get two independent per-repository lease files.
 # ---------------------------------------------------------------------------
 @pytest.fixture
-def isolated_global_arbitration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def isolated_global_arbitration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
     """Redirect the host-wide GLOBAL-lease root to a throwaway directory so
     these tests can never collide with (or be polluted by) a REAL concurrent
     lane's actual `uv-sync` lock on this shared host.
@@ -254,7 +264,9 @@ def isolated_global_arbitration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
         root.mkdir(parents=True, exist_ok=True)
         return root
 
-    monkeypatch.setattr(tq, "workspace_arbitration_dir", _fake_workspace_arbitration_dir)
+    monkeypatch.setattr(
+        tq, "workspace_arbitration_dir", _fake_workspace_arbitration_dir
+    )
     return root
 
 
@@ -304,7 +316,9 @@ def test_global_scope_lease_excludes_a_different_repository(
             cm.__exit__(None, None, None)
 
     # released — repo_b can now acquire every slot again.
-    with tq.acquire("uv-sync", operation="sync in repo-b again", path=repo_b, colocated=True):
+    with tq.acquire(
+        "uv-sync", operation="sync in repo-b again", path=repo_b, colocated=True
+    ):
         pass
 
 
