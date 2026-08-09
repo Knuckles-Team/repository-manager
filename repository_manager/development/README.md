@@ -56,3 +56,13 @@ feedback is therefore not interchangeable with stage-2 certification.
 Lifecycle transitions are explicit in `transitions.py`; terminal states have
 no outgoing transition, retries are represented by a new WorkItem attempt, and
 the model validators enforce the corresponding state/evidence combinations.
+
+## Local execution consumer
+
+The additive `repository_manager.execution` package consumes
+`ExecutionCommand`/`ExecutionResult` without changing this contract boundary.
+Its [local executor guide](../execution/README.md) documents fixed-argv
+validation, authorized worktree roots, process-group cleanup, bounded redacted
+logs, cancellation, heartbeat, and publication fencing.  Build, validation,
+workspace, and remote lanes migrate their existing subprocess call sites to
+that seam only after their own scheduler/transport policies are ready.
