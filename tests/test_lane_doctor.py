@@ -13,6 +13,7 @@ positive half is what makes the refusal meaningful.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -389,6 +390,24 @@ def test_a_healthy_canonical_passes_the_worktree_check(worktree: Path) -> None:
     """The positive half: without it, an unconditional FAIL would pass above."""
     check = _named(lane_doctor.diagnose(worktree, env={}), "canonical-is-worktree")
     assert check["status"] == OK
+
+
+def test_tree_repair_diagnosis_failure_blocks_the_lane(
+    worktree: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from repository_manager import tree_repair
+
+    def _raise(_path: Path) -> dict:
+        raise RuntimeError("diagnosis backend unavailable")
+
+    monkeypatch.setattr(tree_repair, "diagnose", _raise)
+
+    check = lane_doctor._check_tree_repair(worktree)
+
+    assert check.status == FAIL
+    assert "refusing to authorize" in check.finding
+    assert "diagnosis backend unavailable" in check.evidence["error"]
+    assert json.dumps(str(worktree)) in check.remedy
 
 
 # ---------------------------------------------------------------------------

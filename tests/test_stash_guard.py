@@ -252,6 +252,27 @@ def test_private_ref_pattern_is_immune_to_a_stash_push_that_lands_afterward(repo
     assert "interloper WIP" in _stash_list(repo)
 
 
+def test_capture_wip_never_reads_or_writes_an_existing_shared_stash(repo):
+    """Adoption capture uses the temporary-index private-commit path."""
+    open(os.path.join(repo, "a.txt"), "w").write("pre-existing WIP\n")
+    open(os.path.join(repo, "interloper-only.txt"), "w").write("interloper\n")
+    _run('git stash push -u -m "pre-existing interloper"', repo)
+    existing = _stash_list(repo)
+    open(os.path.join(repo, "a.txt"), "w").write("lane-RM own WIP\n")
+    open(os.path.join(repo, "rm-only.txt"), "w").write("belongs to RM\n")
+
+    captured = stash_guard.capture_wip(FakeGit(), repo, label="lane-RM")
+
+    assert captured["ok"] is True
+    assert _stash_list(repo) == existing
+    assert _status(repo) == ""
+    restored = stash_guard.apply_and_clear(FakeGit(), repo, captured["ref"])
+    assert restored == {"ok": True, "ref": captured["ref"], "error": None}
+    assert open(os.path.join(repo, "a.txt")).read() == "lane-RM own WIP\n"
+    assert os.path.isfile(os.path.join(repo, "rm-only.txt"))
+    assert _stash_list(repo) == existing
+
+
 def test_two_repository_manager_captures_on_the_same_canonical_never_cross(repo):
     """The scenario the ticket actually asks for: two *repository-manager*
     operations racing on worktrees that share one ``.git``. Lane B's own
@@ -271,7 +292,7 @@ def test_two_repository_manager_captures_on_the_same_canonical_never_cross(repo)
         # exited yet -- we are firing from inside A's own push command).
         b_attempts.append(stash_guard.capture_wip(FakeGit(), repo, label="lane-B"))
 
-    git = HookedGit({"git stash push": _lane_b_races_in})
+    git = HookedGit({"git update-ref refs/lane/rm-adopt-stash": _lane_b_races_in})
     result_a = stash_guard.capture_wip(git, repo, label="lane-A")
 
     assert result_a["ok"] is True
