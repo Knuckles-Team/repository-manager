@@ -955,6 +955,99 @@ class DependencyGraph:
     parallel_groups: tuple[tuple[str, ...], ...]
     digest: str
 
+    def __post_init__(self) -> None:
+        projects = _typed_sequence(
+            self.projects,
+            "graph projects",
+            ProjectRecord,
+            max_items=MAX_PROJECTS,
+        )
+        packages = _typed_sequence(
+            self.packages,
+            "graph packages",
+            PackageRecord,
+            max_items=MAX_PACKAGES,
+        )
+        edges = _typed_sequence(
+            self.edges,
+            "graph edges",
+            DependencyEdge,
+            max_items=MAX_EDGES,
+        )
+        project_edge_values = _bounded_sequence(
+            self.project_edges,
+            "graph project edges",
+            max_items=MAX_EDGES,
+        )
+        project_edges: list[tuple[str, str]] = []
+        project_edge_set: set[tuple[str, str]] = set()
+        for index, raw_pair in enumerate(project_edge_values):
+            pair = _bounded_sequence(
+                raw_pair,
+                f"graph project edge {index}",
+                max_items=2,
+            )
+            if len(pair) != 2 or any(not isinstance(item, str) for item in pair):
+                raise WorkspaceReleaseError(
+                    "graph project edges must contain two string endpoints"
+                )
+            dependent, dependency = cast(tuple[str, str], pair)
+            canonical_pair = (
+                canonical_repository_id(dependent),
+                canonical_repository_id(dependency),
+            )
+            if canonical_pair[0] == canonical_pair[1]:
+                raise WorkspaceReleaseError(
+                    "graph project edges must not contain self edges"
+                )
+            if canonical_pair in project_edge_set:
+                raise WorkspaceReleaseError("graph project edges must not duplicate")
+            project_edge_set.add(canonical_pair)
+            project_edges.append(canonical_pair)
+
+        group_values = _bounded_sequence(
+            self.parallel_groups,
+            "graph parallel groups",
+            max_items=MAX_PROJECTS,
+        )
+        groups: list[tuple[str, ...]] = []
+        grouped_projects: set[str] = set()
+        for index, raw_group in enumerate(group_values):
+            group = _bounded_sequence(
+                raw_group,
+                f"graph parallel group {index}",
+                max_items=MAX_PROJECTS,
+            )
+            if not group or any(not isinstance(item, str) for item in group):
+                raise WorkspaceReleaseError(
+                    "graph parallel groups must contain non-empty string groups"
+                )
+            members = tuple(canonical_repository_id(cast(str, item)) for item in group)
+            if members != tuple(sorted(members)):
+                raise WorkspaceReleaseError(
+                    "graph parallel group members must be canonical and ordered"
+                )
+            if len(members) != len(set(members)) or set(members) & grouped_projects:
+                raise WorkspaceReleaseError(
+                    "graph parallel groups must not duplicate projects"
+                )
+            grouped_projects.update(members)
+            groups.append(members)
+
+        digest = _bounded_text(self.digest, "graph digest", max_length=64)
+        if re.fullmatch(r"[0-9a-fA-F]{64}", digest) is None:
+            raise WorkspaceReleaseError("graph digest must be a SHA-256 digest")
+        object.__setattr__(
+            self, "projects", tuple(sorted(projects, key=lambda item: item.project_id))
+        )
+        object.__setattr__(
+            self, "packages", tuple(sorted(packages, key=lambda item: item.key.value))
+        )
+        object.__setattr__(self, "edges", tuple(sorted(edges, key=_edge_sort_key)))
+        object.__setattr__(self, "project_edges", tuple(sorted(project_edges)))
+        object.__setattr__(self, "parallel_groups", tuple(groups))
+        object.__setattr__(self, "digest", digest.lower())
+
     def canonical_payload(self) -> dict[str, object]:
         return {
             "projects": [_project_payload(project) for project in self.projects],
@@ -976,12 +1069,57 @@ class LegacyPhase:
     bulk_push: bool = False
     wait_minutes: int = 0
 
+    def __post_init__(self) -> None:
+        name = _bounded_text(self.name, "phase name")
+        if (
+            isinstance(self.phase, bool)
+            or not isinstance(self.phase, int)
+            or self.phase < 1
+        ):
+            raise WorkspaceReleaseError("phase number must be positive")
+        references = _bounded_sequence(
+            self.project_references,
+            "phase project references",
+            max_items=MAX_PROJECTS,
+        )
+        if any(not isinstance(item, str) for item in references):
+            raise WorkspaceReleaseError("phase project references must be strings")
+        normalized_references = tuple(
+            _bounded_text(item, "phase project reference")
+            for item in cast(tuple[str, ...], references)
+        )
+        if len(normalized_references) != len(set(normalized_references)):
+            raise WorkspaceReleaseError("phase project references must be unique")
+        if not isinstance(self.bulk_bump, bool) or not isinstance(self.bulk_push, bool):
+            raise WorkspaceReleaseError("phase bulk flags must be booleans")
+        if (
+            isinstance(self.wait_minutes, bool)
+            or not isinstance(self.wait_minutes, int)
+            or self.wait_minutes < 0
+        ):
+            raise WorkspaceReleaseError("phase wait_minutes must be non-negative")
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "project_references", normalized_references)
+
 
 @dataclass(frozen=True, slots=True)
 class LegacyPhaseManifest:
     """Immutable view of the current phase manifest during shadow operation."""
 
     phases: tuple[LegacyPhase, ...]
+
+    def __post_init__(self) -> None:
+        phases = _typed_sequence(
+            self.phases,
+            "phase manifest phases",
+            LegacyPhase,
+            max_items=MAX_PLAN_STAGES,
+        )
+        object.__setattr__(
+            self,
+            "phases",
+            tuple(sorted(phases, key=lambda item: (item.phase, item.name))),
+        )
 
 
 def _package_payload(package: PackageRecord) -> dict[str, object]:

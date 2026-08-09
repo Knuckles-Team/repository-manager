@@ -14,6 +14,8 @@ from repository_manager.development.workspace_release import (
     Ecosystem,
     GraphDiagnosticCode,
     GraphValidationError,
+    LegacyPhase,
+    LegacyPhaseManifest,
     PackageKey,
     PackageRecord,
     PackageReference,
@@ -515,8 +517,12 @@ def test_closure_rejects_dishonest_explanations_and_missing_source_evidence() ->
     with pytest.raises(SelectionError):
         replace(closure, explanations=tuple(dishonest), digest="")
 
-    with pytest.raises(SelectionError):
-        replace(closure, source_project_edges=(), digest="")
+    with pytest.raises(WorkspaceReleaseError):
+        replace(
+            closure,
+            source_graph=replace(closure.source_graph, project_edges=()),
+            digest="",
+        )
 
     graph = _chain_graph()
     all_projects = tuple(project.project_id for project in graph.projects)
@@ -655,3 +661,137 @@ def test_maximum_bounded_phase_mismatch_returns_a_bounded_report() -> None:
     assert all(
         len(value) <= 4096 for item in report.diagnostics for _, value in item.details
     )
+
+
+def test_frozen_legacy_models_copy_lists_and_consume_generators_once() -> None:
+    references = ["leaf"]
+    phase = LegacyPhase(
+        name="leaf",
+        phase=1,
+        project_references=(item for item in references),
+    )
+    references.append("changed")
+    assert phase.project_references == ("leaf",)
+
+    phases = [phase]
+    manifest = LegacyPhaseManifest(phases=(item for item in phases))
+    phases.clear()
+    assert manifest.phases == (phase,)
+    assert manifest.phases == (phase,)
+
+
+def test_dependency_graph_copies_nested_generators_and_repeats_without_drift() -> None:
+    graph = _chain_graph()
+    projects = list(graph.projects)
+    packages = list(graph.packages)
+    edges = list(graph.edges)
+    project_edges = [list(pair) for pair in graph.project_edges]
+    parallel_groups = [list(group) for group in graph.parallel_groups]
+    frozen = DependencyGraph(
+        projects=(item for item in projects),
+        packages=(item for item in packages),
+        edges=(item for item in edges),
+        project_edges=(pair for pair in project_edges),
+        parallel_groups=(group for group in parallel_groups),
+        digest=graph.digest,
+    )
+
+    projects.clear()
+    packages.clear()
+    edges.clear()
+    project_edges[0][0] = "repo:packages/mutated"
+    parallel_groups[0].clear()
+
+    assert frozen.projects == graph.projects
+    assert frozen.packages == graph.packages
+    assert frozen.edges == graph.edges
+    assert frozen.project_edges == graph.project_edges
+    assert frozen.parallel_groups == graph.parallel_groups
+    first = derive_selected_closure(
+        frozen,
+        SelectionPolicy(
+            changed_projects=("packages/changed",),
+            upstream_mode=InclusionMode.TRANSITIVE,
+        ),
+    )
+    second = derive_selected_closure(
+        frozen,
+        SelectionPolicy(
+            changed_projects=("packages/changed",),
+            upstream_mode=InclusionMode.TRANSITIVE,
+        ),
+    )
+    assert first.digest == second.digest
+    assert first.canonical_payload() == second.canonical_payload()
+
+
+def test_closure_binds_complete_unselected_source_edges_and_changes_digest() -> None:
+    graph = _chain_graph()
+    policy = SelectionPolicy(changed_projects=("packages/changed",))
+    closure = derive_selected_closure(graph, policy)
+    independent = next(
+        project
+        for project in graph.projects
+        if project.project_id == "repo:packages/independent"
+    )
+    independent_package = replace(
+        independent.packages[0],
+        dependencies=(_dependency("leaf", "packages/leaf"),),
+    )
+    enriched_projects = tuple(
+        replace(
+            project,
+            packages=(independent_package,)
+            if project.project_id == independent.project_id
+            else project.packages,
+        )
+        for project in graph.projects
+    )
+    enriched_graph = build_dependency_graph(enriched_projects)
+    enriched_closure = derive_selected_closure(enriched_graph, policy)
+
+    assert enriched_closure.selected_project_ids == closure.selected_project_ids
+    assert enriched_closure.source_project_edges != closure.source_project_edges
+    assert enriched_closure.digest != closure.digest
+    with pytest.raises(SelectionError):
+        replace(
+            closure,
+            source_graph=enriched_graph,
+            digest=closure.digest,
+        )
+    with pytest.raises(SelectionError):
+        replace(
+            enriched_closure,
+            source_graph=graph,
+            digest=enriched_closure.digest,
+        )
+
+
+def test_closure_revalidates_the_authoritative_source_graph_digest() -> None:
+    closure = derive_selected_closure(
+        _chain_graph(),
+        SelectionPolicy(changed_projects=("packages/changed",)),
+    )
+    with pytest.raises(GraphValidationError):
+        replace(
+            closure,
+            source_graph=replace(closure.source_graph, digest="f" * 64),
+            digest="",
+        )
+
+
+def test_closure_selected_records_and_edges_must_match_source_graph() -> None:
+    closure = derive_selected_closure(
+        _chain_graph(),
+        SelectionPolicy(
+            changed_projects=("packages/changed",),
+            upstream_mode=InclusionMode.TRANSITIVE,
+        ),
+    )
+    tampered_project = replace(closure.projects[0], tree_sha="a" * 40)
+    with pytest.raises(SelectionError):
+        replace(closure, projects=(tampered_project, *closure.projects[1:]), digest="")
+
+    tampered_edge = replace(closure.edges[0], source="tampered-source")
+    with pytest.raises(SelectionError):
+        replace(closure, edges=(tampered_edge, *closure.edges[1:]), digest="")

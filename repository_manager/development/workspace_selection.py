@@ -634,13 +634,21 @@ class SelectedChangeClosure:
     project_edges: tuple[tuple[str, str], ...]
     parallel_groups: tuple[tuple[str, ...], ...]
     explanations: tuple[SelectionExplanation, ...]
-    source_graph_digest: str
+    source_graph: DependencyGraph
     digest: str = ""
-    source_project_edges: tuple[tuple[str, str], ...] | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.policy, SelectionPolicy):
             raise SelectionError("closure policy must be a SelectionPolicy")
+        if not isinstance(self.source_graph, DependencyGraph):
+            raise SelectionError("closure requires a frozen source DependencyGraph")
+        (
+            source_known,
+            source_project_map,
+            _source_package_map,
+            source_edges,
+            source_project_edges,
+        ) = _graph_inventory(self.source_graph)
         known = _canonical_ids(
             self.known_project_ids,
             "known project IDs",
@@ -653,6 +661,10 @@ class SelectedChangeClosure:
         )
         if not set(selected).issubset(known):
             raise SelectionError("selected project IDs must be known project IDs")
+        if known != source_known:
+            raise SelectionError(
+                "closure known projects must match the frozen source graph"
+            )
         if not (
             set(self.policy.changed_projects) | set(self.policy.selected_projects)
         ).issubset(set(known)):
@@ -670,6 +682,16 @@ class SelectedChangeClosure:
         ):
             raise SelectionError(
                 "closure projects must exactly match selected project IDs"
+            )
+        expected_projects = tuple(
+            source_project_map[project_id] for project_id in selected
+        )
+        if (
+            tuple(project_map[project_id] for project_id in selected)
+            != expected_projects
+        ):
+            raise SelectionError(
+                "closure projects must exactly match the frozen source graph"
             )
         edges = _typed_sequence(
             self.edges,
@@ -704,6 +726,16 @@ class SelectedChangeClosure:
             } - set(selected):
                 raise SelectionError("closure edges must use selected projects")
         ordered_edges = tuple(sorted(edges, key=_edge_sort_key))
+        expected_selected_edges = tuple(
+            edge
+            for edge in source_edges
+            if edge.dependent_project_id in selected
+            and edge.dependency_project_id in selected
+        )
+        if ordered_edges != expected_selected_edges:
+            raise SelectionError(
+                "closure edges must exactly match the frozen source graph"
+            )
 
         project_edge_values = _bounded_sequence(
             self.project_edges,
@@ -741,36 +773,7 @@ class SelectedChangeClosure:
             )
         ordered_project_edges = tuple(sorted(project_edge_set))
 
-        if self.source_project_edges is None:
-            raise SelectionError("closure requires frozen source project-edge evidence")
-        source_edge_values = _bounded_sequence(
-            self.source_project_edges,
-            "source graph project edges",
-            max_items=MAX_EDGES,
-        )
-        source_edge_set: set[tuple[str, str]] = set()
-        for item in source_edge_values:
-            if not isinstance(item, (tuple, list)) or len(item) != 2:
-                raise SelectionError("source graph project edges must contain pairs")
-            dependent, dependency = item
-            if not isinstance(dependent, str) or not isinstance(dependency, str):
-                raise SelectionError(
-                    "source graph project edge endpoints must be strings"
-                )
-            pair = (
-                canonical_repository_id(dependent),
-                canonical_repository_id(dependency),
-            )
-            if pair in source_edge_set:
-                raise SelectionError("source graph project edges must not duplicate")
-            if pair[0] == pair[1]:
-                raise SelectionError("source graph project edges must not self-cycle")
-            if set(pair) - set(known):
-                raise SelectionError(
-                    "source graph project edges must use known projects"
-                )
-            source_edge_set.add(pair)
-        ordered_source_edges = tuple(sorted(source_edge_set))
+        ordered_source_edges = source_project_edges
         expected_selected_source_edges = {
             pair for pair in ordered_source_edges if set(pair).issubset(set(selected))
         }
@@ -778,12 +781,6 @@ class SelectedChangeClosure:
             raise SelectionError(
                 "closure project edges must match selected source graph edges"
             )
-        source_groups, source_cycle_diagnostics = _topological_groups(
-            known, ordered_source_edges
-        )
-        del source_groups
-        if source_cycle_diagnostics:
-            raise GraphValidationError(source_cycle_diagnostics)
         expected_included, expected_reasons, expected_via = _selection_evidence(
             self.policy, known, ordered_source_edges
         )
@@ -873,15 +870,6 @@ class SelectedChangeClosure:
                 raise SelectionError(
                     "closure explanations do not match policy and source graph evidence"
                 )
-        source_digest = _bounded_text(
-            self.source_graph_digest,
-            "source graph digest",
-            max_length=64,
-        )
-        if len(source_digest) != 64 or any(
-            char not in "0123456789abcdefABCDEF" for char in source_digest
-        ):
-            raise SelectionError("source graph digest must be a SHA-256 digest")
         object.__setattr__(self, "known_project_ids", known)
         object.__setattr__(self, "selected_project_ids", selected)
         object.__setattr__(
@@ -889,12 +877,10 @@ class SelectedChangeClosure:
         )
         object.__setattr__(self, "edges", ordered_edges)
         object.__setattr__(self, "project_edges", ordered_project_edges)
-        object.__setattr__(self, "source_project_edges", ordered_source_edges)
         object.__setattr__(self, "parallel_groups", tuple(normalized_groups))
         object.__setattr__(
             self, "explanations", tuple(explanation_map[item] for item in known)
         )
-        object.__setattr__(self, "source_graph_digest", source_digest.lower())
         if not isinstance(self.digest, str):
             raise SelectionError("closure digest must be a string")
         if self.digest:
@@ -931,9 +917,19 @@ class SelectedChangeClosure:
     def all_project_edges(self) -> tuple[tuple[str, str], ...]:
         """Return the frozen complete project-edge evidence."""
 
-        if self.source_project_edges is None:
-            raise SelectionError("closure has no source project-edge evidence")
-        return self.source_project_edges
+        return self.source_graph.project_edges
+
+    @property
+    def source_project_edges(self) -> tuple[tuple[str, str], ...]:
+        """Return complete source project edges derived from the frozen graph."""
+
+        return self.source_graph.project_edges
+
+    @property
+    def source_graph_digest(self) -> str:
+        """Return the verified authoritative source graph digest."""
+
+        return self.source_graph.digest
 
     def canonical_payload(self, *, include_digest: bool = False) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -943,12 +939,14 @@ class SelectedChangeClosure:
             "projects": [_project_payload(project) for project in self.projects],
             "edges": [_edge_payload(edge) for edge in self.edges],
             "project_edges": self.project_edges,
-            "source_project_edges": self.source_project_edges,
             "parallel_groups": self.parallel_groups,
             "explanations": [
                 explanation.canonical_payload() for explanation in self.explanations
             ],
-            "source_graph_digest": self.source_graph_digest,
+            "source_graph": {
+                **self.source_graph.canonical_payload(),
+                "digest": self.source_graph.digest,
+            },
         }
         if include_digest:
             payload["digest"] = self.digest
@@ -1038,8 +1036,7 @@ def derive_selected_closure(
         project_edges=selected_project_edges,
         parallel_groups=groups,
         explanations=explanations,
-        source_graph_digest=graph.digest,
-        source_project_edges=project_edges,
+        source_graph=graph,
     )
 
 
