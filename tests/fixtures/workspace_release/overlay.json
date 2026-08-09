@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "edges": [
+    {
+      "dependent": "repo:apps/consumer::python:consumer",
+      "dependency": "repo:services/foo::python:foo",
+      "floor": ">=1.0.0",
+      "source": "fixture-overlay"
+    }
+  ],
+  "versions": []
+}

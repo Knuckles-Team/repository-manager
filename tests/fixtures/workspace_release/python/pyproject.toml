@@ -1,0 +1,7 @@
+[project]
+name = "fixture-python"
+version = "1.0.0"
+dependencies = ["fixture-rust>=2.0.0"]
+
+[tool.bumpversion]
+current_version = "1.0.0"
