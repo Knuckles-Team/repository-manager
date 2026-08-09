@@ -943,6 +943,17 @@ def start(
     base: str = "main",
     path: str | None = None,
     git: Any = None,
+    registry: Any = None,
+    owner_id: str = "",
+    session_id: str = "",
+    host_id: str = "",
+    request_id: str | None = None,
+    idempotency_key: str | None = None,
+    predicted_disk_bytes: int = 0,
+    disk_budget_bytes: int | None = None,
+    ttl_seconds: int = 3600,
+    adopt: bool = False,
+    operator_id: str = "",
 ) -> dict[str, Any]:
     """Open an isolated lane: worktree + partitioned environment + proof.
 
@@ -958,8 +969,32 @@ def start(
         from repository_manager.mcp_server import get_git_instance
 
         git = get_git_instance(path=path)
-    manager = WorktreeManager(git)
-    added = manager.add(repo, branch, base=base)
+    manager = WorktreeManager(git, registry=registry)
+    if registry is not None:
+        if not owner_id or not session_id:
+            return {
+                "ok": False,
+                "stage": "registry",
+                "error": "managed lane start requires owner_id and session_id",
+            }
+        added = manager.allocate(
+            repo,
+            branch,
+            base=base,
+            owner_id=owner_id,
+            session_id=session_id,
+            host_id=host_id,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            predicted_disk_bytes=predicted_disk_bytes,
+            disk_budget_bytes=disk_budget_bytes,
+            ttl_seconds=ttl_seconds,
+            adopt=adopt,
+            operator_id=operator_id,
+            registry=registry,
+        )
+    else:
+        added = manager.add(repo, branch, base=base, adopt=adopt)
     if not added.get("ok", False):
         return {"ok": False, "stage": "worktree", "result": added}
 
@@ -975,7 +1010,77 @@ def start(
         "exports": exports,
         "shell": _shell_block(exports),
         "preflight": report,
+        **(
+            {
+                "lane_id": added.get("lane_id"),
+                "fence": added.get("fence"),
+                "record": added.get("record"),
+            }
+            if registry is not None
+            else {}
+        ),
     }
+
+
+def allocate(
+    repo: str,
+    branch: str,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Bounded lane-doctor adapter for durable allocation."""
+
+    return start(repo, branch, registry=kwargs.pop("registry", None), **kwargs)
+
+
+def _registry_lane_for_path(registry: Any, path: Path, branch: str = "") -> Any:
+    for record in registry.list_records():
+        if Path(record.worktree_path) == path and (not branch or record.branch == branch):
+            return record
+    return None
+
+
+def heartbeat(
+    lane_id: str,
+    *,
+    owner_id: str,
+    fence: str,
+    registry: Any,
+    observed_disk_bytes: int | None = None,
+    now: Any | None = None,
+) -> dict[str, Any]:
+    """Refresh a managed lane heartbeat through its current fence."""
+
+    try:
+        record = registry.heartbeat(
+            lane_id,
+            owner_id=owner_id,
+            fence=fence,
+            observed_disk_bytes=observed_disk_bytes,
+            now=now,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
+    return {"ok": True, "lane_id": lane_id, "fence": record.fence, "record": record.model_dump(mode="json")}
+
+
+def status(
+    lane_id: str | None = None,
+    *,
+    path: Path | str | None = None,
+    branch: str = "",
+    registry: Any,
+) -> dict[str, Any]:
+    """Read durable lane status without touching Git or the worktree."""
+
+    try:
+        record = registry.require(lane_id) if lane_id else None
+        if record is None and path is not None:
+            record = _registry_lane_for_path(registry, _resolve_tree(path), branch)
+        if record is None:
+            return {"ok": False, "error": "lane could not be resolved"}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
+    return {"ok": True, "lane_id": record.lane_id, "record": record.model_dump(mode="json")}
 
 
 def finish(
@@ -984,6 +1089,10 @@ def finish(
     branch: str = "",
     base: str = "",
     force: bool = False,
+    registry: Any = None,
+    lane_id: str | None = None,
+    owner_id: str = "",
+    fence: str = "",
 ) -> dict[str, Any]:
     """Preflight, then hand the branch to the serialized merge queue.
 
@@ -1007,6 +1116,40 @@ def finish(
             "preflight": report,
         }
 
+    managed_record = None
+    if registry is not None:
+        managed_record = (
+            registry.require(lane_id)
+            if lane_id
+            else _registry_lane_for_path(registry, tree, branch)
+        )
+        if managed_record is None:
+            return {
+                "ok": False,
+                "stage": "registry",
+                "enqueued": False,
+                "reason": "managed lane record could not be resolved",
+                "preflight": report,
+            }
+        effective_owner = owner_id or managed_record.owner_id or ""
+        effective_fence = fence or managed_record.fence
+        try:
+            submitted_lane = registry.submit(
+                managed_record.lane_id,
+                owner_id=effective_owner,
+                fence=effective_fence,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "stage": "registry",
+                "enqueued": False,
+                "reason": str(exc),
+                "preflight": report,
+            }
+    else:
+        submitted_lane = None
+
     try:
         merge_queue = _load_merge_queue()
     except ImportError as exc:
@@ -1021,6 +1164,7 @@ def finish(
             ),
             "preflight": report,
             "forced": force,
+            "lane_id": managed_record.lane_id if managed_record else None,
         }
 
     try:
@@ -1041,6 +1185,8 @@ def finish(
         "candidate": result,
         "preflight": report,
         "forced": force,
+        "lane_id": submitted_lane.lane_id if submitted_lane else None,
+        "lane_state": submitted_lane.state.value if submitted_lane else None,
         "note": (
             "enqueued != landed, but you do not need to do anything: a scheduler "
             "drains this queue automatically. Watch it with "
@@ -1090,6 +1236,17 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
             branch,
             base=kwargs.get("base") or "main",
             path=kwargs.get("workspace"),
+            registry=kwargs.get("registry"),
+            owner_id=kwargs.get("owner_id") or "",
+            session_id=kwargs.get("session_id") or "",
+            host_id=kwargs.get("host_id") or "",
+            request_id=kwargs.get("request_id"),
+            idempotency_key=kwargs.get("idempotency_key"),
+            predicted_disk_bytes=int(kwargs.get("predicted_disk_bytes") or 0),
+            disk_budget_bytes=kwargs.get("disk_budget_bytes"),
+            ttl_seconds=int(kwargs.get("ttl_seconds") or 3600),
+            adopt=bool(kwargs.get("adopt")),
+            operator_id=kwargs.get("operator_id") or "",
         )
     if action == "finish":
         return finish(
@@ -1097,6 +1254,10 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
             branch=kwargs.get("branch") or "",
             base=kwargs.get("base") or "",
             force=bool(kwargs.get("force")),
+            registry=kwargs.get("registry"),
+            lane_id=kwargs.get("lane_id"),
+            owner_id=kwargs.get("owner_id") or "",
+            fence=kwargs.get("fence") or "",
         )
     return {"ok": False, "error": f"unknown action: {action}"}
 

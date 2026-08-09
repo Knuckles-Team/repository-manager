@@ -90,8 +90,12 @@ class WorktreeManager:
     repository-manager.
     """
 
-    def __init__(self, git: GitLike) -> None:
+    def __init__(self, git: GitLike, registry: Any | None = None) -> None:
         self.git = git
+        # The registry is optional so the historical worktree verbs remain
+        # usable during rollback and migration.  Managed lifecycle callers use
+        # ``allocate`` below, which reserves before invoking ``add``.
+        self.registry = registry
 
     # ── resolution ────────────────────────────────────────────────────────
     def resolve_repo(self, repo: str) -> str | None:
@@ -245,6 +249,214 @@ class WorktreeManager:
             "adopted": adopted,
             **out,
         }
+
+    def allocate(
+        self,
+        repo: str,
+        branch: str,
+        *,
+        base: str = "main",
+        owner_id: str,
+        session_id: str,
+        host_id: str = "",
+        request_id: str | None = None,
+        idempotency_key: str | None = None,
+        predicted_disk_bytes: int = 0,
+        disk_budget_bytes: int | None = None,
+        ttl_seconds: int = 3600,
+        adopt: bool = False,
+        operator_id: str = "",
+        registry: Any | None = None,
+        now: Any | None = None,
+    ) -> dict[str, Any]:
+        """Reserve a durable lane before creating its linked worktree.
+
+        This is a bounded adapter: all Git creation still goes through
+        :meth:`add`, while identity, quota, and fencing are owned by the lane
+        registry.  A quota refusal therefore happens before ``add`` can create
+        a directory.
+        """
+
+        from repository_manager.lane_registry import LaneRegistry
+
+        authority = registry or self.registry
+        if authority is None:
+            authority = LaneRegistry()
+        canonical = self.resolve_repo(repo)
+        if not canonical:
+            return {"ok": False, "error": f"repo not found: {repo}"}
+        worktree = self.worktree_path(repo, branch)
+        key = idempotency_key or request_id
+        if key is None:
+            key = f"{canonical}\0{branch}\0{owner_id}\0{session_id}"
+        try:
+            if adopt:
+                if not operator_id:
+                    return {
+                        "ok": False,
+                        "stage": "registry",
+                        "error": "legacy adoption requires explicit operator_id",
+                    }
+                candidates = [
+                    item
+                    for item in authority.list_records()
+                    if item.state.value == "observed_legacy"
+                    and item.repository_path == canonical
+                    and item.branch == branch
+                    and item.worktree_path == worktree
+                ]
+                if len(candidates) != 1:
+                    return {
+                        "ok": False,
+                        "stage": "registry",
+                        "error": "observed legacy lane could not be uniquely resolved",
+                    }
+                record = authority.adopt(
+                    candidates[0].lane_id,
+                    owner_id=owner_id,
+                    session_id=session_id,
+                    host_id=host_id,
+                    operator_id=operator_id,
+                    now=now,
+                )
+            else:
+                record = authority.allocate(
+                    canonical,
+                    branch,
+                    worktree,
+                    owner_id=owner_id,
+                    session_id=session_id,
+                    host_id=host_id,
+                    request_id=key,
+                    base_ref=base,
+                    ttl_seconds=ttl_seconds,
+                    predicted_disk_bytes=predicted_disk_bytes,
+                    disk_budget_bytes=disk_budget_bytes,
+                    now=now,
+                )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "stage": "registry",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        added = self.add(repo, branch, base=base, adopt=adopt)
+        if not added.get("ok"):
+            try:
+                authority.abort(
+                    record.lane_id,
+                    owner_id=owner_id,
+                    fence=record.fence,
+                    reason="worktree creation failed",
+                )
+            except Exception:
+                # The original creation error is the actionable response; the
+                # durable row remains for reconciliation if abort itself fails.
+                pass
+            return {"ok": False, "stage": "worktree", "result": added, "lane_id": record.lane_id}
+        try:
+            active = record
+            if not adopt:
+                active = authority.activate(
+                    record.lane_id,
+                    owner_id=owner_id,
+                    fence=record.fence,
+                    worktree_path=added.get("path") or worktree,
+                    now=now,
+                )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "stage": "registry-activate",
+                "lane_id": record.lane_id,
+                "fence": record.fence,
+                "worktree": added,
+                "error": str(exc),
+            }
+        return {
+            **added,
+            "lane_id": active.lane_id,
+            "fence": active.fence,
+            "record": active.model_dump(mode="json"),
+            "registry": authority,
+        }
+
+    # Explicit names make the adapter seam discoverable to later consumers
+    # while retaining ``allocate`` as the concise worktree API.
+    allocate_lane = allocate
+
+    def heartbeat(
+        self,
+        lane_id: str,
+        *,
+        owner_id: str,
+        fence: str,
+        observed_disk_bytes: int | None = None,
+        now: Any | None = None,
+        registry: Any | None = None,
+    ) -> dict[str, Any]:
+        """Forward a lane heartbeat to the durable fenced registry."""
+
+        authority = registry or self.registry
+        if authority is None:
+            return {"ok": False, "error": "lane registry is not configured"}
+        try:
+            record = authority.heartbeat(
+                lane_id,
+                owner_id=owner_id,
+                fence=fence,
+                observed_disk_bytes=observed_disk_bytes,
+                now=now,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
+        return {"ok": True, "lane_id": lane_id, "fence": record.fence, "record": record.model_dump(mode="json")}
+
+    heartbeat_lane = heartbeat
+
+    def finish(
+        self,
+        lane_id: str,
+        *,
+        owner_id: str,
+        fence: str,
+        registry: Any | None = None,
+        now: Any | None = None,
+    ) -> dict[str, Any]:
+        """Forward fenced lane completion without mutating Git directly."""
+
+        authority = registry or self.registry
+        if authority is None:
+            return {"ok": False, "error": "lane registry is not configured"}
+        try:
+            record = authority.finish(
+                lane_id, owner_id=owner_id, fence=fence, now=now
+            )
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
+        return {"ok": True, "lane_id": lane_id, "record": record.model_dump(mode="json")}
+
+    finish_lane = finish
+
+    def status(
+        self,
+        lane_id: str,
+        *,
+        registry: Any | None = None,
+    ) -> dict[str, Any]:
+        """Return one durable lane status projection."""
+
+        authority = registry or self.registry
+        if authority is None:
+            return {"ok": False, "error": "lane registry is not configured"}
+        try:
+            record = authority.status(lane_id)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
+        return {"ok": True, "lane_id": lane_id, "record": record.model_dump(mode="json")}
+
+    lane_status = status
 
     def list_worktrees(self, repo: str | None = None) -> dict[str, Any]:
         """List worktrees for one repo, or across every workspace repo.
