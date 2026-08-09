@@ -74,3 +74,22 @@ The later merge-queue adapter may consume these pure records for object-only
 trial merge and differential gates.  RMDD-29 remains the authority for typed
 build execution payloads and production worker handoff; this module creates no
 such payload.
+
+## Existing queue-store shadow adapter
+
+The RMDD-12 checkpoint-2 adapter appends `candidate_snapshot` and `generation`
+records to the existing `merge_queue.queue_store` fragments.  The fixed store
+key is retained as an `id = record_id` compatibility alias; the domain
+`record_id` and immutable digest remain authoritative.  Legacy candidate records
+continue to fold through the original queue view and are never interpreted as
+generation members.  Snapshot and generation appends are replay-idempotent, and
+the domain folds validate mixed legacy/additive fragments during restart.
+
+The private shadow path snapshots only queued candidates with explicit canonical
+config/toolchain/resource digests, selects and seals deterministic batches, and
+uses the existing `merge-tree`/`commit-tree` object operations against the
+captured SHAs.  It records bounded conflict and differential evidence, does not
+run gates or materialize a worktree, and never moves a target ref.  A target ref
+that no longer equals the sealed base is reported as `stale-base`; no shadow
+result is certification evidence.  Any execution or landing handoff remains
+explicitly RMDD-29-gated.
