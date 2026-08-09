@@ -60,11 +60,10 @@ import json
 import shutil
 import subprocess  # nosec B404 - fixed argv, never shell=True
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
 from agent_utilities.governance.lanes import (
     LaneArbitrationError,
     LeaseUnavailable,
@@ -73,6 +72,14 @@ from agent_utilities.governance.lanes import (
 )
 
 from repository_manager import task_queue as tq
+from repository_manager.config_schema import (
+    ArtifactContract,
+    ConfigSchemaError,
+    Placement,
+    ResourceRequest,
+    load_yaml_mapping,
+    parse_build_config,
+)
 from repository_manager.merge_queue import (
     _now,  # reuse the same UTC-isoformat timestamp helper merge_queue uses
     _require_git,
@@ -116,6 +123,17 @@ class BuildSpec:
     #: compiles (e.g. a maturin abi3 wheel target).
     target_triple: str = ""
     source: str = ""
+    #: Scheduler-facing resource and placement declaration.  The build broker
+    #: does not admit these yet; later scheduler lanes consume the typed value.
+    resource_class: str = "light-check"
+    resources: ResourceRequest = field(default_factory=ResourceRequest)
+    disk_estimate_mb: int = 0
+    placement: Placement = field(default_factory=Placement)
+    artifact_contract: ArtifactContract = field(default_factory=ArtifactContract)
+    #: Validation stage and generation compatibility are metadata-only until
+    #: the staged validation/build lanes consume them.
+    stage: str = "feedback"
+    generation_compatible: bool = True
 
 
 @dataclass(frozen=True)
@@ -123,6 +141,7 @@ class BuildConfig:
     base: str = "main"
     specs: tuple[BuildSpec, ...] = ()
     source: str = ""
+    schema_version: int = 2
 
     def spec(self, name: str = "") -> BuildSpec:
         if not self.specs:
@@ -152,45 +171,35 @@ def _as_argv(value: Any, *, where: str) -> tuple[str, ...]:
 
 
 def parse_config(data: dict[str, Any], *, source: str = "") -> BuildConfig:
-    specs: list[BuildSpec] = []
-    for index, raw in enumerate(data.get("specs") or []):
-        if not isinstance(raw, dict):
-            raise BuildQueueError(
-                f"{source or CONFIG_FILENAME}: specs[{index}] is not a mapping"
-            )
-        name = str(raw.get("name") or "").strip()
-        if not name:
-            raise BuildQueueError(
-                f"{source or CONFIG_FILENAME}: specs[{index}] has no name"
-            )
-        specs.append(
+    try:
+        schema = parse_build_config(data, source=source)
+    except ConfigSchemaError as exc:
+        raise BuildQueueError(str(exc)) from exc
+    return BuildConfig(
+        base=schema.base,
+        specs=tuple(
             BuildSpec(
-                name=name,
-                command=_as_argv(raw.get("command"), where=f"spec {name!r}"),
-                workdir=str(raw.get("workdir", ".")),
-                toolchain_fingerprint=(
-                    _as_argv(
-                        raw["toolchain_fingerprint"],
-                        where=f"spec {name!r} toolchain_fingerprint",
-                    )
-                    if raw.get("toolchain_fingerprint")
-                    else ()
-                ),
-                cache_key_paths=tuple(str(p) for p in raw.get("cache_key_paths") or ()),
-                artifacts=tuple(str(p) for p in raw.get("artifacts") or ()),
-                timeout=int(raw.get("timeout", 3600)),
-                target_triple=str(raw.get("target_triple", "")),
+                name=spec.name,
+                command=spec.command,
+                workdir=spec.workdir,
+                toolchain_fingerprint=spec.toolchain_fingerprint,
+                cache_key_paths=spec.cache_key_paths,
+                artifacts=spec.artifacts,
+                timeout=spec.timeout,
+                target_triple=spec.target_triple,
+                resource_class=spec.resource_class,
+                resources=spec.resources,
+                disk_estimate_mb=spec.disk_estimate_mb,
+                placement=spec.placement,
+                artifact_contract=spec.artifact_contract,
+                stage=spec.stage,
+                generation_compatible=spec.generation_compatible,
                 source=source,
             )
-        )
-    names = [s.name for s in specs]
-    duplicates = sorted({n for n in names if names.count(n) > 1})
-    if duplicates:
-        raise BuildQueueError(
-            f"{source or CONFIG_FILENAME}: duplicate spec name(s) {duplicates}"
-        )
-    return BuildConfig(
-        base=str(data.get("base", "main")), specs=tuple(specs), source=source
+            for spec in schema.specs
+        ),
+        schema_version=schema.schema_version,
+        source=source,
     )
 
 
@@ -203,10 +212,11 @@ def load_config(tree: Path | str) -> BuildConfig:
             "declaration is refused rather than defaulted (an absent config "
             "and 'this repo builds nothing' must not be the same value)."
         )
-    data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    if not isinstance(data, dict):
-        raise BuildQueueError(f"{config_path}: must be a YAML mapping")
-    return parse_config(data, source=str(config_path))
+    try:
+        data = load_yaml_mapping(str(config_path))
+        return parse_config(data, source=str(config_path))
+    except ConfigSchemaError as exc:
+        raise BuildQueueError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +571,9 @@ def _claim_build_task(
     lease_name = f"build-claim-{digest}"
     try:
         with hold_lease(
-            lease_name, operation=f"claim build {key.repo}:{spec.name}", ttl_seconds=30,
+            lease_name,
+            operation=f"claim build {key.repo}:{spec.name}",
+            ttl_seconds=30,
             path=path,
         ):
             existing = tq.find_task("build", digest, path=path)
