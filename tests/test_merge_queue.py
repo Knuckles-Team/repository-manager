@@ -20,7 +20,9 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -1252,6 +1254,73 @@ def test_shadow_generation_uses_mixed_queue_fragments_and_replays_idempotently(
         == first["generations"][0]["result"]["synthetic_commit_sha"]
     )
     assert mq._queue_raw_records(shell_repo) == raw
+
+
+def test_shadow_generation_lease_serializes_callers_and_cleans_up(
+    shell_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One caller owns the existing merge lease; replay is stable after release."""
+
+    from agent_utilities.governance.lanes import LeaseUnavailable, lease_status
+
+    _branch_with(shell_repo, "feat/lease", {"lease.txt": "lease\n"}, "lease")
+    mq.enqueue("feat/lease", path=shell_repo)
+    entered = Event()
+    release = Event()
+    real_trial = mq._shadow_trial_merge
+
+    def blocked_trial(repo: Path, record):
+        entered.set()
+        if not release.wait(10):
+            raise AssertionError("test trial release timed out")
+        return real_trial(repo, record)
+
+    monkeypatch.setattr(mq, "_shadow_trial_merge", blocked_trial)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            mq.shadow_generation, **_shadow_kwargs(shell_repo)
+        )
+        try:
+            assert entered.wait(10), "first caller did not reach the leased trial"
+            second_future = executor.submit(
+                mq.shadow_generation, **_shadow_kwargs(shell_repo)
+            )
+            with pytest.raises(LeaseUnavailable):
+                second_future.result(timeout=10)
+        finally:
+            release.set()
+        first = first_future.result(timeout=10)
+
+    assert first["generations"][0]["result"]["status"] == "trial-merged"
+    assert lease_status(mq.MERGE_LEASE, shell_repo) is None
+    replay = mq.shadow_generation(**_shadow_kwargs(shell_repo))
+    assert replay["candidate_snapshot_appends"] == 0
+    assert replay["generation_record_appends"] == 0
+    raw = mq._queue_raw_records(shell_repo)
+    assert sum(item.get("kind") == "candidate_snapshot" for item in raw) == 1
+    assert sum(item.get("kind") == "generation" for item in raw) == 2
+    from repository_manager.candidate_generation import fold_generation_records
+
+    assert len(fold_generation_records(raw)) == 1
+
+
+def test_shadow_generation_lease_cleans_up_after_failure(shell_repo: Path) -> None:
+    """A failed snapshot cannot strand the shared merge lease."""
+
+    from agent_utilities.governance.lanes import lease_status
+
+    _branch_with(shell_repo, "feat/failure", {"failure.txt": "failure\n"}, "failure")
+    mq.enqueue("feat/failure", path=shell_repo)
+    with pytest.raises(mq.MergeQueueError, match="config_digest"):
+        mq.shadow_generation(
+            config_digest="not-a-digest",
+            toolchain_digest=_SHADOW_TOOLCHAIN,
+            resource_digest=_SHADOW_RESOURCE,
+            now="2099-01-01T00:00:00Z",
+            path=shell_repo,
+        )
+    assert lease_status(mq.MERGE_LEASE, shell_repo) is None
 
 
 def test_shadow_generation_attributes_conflict_and_differential_paths_without_refs(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -335,6 +336,24 @@ def test_generation_fold_rejects_divergent_same_timestamp_records() -> None:
         fold_generation_records(
             [sealed.to_record(), first.to_record(), second.to_record()]
         )
+
+
+def test_generation_replay_canonicalizes_nested_observation_time_only() -> None:
+    members = (_candidate(1), _candidate(2))
+    sealed = seal_generation(members, sealed_at=datetime(2026, 8, 9, 12, 1, tzinfo=UTC))
+    original = sealed.to_record()
+    replay = copy.deepcopy(original)
+    replay["members"][0]["recorded_at"] = "2026-08-09T12:01:00.123456Z"
+
+    first = fold_generation_records([original, replay])[0]
+    second = fold_generation_records([replay, original])[0]
+    assert first == second
+    assert first.record_id == sealed.record_id
+
+    drift = copy.deepcopy(replay)
+    drift["members"][0]["candidate"]["candidate_sha"] = "f" * 40
+    with pytest.raises(CandidateGenerationError):
+        fold_generation_records([original, drift])
 
 
 def test_bisection_isolates_one_bad_candidate_and_reuses_exact_good_evidence() -> None:

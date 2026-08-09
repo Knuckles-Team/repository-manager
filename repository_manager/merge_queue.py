@@ -1074,7 +1074,7 @@ def _shadow_trial_merge(repo: Path, record: GenerationRecord) -> dict[str, Any]:
     }
 
 
-def shadow_generation(
+def _shadow_generation_unlocked(
     *,
     config_digest: str,
     toolchain_digest: str,
@@ -1162,6 +1162,18 @@ def shadow_generation(
         if _append_domain_record(snapshot, path=repo, lane=scope.lane):
             snapshot_appends += 1
 
+    # A replay may construct the same immutable snapshot with a fresh
+    # observation timestamp.  Continue with the canonical stored member so the
+    # nested member record in a sealed generation is byte-stable as well.
+    try:
+        canonical_snapshots = {
+            item.record_id: item
+            for item in fold_candidate_records(_queue_raw_records(repo))
+        }
+    except CandidateGenerationError as exc:
+        raise MergeQueueError(str(exc)) from exc
+    snapshots = [canonical_snapshots[item.record_id] for item in snapshots]
+
     try:
         selection = select_batches(
             snapshots,
@@ -1215,6 +1227,47 @@ def shadow_generation(
         "selected": [item.record_id for item in selection.selected],
         "execution_handoff": "RMDD-29-gated",
     }
+
+
+def shadow_generation(
+    *,
+    config_digest: str,
+    toolchain_digest: str,
+    resource_digest: str,
+    base: str = "",
+    batch_size: int = 0,
+    debounce: float | int | timedelta = 0,
+    maximum_age: float | int | timedelta = 0,
+    build_target: str = "default",
+    concept_claims: Iterable[object] = (),
+    incompatibility_labels: Iterable[object] = (),
+    target: TargetPolicy | None = None,
+    now: datetime | str | None = None,
+    path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Serialize shadow snapshot/seal/replay through the merge lease."""
+
+    scope = lane_scope(path)
+    with hold_lease(
+        MERGE_LEASE,
+        operation=f"shadow generation for {scope.main_tree.name}",
+        path=scope.tree,
+    ):
+        return _shadow_generation_unlocked(
+            config_digest=config_digest,
+            toolchain_digest=toolchain_digest,
+            resource_digest=resource_digest,
+            base=base,
+            batch_size=batch_size,
+            debounce=debounce,
+            maximum_age=maximum_age,
+            build_target=build_target,
+            concept_claims=concept_claims,
+            incompatibility_labels=incompatibility_labels,
+            target=target,
+            now=now,
+            path=path,
+        )
 
 
 @contextmanager

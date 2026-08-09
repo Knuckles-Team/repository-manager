@@ -627,6 +627,28 @@ def fold_candidate_records(
     return tuple(snapshots)
 
 
+def _generation_record_comparison_json(record: dict[str, Any]) -> str:
+    """Canonicalize replay-only member observation metadata for tie checks.
+
+    A generation embeds its candidate records for lineage.  A replay can
+    reconstruct the same immutable member with a different ``recorded_at``;
+    that observation timestamp is not part of the member immutable digest and
+    must not turn an otherwise identical same-timestamp generation update into
+    a divergent history.  All immutable member fields remain in the comparison.
+    """
+
+    normalized = dict(record)
+    members = normalized.get("members")
+    if isinstance(members, (list, tuple)) and all(
+        isinstance(member, dict) for member in members
+    ):
+        normalized["members"] = [
+            {key: value for key, value in member.items() if key != "recorded_at"}
+            for member in members
+        ]
+    return canonical_json(normalized)
+
+
 def fold_generation_records(
     records: Iterable[dict[str, Any]],
 ) -> tuple[GenerationRecord, ...]:
@@ -647,7 +669,9 @@ def fold_generation_records(
         timestamps: dict[datetime, set[str]] = {}
         for record, raw in decoded:
             timestamp = timestamp_value(record.recorded_at)
-            timestamps.setdefault(timestamp, set()).add(canonical_json(raw))
+            timestamps.setdefault(timestamp, set()).add(
+                _generation_record_comparison_json(raw)
+            )
         if any(len(variants) > 1 for variants in timestamps.values()):
             raise CandidateGenerationError(
                 f"generation {record_id} has divergent records at one timestamp"
