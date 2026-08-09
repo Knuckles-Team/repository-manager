@@ -658,8 +658,10 @@ class ValidationRunner:
                 "validation requires a graph-os WorkItem authority; no local job store is allowed"
             )
         submitted: list[SubmittedValidationJob] = []
+        current_job: ValidationJob | None = None
         try:
             for job in plan.jobs:
+                current_job = job
                 result = self.job_authority.submit(job)
                 if result.job_id != job.job_id:
                     raise ValidationRunnerError(
@@ -670,29 +672,38 @@ class ValidationRunner:
                         f"durable authority changed immutable input for {job.gate_name}"
                     )
                 submitted.append(result)
+                current_job = None
         except Exception as exc:
+            # The requested job ID is deterministic and safe to cancel even
+            # when the authority persisted it before losing its response.  A
+            # mismatched returned ID is authority-controlled input; never use
+            # it to cancel an unrelated WorkItem.
+            cancellation_ids = [previous.job_id for previous in submitted]
+            if current_job is not None:
+                cancellation_ids.append(current_job.job_id)
+            cancellation_ids = list(dict.fromkeys(cancellation_ids))
             cancellation_failures: list[str] = []
-            for previous in submitted:
+            for job_id in cancellation_ids:
                 try:
                     if not self.job_authority.cancel(
-                        previous.job_id,
+                        job_id,
                         reason="validation submission failed; canceling prefix",
                     ):
-                        cancellation_failures.append(previous.job_id)
+                        cancellation_failures.append(job_id)
                 except Exception as cancel_exc:
                     cancellation_failures.append(
-                        f"{previous.job_id} ({type(cancel_exc).__name__})"
+                        f"{job_id} ({type(cancel_exc).__name__})"
                     )
             detail = (
-                f"validation job submission failed after {len(submitted)} job(s): "
+                f"validation job submission failed after {len(submitted)} acknowledged job(s): "
                 f"{type(exc).__name__}: {exc}"
             )
             if cancellation_failures:
                 detail += "; submission reconciliation failed for job(s): " + ", ".join(
                     cancellation_failures
                 )
-            elif submitted:
-                detail += "; submitted prefix was cooperatively canceled"
+            elif cancellation_ids:
+                detail += "; submitted prefix/current job was cooperatively canceled"
             raise ValidationRunnerError(detail) from exc
         return tuple(submitted)
 
@@ -705,6 +716,12 @@ class ValidationRunner:
         """Prepare, submit, and execute a staged plan without landing or pushing."""
 
         token = cancellation or CancellationToken()
+        if self.executor is None:
+            return ValidationRunResult(
+                request=request,
+                plan=None,
+                preparation_error="no fixed-argv validation executor was configured",
+            )
         try:
             preparation = self._prepare_request(request)
             prepared = preparation.request
@@ -719,13 +736,6 @@ class ValidationRunner:
                 request=request,
                 plan=None,
                 preparation_error=str(exc),
-            )
-        if self.executor is None:
-            return ValidationRunResult(
-                request=prepared,
-                plan=plan,
-                preparation_error="no fixed-argv validation executor was configured",
-                snapshot_gate_deferred=preparation.snapshot_gate_deferred,
             )
         try:
             submitted = self.submit(plan)

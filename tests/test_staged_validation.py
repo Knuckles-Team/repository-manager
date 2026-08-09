@@ -29,6 +29,7 @@ from repository_manager.validation import (
     GateMode,
     LocalTestAdmission,
     PathSelection,
+    SubmittedValidationJob,
     TimeoutPolicy,
     ValidationCertificate,
     ValidationFailureClass,
@@ -796,20 +797,28 @@ def test_resource_refusal_happens_before_executor(tmp_path: Path) -> None:
 
 def test_missing_executor_fails_before_durable_submission(tmp_path: Path) -> None:
     repo, sha = _repo(tmp_path)
+    (repo / "tracked.txt").write_text("dirty and must remain\n", encoding="utf-8")
     profile = ValidationProfile(
         "custom", 1, (_gate("feedback", ValidationStage.FEEDBACK),)
     )
     authority = FakeValidationJobAuthority()
+
+    def unexpected_snapshot(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a missing executor must not snapshot a dirty tree")
+
     result = ValidationRunner(
         job_authority=authority,
         resource_admission=LocalTestAdmission(),
+        safe_commit_fn=unexpected_snapshot,
     ).run(_request(repo, sha, profile, (ValidationStage.FEEDBACK,)))
     assert (
         result.preparation_error == "no fixed-argv validation executor was configured"
     )
-    assert result.plan is not None
+    assert result.plan is None
     assert result.submitted == ()
     assert authority.jobs == []
+    assert _git(repo, "rev-parse", "HEAD") == sha
+    assert _git(repo, "status", "--porcelain")
 
 
 def test_submission_failure_cancels_prefix_and_reports_reconciliation(
@@ -850,11 +859,71 @@ def test_submission_failure_cancels_prefix_and_reports_reconciliation(
     assert result.plan is not None
     assert result.submitted == ()
     assert len(authority.jobs) == 1
+    assert [job_id for job_id, _ in authority.cancelled] == [
+        authority.jobs[0].job_id,
+        result.plan.jobs[1].job_id,
+    ]
+    assert all(
+        reason == "validation submission failed; canceling prefix"
+        for _, reason in authority.cancelled
+    )
+    assert result.preparation_error is not None
+    assert "submission reconciliation failed" in result.preparation_error
+
+
+def test_persisted_then_raised_submission_cancels_current_job(
+    tmp_path: Path,
+) -> None:
+    class PersistedThenRaiseAuthority(FakeValidationJobAuthority):
+        def submit(self, job: Any) -> Any:
+            self.jobs.append(job)
+            raise RuntimeError("lost submission response")
+
+    repo, sha = _repo(tmp_path)
+    profile = ValidationProfile(
+        "custom", 1, (_gate("feedback", ValidationStage.FEEDBACK),)
+    )
+    authority = PersistedThenRaiseAuthority()
+    result = ValidationRunner(
+        job_authority=authority,
+        resource_admission=LocalTestAdmission(),
+        executor=FakeExecutor(),
+    ).run(_request(repo, sha, profile, (ValidationStage.FEEDBACK,)))
+    assert result.preparation_error is not None
+    assert "cooperatively canceled" in result.preparation_error
+    assert len(authority.jobs) == 1
     assert authority.cancelled == [
         (authority.jobs[0].job_id, "validation submission failed; canceling prefix")
     ]
+
+
+def test_same_id_bad_digest_ack_cancels_current_job(
+    tmp_path: Path,
+) -> None:
+    class BadDigestAuthority(FakeValidationJobAuthority):
+        def submit(self, job: Any) -> SubmittedValidationJob:
+            acknowledged = super().submit(job)
+            return SubmittedValidationJob(
+                job_id=acknowledged.job_id,
+                input_digest="0" * 64,
+            )
+
+    repo, sha = _repo(tmp_path)
+    profile = ValidationProfile(
+        "custom", 1, (_gate("feedback", ValidationStage.FEEDBACK),)
+    )
+    authority = BadDigestAuthority()
+    result = ValidationRunner(
+        job_authority=authority,
+        resource_admission=LocalTestAdmission(),
+        executor=FakeExecutor(),
+    ).run(_request(repo, sha, profile, (ValidationStage.FEEDBACK,)))
     assert result.preparation_error is not None
-    assert "submission reconciliation failed" in result.preparation_error
+    assert "cooperatively canceled" in result.preparation_error
+    assert len(authority.jobs) == 1
+    assert authority.cancelled == [
+        (authority.jobs[0].job_id, "validation submission failed; canceling prefix")
+    ]
 
 
 def test_cancelled_and_timed_out_jobs_release_reservations(tmp_path: Path) -> None:
