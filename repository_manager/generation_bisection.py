@@ -4,8 +4,8 @@ The bisection planner never executes a gate or changes a candidate.  It turns
 one immutable attempt result into an explicit decision so a controller can
 retry an environment failure, split an attributable failure, or reject one
 candidate with evidence.  Parent/child lineage is represented by generation
-IDs and is therefore restart-safe when persisted by the candidate-generation
-ledger.
+IDs and is therefore restart-safe when appended to the existing queue record
+authority.
 """
 
 from __future__ import annotations
@@ -43,10 +43,11 @@ class AttemptResult:
     generation_id: str
     member_ids: tuple[str, ...]
     passed: bool
-    failure_class: str = ""
+    failure_class: str | FailureClass | None = None
     detail: str = ""
     evidence_ids: tuple[str, ...] = ()
     attempt: int = 1
+    attempt_budget: int = 3
 
     def __post_init__(self) -> None:
         if not self.generation_id:
@@ -57,6 +58,8 @@ class AttemptResult:
             raise ValueError("attempt member IDs must be unique")
         if self.attempt < 1:
             raise ValueError("attempt number must be positive")
+        if self.attempt_budget < 1:
+            raise ValueError("attempt budget must be positive")
         object.__setattr__(self, "member_ids", tuple(self.member_ids))
         object.__setattr__(self, "evidence_ids", tuple(sorted(set(self.evidence_ids))))
 
@@ -91,39 +94,33 @@ def classify_failure(
     *,
     passed: bool,
     failure_class: str | FailureClass | None = None,
-    detail: str = "",
 ) -> FailureKind:
-    """Classify a result without treating an unknown failure as success."""
+    """Classify only an explicit stable failure code.
+
+    Human-readable detail is intentionally not consulted: it is untrusted
+    evidence and must never turn an opaque worker failure into a source-code
+    rejection or a bisection decision.
+    """
 
     if passed:
-        return FailureKind.NONE
-    value = str(failure_class or "").lower()
-    text = detail.lower()
+        return FailureKind.NONE if failure_class is None else FailureKind.OPAQUE
+    if isinstance(failure_class, FailureClass):
+        value = failure_class
+    elif isinstance(failure_class, str):
+        try:
+            value = FailureClass(failure_class)
+        except ValueError:
+            return FailureKind.OPAQUE
+    else:
+        return FailureKind.OPAQUE
     if value in {
-        FailureClass.WORKER_ENVIRONMENT_FAILURE.value,
-        "environment",
-        "env",
-        "timeout",
-        "resource",
-    } or any(token in text for token in ("environment", "toolchain", "worker")):
+        FailureClass.WORKER_ENVIRONMENT_FAILURE,
+        FailureClass.CAPACITY_DISK_DEFERRED,
+    }:
         return FailureKind.ENVIRONMENT
-    if (
-        value
-        in {
-            FailureClass.CANCELLED_DEADLINE.value,
-            "cancelled",
-            "cancellation",
-        }
-        or "cancel" in text
-    ):
+    if value == FailureClass.CANCELLED_DEADLINE:
         return FailureKind.CANCELLATION
-    if value in {
-        FailureClass.VALIDATION_CANDIDATE_FAILURE.value,
-        "candidate",
-        "conflict",
-        "code",
-        "validation",
-    } or any(token in text for token in ("conflict", "candidate", "compile", "test")):
+    if value == FailureClass.VALIDATION_CANDIDATE_FAILURE:
         return FailureKind.CANDIDATE
     return FailureKind.OPAQUE
 
@@ -143,9 +140,8 @@ def decide(attempt: AttemptResult) -> BisectionDecision:
     kind = classify_failure(
         passed=attempt.passed,
         failure_class=attempt.failure_class,
-        detail=attempt.detail,
     )
-    if attempt.passed:
+    if attempt.passed and kind == FailureKind.NONE:
         return BisectionDecision(
             action=DecisionAction.ACCEPT,
             kind=FailureKind.NONE,
@@ -155,19 +151,31 @@ def decide(attempt: AttemptResult) -> BisectionDecision:
             reused_evidence_ids=attempt.evidence_ids,
             reason="generation passed; exact evidence is reusable for the same membership",
         )
-    if kind in {FailureKind.ENVIRONMENT, FailureKind.CANCELLATION}:
+    if kind != FailureKind.CANDIDATE:
+        exhausted = attempt.attempt >= attempt.attempt_budget
+        quarantine = kind == FailureKind.ENVIRONMENT and exhausted
+        if kind == FailureKind.OPAQUE:
+            reason = (
+                "unknown failure code: retry unchanged generation"
+                if not exhausted
+                else "unknown failure code exhausted retry budget: quarantine and reconcile"
+            )
+        elif kind == FailureKind.ENVIRONMENT:
+            reason = (
+                "environment failure: retry the unchanged generation"
+                if not exhausted
+                else "environment failure exhausted retry budget: quarantine and reconcile"
+            )
+        else:
+            reason = "cancellation is not a success; retry or apply group cancellation policy"
         return BisectionDecision(
             action=DecisionAction.RETRY,
             kind=kind,
             parent_generation_id=attempt.generation_id,
             member_ids=attempt.member_ids,
             retry_member_ids=attempt.member_ids,
-            quarantined=kind == FailureKind.ENVIRONMENT,
-            reason=(
-                "environment failure: retry the unchanged generation"
-                if kind == FailureKind.ENVIRONMENT
-                else "cancellation is not a success; retry or apply group cancellation policy"
-            ),
+            quarantined=quarantine or (kind == FailureKind.OPAQUE and exhausted),
+            reason=reason,
         )
     if len(attempt.member_ids) == 1:
         return BisectionDecision(
@@ -201,13 +209,46 @@ def reusable_evidence(
     return ()
 
 
-def child_lineage(
-    parent_generation_id: str, child_generation_ids: Iterable[str]
-) -> tuple[str, ...]:
-    """Return stable, de-duplicated child IDs for a parent record."""
+@dataclass(frozen=True)
+class LineageEdge:
+    """Typed parent-to-child relation persisted with bisection results."""
 
-    del parent_generation_id  # retained in the API to make call sites explicit
-    return tuple(sorted(set(str(value) for value in child_generation_ids if value)))
+    parent_generation_id: str
+    child_generation_id: str
+    relation: str = "bisection"
+
+    def __post_init__(self) -> None:
+        if not self.parent_generation_id or not self.child_generation_id:
+            raise ValueError("lineage edges require parent and child generation IDs")
+        if not self.relation:
+            raise ValueError("lineage edges require a relation")
+
+    def to_record(self) -> dict[str, str]:
+        return {
+            "parent_generation_id": self.parent_generation_id,
+            "child_generation_id": self.child_generation_id,
+            "relation": self.relation,
+        }
+
+
+def child_lineage(
+    parent_generation_id: str,
+    child_generation_ids: Iterable[str],
+    *,
+    relation: str = "bisection",
+) -> tuple[LineageEdge, ...]:
+    """Return stable typed parent-to-child edges without dropping the parent."""
+
+    if not parent_generation_id:
+        raise ValueError("lineage edges require a parent generation ID")
+    if not relation:
+        raise ValueError("lineage edges require a relation")
+    return tuple(
+        LineageEdge(parent_generation_id, child_id, relation)
+        for child_id in sorted(
+            set(str(value) for value in child_generation_ids if value)
+        )
+    )
 
 
 __all__ = [
@@ -215,6 +256,7 @@ __all__ = [
     "BisectionDecision",
     "DecisionAction",
     "FailureKind",
+    "LineageEdge",
     "child_lineage",
     "classify_failure",
     "decide",

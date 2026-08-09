@@ -8,7 +8,7 @@ as ``late`` for the next generation rather than being appended to the old one.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -18,7 +18,7 @@ from repository_manager.candidate_generation import (
     generation_record,
     timestamp_value,
 )
-from repository_manager.development import CandidateVersion, Generation, TargetPolicy
+from repository_manager.development import Generation, TargetPolicy
 
 
 @dataclass(frozen=True)
@@ -71,39 +71,12 @@ def compatibility_key(candidate: CandidateSnapshot) -> CompatibilityKey:
 def candidates_compatible(
     left: CandidateSnapshot,
     right: CandidateSnapshot,
-    *,
-    base_ancestor: Callable[[str, str], bool] | None = None,
 ) -> bool:
-    """Return whether two immutable snapshots may share one generation.
-
-    Equal base SHAs are the normal fast path.  A caller that has already
-    performed a read-only ancestry check may provide it for a pair of distinct
-    but compatible base snapshots.  No ancestry lookup is performed here.
-    """
+    """Return whether two immutable snapshots may share one generation."""
 
     if left.incompatibility_labels or right.incompatibility_labels:
         return False
-    left_key = compatibility_key(left)
-    right_key = compatibility_key(right)
-    if left_key == right_key:
-        return True
-    if (
-        left.repository.repository_id != right.repository.repository_id
-        or left.target_branch != right.target_branch
-        or left.config_digest != right.config_digest
-        or left.toolchain_digest != right.toolchain_digest
-        or left.resource_digest != right.resource_digest
-        or left.build_target != right.build_target
-        or left.concept_claims != right.concept_claims
-        or left.incompatibility_labels != right.incompatibility_labels
-        or left.target != right.target
-    ):
-        return False
-    if base_ancestor is None:
-        return False
-    return base_ancestor(left.base_sha, right.base_sha) or base_ancestor(
-        right.base_sha, left.base_sha
-    )
+    return compatibility_key(left) == compatibility_key(right)
 
 
 def _seconds(value: float | int | timedelta) -> float:
@@ -150,7 +123,6 @@ def select_batches(
     maximum_age: float | int | timedelta = 0,
     batch_size: int = 8,
     sealed_at: datetime | None = None,
-    base_ancestor: Callable[[str, str], bool] | None = None,
 ) -> CoalescingResult:
     """Select mature, compatible batches in deterministic order.
 
@@ -191,8 +163,7 @@ def select_batches(
         retained: list[CandidateSnapshot] = []
         for candidate in remaining:
             if len(batch) < batch_size and all(
-                candidates_compatible(member, candidate, base_ancestor=base_ancestor)
-                for member in batch
+                candidates_compatible(member, candidate) for member in batch
             ):
                 batch.append(candidate)
             else:
@@ -215,20 +186,15 @@ def generation_id_for(
     ordered = tuple(sorted(members, key=_candidate_sort_key))
     if not ordered:
         raise ValueError("cannot derive an ID for an empty generation")
+    if len({item.version for item in ordered}) != len(ordered):
+        raise ValueError("generation members must preserve distinct candidate versions")
     first = ordered[0]
     branch = target_branch or first.target_branch
     return Generation.derive_id(
         repository_id=first.repository.repository_id,
         target_branch=branch,
         base_sha=first.base_sha,
-        candidate_versions=tuple(
-            CandidateVersion(
-                candidate_id=item.candidate_id,
-                version=index,
-                candidate_sha=item.candidate_sha,
-            )
-            for index, item in enumerate(ordered, start=1)
-        ),
+        candidate_versions=tuple(item.candidate_version for item in ordered),
         config_digest=first.config_digest,
         toolchain_digest=first.toolchain_digest,
     )

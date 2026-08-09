@@ -2,21 +2,18 @@
 
 This module is the storage-neutral part of RMDD-12.  Git and the merge queue
 provide the branch/base snapshots; this module records those snapshots in the
-same append-only :class:`~agent_utilities.governance.lanes.FragmentStore`
-authority used by the existing queue.  It deliberately does not create a
-second job store, execute commands, or move a ref.
+same append-only record authority used by the existing queue.  It deliberately
+does not create a second durable store, execute commands, or move a ref.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, Protocol
-
-from agent_utilities.governance.lanes import FragmentStore, lane_scope
 
 from repository_manager.development import (
     Candidate,
@@ -29,12 +26,9 @@ from repository_manager.development import (
     TargetPolicy,
     canonical_digest,
     canonical_json,
-    is_legal_transition,
 )
 
-GENERATION_STORE_DIRNAME = "merge-queue-generations"
-CANDIDATE_STORE_DIRNAME = "candidates"
-GENERATION_RECORD_DIRNAME = "generations"
+_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class CandidateGenerationError(ValueError):
@@ -75,13 +69,14 @@ def timestamp_value(value: datetime | str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def digest_input(value: object) -> str:
-    """Return a valid contract digest, hashing shorthand test/config values."""
+def require_digest(value: str, *, field_name: str) -> str:
+    """Accept only a canonical lowercase SHA-256 digest at the boundary."""
 
-    text = str(value)
-    if len(text) == 64 and all(char in "0123456789abcdef" for char in text):
-        return text
-    return canonical_digest(value)
+    if not isinstance(value, str) or _DIGEST_RE.fullmatch(value) is None:
+        raise CandidateGenerationError(
+            f"{field_name} must be a canonical 64-character lowercase hex digest"
+        )
+    return value
 
 
 def _tuple_strings(values: Iterable[object]) -> tuple[str, ...]:
@@ -142,11 +137,21 @@ class CandidateSnapshot:
             "incompatibility_labels",
             _tuple_strings(self.incompatibility_labels),
         )
-        object.__setattr__(self, "config_digest", digest_input(self.config_digest))
         object.__setattr__(
-            self, "toolchain_digest", digest_input(self.toolchain_digest)
+            self,
+            "config_digest",
+            require_digest(self.config_digest, field_name="config_digest"),
         )
-        object.__setattr__(self, "resource_digest", digest_input(self.resource_digest))
+        object.__setattr__(
+            self,
+            "toolchain_digest",
+            require_digest(self.toolchain_digest, field_name="toolchain_digest"),
+        )
+        object.__setattr__(
+            self,
+            "resource_digest",
+            require_digest(self.resource_digest, field_name="resource_digest"),
+        )
         Candidate(
             candidate_id=self.candidate_id,
             version=self.version,
@@ -244,36 +249,92 @@ class CandidateSnapshot:
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> CandidateSnapshot:
+        if not isinstance(record, dict):
+            raise CandidateGenerationError(
+                "candidate snapshot record must be a mapping"
+            )
         if record.get("kind") != "candidate_snapshot":
             raise CandidateGenerationError("record is not a candidate snapshot")
-        contract = Candidate.model_validate(record.get("candidate"))
-        snapshot = cls(
-            candidate_id=contract.candidate_id,
-            version=contract.version,
-            repository=contract.repository,
-            branch=contract.branch,
-            target_branch=str(record.get("target_branch", "main")),
-            candidate_sha=contract.candidate_sha,
-            base_sha=contract.base_sha,
-            lane_id=contract.lane_id,
-            owner_id=contract.owner_id,
-            config_digest=contract.config_digest,
-            toolchain_digest=str(record.get("toolchain_digest", "")),
-            resource_digest=str(record.get("resource_digest", "")),
-            build_target=str(record.get("build_target", "default")),
-            concept_claims=contract.concept_claims,
-            incompatibility_labels=tuple(record.get("incompatibility_labels", ())),
-            enqueued_at=contract.enqueued_at,
-            target=TargetPolicy.model_validate(record.get("target", {})),
-            recorded_at=str(record.get("recorded_at", "")),
-        )
-        recorded_id = str(record.get("record_id", ""))
-        if recorded_id and recorded_id != snapshot.record_id:
+        required = {
+            "record_id",
+            "candidate",
+            "target_branch",
+            "toolchain_digest",
+            "resource_digest",
+            "build_target",
+            "incompatibility_labels",
+            "target",
+            "recorded_at",
+            "immutable_digest",
+        }
+        missing = sorted(required - record.keys())
+        if missing:
+            raise CandidateGenerationError(
+                f"candidate snapshot is missing required fields: {', '.join(missing)}"
+            )
+        if not isinstance(record["record_id"], str):
+            raise CandidateGenerationError(
+                "candidate snapshot record_id must be a string"
+            )
+        if not isinstance(record["candidate"], dict):
+            raise CandidateGenerationError(
+                "candidate snapshot candidate must be a mapping"
+            )
+        if not isinstance(record["target_branch"], str) or not record["target_branch"]:
+            raise CandidateGenerationError(
+                "candidate snapshot target_branch is invalid"
+            )
+        if not isinstance(record["build_target"], str) or not record["build_target"]:
+            raise CandidateGenerationError("candidate snapshot build_target is invalid")
+        labels = record["incompatibility_labels"]
+        if not isinstance(labels, (list, tuple)) or not all(
+            isinstance(value, str) for value in labels
+        ):
+            raise CandidateGenerationError(
+                "candidate snapshot incompatibility_labels must be strings"
+            )
+        if not isinstance(record["recorded_at"], str):
+            raise CandidateGenerationError(
+                "candidate snapshot recorded_at must be a string"
+            )
+        if not isinstance(record["immutable_digest"], str):
+            raise CandidateGenerationError(
+                "candidate snapshot immutable_digest must be a string"
+            )
+        try:
+            contract = Candidate.model_validate(record["candidate"])
+            target_policy = TargetPolicy.model_validate(record["target"])
+            snapshot = cls(
+                candidate_id=contract.candidate_id,
+                version=contract.version,
+                repository=contract.repository,
+                branch=contract.branch,
+                target_branch=record["target_branch"],
+                candidate_sha=contract.candidate_sha,
+                base_sha=contract.base_sha,
+                lane_id=contract.lane_id,
+                owner_id=contract.owner_id,
+                config_digest=contract.config_digest,
+                toolchain_digest=record["toolchain_digest"],
+                resource_digest=record["resource_digest"],
+                build_target=record["build_target"],
+                concept_claims=contract.concept_claims,
+                incompatibility_labels=tuple(labels),
+                enqueued_at=contract.enqueued_at,
+                target=target_policy,
+                recorded_at=record["recorded_at"],
+            )
+        except (TypeError, ValueError) as exc:
+            raise CandidateGenerationError(
+                f"candidate snapshot {record['record_id']} is invalid"
+            ) from exc
+        recorded_id = record["record_id"]
+        if recorded_id != snapshot.record_id:
             raise CandidateGenerationError(
                 f"candidate record key does not match {snapshot.record_id}"
             )
-        recorded_digest = str(record.get("immutable_digest", ""))
-        if recorded_digest and recorded_digest != snapshot.immutable_digest():
+        recorded_digest = record["immutable_digest"]
+        if recorded_digest != snapshot.immutable_digest():
             raise CandidateGenerationError(
                 f"candidate snapshot {snapshot.record_id} has an invalid immutable digest"
             )
@@ -292,17 +353,39 @@ class GenerationRecord:
     def __post_init__(self) -> None:
         if not self.members:
             raise CandidateGenerationError("a generation record needs members")
-        versions = tuple(
-            CandidateVersion(
-                candidate_id=member.candidate_id,
-                version=index,
-                candidate_sha=member.candidate_sha,
-            )
-            for index, member in enumerate(self.members, start=1)
-        )
+        versions = tuple(member.candidate_version for member in self.members)
         if versions != self.generation.candidate_versions:
             raise CandidateGenerationError(
                 "generation membership does not match its candidate versions"
+            )
+        first = self.members[0]
+        for member in self.members:
+            if (
+                member.repository != self.generation.repository
+                or member.target_branch != self.generation.target_branch
+                or member.base_sha != self.generation.base_sha
+                or member.config_digest != self.generation.config_digest
+                or member.toolchain_digest != self.generation.toolchain_digest
+                or member.target != self.generation.target
+                or member.resource_digest != first.resource_digest
+                or member.build_target != first.build_target
+                or member.concept_claims != first.concept_claims
+                or member.incompatibility_labels != first.incompatibility_labels
+            ):
+                raise CandidateGenerationError(
+                    "generation members do not match immutable generation inputs"
+                )
+        expected_id = Generation.derive_id(
+            repository_id=self.generation.repository.repository_id,
+            target_branch=self.generation.target_branch,
+            base_sha=self.generation.base_sha,
+            candidate_versions=versions,
+            config_digest=self.generation.config_digest,
+            toolchain_digest=self.generation.toolchain_digest,
+        )
+        if expected_id != self.generation.generation_id:
+            raise CandidateGenerationError(
+                "generation ID does not match its immutable membership"
             )
         if self.recorded_at:
             object.__setattr__(self, "recorded_at", _timestamp(self.recorded_at))
@@ -326,6 +409,28 @@ class GenerationRecord:
             return {}
         value = json.loads(self.result_json)
         return dict(value)
+
+    def immutable_payload(self) -> dict[str, object]:
+        """Return generation identity inputs excluding mutable results/state."""
+
+        return {
+            "generation_id": self.generation.generation_id,
+            "repository": self.generation.repository,
+            "target_branch": self.generation.target_branch,
+            "target": self.generation.target,
+            "base_sha": self.generation.base_sha,
+            "expected_landing_base_sha": self.generation.expected_landing_base_sha,
+            "candidate_versions": self.generation.candidate_versions,
+            "config_digest": self.generation.config_digest,
+            "toolchain_digest": self.generation.toolchain_digest,
+            "sealed_at": self.generation.sealed_at,
+            "members": tuple(member.immutable_digest() for member in self.members),
+        }
+
+    def immutable_digest(self) -> str:
+        """Digest the sealed membership and exact generation inputs."""
+
+        return canonical_digest(self.immutable_payload())
 
     def with_update(
         self,
@@ -354,22 +459,69 @@ class GenerationRecord:
             "members": [member.to_record() for member in self.members],
             "result": self.result,
             "recorded_at": self.recorded_at,
+            "immutable_digest": self.immutable_digest(),
         }
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> GenerationRecord:
+        if not isinstance(record, dict):
+            raise CandidateGenerationError("generation record must be a mapping")
         if record.get("kind") != "generation":
             raise CandidateGenerationError("record is not a generation")
-        generation = Generation.model_validate(record.get("generation"))
-        members = tuple(
-            CandidateSnapshot.from_record(item) for item in record.get("members", ())
-        )
-        return cls(
-            generation=generation,
-            members=members,
-            result_json=canonical_json(record.get("result", {})),
-            recorded_at=str(record.get("recorded_at", "")),
-        )
+        required = {
+            "record_id",
+            "generation",
+            "members",
+            "recorded_at",
+            "immutable_digest",
+        }
+        missing = sorted(required - record.keys())
+        if missing:
+            raise CandidateGenerationError(
+                f"generation record is missing required fields: {', '.join(missing)}"
+            )
+        if not isinstance(record["record_id"], str):
+            raise CandidateGenerationError("generation record_id must be a string")
+        if not isinstance(record["generation"], dict):
+            raise CandidateGenerationError("generation payload must be a mapping")
+        member_payload = record["members"]
+        if not isinstance(member_payload, (list, tuple)) or not all(
+            isinstance(item, dict) for item in member_payload
+        ):
+            raise CandidateGenerationError("generation members must be mappings")
+        if not isinstance(record["recorded_at"], str):
+            raise CandidateGenerationError("generation recorded_at must be a string")
+        if not isinstance(record["immutable_digest"], str):
+            raise CandidateGenerationError(
+                "generation immutable_digest must be a string"
+            )
+        result = record.get("result", {})
+        if not isinstance(result, dict):
+            raise CandidateGenerationError("generation result must be a mapping")
+        try:
+            generation = Generation.model_validate(record["generation"])
+            members = tuple(
+                CandidateSnapshot.from_record(item) for item in member_payload
+            )
+            parsed = cls(
+                generation=generation,
+                members=members,
+                result_json=canonical_json(result),
+                recorded_at=record["recorded_at"],
+            )
+        except (TypeError, ValueError) as exc:
+            raise CandidateGenerationError(
+                f"generation record {record['record_id']} is invalid"
+            ) from exc
+        if record["record_id"] != parsed.record_id:
+            raise CandidateGenerationError(
+                f"generation record key does not match {parsed.record_id}"
+            )
+        if record["immutable_digest"] != parsed.immutable_digest():
+            raise CandidateGenerationError(
+                f"generation {parsed.record_id} has an invalid immutable digest"
+            )
+        return parsed
 
 
 def _assert_generation_identity(old: Generation, new: Generation) -> None:
@@ -397,176 +549,90 @@ def _assert_generation_identity(old: Generation, new: Generation) -> None:
 def _latest_record(group: list[dict[str, Any]]) -> dict[str, Any]:
     """Fold records by write time, retaining deterministic tie-breaking."""
 
+    if not group:
+        raise CandidateGenerationError("cannot fold an empty record group")
+    for record in group:
+        if not isinstance(record.get("record_id"), str) or not record["record_id"]:
+            raise CandidateGenerationError("append-only record requires record_id")
+        if not isinstance(record.get("recorded_at"), str):
+            raise CandidateGenerationError(
+                f"record {record['record_id']} requires recorded_at for folding"
+            )
     return max(
         group,
         key=lambda record: (
-            timestamp_value(str(record.get("recorded_at", "1970-01-01T00:00:00Z"))),
+            timestamp_value(str(record["recorded_at"])),
             canonical_json(record),
         ),
     )
 
 
-class _RecordStore(Protocol):
-    def append(self, record: dict[str, Any], *, lane: str) -> Path: ...
+class AppendOnlyRecordStore(Protocol):
+    """Storage seam owned by the queue; RMDD-12 only consumes its records."""
+
+    def append(self, record: dict[str, Any], *, lane: str) -> object: ...
 
     def fold(
         self, resolve: Callable[[list[dict[str, Any]]], dict[str, Any]]
     ) -> list[dict[str, Any]]: ...
 
 
-class CandidateLedger:
-    """Append-only candidate snapshot authority backed by FragmentStore."""
+def _group_records(
+    records: Iterable[dict[str, Any]], *, kind: str
+) -> dict[str, list[dict[str, Any]]]:
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            raise CandidateGenerationError("append-only records must be mappings")
+        if record.get("kind") != kind:
+            continue
+        record_id = record.get("record_id")
+        if not isinstance(record_id, str) or not record_id:
+            raise CandidateGenerationError(f"{kind} record requires record_id")
+        groups.setdefault(record_id, []).append(record)
+    return groups
 
-    def __init__(
-        self,
-        path: Path | str | None = None,
-        *,
-        store: _RecordStore | None = None,
-        lane: str | None = None,
-    ) -> None:
-        if store is None:
-            scope = lane_scope(path)
-            self.store = FragmentStore(
-                root=scope.arbitration_dir
-                / GENERATION_STORE_DIRNAME
-                / CANDIDATE_STORE_DIRNAME,
-                key="record_id",
+
+def fold_candidate_records(
+    records: Iterable[dict[str, Any]],
+) -> tuple[CandidateSnapshot, ...]:
+    """Fold candidate records supplied by the existing queue store."""
+
+    snapshots: list[CandidateSnapshot] = []
+    for record_id, group in sorted(
+        _group_records(records, kind="candidate_snapshot").items()
+    ):
+        decoded = [CandidateSnapshot.from_record(item) for item in group]
+        first = decoded[0]
+        if any(
+            item.immutable_digest() != first.immutable_digest() for item in decoded[1:]
+        ):
+            raise CandidateGenerationError(
+                f"candidate {record_id} has conflicting append-only inputs"
             )
-            self.lane = lane or scope.lane
-        else:
-            self.store = store
-            self.lane = lane or "generation"
-
-    def append(self, snapshot: CandidateSnapshot, *, lane: str | None = None) -> None:
-        existing = self.get(snapshot.record_id)
-        if existing is not None:
-            if existing.immutable_digest() != snapshot.immutable_digest():
-                raise CandidateGenerationError(
-                    f"candidate snapshot {snapshot.record_id} was mutated"
-                )
-            return
-        self.store.append(snapshot.to_record(), lane=lane or self.lane)
-
-    def all(self) -> tuple[CandidateSnapshot, ...]:
-        snapshots = tuple(
-            CandidateSnapshot.from_record(record)
-            for record in self.store.fold(resolve=_latest_record)
-        )
-        for snapshot in snapshots:
-            self._validate_history(snapshot.record_id)
-        return snapshots
-
-    def get(self, record_id: str) -> CandidateSnapshot | None:
-        return next((item for item in self.all() if item.record_id == record_id), None)
-
-    def latest_for(self, candidate_id: str) -> CandidateSnapshot | None:
-        matches = [item for item in self.all() if item.candidate_id == candidate_id]
-        return max(matches, key=lambda item: item.version, default=None)
-
-    def _validate_history(self, record_id: str) -> None:
-        records: list[CandidateSnapshot] = []
-        for lane in getattr(self.store, "lanes", lambda: [])():
-            for raw in getattr(self.store, "read_fragment", lambda _lane: [])(lane):
-                if str(raw.get("record_id")) == record_id:
-                    records.append(CandidateSnapshot.from_record(raw))
-        if not records:
-            return
-        first = records[0]
-        for snapshot in records[1:]:
-            if snapshot.immutable_digest() != first.immutable_digest():
-                raise CandidateGenerationError(
-                    f"candidate {record_id} has conflicting append-only inputs"
-                )
+        snapshots.append(CandidateSnapshot.from_record(_latest_record(group)))
+    return tuple(snapshots)
 
 
-class GenerationLedger:
-    """Append-only generation authority with immutable-field reconciliation."""
+def fold_generation_records(
+    records: Iterable[dict[str, Any]],
+) -> tuple[GenerationRecord, ...]:
+    """Fold generation records without selecting a persistence backend."""
 
-    def __init__(
-        self,
-        path: Path | str | None = None,
-        *,
-        store: _RecordStore | None = None,
-        lane: str | None = None,
-    ) -> None:
-        if store is None:
-            scope = lane_scope(path)
-            self.store = FragmentStore(
-                root=scope.arbitration_dir
-                / GENERATION_STORE_DIRNAME
-                / GENERATION_RECORD_DIRNAME,
-                key="record_id",
-            )
-            self.lane = lane or scope.lane
-        else:
-            self.store = store
-            self.lane = lane or "generation"
-
-    def append(self, record: GenerationRecord, *, lane: str | None = None) -> None:
-        previous = self.get(record.record_id)
-        if previous is not None:
-            _assert_generation_identity(previous.generation, record.generation)
-            if tuple(previous.members) != tuple(record.members):
-                raise CandidateGenerationError(
-                    f"generation {record.record_id} membership was mutated"
-                )
-            if (
-                previous.generation.state != record.generation.state
-                and not is_legal_transition(
-                    previous.generation.state, record.generation.state
-                )
+    generations: list[GenerationRecord] = []
+    for record_id, group in sorted(_group_records(records, kind="generation").items()):
+        decoded = [GenerationRecord.from_record(item) for item in group]
+        first = decoded[0]
+        for record in decoded[1:]:
+            _assert_generation_identity(first.generation, record.generation)
+            if tuple(member.immutable_digest() for member in record.members) != tuple(
+                member.immutable_digest() for member in first.members
             ):
                 raise CandidateGenerationError(
-                    f"illegal generation transition: {previous.generation.state} -> "
-                    f"{record.generation.state}"
+                    f"generation {record_id} has conflicting append-only members"
                 )
-        self.store.append(record.to_record(), lane=lane or self.lane)
-
-    def all(self) -> tuple[GenerationRecord, ...]:
-        records = tuple(
-            GenerationRecord.from_record(record)
-            for record in self.store.fold(resolve=_latest_record)
-        )
-        for record in records:
-            self._validate_history(record.record_id)
-        return records
-
-    def get(self, generation_id: str) -> GenerationRecord | None:
-        return next(
-            (
-                item
-                for item in self.all_without_history()
-                if item.record_id == generation_id
-            ),
-            None,
-        )
-
-    def all_without_history(self) -> tuple[GenerationRecord, ...]:
-        return tuple(
-            GenerationRecord.from_record(record)
-            for record in self.store.fold(resolve=_latest_record)
-        )
-
-    def _validate_history(self, generation_id: str) -> None:
-        records: list[GenerationRecord] = []
-        for lane in getattr(self.store, "lanes", lambda: [])():
-            for raw in getattr(self.store, "read_fragment", lambda _lane: [])(lane):
-                if str(raw.get("record_id")) == generation_id:
-                    records.append(GenerationRecord.from_record(raw))
-        if not records:
-            return
-        first = records[0]
-        for record in records[1:]:
-            _assert_generation_identity(first.generation, record.generation)
-            if record.members != first.members:
-                raise CandidateGenerationError(
-                    f"generation {generation_id} has conflicting append-only members"
-                )
-
-    def reconcile(self) -> tuple[GenerationRecord, ...]:
-        """Rebuild the latest durable generation view after a restart."""
-
-        return self.all()
+        generations.append(GenerationRecord.from_record(_latest_record(group)))
+    return tuple(generations)
 
 
 def snapshot_candidate(
@@ -576,8 +642,8 @@ def snapshot_candidate(
     candidate_sha: str,
     base_sha: str,
     config_digest: str,
-    toolchain_digest: str = "",
-    resource_digest: str = "",
+    toolchain_digest: str,
+    resource_digest: str,
     build_target: str = "default",
     target_branch: str | None = None,
     owner_id: str | None = None,
@@ -621,16 +687,15 @@ def snapshot_branch_candidate(
     repository: RepositoryIdentity,
     resolve_ref: Callable[[str], str],
     config_digest: str,
-    toolchain_digest: str = "",
-    resource_digest: str = "",
+    toolchain_digest: str,
+    resource_digest: str,
     build_target: str = "default",
     target_branch: str | None = None,
     owner_id: str | None = None,
     concept_claims: Iterable[object] = (),
     incompatibility_labels: Iterable[object] = (),
     target: TargetPolicy | None = None,
-    ledger: CandidateLedger | None = None,
-    lane: str | None = None,
+    previous: CandidateSnapshot | None = None,
 ) -> CandidateSnapshot:
     """Resolve branch/base exactly once and append a new version if moved."""
 
@@ -639,19 +704,25 @@ def snapshot_branch_candidate(
     )
     candidate_sha = resolve_ref(candidate.branch)
     base_sha = resolve_ref(target_branch or candidate.base)
-    previous = ledger.latest_for(logical_id) if ledger is not None else None
     target_value = target or TargetPolicy()
     concepts = _tuple_strings(concept_claims)
     labels = _tuple_strings(incompatibility_labels)
     version = 1
     if previous is not None:
+        if previous.candidate_id != logical_id:
+            raise CandidateGenerationError(
+                "previous candidate snapshot belongs to a different candidate"
+            )
         version = previous.version
         immutable_inputs_changed = (
             previous.candidate_sha != candidate_sha
             or previous.base_sha != base_sha
-            or previous.config_digest != digest_input(config_digest)
-            or previous.toolchain_digest != digest_input(toolchain_digest)
-            or previous.resource_digest != digest_input(resource_digest)
+            or previous.config_digest
+            != require_digest(config_digest, field_name="config_digest")
+            or previous.toolchain_digest
+            != require_digest(toolchain_digest, field_name="toolchain_digest")
+            or previous.resource_digest
+            != require_digest(resource_digest, field_name="resource_digest")
             or previous.build_target != build_target
             or previous.target_branch != (target_branch or candidate.base)
             or previous.concept_claims != concepts
@@ -677,8 +748,6 @@ def snapshot_branch_candidate(
         candidate_id=logical_id,
         version=version,
     )
-    if ledger is not None:
-        ledger.append(snapshot, lane=lane)
     return snapshot
 
 
@@ -716,18 +785,21 @@ def generation_record(
         for member in ordered
     ):
         raise CandidateGenerationError("generation members are not compatible")
+    if len({member.version for member in ordered}) != len(ordered):
+        raise CandidateGenerationError(
+            "generation members must preserve distinct candidate versions"
+        )
+    generation_target = target or first.target
+    if generation_target != first.target:
+        raise CandidateGenerationError(
+            "generation target must match each candidate snapshot target"
+        )
+    candidate_versions = tuple(member.candidate_version for member in ordered)
     generation_id = Generation.derive_id(
         repository_id=first.repository.repository_id,
         target_branch=target_branch,
         base_sha=first.base_sha,
-        candidate_versions=tuple(
-            CandidateVersion(
-                candidate_id=member.candidate_id,
-                version=index,
-                candidate_sha=member.candidate_sha,
-            )
-            for index, member in enumerate(ordered, start=1)
-        ),
+        candidate_versions=candidate_versions,
         config_digest=first.config_digest,
         toolchain_digest=first.toolchain_digest,
     )
@@ -735,17 +807,10 @@ def generation_record(
         generation_id=generation_id,
         repository=first.repository,
         target_branch=target_branch,
-        target=target or first.target,
+        target=generation_target,
         base_sha=first.base_sha,
         expected_landing_base_sha=first.base_sha,
-        candidate_versions=tuple(
-            CandidateVersion(
-                candidate_id=member.candidate_id,
-                version=index,
-                candidate_sha=member.candidate_sha,
-            )
-            for index, member in enumerate(ordered, start=1)
-        ),
+        candidate_versions=candidate_versions,
         config_digest=first.config_digest,
         toolchain_digest=first.toolchain_digest,
         state=state,
@@ -764,29 +829,16 @@ def generation_record(
     )
 
 
-def generation_ledger(path: Path | str | None = None) -> GenerationLedger:
-    """Return the generation ledger for one repository."""
-
-    return GenerationLedger(path)
-
-
-def candidate_ledger(path: Path | str | None = None) -> CandidateLedger:
-    """Return the candidate snapshot ledger for one repository."""
-
-    return CandidateLedger(path)
-
-
 __all__ = [
+    "AppendOnlyRecordStore",
     "CandidateGenerationError",
-    "CandidateLedger",
     "CandidateSnapshot",
-    "GenerationLedger",
     "GenerationRecord",
     "candidate_identity",
-    "candidate_ledger",
-    "digest_input",
-    "generation_ledger",
+    "fold_candidate_records",
+    "fold_generation_records",
     "generation_record",
+    "require_digest",
     "snapshot_branch_candidate",
     "snapshot_candidate",
     "timestamp_value",
