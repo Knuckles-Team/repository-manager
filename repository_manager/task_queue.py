@@ -360,6 +360,16 @@ class ExecutionClass:
     #: Only meaningful for ``POOL``.
     pool_size: int = 1
     ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS
+    #: Name in the weighted scheduler's versioned profile registry.  This is
+    #: metadata for the transitional local adapter; it does not make this
+    #: filesystem lease a distributed capacity authority.
+    resource_profile: str = ""
+    #: Optional compatibility metadata used when explaining a legacy acquire.
+    concurrency_key: str = ""
+    cpu_weight: int = 0
+    memory_mib: int = 0
+    disk_mib: int = 0
+    process_slots: int = 0
 
 
 #: The declared execution classes this ledger arbitrates. Adding a resource is
@@ -375,12 +385,32 @@ EXECUTION_CLASSES: dict[str, ExecutionClass] = {
     # 21.7 GB of duplicate target dirs it replaces). Identical builds still
     # serialise because they contend for the same cache key at the build_queue
     # layer, not because this class forces it.
-    "build": ExecutionClass("build", scope=Scope.REPO, policy=Policy.POOL, pool_size=4),
+    "build": ExecutionClass(
+        "build",
+        scope=Scope.REPO,
+        policy=Policy.POOL,
+        pool_size=4,
+        resource_profile="rust-build",
+        concurrency_key="rust-build",
+        cpu_weight=8,
+        memory_mib=16_384,
+        disk_mib=16_384,
+        process_slots=2,
+    ),
     # `uv sync` — D-W2T-3: a concurrent sync deleted `.venv/bin/pytest` out
     # from under a running suite. Host-wide (GLOBAL): the contended resource
     # is the shared dependency cache/lockfile, not any one repo.
     "uv-sync": ExecutionClass(
-        "uv-sync", scope=Scope.GLOBAL, policy=Policy.POOL, pool_size=4
+        "uv-sync",
+        scope=Scope.GLOBAL,
+        policy=Policy.POOL,
+        pool_size=4,
+        resource_profile="light-check",
+        concurrency_key="uv-sync",
+        cpu_weight=1,
+        memory_mib=512,
+        disk_mib=512,
+        process_slots=1,
     ),
     # `pre-commit run --all-files` driven centrally — D-OB-12/D-ORC-37: the
     # staged-files-only patch/restore window is a data-loss hazard if two
@@ -389,13 +419,78 @@ EXECUTION_CLASSES: dict[str, ExecutionClass] = {
     # *driver* (e.g. this ledger's own future pre-commit consumer) still
     # must not double-enter the window.
     "pre-commit": ExecutionClass(
-        "pre-commit", scope=Scope.WORKTREE, policy=Policy.EXCLUSIVE
+        "pre-commit",
+        scope=Scope.WORKTREE,
+        policy=Policy.EXCLUSIVE,
+        resource_profile="pre-commit",
+        concurrency_key="pre-commit",
+        cpu_weight=4,
+        memory_mib=2_048,
+        disk_mib=1_024,
+        process_slots=2,
     ),
     # A repository's merge drain. EXCLUSIVE, REPO-scoped — this is the SAME
     # resource merge_queue.py's own MERGE_LEASE names; declared here too so
     # `rm_task status` can report it uniformly alongside build/uv-sync.
     "merge-drain": ExecutionClass(
-        "merge-drain", scope=Scope.REPO, policy=Policy.EXCLUSIVE
+        "merge-drain",
+        scope=Scope.REPO,
+        policy=Policy.EXCLUSIVE,
+        resource_profile="merge-drain",
+        concurrency_key="merge-drain",
+        cpu_weight=2,
+        memory_mib=1_024,
+        disk_mib=512,
+        process_slots=1,
+    ),
+    # These names are declared for consumers migrating to the common weighted
+    # scheduler.  ``acquire`` remains only a same-node compatibility adapter;
+    # distributed admission uses ResourceScheduler + WorkItem CAS instead.
+    "light-check": ExecutionClass(
+        "light-check",
+        scope=Scope.GLOBAL,
+        policy=Policy.POOL,
+        pool_size=16,
+        resource_profile="light-check",
+        concurrency_key="light-check",
+        cpu_weight=1,
+        memory_mib=256,
+        disk_mib=256,
+        process_slots=1,
+    ),
+    "frontend-build": ExecutionClass(
+        "frontend-build",
+        scope=Scope.GLOBAL,
+        policy=Policy.EXCLUSIVE,
+        resource_profile="frontend-build",
+        concurrency_key="frontend-build",
+        cpu_weight=8,
+        memory_mib=8_192,
+        disk_mib=4_096,
+        process_slots=1,
+    ),
+    "rust-build": ExecutionClass(
+        "rust-build",
+        scope=Scope.GLOBAL,
+        policy=Policy.POOL,
+        pool_size=2,
+        resource_profile="rust-build",
+        concurrency_key="rust-build",
+        cpu_weight=8,
+        memory_mib=16_384,
+        disk_mib=16_384,
+        process_slots=2,
+    ),
+    "workspace-release": ExecutionClass(
+        "workspace-release",
+        scope=Scope.GLOBAL,
+        policy=Policy.EXCLUSIVE,
+        resource_profile="workspace-release",
+        concurrency_key="workspace-release",
+        cpu_weight=4,
+        memory_mib=4_096,
+        disk_mib=2_048,
+        process_slots=2,
     ),
 }
 
@@ -405,6 +500,19 @@ def register_execution_class(execution_class: ExecutionClass) -> None:
     outside this module uses instead of hand-rolling its own lease.
     """
     EXECUTION_CLASSES[execution_class.name] = execution_class
+
+
+def execution_class_profile(name: str) -> str:
+    """Return the weighted profile for a legacy execution class.
+
+    This helper is intentionally descriptive only.  Callers still need to
+    submit a WorkItem-backed :class:`resource_scheduler.AdmissionRequest` to
+    obtain distributed capacity; ``acquire`` cannot be promoted into that
+    authority merely by looking up this value.
+    """
+
+    execution_class = _resolve_class(name)
+    return execution_class.resource_profile or execution_class.name
 
 
 def _resolve_class(name: str) -> ExecutionClass:
@@ -480,10 +588,15 @@ def _hold_repo_lease(
 ):
     if _HOLD_LEASE_ACCEPTS_OWNER:
         return hold_lease(
-            lease_name, operation=operation, ttl_seconds=ttl_seconds, path=path,
+            lease_name,
+            operation=operation,
+            ttl_seconds=ttl_seconds,
+            path=path,
             owner=owner,
         )
-    return hold_lease(lease_name, operation=operation, ttl_seconds=ttl_seconds, path=path)
+    return hold_lease(
+        lease_name, operation=operation, ttl_seconds=ttl_seconds, path=path
+    )
 
 
 def _global_lease_dir() -> Path:
@@ -583,9 +696,7 @@ def _hold_global_lease(
                 holder = json.loads(lease_file.read_text(encoding="utf-8"))
                 if _global_holder_alive(holder):
                     raise LeaseUnavailable(name, holder)
-            lease_file.write_text(
-                json.dumps(record, indent=2) + "\n", encoding="utf-8"
-            )
+            lease_file.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
     finally:
@@ -706,10 +817,15 @@ def acquire(
     if execution_class.policy == Policy.EXCLUSIVE:
         lease_name = _lease_name_for(execution_class, scope, None)
         cm = (
-            _hold_global_lease(lease_name, operation=operation, ttl_seconds=ttl, owner=owner)
+            _hold_global_lease(
+                lease_name, operation=operation, ttl_seconds=ttl, owner=owner
+            )
             if is_global
             else _hold_repo_lease(
-                lease_name, operation=operation, ttl_seconds=ttl, path=scope.tree,
+                lease_name,
+                operation=operation,
+                ttl_seconds=ttl,
+                path=scope.tree,
                 owner=owner,
             )
         )
@@ -737,7 +853,10 @@ def acquire(
                 )
                 if is_global
                 else _hold_repo_lease(
-                    lease_name, operation=operation, ttl_seconds=ttl, path=scope.tree,
+                    lease_name,
+                    operation=operation,
+                    ttl_seconds=ttl,
+                    path=scope.tree,
                     owner=owner,
                 )
             )
