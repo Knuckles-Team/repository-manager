@@ -309,6 +309,114 @@ def test_native_policy_refusal_is_not_misreported_as_fence_conflict():
     assert "policy" not in decision.reason_code.value
 
 
+@pytest.mark.parametrize(
+    ("native_result", "expected_status", "expected_reason"),
+    (
+        (FenceDecision.ACCEPTED, AdmissionStatus.ADMITTED, AdmissionReason.ADMITTED),
+        (
+            FenceDecision.IDEMPOTENT,
+            AdmissionStatus.ADMITTED,
+            AdmissionReason.ADMITTED,
+        ),
+        (
+            FenceDecision.STALE,
+            AdmissionStatus.STALE_FENCE,
+            AdmissionReason.STALE_FENCE,
+        ),
+        (
+            FenceDecision.CONFLICT,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.FENCE_CONFLICT,
+        ),
+        (
+            FenceDecision.INPUT_CONFLICT,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.FENCE_CONFLICT,
+        ),
+        (
+            FenceDecision.CAPACITY,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.CAPACITY,
+        ),
+        (
+            FenceDecision.POLICY,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.FENCE_CONFLICT,
+        ),
+        (
+            FenceDecision.DRAINED,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.DRAINED,
+        ),
+        (
+            FenceDecision.QUARANTINED,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.QUARANTINED,
+        ),
+        (
+            FenceDecision.STALE_HOST,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.STALE_HOST,
+        ),
+        (
+            FenceDecision.LABELS,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.LABELS,
+        ),
+        (
+            FenceDecision.ANTI_AFFINITY,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.ANTI_AFFINITY,
+        ),
+        (
+            FenceDecision.DISK,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.DISK_HIGH_WATERMARK,
+        ),
+        (
+            FenceDecision.CONCURRENCY,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.CONCURRENCY,
+        ),
+        (
+            FenceDecision.EXCLUSIVITY,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.EXCLUSIVITY,
+        ),
+        (
+            FenceDecision.NOT_FOUND,
+            AdmissionStatus.DEFERRED,
+            AdmissionReason.NATIVE_NOT_FOUND,
+        ),
+    ),
+)
+def test_all_native_fence_decisions_preserve_scheduler_reason_vocabulary(
+    native_result: FenceDecision,
+    expected_status: AdmissionStatus,
+    expected_reason: AdmissionReason,
+):
+    class DecisionPort(InMemoryWorkItemReservationPort):
+        def __init__(self):
+            super().__init__()
+            self.authoritative_record = None
+
+        def query_reservation(self, **kwargs):  # type: ignore[no-untyped-def]
+            if kwargs.get("expected") is not None:
+                return self.authoritative_record or FenceDecision.NOT_FOUND
+            return FenceDecision.NOT_FOUND
+
+        def atomic_reserve(self, **kwargs):  # type: ignore[no-untyped-def]
+            self.authoritative_record = kwargs["reservation"]
+            return native_result
+
+    port = DecisionPort()
+    scheduler, _ = _scheduler(_host("local"), port=port)
+    port.claim("wi", fence="f")
+    decision = scheduler.admit(_request("wi", "f"), now=NOW)
+    assert decision.status == expected_status
+    assert decision.reason_code == expected_reason
+
+
 def test_priority_aging_and_fairness_prevent_group_monopoly():
     selector = FairnessSelector(
         FairnessPolicy(aging_interval_seconds=10), state=InMemoryFairnessState()
