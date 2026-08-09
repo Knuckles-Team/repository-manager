@@ -16,7 +16,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from repository_manager.capacity import (
     CapacityInventory,
@@ -1076,7 +1076,7 @@ def create_production_resource_scheduler(
         create_production_resource_scheduler as _create_native_scheduler,
     )
 
-    return _create_native_scheduler(graph_client, **kwargs)
+    return cast(ResourceScheduler, _create_native_scheduler(graph_client, **kwargs))
 
 
 __all__ = [
