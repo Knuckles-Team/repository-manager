@@ -902,13 +902,15 @@ def test_frozen_legacy_models_copy_lists_and_consume_generators_once() -> None:
     phase = LegacyPhase(
         name="leaf",
         phase=1,
-        project_references=(item for item in references),
+        project_references=(item for item in references),  # type: ignore[arg-type]
     )
     references.append("changed")
     assert phase.project_references == ("leaf",)
 
     phases = [phase]
-    manifest = LegacyPhaseManifest(phases=(item for item in phases))
+    manifest = LegacyPhaseManifest(
+        phases=(item for item in phases)  # type: ignore[arg-type]
+    )
     phases.clear()
     assert manifest.phases == (phase,)
     assert manifest.phases == (phase,)
@@ -922,11 +924,11 @@ def test_dependency_graph_copies_nested_generators_and_repeats_without_drift() -
     project_edges = [list(pair) for pair in graph.project_edges]
     parallel_groups = [list(group) for group in graph.parallel_groups]
     frozen = DependencyGraph(
-        projects=(item for item in projects),
-        packages=(item for item in packages),
-        edges=(item for item in edges),
-        project_edges=(pair for pair in project_edges),
-        parallel_groups=(group for group in parallel_groups),
+        projects=(item for item in projects),  # type: ignore[arg-type]
+        packages=(item for item in packages),  # type: ignore[arg-type]
+        edges=(item for item in edges),  # type: ignore[arg-type]
+        project_edges=(pair for pair in project_edges),  # type: ignore[arg-type]
+        parallel_groups=(group for group in parallel_groups),  # type: ignore[arg-type]
         digest=graph.digest,
     )
 
