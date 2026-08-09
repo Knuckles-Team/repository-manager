@@ -1708,6 +1708,55 @@ def _cycle_path(
     return tuple(sorted(remaining))
 
 
+def _bounded_mapping_keys(
+    value: Mapping[str, object],
+    field_name: str,
+    allowed: frozenset[str],
+) -> tuple[str, ...]:
+    """Validate mapping keys without sorting or materializing untrusted input."""
+
+    keys: list[str] = []
+    try:
+        iterator = iter(value)
+        for index, key in enumerate(iterator):
+            if index >= len(allowed):
+                raise WorkspaceReleaseError(f"{field_name} has too many keys")
+            if (
+                type(key) is not str
+                or not key
+                or key.strip() != key
+                or len(key) > MAX_STRING_LENGTH
+                or any(ord(char) < 0x20 or ord(char) == 0x7F for char in key)
+            ):
+                raise WorkspaceReleaseError(
+                    f"{field_name} keys must be bounded strings"
+                )
+            if key in keys:
+                raise WorkspaceReleaseError(f"{field_name} contains duplicate keys")
+            keys.append(key)
+    except WorkspaceReleaseError:
+        raise
+    except Exception:
+        raise WorkspaceReleaseError(f"{field_name} keys could not be read") from None
+    if any(key not in allowed for key in keys):
+        raise WorkspaceReleaseError(f"{field_name} has unsupported fields")
+    return tuple(keys)
+
+
+def _safe_mapping_get(
+    value: Mapping[str, object],
+    key: str,
+    default: object,
+    field_name: str,
+) -> object:
+    """Read one validated mapping value without exposing mapping exceptions."""
+
+    try:
+        return value.get(key, default)
+    except Exception:
+        raise WorkspaceReleaseError(f"{field_name} values could not be read") from None
+
+
 def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManifest:
     """Copy the current phase manifest into an immutable compatibility view.
 
@@ -1716,51 +1765,52 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
     the later shadow comparator; those strings are never used as graph keys.
     """
 
-    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
+    if not isinstance(value, Mapping):
         raise WorkspaceReleaseError("phase manifest keys must be strings")
-    allowed = {"description", "phases"}
-    unknown = sorted(set(value) - allowed)
-    if unknown:
-        raise WorkspaceReleaseError(
-            f"phase manifest has unsupported fields: {', '.join(unknown)}"
-        )
-    phases_value = value.get("phases", ())
+    allowed = frozenset({"description", "phases"})
+    _bounded_mapping_keys(value, "phase manifest", allowed)
+    phases_value = _safe_mapping_get(value, "phases", (), "phase manifest")
     if not isinstance(phases_value, (list, tuple)):
         raise WorkspaceReleaseError("phase manifest phases must be a sequence")
     if len(phases_value) > MAX_PLAN_STAGES:
         raise WorkspaceReleaseError("phase manifest exceeds the stage bound")
     phases: list[LegacyPhase] = []
     total_project_references = 0
-    phase_keys = {
-        "name",
-        "phase",
-        "project",
-        "projects",
-        "bulk_bump",
-        "bulk_push",
-        "wait_minutes",
-        "updates",
-        "exclude",
-    }
+    phase_keys = frozenset(
+        {
+            "name",
+            "phase",
+            "project",
+            "projects",
+            "bulk_bump",
+            "bulk_push",
+            "wait_minutes",
+            "updates",
+            "exclude",
+        }
+    )
     for index, raw in enumerate(phases_value):
         if not isinstance(raw, Mapping):
             raise WorkspaceReleaseError(f"phase {index} must be a mapping")
-        unsupported = sorted(set(raw) - phase_keys)
-        if unsupported:
-            raise WorkspaceReleaseError(
-                f"phase {index} has unsupported fields: {', '.join(unsupported)}"
-            )
-        name = _bounded_text(raw.get("name", f"phase-{index + 1}"), "phase name")
-        phase = raw.get("phase", index + 1)
+        _bounded_mapping_keys(raw, f"phase {index}", phase_keys)
+        name = _bounded_text(
+            _safe_mapping_get(raw, "name", f"phase-{index + 1}", f"phase {index}"),
+            "phase name",
+        )
+        phase = _safe_mapping_get(raw, "phase", index + 1, f"phase {index}")
         if isinstance(phase, bool) or not isinstance(phase, int) or phase < 1:
             raise WorkspaceReleaseError(f"phase {index} number must be positive")
-        project = raw.get("project")
-        projects = raw.get("projects", ())
+        project = _safe_mapping_get(raw, "project", None, f"phase {index}")
+        projects = _safe_mapping_get(raw, "projects", (), f"phase {index}")
         refs: list[str] = []
         if project is not None:
             refs.append(_bounded_text(project, f"phase {index} project"))
         if not isinstance(projects, (list, tuple)):
             raise WorkspaceReleaseError(f"phase {index} projects must be a sequence")
+        if len(projects) > MAX_PROJECTS:
+            raise WorkspaceReleaseError(
+                f"phase {index} projects exceed the project bound"
+            )
         refs.extend(_bounded_text(item, f"phase {index} project") for item in projects)
         if len(refs) > MAX_PROJECTS:
             raise WorkspaceReleaseError(
@@ -1775,13 +1825,13 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
             raise WorkspaceReleaseError(
                 f"phase {index} project references must be unique"
             )
-        wait = raw.get("wait_minutes", 0)
+        wait = _safe_mapping_get(raw, "wait_minutes", 0, f"phase {index}")
         if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0:
             raise WorkspaceReleaseError(
                 f"phase {index} wait_minutes must be non-negative"
             )
-        bulk_bump = raw.get("bulk_bump", False)
-        bulk_push = raw.get("bulk_push", False)
+        bulk_bump = _safe_mapping_get(raw, "bulk_bump", False, f"phase {index}")
+        bulk_push = _safe_mapping_get(raw, "bulk_push", False, f"phase {index}")
         if not isinstance(bulk_bump, bool) or not isinstance(bulk_push, bool):
             raise WorkspaceReleaseError(f"phase {index} bulk flags must be booleans")
         phases.append(

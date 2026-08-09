@@ -14,6 +14,7 @@ ambiguity, never an implicit choice.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -1142,45 +1143,117 @@ class ShadowDiagnostic:
         }
 
 
+class _ReverseDiagnostic:
+    """Heap entry whose root is the lexicographically greatest diagnostic."""
+
+    __slots__ = ("diagnostic", "key")
+
+    def __init__(self, diagnostic: ShadowDiagnostic) -> None:
+        self.diagnostic = diagnostic
+        self.key = _shadow_diagnostic_sort_key(diagnostic)
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, _ReverseDiagnostic):
+            return NotImplemented
+        return self.key > other.key
+
+
+_HASH_MODULUS = 1 << 256
+
+
+@dataclass(slots=True)
+class _DigestMultiset:
+    """Order-independent, duplicate-sensitive bounded hash state."""
+
+    count: int = 0
+    total: int = 0
+    squares: int = 0
+
+    def add(self, fingerprint: int) -> None:
+        self.count += 1
+        self.total = (self.total + fingerprint) % _HASH_MODULUS
+        self.squares = (self.squares + fingerprint * fingerprint) % _HASH_MODULUS
+
+    def subtract(self, other: _DigestMultiset) -> _DigestMultiset:
+        if other.count > self.count:
+            raise SelectionError("diagnostic fingerprint count underflow")
+        return _DigestMultiset(
+            count=self.count - other.count,
+            total=(self.total - other.total) % _HASH_MODULUS,
+            squares=(self.squares - other.squares) % _HASH_MODULUS,
+        )
+
+    def merge(self, other: _DigestMultiset) -> _DigestMultiset:
+        return _DigestMultiset(
+            count=self.count + other.count,
+            total=(self.total + other.total) % _HASH_MODULUS,
+            squares=(self.squares + other.squares) % _HASH_MODULUS,
+        )
+
+    def digest(self) -> str:
+        payload = (
+            f"count={self.count};total={self.total:064x};squares={self.squares:064x}"
+        )
+        return hashlib.sha256(payload.encode("ascii")).hexdigest()
+
+
+def _diagnostic_fingerprint(diagnostic: ShadowDiagnostic) -> int:
+    return int.from_bytes(
+        hashlib.sha256(
+            _canonical_json(diagnostic.canonical_payload()).encode("utf-8")
+        ).digest(),
+        "big",
+    )
+
+
 class _DiagnosticAccumulator:
     """Keep shadow diagnostics bounded while preserving mandatory phase evidence."""
 
     def __init__(self) -> None:
-        self._mandatory: list[ShadowDiagnostic] = []
-        self._ordinary: list[ShadowDiagnostic] = []
-        self._omitted = 0
-        self._omitted_fingerprint = 0
+        self._mandatory: list[_ReverseDiagnostic] = []
+        self._ordinary: list[_ReverseDiagnostic] = []
+        self._mandatory_count = 0
+        self._ordinary_count = 0
+        self._mandatory_fingerprint = _DigestMultiset()
+        self._ordinary_fingerprint = _DigestMultiset()
 
-    def _record_omitted(self, diagnostic: ShadowDiagnostic) -> None:
-        fingerprint = hashlib.sha256(
-            _canonical_json(diagnostic.canonical_payload()).encode("utf-8")
-        ).digest()
-        self._omitted_fingerprint ^= int.from_bytes(fingerprint, "big")
+    @staticmethod
+    def _offer(target: list[_ReverseDiagnostic], diagnostic: ShadowDiagnostic) -> None:
+        entry = _ReverseDiagnostic(diagnostic)
+        if len(target) < MAX_SHADOW_DIAGNOSTICS:
+            heapq.heappush(target, entry)
+        elif entry.key < target[0].key:
+            heapq.heapreplace(target, entry)
 
     def add(self, diagnostic: ShadowDiagnostic, *, mandatory: bool = False) -> None:
-        target = self._mandatory if mandatory else self._ordinary
-        if len(target) < MAX_SHADOW_DIAGNOSTICS:
-            target.append(diagnostic)
+        fingerprint = _diagnostic_fingerprint(diagnostic)
+        if mandatory:
+            self._mandatory_count += 1
+            self._mandatory_fingerprint.add(fingerprint)
+            self._offer(self._mandatory, diagnostic)
         else:
-            self._omitted += 1
-            self._record_omitted(diagnostic)
+            self._ordinary_count += 1
+            self._ordinary_fingerprint.add(fingerprint)
+            self._offer(self._ordinary, diagnostic)
 
     def finalize(self) -> tuple[ShadowDiagnostic, ...]:
-        mandatory = sorted(self._mandatory, key=_shadow_diagnostic_sort_key)
-        ordinary = sorted(self._ordinary, key=_shadow_diagnostic_sort_key)
-        if len(mandatory) > MAX_SHADOW_DIAGNOSTICS:
-            mandatory = mandatory[:MAX_SHADOW_DIAGNOSTICS]
-            omitted = len(self._mandatory) - len(mandatory) + self._omitted
-        else:
-            omitted = self._omitted
+        mandatory_entries = sorted(self._mandatory, key=lambda item: item.key)
+        mandatory = [entry.diagnostic for entry in mandatory_entries]
+        mandatory_omitted = self._mandatory_count - len(mandatory)
+        mandatory_retained = _diagnostic_multiset(mandatory)
+        mandatory_fingerprint = self._mandatory_fingerprint.subtract(mandatory_retained)
         available = MAX_SHADOW_DIAGNOSTICS - len(mandatory)
-        if len(ordinary) > available or self._omitted:
+        ordinary_entries = sorted(self._ordinary, key=lambda item: item.key)
+        ordinary = [entry.diagnostic for entry in ordinary_entries]
+        if self._ordinary_count > available or mandatory_omitted:
             keep_count = max(0, available - 1) if available else 0
-            omitted += len(ordinary) - keep_count
-            for diagnostic in ordinary[keep_count:]:
-                self._record_omitted(diagnostic)
+            retained = ordinary[:keep_count]
+            omitted = mandatory_omitted + self._ordinary_count - keep_count
+            omitted_fingerprint = mandatory_fingerprint.merge(
+                self._ordinary_fingerprint.subtract(_diagnostic_multiset(retained))
+            )
             if available:
-                ordinary = ordinary[:keep_count]
+                ordinary = retained
                 ordinary.append(
                     ShadowDiagnostic(
                         ShadowDiagnosticCode.DIAGNOSTICS_TRUNCATED,
@@ -1190,7 +1263,7 @@ class _DiagnosticAccumulator:
                             ("omitted", str(omitted)),
                             (
                                 "digest",
-                                f"{self._omitted_fingerprint:064x}",
+                                omitted_fingerprint.digest(),
                             ),
                         ),
                     )
@@ -1201,6 +1274,15 @@ class _DiagnosticAccumulator:
         if len(result) > MAX_SHADOW_DIAGNOSTICS:
             return result[:MAX_SHADOW_DIAGNOSTICS]
         return result
+
+
+def _diagnostic_multiset(
+    diagnostics: Iterable[ShadowDiagnostic],
+) -> _DigestMultiset:
+    fingerprint = _DigestMultiset()
+    for diagnostic in diagnostics:
+        fingerprint.add(_diagnostic_fingerprint(diagnostic))
+    return fingerprint
 
 
 def _shadow_diagnostic_sort_key(

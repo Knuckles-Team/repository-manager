@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import random
 from dataclasses import replace
+from typing import cast
 
 import pytest
 
@@ -29,6 +30,7 @@ from repository_manager.development.workspace_release import (
 from repository_manager.development.workspace_selection import (
     MAX_SHADOW_DIAGNOSTICS,
     InclusionMode,
+    PhaseShadowReport,
     SelectionError,
     SelectionPolicy,
     SelectionReason,
@@ -661,6 +663,126 @@ def test_maximum_bounded_phase_mismatch_returns_a_bounded_report() -> None:
     assert all(
         len(value) <= 4096 for item in report.diagnostics for _, value in item.details
     )
+
+
+def test_overflow_diagnostics_are_canonical_under_reference_permutations() -> None:
+    closure = derive_selected_closure(
+        _chain_graph(),
+        SelectionPolicy(changed_projects=("packages/changed",)),
+    )
+    phases = [
+        {
+            "phase": phase,
+            "name": f"unknowns-{phase:02d}",
+            "projects": [
+                f"unknown-{phase:02d}-{reference:04d}" for reference in range(2_000)
+            ],
+        }
+        for phase in range(1, 16)
+    ]
+
+    def phase_projects(phase: dict[str, object]) -> list[str]:
+        return cast(list[str], phase["projects"])
+
+    def build_report(references: list[dict[str, object]]) -> PhaseShadowReport:
+        return compare_legacy_phases(
+            closure,
+            phase_manifest_from_mapping({"phases": references}),
+        )
+
+    reversed_phases = [
+        {**phase, "projects": list(reversed(phase_projects(phase)))} for phase in phases
+    ]
+    shuffled_phases = [
+        {
+            **phase,
+            "projects": random.Random(cast(int, phase["phase"])).sample(
+                phase_projects(phase), len(phase_projects(phase))
+            ),
+        }
+        for phase in phases
+    ]
+    normal = build_report(phases)
+    reversed_report = build_report(reversed_phases)
+    shuffled_report = build_report(shuffled_phases)
+
+    assert len(normal.diagnostics) == MAX_SHADOW_DIAGNOSTICS
+    assert normal.canonical_payload() == reversed_report.canonical_payload()
+    assert normal.canonical_payload() == shuffled_report.canonical_payload()
+    assert normal.report_digest == reversed_report.report_digest
+    assert normal.report_digest == shuffled_report.report_digest
+    retained = tuple(
+        item.subject
+        for item in normal.diagnostics
+        if item.code == ShadowDiagnosticCode.MISSING_PROJECT
+    )
+    assert retained == tuple(
+        item.subject
+        for item in reversed_report.diagnostics
+        if item.code == ShadowDiagnosticCode.MISSING_PROJECT
+    )
+    assert retained == tuple(
+        item.subject
+        for item in shuffled_report.diagnostics
+        if item.code == ShadowDiagnosticCode.MISSING_PROJECT
+    )
+    overflow = next(
+        item
+        for item in normal.diagnostics
+        if item.code == ShadowDiagnosticCode.DIAGNOSTICS_TRUNCATED
+    )
+    assert dict(overflow.details)["omitted"] == "13631"
+    assert overflow.details == next(
+        item.details
+        for item in reversed_report.diagnostics
+        if item.code == ShadowDiagnosticCode.DIAGNOSTICS_TRUNCATED
+    )
+
+    duplicate_in_omitted = [
+        {**phase, "projects": list(phase_projects(phase))} for phase in phases
+    ]
+    duplicate_last = cast(list[str], duplicate_in_omitted[-1]["projects"])
+    duplicate_previous = cast(list[str], duplicate_in_omitted[-2]["projects"])
+    duplicate_last[-1] = duplicate_previous[-1]
+    duplicate_report = build_report(duplicate_in_omitted)
+    duplicate_retained = tuple(
+        item.subject
+        for item in duplicate_report.diagnostics
+        if item.code == ShadowDiagnosticCode.MISSING_PROJECT
+    )
+    assert duplicate_retained == retained
+    duplicate_overflow = next(
+        item
+        for item in duplicate_report.diagnostics
+        if item.code == ShadowDiagnosticCode.DIAGNOSTICS_TRUNCATED
+    )
+    assert dict(duplicate_overflow.details)["omitted"] == "13631"
+    assert duplicate_overflow.details != overflow.details
+
+
+class _UnorderablePrivateKey:
+    def __repr__(self) -> str:
+        return "PRIVATE-KEY-SHOULD-NOT-LEAK"
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {"phases": [{1: "PRIVATE-VALUE", "name": "p"}]},
+        {"phases": [{_UnorderablePrivateKey(): "PRIVATE-VALUE", "name": "p"}]},
+        {"phases": [{"name": "p", "x" * 4_097: "PRIVATE-VALUE"}]},
+        {1: "PRIVATE-VALUE", "phases": []},
+    ],
+)
+def test_phase_parser_rejects_malformed_keys_without_repr_or_value_leaks(
+    mapping: dict[object, object],
+) -> None:
+    with pytest.raises(WorkspaceReleaseError) as captured:
+        phase_manifest_from_mapping(mapping)  # type: ignore[arg-type]
+
+    message = str(captured.value)
+    assert "PRIVATE" not in message
+    assert "Unorderable" not in message
 
 
 def test_frozen_legacy_models_copy_lists_and_consume_generators_once() -> None:
