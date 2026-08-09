@@ -842,6 +842,45 @@ def _check_precommit_hook_installed(tree: Path) -> Check:
     )
 
 
+def _check_tree_repair(tree: Path) -> Check:
+    """D-CDX-105/RMDD-26: detect structural index and ``core.bare`` drift."""
+    try:
+        from repository_manager import tree_repair
+
+        report = tree_repair.diagnose(tree)
+        finding = report.get("finding", "clean")
+    except Exception as exc:  # pragma: no cover - unavailable optional runtime
+        error = f"{type(exc).__name__}: {exc}"
+        return Check(
+            "tree-repair",
+            FAIL,
+            "tree-repair diagnosis unavailable; refusing to authorize a gate: " + error,
+            remedy=(
+                "rerun repository_manager.tree_repair.diagnose for path="
+                f"{json.dumps(str(tree))} and repair only after a valid finding "
+                "is returned"
+            ),
+            evidence={"path": str(tree), "error": error},
+        )
+    if finding == "clean":
+        return Check(
+            "tree-repair",
+            OK,
+            "working-tree index and core.bare structure are healthy",
+            evidence=report.get("evidence", {}),
+        )
+    return Check(
+        "tree-repair",
+        FAIL,
+        f"tree-repair detected {finding}; repair before running a gate",
+        remedy=(
+            "call repository_manager.tree_repair.repair with path="
+            f"{json.dumps(str(tree))} and finding={json.dumps(str(finding))}"
+        ),
+        evidence=report.get("evidence", {}),
+    )
+
+
 def diagnose(
     path: Path | str | None = None,
     *,
@@ -870,6 +909,7 @@ def diagnose(
         _check_precommit_hook_installed(tree),
         _check_canonical_clean(scope),
         _check_canonical_is_worktree(scope),
+        _check_tree_repair(tree),
         _check_merge_queue_config(tree, scope),
         _check_base_drift(tree, base),
         _check_uncommitted(tree),

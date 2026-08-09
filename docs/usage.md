@@ -137,6 +137,71 @@ exists:
 The same action core backs the `rm_lane` MCP tool and
 `python -m repository_manager.lane_doctor`, so the surfaces cannot drift.
 
+### Working-tree mutation safety (`CONCEPT:RM-SAFE-COMMIT`, `CONCEPT:RM-DESTRUCTIVE-GUARD`, `CONCEPT:RM-TREE-REPAIR`)
+
+The pure safety primitives are available to lane and job implementations without
+changing MCP registration:
+
+```python
+from repository_manager.destructive_guard import guard, issue_override_token
+from repository_manager.safe_commit import safe_commit
+from repository_manager.tree_repair import diagnose, repair
+
+commit = safe_commit("/path/to/lane", "implement the reviewed change")
+finding = diagnose("/path/to/lane")
+if finding["finding"] != "clean":
+    repair("/path/to/lane", finding=finding)
+
+# Destructive argv is refused unless this explicit token is consumed once.
+decision = guard(["git", "clean", "-fd"], path="/path/to/lane")
+override = guard(
+    ["git", "clean", "-fd"],
+    path="/path/to/lane",
+    lane="lane-id",
+    override=issue_override_token(
+        authorization=operator_authorization_callback,
+        audit_context={
+            "actor": "operator",
+            "lane": "lane-id",
+            "repository": "/path/to/lane",
+            "argv": "git clean -fd",
+            "operation": "git clean -fd",
+        },
+    ),
+)
+```
+
+Override context is mandatory and exact: the repository is resolved before
+consumption and `argv` must be normalized fixed-argument text. Unknown commands,
+alternate `--git-dir`/`--work-tree` targets, aliases/config injection, and
+non-`git` executables are refused. The mutation lease is cooperative; a raw
+external Git process that ignores it remains outside this boundary, and a
+post-execution tree invariant is returned when such a process races it.
+
+`safe_commit` stages deletions and untracked files before invoking the configured
+gate and returns an explicit `nothing_left_unstaged` assertion plus the staged
+path set, commit SHA, and refreshed tree baseline evidence. `destructive_guard` refuses `reset --hard`, broad
+checkout/clean/stash operations, forced branch deletion, and force-push by
+default. A token cannot be minted from configuration or an environment flag;
+the caller must supply a live authorization callback and
+actor/lane/repository/argv/operation audit context. An override first creates
+`refs/lane-backup/pre-destructive/<lane>-<uuid>` and parks dirty WIP at the
+lane-private ref; a missing snapshot is a refusal. Use `stash_guard.park` and
+`stash_guard.unpark` for a temporary clean tree instead of the shared
+`refs/stash` stack.
+
+```mermaid
+flowchart LR
+    TREE[Dirty worktree] --> STAGE[git add -A]
+    STAGE --> PROVE{nothing left unstaged?}
+    PROVE -->|yes| GATE[Configured gate]
+    GATE --> RESTAGE[Restage formatter output]
+    RESTAGE --> COMMIT[Commit + SHA]
+    DANGER[Destructive argv] --> REFUSE[Refuse + safer alternative]
+    DANGER -->|single-use override| SNAP[Backup ref + private WIP park]
+    SNAP --> EXEC[Execute fixed argv]
+```
+
 ```mermaid
 flowchart LR
     V{Worktree has .venv} -->|No| OK[Isolation check passes]

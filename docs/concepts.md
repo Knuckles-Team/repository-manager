@@ -14,6 +14,9 @@
 | `CONCEPT:RM-OS.governance.rm-2` | Misc Operations | MCP tool domain `misc` — Action-routed dynamic tool registration |
 | `CONCEPT:RM-OS.governance.rm-3` | Project Management | MCP tool domain `project_management` — Action-routed dynamic tool registration |
 | `CONCEPT:RM-OS.governance.rm-4` | Workspace Management | MCP tool domain `workspace_management` — Action-routed dynamic tool registration |
+| `CONCEPT:RM-SAFE-COMMIT` | Safe commit | Stages the complete tree before a gate and proves `nothing_left_unstaged` before commit (C-12) |
+| `CONCEPT:RM-DESTRUCTIVE-GUARD` | Destructive git guard | Refuses destructive verbs unless a logged, single-use, snapshot-backed override is supplied (C-12) |
+| `CONCEPT:RM-TREE-REPAIR` | Working-tree repair | Detects index collapse and `core.bare` drift and applies content-preserving mechanical repairs (C-12) |
 
 ## Cross-Project References (from agent-utilities)
 
