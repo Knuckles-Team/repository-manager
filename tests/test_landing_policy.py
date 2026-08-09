@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import warnings
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 
@@ -23,6 +26,8 @@ from repository_manager.landing_policy import (
     LandingVerificationRequest,
     LandingVerificationResult,
     TargetOccupancyState,
+    _plain_payload_mapping,
+    _require_sequence,
     verify_landability,
     verify_landing,
 )
@@ -33,6 +38,26 @@ from repository_manager.validation import (
 )
 
 _UNSET = object()
+
+
+class _NeverIteratedMapping(Mapping[str, object]):
+    def __getitem__(self, key: str) -> object:
+        raise AssertionError(f"hostile mapping was indexed: {key}")
+
+    def __iter__(self) -> Iterator[str]:
+        raise AssertionError("hostile mapping was iterated")
+
+    def __len__(self) -> int:
+        raise AssertionError("hostile mapping length was requested")
+
+
+class _NeverIteratedList(list[object]):
+    def __iter__(self) -> Iterator[object]:
+        raise AssertionError("hostile list was iterated")
+
+    def __len__(self) -> int:
+        raise AssertionError("hostile list length was requested")
+
 
 SHA0 = "0" * 40
 SHA1 = "1" * 40
@@ -182,9 +207,9 @@ def _request(
         canonical=canonical or CanonicalCheckoutState(True, True),
         target_occupancy=target_occupancy or TargetOccupancyState(0),
         evidence=evidence,
-        expected_certificate_digest=expected_certificate_digest,  # type: ignore[arg-type]
-        expected_generation_id=expected_generation_id,  # type: ignore[arg-type]
-        expected_synthetic_commit_sha=expected_synthetic_commit_sha,  # type: ignore[arg-type]
+        expected_certificate_digest=cast(str | None, expected_certificate_digest),
+        expected_generation_id=cast(str | None, expected_generation_id),
+        expected_synthetic_commit_sha=cast(str | None, expected_synthetic_commit_sha),
     )
 
 
@@ -206,7 +231,8 @@ def test_certified_landing_is_accepted_without_git_or_filesystem_effects(
 
     assert result.accepted
     assert result.refusal_code is None
-    assert result.generation_id == valid_request.generation.generation_id  # type: ignore[union-attr]
+    assert valid_request.generation is not None
+    assert result.generation_id == valid_request.generation.generation_id
     assert result.synthetic_commit_sha == SHA1
     assert result.tree_sha == SHA2
     certificate = valid_request.certificate
@@ -468,29 +494,23 @@ def test_target_occupancy_refuses_other_worktrees() -> None:
 
 
 def test_inputs_and_results_are_closed_and_bounded() -> None:
+    certificate, evidence = _certificate()
+    mutable_request = _request(
+        generation=_generation(), certificate=certificate, evidence=evidence
+    )
+    object.__setattr__(mutable_request, "evidence", [])
     with pytest.raises(LandingPolicyError, match="immutable tuple"):
-        LandingVerificationRequest(
-            repository=_repository(),
-            target_branch="main",
-            target=TargetPolicy(),
-            expected_base_sha=SHA0,
-            observed_target_sha=SHA0,
-            expected_landing_fence="fence:landing-1",
-            observed_landing_fence="fence:landing-1",
-            generation=None,
-            certificate=None,
-            canonical=CanonicalCheckoutState(True, True),
-            target_occupancy=TargetOccupancyState(0),
-            evidence=[],  # type: ignore[arg-type]
-        )
+        mutable_request.__post_init__()
+
+    malformed_canonical = CanonicalCheckoutState(True, True)
+    object.__setattr__(malformed_canonical, "mutation_lease_held", 1)
     with pytest.raises(LandingPolicyError, match="boolean"):
-        CanonicalCheckoutState(1, True)  # type: ignore[arg-type]
+        malformed_canonical.__post_init__()
     with pytest.raises(LandingPolicyError, match="between"):
         TargetOccupancyState(1025)
     with pytest.raises(LandingPolicyError, match="accepted result requires"):
         LandingVerificationResult(accepted=True)
 
-    certificate, evidence = _certificate()
     with pytest.raises(LandingPolicyError, match="bounded count"):
         _request(
             generation=_generation(),
@@ -591,6 +611,96 @@ def test_model_copy_authority_values_are_rebuilt_and_anchored() -> None:
         assert result.code is expected_code
 
 
+@pytest.mark.parametrize(
+    "forged_target",
+    [
+        {},
+        {"kind": "malformed"},
+        {"kind": "local", "alias": "forged"},
+    ],
+)
+def test_forged_nested_target_dict_is_never_defaulted(
+    forged_target: dict[str, object],
+) -> None:
+    generation = _generation().model_copy(update={"target": forged_target})
+    certificate, evidence = _certificate()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        result = verify_landing(
+            _request(generation=generation, certificate=certificate, evidence=evidence)
+        )
+
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+def test_forged_nested_target_model_copy_is_typed_refusal() -> None:
+    malformed_target = TargetPolicy().model_copy(update={"kind": "malformed"})
+    generation = _generation().model_copy(update={"target": malformed_target})
+    certificate, evidence = _certificate()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        result = verify_landing(
+            _request(generation=generation, certificate=certificate, evidence=evidence)
+        )
+
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+def test_hostile_custom_containers_are_refused_without_iteration() -> None:
+    with pytest.raises(LandingPolicyError):
+        _plain_payload_mapping(_NeverIteratedMapping(), "hostile mapping")
+    with pytest.raises(LandingPolicyError):
+        _require_sequence(_NeverIteratedList(), "hostile list")
+
+    generation = _generation().model_copy(update={"target": _NeverIteratedMapping()})
+    certificate, evidence = _certificate()
+    result = verify_landing(
+        _request(generation=generation, certificate=certificate, evidence=evidence)
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+    hostile_candidates = _NeverIteratedList()
+    generation = _generation().model_copy(
+        update={"candidate_versions": hostile_candidates}
+    )
+    result = verify_landing(
+        _request(generation=generation, certificate=certificate, evidence=evidence)
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+    hostile_labels = _NeverIteratedList()
+    malformed_target = TargetPolicy().model_copy(
+        update={"capability_labels": hostile_labels}
+    )
+    generation = _generation().model_copy(update={"target": malformed_target})
+    result = verify_landing(
+        _request(generation=generation, certificate=certificate, evidence=evidence)
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+def test_list_snapshot_disposition_is_invariant_under_warning_errors() -> None:
+    generation = _generation()
+    candidates = list(generation.candidate_versions)
+    copied_generation = generation.model_copy(update={"candidate_versions": candidates})
+    certificate, evidence = _certificate()
+    request = _request(
+        generation=copied_generation,
+        certificate=certificate,
+        evidence=evidence,
+    )
+
+    normal_result = verify_landing(request)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        strict_result = verify_landing(request)
+
+    assert strict_result == normal_result
+    assert strict_result.accepted
+
+
 @pytest.mark.parametrize("state", [None, True, object()])
 def test_malformed_generation_state_is_a_typed_refusal(state: object) -> None:
     generation = _generation().model_copy(update={"state": state})
@@ -615,10 +725,14 @@ def test_malformed_gate_evidence_fields_never_escape_as_attribute_errors() -> No
         evidence[0], differential=True, baseline_tree_sha=SHA0
     )
     object.__setattr__(malformed_differential, "differential", 1)
+    malformed_stage = replace(evidence[0])
+    object.__setattr__(malformed_stage, "stage", object())
+    malformed_outcome = replace(evidence[0])
+    object.__setattr__(malformed_outcome, "outcome", None)
     malformed = (
-        replace(evidence[0], stage=object()),
+        malformed_stage,
         malformed_differential,
-        replace(evidence[0], outcome=None),  # type: ignore[arg-type]
+        malformed_outcome,
     )
     for item in malformed:
         result = verify_landing(

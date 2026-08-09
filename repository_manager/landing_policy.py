@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, StrEnum
+from typing import TypeVar, cast
 
 from pydantic import BaseModel
 
@@ -69,6 +69,8 @@ _BIDI_CONTROLS = frozenset(
         "\u2069",
     }
 )
+
+_EnumT = TypeVar("_EnumT", bound=StrEnum)
 
 
 class LandingPolicyError(ValueError):
@@ -178,6 +180,20 @@ def _require_optional_fence(value: object, field_name: str) -> str | None:
     return _require_bounded_text(value, field_name, maximum_bytes=_MAX_FENCE_BYTES)
 
 
+def _require_datetime(value: object, field_name: str) -> datetime:
+    if not isinstance(value, datetime):
+        raise LandingPolicyError(f"{field_name} is not a timestamp")
+    return value
+
+
+def _require_optional_int(value: object, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int:
+        raise LandingPolicyError(f"{field_name} must be an integer or None")
+    return value
+
+
 def _bounded_detail(value: str) -> str:
     if not isinstance(value, str):
         raise LandingPolicyError("landing detail must be a string")
@@ -207,19 +223,28 @@ def _validate_plain_tree(value: object, *, depth: int = 0) -> None:
 
     if depth > 8:
         raise LandingPolicyError("authority nesting exceeds its bounded depth")
-    if isinstance(value, Mapping):
-        if len(value) > _MAX_MAPPING_KEYS:
+    if type(value) is dict:
+        mapping = cast(dict[object, object], value)
+        if len(mapping) > _MAX_MAPPING_KEYS:
             raise LandingPolicyError("authority mapping exceeds its bounded count")
-        for key, item in value.items():
+        for key, item in mapping.items():
             if not isinstance(key, str):
                 raise LandingPolicyError("authority mapping keys must be strings")
             _require_bounded_text(key, "authority mapping key")
             _validate_plain_tree(item, depth=depth + 1)
         return
-    if isinstance(value, (list, tuple)):
-        if len(value) > _MAX_EVIDENCE_ITEMS:
+    if type(value) is list:
+        list_value = cast(list[object], value)
+        if len(list_value) > _MAX_EVIDENCE_ITEMS:
             raise LandingPolicyError("authority sequence exceeds its bounded count")
-        for item in value:
+        for item in list_value:
+            _validate_plain_tree(item, depth=depth + 1)
+        return
+    if type(value) is tuple:
+        tuple_value = cast(tuple[object, ...], value)
+        if len(tuple_value) > _MAX_EVIDENCE_ITEMS:
+            raise LandingPolicyError("authority sequence exceeds its bounded count")
+        for item in tuple_value:
             _validate_plain_tree(item, depth=depth + 1)
         return
     if value is None or type(value) in {bool, int, float, str}:
@@ -242,8 +267,13 @@ def _plain_model_mapping(value: object, field_name: str) -> dict[str, object]:
     if not isinstance(value, BaseModel):
         raise LandingPolicyError(f"{field_name} is not a typed authority model")
     try:
-        raw = value.model_dump(mode="json", exclude_none=False)
-        if not isinstance(raw, dict):
+        # ``warnings=False`` is deliberate: callers must receive a typed
+        # refusal from the shape checks below, never a disposition that depends
+        # on Pydantic's serializer warning policy.
+        raw = BaseModel.model_dump(
+            value, mode="json", exclude_none=False, warnings=False
+        )
+        if type(raw) is not dict:
             raise LandingPolicyError(f"{field_name} did not produce a mapping")
         _validate_plain_tree(raw)
     except LandingPolicyError:
@@ -256,10 +286,16 @@ def _plain_model_mapping(value: object, field_name: str) -> dict[str, object]:
 def _plain_payload_mapping(value: object, field_name: str) -> dict[str, object]:
     """Take a bounded mapping from a legacy dataclass canonical payload."""
 
-    if not isinstance(value, Mapping):
+    # Do not call ``dict(value)`` on an arbitrary Mapping: a hostile Mapping
+    # may be infinite or perform effects while iterating.  The exact builtin
+    # type is bounded before its shallow snapshot is materialized.
+    if type(value) is not dict:
         raise LandingPolicyError(f"{field_name} did not produce a mapping")
     try:
-        raw = dict(value)
+        plain_value = cast(dict[str, object], value)
+        if len(plain_value) > _MAX_MAPPING_KEYS:
+            raise LandingPolicyError("authority mapping exceeds its bounded count")
+        raw = dict(plain_value)
         _validate_plain_tree(raw)
     except LandingPolicyError:
         raise
@@ -271,14 +307,20 @@ def _plain_payload_mapping(value: object, field_name: str) -> dict[str, object]:
 def _require_sequence(
     value: object, field_name: str, *, maximum: int = _MAX_EVIDENCE_ITEMS
 ) -> tuple[object, ...]:
-    if not isinstance(value, (list, tuple)):
-        raise LandingPolicyError(f"{field_name} must be a bounded list or tuple")
-    if len(value) > maximum:
-        raise LandingPolicyError(f"{field_name} exceeds the bounded count")
-    return tuple(value)
+    if type(value) is list:
+        list_value = cast(list[object], value)
+        if len(list_value) > maximum:
+            raise LandingPolicyError(f"{field_name} exceeds the bounded count")
+        return tuple(list_value)
+    if type(value) is tuple:
+        tuple_value = cast(tuple[object, ...], value)
+        if len(tuple_value) > maximum:
+            raise LandingPolicyError(f"{field_name} exceeds the bounded count")
+        return tuple(tuple_value)
+    raise LandingPolicyError(f"{field_name} must be a bounded list or tuple")
 
 
-def _enum_value(value: object, enum_type: type[StrEnum], field_name: str) -> StrEnum:
+def _enum_value(value: object, enum_type: type[_EnumT], field_name: str) -> _EnumT:
     if isinstance(value, enum_type):
         return value
     if type(value) is str:
@@ -292,8 +334,9 @@ def _enum_value(value: object, enum_type: type[StrEnum], field_name: str) -> Str
 def _rebuild_repository(value: object) -> RepositoryIdentity:
     if not isinstance(value, RepositoryIdentity):
         raise LandingPolicyError("repository is not a typed authority model")
-    if not isinstance(value.configured_roots, (list, tuple)):
-        raise LandingPolicyError("configured roots must be a bounded list or tuple")
+    roots = _require_sequence(value.configured_roots, "configured roots")
+    for root in roots:
+        _require_bounded_text(root, "configured root", maximum_bytes=4096)
     raw = _plain_model_mapping(value, "repository")
     try:
         repository = RepositoryIdentity.model_validate(raw)
@@ -317,8 +360,9 @@ def _rebuild_repository(value: object) -> RepositoryIdentity:
 def _rebuild_target(value: object) -> TargetPolicy:
     if not isinstance(value, TargetPolicy):
         raise LandingPolicyError("target is not a typed authority model")
-    if not isinstance(value.capability_labels, (list, tuple)):
-        raise LandingPolicyError("target capabilities must be a bounded list or tuple")
+    labels = _require_sequence(value.capability_labels, "target capabilities")
+    for label in labels:
+        _require_bounded_text(label, "target capability")
     raw = _plain_model_mapping(value, "target")
     try:
         target = TargetPolicy.model_validate(raw)
@@ -353,20 +397,31 @@ def _rebuild_candidate(value: object) -> CandidateVersion:
 def _rebuild_generation(value: object) -> Generation:
     if not isinstance(value, Generation):
         raise LandingPolicyError("generation is not a typed authority model")
-    for field_name in (
+    if not isinstance(value.repository, RepositoryIdentity):
+        raise LandingPolicyError("generation repository is not a typed authority model")
+    if not isinstance(value.target, TargetPolicy):
+        raise LandingPolicyError("generation target is not a typed authority model")
+    sequences = (
         "candidate_versions",
         "validation_evidence_ids",
         "build_artifact_refs",
         "bisection_lineage",
-    ):
-        if not isinstance(getattr(value, field_name, None), (list, tuple)):
-            raise LandingPolicyError(f"{field_name} must be a bounded list or tuple")
+    )
+    for field_name in sequences:
+        _require_sequence(getattr(value, field_name, None), field_name)
+    candidates = _require_sequence(value.candidate_versions, "candidate_versions")
+    _rebuild_repository(value.repository)
+    _rebuild_target(value.target)
+    for candidate in candidates:
+        _rebuild_candidate(candidate)
     raw = _plain_model_mapping(value, "generation")
-    candidates = _require_sequence(raw.get("candidate_versions"), "candidate_versions")
+    raw_candidates = _require_sequence(
+        raw.get("candidate_versions"), "candidate_versions"
+    )
     raw["repository"] = _plain_payload_mapping(raw.get("repository"), "repository")
     raw["target"] = _plain_payload_mapping(raw.get("target"), "target")
     raw["candidate_versions"] = [
-        _plain_payload_mapping(item, "candidate version") for item in candidates
+        _plain_payload_mapping(item, "candidate version") for item in raw_candidates
     ]
     try:
         generation = Generation.model_validate(raw)
@@ -444,10 +499,39 @@ def _rebuild_certificate(value: object) -> ValidationCertificate:
     blocking_names = _require_sequence(
         raw.get("blocking_gate_names"), "certificate blocking gates"
     )
-    raw["evidence_digests"] = tuple(evidence_digests)
-    raw["blocking_gate_names"] = tuple(blocking_names)
+    certificate_id = _require_bounded_text(raw.get("certificate_id"), "certificate_id")
+    generation_id = _require_bounded_text(raw.get("generation_id"), "generation_id")
+    tree_sha = _require_sha(raw.get("tree_sha"), "certificate tree_sha")
+    gate_config_digest = _require_digest(
+        raw.get("gate_config_digest"), "gate_config_digest"
+    )
+    toolchain_digest = _require_digest(raw.get("toolchain_digest"), "toolchain_digest")
+    target_host = _require_bounded_text(raw.get("target_host"), "target_host")
+    resource_digest = _require_digest(raw.get("resource_digest"), "resource_digest")
+    evidence_digest_values = tuple(
+        _require_digest(item, "certificate evidence digest")
+        for item in evidence_digests
+    )
+    blocking_gate_values = tuple(
+        _require_bounded_text(item, "certificate blocking gate name")
+        for item in blocking_names
+    )
+    issued_at = _require_datetime(raw.get("issued_at"), "issued_at")
+    profile_digest = _require_digest(raw.get("profile_digest"), "profile_digest")
     try:
-        certificate = ValidationCertificate(**raw)
+        certificate = ValidationCertificate(
+            certificate_id=certificate_id,
+            generation_id=generation_id,
+            tree_sha=tree_sha,
+            gate_config_digest=gate_config_digest,
+            toolchain_digest=toolchain_digest,
+            target_host=target_host,
+            resource_digest=resource_digest,
+            evidence_digests=evidence_digest_values,
+            blocking_gate_names=blocking_gate_values,
+            issued_at=issued_at,
+            profile_digest=profile_digest,
+        )
     except Exception as exc:
         raise LandingPolicyError("certificate authority is invalid") from exc
     _validate_certificate_content(certificate)
@@ -533,73 +617,123 @@ def _rebuild_evidence(value: object) -> GateEvidence:
         raise LandingPolicyError("evidence could not be serialized") from exc
     if set(raw) != _EVIDENCE_FIELDS:
         raise LandingPolicyError("evidence fields are not exact")
-    raw["stage"] = _enum_value(raw.get("stage"), ValidationStage, "evidence stage")
-    raw["outcome"] = _enum_value(
-        raw.get("outcome"), EvidenceOutcome, "evidence outcome"
+    evidence_id = _require_bounded_text(raw.get("evidence_id"), "evidence_id")
+    gate_name = _require_bounded_text(raw.get("gate_name"), "gate_name")
+    stage = _enum_value(raw.get("stage"), ValidationStage, "evidence stage")
+    tree_sha = _require_sha(raw.get("tree_sha"), "evidence tree_sha")
+    generation_id_value = raw.get("generation_id")
+    generation_id = (
+        None
+        if generation_id_value is None
+        else _require_bounded_text(generation_id_value, "generation_id")
     )
-    if raw.get("failure_class") is not None:
-        raw["failure_class"] = _enum_value(
-            raw.get("failure_class"), ValidationFailureClass, "evidence failure class"
+    gate_config_digest = _require_digest(
+        raw.get("gate_config_digest"), "gate_config_digest"
+    )
+    command_digest = _require_digest(raw.get("command_digest"), "command_digest")
+    target_host = _require_bounded_text(raw.get("target_host"), "target_host")
+    toolchain_digest = _require_digest(raw.get("toolchain_digest"), "toolchain_digest")
+    resource_digest = _require_digest(raw.get("resource_digest"), "resource_digest")
+    profile_digest = _require_digest(raw.get("profile_digest"), "profile_digest")
+    started_at = _require_datetime(raw.get("started_at"), "started_at")
+    finished_at = _require_datetime(raw.get("finished_at"), "finished_at")
+    outcome = _enum_value(raw.get("outcome"), EvidenceOutcome, "evidence outcome")
+    failure_class_value = raw.get("failure_class")
+    failure_class = (
+        None
+        if failure_class_value is None
+        else _enum_value(
+            failure_class_value,
+            ValidationFailureClass,
+            "evidence failure class",
         )
+    )
+    sequence_values: dict[str, tuple[str, ...]] = {}
     for field_name in _EVIDENCE_SEQUENCE_FIELDS:
         values = _require_sequence(
             raw.get(field_name),
             field_name,
             maximum=_MAX_EVIDENCE_SEQUENCE_ITEMS,
         )
-        raw[field_name] = values
-        for item in values:
-            _require_bounded_text(item, f"{field_name} entry")
-    for field_name in (
-        "evidence_id",
-        "gate_name",
-        "target_host",
-        "stdout_tail",
-        "stderr_tail",
-        "detail",
-    ):
-        _require_bounded_text(
-            raw.get(field_name),
-            field_name,
-            maximum_bytes=_MAX_EVIDENCE_FIELD_BYTES,
-            allow_empty=field_name in {"stdout_tail", "stderr_tail", "detail"},
+        sequence_values[field_name] = tuple(
+            _require_bounded_text(item, f"{field_name} entry") for item in values
         )
-    for field_name in (
-        "generation_id",
-        "job_id",
-        "baseline_tree_sha",
-    ):
-        value_for_field = raw.get(field_name)
-        if value_for_field is not None:
-            _require_bounded_text(value_for_field, field_name)
-    _require_sha(raw.get("tree_sha"), "evidence tree_sha")
-    if raw.get("baseline_tree_sha") is not None:
-        _require_sha(raw.get("baseline_tree_sha"), "baseline_tree_sha")
-    for field_name in (
-        "gate_config_digest",
-        "command_digest",
-        "toolchain_digest",
-        "resource_digest",
-        "profile_digest",
-    ):
-        _require_digest(raw.get(field_name), field_name)
-    for field_name in ("started_at", "finished_at"):
-        if not isinstance(raw.get(field_name), datetime):
-            raise LandingPolicyError(f"{field_name} is not a timestamp")
-    for field_name in (
-        "differential",
-        "snapshot_gate_deferred",
-        "snapshot_gate_replayed",
-    ):
-        _require_bool(raw.get(field_name), field_name)
-    baseline_readable = raw.get("baseline_readable")
-    if baseline_readable is not None:
-        _require_bool(baseline_readable, "baseline_readable")
-    exit_code = raw.get("exit_code")
-    if exit_code is not None and (type(exit_code) is not int):
-        raise LandingPolicyError("exit_code must be an integer or None")
+    stdout_tail = _require_bounded_text(
+        raw.get("stdout_tail"),
+        "stdout_tail",
+        maximum_bytes=_MAX_EVIDENCE_FIELD_BYTES,
+        allow_empty=True,
+    )
+    stderr_tail = _require_bounded_text(
+        raw.get("stderr_tail"),
+        "stderr_tail",
+        maximum_bytes=_MAX_EVIDENCE_FIELD_BYTES,
+        allow_empty=True,
+    )
+    detail = _require_bounded_text(
+        raw.get("detail"),
+        "detail",
+        maximum_bytes=_MAX_EVIDENCE_FIELD_BYTES,
+        allow_empty=True,
+    )
+    job_id_value = raw.get("job_id")
+    job_id = (
+        None if job_id_value is None else _require_bounded_text(job_id_value, "job_id")
+    )
+    baseline_tree_value = raw.get("baseline_tree_sha")
+    baseline_tree_sha = (
+        None
+        if baseline_tree_value is None
+        else _require_sha(baseline_tree_value, "baseline_tree_sha")
+    )
+    baseline_readable_value = raw.get("baseline_readable")
+    baseline_readable = (
+        None
+        if baseline_readable_value is None
+        else _require_bool(baseline_readable_value, "baseline_readable")
+    )
+    differential = _require_bool(raw.get("differential"), "differential")
+    snapshot_gate_deferred = _require_bool(
+        raw.get("snapshot_gate_deferred"), "snapshot_gate_deferred"
+    )
+    snapshot_gate_replayed = _require_bool(
+        raw.get("snapshot_gate_replayed"), "snapshot_gate_replayed"
+    )
+    exit_code = _require_optional_int(raw.get("exit_code"), "exit_code")
     try:
-        evidence = GateEvidence(**raw)
+        evidence = GateEvidence(
+            evidence_id=evidence_id,
+            gate_name=gate_name,
+            stage=stage,
+            tree_sha=tree_sha,
+            generation_id=generation_id,
+            gate_config_digest=gate_config_digest,
+            command_digest=command_digest,
+            target_host=target_host,
+            toolchain_digest=toolchain_digest,
+            resource_digest=resource_digest,
+            profile_digest=profile_digest,
+            started_at=started_at,
+            finished_at=finished_at,
+            outcome=outcome,
+            failure_class=failure_class,
+            job_id=job_id,
+            dependency_job_ids=sequence_values["dependency_job_ids"],
+            baseline_tree_sha=baseline_tree_sha,
+            baseline_readable=baseline_readable,
+            differential=differential,
+            failure_ids=sequence_values["failure_ids"],
+            pre_existing_failure_ids=sequence_values["pre_existing_failure_ids"],
+            fixed_failure_ids=sequence_values["fixed_failure_ids"],
+            log_refs=sequence_values["log_refs"],
+            artifact_refs=sequence_values["artifact_refs"],
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            exit_code=exit_code,
+            snapshot_gate_deferred=snapshot_gate_deferred,
+            snapshot_gate_replayed=snapshot_gate_replayed,
+            detail=detail,
+        )
     except Exception as exc:
         raise LandingPolicyError("evidence authority is invalid") from exc
     try:
