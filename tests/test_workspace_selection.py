@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from dataclasses import replace
 
 import pytest
 
@@ -24,6 +25,7 @@ from repository_manager.development.workspace_release import (
     phase_manifest_from_mapping,
 )
 from repository_manager.development.workspace_selection import (
+    MAX_SHADOW_DIAGNOSTICS,
     InclusionMode,
     SelectionError,
     SelectionPolicy,
@@ -446,3 +448,210 @@ def test_shadow_comparator_fails_closed_on_oversized_manual_reference() -> None:
                 ]
             }
         )
+
+
+def test_wait_minutes_are_semantic_but_phase_names_are_display_only() -> None:
+    graph = _chain_graph()
+    closure = derive_selected_closure(
+        graph,
+        SelectionPolicy(
+            changed_projects=("packages/changed",),
+            upstream_mode=InclusionMode.TRANSITIVE,
+        ),
+    )
+    manifest = phase_manifest_from_mapping(
+        {
+            "phases": [
+                {"name": "renamed-display-label", "phase": 1, "project": "leaf"},
+                {"name": "different-label", "phase": 2, "project": "middle"},
+                {
+                    "name": "another-label",
+                    "phase": 3,
+                    "project": "changed",
+                    "wait_minutes": 999,
+                },
+            ]
+        }
+    )
+    report = compare_legacy_phases(closure, manifest)
+
+    assert report.exact_equal is False
+    assert ShadowDiagnosticCode.PHASE_WAIT_MISMATCH in _codes(report)
+    assert ShadowDiagnosticCode.PHASE_ORDER_MISMATCH not in _codes(report)
+    assert report.manual_phases[-1].wait_minutes == 999
+
+    renamed_only = phase_manifest_from_mapping(
+        {
+            "phases": [
+                {"name": "label-a", "phase": 1, "project": "leaf"},
+                {"name": "label-b", "phase": 2, "project": "middle"},
+                {"name": "label-c", "phase": 3, "project": "changed"},
+            ]
+        }
+    )
+    assert compare_legacy_phases(closure, renamed_only).exact_equal is True
+
+
+def test_closure_rejects_dishonest_explanations_and_missing_source_evidence() -> None:
+    closure = derive_selected_closure(
+        _chain_graph(),
+        SelectionPolicy(
+            changed_projects=("packages/changed",),
+            upstream_mode=InclusionMode.TRANSITIVE,
+        ),
+    )
+    changed_index = next(
+        index
+        for index, explanation in enumerate(closure.explanations)
+        if explanation.project_id == "repo:packages/changed"
+    )
+    dishonest = list(closure.explanations)
+    dishonest[changed_index] = replace(
+        dishonest[changed_index],
+        included=False,
+        reasons=(SelectionReason.EXCLUDED,),
+        via_projects=(),
+    )
+    with pytest.raises(SelectionError):
+        replace(closure, explanations=tuple(dishonest), digest="")
+
+    with pytest.raises(SelectionError):
+        replace(closure, source_project_edges=(), digest="")
+
+    graph = _chain_graph()
+    all_projects = tuple(project.project_id for project in graph.projects)
+    all_closure = derive_selected_closure(
+        graph,
+        SelectionPolicy(
+            changed_projects=("packages/changed",),
+            selected_projects=all_projects,
+        ),
+    )
+    with pytest.raises(SelectionError):
+        replace(
+            all_closure,
+            policy=SelectionPolicy(changed_projects=("packages/changed",)),
+            digest="",
+        )
+
+
+def test_graph_inventory_rejects_substituted_package_records_and_digest() -> None:
+    graph = _chain_graph()
+    original = graph.packages[0]
+    altered_version = Version("2.0.0")
+    altered = replace(
+        original,
+        version=altered_version,
+        version_sources=(VersionSource("fixture", altered_version),),
+    )
+    altered_packages = (altered, *graph.packages[1:])
+    with pytest.raises(GraphValidationError) as package_capture:
+        derive_selected_closure(
+            replace(graph, packages=altered_packages),
+            SelectionPolicy(changed_projects=("packages/changed",)),
+        )
+    assert GraphDiagnosticCode.INVALID_METADATA in {
+        item.code for item in package_capture.value.diagnostics
+    }
+
+    with pytest.raises(GraphValidationError) as digest_capture:
+        derive_selected_closure(
+            replace(graph, digest="f" * 64),
+            SelectionPolicy(changed_projects=("packages/changed",)),
+        )
+    assert GraphDiagnosticCode.INVALID_METADATA in {
+        item.code for item in digest_capture.value.diagnostics
+    }
+
+
+def test_directly_reconstructed_closure_rejects_duplicate_package_records() -> None:
+    closure = derive_selected_closure(
+        _chain_graph(),
+        SelectionPolicy(changed_projects=("packages/changed",)),
+    )
+    first_project = closure.projects[0]
+    duplicate_project = replace(
+        first_project,
+        packages=(first_project.packages[0], first_project.packages[0]),
+    )
+    with pytest.raises(SelectionError):
+        replace(
+            closure,
+            projects=(duplicate_project,),
+            digest="",
+        )
+
+
+def test_shadow_reports_each_unmatched_trailing_phase() -> None:
+    graph = _chain_graph()
+    derived_closure = derive_selected_closure(
+        graph,
+        SelectionPolicy(
+            changed_projects=("packages/changed",),
+            upstream_mode=InclusionMode.TRANSITIVE,
+        ),
+    )
+    trailing_derived = compare_legacy_phases(
+        derived_closure,
+        phase_manifest_from_mapping(
+            {"phases": [{"phase": 1, "name": "leaf", "project": "leaf"}]}
+        ),
+    )
+    assert ShadowDiagnosticCode.PHASE_COUNT_MISMATCH in _codes(trailing_derived)
+    assert [
+        item.subject
+        for item in trailing_derived.diagnostics
+        if item.code == ShadowDiagnosticCode.PHASE_TRAILING_DERIVED
+    ] == ["phase-2", "phase-3"]
+
+    single_closure = derive_selected_closure(
+        graph,
+        SelectionPolicy(changed_projects=("packages/changed",)),
+    )
+    trailing_manual = compare_legacy_phases(
+        single_closure,
+        phase_manifest_from_mapping(
+            {
+                "phases": [
+                    {"phase": 1, "name": "changed", "project": "changed"},
+                    {"phase": 2, "name": "extra", "project": "middle"},
+                ]
+            }
+        ),
+    )
+    assert ShadowDiagnosticCode.PHASE_TRAILING_MANUAL in _codes(trailing_manual)
+    assert any(
+        item.subject == "phase-2"
+        and item.code == ShadowDiagnosticCode.PHASE_TRAILING_MANUAL
+        for item in trailing_manual.diagnostics
+    )
+
+
+def test_maximum_bounded_phase_mismatch_returns_a_bounded_report() -> None:
+    closure = derive_selected_closure(
+        _chain_graph(),
+        SelectionPolicy(changed_projects=("packages/changed",)),
+    )
+    max_phases = 16_384
+    manifest = phase_manifest_from_mapping(
+        {
+            "phases": [
+                {"phase": index, "name": f"phase-{index}"}
+                for index in range(1, max_phases + 1)
+            ]
+        }
+    )
+    report = compare_legacy_phases(closure, manifest)
+
+    assert report.exact_equal is False
+    assert len(report.diagnostics) <= MAX_SHADOW_DIAGNOSTICS
+    assert (
+        sum(
+            item.code == ShadowDiagnosticCode.PHASE_TRAILING_MANUAL
+            for item in report.diagnostics
+        )
+        == max_phases - 1
+    )
+    assert all(
+        len(value) <= 4096 for item in report.diagnostics for _, value in item.details
+    )

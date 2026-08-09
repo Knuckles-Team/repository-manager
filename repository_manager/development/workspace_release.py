@@ -1592,6 +1592,7 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
     if len(phases_value) > MAX_PLAN_STAGES:
         raise WorkspaceReleaseError("phase manifest exceeds the stage bound")
     phases: list[LegacyPhase] = []
+    total_project_references = 0
     phase_keys = {
         "name",
         "phase",
@@ -1626,6 +1627,11 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
         if len(refs) > MAX_PROJECTS:
             raise WorkspaceReleaseError(
                 f"phase {index} projects exceed the project bound"
+            )
+        total_project_references += len(refs)
+        if total_project_references > MAX_EDGES:
+            raise WorkspaceReleaseError(
+                "phase manifest project references exceed the bounded total"
             )
         if len(refs) != len(set(refs)):
             raise WorkspaceReleaseError(

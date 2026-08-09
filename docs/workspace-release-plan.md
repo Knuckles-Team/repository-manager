@@ -53,17 +53,25 @@ projects remain parallel.
 Unknown roots, duplicate or contradictory policy IDs, malformed graph edges, and
 cycles fail closed before a closure is returned. Policy and closure collections,
 references, explanations, and digests are bounded and immutable. The closure
-digest and explanations are independent of input project/edge iteration order.
+freezes the complete known-project cross-project edge evidence and verifies that
+selected membership, directional reasons, and witnesses agree with it; a digest
+alone is not treated as authenticity. The closure digest and explanations are
+independent of input project/edge iteration order.
 
-`derive_phase_view` and `compare_legacy_phases` project a `LegacyPhaseManifest` into the same canonical
-identity space without rewriting it. Canonical references resolve directly;
-historical bare references resolve only for a unique basename owner. Same-basename
-repositories produce an `AMBIGUOUS_PROJECT` diagnostic. The read-only report
-contains derived/manual phase views, membership/order/bulk-flag diagnostics,
-exact equality, and a deterministic SHA-256 report digest. Legacy phase reference
-order is preserved for comparison, while duplicate references are refused by the
-bounded manifest reader. No comparator path executes code, invokes a subprocess or
-network, or mutates a manifest.
+`derive_phase_view` and `compare_legacy_phases` project a `LegacyPhaseManifest`
+into the same canonical identity space without rewriting it. Canonical references
+resolve directly; historical bare references resolve only for a unique basename
+owner. Same-basename repositories produce an `AMBIGUOUS_PROJECT` diagnostic. The
+read-only report contains derived/manual phase views, membership/order/bulk-flag
+diagnostics, wait-time diagnostics, exact equality, and a deterministic SHA-256
+report digest. Phase number, membership/order, bulk flags, and `wait_minutes` are
+semantic; phase `name` is intentionally a display-only label and is not used to
+claim equivalence. Legacy phase reference order is preserved for comparison,
+while duplicate references are refused by the bounded manifest reader. Trailing
+derived/manual phases are reported individually. Membership diagnostics carry a
+bounded count, full-sequence digest, and prefix; diagnostic accumulation has a
+small deterministic overflow summary. No comparator path executes code, invokes a
+subprocess or network, or mutates a manifest.
 
 Checkpoint 2 still does not rewrite floors, plan versions, execute stages, create
 WorkItems, restart/resume, edit workspace manifests, or wire MCP/CLI surfaces.
