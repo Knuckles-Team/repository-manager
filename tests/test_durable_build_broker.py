@@ -23,7 +23,7 @@ from repository_manager.build_service import (
     BuildServiceError,
     dirty_snapshot_digest,
 )
-from repository_manager.build_worker import BuildWorker
+from repository_manager.build_worker import BuildWorker, BuildWorkerError
 from repository_manager.capacity import CapacityInventory, HostCapacity, ResourceVector
 from repository_manager.development import JobState, ResourceRequest
 from repository_manager.development.jobs import (
@@ -35,11 +35,17 @@ from repository_manager.reservations import InMemoryWorkItemReservationPort
 from repository_manager.resource_scheduler import (
     AdmissionReason,
     AdmissionRequest,
+    AdmissionStatus,
     ResourceScheduler,
 )
 
 
-def _repo(tmp_path: Path, *, command: str = "print(1)") -> Path:
+def _repo(
+    tmp_path: Path,
+    *,
+    command: str = "print(1)",
+    toolchain: str | None = None,
+) -> Path:
     repo = tmp_path / "same-basename"
     repo.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
@@ -47,6 +53,11 @@ def _repo(tmp_path: Path, *, command: str = "print(1)") -> Path:
         ["git", "config", "user.email", "tests@example.invalid"], cwd=repo, check=True
     )
     subprocess.run(["git", "config", "user.name", "RMDD tests"], cwd=repo, check=True)
+    toolchain_line = (
+        f"    toolchain_fingerprint: [python3, -c, {toolchain!r}]\n"
+        if toolchain is not None
+        else ""
+    )
     (repo / ".buildcache.yaml").write_text(
         f"""schema_version: 2
 base: main
@@ -54,6 +65,7 @@ specs:
   - name: test-build
     command: [python3, -c, {command!r}]
     artifacts: [out.txt]
+{toolchain_line}
     resource_class: light-check
 """,
         encoding="utf-8",
@@ -208,6 +220,84 @@ def test_uncacheable_toolchain_submits_durable_without_cache_hit(
     assert result["cached"] is False
     assert result["key"] is None
     assert len(typed.port.rows) == 1
+
+
+def test_worker_recomputes_enabled_toolchain_fingerprint_on_materialized_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(
+        tmp_path, store, toolchain="print('stable-toolchain')"
+    )
+    original = bq._toolchain_fingerprint  # noqa: SLF001
+    calls: list[tuple[Path, tuple[str, ...]]] = []
+
+    def observe(tree: Path, spec: bq.BuildSpec) -> str | None:
+        calls.append((tree, spec.toolchain_fingerprint))
+        return original(tree, spec)
+
+    monkeypatch.setattr(bq, "_toolchain_fingerprint", observe)
+    result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["ok"] is True
+    assert calls and calls[0][1] == (
+        "python3",
+        "-c",
+        "print('stable-toolchain')",
+    )
+
+
+def test_worker_refuses_changed_cacheable_toolchain_before_executor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(
+        tmp_path, store, toolchain="print('stable-toolchain')"
+    )
+    monkeypatch.setattr(
+        bq,
+        "_toolchain_fingerprint",
+        lambda _tree, _spec: "changed-toolchain",
+    )
+
+    class NeverExecutor:
+        def run(self, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            raise AssertionError("toolchain refusal must precede the compiler")
+
+    result = BuildWorker(
+        authority,
+        scheduler,
+        artifact_store=store,
+        executor=NeverExecutor(),  # type: ignore[arg-type]
+    ).run_job(authority.row.job_id, repo_path=repo, spec_name="test-build")
+    assert result["state"] == JobState.FAILED.value
+    assert result["refusal_code"] == "worker_environment_failure"
+    assert authority.commits[-1]["outcome"] == "failed"
+
+
+def test_worker_rechecks_uncacheable_toolchain_without_publishing_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(
+        tmp_path, store, toolchain="import sys; sys.exit(1)"
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def unavailable(_tree: Path, spec: bq.BuildSpec) -> None:
+        calls.append(spec.toolchain_fingerprint)
+        return None
+
+    monkeypatch.setattr(bq, "_toolchain_fingerprint", unavailable)
+    result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["ok"] is True
+    assert result["degraded"] is True
+    assert calls == [("python3", "-c", "import sys; sys.exit(1)")]
+    assert list(store.iter_entries()) == []
 
 
 def test_dirty_canonical_build_is_refused_before_durable_submission(
@@ -729,10 +819,16 @@ def test_dirty_snapshot_rejects_oversized_untracked_file_before_reading(
         dirty_snapshot_digest(repo)
 
 
-def _worker_fixture(tmp_path: Path, store: BuildArtifactStore):
+def _worker_fixture(
+    tmp_path: Path,
+    store: BuildArtifactStore,
+    *,
+    toolchain: str | None = None,
+):
     repo = _repo(
         tmp_path,
         command="from pathlib import Path; Path('out.txt').write_text('built')",
+        toolchain=toolchain,
     )
     typed = _TypedJobService()
     submitted = BuildService(typed, artifact_store=store).submit(
@@ -846,6 +942,43 @@ def test_worker_executes_after_admission_and_recovers_terminal_manifest(
     assert recovered["recovered"] is True
 
 
+def test_worker_recover_reconciles_old_stage_only_after_terminal_authority_proof(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(tmp_path, store)
+    producer = tmp_path / "staged-output"
+    producer.mkdir()
+    (producer / "out.txt").write_text("staged", encoding="utf-8")
+    descriptor = authority.get_build_descriptor(authority.row.job_id)
+    key = descriptor.cache_key  # type: ignore[union-attr]
+    staged = store.stage(
+        producer,
+        workdir=".",
+        patterns=["out.txt"],
+        key=key,
+        attempt=1,
+        fence="f1",
+        job_id=authority.row.job_id,
+        work_item_id=authority.row.work_item_id,
+    )
+    old = 1
+    os.utime(staged.stage_dir, (old, old))
+    authority.row = authority.row.model_copy(
+        update={"state": JobState.FAILED, "attempt": 1, "lease_fence": "f1"}
+    )
+    recovered = BuildWorker(
+        authority,
+        scheduler,
+        artifact_store=store,
+        stale_stage_age_seconds=0,
+    ).recover(authority.row.job_id, repo_path=repo, spec_name="test-build")
+    reconciliation = recovered["staging_reconciliation"]
+    assert reconciliation["removed"]
+    assert not staged.stage_dir.exists()
+    assert recovered["state"] == JobState.FAILED.value
+
+
 def test_restart_quarantines_corrupt_terminal_manifest_with_exact_proof(
     tmp_path: Path,
 ) -> None:
@@ -889,10 +1022,27 @@ def test_worker_reports_reconciliation_after_terminal_commit_finalize_failure(
     assert result["state"] == "succeeded"
     assert result["reconciliation_pending"] is True
     assert [item["outcome"] for item in authority.commits] == ["succeeded"]
+    producer = tmp_path / "post-terminal-stage"
+    producer.mkdir()
+    (producer / "out.txt").write_text("duplicate stage", encoding="utf-8")
+    manifest = store.read_manifest(result["key"])
+    assert manifest is not None
+    staged = store.stage(
+        producer,
+        workdir=".",
+        patterns=["out.txt"],
+        key=result["key"],
+        attempt=1,
+        fence=manifest["fence"],
+        job_id=authority.row.job_id,
+        work_item_id=authority.row.work_item_id,
+    )
+    os.utime(staged.stage_dir, (1, 1))
     recovered = BuildWorker(authority, scheduler, artifact_store=store).recover(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
     assert recovered["ok"] is True
+    assert staged.stage_dir.exists()
 
 
 def test_worker_does_not_fail_after_success_commit_response_is_lost(
@@ -916,6 +1066,118 @@ def test_worker_does_not_fail_after_success_commit_response_is_lost(
     assert result["state"] == "succeeded"
     assert result["reconciliation_pending"] is True
     assert [item["outcome"] for item in authority.commits] == ["succeeded"]
+
+
+def test_deferred_admission_stays_retryable_without_terminalizing_work_item(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+
+    class DeferredScheduler:
+        def admit(self, request: object) -> object:
+            del request
+            return SimpleNamespace(
+                status=AdmissionStatus.DEFERRED,
+                admitted=False,
+                reservation_id="",
+                reason_code=AdmissionReason.CAPACITY,
+                reason="capacity is temporarily unavailable",
+            )
+
+        def release(self, reservation_id: str, **kwargs: object) -> bool:
+            del reservation_id, kwargs
+            raise AssertionError("deferred admission must not release a reservation")
+
+    class NeverExecutor:
+        def run(self, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            raise AssertionError("deferred admission must precede execution")
+
+    result = BuildWorker(
+        authority,
+        DeferredScheduler(),  # type: ignore[arg-type]
+        artifact_store=store,
+        executor=NeverExecutor(),  # type: ignore[arg-type]
+    ).run_job(authority.row.job_id, repo_path=repo, spec_name="test-build")
+    assert result["deferred"] is True
+    assert result["retryable"] is True
+    assert result["admission_status"] == AdmissionStatus.DEFERRED.value
+    assert authority.commits == []
+    assert authority.row.state is JobState.LEASED
+
+
+def test_stale_fence_admission_is_not_retryable_on_the_same_claim(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+
+    class StaleFenceScheduler:
+        def admit(self, request: object) -> object:
+            del request
+            return SimpleNamespace(
+                status=AdmissionStatus.STALE_FENCE,
+                admitted=False,
+                reservation_id="",
+                reason_code=AdmissionReason.STALE_FENCE,
+                reason="claim fence is no longer current",
+            )
+
+        def release(self, reservation_id: str, **kwargs: object) -> bool:
+            del reservation_id, kwargs
+            raise AssertionError("stale-fence admission must not release a reservation")
+
+    result = BuildWorker(
+        authority,
+        StaleFenceScheduler(),  # type: ignore[arg-type]
+        artifact_store=store,
+    ).run_job(authority.row.job_id, repo_path=repo, spec_name="test-build")
+    assert result["stale_fence"] is True
+    assert result["deferred"] is False
+    assert result["retryable"] is False
+    assert result["reconciliation_required"] is True
+    assert authority.commits == []
+
+
+def test_worker_rejects_claim_for_another_job_or_work_item(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+    original_claim = authority.claim
+
+    def wrong_claim(job_id: str, *, token: str) -> dict[str, object]:
+        claimed = original_claim(job_id, token=token)
+        claimed["job_id"] = "job-not-authorized"
+        return claimed
+
+    authority.claim = wrong_claim  # type: ignore[method-assign]
+    with pytest.raises(BuildWorkerError, match="claim job identity"):
+        BuildWorker(authority, None, artifact_store=store).run_job(
+            authority.row.job_id, repo_path=repo, spec_name="test-build"
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("generation_id", "generation-not-in-descriptor", "generation"),
+        ("config_digest", "config-not-in-descriptor", "config digest"),
+        ("resource_class", "frontend-build", "resource profile"),
+    ],
+)
+def test_worker_rejects_descriptor_view_identity_mismatch(
+    tmp_path: Path, field: str, value: str, message: str
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(tmp_path, store)
+    authority.row = authority.row.model_copy(update={field: value})
+    result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["state"] == JobState.FAILED.value
+    assert message in result["error"]
 
 
 @pytest.mark.parametrize("release_behavior", [False, "raise"])

@@ -37,6 +37,7 @@ from repository_manager.execution import (
 from repository_manager.resource_scheduler import (
     AdmissionDecision,
     AdmissionRequest,
+    AdmissionStatus,
     ResourceScheduler,
 )
 
@@ -46,6 +47,7 @@ class BuildWorkerError(RuntimeError):
 
 
 _MAX_CONFIG_BYTES = 1 << 20
+_DEFAULT_STALE_STAGE_AGE_SECONDS = 24 * 60 * 60
 
 
 def _read_bounded_regular_file(path: Path, limit: int) -> bytes:
@@ -184,6 +186,28 @@ def _claim_attempt(claim: Mapping[str, Any], view: DurableJobView) -> int:
         ) from exc
 
 
+def _validate_claim_identity(
+    job_id: str, view: DurableJobView, claim: Mapping[str, Any]
+) -> None:
+    """Require the native claim to identify the exact WorkItem being run."""
+
+    if str(claim.get("job_id") or "") != view.job_id or view.job_id != job_id:
+        raise BuildWorkerError("durable build claim job identity does not match")
+    if str(claim.get("work_item_id") or "") != view.work_item_id:
+        raise BuildWorkerError("durable build claim WorkItem identity does not match")
+    try:
+        claim_attempt = int(claim.get("attempt", 0))
+    except (TypeError, ValueError) as exc:
+        raise BuildWorkerError(
+            "durable build claim included an invalid attempt"
+        ) from exc
+    if claim_attempt < 1 or (view.attempt > 0 and claim_attempt != view.attempt):
+        raise BuildWorkerError("durable build claim attempt does not match")
+    claim_fence = _claim_fence(claim)
+    if view.lease_fence is not None and view.lease_fence != claim_fence:
+        raise BuildWorkerError("durable build claim fence does not match")
+
+
 def _result_ref(key: str, fence: str) -> str:
     """Bind the terminal result reference to the committing fence."""
 
@@ -253,6 +277,7 @@ def _paths_tree_sha_at(tree: Path, head_sha: str, paths: tuple[str, ...]) -> str
 
 def _descriptor_spec(descriptor: Mapping[str, Any]) -> bq.BuildSpec:
     command = descriptor.get("command")
+    toolchain_command = descriptor.get("toolchain_command")
     artifacts = descriptor.get("artifacts")
     workdir = descriptor.get("workdir")
     name = descriptor.get("spec")
@@ -262,6 +287,8 @@ def _descriptor_spec(descriptor: Mapping[str, Any]) -> bq.BuildSpec:
         or not isinstance(command, list | tuple)
         or not command
         or any(not isinstance(item, str) or not item for item in command)
+        or not isinstance(toolchain_command, list | tuple)
+        or any(not isinstance(item, str) or not item for item in toolchain_command)
         or not isinstance(artifacts, list | tuple)
         or not artifacts
         or any(not isinstance(item, str) or not item for item in artifacts)
@@ -279,11 +306,46 @@ def _descriptor_spec(descriptor: Mapping[str, Any]) -> bq.BuildSpec:
     return bq.BuildSpec(
         name=name,
         command=tuple(command),
+        toolchain_fingerprint=tuple(toolchain_command),
         workdir=workdir,
         artifacts=tuple(artifacts),
         timeout=timeout,
         resource_class=str(descriptor.get("resource_class") or "light-check"),
     )
+
+
+def _verify_toolchain_fingerprint(
+    build_tree: Path,
+    spec: bq.BuildSpec,
+    descriptor: Mapping[str, Any],
+    *,
+    cacheable: bool,
+) -> str | None:
+    """Recompute the toolchain on the immutable materialized build tree.
+
+    A cacheable descriptor must reproduce the fingerprint incorporated into
+    its v2 key.  An uncacheable descriptor still executes the probe so the
+    worker observes the submitted toolchain, but it intentionally does not
+    turn a degraded request into a cache hit when the probe is unavailable or
+    has changed.
+    """
+
+    expected = str(descriptor.get("toolchain_fingerprint") or "")
+    if not spec.toolchain_fingerprint:
+        if cacheable and expected != "unpinned":
+            raise BuildWorkerError(
+                "persisted unpinned toolchain fingerprint disagrees with the spec"
+            )
+        return None
+    try:
+        actual = bq._toolchain_fingerprint(build_tree, spec)  # noqa: SLF001
+    except (OSError, subprocess.SubprocessError):
+        actual = None
+    if cacheable and (actual is None or actual != expected):
+        raise BuildWorkerError(
+            "worker toolchain fingerprint does not match the durable build key"
+        )
+    return actual
 
 
 def _terminal_matches(
@@ -471,6 +533,7 @@ class BuildWorker:
         worker_id: str = "worker:repository-manager-build",
         token_factory: Callable[[], str] | None = None,
         lease_ttl_seconds: int = 900,
+        stale_stage_age_seconds: int = _DEFAULT_STALE_STAGE_AGE_SECONDS,
     ) -> None:
         if not callable(getattr(authority, "claim", None)):
             raise TypeError("BuildWorker requires a durable WorkItem authority")
@@ -478,6 +541,8 @@ class BuildWorker:
             raise ValueError("worker_id must be non-blank")
         if lease_ttl_seconds < 1:
             raise ValueError("lease_ttl_seconds must be positive")
+        if stale_stage_age_seconds < 0:
+            raise ValueError("stale_stage_age_seconds must be non-negative")
         self.authority = authority
         self.scheduler = scheduler
         self.artifact_store = artifact_store
@@ -485,6 +550,7 @@ class BuildWorker:
         self.worker_id = worker_id
         self.token_factory = token_factory or (lambda: worker_id)
         self.lease_ttl_seconds = lease_ttl_seconds
+        self.stale_stage_age_seconds = stale_stage_age_seconds
         self._cancellations: dict[str, CancellationToken] = {}
         self._release_errors: dict[str, str] = {}
         self._release_contexts: dict[str, dict[str, Any]] = {}
@@ -617,6 +683,7 @@ class BuildWorker:
         actual_claim = dict(supplied_claim or {})
         if not actual_claim:
             return self._refusal(job_id, "work_item_not_claimable", view=view)
+        _validate_claim_identity(job_id, view, actual_claim)
         fence = _claim_fence(actual_claim)
         attempt = _claim_attempt(actual_claim, view)
         token = cancellation or CancellationToken()
@@ -638,6 +705,26 @@ class BuildWorker:
                     code="resource_scheduler_required",
                 )
             admission = self._admit(view, attempt, fence)
+            raw_status = getattr(admission, "status", None)
+            try:
+                admission_status = AdmissionStatus(raw_status)
+            except (TypeError, ValueError):
+                admission_status = None
+            if admission_status is AdmissionStatus.DEFERRED:
+                return self._deferred_admission(
+                    job_id,
+                    view,
+                    admission,
+                    retryable=True,
+                )
+            if admission_status is AdmissionStatus.STALE_FENCE:
+                return self._deferred_admission(
+                    job_id,
+                    view,
+                    admission,
+                    retryable=False,
+                    stale_fence=True,
+                )
             if not admission.admitted:
                 return self._terminal_refusal(
                     job_id,
@@ -669,6 +756,12 @@ class BuildWorker:
                 )
 
             with bq.materialized(scope.tree, view.base_sha, scope=scope) as build_tree:
+                _verify_toolchain_fingerprint(
+                    build_tree,
+                    spec,
+                    descriptor,
+                    cacheable=True,
+                )
                 command = ExecutionCommand(
                     argv=spec.command,
                     workdir=str((build_tree / spec.workdir).resolve()),
@@ -1075,6 +1168,10 @@ class BuildWorker:
             raise BuildWorkerError(
                 "durable build WorkItem has no persisted execution descriptor; resubmit"
             )
+        if view.operation != "build":
+            raise BuildWorkerError(
+                "durable build WorkItem operation is not a build operation"
+            )
         if descriptor.get("repository_id") != view.repository_id:
             raise BuildWorkerError(
                 "build descriptor repository identity disagrees with WorkItem"
@@ -1087,6 +1184,28 @@ class BuildWorker:
             raise BuildWorkerError(
                 "build descriptor HEAD disagrees with WorkItem authority"
             )
+        if descriptor.get("resource_class") != view.resource_class:
+            raise BuildWorkerError(
+                "build descriptor resource profile disagrees with WorkItem"
+            )
+        descriptor_generation = descriptor.get("generation_id") or None
+        view_generation = view.generation_id or None
+        if descriptor_generation != view_generation:
+            raise BuildWorkerError(
+                "build descriptor generation disagrees with WorkItem authority"
+            )
+        if (
+            view.config_digest is not None
+            and descriptor.get("config_digest") != view.config_digest
+        ):
+            raise BuildWorkerError(
+                "build descriptor config digest disagrees with WorkItem authority"
+            )
+        # ``DurableJobView.input_digest`` is AU's canonical whole-request
+        # digest, while the typed build extension's input_digest covers the
+        # executable descriptor body.  They are intentionally different
+        # contracts until RMDD-29 adds a typed projection; do not manufacture
+        # equivalence or accept an untyped field smuggled through correlation.
         if descriptor.get("input_digest") != descriptor_input_digest(descriptor):
             raise BuildWorkerError(
                 "persisted build descriptor input digest does not match its body"
@@ -1160,6 +1279,10 @@ class BuildWorker:
                 raise BuildWorkerError(
                     "persisted build generation does not match its key"
                 )
+            if descriptor.get("toolchain_fingerprint") != key.toolchain_fingerprint:
+                raise BuildWorkerError(
+                    "persisted build toolchain fingerprint does not match its key"
+                )
             try:
                 submitted_tree_sha = _paths_tree_sha_at(
                     scope.main_tree,
@@ -1174,6 +1297,10 @@ class BuildWorker:
                 raise BuildWorkerError(
                     "persisted build key tree digest disagrees with submitted SHA"
                 )
+        elif descriptor.get("toolchain_fingerprint") != "unavailable":
+            raise BuildWorkerError(
+                "uncacheable build descriptor lacks an unavailable toolchain marker"
+            )
         return scope, spec, key, descriptor
 
     def cancel(self, job_id: str, *, reason: str = "cancelled by owner") -> bool:
@@ -1181,6 +1308,68 @@ class BuildWorker:
         if token is not None:
             token.cancel(reason)
         return bool(self.authority.cancel(job_id, reason=reason))
+
+    def _staging_authority_probe(
+        self, stage_manifest: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        """Prove that one old stage belongs to a terminal or stale claim."""
+
+        stage_job = str(stage_manifest.get("job_id") or "")
+        stage_work_item = str(stage_manifest.get("work_item_id") or "")
+        stage_fence = str(stage_manifest.get("fence") or "")
+        try:
+            stage_attempt = int(stage_manifest.get("attempt", 0))
+        except (TypeError, ValueError):
+            return {}
+        if not stage_job or not stage_work_item or not stage_fence or stage_attempt < 1:
+            return {}
+        try:
+            current = _as_view(self.authority.get(stage_job))
+        except Exception:
+            return {}
+        if current.job_id != stage_job or current.work_item_id != stage_work_item:
+            return {}
+        if current.state is JobState.SUCCEEDED:
+            # A successful WorkItem may still be between durable terminal
+            # commit and manifest finalization.  Preserve its stage until the
+            # normal terminal-evidence recovery path has inspected it.
+            stale = False
+        elif current.state in {
+            JobState.FAILED,
+            JobState.CANCELLED,
+            JobState.DEAD_LETTER,
+        }:
+            stale = True
+        elif current.state in {JobState.LEASED, JobState.RUNNING}:
+            # A paused but still-owned producer must retain its private stage.
+            stale = not (
+                current.attempt == stage_attempt and current.lease_fence == stage_fence
+            )
+        elif current.state in {JobState.SUBMITTED, JobState.READY}:
+            # No active lease can consume this private stage anymore.
+            stale = True
+        else:
+            stale = False
+        if not stale:
+            return {}
+        return {
+            "job_id": stage_job,
+            "work_item_id": stage_work_item,
+            "attempt": stage_attempt,
+            "fence": stage_fence,
+            "stale": True,
+        }
+
+    def _reconcile_staging(self, store: BuildArtifactStore) -> dict[str, Any]:
+        """Boundedly reconcile stages using exact durable WorkItem evidence."""
+
+        try:
+            return store.reconcile_staging(
+                max_age_seconds=self.stale_stage_age_seconds,
+                authority_probe=self._staging_authority_probe,
+            )
+        except Exception as exc:  # pragma: no cover - defensive authority boundary
+            return {"removed": [], "kept": [], "errors": [str(exc)]}
 
     def recover(
         self,
@@ -1195,17 +1384,28 @@ class BuildWorker:
         scope, spec, key, descriptor = self._execution_plan(
             view, repo_path=repo_path, spec_name=spec_name
         )
+        store = self.artifact_store or BuildArtifactStore(repo_path=scope.tree)
+        staging_reconciliation = self._reconcile_staging(store)
+
+        def with_reconciliation(result: Mapping[str, Any]) -> dict[str, Any]:
+            enriched = dict(result)
+            enriched.setdefault("staging_reconciliation", staging_reconciliation)
+            return enriched
+
         if key is None:
             if view.state is JobState.SUCCEEDED:
-                return {
-                    "ok": True,
-                    "recovered": True,
-                    "state": view.state.value,
-                    "degraded": True,
-                    "degraded_reason": descriptor.get("degraded_reason"),
-                }
-            return self.run_job(job_id, repo_path=repo_path, spec_name=spec_name)
-        store = self.artifact_store or BuildArtifactStore(repo_path=scope.tree)
+                return with_reconciliation(
+                    {
+                        "ok": True,
+                        "recovered": True,
+                        "state": view.state.value,
+                        "degraded": True,
+                        "degraded_reason": descriptor.get("degraded_reason"),
+                    }
+                )
+            return with_reconciliation(
+                self.run_job(job_id, repo_path=repo_path, spec_name=spec_name)
+            )
         manifest = store.read_manifest(key.digest)
         manifest_fence = str(manifest.get("fence") or "") if manifest else ""
         result_ref = _result_ref(key.digest, manifest_fence)
@@ -1250,19 +1450,23 @@ class BuildWorker:
                         attempt=view.attempt,
                     )
                 except (ArtifactFenceLost, ArtifactStoreError) as exc:
-                    return self._reconciliation_pending(
-                        job_id,
-                        view,
-                        key=key,
-                        error=str(exc),
+                    return with_reconciliation(
+                        self._reconciliation_pending(
+                            job_id,
+                            view,
+                            key=key,
+                            error=str(exc),
+                        )
                     )
-                return {
-                    "ok": True,
-                    "recovered": True,
-                    "state": view.state.value,
-                    "key": key.digest,
-                    "artifacts": committed.get("artifacts", []),
-                }
+                return with_reconciliation(
+                    {
+                        "ok": True,
+                        "recovered": True,
+                        "state": view.state.value,
+                        "key": key.digest,
+                        "artifacts": committed.get("artifacts", []),
+                    }
+                )
             if manifest:
                 self._quarantine_terminal_invalid(
                     store,
@@ -1271,13 +1475,15 @@ class BuildWorker:
                     view=view,
                     reason="terminal-evidence-mismatch",
                 )
-            return {
-                "ok": False,
-                "recovered": False,
-                "state": view.state.value,
-                "key": key.digest,
-                "error": "succeeded WorkItem has no exact published artifact evidence",
-            }
+            return with_reconciliation(
+                {
+                    "ok": False,
+                    "recovered": False,
+                    "state": view.state.value,
+                    "key": key.digest,
+                    "error": "succeeded WorkItem has no exact published artifact evidence",
+                }
+            )
         if view.state in {JobState.CANCELLED, JobState.FAILED, JobState.DEAD_LETTER}:
             if manifest:
                 self._quarantine_terminal_invalid(
@@ -1287,13 +1493,15 @@ class BuildWorker:
                     view=view,
                     reason="terminal-without-success",
                 )
-            return {
-                "ok": False,
-                "recovered": False,
-                "state": view.state.value,
-                "key": key.digest,
-                "error": "terminal WorkItem cannot be rerun",
-            }
+            return with_reconciliation(
+                {
+                    "ok": False,
+                    "recovered": False,
+                    "state": view.state.value,
+                    "key": key.digest,
+                    "error": "terminal WorkItem cannot be rerun",
+                }
+            )
         if manifest and not store.validate_manifest(
             manifest, require_committed=False, expected_key=key.digest
         ):
@@ -1305,9 +1513,51 @@ class BuildWorker:
             )
         # A stale lease is reclaimed by the native claim on a retry.  No local
         # process marker is promoted to success.
-        return self.run_job(job_id, repo_path=repo_path, spec_name=spec_name)
+        return with_reconciliation(
+            self.run_job(job_id, repo_path=repo_path, spec_name=spec_name)
+        )
 
     reclaim = recover
+
+    @staticmethod
+    def _deferred_admission(
+        job_id: str,
+        view: DurableJobView,
+        admission: Any,
+        *,
+        retryable: bool,
+        stale_fence: bool = False,
+    ) -> dict[str, Any]:
+        """Leave a deferred claim durable for the native queue to retry.
+
+        The worker performs one bounded attempt and returns.  For a capacity
+        defer, the current native lease expires/reclaims through the queue;
+        this worker has no typed native-defer verb and must not busy-loop.
+        A stale fence is not retryable on this claim: only a fresh native
+        claim may be attempted.
+        """
+
+        reason_code = getattr(getattr(admission, "reason_code", None), "value", None)
+        if reason_code is None:
+            reason_code = str(getattr(admission, "reason_code", "deferred"))
+        status = getattr(getattr(admission, "status", None), "value", None)
+        if status is None:
+            status = str(getattr(admission, "status", "deferred"))
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "work_item_id": view.work_item_id,
+            "state": view.state.value,
+            "deferred": not stale_fence,
+            "stale_fence": stale_fence,
+            "retryable": retryable,
+            "admission_status": status,
+            "reason_code": reason_code,
+            "error": str(getattr(admission, "reason", "resource admission deferred")),
+            "defer_mode": "lease-reclaim" if not stale_fence else None,
+            "reconciliation_required": stale_fence,
+            "reservation_id": None,
+        }
 
     def _admit(
         self,
@@ -1381,6 +1631,12 @@ class BuildWorker:
             else bq.materialized(scope.tree, view.base_sha, scope=scope)
         )
         with context as build_tree:
+            _verify_toolchain_fingerprint(
+                build_tree,
+                spec,
+                descriptor,
+                cacheable=False,
+            )
             executor = self.executor or LocalExecutor(
                 build_tree, worker_id=self.worker_id
             )
