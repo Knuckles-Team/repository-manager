@@ -657,6 +657,8 @@ def test_production_list_consumes_one_raw_page_and_returns_scanned_cursor(
 def test_production_adapter_preserves_au_duplicate_conflict_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    submitted_kwargs: dict[str, object] = {}
+
     class Authority:
         class RepositoryWorkItemConflict(ValueError):
             pass
@@ -665,7 +667,8 @@ def test_production_adapter_preserves_au_duplicate_conflict_code(
             pass
 
         @staticmethod
-        def submit_repository_work_item(*_args: object, **_kwargs: object) -> None:
+        def submit_repository_work_item(*_args: object, **kwargs: object) -> None:
+            submitted_kwargs.update(kwargs)
             raise Authority.RepositoryWorkItemConflict("idempotency key conflict")
 
     monkeypatch.setattr(
@@ -678,6 +681,7 @@ def test_production_adapter_preserves_au_duplicate_conflict_code(
             _request(), now=NOW
         )
     assert exc_info.value.code == RepositoryJobServiceCode.DUPLICATE.value
+    assert submitted_kwargs["resolved_profile_projection"] is True
 
 
 def test_production_submission_requires_trusted_profile_registry() -> None:

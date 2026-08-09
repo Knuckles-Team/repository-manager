@@ -811,6 +811,7 @@ class GraphRepositoryJobPort:
                 request_mapping,
                 now=None if now is None else now.timestamp(),
                 max_attempts=max_attempts,
+                resolved_profile_projection=True,
             )
         except Exception as exc:  # noqa: BLE001 - translate authority contract errors
             raise _translate_authority_error(authority, exc) from exc
