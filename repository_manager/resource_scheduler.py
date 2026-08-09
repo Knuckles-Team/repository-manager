@@ -16,6 +16,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import Any
 
 from repository_manager.capacity import (
     CapacityInventory,
@@ -1066,6 +1067,18 @@ class ResourceScheduler:
         )
 
 
+def create_production_resource_scheduler(
+    graph_client: object, **kwargs: Any
+) -> ResourceScheduler:
+    """Public construction seam for the native RMDD-27 scheduler binding."""
+
+    from repository_manager.native_reservations import (
+        create_production_resource_scheduler as _create_native_scheduler,
+    )
+
+    return _create_native_scheduler(graph_client, **kwargs)
+
+
 __all__ = [
     "AdmissionDecision",
     "AdmissionReason",
@@ -1073,4 +1086,5 @@ __all__ = [
     "AdmissionStatus",
     "ResourceAdmissionRequest",
     "ResourceScheduler",
+    "create_production_resource_scheduler",
 ]

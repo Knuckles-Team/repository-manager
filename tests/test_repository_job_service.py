@@ -29,6 +29,7 @@ from repository_manager.development.jobs import (
     encode_cursor,
 )
 from repository_manager.development.models import DevelopmentRequest
+from repository_manager.resource_profiles import default_resource_profiles
 
 NOW = datetime(2026, 8, 9, 3, 0, tzinfo=UTC)
 
@@ -673,8 +674,65 @@ def test_production_adapter_preserves_au_duplicate_conflict_code(
         staticmethod(lambda: Authority),
     )
     with pytest.raises(RepositoryJobServiceError) as exc_info:
-        GraphRepositoryJobPort(object()).submit(_request(), now=NOW)
+        GraphRepositoryJobPort(object(), profiles=default_resource_profiles()).submit(
+            _request(), now=NOW
+        )
     assert exc_info.value.code == RepositoryJobServiceCode.DUPLICATE.value
+
+
+def test_production_submission_requires_trusted_profile_registry() -> None:
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        GraphRepositoryJobPort(object())._resolved_submission(_request())
+    assert exc_info.value.code == RepositoryJobServiceCode.INTERNAL.value
+
+
+def test_production_submission_persists_resolved_admission_projection() -> None:
+    prepared = GraphRepositoryJobPort(
+        object(), profiles=default_resource_profiles()
+    )._resolved_submission(_request())
+    resources = prepared["resources"]
+    assert isinstance(resources, dict)
+    assert resources["resource_class"] == "frontend-build"
+    assert resources["profile_version"] == "1"
+    assert resources["concurrency_key"] == "frontend-build"
+    assert resources["concurrency_limit"] == 1
+    assert resources["repository_exclusive"] is False
+    assert resources["branch_exclusive"] is False
+    assert resources["disk_policy_key"] == "frontend-build:v1"
+    assert resources["fairness_cost"] == 9
+    assert (
+        resources["resolved_profile_authority"]
+        == "repository_manager:resource_profile_registry:v1"
+    )
+    assert (
+        prepared["resolved_profile_authority"]
+        == resources["resolved_profile_authority"]
+    )
+    assert "reservation_input_fingerprint" not in resources
+
+
+def test_branch_exclusive_projection_preserves_only_explicit_branch() -> None:
+    raw = _request()
+    raw["branch"] = "release"
+    raw_resources = dict(raw["resources"])
+    raw_resources.update(
+        {
+            "resource_class": "merge-drain",
+            "resolved_profile_authority": "caller-forged",
+        }
+    )
+    raw["resources"] = raw_resources
+    prepared = GraphRepositoryJobPort(
+        object(), profiles=default_resource_profiles()
+    )._resolved_submission(raw)
+    assert prepared["branch"] == "release"
+    resources = prepared["resources"]
+    assert isinstance(resources, dict)
+    assert resources["branch_exclusive"] is True
+    assert (
+        resources["resolved_profile_authority"]
+        == "repository_manager:resource_profile_registry:v1"
+    )
 
 
 def test_production_adapter_preserves_au_base_moved_conflict_code(
@@ -694,7 +752,9 @@ def test_production_adapter_preserves_au_base_moved_conflict_code(
         staticmethod(lambda: Authority),
     )
     with pytest.raises(RepositoryJobServiceError) as exc_info:
-        GraphRepositoryJobPort(object()).submit(_request(), now=NOW)
+        GraphRepositoryJobPort(object(), profiles=default_resource_profiles()).submit(
+            _request(), now=NOW
+        )
     assert exc_info.value.code == RepositoryJobServiceCode.CONFLICT.value
 
 
@@ -782,7 +842,9 @@ def test_authority_error_does_not_echo_secret_like_input(
         staticmethod(lambda: Authority),
     )
     with pytest.raises(RepositoryJobServiceError) as exc_info:
-        GraphRepositoryJobPort(object()).submit(_request(), now=NOW)
+        GraphRepositoryJobPort(object(), profiles=default_resource_profiles()).submit(
+            _request(), now=NOW
+        )
     assert exc_info.value.code == RepositoryJobServiceCode.INVALID_REQUEST.value
     assert "4111111111111111" not in str(exc_info.value)
 

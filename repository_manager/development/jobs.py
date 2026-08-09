@@ -20,7 +20,7 @@ import json
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import (
     BaseModel,
@@ -35,14 +35,18 @@ from pydantic import (
 )
 
 from .enums import JobState, OperationKind, RefusalCode
-from .models import DevelopmentRequest
+from .models import DevelopmentRequest, ResourceRequest
 from .serialization import canonical_digest, canonical_json
+
+if TYPE_CHECKING:
+    from repository_manager.resource_profiles import ResourceProfileRegistry
 
 _CURSOR_PREFIX = "rmpage:v1:"
 _CURSOR_VERSION = 1
 _MAX_PAGE_SIZE = 1000
 _MAX_SCAN_ROWS = 1000
 _REPAIR_OPERATION = "repair"
+_RESOLVED_PROFILE_AUTHORITY = "repository_manager:resource_profile_registry:v1"
 _OPERATION_KIND: Mapping[str, str] = {
     "lane.allocate": "repository.lane.allocate",
     "lane.check": "repository.lane.check",
@@ -679,8 +683,13 @@ class GraphRepositoryJobPort:
     by the host; this adapter never creates credentials or a local store.
     """
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(
+        self, engine: Any, *, profiles: ResourceProfileRegistry | None = None
+    ) -> None:
         self.engine = engine
+        # Reads remain constructible for compatibility, but native WorkItem
+        # submission below refuses to run without this trusted registry.
+        self.profiles = profiles
 
     @staticmethod
     def _authority_module() -> Any:
@@ -717,6 +726,76 @@ class GraphRepositoryJobPort:
                 raw[field] = _datetime_from_epoch(raw[field])
         return DurableJobView.model_validate(raw)
 
+    def _resolved_submission(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Attach the trusted, fully resolved admission extension before submit."""
+
+        profiles = self.profiles
+        if profiles is None:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INTERNAL,
+                "native WorkItem submission requires a trusted resource profile registry",
+            )
+        raw = dict(request)
+        raw_resources = raw.get("resources")
+        if raw_resources is None:
+            raw_resources = {}
+        if not isinstance(raw_resources, Mapping):
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INVALID_REQUEST,
+                "repository resource request is invalid",
+            )
+        resource_input = dict(raw_resources)
+        if "branch" in resource_input and "branch" not in raw:
+            # Branch is an RM/AU correlation outside the public ResourceRequest
+            # model.  Preserve an explicitly supplied value; never invent one
+            # from base_ref at this boundary.
+            raw["branch"] = resource_input["branch"]
+        profile_name = resource_input.get("resource_class") or raw.get("resource_class")
+        if profile_name is None:
+            profile_name = "light-check"
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INVALID_REQUEST,
+                "repository resource profile is invalid",
+            )
+        try:
+            profile = profiles.resolve(profile_name)
+            public_fields = set(ResourceRequest.model_fields)
+            public_input = {
+                key: value
+                for key, value in resource_input.items()
+                if key in public_fields
+            }
+            public_input["resource_class"] = profile.name
+            resolved = profile.merge_request(
+                ResourceRequest.model_validate(public_input)
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed at authority boundary
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INVALID_REQUEST,
+                "repository resource profile could not be resolved",
+            ) from exc
+        resources = resolved.model_dump(mode="json", exclude_none=False)
+        resources.update(
+            {
+                "profile_version": str(profile.profile_version),
+                "concurrency_limit": profile.concurrency_limit,
+                "repository_exclusive": profile.repository_exclusive,
+                "branch_exclusive": profile.branch_exclusive,
+                "disk_policy_key": f"{profile.name}:v{profile.profile_version}",
+                "fairness_cost": max(1, resolved.cpu_weight + resolved.process_slots),
+                # AU must persist this marker in its immutable extension.  It
+                # is intentionally separate from WorkItem input_digest and
+                # from RM's later reservation input fingerprint.
+                "resolved_profile_authority": _RESOLVED_PROFILE_AUTHORITY,
+            }
+        )
+        raw["resources"] = resources
+        # Keep a transport-visible copy while AU's generated request adapter
+        # learns to persist the nested marker under resource_reservation.
+        raw["resolved_profile_authority"] = _RESOLVED_PROFILE_AUTHORITY
+        return raw
+
     def submit(
         self,
         request: Mapping[str, Any],
@@ -725,7 +804,7 @@ class GraphRepositoryJobPort:
         now: datetime | None = None,
     ) -> JobSubmitResult:
         authority = self._authority_module()
-        request_mapping = _as_mapping(request)
+        request_mapping = self._resolved_submission(_as_mapping(request))
         try:
             handle = authority.submit_repository_work_item(
                 self.engine,
