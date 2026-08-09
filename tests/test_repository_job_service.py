@@ -716,6 +716,14 @@ def test_production_exact_input_refuses_before_public_row_lookup() -> None:
     )
 
 
+def test_markerless_port_is_rejected_before_any_exact_or_visible_read() -> None:
+    class MarkerlessPort(FakeRepositoryJobPort):
+        execution_input_authority_available = None
+
+    with pytest.raises(TypeError, match="execution_input_authority_available"):
+        RepositoryJobService(MarkerlessPort())
+
+
 def test_production_submission_persists_resolved_admission_projection() -> None:
     prepared = GraphRepositoryJobPort(
         object(), profiles=default_resource_profiles()

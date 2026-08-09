@@ -552,6 +552,8 @@ class ShadowMismatch(BaseModel):
 class RepositoryJobPort(Protocol):
     """The only state seam used by :class:`RepositoryJobService`."""
 
+    def execution_input_authority_available(self) -> bool: ...
+
     def submit(
         self,
         request: Mapping[str, Any],
@@ -912,8 +914,8 @@ class GraphRepositoryJobPort:
             deduplicated=bool(raw.get("deduplicated", False)),
         )
 
-    def has_execution_input_authority(self) -> bool:
-        """Report the absent EG-native capability port without probing rows."""
+    def execution_input_authority_available(self) -> bool:
+        """Report the absent EG-native atomic exact-input port."""
 
         return False
 
@@ -924,12 +926,12 @@ class GraphRepositoryJobPort:
         tenant_id: str,
         owner_id: str,
     ) -> BuildExecutionDescriptor | None:
-        """Refuse until EG supplies a verified opaque capability operation.
+        """Refuse until EG supplies one atomic authenticated exact-input operation.
 
         The old tenant/owner adapter accepted a caller-controlled owner string
         and therefore could impersonate the submitter.  Public views remain
         available, but no production Graph port may read executable bytes
-        until the native capability-aware port is injected.
+        until the native atomic exact-input port exists.
         """
 
         del tenant_id, owner_id
@@ -1287,23 +1289,22 @@ class RepositoryJobService:
     """Domain-facing durable job operations over one injected port."""
 
     def __init__(self, port: RepositoryJobPort) -> None:
-        if not isinstance(port, RepositoryJobPort):
-            # Runtime-checkable protocols only check method names; this gives a
-            # useful startup error while keeping fake ports structural.
-            required = (
-                "submit",
-                "get",
-                "list_page",
-                "cancel",
-                "retry",
-                "submit_repair",
-                "get_exact_execution_input",
-            )
-            missing = [
-                name for name in required if not callable(getattr(port, name, None))
-            ]
-            if missing:
-                raise TypeError(f"repository job port is missing: {', '.join(missing)}")
+        # Runtime-checkable protocols only check attribute presence; validate
+        # callability explicitly so a public owner/tenant-shaped object cannot
+        # masquerade as an exact-input authority by setting a truthy marker.
+        required = (
+            "execution_input_authority_available",
+            "submit",
+            "get",
+            "list_page",
+            "cancel",
+            "retry",
+            "submit_repair",
+            "get_exact_execution_input",
+        )
+        missing = [name for name in required if not callable(getattr(port, name, None))]
+        if missing:
+            raise TypeError(f"repository job port is missing: {', '.join(missing)}")
         self._port = port
 
     @staticmethod
@@ -1402,36 +1403,31 @@ class RepositoryJobService:
     ) -> BuildExecutionDescriptor | None:
         """Return the exact typed build body inside the authenticated scope.
 
-        A production port must report a native capability authority before any
-        public-row lookup; otherwise this method fails closed.  Test ports may
-        retain the legacy tenant/owner-shaped protocol, and their result is
-        still revalidated and bound to the immutable projection before it
-        leaves the service.
+        A production port must report a native atomic exact-input authority
+        before any public-row lookup; otherwise this method fails closed.  The
+        pre-native Graph port never reports availability.  The explicit test
+        fake is the only owner-scoped implementation used to exercise pure
+        service semantics before the EG native operation exists.
         """
 
-        capability_available = getattr(
-            self._port, "has_execution_input_authority", None
-        )
-        if callable(capability_available):
-            try:
-                if not capability_available():
-                    raise RepositoryJobServiceError(
-                        RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
-                        _SAFE_ERROR_MESSAGES[
-                            RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
-                        ],
-                        job_id=job_id,
-                    )
-            except RepositoryJobServiceError:
-                raise
-            except Exception as exc:
-                raise RepositoryJobServiceError(
-                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
-                    _SAFE_ERROR_MESSAGES[
-                        RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
-                    ],
-                    job_id=job_id,
-                ) from exc
+        try:
+            available = bool(self._port.execution_input_authority_available())
+        except Exception as exc:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+                _SAFE_ERROR_MESSAGES[
+                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+                ],
+                job_id=job_id,
+            ) from exc
+        if not available:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+                _SAFE_ERROR_MESSAGES[
+                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+                ],
+                job_id=job_id,
+            )
         view = self._visible(job_id, auth)
         try:
             payload = self._port.get_exact_execution_input(
@@ -1779,7 +1775,7 @@ class LegacyShadowAdapter:
 
 
 class FakeRepositoryJobPort:
-    """Faithful durable-shaped fake for service tests and restart simulation."""
+    """Test-only durable fake with an explicitly trusted exact-input seam."""
 
     def __init__(self) -> None:
         self.rows: dict[str, DurableJobView] = {}
@@ -1788,6 +1784,11 @@ class FakeRepositoryJobPort:
         self.execution_inputs: dict[str, BuildExecutionDescriptor] = {}
         self.submit_calls = 0
         self.cancel_calls = 0
+
+    def execution_input_authority_available(self) -> bool:
+        """Opt into the test-only exact-input implementation."""
+
+        return True
 
     def snapshot(self) -> dict[str, Any]:
         """Return a restart-safe fake snapshot, including typed bodies."""
