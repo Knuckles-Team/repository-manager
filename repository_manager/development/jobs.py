@@ -168,6 +168,35 @@ def _safe_port_error(
     )
 
 
+def _safe_exact_input_error(
+    error: Exception, *, job_id: str
+) -> RepositoryJobServiceError:
+    """Normalize exact-input adapter failures without exposing private input."""
+
+    if isinstance(error, RepositoryJobServiceError):
+        try:
+            code = RepositoryJobServiceCode(error.code)
+        except ValueError:
+            code = (
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+            )
+        if code not in {
+            RepositoryJobServiceCode.INPUT_CONFLICT,
+            RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED,
+            RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+        }:
+            code = (
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+            )
+    else:
+        code = RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+    return RepositoryJobServiceError(
+        code,
+        _SAFE_ERROR_MESSAGES[code],
+        job_id=job_id,
+    )
+
+
 class JobAuthorization(BaseModel):
     """Verified caller identity supplied by the MCP/REST/CLI boundary."""
 
@@ -1435,8 +1464,8 @@ class RepositoryJobService:
                 tenant_id=auth.tenant_id,
                 owner_id=auth.owner_id,
             )
-        except Exception as exc:  # noqa: BLE001 - normalize port boundary errors
-            raise _safe_port_error(exc, job_id=job_id) from exc
+        except Exception as exc:  # noqa: BLE001 - exact input is privacy-sensitive
+            raise _safe_exact_input_error(exc, job_id=job_id) from exc
         if payload is None:
             if view.operation == "build" and view.operation_payload_digest is None:
                 raise RepositoryJobServiceError(

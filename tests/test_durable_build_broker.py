@@ -1288,6 +1288,28 @@ def test_degraded_success_commit_response_must_be_accepted(
     assert all(item["outcome"] != "succeeded" for item in authority.commits)
 
 
+def test_fenced_success_commit_maps_to_authority_unavailable(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(tmp_path, store)
+    original_commit = authority.commit
+
+    def fenced_success_commit(job_id: str, claim: object, **kwargs: object) -> str:
+        if kwargs.get("outcome") == "succeeded":
+            return "fenced"
+        return original_commit(job_id, claim, **kwargs)
+
+    authority.commit = fenced_success_commit  # type: ignore[method-assign]
+    result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["refusal_code"] == "typed_execution_payload_authority_unavailable"
+    assert (
+        result["error"] == "typed repository execution input authority is unavailable"
+    )
+
+
 def test_degraded_success_commit_ack_loss_reports_reconciliation(
     tmp_path: Path,
 ) -> None:
@@ -1507,6 +1529,33 @@ def test_worker_atomic_authority_exception_is_stable_and_private(
     )
     assert result["refusal_code"] == "typed_execution_payload_authority_unavailable"
     assert "private-command" not in result["error"]
+
+
+def test_terminal_refusal_commit_failure_is_private_and_stable(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+
+    def exploding_exact(job_id: str) -> object:
+        del job_id
+        raise RuntimeError("input_conflict argv=private-command path=/secret")
+
+    def exploding_commit(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError("commit failed command=private-command path=/secret")
+
+    authority.get_exact_execution_input = exploding_exact  # type: ignore[method-assign]
+    authority.commit = exploding_commit  # type: ignore[method-assign]
+    result = BuildWorker(authority, None, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["refusal_code"] == "typed_execution_payload_authority_unavailable"
+    assert (
+        result["error"] == "typed repository execution input authority is unavailable"
+    )
+    assert "private-command" not in result["error"]
+    assert "/secret" not in result["error"]
 
 
 def test_worker_marker_exception_refuses_before_authority_state_access(

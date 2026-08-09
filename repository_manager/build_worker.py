@@ -61,6 +61,8 @@ _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE = "typed_execution_payload_authority_unav
 _EXECUTION_INPUT_AUTHORITY_MESSAGE = (
     "typed repository execution input authority is unavailable"
 )
+_AUTHORITY_COMMIT_FAILURE_MESSAGE = "durable WorkItem authority commit failed"
+_WORKER_AUTHORITY_FAILURE_MESSAGE = "durable build worker authority operation failed"
 
 
 def _read_bounded_regular_file(path: Path, limit: int) -> bytes:
@@ -265,6 +267,53 @@ def _require_current_fence(
             refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
         )
     return True
+
+
+def _authority_refusal_code(code: str) -> str:
+    """Normalize explicit fence-denial statuses without parsing error text."""
+
+    if code in {
+        _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+        "fenced",
+        "stale_fence",
+    }:
+        return _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+    return code
+
+
+def _authority_exception_code(error: BaseException, *, fallback: str) -> str:
+    """Map only trusted structured authority errors to the stable refusal code."""
+
+    if isinstance(error, RepositoryJobServiceError):
+        if error.code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE:
+            return _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+    if isinstance(error, BuildWorkerError):
+        if error.refusal_code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE:
+            return _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+    return _authority_refusal_code(fallback)
+
+
+def _commit_result_refusal_code(result: object) -> str | None:
+    """Recognize the native fenced result without exposing its representation."""
+
+    if isinstance(result, str) and result.strip().lower() == "fenced":
+        return _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+    return None
+
+
+def _raise_on_fenced_commit_result(result: object) -> None:
+    refusal_code = _commit_result_refusal_code(result)
+    if refusal_code is not None:
+        raise BuildWorkerError(
+            _EXECUTION_INPUT_AUTHORITY_MESSAGE,
+            refusal_code=refusal_code,
+        )
+
+
+def _safe_authority_error(code: str) -> str:
+    if code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE:
+        return _EXECUTION_INPUT_AUTHORITY_MESSAGE
+    return _AUTHORITY_COMMIT_FAILURE_MESSAGE
 
 
 def _result_ref(key: str, fence: str) -> str:
@@ -928,11 +977,21 @@ class BuildWorker:
                         job_id,
                         view,
                         key=key,
-                        error=str(exc),
+                        error=_AUTHORITY_COMMIT_FAILURE_MESSAGE,
                         reservation_id=reservation_id,
                     )
-                raise
-            if str(commit_result) not in {"None", "committed", "noop", "succeeded"}:
+                code = _authority_exception_code(
+                    exc, fallback="worker_environment_failure"
+                )
+                raise BuildWorkerError(
+                    _safe_authority_error(code),
+                    refusal_code=code,
+                ) from exc
+            commit_accepted = commit_result is None or (
+                isinstance(commit_result, str)
+                and commit_result in {"None", "committed", "noop", "succeeded"}
+            )
+            if not commit_accepted:
                 if _terminal_matches(
                     self.authority,
                     job_id,
@@ -944,11 +1003,18 @@ class BuildWorker:
                         job_id,
                         view,
                         key=key,
-                        error=f"durable WorkItem success commit returned {commit_result!r}",
+                        error=_AUTHORITY_COMMIT_FAILURE_MESSAGE,
                         reservation_id=reservation_id,
                     )
+                commit_refusal_code = _commit_result_refusal_code(commit_result)
+                if commit_refusal_code is not None:
+                    raise BuildWorkerError(
+                        _EXECUTION_INPUT_AUTHORITY_MESSAGE,
+                        refusal_code=commit_refusal_code,
+                    )
                 raise BuildWorkerError(
-                    f"durable WorkItem success commit returned {commit_result!r}"
+                    _AUTHORITY_COMMIT_FAILURE_MESSAGE,
+                    refusal_code="worker_environment_failure",
                 )
             terminal_committed = True
             # A restart between terminal commit and this metadata update is
@@ -998,8 +1064,7 @@ class BuildWorker:
                 job_id,
                 actual_claim,
                 view,
-                code="stale_fence",
-                error=str(exc),
+                code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
                 reservation_id=reservation_id,
             )
         except (ArtifactStoreError, bq.BuildQueueError) as exc:
@@ -1040,12 +1105,19 @@ class BuildWorker:
                 job_id=job_id,
                 view=view,
             )
+            refusal_code = _authority_refusal_code(
+                exc.refusal_code or "worker_environment_failure"
+            )
             return self._terminal_refusal(
                 job_id,
                 actual_claim,
                 view,
-                code=exc.refusal_code or "worker_environment_failure",
-                error=str(exc),
+                code=refusal_code,
+                error=(
+                    _EXECUTION_INPUT_AUTHORITY_MESSAGE
+                    if refusal_code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+                    else str(exc)
+                ),
                 reservation_id=reservation_id,
             )
         except Exception as exc:  # noqa: BLE001 - terminalize unexpected worker failures
@@ -1063,12 +1135,15 @@ class BuildWorker:
                 job_id=job_id,
                 view=view,
             )
+            code = _authority_exception_code(exc, fallback="worker_environment_failure")
             return self._terminal_refusal(
                 job_id,
                 actual_claim,
                 view,
-                code="worker_environment_failure",
-                error=str(exc),
+                code=code,
+                error=_safe_authority_error(code)
+                if code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+                else _WORKER_AUTHORITY_FAILURE_MESSAGE,
                 reservation_id=reservation_id,
             )
         finally:
@@ -1931,11 +2006,21 @@ class BuildWorker:
                         job_id,
                         view,
                         key=None,
-                        error=str(exc),
+                        error=_AUTHORITY_COMMIT_FAILURE_MESSAGE,
                         reservation_id=reservation_id,
                     )
-                raise
-            if str(commit_result) not in {"None", "committed", "noop", "succeeded"}:
+                code = _authority_exception_code(
+                    exc, fallback="worker_environment_failure"
+                )
+                raise BuildWorkerError(
+                    _safe_authority_error(code),
+                    refusal_code=code,
+                ) from exc
+            commit_accepted = commit_result is None or (
+                isinstance(commit_result, str)
+                and commit_result in {"None", "committed", "noop", "succeeded"}
+            )
+            if not commit_accepted:
                 if _terminal_matches(
                     self.authority, job_id, claim, result_ref=result_ref
                 ):
@@ -1943,15 +2028,18 @@ class BuildWorker:
                         job_id,
                         view,
                         key=None,
-                        error=(
-                            "durable degraded WorkItem success commit returned "
-                            f"{commit_result!r}"
-                        ),
+                        error=_AUTHORITY_COMMIT_FAILURE_MESSAGE,
                         reservation_id=reservation_id,
                     )
+                commit_refusal_code = _commit_result_refusal_code(commit_result)
+                if commit_refusal_code is not None:
+                    raise BuildWorkerError(
+                        _EXECUTION_INPUT_AUTHORITY_MESSAGE,
+                        refusal_code=commit_refusal_code,
+                    )
                 raise BuildWorkerError(
-                    "durable degraded WorkItem success commit returned "
-                    f"{commit_result!r}"
+                    _AUTHORITY_COMMIT_FAILURE_MESSAGE,
+                    refusal_code="worker_environment_failure",
                 )
             state = "succeeded"
             ok = True
@@ -1969,15 +2057,16 @@ class BuildWorker:
             )
             if not already_cancelled:
                 if state == "cancelled":
-                    self.authority.commit(
+                    commit_result = self.authority.commit(
                         job_id,
                         claim,
                         outcome="cancelled",
                         refusal_code=FailureClass.CANCELLED_DEADLINE.value,
                         retryable=False,
                     )
+                    _raise_on_fenced_commit_result(commit_result)
                 else:
-                    self.authority.commit(
+                    commit_result = self.authority.commit(
                         job_id,
                         claim,
                         outcome="failed",
@@ -1986,6 +2075,7 @@ class BuildWorker:
                         ).value,
                         retryable=True,
                     )
+                    _raise_on_fenced_commit_result(commit_result)
             ok = False
         return {
             "ok": ok,
@@ -2015,21 +2105,23 @@ class BuildWorker:
         )
         if not already_cancelled:
             if cancelled:
-                self.authority.commit(
+                commit_result = self.authority.commit(
                     job_id,
                     claim,
                     outcome="cancelled",
                     refusal_code=FailureClass.CANCELLED_DEADLINE.value,
                     retryable=False,
                 )
+                _raise_on_fenced_commit_result(commit_result)
             else:
-                self.authority.commit(
+                commit_result = self.authority.commit(
                     job_id,
                     claim,
                     outcome="failed",
                     failure_class=failure.value,
                     retryable=True,
                 )
+                _raise_on_fenced_commit_result(commit_result)
         return {
             "ok": False,
             "job_id": job_id,
@@ -2051,7 +2143,7 @@ class BuildWorker:
     ) -> dict[str, Any]:
         current = self._current_view(job_id)
         if current is None or current.state is not JobState.CANCELLED:
-            self.authority.commit(
+            commit_result = self.authority.commit(
                 job_id,
                 claim,
                 outcome="cancelled",
@@ -2059,6 +2151,7 @@ class BuildWorker:
                 refusal_code=FailureClass.CANCELLED_DEADLINE.value,
                 retryable=False,
             )
+            _raise_on_fenced_commit_result(commit_result)
         return {
             "ok": False,
             "job_id": job_id,
@@ -2077,39 +2170,47 @@ class BuildWorker:
         error: str = "",
         reservation_id: str | None = None,
     ) -> dict[str, Any]:
+        refusal_code = _authority_refusal_code(code)
         try:
-            self.authority.commit(
+            commit_result = self.authority.commit(
                 job_id,
                 claim,
                 outcome="failed",
                 # AU intentionally rejects a result carrying both fields.  A
                 # refusal code is the canonical terminal classification here;
                 # execution failures use failure_class in their own path.
-                refusal_code=code,
-                error_ref=error or code,
+                refusal_code=refusal_code,
+                error_ref=error or refusal_code,
                 retryable=True,
             )
+            _raise_on_fenced_commit_result(commit_result)
         except Exception as exc:
             # The WorkItem authority remains the source of truth.  If it did
             # not accept terminalization, report reconciliation rather than
             # claiming a failed terminal state that was never durable.
+            normalized_code = _authority_exception_code(exc, fallback=refusal_code)
             return {
                 "ok": False,
                 "job_id": job_id,
                 "work_item_id": view.work_item_id,
                 "state": view.state.value,
                 "terminalization_pending": True,
-                "error": str(exc),
-                "refusal_code": code,
+                "error": _safe_authority_error(normalized_code),
+                "refusal_code": normalized_code,
                 "reservation_id": reservation_id,
             }
+        safe_error = (
+            _EXECUTION_INPUT_AUTHORITY_MESSAGE
+            if refusal_code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+            else error or refusal_code
+        )
         return {
             "ok": False,
             "job_id": job_id,
             "work_item_id": view.work_item_id,
             "state": "failed",
-            "error": error or code,
-            "refusal_code": code,
+            "error": safe_error,
+            "refusal_code": refusal_code,
             "reservation_id": reservation_id,
         }
 
