@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from repository_manager.mcp_tools.context import McpToolContext, from_server
+from repository_manager.mcp_tools.context import from_server
 
 
 def register_git_operations_tools(mcp: Any) -> None:
@@ -76,24 +76,3 @@ def extend_registry(
     """
 
     return MCP_TOOL_REGISTRY + tuple(entries)
-
-
-def registrars(
-    context: McpToolContext | None = None,
-) -> tuple[tuple[str, str, Any], ...]:
-    """Return the registry with context-bound callables for direct consumers."""
-
-    if context is None:
-        return MCP_TOOL_REGISTRY
-    return tuple(
-        (tag, env_var, _bind(registrar, context))
-        for tag, env_var, registrar in MCP_TOOL_REGISTRY
-    )
-
-
-def _bind(registrar: Any, context: McpToolContext) -> Any:
-    def register(mcp: Any) -> None:
-        registrar(mcp, context=context)
-
-    register.__name__ = getattr(registrar, "__name__", "register_tools")
-    return register
