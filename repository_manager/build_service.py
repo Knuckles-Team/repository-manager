@@ -9,7 +9,6 @@ capacity, or maintain a local job map.  Those effects belong to
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -18,17 +17,6 @@ import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    StrictBool,
-    StrictInt,
-    StrictStr,
-    field_validator,
-    model_validator,
-)
 
 from repository_manager import build_queue as bq
 from repository_manager.build_artifacts import BuildArtifactStore
@@ -41,6 +29,10 @@ from repository_manager.development.jobs import (
     JobSubmitResult,
     RepositoryJobService,
 )
+from repository_manager.development.payloads import (
+    BuildExecutionDescriptor,
+    operation_payload_from_mapping,
+)
 from repository_manager.resource_profiles import default_resource_profiles
 
 
@@ -48,8 +40,6 @@ class BuildServiceError(RuntimeError):
     """A durable build request could not be constructed or submitted."""
 
 
-_DESCRIPTOR_PREFIX = "build-descriptor:v1:"
-_DESCRIPTOR_MAX_BYTES = 12_288
 _DIRTY_SNAPSHOT_MAX_BYTES = 1 << 20
 
 
@@ -199,138 +189,6 @@ def dirty_snapshot_digest(tree: Path | str) -> str:
     return hashlib.sha256(b"".join(parts)).hexdigest()
 
 
-class BuildExecutionDescriptor(BaseModel):
-    """Bounded typed execution input owned by the durable build extension.
-
-    This model is passed through the future typed Repository WorkItem
-    extension, not smuggled into arbitrary WorkItem fields.  Until the
-    authority exposes that extension, :class:`BuildService` refuses durable
-    submission rather than pretending a correlation string is executable
-    state.
-    """
-
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-    version: StrictInt = Field(default=1, ge=1, le=1)
-    repository_id: StrictStr
-    base_sha: StrictStr
-    # ``tree_sha`` in the v2 key may intentionally cover only declared
-    # cache-key paths.  Keep the exact submitted HEAD separately so a
-    # mutation between key computation and durable submission cannot change
-    # the immutable execution snapshot underneath the request.
-    head_sha: StrictStr
-    spec: StrictStr
-    command: tuple[StrictStr, ...]
-    toolchain_command: tuple[StrictStr, ...] = ()
-    workdir: StrictStr
-    artifacts: tuple[StrictStr, ...]
-    timeout: StrictInt = Field(ge=1, le=86_400)
-    resource_class: StrictStr = "light-check"
-    cacheable: StrictBool
-    cache_key: StrictStr | None = None
-    legacy_cache_key: StrictStr | None = None
-    key_components: Mapping[str, StrictStr] = Field(default_factory=dict)
-    generation_id: StrictStr | None = None
-    config_digest: StrictStr | None = None
-    spec_digest: StrictStr
-    input_digest: StrictStr
-    toolchain_fingerprint: StrictStr
-    dirty_snapshot_digest: StrictStr | None = None
-    degraded_reason: StrictStr = ""
-
-    @field_validator("command", "artifacts", mode="before")
-    @classmethod
-    def normalize_sequences(cls, value: object) -> tuple[str, ...]:
-        if not isinstance(value, (tuple, list)):
-            raise ValueError("build descriptor sequences must be lists or tuples")
-        result = tuple(value)
-        if not result or any(not isinstance(item, str) or not item for item in result):
-            raise ValueError(
-                "build descriptor sequences must contain non-empty strings"
-            )
-        return result
-
-    @field_validator("toolchain_command", mode="before")
-    @classmethod
-    def normalize_toolchain_command(cls, value: object) -> tuple[str, ...]:
-        if value is None:
-            return ()
-        if not isinstance(value, (tuple, list)):
-            raise ValueError("toolchain command must be a list or tuple")
-        result = tuple(value)
-        if any(not isinstance(item, str) or not item for item in result):
-            raise ValueError("toolchain command entries must be non-empty strings")
-        return result
-
-    @field_validator("workdir")
-    @classmethod
-    def validate_workdir(cls, value: str) -> str:
-        path = Path(value)
-        if not value or path.is_absolute() or ".." in path.parts:
-            raise ValueError("build descriptor workdir must be relative and contained")
-        return value
-
-    @model_validator(mode="after")
-    def validate_cache_contract(self) -> BuildExecutionDescriptor:
-        if self.cacheable and not self.cache_key:
-            raise ValueError("cacheable build descriptor requires cache_key")
-        if not self.cacheable and self.cache_key is not None:
-            raise ValueError("uncacheable build descriptor must not carry cache_key")
-        if len(self.command) > 128 or len(self.toolchain_command) > 128:
-            raise ValueError("build descriptor command is too large")
-        if len(self.artifacts) > 128 or len(self.key_components) > 64:
-            raise ValueError("build descriptor is too large")
-        if (
-            len(
-                json.dumps(
-                    self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-                ).encode("utf-8")
-            )
-            > _DESCRIPTOR_MAX_BYTES
-        ):
-            raise ValueError("build descriptor exceeds the durable bound")
-        return self
-
-
-def encode_build_descriptor(value: Mapping[str, Any]) -> str:
-    """Return a bounded candidate envelope for local migration experiments.
-
-    Production submission deliberately does not use this representation:
-    the typed WorkItem build extension owns descriptor persistence.
-    """
-
-    payload = json.dumps(
-        dict(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-    ).encode("utf-8")
-    encoded = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
-    result = _DESCRIPTOR_PREFIX + encoded
-    if len(result.encode("utf-8")) > _DESCRIPTOR_MAX_BYTES:
-        raise BuildServiceError("build execution descriptor exceeds the durable bound")
-    return result
-
-
-def decode_build_descriptor(value: str | None) -> dict[str, Any] | None:
-    """Decode and validate a persisted build descriptor, failing closed."""
-
-    if not isinstance(value, str) or not value.startswith(_DESCRIPTOR_PREFIX):
-        return None
-    if len(value.encode("utf-8")) > _DESCRIPTOR_MAX_BYTES:
-        raise BuildServiceError("persisted build execution descriptor is too large")
-    encoded = value[len(_DESCRIPTOR_PREFIX) :]
-    try:
-        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
-        decoded = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise BuildServiceError(
-            "persisted build execution descriptor is invalid"
-        ) from exc
-    if not isinstance(decoded, dict) or decoded.get("version") != 1:
-        raise BuildServiceError(
-            "persisted build execution descriptor has an unknown version"
-        )
-    return decoded
-
-
 def _digest(value: object) -> str:
     encoded = json.dumps(
         value,
@@ -341,28 +199,23 @@ def _digest(value: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def descriptor_input_digest(descriptor: Mapping[str, Any]) -> str:
-    """Recompute the immutable descriptor input digest at worker boundaries."""
+def _artifact_contract_digest(spec: bq.BuildSpec) -> str:
+    """Digest only the declared artifact contract, not mutable build state."""
 
-    immutable = {
-        "key": dict(descriptor.get("key_components") or {}),
-        "repository_id": descriptor.get("repository_id"),
-        "base_sha": descriptor.get("base_sha"),
-        "head_sha": descriptor.get("head_sha"),
-        "config_digest": descriptor.get("config_digest"),
-        "spec_digest": descriptor.get("spec_digest"),
-        "command": list(descriptor.get("command") or ()),
-        "toolchain_command": list(descriptor.get("toolchain_command") or ()),
-        "workdir": descriptor.get("workdir"),
-        "artifacts": list(descriptor.get("artifacts") or ()),
-        "timeout": descriptor.get("timeout"),
-        "resource_class": descriptor.get("resource_class"),
-        "cacheable": descriptor.get("cacheable"),
-        "generation_id": descriptor.get("generation_id"),
-        "dirty_snapshot_digest": descriptor.get("dirty_snapshot_digest"),
-        "degraded_reason": descriptor.get("degraded_reason"),
-    }
-    return _digest(immutable)
+    return _digest(
+        {
+            "patterns": list(spec.artifact_contract.patterns),
+            "required": spec.artifact_contract.required,
+            "publish": spec.artifact_contract.publish,
+            "retention": spec.artifact_contract.retention,
+        }
+    )
+
+
+def _toolchain_digest(fingerprint: str) -> str:
+    """Bind the diagnostic toolchain fingerprint to the typed payload."""
+
+    return _digest({"toolchain_fingerprint": fingerprint})
 
 
 class BuildService:
@@ -651,33 +504,24 @@ class BuildService:
         )
 
     def _submit_durable(self, request: Mapping[str, Any]) -> JobSubmitResult:
-        """Submit only through the typed build WorkItem extension."""
+        """Submit one exact typed payload through the normal job service."""
 
-        raw_descriptor = request.get("build_descriptor")
-        if not isinstance(raw_descriptor, Mapping):
-            raise BuildServiceError(
-                "durable build request has no typed execution descriptor"
-            )
+        raw_payload = request.get("operation_payload")
         try:
-            descriptor = BuildExecutionDescriptor.model_validate(raw_descriptor)
-        except ValueError as exc:
+            payload_model = operation_payload_from_mapping(raw_payload)
+        except (TypeError, ValueError) as exc:
             raise BuildServiceError(
-                "durable build execution descriptor is invalid"
+                "durable build operation payload is invalid"
             ) from exc
-        submit_build = getattr(self.job_service, "submit_build", None)
-        if not callable(submit_build):
-            raise BuildServiceError(
-                "RepositoryJobService lacks the typed build descriptor extension; "
-                "durable build submission is fail-closed until that contract is installed"
-            )
         payload = dict(request)
-        # The descriptor is a typed extension payload, never an arbitrary
-        # WorkItem/request field.  Keep it local for validation and hand it to
-        # the extension through its explicit parameter only.
-        payload.pop("build_descriptor", None)
-        return submit_build(
+        payload["operation_payload"] = payload_model.model_dump(
+            mode="json", exclude_none=False
+        )
+        # The ordinary service persists the sibling extension atomically with
+        # the WorkItem.  Never move executable bytes into correlation or a
+        # second descriptor-specific submission API.
+        return self.job_service.submit(
             payload,
-            descriptor=descriptor,
             auth=self.auth,
             max_attempts=self.max_attempts,
         )
@@ -813,55 +657,55 @@ class BuildService:
         }
         scope = bq.lane_scope(tree)
         repository_id = bq.stable_repository_id(scope.main_tree)
-        dirty_digest = (
-            dirty_snapshot_digest(tree) if key.degraded_reason == "dirty-tree" else None
-        )
-        immutable = {
-            "key": key.components(),
-            "repository_id": repository_id,
-            "base_sha": base_sha,
-            "head_sha": base_sha,
-            "command": list(spec.command),
-            "toolchain_command": list(spec.toolchain_fingerprint),
-            "workdir": spec.workdir,
-            "artifacts": list(spec.artifacts),
-            "timeout": spec.timeout,
-            "resource_class": spec.resource_class,
-            "cacheable": cacheable,
-            "generation_id": key.generation_id,
-            "dirty_snapshot_digest": dirty_digest,
-            "config_digest": bq._config_digest(tree),  # noqa: SLF001
-            "spec_digest": bq._spec_digest(spec),  # noqa: SLF001
-            "degraded_reason": key.degraded_reason,
-        }
-        immutable_digest = _digest(immutable)
-        idempotency_key = f"build:{key.digest if cacheable else immutable_digest}"
-        request_id = f"build:{key.digest if cacheable else immutable_digest}:request"
-        descriptor = BuildExecutionDescriptor(
-            repository_id=repository_id,
-            base_sha=base_sha,
-            head_sha=base_sha,
-            spec=spec.name,
-            command=spec.command,
-            toolchain_command=spec.toolchain_fingerprint,
-            workdir=spec.workdir,
-            artifacts=spec.artifacts,
-            timeout=spec.timeout,
-            resource_class=spec.resource_class,
-            cacheable=cacheable,
-            cache_key=key.digest if cacheable else None,
-            legacy_cache_key=key.legacy_digest if cacheable else None,
-            key_components=key.components(),
-            generation_id=key.generation_id,
-            # Keep the exact execution snapshot bound even for degraded jobs;
-            # cache keys omit this field only when they cannot be trusted.
-            config_digest=bq._config_digest(tree),  # noqa: SLF001
-            spec_digest=key.spec_digest or bq._spec_digest(spec),  # noqa: SLF001
-            input_digest=immutable_digest,
-            toolchain_fingerprint=key.toolchain_fingerprint or "unavailable",
-            dirty_snapshot_digest=dirty_digest,
-            degraded_reason=key.degraded_reason,
-        )
+        config_digest = bq._config_digest(tree)  # noqa: SLF001
+        spec_digest = bq._spec_digest(spec)  # noqa: SLF001
+        if cacheable:
+            tree_sha = key.tree_sha
+            toolchain_fingerprint = key.toolchain_fingerprint
+        else:
+            try:
+                tree_sha = bq._require_git(  # noqa: SLF001
+                    ["rev-parse", f"{base_sha}^{{tree}}"], tree
+                )
+            except Exception as exc:
+                raise BuildServiceError(
+                    "uncacheable build payload could not resolve submitted tree"
+                ) from exc
+            toolchain_fingerprint = "unavailable"
+        try:
+            payload_model = BuildExecutionDescriptor(
+                repository_id=repository_id,
+                base_sha=base_sha,
+                tree_sha=tree_sha,
+                generation_id=generation_id or key.generation_id or None,
+                build_spec_name=spec.name,
+                spec_digest=spec_digest,
+                config_digest=config_digest,
+                toolchain_digest=_toolchain_digest(toolchain_fingerprint),
+                artifact_contract_digest=_artifact_contract_digest(spec),
+                feature_set=" ".join(spec.command),
+                target_triple=bq._target_triple(spec),  # noqa: SLF001
+                cache_key_components=key.components(),
+                cache_key_digest=key.digest if cacheable else None,
+                argv=spec.command,
+                workdir=spec.workdir,
+                timeout_seconds=spec.timeout,
+                artifact_patterns=spec.artifacts,
+                environment_refs=(),
+                execution_policy_ref="repository.build-policy:v1",
+                profile_ref=f"repository_manager:resource_profile:{spec.resource_class}:v1",
+                cacheable=cacheable,
+                degraded_reason=key.degraded_reason,
+            )
+        except (TypeError, ValueError) as exc:
+            raise BuildServiceError("build execution payload is invalid") from exc
+        # For cacheable requests the C-05 key is the idempotency identity. For
+        # degraded requests the complete typed body is the identity, so a
+        # changed executable input cannot reuse the same WorkItem.
+        identity = payload_model.cache_key_digest or payload_model.payload_digest
+        assert identity is not None
+        idempotency_key = f"build:{identity}"
+        request_id = f"build:{identity}:request"
         return {
             "contract_version": "1",
             "request_id": request_id,
@@ -874,13 +718,14 @@ class BuildService:
             "session_id": self.session_id,
             "tenant_id": self.auth.tenant_id,
             "generation_id": generation_id,
-            "config_digest": key.config_digest or None,
-            "input_digest": immutable_digest,
-            # Public correlation remains a small request identity.  The
-            # descriptor is handed separately to the typed build extension;
-            # current AU projections intentionally drop arbitrary fields.
+            "config_digest": config_digest,
+            "input_digest": payload_model.payload_digest,
+            # Public correlation remains a bounded opaque source relationship;
+            # executable input is exclusively the typed sibling below.
             "correlation_id": request_id,
-            "build_descriptor": descriptor.model_dump(mode="json"),
+            "operation_payload": payload_model.model_dump(
+                mode="json", exclude_none=False
+            ),
             "resources": resource_payload,
             "target": {"kind": TargetKind.LOCAL.value},
             "consent": {},
@@ -897,9 +742,12 @@ class BuildService:
     ) -> None:
         """Recheck immutable inputs immediately before typed submission."""
 
-        descriptor = request.get("build_descriptor")
-        if not isinstance(descriptor, Mapping):
-            raise BuildServiceError("durable build request has no typed descriptor")
+        try:
+            payload = operation_payload_from_mapping(request.get("operation_payload"))
+        except (TypeError, ValueError) as exc:
+            raise BuildServiceError(
+                "durable build request has no valid typed operation payload"
+            ) from exc
         if bq._tree_is_dirty(tree):  # noqa: SLF001
             raise BuildServiceError(
                 "build submission tree changed or became dirty before durable submission"
@@ -923,40 +771,121 @@ class BuildService:
             raise BuildServiceError(
                 "build submission inputs could not be revalidated"
             ) from exc
-        if descriptor.get("repository_id") != current_repo_id:
+        if payload.repository_id != current_repo_id:
             raise BuildServiceError("build submission repository identity changed")
-        if (
-            descriptor.get("base_sha") != current_head
-            or descriptor.get("head_sha") != current_head
-        ):
+        if payload.base_sha != current_head:
             raise BuildServiceError(
                 "build submission HEAD changed before durable submission"
             )
-        if descriptor.get("config_digest") != current_config_digest:
+        if payload.config_digest != current_config_digest:
             raise BuildServiceError(
                 "build submission config changed before durable submission"
             )
-        if descriptor.get("spec_digest") != current_spec_digest:
+        if payload.spec_digest != current_spec_digest:
             raise BuildServiceError(
                 "build submission spec changed before durable submission"
+            )
+        if payload.build_spec_name != current_spec.name:
+            raise BuildServiceError(
+                "build submission spec changed before durable submission"
+            )
+        if payload.argv != current_spec.command:
+            raise BuildServiceError(
+                "build submission command changed before durable submission"
+            )
+        if payload.workdir != current_spec.workdir:
+            raise BuildServiceError(
+                "build submission workdir changed before durable submission"
+            )
+        normalized_artifacts = tuple(sorted(dict.fromkeys(current_spec.artifacts)))
+        if payload.artifact_patterns != normalized_artifacts:
+            raise BuildServiceError(
+                "build submission artifact contract changed before durable submission"
+            )
+        if payload.timeout_seconds != current_spec.timeout:
+            raise BuildServiceError(
+                "build submission timeout changed before durable submission"
+            )
+        if payload.feature_set != " ".join(current_spec.command):
+            raise BuildServiceError(
+                "build submission feature set changed before durable submission"
+            )
+        if payload.target_triple != bq._target_triple(current_spec):  # noqa: SLF001
+            raise BuildServiceError(
+                "build submission target changed before durable submission"
+            )
+        if payload.generation_id != (
+            generation_id or current_key.generation_id or None
+        ):
+            raise BuildServiceError(
+                "build submission generation changed before durable submission"
+            )
+        if payload.artifact_contract_digest != _artifact_contract_digest(current_spec):
+            raise BuildServiceError(
+                "build submission artifact contract changed before durable submission"
+            )
+        expected_toolchain = (
+            current_key.toolchain_fingerprint
+            if current_key.computable
+            else "unavailable"
+        )
+        if payload.toolchain_digest != _toolchain_digest(expected_toolchain):
+            raise BuildServiceError(
+                "build submission toolchain identity changed before durable submission"
+            )
+        if payload.execution_policy_ref != "repository.build-policy:v1":
+            raise BuildServiceError(
+                "build submission execution policy changed before durable submission"
+            )
+        if payload.cacheable != key.computable:
+            raise BuildServiceError(
+                "build submission cacheability changed before durable submission"
+            )
+        if payload.profile_ref != (
+            f"repository_manager:resource_profile:{current_spec.resource_class}:v1"
+        ):
+            raise BuildServiceError(
+                "build submission resource profile changed before durable submission"
             )
         if current_key.components() != key.components():
             raise BuildServiceError(
                 "build submission key inputs changed before durable submission"
             )
-        if descriptor.get("key_components") != current_key.components():
+        current_components = current_key.components()
+        payload_components = {
+            component.name: component.value
+            for component in payload.cache_key_components
+        }
+        if payload_components != current_components:
             raise BuildServiceError(
                 "build submission key inputs changed before durable submission"
             )
-        if descriptor.get("cacheable") is True:
-            if descriptor.get("cache_key") != current_key.digest:
+        if payload.cacheable is True:
+            if payload.cache_key_digest != current_key.digest:
                 raise BuildServiceError(
                     "build submission cache key changed before durable submission"
                 )
-        elif descriptor.get("degraded_reason") != current_key.degraded_reason:
-            raise BuildServiceError(
-                "build submission degradation state changed before durable submission"
-            )
+            if payload.tree_sha != current_key.tree_sha:
+                raise BuildServiceError(
+                    "build submission tree key changed before durable submission"
+                )
+        else:
+            try:
+                submitted_tree_sha = bq._require_git(  # noqa: SLF001
+                    ["rev-parse", f"{current_head}^{{tree}}"], tree
+                )
+            except Exception as exc:
+                raise BuildServiceError(
+                    "build submission tree identity could not be revalidated"
+                ) from exc
+            if payload.tree_sha != submitted_tree_sha:
+                raise BuildServiceError(
+                    "build submission tree identity changed before durable submission"
+                )
+            if payload.degraded_reason != current_key.degraded_reason:
+                raise BuildServiceError(
+                    "build submission degradation state changed before durable submission"
+                )
 
     @staticmethod
     def _submission_result(
@@ -995,8 +924,5 @@ __all__ = [
     "BuildRequestService",
     "BuildService",
     "BuildServiceError",
-    "decode_build_descriptor",
-    "descriptor_input_digest",
     "dirty_snapshot_digest",
-    "encode_build_descriptor",
 ]
