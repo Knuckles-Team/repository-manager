@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
 import subprocess
@@ -16,10 +17,6 @@ from repository_manager.build_artifacts import (
     ArtifactStoreError,
     BuildArtifactStore,
 )
-from repository_manager.build_service import (
-    BuildExecutionDescriptor,
-    descriptor_input_digest,
-)
 from repository_manager.config_schema import load_yaml_mapping_text
 from repository_manager.development import (
     DurableJobView,
@@ -28,6 +25,14 @@ from repository_manager.development import (
     FailureClass,
     JobState,
     ResourceRequest,
+)
+from repository_manager.development.jobs import (
+    RepositoryJobServiceCode,
+    RepositoryJobServiceError,
+)
+from repository_manager.development.payloads import (
+    BuildExecutionDescriptor,
+    operation_payload_from_mapping,
 )
 from repository_manager.execution import (
     CancellationToken,
@@ -45,9 +50,19 @@ from repository_manager.resource_scheduler import (
 class BuildWorkerError(RuntimeError):
     """A worker could not claim, admit, execute, or publish a build."""
 
+    def __init__(self, message: str, *, refusal_code: str | None = None) -> None:
+        super().__init__(message)
+        self.refusal_code = refusal_code
+
 
 _MAX_CONFIG_BYTES = 1 << 20
 _DEFAULT_STALE_STAGE_AGE_SECONDS = 24 * 60 * 60
+_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE = "typed_execution_payload_authority_unavailable"
+_EXECUTION_INPUT_AUTHORITY_MESSAGE = (
+    "typed repository execution input authority is unavailable"
+)
+_AUTHORITY_COMMIT_FAILURE_MESSAGE = "durable WorkItem authority commit failed"
+_WORKER_AUTHORITY_FAILURE_MESSAGE = "durable build worker authority operation failed"
 
 
 def _read_bounded_regular_file(path: Path, limit: int) -> bytes:
@@ -143,13 +158,15 @@ class BuildAuthority(Protocol):
 
     def heartbeat(self, job_id: str, claim: Mapping[str, Any]) -> bool: ...
 
+    def execution_input_authority_available(self) -> bool: ...
+
     def is_current(self, job_id: str, claim: Mapping[str, Any]) -> bool: ...
 
     def terminal_matches(
         self, job_id: str, claim: Mapping[str, Any], *, result_ref: str
     ) -> bool: ...
 
-    def get_build_descriptor(
+    def get_exact_execution_input(
         self, job_id: str
     ) -> BuildExecutionDescriptor | Mapping[str, Any] | None: ...
 
@@ -208,6 +225,97 @@ def _validate_claim_identity(
         raise BuildWorkerError("durable build claim fence does not match")
 
 
+def _execution_input_authority_available(authority: object) -> bool:
+    """Read the explicit pre-native availability marker without side effects."""
+
+    marker = getattr(authority, "execution_input_authority_available", None)
+    if not callable(marker):
+        return False
+    try:
+        return bool(marker())
+    except Exception:
+        return False
+
+
+def _authority_unavailable_result(job_id: str) -> dict[str, Any]:
+    """Return the stable pre-native refusal before touching durable state."""
+
+    return {
+        "ok": False,
+        "job_id": job_id,
+        "state": "failed",
+        "error": _EXECUTION_INPUT_AUTHORITY_MESSAGE,
+        "refusal_code": _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+    }
+
+
+def _require_current_fence(
+    authority: BuildAuthority, job_id: str, claim: Mapping[str, Any]
+) -> bool:
+    """Require a current mutation fence after the atomic exact-input read."""
+
+    try:
+        current = bool(authority.is_current(job_id, claim))
+    except Exception as exc:
+        raise BuildWorkerError(
+            _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+            refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+        ) from exc
+    if not current:
+        raise BuildWorkerError(
+            _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+            refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+        )
+    return True
+
+
+def _authority_refusal_code(code: str) -> str:
+    """Normalize explicit fence-denial statuses without parsing error text."""
+
+    if code in {
+        _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+        "fenced",
+        "stale_fence",
+    }:
+        return _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+    return code
+
+
+def _authority_exception_code(error: BaseException, *, fallback: str) -> str:
+    """Map only trusted structured authority errors to the stable refusal code."""
+
+    if isinstance(error, RepositoryJobServiceError):
+        if error.code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE:
+            return _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+    if isinstance(error, BuildWorkerError):
+        if error.refusal_code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE:
+            return _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+    return _authority_refusal_code(fallback)
+
+
+def _commit_result_refusal_code(result: object) -> str | None:
+    """Recognize the native fenced result without exposing its representation."""
+
+    if isinstance(result, str) and result.strip().lower() == "fenced":
+        return _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+    return None
+
+
+def _raise_on_fenced_commit_result(result: object) -> None:
+    refusal_code = _commit_result_refusal_code(result)
+    if refusal_code is not None:
+        raise BuildWorkerError(
+            _EXECUTION_INPUT_AUTHORITY_MESSAGE,
+            refusal_code=refusal_code,
+        )
+
+
+def _safe_authority_error(code: str) -> str:
+    if code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE:
+        return _EXECUTION_INPUT_AUTHORITY_MESSAGE
+    return _AUTHORITY_COMMIT_FAILURE_MESSAGE
+
+
 def _result_ref(key: str, fence: str) -> str:
     """Bind the terminal result reference to the committing fence."""
 
@@ -230,6 +338,25 @@ def _degraded_fence(result_ref: str | None, job_id: str) -> str | None:
         return None
     fence = result_ref[len(prefix) :]
     return fence if fence.strip() == fence and fence else None
+
+
+def _manifest_key_from_result_ref(result_ref: str | None) -> str | None:
+    """Extract only the bounded cache address from terminal evidence."""
+
+    if not isinstance(result_ref, str) or not result_ref.startswith("build-manifest:"):
+        return None
+    value = result_ref[len("build-manifest:") :]
+    key, marker, fence = value.partition(":fence:")
+    if (
+        marker != ":fence:"
+        or len(key) != 35
+        or not key.startswith("v2:")
+        or any(char not in "0123456789abcdef" for char in key[3:])
+        or not fence
+        or fence.strip() != fence
+    ):
+        return None
+    return key
 
 
 def _as_view(value: DurableJobView | Mapping[str, Any] | None) -> DurableJobView:
@@ -293,49 +420,31 @@ def _paths_tree_sha_at(tree: Path, head_sha: str, paths: tuple[str, ...]) -> str
     return hashlib.sha256(listing.encode()).hexdigest()[:32]
 
 
-def _descriptor_spec(descriptor: Mapping[str, Any]) -> bq.BuildSpec:
-    command = descriptor.get("command")
-    toolchain_command = descriptor.get("toolchain_command")
-    artifacts = descriptor.get("artifacts")
-    workdir = descriptor.get("workdir")
-    name = descriptor.get("spec")
-    if (
-        not isinstance(name, str)
-        or not name.strip()
-        or not isinstance(command, list | tuple)
-        or not command
-        or any(not isinstance(item, str) or not item for item in command)
-        or not isinstance(toolchain_command, list | tuple)
-        or any(not isinstance(item, str) or not item for item in toolchain_command)
-        or not isinstance(artifacts, list | tuple)
-        or not artifacts
-        or any(not isinstance(item, str) or not item for item in artifacts)
-        or not isinstance(workdir, str)
-        or Path(workdir).is_absolute()
-        or ".." in Path(workdir).parts
-    ):
-        raise BuildWorkerError("durable build descriptor has invalid execution paths")
-    try:
-        timeout = int(descriptor.get("timeout", 0))
-    except (TypeError, ValueError) as exc:
-        raise BuildWorkerError("durable build descriptor has invalid timeout") from exc
-    if timeout < 1:
-        raise BuildWorkerError("durable build descriptor has invalid timeout")
-    return bq.BuildSpec(
-        name=name,
-        command=tuple(command),
-        toolchain_fingerprint=tuple(toolchain_command),
-        workdir=workdir,
-        artifacts=tuple(artifacts),
-        timeout=timeout,
-        resource_class=str(descriptor.get("resource_class") or "light-check"),
+def _execution_digest(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _artifact_contract_digest(spec: bq.BuildSpec) -> str:
+    return _execution_digest(
+        {
+            "patterns": list(spec.artifact_contract.patterns),
+            "required": spec.artifact_contract.required,
+            "publish": spec.artifact_contract.publish,
+            "retention": spec.artifact_contract.retention,
+        }
     )
 
 
 def _verify_toolchain_fingerprint(
     build_tree: Path,
     spec: bq.BuildSpec,
-    descriptor: Mapping[str, Any],
+    descriptor: BuildExecutionDescriptor,
     *,
     cacheable: bool,
 ) -> str | None:
@@ -348,7 +457,15 @@ def _verify_toolchain_fingerprint(
     has changed.
     """
 
-    expected = str(descriptor.get("toolchain_fingerprint") or "")
+    components = {item.name: item.value for item in descriptor.cache_key_components}
+    expected = components.get("toolchain_fingerprint", "")
+    expected_digest = _execution_digest(
+        {"toolchain_fingerprint": expected if cacheable else "unavailable"}
+    )
+    if descriptor.toolchain_digest != expected_digest:
+        raise BuildWorkerError(
+            "persisted build toolchain digest does not match its cache identity"
+        )
     if not spec.toolchain_fingerprint:
         if cacheable and expected != "unpinned":
             raise BuildWorkerError(
@@ -387,7 +504,13 @@ def _terminal_matches(
 class GraphBuildAuthority:
     """Production adapter over the existing Agent Utilities WorkItem verbs."""
 
-    def __init__(self, engine: Any, *, tenant_id: str, token: str) -> None:
+    def __init__(
+        self,
+        engine: Any,
+        *,
+        tenant_id: str,
+        token: str,
+    ) -> None:
         if not tenant_id.strip() or not token.strip():
             raise ValueError("tenant_id and token must be non-blank")
         self.engine = engine
@@ -411,19 +534,19 @@ class GraphBuildAuthority:
 
         return GraphRepositoryJobPort._view(view)  # noqa: SLF001 - adapter boundary
 
-    def get_build_descriptor(
-        self, job_id: str
-    ) -> BuildExecutionDescriptor | Mapping[str, Any] | None:
-        """Read the typed RMDD build extension, never arbitrary WorkItem fields."""
+    def execution_input_authority_available(self) -> bool:
+        """EG-native atomic exact-input authority is not installed yet."""
 
-        authority = self._authority()
-        getter = getattr(authority, "get_repository_build_descriptor", None)
-        if callable(getter):
-            return getter(self.engine, job_id, tenant=self.tenant_id)
-        view = authority.get_repository_work_item(
-            self.engine, job_id, tenant=self.tenant_id
+        return False
+
+    def get_exact_execution_input(self, job_id: str) -> BuildExecutionDescriptor | None:
+        """Refuse until EG supplies one atomic authorized exact-input read."""
+
+        raise RepositoryJobServiceError(
+            RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+            "typed repository execution input authority is unavailable",
+            job_id=job_id,
         )
-        return getattr(view, "build_descriptor", None) if view is not None else None
 
     def claim(self, job_id: str, *, token: str) -> Mapping[str, Any] | None:
         authority = self._authority()
@@ -446,11 +569,8 @@ class GraphBuildAuthority:
         )
 
     def is_current(self, job_id: str, claim: Mapping[str, Any]) -> bool:
-        view = self.get(job_id)
-        if view is None or view.state not in {JobState.LEASED, JobState.RUNNING}:
-            return False
-        current = view.lease_fence
-        return current is not None and current == _claim_fence(claim)
+        del job_id, claim
+        return False
 
     def terminal_matches(
         self, job_id: str, claim: Mapping[str, Any], *, result_ref: str
@@ -633,6 +753,8 @@ class BuildWorker:
     ) -> dict[str, Any] | None:
         """Claim the next build through an authority-specific queue verb."""
 
+        if not _execution_input_authority_available(self.authority):
+            return _authority_unavailable_result("")
         claim_next = getattr(self.authority, "claim_next", None)
         if not callable(claim_next):
             raise BuildWorkerError("authority does not expose claim_next; use run_job")
@@ -692,6 +814,8 @@ class BuildWorker:
         cancellation: CancellationToken | None = None,
     ) -> dict[str, Any]:
         """Run one job; all heavyweight effects follow resource admission."""
+        if not _execution_input_authority_available(self.authority):
+            return _authority_unavailable_result(job_id)
         view = _as_view(self.authority.get(job_id))
         if view.state in {JobState.CANCELLED, JobState.SUCCEEDED}:
             return self._refusal(job_id, "work_item_terminal", view=view)
@@ -712,8 +836,11 @@ class BuildWorker:
         published = False
         terminal_committed = False
         try:
-            scope, spec, key, descriptor = self._execution_plan(
-                view, repo_path=repo_path, spec_name=spec_name
+            scope, spec, key, payload = self._execution_plan(
+                view,
+                repo_path=repo_path,
+                spec_name=spec_name,
+                claim=actual_claim,
             )
             if self.scheduler is None:
                 return self._terminal_refusal(
@@ -736,12 +863,11 @@ class BuildWorker:
                     retryable=True,
                 )
             if admission_status is AdmissionStatus.STALE_FENCE:
-                return self._deferred_admission(
+                return self._terminal_refusal(
                     job_id,
+                    actual_claim,
                     view,
-                    admission,
-                    retryable=False,
-                    stale_fence=True,
+                    code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
                 )
             if not admission.admitted:
                 return self._terminal_refusal(
@@ -768,7 +894,7 @@ class BuildWorker:
                     view,
                     scope,
                     spec,
-                    descriptor,
+                    payload,
                     token,
                     reservation_id=reservation_id,
                 )
@@ -777,14 +903,17 @@ class BuildWorker:
                 _verify_toolchain_fingerprint(
                     build_tree,
                     spec,
-                    descriptor,
+                    payload,
                     cacheable=True,
                 )
                 command = ExecutionCommand(
-                    argv=spec.command,
-                    workdir=str((build_tree / spec.workdir).resolve()),
-                    timeout_seconds=spec.timeout,
-                    heartbeat_interval_seconds=min(30, max(1, spec.timeout // 4)),
+                    argv=payload.argv,
+                    workdir=str((build_tree / payload.workdir).resolve()),
+                    environment_refs=payload.environment_refs,
+                    timeout_seconds=payload.timeout_seconds,
+                    heartbeat_interval_seconds=min(
+                        30, max(1, payload.timeout_seconds // 4)
+                    ),
                 )
                 executor = self.executor or LocalExecutor(
                     build_tree,
@@ -796,7 +925,9 @@ class BuildWorker:
                     worker_id=self.worker_id,
                     fence=fence,
                     cancellation=token,
-                    fence_check=lambda: self.authority.is_current(job_id, actual_claim),
+                    fence_check=lambda: _require_current_fence(
+                        self.authority, job_id, actual_claim
+                    ),
                     heartbeat=lambda: self.authority.heartbeat(job_id, actual_claim),
                 )
                 if result.outcome != ExecutionOutcome.SUCCEEDED:
@@ -805,8 +936,8 @@ class BuildWorker:
                     )
                 staged = store.stage(
                     build_tree,
-                    workdir=spec.workdir,
-                    patterns=spec.artifacts,
+                    workdir=payload.workdir,
+                    patterns=payload.artifact_patterns,
                     key=key.digest,
                     attempt=attempt,
                     fence=fence,
@@ -820,7 +951,9 @@ class BuildWorker:
                 )
                 store.publish(
                     staged,
-                    fence_check=lambda: self.authority.is_current(job_id, actual_claim),
+                    fence_check=lambda: _require_current_fence(
+                        self.authority, job_id, actual_claim
+                    ),
                 )
                 published = True
             result_ref = _result_ref(key.digest, fence)
@@ -844,11 +977,21 @@ class BuildWorker:
                         job_id,
                         view,
                         key=key,
-                        error=str(exc),
+                        error=_AUTHORITY_COMMIT_FAILURE_MESSAGE,
                         reservation_id=reservation_id,
                     )
-                raise
-            if str(commit_result) not in {"None", "committed", "noop", "succeeded"}:
+                code = _authority_exception_code(
+                    exc, fallback="worker_environment_failure"
+                )
+                raise BuildWorkerError(
+                    _safe_authority_error(code),
+                    refusal_code=code,
+                ) from exc
+            commit_accepted = commit_result is None or (
+                isinstance(commit_result, str)
+                and commit_result in {"None", "committed", "noop", "succeeded"}
+            )
+            if not commit_accepted:
                 if _terminal_matches(
                     self.authority,
                     job_id,
@@ -860,11 +1003,18 @@ class BuildWorker:
                         job_id,
                         view,
                         key=key,
-                        error=f"durable WorkItem success commit returned {commit_result!r}",
+                        error=_AUTHORITY_COMMIT_FAILURE_MESSAGE,
                         reservation_id=reservation_id,
                     )
+                commit_refusal_code = _commit_result_refusal_code(commit_result)
+                if commit_refusal_code is not None:
+                    raise BuildWorkerError(
+                        _EXECUTION_INPUT_AUTHORITY_MESSAGE,
+                        refusal_code=commit_refusal_code,
+                    )
                 raise BuildWorkerError(
-                    f"durable WorkItem success commit returned {commit_result!r}"
+                    _AUTHORITY_COMMIT_FAILURE_MESSAGE,
+                    refusal_code="worker_environment_failure",
                 )
             terminal_committed = True
             # A restart between terminal commit and this metadata update is
@@ -914,8 +1064,7 @@ class BuildWorker:
                 job_id,
                 actual_claim,
                 view,
-                code="stale_fence",
-                error=str(exc),
+                code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
                 reservation_id=reservation_id,
             )
         except (ArtifactStoreError, bq.BuildQueueError) as exc:
@@ -941,6 +1090,36 @@ class BuildWorker:
                 error=str(exc),
                 reservation_id=reservation_id,
             )
+        except BuildWorkerError as exc:
+            if terminal_committed:
+                return self._reconciliation_pending(
+                    job_id,
+                    view,
+                    key=key,
+                    error=str(exc),
+                    reservation_id=reservation_id,
+                )
+            self._quarantine_stale_publication(
+                store,
+                key=key,
+                job_id=job_id,
+                view=view,
+            )
+            refusal_code = _authority_refusal_code(
+                exc.refusal_code or "worker_environment_failure"
+            )
+            return self._terminal_refusal(
+                job_id,
+                actual_claim,
+                view,
+                code=refusal_code,
+                error=(
+                    _EXECUTION_INPUT_AUTHORITY_MESSAGE
+                    if refusal_code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+                    else str(exc)
+                ),
+                reservation_id=reservation_id,
+            )
         except Exception as exc:  # noqa: BLE001 - terminalize unexpected worker failures
             if terminal_committed:
                 return self._reconciliation_pending(
@@ -956,12 +1135,15 @@ class BuildWorker:
                 job_id=job_id,
                 view=view,
             )
+            code = _authority_exception_code(exc, fallback="worker_environment_failure")
             return self._terminal_refusal(
                 job_id,
                 actual_claim,
                 view,
-                code="worker_environment_failure",
-                error=str(exc),
+                code=code,
+                error=_safe_authority_error(code)
+                if code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+                else _WORKER_AUTHORITY_FAILURE_MESSAGE,
                 reservation_id=reservation_id,
             )
         finally:
@@ -1073,12 +1255,14 @@ class BuildWorker:
         self,
         store: BuildArtifactStore,
         *,
-        key: bq.CacheKey,
+        key: bq.CacheKey | str,
         manifest: Mapping[str, Any],
         view: DurableJobView,
         reason: str,
     ) -> None:
         """Quarantine a terminal entry only after exact owner proof."""
+
+        key_digest = key if isinstance(key, str) else key.digest
 
         def proves_invalid(candidate: Mapping[str, Any]) -> Mapping[str, Any]:
             try:
@@ -1119,7 +1303,7 @@ class BuildWorker:
 
         try:
             store.quarantine_if(
-                key.digest,
+                key_digest,
                 authority_check=proves_invalid,
                 reason=reason,
             )
@@ -1131,7 +1315,7 @@ class BuildWorker:
         job_id: str,
         view: DurableJobView,
         *,
-        key: bq.CacheKey | None,
+        key: bq.CacheKey | str | None,
         error: str,
         reservation_id: str | None = None,
     ) -> dict[str, Any]:
@@ -1144,7 +1328,9 @@ class BuildWorker:
             "state": JobState.SUCCEEDED.value,
             "durable_terminal": True,
             "reconciliation_pending": True,
-            "key": key.digest if key is not None else None,
+            "key": (
+                key if isinstance(key, str) else key.digest if key is not None else None
+            ),
             "error": error,
             "reservation_id": reservation_id,
         }
@@ -1155,85 +1341,130 @@ class BuildWorker:
         *,
         repo_path: Path | str,
         spec_name: str,
-    ) -> tuple[Any, bq.BuildSpec, bq.CacheKey | None, Mapping[str, Any]]:
+        claim: Mapping[str, Any] | None = None,
+    ) -> tuple[
+        Any,
+        bq.BuildSpec,
+        bq.CacheKey | None,
+        BuildExecutionDescriptor,
+    ]:
+        if not _execution_input_authority_available(self.authority):
+            raise BuildWorkerError(
+                _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+                refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+            )
         scope = bq.lane_scope(repo_path)
         if view.repository_id != bq.stable_repository_id(scope.main_tree):
             raise BuildWorkerError(
                 "worker repository identity does not match the WorkItem"
             )
-        get_descriptor = getattr(self.authority, "get_build_descriptor", None)
-        if not callable(get_descriptor):
-            raise BuildWorkerError(
-                "durable build authority lacks the typed execution descriptor extension"
-            )
-        raw_descriptor = get_descriptor(view.job_id)
-        if raw_descriptor is None:
-            raise BuildWorkerError(
-                "durable build WorkItem has no typed execution descriptor; resubmit"
-            )
-        try:
-            descriptor_model = (
-                raw_descriptor
-                if isinstance(raw_descriptor, BuildExecutionDescriptor)
-                else BuildExecutionDescriptor.model_validate(raw_descriptor)
-            )
-        except ValueError as exc:
-            raise BuildWorkerError(
-                "durable build execution descriptor is invalid"
-            ) from exc
-        descriptor = descriptor_model.model_dump(mode="python")
-        if descriptor is None:
-            raise BuildWorkerError(
-                "durable build WorkItem has no persisted execution descriptor; resubmit"
-            )
         if view.operation != "build":
             raise BuildWorkerError(
                 "durable build WorkItem operation is not a build operation"
             )
-        if descriptor.get("repository_id") != view.repository_id:
+        if claim is None:
+            # Every executable-input read follows a current worker claim.  A
+            # terminal recovery never calls this planner without a live claim.
             raise BuildWorkerError(
-                "build descriptor repository identity disagrees with WorkItem"
+                _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+                refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
             )
-        if descriptor.get("base_sha") != view.base_sha:
+        _validate_claim_identity(view.job_id, view, claim)
+        get_exact = getattr(self.authority, "get_exact_execution_input", None)
+        if not callable(get_exact):
             raise BuildWorkerError(
-                "build descriptor SHA disagrees with WorkItem authority"
+                _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+                refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
             )
-        if descriptor.get("head_sha") != view.base_sha:
+        try:
+            # This is the sole executable-input authority operation.  The
+            # production adapter must perform authentication, currentness,
+            # and private-row/body access atomically in native code.  Python
+            # intentionally has no separate issue/verify/read capability API.
+            raw_payload = get_exact(view.job_id)
+        except RepositoryJobServiceError as exc:
+            code = exc.code
+            if code == "typed_execution_payload_required":
+                raise BuildWorkerError(
+                    "typed_execution_payload_required: resubmit build",
+                    refusal_code="invalid_request",
+                ) from exc
+            if code == "input_conflict":
+                raise BuildWorkerError(
+                    "input_conflict: persisted build payload is invalid",
+                    refusal_code="invalid_request",
+                ) from exc
+            if code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE:
+                raise BuildWorkerError(
+                    _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+                    refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+                ) from exc
             raise BuildWorkerError(
-                "build descriptor HEAD disagrees with WorkItem authority"
-            )
-        if descriptor.get("resource_class") != view.resource_class:
+                _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+                refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+            ) from exc
+        except Exception as exc:
             raise BuildWorkerError(
-                "build descriptor resource profile disagrees with WorkItem"
+                _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+                refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
+            ) from exc
+        if raw_payload is None:
+            raise BuildWorkerError(
+                "typed_execution_payload_required: resubmit build",
+                refusal_code="invalid_request",
             )
-        descriptor_generation = descriptor.get("generation_id") or None
+        try:
+            payload = operation_payload_from_mapping(raw_payload)
+        except (TypeError, ValueError) as exc:
+            raise BuildWorkerError(
+                "durable build operation payload is invalid"
+            ) from exc
+        # A native atomic read authenticates the private payload.  This second
+        # check is only the post-read mutation-fence proof; it is never used to
+        # authorize the preceding private read.
+        _require_current_fence(self.authority, view.job_id, claim)
+        if payload.repository_id != view.repository_id:
+            raise BuildWorkerError(
+                "build payload repository identity disagrees with WorkItem"
+            )
+        if payload.base_sha != view.base_sha:
+            raise BuildWorkerError(
+                "build payload SHA disagrees with WorkItem authority"
+            )
+        expected_profile = (
+            f"repository_manager:resource_profile:{view.resource_class}:v1"
+        )
+        if payload.profile_ref != expected_profile:
+            raise BuildWorkerError(
+                "build payload resource profile disagrees with WorkItem"
+            )
+        if payload.execution_policy_ref != "repository.build-policy:v1":
+            raise BuildWorkerError(
+                "build payload execution policy is not the approved policy"
+            )
+        if view.target_kind != "local":
+            raise BuildWorkerError(
+                "build WorkItem target is not the submitted local target"
+            )
+        descriptor_generation = payload.generation_id
         view_generation = view.generation_id or None
         if descriptor_generation != view_generation:
             raise BuildWorkerError(
-                "build descriptor generation disagrees with WorkItem authority"
+                "build payload generation disagrees with WorkItem authority"
             )
         if (
             view.config_digest is not None
-            and descriptor.get("config_digest") != view.config_digest
+            and payload.config_digest != view.config_digest
         ):
             raise BuildWorkerError(
-                "build descriptor config digest disagrees with WorkItem authority"
+                "build payload config digest disagrees with WorkItem authority"
             )
-        # ``DurableJobView.input_digest`` is AU's canonical whole-request
-        # digest, while the typed build extension's input_digest covers the
-        # executable descriptor body.  They are intentionally different
-        # contracts until RMDD-29 adds a typed projection; do not manufacture
-        # equivalence or accept an untyped field smuggled through correlation.
-        if descriptor.get("input_digest") != descriptor_input_digest(descriptor):
-            raise BuildWorkerError(
-                "persisted build descriptor input digest does not match its body"
-            )
-        persisted_spec = str(descriptor.get("spec") or "")
+        persisted_spec = payload.build_spec_name
         if spec_name and spec_name != persisted_spec:
             raise BuildWorkerError(
-                "worker spec selection disagrees with persisted descriptor"
+                "worker spec selection disagrees with persisted payload"
             )
-        dirty = descriptor.get("degraded_reason") == "dirty-tree"
+        dirty = payload.degraded_reason == "dirty-tree"
         if dirty:
             raise BuildWorkerError(
                 "dirty durable builds require an immutable typed snapshot; "
@@ -1241,12 +1472,12 @@ class BuildWorker:
             )
         config, config_digest = _config_snapshot(
             scope,
-            base_sha=view.base_sha,
+            base_sha=payload.base_sha,
             dirty=dirty,
         )
-        if descriptor.get("config_digest") != config_digest:
+        if payload.config_digest != config_digest:
             raise BuildWorkerError(
-                "persisted build config digest does not match the submitted snapshot"
+                "build payload config digest does not match the submitted snapshot"
             )
         try:
             snapshot_spec = config.spec(persisted_spec)
@@ -1254,36 +1485,38 @@ class BuildWorker:
             raise BuildWorkerError(
                 "submitted build config does not contain the persisted spec"
             ) from exc
-        if descriptor.get("spec_digest") != bq._spec_digest(snapshot_spec):  # noqa: SLF001
+        if payload.spec_digest != bq._spec_digest(snapshot_spec):  # noqa: SLF001
             raise BuildWorkerError(
-                "persisted build spec digest does not match the submitted snapshot"
+                "build payload spec digest does not match the submitted snapshot"
             )
-        descriptor_spec = _descriptor_spec(descriptor)
         if (
-            descriptor_spec.command != snapshot_spec.command
-            or descriptor_spec.toolchain_fingerprint
-            != snapshot_spec.toolchain_fingerprint
-            or descriptor_spec.workdir != snapshot_spec.workdir
-            or descriptor_spec.artifacts != snapshot_spec.artifacts
-            or descriptor_spec.timeout != snapshot_spec.timeout
-            or descriptor_spec.resource_class != snapshot_spec.resource_class
+            payload.argv != snapshot_spec.command
+            or payload.workdir != snapshot_spec.workdir
+            or payload.artifact_patterns
+            != tuple(sorted(dict.fromkeys(snapshot_spec.artifacts)))
+            or payload.timeout_seconds != snapshot_spec.timeout
+            or payload.feature_set != " ".join(snapshot_spec.command)
+            or payload.target_triple != bq._target_triple(snapshot_spec)  # noqa: SLF001
+            or payload.artifact_contract_digest
+            != _artifact_contract_digest(snapshot_spec)
+            or payload.profile_ref
+            != f"repository_manager:resource_profile:{snapshot_spec.resource_class}:v1"
         ):
             raise BuildWorkerError(
-                "persisted build execution fields disagree with the submitted snapshot"
+                "build payload execution fields disagree with the submitted snapshot"
             )
         spec = snapshot_spec
-        cacheable = descriptor.get("cacheable") is True
+        cacheable = payload.cacheable is True
         key: bq.CacheKey | None = None
         if cacheable:
-            components = descriptor.get("key_components")
-            if not isinstance(components, Mapping):
-                raise BuildWorkerError(
-                    "cacheable descriptor has no immutable key components"
-                )
+            components = {
+                item.name: item.value for item in payload.cache_key_components
+            }
             key = _key_from_components(components)
             expected_components = {
                 "repo": view.repository_id,
                 "spec": snapshot_spec.name,
+                "tree_sha": payload.tree_sha,
                 "feature_set": " ".join(snapshot_spec.command),
                 "target_triple": bq._target_triple(snapshot_spec),  # noqa: SLF001
             }
@@ -1293,45 +1526,67 @@ class BuildWorker:
                         "persisted build key "
                         f"{component} component disagrees with the submitted snapshot"
                     )
-            if descriptor.get("cache_key") != key.digest:
+            if payload.cache_key_digest != key.digest:
                 raise BuildWorkerError(
-                    "persisted build key does not match its components"
+                    "build payload cache key does not match its components"
                 )
-            if descriptor.get("config_digest") != key.config_digest:
+            if payload.config_digest != key.config_digest:
                 raise BuildWorkerError(
-                    "persisted build config digest does not match its key"
+                    "build payload config digest does not match its key"
                 )
-            if descriptor.get("spec_digest") != key.spec_digest:
+            if payload.spec_digest != key.spec_digest:
                 raise BuildWorkerError(
-                    "persisted build spec digest does not match its key"
+                    "build payload spec digest does not match its key"
                 )
-            if descriptor.get("generation_id") != key.generation_id:
+            if (payload.generation_id or "") != key.generation_id:
                 raise BuildWorkerError(
-                    "persisted build generation does not match its key"
-                )
-            if descriptor.get("toolchain_fingerprint") != key.toolchain_fingerprint:
-                raise BuildWorkerError(
-                    "persisted build toolchain fingerprint does not match its key"
+                    "build payload generation does not match its key"
                 )
             try:
                 submitted_tree_sha = _paths_tree_sha_at(
                     scope.main_tree,
-                    view.base_sha,
+                    payload.base_sha,
                     snapshot_spec.cache_key_paths,
                 )
             except (bq.BuildQueueError, OSError) as exc:
                 raise BuildWorkerError(
                     "submitted build SHA tree could not be verified"
                 ) from exc
-            if key.tree_sha != submitted_tree_sha:
+            if (
+                key.tree_sha != submitted_tree_sha
+                or payload.tree_sha != submitted_tree_sha
+            ):
                 raise BuildWorkerError(
-                    "persisted build key tree digest disagrees with submitted SHA"
+                    "build payload tree digest disagrees with submitted SHA"
                 )
-        elif descriptor.get("toolchain_fingerprint") != "unavailable":
+        else:
+            try:
+                submitted_tree_sha = bq._require_git(  # noqa: SLF001
+                    ["rev-parse", f"{payload.base_sha}^{{tree}}"], scope.main_tree
+                )
+            except (bq.BuildQueueError, OSError) as exc:
+                raise BuildWorkerError(
+                    "submitted build SHA tree could not be verified"
+                ) from exc
+            if payload.tree_sha != submitted_tree_sha:
+                raise BuildWorkerError(
+                    "uncacheable build payload tree digest disagrees with submitted SHA"
+                )
+        if not cacheable and payload.cache_key_digest is not None:
             raise BuildWorkerError(
-                "uncacheable build descriptor lacks an unavailable toolchain marker"
+                "uncacheable build payload unexpectedly carries a cache key"
             )
-        return scope, spec, key, descriptor
+        components = {item.name: item.value for item in payload.cache_key_components}
+        expected_toolchain = (
+            components["toolchain_fingerprint"] if cacheable else "unavailable"
+        )
+        if payload.toolchain_digest != _execution_digest(
+            {"toolchain_fingerprint": expected_toolchain}
+        ):
+            raise BuildWorkerError(
+                "build payload toolchain digest disagrees with its key"
+            )
+        return scope, spec, key, payload
 
     def cancel(self, job_id: str, *, reason: str = "cancelled by owner") -> bool:
         token = self._cancellations.get(job_id)
@@ -1410,10 +1665,14 @@ class BuildWorker:
     ) -> dict[str, Any]:
         """Reconcile a restart without trusting a local running marker."""
 
+        if not _execution_input_authority_available(self.authority):
+            return _authority_unavailable_result(job_id)
         view = _as_view(self.authority.get(job_id))
-        scope, spec, key, descriptor = self._execution_plan(
-            view, repo_path=repo_path, spec_name=spec_name
-        )
+        scope = bq.lane_scope(repo_path)
+        if view.repository_id != bq.stable_repository_id(scope.main_tree):
+            raise BuildWorkerError(
+                "worker repository identity does not match the WorkItem"
+            )
         store = self.artifact_store or BuildArtifactStore(repo_path=scope.tree)
         staging_reconciliation = self._reconcile_staging(store)
 
@@ -1422,164 +1681,162 @@ class BuildWorker:
             enriched.setdefault("staging_reconciliation", staging_reconciliation)
             return enriched
 
-        if key is None:
-            if view.state is JobState.SUCCEEDED:
-                degraded_result_ref = view.result_ref
-                degraded_fence = _degraded_fence(degraded_result_ref, job_id)
-                if (
-                    view.job_id != job_id
-                    or view.attempt < 1
-                    or degraded_fence is None
-                    or (
-                        view.lease_fence is not None
-                        and view.lease_fence != degraded_fence
-                    )
-                    or not _terminal_matches(
-                        self.authority,
-                        job_id,
-                        {
-                            "job_id": view.job_id,
-                            "work_item_id": view.work_item_id,
-                            "attempt": view.attempt,
-                            "fence": degraded_fence,
-                        },
-                        result_ref=degraded_result_ref or "",
-                    )
-                ):
-                    return with_reconciliation(
-                        {
-                            "ok": False,
-                            "recovered": False,
-                            "state": view.state.value,
-                            "degraded": True,
-                            "error": (
-                                "succeeded degraded WorkItem has no exact "
-                                "job/fence terminal result proof"
-                            ),
-                        }
-                    )
+        if view.state is not JobState.SUCCEEDED:
+            if view.state in {
+                JobState.CANCELLED,
+                JobState.FAILED,
+                JobState.DEAD_LETTER,
+            }:
                 return with_reconciliation(
                     {
-                        "ok": True,
-                        "recovered": True,
+                        "ok": False,
+                        "recovered": False,
                         "state": view.state.value,
-                        "degraded": True,
-                        "degraded_reason": descriptor.get("degraded_reason"),
-                        "result_ref": degraded_result_ref,
+                        "error": "terminal WorkItem cannot be rerun",
                     }
                 )
+            # A live/reclaimable job is claimed before its exact payload is
+            # fetched.  This keeps stale workers from reading or executing
+            # executable input under an old fence.
             return with_reconciliation(
                 self.run_job(job_id, repo_path=repo_path, spec_name=spec_name)
             )
-        manifest = store.read_manifest(key.digest)
-        manifest_fence = str(manifest.get("fence") or "") if manifest else ""
-        result_ref = _result_ref(key.digest, manifest_fence)
-        if view.state is JobState.SUCCEEDED:
+
+        # Terminal recovery never opens the executable payload.  Degraded
+        # success is proved solely by its job-bound result reference; a
+        # cacheable success carries only the cache address in its terminal
+        # evidence, which is sufficient to reconcile the artifact manifest.
+        degraded_result_ref = view.result_ref
+        degraded_fence = _degraded_fence(degraded_result_ref, job_id)
+        if degraded_fence is not None:
             if (
-                manifest
-                and store.validate_manifest(
-                    manifest, require_committed=False, expected_key=key.digest
-                )
-                and _terminal_matches(
+                view.job_id != job_id
+                or view.attempt < 1
+                or (view.lease_fence is not None and view.lease_fence != degraded_fence)
+                or not _terminal_matches(
                     self.authority,
                     job_id,
                     {
                         "job_id": view.job_id,
                         "work_item_id": view.work_item_id,
                         "attempt": view.attempt,
-                        "fence": manifest.get("fence", ""),
+                        "fence": degraded_fence,
                     },
-                    result_ref=result_ref,
+                    result_ref=degraded_result_ref or "",
                 )
             ):
-                # This is the crash boundary after durable terminal commit and
-                # before the manifest commit marker.  No claim or subprocess is
-                # allowed for an already-succeeded WorkItem.
-                try:
-                    committed = store.finalize(
-                        key.digest,
-                        fence=str(manifest.get("fence") or ""),
-                        terminal_check=lambda: _terminal_matches(
-                            self.authority,
-                            job_id,
-                            {
-                                "job_id": view.job_id,
-                                "work_item_id": view.work_item_id,
-                                "attempt": view.attempt,
-                                "fence": manifest.get("fence", ""),
-                            },
-                            result_ref=result_ref,
-                        ),
-                        job_id=view.job_id,
-                        work_item_id=view.work_item_id,
-                        attempt=view.attempt,
-                    )
-                except (ArtifactFenceLost, ArtifactStoreError) as exc:
-                    return with_reconciliation(
-                        self._reconciliation_pending(
-                            job_id,
-                            view,
-                            key=key,
-                            error=str(exc),
-                        )
-                    )
                 return with_reconciliation(
                     {
-                        "ok": True,
-                        "recovered": True,
+                        "ok": False,
+                        "recovered": False,
                         "state": view.state.value,
-                        "key": key.digest,
-                        "artifacts": committed.get("artifacts", []),
+                        "degraded": True,
+                        "error": (
+                            "succeeded degraded WorkItem has no exact "
+                            "job/fence terminal result proof"
+                        ),
                     }
                 )
-            if manifest:
-                self._quarantine_terminal_invalid(
-                    store,
-                    key=key,
-                    manifest=manifest,
-                    view=view,
-                    reason="terminal-evidence-mismatch",
-                )
+            return with_reconciliation(
+                {
+                    "ok": True,
+                    "recovered": True,
+                    "state": view.state.value,
+                    "degraded": True,
+                    "result_ref": degraded_result_ref,
+                }
+            )
+
+        key_digest = _manifest_key_from_result_ref(view.result_ref)
+        if key_digest is None:
             return with_reconciliation(
                 {
                     "ok": False,
                     "recovered": False,
                     "state": view.state.value,
-                    "key": key.digest,
-                    "error": "succeeded WorkItem has no exact published artifact evidence",
+                    "error": (
+                        "succeeded WorkItem has no exact job/fence terminal "
+                        "artifact reference"
+                    ),
                 }
             )
-        if view.state in {JobState.CANCELLED, JobState.FAILED, JobState.DEAD_LETTER}:
-            if manifest:
-                self._quarantine_terminal_invalid(
-                    store,
-                    key=key,
-                    manifest=manifest,
-                    view=view,
-                    reason="terminal-without-success",
-                )
-            return with_reconciliation(
+        manifest = store.read_manifest(key_digest)
+        manifest_fence = str(manifest.get("fence") or "") if manifest else ""
+        result_ref = _result_ref(key_digest, manifest_fence)
+        if (
+            manifest
+            and store.validate_manifest(
+                manifest, require_committed=False, expected_key=key_digest
+            )
+            and view.result_ref == result_ref
+            and _terminal_matches(
+                self.authority,
+                job_id,
                 {
-                    "ok": False,
-                    "recovered": False,
-                    "state": view.state.value,
-                    "key": key.digest,
-                    "error": "terminal WorkItem cannot be rerun",
-                }
+                    "job_id": view.job_id,
+                    "work_item_id": view.work_item_id,
+                    "attempt": view.attempt,
+                    "fence": manifest.get("fence", ""),
+                },
+                result_ref=result_ref,
             )
-        if manifest and not store.validate_manifest(
-            manifest, require_committed=False, expected_key=key.digest
         ):
-            self._quarantine_stale_publication(
-                store,
-                key=key,
-                job_id=job_id,
-                view=view,
+            # This is the crash boundary after durable terminal commit and
+            # before the manifest commit marker.  No claim or subprocess is
+            # allowed for an already-succeeded WorkItem.
+            try:
+                committed = store.finalize(
+                    key_digest,
+                    fence=str(manifest.get("fence") or ""),
+                    terminal_check=lambda: _terminal_matches(
+                        self.authority,
+                        job_id,
+                        {
+                            "job_id": view.job_id,
+                            "work_item_id": view.work_item_id,
+                            "attempt": view.attempt,
+                            "fence": manifest.get("fence", ""),
+                        },
+                        result_ref=result_ref,
+                    ),
+                    job_id=view.job_id,
+                    work_item_id=view.work_item_id,
+                    attempt=view.attempt,
+                )
+            except (ArtifactFenceLost, ArtifactStoreError) as exc:
+                return with_reconciliation(
+                    self._reconciliation_pending(
+                        job_id,
+                        view,
+                        key=key_digest,
+                        error=str(exc),
+                    )
+                )
+            return with_reconciliation(
+                {
+                    "ok": True,
+                    "recovered": True,
+                    "state": view.state.value,
+                    "key": key_digest,
+                    "artifacts": committed.get("artifacts", []),
+                }
             )
-        # A stale lease is reclaimed by the native claim on a retry.  No local
-        # process marker is promoted to success.
+        if manifest:
+            self._quarantine_terminal_invalid(
+                store,
+                key=key_digest,
+                manifest=manifest,
+                view=view,
+                reason="terminal-evidence-mismatch",
+            )
         return with_reconciliation(
-            self.run_job(job_id, repo_path=repo_path, spec_name=spec_name)
+            {
+                "ok": False,
+                "recovered": False,
+                "state": view.state.value,
+                "key": key_digest,
+                "error": "succeeded WorkItem has no exact published artifact evidence",
+            }
         )
 
     reclaim = recover
@@ -1630,6 +1887,9 @@ class BuildWorker:
         attempt: int,
         fence: str,
     ) -> AdmissionDecision:
+        scheduler = self.scheduler
+        if scheduler is None:
+            raise BuildWorkerError("resource scheduler is required")
         resources = ResourceRequest(
             resource_class=view.resource_class,
             concurrency_key=view.concurrency_key,
@@ -1647,7 +1907,7 @@ class BuildWorker:
             disk_low_watermark_mib=view.disk_low_watermark_mib,
             disk_high_watermark_mib=view.disk_high_watermark_mib,
         )
-        return self.scheduler.admit(
+        return scheduler.admit(
             AdmissionRequest(
                 work_item_id=view.work_item_id,
                 attempt=attempt,
@@ -1670,7 +1930,7 @@ class BuildWorker:
         view: DurableJobView,
         scope: Any,
         spec: bq.BuildSpec,
-        descriptor: Mapping[str, Any],
+        payload: BuildExecutionDescriptor,
         token: CancellationToken,
         reservation_id: str | None,
     ) -> dict[str, Any]:
@@ -1683,7 +1943,7 @@ class BuildWorker:
 
         from contextlib import nullcontext
 
-        dirty = descriptor.get("degraded_reason") == "dirty-tree"
+        dirty = payload.degraded_reason == "dirty-tree"
         if dirty:
             raise BuildWorkerError(
                 "dirty durable builds require an immutable typed snapshot; "
@@ -1699,17 +1959,20 @@ class BuildWorker:
             _verify_toolchain_fingerprint(
                 build_tree,
                 spec,
-                descriptor,
+                payload,
                 cacheable=False,
             )
             executor = self.executor or LocalExecutor(
                 build_tree, worker_id=self.worker_id
             )
             command = ExecutionCommand(
-                argv=spec.command,
-                workdir=str((build_tree / spec.workdir).resolve()),
-                timeout_seconds=spec.timeout,
-                heartbeat_interval_seconds=min(30, max(1, spec.timeout // 4)),
+                argv=payload.argv,
+                workdir=str((build_tree / payload.workdir).resolve()),
+                environment_refs=payload.environment_refs,
+                timeout_seconds=payload.timeout_seconds,
+                heartbeat_interval_seconds=min(
+                    30, max(1, payload.timeout_seconds // 4)
+                ),
             )
             result = executor.run(
                 command,
@@ -1717,7 +1980,9 @@ class BuildWorker:
                 worker_id=self.worker_id,
                 fence=fence,
                 cancellation=token,
-                fence_check=lambda: self.authority.is_current(job_id, claim),
+                fence_check=lambda: _require_current_fence(
+                    self.authority, job_id, claim
+                ),
                 heartbeat=lambda: self.authority.heartbeat(job_id, claim),
             )
         result_ref: str | None = None
@@ -1741,11 +2006,21 @@ class BuildWorker:
                         job_id,
                         view,
                         key=None,
-                        error=str(exc),
+                        error=_AUTHORITY_COMMIT_FAILURE_MESSAGE,
                         reservation_id=reservation_id,
                     )
-                raise
-            if str(commit_result) not in {"None", "committed", "noop", "succeeded"}:
+                code = _authority_exception_code(
+                    exc, fallback="worker_environment_failure"
+                )
+                raise BuildWorkerError(
+                    _safe_authority_error(code),
+                    refusal_code=code,
+                ) from exc
+            commit_accepted = commit_result is None or (
+                isinstance(commit_result, str)
+                and commit_result in {"None", "committed", "noop", "succeeded"}
+            )
+            if not commit_accepted:
                 if _terminal_matches(
                     self.authority, job_id, claim, result_ref=result_ref
                 ):
@@ -1753,15 +2028,18 @@ class BuildWorker:
                         job_id,
                         view,
                         key=None,
-                        error=(
-                            "durable degraded WorkItem success commit returned "
-                            f"{commit_result!r}"
-                        ),
+                        error=_AUTHORITY_COMMIT_FAILURE_MESSAGE,
                         reservation_id=reservation_id,
                     )
+                commit_refusal_code = _commit_result_refusal_code(commit_result)
+                if commit_refusal_code is not None:
+                    raise BuildWorkerError(
+                        _EXECUTION_INPUT_AUTHORITY_MESSAGE,
+                        refusal_code=commit_refusal_code,
+                    )
                 raise BuildWorkerError(
-                    "durable degraded WorkItem success commit returned "
-                    f"{commit_result!r}"
+                    _AUTHORITY_COMMIT_FAILURE_MESSAGE,
+                    refusal_code="worker_environment_failure",
                 )
             state = "succeeded"
             ok = True
@@ -1779,15 +2057,16 @@ class BuildWorker:
             )
             if not already_cancelled:
                 if state == "cancelled":
-                    self.authority.commit(
+                    commit_result = self.authority.commit(
                         job_id,
                         claim,
                         outcome="cancelled",
                         refusal_code=FailureClass.CANCELLED_DEADLINE.value,
                         retryable=False,
                     )
+                    _raise_on_fenced_commit_result(commit_result)
                 else:
-                    self.authority.commit(
+                    commit_result = self.authority.commit(
                         job_id,
                         claim,
                         outcome="failed",
@@ -1796,15 +2075,15 @@ class BuildWorker:
                         ).value,
                         retryable=True,
                     )
+                    _raise_on_fenced_commit_result(commit_result)
             ok = False
         return {
             "ok": ok,
             "job_id": job_id,
             "state": state,
             "degraded": True,
-            "degraded_reason": descriptor.get(
-                "degraded_reason", "dirty-tree-or-unfingerprintable-toolchain"
-            ),
+            "degraded_reason": payload.degraded_reason
+            or "dirty-tree-or-unfingerprintable-toolchain",
             "cached": False,
             "result_ref": result_ref,
             "reservation_id": reservation_id,
@@ -1826,21 +2105,23 @@ class BuildWorker:
         )
         if not already_cancelled:
             if cancelled:
-                self.authority.commit(
+                commit_result = self.authority.commit(
                     job_id,
                     claim,
                     outcome="cancelled",
                     refusal_code=FailureClass.CANCELLED_DEADLINE.value,
                     retryable=False,
                 )
+                _raise_on_fenced_commit_result(commit_result)
             else:
-                self.authority.commit(
+                commit_result = self.authority.commit(
                     job_id,
                     claim,
                     outcome="failed",
                     failure_class=failure.value,
                     retryable=True,
                 )
+                _raise_on_fenced_commit_result(commit_result)
         return {
             "ok": False,
             "job_id": job_id,
@@ -1862,7 +2143,7 @@ class BuildWorker:
     ) -> dict[str, Any]:
         current = self._current_view(job_id)
         if current is None or current.state is not JobState.CANCELLED:
-            self.authority.commit(
+            commit_result = self.authority.commit(
                 job_id,
                 claim,
                 outcome="cancelled",
@@ -1870,6 +2151,7 @@ class BuildWorker:
                 refusal_code=FailureClass.CANCELLED_DEADLINE.value,
                 retryable=False,
             )
+            _raise_on_fenced_commit_result(commit_result)
         return {
             "ok": False,
             "job_id": job_id,
@@ -1888,39 +2170,47 @@ class BuildWorker:
         error: str = "",
         reservation_id: str | None = None,
     ) -> dict[str, Any]:
+        refusal_code = _authority_refusal_code(code)
         try:
-            self.authority.commit(
+            commit_result = self.authority.commit(
                 job_id,
                 claim,
                 outcome="failed",
                 # AU intentionally rejects a result carrying both fields.  A
                 # refusal code is the canonical terminal classification here;
                 # execution failures use failure_class in their own path.
-                refusal_code=code,
-                error_ref=error or code,
+                refusal_code=refusal_code,
+                error_ref=error or refusal_code,
                 retryable=True,
             )
+            _raise_on_fenced_commit_result(commit_result)
         except Exception as exc:
             # The WorkItem authority remains the source of truth.  If it did
             # not accept terminalization, report reconciliation rather than
             # claiming a failed terminal state that was never durable.
+            normalized_code = _authority_exception_code(exc, fallback=refusal_code)
             return {
                 "ok": False,
                 "job_id": job_id,
                 "work_item_id": view.work_item_id,
                 "state": view.state.value,
                 "terminalization_pending": True,
-                "error": str(exc),
-                "refusal_code": code,
+                "error": _safe_authority_error(normalized_code),
+                "refusal_code": normalized_code,
                 "reservation_id": reservation_id,
             }
+        safe_error = (
+            _EXECUTION_INPUT_AUTHORITY_MESSAGE
+            if refusal_code == _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE
+            else error or refusal_code
+        )
         return {
             "ok": False,
             "job_id": job_id,
             "work_item_id": view.work_item_id,
             "state": "failed",
-            "error": error or code,
-            "refusal_code": code,
+            "error": safe_error,
+            "refusal_code": refusal_code,
             "reservation_id": reservation_id,
         }
 

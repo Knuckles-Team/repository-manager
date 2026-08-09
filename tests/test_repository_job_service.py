@@ -704,6 +704,51 @@ def test_production_submission_requires_trusted_profile_registry() -> None:
     assert exc_info.value.code == RepositoryJobServiceCode.INTERNAL.value
 
 
+def test_production_exact_input_refuses_before_public_row_lookup() -> None:
+    service = RepositoryJobService(GraphRepositoryJobPort(object()))
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        service.get_exact_execution_input(
+            "rmjob:11111111-1111-1111-1111-111111111111", auth=_auth()
+        )
+    assert (
+        exc_info.value.code
+        == RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE.value
+    )
+
+
+def test_markerless_port_is_rejected_before_any_exact_or_visible_read() -> None:
+    class MarkerlessPort(FakeRepositoryJobPort):
+        execution_input_authority_available = None
+
+    with pytest.raises(TypeError, match="execution_input_authority_available"):
+        RepositoryJobService(MarkerlessPort())
+
+
+def test_marker_true_exact_read_generic_error_maps_to_authority_unavailable() -> None:
+    class ExplodingExactPort(FakeRepositoryJobPort):
+        def get_exact_execution_input(
+            self,
+            job_id: str,
+            *,
+            tenant_id: str,
+            owner_id: str,
+        ) -> object:
+            del job_id, tenant_id, owner_id
+            raise RuntimeError("exact argv=private-command path=/secret")
+
+    port = ExplodingExactPort()
+    service = RepositoryJobService(port)
+    submitted = service.submit(_request(), auth=_auth(), now=NOW)
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        service.get_exact_execution_input(submitted.job.job_id, auth=_auth())
+    assert (
+        exc_info.value.code
+        == RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE.value
+    )
+    assert "private-command" not in str(exc_info.value)
+    assert "/secret" not in str(exc_info.value)
+
+
 def test_production_submission_persists_resolved_admission_projection() -> None:
     prepared = GraphRepositoryJobPort(
         object(), profiles=default_resource_profiles()

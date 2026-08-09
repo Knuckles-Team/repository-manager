@@ -22,17 +22,23 @@ from repository_manager.build_service import (
     BuildExecutionDescriptor,
     BuildService,
     BuildServiceError,
-    descriptor_input_digest,
     dirty_snapshot_digest,
 )
-from repository_manager.build_worker import BuildWorker, BuildWorkerError
+from repository_manager.build_worker import (
+    BuildWorker,
+    BuildWorkerError,
+    GraphBuildAuthority,
+)
 from repository_manager.capacity import CapacityInventory, HostCapacity, ResourceVector
-from repository_manager.development import JobState, ResourceRequest
+from repository_manager.development import JobAuthorization, JobState, ResourceRequest
 from repository_manager.development.jobs import (
     DurableJobView,
     FakeRepositoryJobPort,
     RepositoryJobService,
+    RepositoryJobServiceCode,
+    RepositoryJobServiceError,
 )
+from repository_manager.development.payloads import cache_key_digest_from_components
 from repository_manager.reservations import InMemoryWorkItemReservationPort
 from repository_manager.resource_scheduler import (
     AdmissionReason,
@@ -60,12 +66,13 @@ def _repo(
         if toolchain is not None
         else ""
     )
+    (repo / "build_script.py").write_text(command + "\n", encoding="utf-8")
     (repo / ".buildcache.yaml").write_text(
         f"""schema_version: 2
 base: main
 specs:
   - name: test-build
-    command: [python3, -c, {command!r}]
+    command: [python3, build_script.py]
     artifacts: [out.txt]
 {toolchain_line}
     resource_class: light-check
@@ -78,12 +85,11 @@ specs:
 
 
 class _TypedJobService:
-    """Small typed-extension fake; no descriptor is stored in correlation_id."""
+    """Small typed-extension fake; no payload is stored in correlation_id."""
 
     def __init__(self) -> None:
         self.port = FakeRepositoryJobPort()
         self.service = RepositoryJobService(self.port)
-        self.descriptors: dict[str, object] = {}
 
     def submit(self, *args: object, **kwargs: object) -> object:
         return self.service.submit(*args, **kwargs)  # type: ignore[arg-type]
@@ -95,23 +101,77 @@ class _TypedJobService:
     def cancel(self, job_id: str, *, auth: object, reason: str) -> object:
         return self.service.cancel(job_id, auth=auth, reason=reason)  # type: ignore[arg-type]
 
-    def submit_build(
-        self, request: object, *, descriptor: object, **kwargs: object
-    ) -> object:
-        raw = dict(request)  # type: ignore[arg-type]
-        raw.pop("build_descriptor", None)
-        result = self.service.submit(raw, **kwargs)  # type: ignore[arg-type]
-        self.descriptors[result.job.job_id] = descriptor  # type: ignore[attr-defined]
-        return result
+    def exact(self, job_id: str, *, owner_id: str = "repository-manager") -> object:
+        return self.service.get_exact_execution_input(
+            job_id,
+            auth=JobAuthorization(tenant_id="repository-manager", owner_id=owner_id),
+        )
 
 
-def test_build_service_fails_closed_without_typed_descriptor_authority(
+def test_build_service_persists_typed_payload_through_normal_job_service(
     tmp_path: Path,
 ) -> None:
     repo = _repo(tmp_path)
-    service = BuildService(RepositoryJobService(FakeRepositoryJobPort()))
-    with pytest.raises(BuildServiceError, match="typed build descriptor extension"):
-        service.submit(repo_path=repo, spec_name="test-build")
+    port = FakeRepositoryJobPort()
+    result = BuildService(RepositoryJobService(port)).submit(
+        repo_path=repo, spec_name="test-build"
+    )
+    payload = port.execution_inputs[result["job_id"]]
+    assert payload.kind == "repository.build-execution/v1"
+    assert payload.argv == ("python3", "build_script.py")
+    assert port.rows[result["job_id"]].correlation_id.startswith("build:")
+
+
+def test_path_scoped_cache_key_is_persisted_without_changing_its_identity(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    config_path = repo / ".buildcache.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "    artifacts: [out.txt]\n",
+            "    cache_key_paths: [build_script.py]\n    artifacts: [out.txt]\n",
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".buildcache.yaml"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "path-scoped key fixture"], cwd=repo, check=True
+    )
+
+    port = FakeRepositoryJobPort()
+    typed = RepositoryJobService(port)
+    service = BuildService(typed)
+    key, _spec, _config, _tree = service.key(repo_path=repo, spec_name="test-build")
+    assert len(key.tree_sha) == 32
+
+    result = service.submit(repo_path=repo, spec_name="test-build")
+    payload = port.execution_inputs[result["job_id"]]
+    components = {item.name: item.value for item in payload.cache_key_components}
+    assert payload.tree_sha == key.tree_sha
+    assert components["tree_sha"] == key.tree_sha
+    assert payload.cache_key_digest == key.digest
+
+
+def test_build_service_rejects_shell_argv_without_secret_leak(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    config_path = repo / ".buildcache.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "command: [python3, build_script.py]",
+            'command: [python3, -c, "TOKEN=topsecret"]',
+        ),
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", ".buildcache.yaml"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "shell fixture"], cwd=repo, check=True)
+    port = FakeRepositoryJobPort()
+    with pytest.raises(BuildServiceError) as error:
+        BuildService(RepositoryJobService(port)).submit(
+            repo_path=repo, spec_name="test-build"
+        )
+    assert "topsecret" not in str(error.value)
+    assert port.rows == {}
 
 
 def test_v2_key_busts_each_declared_input_dimension(tmp_path: Path) -> None:
@@ -344,24 +404,39 @@ def test_two_services_share_one_job_and_fresh_worker_reads_frozen_descriptor(
         def get(self, job_id: str) -> object:
             return typed.port.rows[job_id]
 
-        def get_build_descriptor(self, job_id: str) -> object:
-            return typed.descriptors[job_id]
+        def execution_input_authority_available(self) -> bool:
+            return True
 
-        def claim(self, job_id: str, *, token: str) -> None:
-            del job_id, token
+        def get_exact_execution_input(self, job_id: str) -> object:
+            return typed.exact(job_id, owner_id=view.owner_id)
+
+        def claim(self, job_id: str, *, token: str) -> dict[str, object]:
+            del token
+            return {
+                "job_id": job_id,
+                "work_item_id": view.work_item_id,
+                "attempt": 1,
+                "fence": "f1",
+            }
+
+        def is_current(self, job_id: str, claim: object) -> bool:
+            del job_id
+            return isinstance(claim, dict) and claim.get("fence") == "f1"
 
     worker = BuildWorker(Authority(), None)
     # Mutating the caller config after submission cannot change the frozen
     # command recovered by a fresh worker instance.
-    (repo / ".buildcache.yaml").write_text(
-        (repo / ".buildcache.yaml").read_text(encoding="utf-8").replace("old", "new"),
+    (repo / "build_script.py").write_text(
+        "from pathlib import Path; Path('out.txt').write_text('new')\n",
         encoding="utf-8",
     )
-    _scope, spec, key, descriptor = worker._execution_plan(  # noqa: SLF001
-        view, repo_path=repo, spec_name="test-build"
+    authority = worker.authority
+    claim = authority.claim(view.job_id, token="test")
+    _scope, spec, key, payload = worker._execution_plan(  # noqa: SLF001
+        view, repo_path=repo, spec_name="test-build", claim=claim
     )
-    assert spec.command[-1].endswith("old')")
-    assert key is not None and descriptor["base_sha"] == view.base_sha
+    assert spec.command == ("python3", "build_script.py")
+    assert key is not None and payload.base_sha == view.base_sha
 
 
 def test_three_frontend_jobs_obey_native_profile_concurrency_limit() -> None:
@@ -841,16 +916,35 @@ def _worker_fixture(
     class Authority:
         def __init__(self) -> None:
             self.row = row
+            self.typed = typed
             self.commits: list[dict[str, object]] = []
+            self.execution_input_current = True
+            self.exact_reads = 0
+            self.body_reads = 0
+            self.get_calls = 0
+            self.claim_calls = 0
 
         def get(self, job_id: str) -> DurableJobView:
+            self.get_calls += 1
             assert job_id == self.row.job_id
             return self.row
 
-        def get_build_descriptor(self, job_id: str) -> object:
-            return typed.descriptors[job_id]
+        def execution_input_authority_available(self) -> bool:
+            return True
+
+        def get_exact_execution_input(self, job_id: str) -> object:
+            self.exact_reads += 1
+            if not self.execution_input_current:
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+                    "authority unavailable",
+                    job_id=job_id,
+                )
+            self.body_reads += 1
+            return typed.exact(job_id, owner_id=self.row.owner_id)
 
         def claim(self, job_id: str, *, token: str) -> dict[str, object]:
+            self.claim_calls += 1
             del token
             self.row = self.row.model_copy(
                 update={
@@ -869,7 +963,12 @@ def _worker_fixture(
 
         def is_current(self, job_id: str, claim: object) -> bool:
             del job_id
-            return self.row.state is JobState.LEASED and claim["fence"] == "f1"
+            return (
+                self.row.state is JobState.LEASED
+                and self.execution_input_current
+                and isinstance(claim, dict)
+                and claim.get("fence") == "f1"
+            )
 
         def heartbeat(self, job_id: str, claim: object) -> bool:
             del job_id, claim
@@ -922,6 +1021,120 @@ def _worker_fixture(
     return repo, Authority(), Scheduler()
 
 
+def test_legacy_payloadless_build_refuses_before_admission_with_stable_code(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+    legacy = authority.row.model_copy(
+        update={
+            "operation_payload_kind": None,
+            "operation_payload_version": None,
+            "operation_payload_digest": None,
+        }
+    )
+    authority.row = legacy
+    authority.typed.port.rows[legacy.job_id] = legacy
+    authority.typed.port.execution_inputs.pop(legacy.job_id, None)
+
+    class NeverScheduler:
+        def admit(self, request: object) -> object:
+            del request
+            raise AssertionError("legacy payload must refuse before admission")
+
+    result = BuildWorker(
+        authority,
+        NeverScheduler(),  # type: ignore[arg-type]
+        artifact_store=store,
+    ).run_job(legacy.job_id, repo_path=repo, spec_name="test-build")
+    assert result["state"] == JobState.FAILED.value
+    assert result["refusal_code"] == "invalid_request"
+    assert "typed_execution_payload_required" in result["error"]
+
+
+def test_stale_claim_fence_never_reads_exact_payload(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+    reads: list[str] = []
+    original_exact = authority.get_exact_execution_input
+
+    def observe_exact(job_id: str) -> object:
+        reads.append(job_id)
+        return original_exact(job_id)
+
+    authority.get_exact_execution_input = observe_exact  # type: ignore[method-assign]
+    authority.execution_input_current = False
+
+    result = BuildWorker(authority, None, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["state"] == JobState.FAILED.value
+    assert result["refusal_code"] == "typed_execution_payload_authority_unavailable"
+    # The one atomic authority call may be attempted, but it must deny before
+    # returning any private payload body.
+    assert reads == [authority.row.job_id]
+    assert authority.exact_reads == 1
+    assert authority.body_reads == 0
+
+
+def test_claim_fence_is_rechecked_after_exact_read_before_admission(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+    checks = 0
+
+    def stale_after_read(job_id: str, claim: object) -> bool:
+        nonlocal checks
+        checks += 1
+        del job_id, claim
+        return False
+
+    authority.is_current = stale_after_read  # type: ignore[method-assign]
+
+    class NeverScheduler:
+        def admit(self, request: object) -> object:
+            del request
+            raise AssertionError("stale post-read claim must precede admission")
+
+    result = BuildWorker(
+        authority,
+        NeverScheduler(),  # type: ignore[arg-type]
+        artifact_store=store,
+    ).run_job(authority.row.job_id, repo_path=repo, spec_name="test-build")
+    assert checks == 1
+    assert result["state"] == JobState.FAILED.value
+    assert result["refusal_code"] == "typed_execution_payload_authority_unavailable"
+
+
+def test_worker_uses_submitted_argv_when_current_config_drifts(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(tmp_path, store)
+    (repo / "new_script.py").write_text(
+        "from pathlib import Path; Path('out.txt').write_text('new')\n",
+        encoding="utf-8",
+    )
+    config_path = repo / ".buildcache.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "build_script.py", "new_script.py"
+        ),
+        encoding="utf-8",
+    )
+    result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["ok"] is True
+    manifest = store.read_manifest(result["key"])
+    assert manifest is not None
+    artifact = Path(manifest["artifacts"][0]["stored_at"])
+    assert artifact.read_text(encoding="utf-8") == "built"
+
+
 def test_worker_executes_after_admission_and_recovers_terminal_manifest(
     tmp_path: Path,
 ) -> None:
@@ -952,8 +1165,12 @@ def test_worker_recover_reconciles_old_stage_only_after_terminal_authority_proof
     producer = tmp_path / "staged-output"
     producer.mkdir()
     (producer / "out.txt").write_text("staged", encoding="utf-8")
-    descriptor = authority.get_build_descriptor(authority.row.job_id)
-    key = descriptor.cache_key  # type: ignore[union-attr]
+    payload = authority.typed.exact(
+        authority.row.job_id, owner_id=authority.row.owner_id
+    )
+    assert isinstance(payload, BuildExecutionDescriptor)
+    key = payload.cache_key_digest
+    assert key is not None
     staged = store.stage(
         producer,
         workdir=".",
@@ -1071,6 +1288,28 @@ def test_degraded_success_commit_response_must_be_accepted(
     assert all(item["outcome"] != "succeeded" for item in authority.commits)
 
 
+def test_fenced_success_commit_maps_to_authority_unavailable(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, scheduler = _worker_fixture(tmp_path, store)
+    original_commit = authority.commit
+
+    def fenced_success_commit(job_id: str, claim: object, **kwargs: object) -> str:
+        if kwargs.get("outcome") == "succeeded":
+            return "fenced"
+        return original_commit(job_id, claim, **kwargs)
+
+    authority.commit = fenced_success_commit  # type: ignore[method-assign]
+    result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["refusal_code"] == "typed_execution_payload_authority_unavailable"
+    assert (
+        result["error"] == "typed repository execution input authority is unavailable"
+    )
+
+
 def test_degraded_success_commit_ack_loss_reports_reconciliation(
     tmp_path: Path,
 ) -> None:
@@ -1140,17 +1379,28 @@ def test_worker_rejects_forged_cache_key_identity_before_admission(
 ) -> None:
     store = BuildArtifactStore(tmp_path / "cache")
     repo, authority, _scheduler = _worker_fixture(tmp_path, store)
-    descriptor = authority.get_build_descriptor(authority.row.job_id)
-    assert isinstance(descriptor, BuildExecutionDescriptor)
-    components = dict(descriptor.key_components)
+    payload = authority.typed.exact(
+        authority.row.job_id, owner_id=authority.row.owner_id
+    )
+    assert isinstance(payload, BuildExecutionDescriptor)
+    components = {item.name: item.value for item in payload.cache_key_components}
     components[component] = f"forged-{component}"
-    forged_key = bq.CacheKey(**components)
-    body = descriptor.model_dump(mode="python")
-    body["key_components"] = components
-    body["cache_key"] = forged_key.digest
-    body["input_digest"] = descriptor_input_digest(body)
-    forged_descriptor = BuildExecutionDescriptor.model_validate(body)
-    authority.get_build_descriptor = lambda _job_id: forged_descriptor  # type: ignore[method-assign]
+    updates: dict[str, object] = {
+        "cache_key_components": components,
+        "cache_key_digest": cache_key_digest_from_components(components),
+    }
+    if component == "repo":
+        updates["repository_id"] = components[component]
+    elif component == "spec":
+        updates["build_spec_name"] = components[component]
+    elif component == "feature_set":
+        updates["feature_set"] = components[component]
+    elif component == "target_triple":
+        updates["target_triple"] = components[component]
+    forged_payload = payload.model_copy(update=updates)
+    authority.get_exact_execution_input = (  # type: ignore[method-assign]
+        lambda _job_id: forged_payload
+    )
 
     class NeverScheduler:
         def admit(self, request: object) -> object:
@@ -1163,8 +1413,167 @@ def test_worker_rejects_forged_cache_key_identity_before_admission(
         artifact_store=store,
     ).run_job(authority.row.job_id, repo_path=repo, spec_name="test-build")
     assert result["state"] == JobState.FAILED.value
-    assert "persisted build key" in result["error"]
-    assert component in result["error"]
+    assert (
+        "build payload" in result["error"]
+        or "repository identity" in result["error"]
+        or "spec selection" in result["error"]
+    )
+
+
+def test_graph_authority_has_no_injectable_pre_native_exact_read() -> None:
+    job_id = "rmjob:11111111-1111-1111-1111-111111111111"
+    exact = GraphBuildAuthority(object(), tenant_id="tenant-a", token="worker-a")
+    assert exact.execution_input_authority_available() is False
+    assert not hasattr(exact, "execution_input_capability")
+    assert not hasattr(exact, "issue_execution_input_capability")
+    assert exact.is_current(job_id, {"fence": "copied-fence"}) is False
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        exact.get_exact_execution_input(job_id)
+    assert exc_info.value.code == (
+        RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE.value
+    )
+
+
+def test_graph_authority_without_native_port_fails_before_exact_read() -> None:
+    exact = GraphBuildAuthority(object(), tenant_id="tenant-a", token="worker-a")
+    assert exact.execution_input_authority_available() is False
+    assert (
+        exact.is_current(
+            "rmjob:11111111-1111-1111-1111-111111111111",
+            {"fence": "copied-fence"},
+        )
+        is False
+    )
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        exact.get_exact_execution_input("rmjob:11111111-1111-1111-1111-111111111111")
+    assert (
+        exc_info.value.code
+        == RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE.value
+    )
+
+
+def test_worker_without_native_authority_refuses_before_exact_or_admission(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+    exact_reads = 0
+
+    def forbidden_exact(*args: object, **kwargs: object) -> object:
+        nonlocal exact_reads
+        del args, kwargs
+        exact_reads += 1
+        raise AssertionError("authority-unavailable path must not read exact input")
+
+    authority.execution_input_authority_available = lambda: False  # type: ignore[method-assign]
+    authority.get_exact_execution_input = forbidden_exact  # type: ignore[method-assign]
+
+    class NeverScheduler:
+        def admit(self, request: object) -> object:
+            del request
+            raise AssertionError("authority-unavailable path must precede admission")
+
+    result = BuildWorker(
+        authority,
+        NeverScheduler(),  # type: ignore[arg-type]
+        artifact_store=store,
+    ).run_job(authority.row.job_id, repo_path=repo, spec_name="test-build")
+    assert result["refusal_code"] == ("typed_execution_payload_authority_unavailable")
+    assert exact_reads == 0
+    assert authority.get_calls == 0
+    assert authority.claim_calls == 0
+
+
+def test_worker_unavailable_refuses_before_claim_next_or_recovery_lookup(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+    claim_next_calls = 0
+
+    def forbidden_claim_next(*, kind: str, token: str) -> object:
+        nonlocal claim_next_calls
+        del kind, token
+        claim_next_calls += 1
+        raise AssertionError("unavailable worker must not claim next")
+
+    authority.execution_input_authority_available = lambda: False  # type: ignore[method-assign]
+    authority.claim_next = forbidden_claim_next  # type: ignore[attr-defined,method-assign]
+    worker = BuildWorker(authority, None, artifact_store=store)
+    queued = worker.run_next(repo_path=repo, spec_name="test-build")
+    recovered = worker.recover(authority.row.job_id, repo_path=repo)
+    assert queued is not None and queued["refusal_code"] == (
+        "typed_execution_payload_authority_unavailable"
+    )
+    assert recovered["refusal_code"] == (
+        "typed_execution_payload_authority_unavailable"
+    )
+    assert claim_next_calls == 0
+    assert authority.get_calls == 0
+    assert authority.claim_calls == 0
+
+
+def test_worker_atomic_authority_exception_is_stable_and_private(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+
+    def exploding_exact(job_id: str) -> object:
+        del job_id
+        raise RuntimeError("input_conflict secret=private-command")
+
+    authority.get_exact_execution_input = exploding_exact  # type: ignore[method-assign]
+    result = BuildWorker(authority, None, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["refusal_code"] == "typed_execution_payload_authority_unavailable"
+    assert "private-command" not in result["error"]
+
+
+def test_terminal_refusal_commit_failure_is_private_and_stable(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+
+    def exploding_exact(job_id: str) -> object:
+        del job_id
+        raise RuntimeError("input_conflict argv=private-command path=/secret")
+
+    def exploding_commit(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError("commit failed command=private-command path=/secret")
+
+    authority.get_exact_execution_input = exploding_exact  # type: ignore[method-assign]
+    authority.commit = exploding_commit  # type: ignore[method-assign]
+    result = BuildWorker(authority, None, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["refusal_code"] == "typed_execution_payload_authority_unavailable"
+    assert (
+        result["error"] == "typed repository execution input authority is unavailable"
+    )
+    assert "private-command" not in result["error"]
+    assert "/secret" not in result["error"]
+
+
+def test_worker_marker_exception_refuses_before_authority_state_access(
+    tmp_path: Path,
+) -> None:
+    store = BuildArtifactStore(tmp_path / "cache")
+    repo, authority, _scheduler = _worker_fixture(tmp_path, store)
+
+    def exploding_marker() -> bool:
+        raise RuntimeError("copied public claim is not authority")
+
+    authority.execution_input_authority_available = exploding_marker  # type: ignore[method-assign]
+    result = BuildWorker(authority, None, artifact_store=store).run_job(
+        authority.row.job_id, repo_path=repo, spec_name="test-build"
+    )
+    assert result["refusal_code"] == "typed_execution_payload_authority_unavailable"
+    assert authority.get_calls == 0
+    assert authority.claim_calls == 0
 
 
 def test_worker_does_not_fail_after_success_commit_response_is_lost(
@@ -1255,11 +1664,11 @@ def test_stale_fence_admission_is_not_retryable_on_the_same_claim(
         StaleFenceScheduler(),  # type: ignore[arg-type]
         artifact_store=store,
     ).run_job(authority.row.job_id, repo_path=repo, spec_name="test-build")
-    assert result["stale_fence"] is True
-    assert result["deferred"] is False
-    assert result["retryable"] is False
-    assert result["reconciliation_required"] is True
-    assert authority.commits == []
+    assert result["refusal_code"] == "typed_execution_payload_authority_unavailable"
+    assert len(authority.commits) == 1
+    assert authority.commits[0]["refusal_code"] == (
+        "typed_execution_payload_authority_unavailable"
+    )
 
 
 def test_worker_rejects_claim_for_another_job_or_work_item(

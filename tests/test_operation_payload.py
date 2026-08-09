@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 import repository_manager.development.jobs as jobs
 from repository_manager.development.enums import JobState
@@ -32,6 +32,9 @@ from repository_manager.development.payloads import (
 
 NOW = datetime(2026, 8, 9, 3, 0, tzinfo=UTC)
 FIXTURE = Path(__file__).parent / "fixtures" / "rmdd_29_operation_payload.json"
+PATH_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "rmdd_29_operation_payload_path_scoped.json"
+)
 
 
 def _payload() -> dict[str, Any]:
@@ -116,6 +119,65 @@ def test_cache_digest_does_not_authorize_a_mismatched_tree_component() -> None:
     ]
     raw["cache_key_digest"] = cache_key_digest_from_components(components)
     with pytest.raises((ValidationError, ValueError), match="tree"):
+        BuildExecutionDescriptor.model_validate(raw)
+
+
+def test_path_scoped_tree_identity_preserves_the_existing_32_hex_cache_component() -> (
+    None
+):
+    raw = _payload()
+    raw.pop("payload_digest", None)
+    path_tree = "f" * 32
+    components = {
+        str(item["name"]): str(item["value"])
+        for item in raw["cache_key_components"]
+        if isinstance(item, dict)
+    }
+    components["tree_sha"] = path_tree
+    raw["tree_sha"] = path_tree
+    raw["cache_key_components"] = [
+        {"name": name, "value": value} for name, value in components.items()
+    ]
+    raw["cache_key_digest"] = cache_key_digest_from_components(components)
+    descriptor = BuildExecutionDescriptor.model_validate(raw)
+    assert descriptor.tree_sha == path_tree
+    assert descriptor.cache_key_components[-1].value == path_tree
+
+
+def test_path_scoped_golden_fixture_matches_au_contract() -> None:
+    descriptor = BuildExecutionDescriptor.model_validate(
+        json.loads(PATH_FIXTURE.read_text(encoding="utf-8"))
+    )
+    assert len(descriptor.tree_sha) == 32
+    assert descriptor.cache_key_digest == "v2:9c1ebe846484244a4b0afcadcac94dc4"
+    assert descriptor.payload_digest == (
+        "31566ae365e939ca01f9c8d248f71cf33967f83b1eabb0b132153694f8c727bd"
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("tree_sha", "f" * 31), ("tree_sha", "f" * 33), ("base_sha", "f" * 32)],
+)
+def test_tree_identity_bounds_keep_path_digest_distinct_from_base_sha(
+    field: str, value: str
+) -> None:
+    with pytest.raises((ValidationError, ValueError)):
+        raw = _payload()
+        raw.pop("payload_digest", None)
+        raw[field] = value
+        if field == "tree_sha":
+            components = {
+                str(item["name"]): str(item["value"])
+                for item in raw["cache_key_components"]
+                if isinstance(item, dict)
+            }
+            components["tree_sha"] = value
+            raw["cache_key_components"] = [
+                {"name": name, "value": component}
+                for name, component in components.items()
+            ]
+            raw["cache_key_digest"] = cache_key_digest_from_components(components)
         BuildExecutionDescriptor.model_validate(raw)
 
 
@@ -327,10 +389,6 @@ def test_service_revalidates_malformed_authority_summary() -> None:
 def test_production_submit_and_exact_read_accept_foreign_au_model(monkeypatch) -> None:
     raw_payload = _payload()
 
-    class ForeignAUPayload(BaseModel):
-        model_config = ConfigDict(extra="allow")
-
-    foreign_payload = ForeignAUPayload.model_validate(raw_payload)
     job_id = "rmjob:11111111-1111-1111-1111-111111111111"
     view_raw = {
         "contract_version": "1",
@@ -366,13 +424,6 @@ def test_production_submit_and_exact_read_accept_foreign_au_model(monkeypatch) -
             calls["get"] = kwargs
             return SimpleNamespace(model_dump=lambda **_: view_raw)
 
-        @staticmethod
-        def get_repository_operation_payload(
-            *_args: object, **kwargs: object
-        ) -> object:
-            calls["exact"] = kwargs
-            return foreign_payload
-
     monkeypatch.setattr(
         GraphRepositoryJobPort,
         "_authority_module",
@@ -384,12 +435,13 @@ def test_production_submit_and_exact_read_accept_foreign_au_model(monkeypatch) -
 
     assert result.job.operation_payload_digest == raw_payload["payload_digest"]
     assert "operation_payload" not in result.job.model_dump(mode="json")
-    exact = port.get_exact_execution_input(
-        job_id, tenant_id="tenant-a", owner_id="owner-a"
+    with pytest.raises(RepositoryJobServiceError) as exc_info:
+        port.get_exact_execution_input(job_id, tenant_id="tenant-a", owner_id="owner-a")
+    assert (
+        exc_info.value.code
+        == RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE.value
     )
-    assert isinstance(exact, BuildExecutionDescriptor)
-    assert exact.payload_digest == raw_payload["payload_digest"]
-    assert calls["exact"] == {"tenant": "tenant-a", "owner_id": "owner-a"}
+    assert "exact" not in calls
 
 
 def test_unexpected_authority_exception_text_stays_internal(monkeypatch) -> None:

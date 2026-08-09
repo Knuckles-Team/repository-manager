@@ -103,6 +103,9 @@ class RepositoryJobServiceCode(StrEnum):
     DUPLICATE = RefusalCode.DUPLICATE_REQUEST.value
     INPUT_CONFLICT = "input_conflict"
     TYPED_EXECUTION_PAYLOAD_REQUIRED = "typed_execution_payload_required"
+    TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE = (
+        "typed_execution_payload_authority_unavailable"
+    )
     RECONCILIATION_REQUIRED = RefusalCode.RECONCILIATION_REQUIRED.value
     INTERNAL = RefusalCode.INTERNAL_ERROR.value
 
@@ -130,6 +133,9 @@ _SAFE_ERROR_MESSAGES: Mapping[RepositoryJobServiceCode, str] = {
     RepositoryJobServiceCode.DUPLICATE: "repository job idempotency key conflicts with immutable input",
     RepositoryJobServiceCode.INPUT_CONFLICT: "repository execution input conflicts with durable state",
     RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED: "typed repository execution input is required",
+    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE: (
+        "typed repository execution input authority is unavailable"
+    ),
     RepositoryJobServiceCode.RECONCILIATION_REQUIRED: "repository job requires reconciliation",
     RepositoryJobServiceCode.INTERNAL: "repository job authority failed",
 }
@@ -159,6 +165,35 @@ def _safe_port_error(
         code,
         _SAFE_ERROR_MESSAGES[code],
         job_id=scoped_job_id,
+    )
+
+
+def _safe_exact_input_error(
+    error: Exception, *, job_id: str
+) -> RepositoryJobServiceError:
+    """Normalize exact-input adapter failures without exposing private input."""
+
+    if isinstance(error, RepositoryJobServiceError):
+        try:
+            code = RepositoryJobServiceCode(error.code)
+        except ValueError:
+            code = (
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+            )
+        if code not in {
+            RepositoryJobServiceCode.INPUT_CONFLICT,
+            RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED,
+            RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+        }:
+            code = (
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+            )
+    else:
+        code = RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+    return RepositoryJobServiceError(
+        code,
+        _SAFE_ERROR_MESSAGES[code],
+        job_id=job_id,
     )
 
 
@@ -546,6 +581,8 @@ class ShadowMismatch(BaseModel):
 class RepositoryJobPort(Protocol):
     """The only state seam used by :class:`RepositoryJobService`."""
 
+    def execution_input_authority_available(self) -> bool: ...
+
     def submit(
         self,
         request: Mapping[str, Any],
@@ -703,6 +740,10 @@ def _translate_authority_error(
     if is_conflict or is_authority_error:
         if "typed_execution_payload_required" in lowered:
             code = RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED
+        elif "typed_execution_payload_authority_unavailable" in lowered:
+            code = (
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+            )
         elif "input_conflict" in lowered:
             code = RepositoryJobServiceCode.INPUT_CONFLICT
         elif is_conflict:
@@ -902,6 +943,11 @@ class GraphRepositoryJobPort:
             deduplicated=bool(raw.get("deduplicated", False)),
         )
 
+    def execution_input_authority_available(self) -> bool:
+        """Report the absent EG-native atomic exact-input port."""
+
+        return False
+
     def get_exact_execution_input(
         self,
         job_id: str,
@@ -909,37 +955,22 @@ class GraphRepositoryJobPort:
         tenant_id: str,
         owner_id: str,
     ) -> BuildExecutionDescriptor | None:
-        """Read the typed body through AU's narrow authenticated seam.
+        """Refuse until EG supplies one atomic authenticated exact-input operation.
 
-        The ordinary ``get`` projection intentionally carries only the
-        operation-payload summary.  This method delegates the body read to AU
-        so tenant/owner checks, legacy refusal, and persistence tamper checks
-        remain authoritative; RM revalidates the returned model once more at
-        its own boundary before exposing it to a caller.
+        The old tenant/owner adapter accepted a caller-controlled owner string
+        and therefore could impersonate the submitter.  Public views remain
+        available, but no production Graph port may read executable bytes
+        until the native atomic exact-input port exists.
         """
 
-        authority = self._authority_module()
-        try:
-            payload = authority.get_repository_operation_payload(
-                self.engine,
-                job_id,
-                tenant=tenant_id,
-                owner_id=owner_id,
-            )
-            if payload is None:
-                return None
-            try:
-                return operation_payload_from_mapping(payload)
-            except (TypeError, ValueError) as exc:
-                raise RepositoryJobServiceError(
-                    RepositoryJobServiceCode.INPUT_CONFLICT,
-                    _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
-                    job_id=job_id,
-                ) from exc
-        except RepositoryJobServiceError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - translate authority contract errors
-            raise _translate_authority_error(authority, exc) from exc
+        del tenant_id, owner_id
+        raise RepositoryJobServiceError(
+            RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+            _SAFE_ERROR_MESSAGES[
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+            ],
+            job_id=job_id,
+        )
 
     # Compatibility spelling for callers that use the shorter contract name;
     # both paths retain the exact same authorization and validation boundary.
@@ -1287,23 +1318,22 @@ class RepositoryJobService:
     """Domain-facing durable job operations over one injected port."""
 
     def __init__(self, port: RepositoryJobPort) -> None:
-        if not isinstance(port, RepositoryJobPort):
-            # Runtime-checkable protocols only check method names; this gives a
-            # useful startup error while keeping fake ports structural.
-            required = (
-                "submit",
-                "get",
-                "list_page",
-                "cancel",
-                "retry",
-                "submit_repair",
-                "get_exact_execution_input",
-            )
-            missing = [
-                name for name in required if not callable(getattr(port, name, None))
-            ]
-            if missing:
-                raise TypeError(f"repository job port is missing: {', '.join(missing)}")
+        # Runtime-checkable protocols only check attribute presence; validate
+        # callability explicitly so a public owner/tenant-shaped object cannot
+        # masquerade as an exact-input authority by setting a truthy marker.
+        required = (
+            "execution_input_authority_available",
+            "submit",
+            "get",
+            "list_page",
+            "cancel",
+            "retry",
+            "submit_repair",
+            "get_exact_execution_input",
+        )
+        missing = [name for name in required if not callable(getattr(port, name, None))]
+        if missing:
+            raise TypeError(f"repository job port is missing: {', '.join(missing)}")
         self._port = port
 
     @staticmethod
@@ -1402,12 +1432,31 @@ class RepositoryJobService:
     ) -> BuildExecutionDescriptor | None:
         """Return the exact typed build body inside the authenticated scope.
 
-        Scope is established from the ordinary projection first, so a caller
-        cannot use this body-bearing method as a tenant/owner existence oracle.
-        The port result is revalidated and bound to the immutable projection
-        before it leaves the service.
+        A production port must report a native atomic exact-input authority
+        before any public-row lookup; otherwise this method fails closed.  The
+        pre-native Graph port never reports availability.  The explicit test
+        fake is the only owner-scoped implementation used to exercise pure
+        service semantics before the EG native operation exists.
         """
 
+        try:
+            available = bool(self._port.execution_input_authority_available())
+        except Exception as exc:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+                _SAFE_ERROR_MESSAGES[
+                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+                ],
+                job_id=job_id,
+            ) from exc
+        if not available:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE,
+                _SAFE_ERROR_MESSAGES[
+                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+                ],
+                job_id=job_id,
+            )
         view = self._visible(job_id, auth)
         try:
             payload = self._port.get_exact_execution_input(
@@ -1415,8 +1464,8 @@ class RepositoryJobService:
                 tenant_id=auth.tenant_id,
                 owner_id=auth.owner_id,
             )
-        except Exception as exc:  # noqa: BLE001 - normalize port boundary errors
-            raise _safe_port_error(exc, job_id=job_id) from exc
+        except Exception as exc:  # noqa: BLE001 - exact input is privacy-sensitive
+            raise _safe_exact_input_error(exc, job_id=job_id) from exc
         if payload is None:
             if view.operation == "build" and view.operation_payload_digest is None:
                 raise RepositoryJobServiceError(
@@ -1755,7 +1804,7 @@ class LegacyShadowAdapter:
 
 
 class FakeRepositoryJobPort:
-    """Faithful durable-shaped fake for service tests and restart simulation."""
+    """Test-only durable fake with an explicitly trusted exact-input seam."""
 
     def __init__(self) -> None:
         self.rows: dict[str, DurableJobView] = {}
@@ -1764,6 +1813,11 @@ class FakeRepositoryJobPort:
         self.execution_inputs: dict[str, BuildExecutionDescriptor] = {}
         self.submit_calls = 0
         self.cancel_calls = 0
+
+    def execution_input_authority_available(self) -> bool:
+        """Opt into the test-only exact-input implementation."""
+
+        return True
 
     def snapshot(self) -> dict[str, Any]:
         """Return a restart-safe fake snapshot, including typed bodies."""
