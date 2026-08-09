@@ -758,11 +758,8 @@ class Generation(ContractModel):
     @model_validator(mode="after")
     def validate_generation_state(self) -> Generation:
         ids = [item.candidate_id for item in self.candidate_versions]
-        versions = [item.version for item in self.candidate_versions]
         if len(set(ids)) != len(ids):
             raise ValueError("generation candidate IDs must be unique")
-        if len(set(versions)) != len(versions):
-            raise ValueError("generation candidate versions must be unique")
         if self.state != GenerationState.OPEN and self.sealed_at is None:
             raise ValueError("sealed or terminal generations require sealed_at")
         if self.state == GenerationState.OPEN and self.sealed_at is not None:

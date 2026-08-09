@@ -26,6 +26,7 @@ from repository_manager.development import (
     TargetPolicy,
     canonical_digest,
     canonical_json,
+    is_legal_transition,
 )
 
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -442,6 +443,7 @@ class GenerationRecord:
         """Append a state/result update while preserving immutable membership."""
 
         _assert_generation_identity(self.generation, generation)
+        _assert_generation_transition(self.generation, generation)
         return GenerationRecord(
             generation=generation,
             members=self.members,
@@ -546,6 +548,17 @@ def _assert_generation_identity(old: Generation, new: Generation) -> None:
             )
 
 
+def _assert_generation_transition(old: Generation, new: Generation) -> None:
+    """Reject a state regression while allowing same-state result updates."""
+
+    if old.state == new.state:
+        return
+    if not is_legal_transition(old.state, new.state):
+        raise CandidateGenerationError(
+            f"illegal generation transition: {old.state} -> {new.state}"
+        )
+
+
 def _latest_record(group: list[dict[str, Any]]) -> dict[str, Any]:
     """Fold records by write time, retaining deterministic tie-breaking."""
 
@@ -621,9 +634,9 @@ def fold_generation_records(
 
     generations: list[GenerationRecord] = []
     for record_id, group in sorted(_group_records(records, kind="generation").items()):
-        decoded = [GenerationRecord.from_record(item) for item in group]
-        first = decoded[0]
-        for record in decoded[1:]:
+        decoded = [(GenerationRecord.from_record(item), item) for item in group]
+        first = decoded[0][0]
+        for record, _ in decoded[1:]:
             _assert_generation_identity(first.generation, record.generation)
             if tuple(member.immutable_digest() for member in record.members) != tuple(
                 member.immutable_digest() for member in first.members
@@ -631,7 +644,26 @@ def fold_generation_records(
                 raise CandidateGenerationError(
                     f"generation {record_id} has conflicting append-only members"
                 )
-        generations.append(GenerationRecord.from_record(_latest_record(group)))
+        timestamps: dict[datetime, set[str]] = {}
+        for record, raw in decoded:
+            timestamp = timestamp_value(record.recorded_at)
+            timestamps.setdefault(timestamp, set()).add(canonical_json(raw))
+        if any(len(variants) > 1 for variants in timestamps.values()):
+            raise CandidateGenerationError(
+                f"generation {record_id} has divergent records at one timestamp"
+            )
+        ordered = sorted(
+            decoded,
+            key=lambda pair: (
+                timestamp_value(pair[0].recorded_at),
+                canonical_json(pair[1]),
+            ),
+        )
+        previous = ordered[0][0]
+        for current, _ in ordered[1:]:
+            _assert_generation_transition(previous.generation, current.generation)
+            previous = current
+        generations.append(ordered[-1][0])
     return tuple(generations)
 
 
@@ -785,10 +817,6 @@ def generation_record(
         for member in ordered
     ):
         raise CandidateGenerationError("generation members are not compatible")
-    if len({member.version for member in ordered}) != len(ordered):
-        raise CandidateGenerationError(
-            "generation members must preserve distinct candidate versions"
-        )
     generation_target = target or first.target
     if generation_target != first.target:
         raise CandidateGenerationError(

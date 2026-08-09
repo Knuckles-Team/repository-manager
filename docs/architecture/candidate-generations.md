@@ -37,7 +37,9 @@ The logical candidate ID remains stable for a branch submission.  A changed
 branch or base SHA creates version `N+1`; version `N` is never rewritten.
 Each generation member retains that snapshot's actual version (for example,
 `v3` and `v7`); no ordinal is substituted.  `Generation.derive_id` hashes the
-ordered `CandidateVersion` tuple and all generation-level immutable inputs.
+ordered `(candidate_id, version, candidate_sha)` tuple and all
+generation-level immutable inputs.  Versions are scoped to their candidate, so
+independent submissions may each begin at `v1`.
 
 ## Coalescing policy
 

@@ -186,8 +186,6 @@ def generation_id_for(
     ordered = tuple(sorted(members, key=_candidate_sort_key))
     if not ordered:
         raise ValueError("cannot derive an ID for an empty generation")
-    if len({item.version for item in ordered}) != len(ordered):
-        raise ValueError("generation members must preserve distinct candidate versions")
     first = ordered[0]
     branch = target_branch or first.target_branch
     return Generation.derive_id(

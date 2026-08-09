@@ -87,7 +87,7 @@ def _candidate(
 
 
 def test_three_compatible_candidates_coalesce_in_stable_order() -> None:
-    candidates = [_candidate(i, version=i) for i in (3, 1, 2)]
+    candidates = [_candidate(i) for i in (3, 1, 2)]
     now = datetime(2026, 8, 9, 12, 1, tzinfo=UTC)
 
     first = select_batches(candidates, now=now, batch_size=8)
@@ -98,6 +98,23 @@ def test_three_compatible_candidates_coalesce_in_stable_order() -> None:
     ]
     assert first.batches == second.batches
     assert generation_id_for(first.selected) == generation_id_for(second.selected)
+
+
+def test_three_v1_candidates_seal_deterministically_without_ordinal_versions() -> None:
+    candidates = [_candidate(i) for i in (3, 1, 2)]
+    sealed_at = datetime(2026, 8, 9, 12, 1, tzinfo=UTC)
+
+    first = seal_generation(candidates, sealed_at=sealed_at)
+    second = seal_generation(reversed(candidates), sealed_at=sealed_at)
+
+    assert [item.version for item in first.generation.candidate_versions] == [1, 1, 1]
+    assert [item.branch for item in first.members] == [
+        "feature/1",
+        "feature/2",
+        "feature/3",
+    ]
+    assert first.generation.generation_id == second.generation.generation_id
+    assert first.generation.candidate_versions == second.generation.candidate_versions
 
 
 def test_generation_id_and_members_preserve_actual_v3_v7_versions() -> None:
@@ -225,7 +242,7 @@ def test_branch_or_base_movement_creates_a_new_immutable_version() -> None:
 
 
 def test_restart_fold_is_idempotent_and_generation_membership_is_immutable() -> None:
-    members = tuple(_candidate(index, version=index) for index in (1, 2, 3))
+    members = tuple(_candidate(index) for index in (1, 2, 3))
     candidate_records = [member.to_record() for member in members]
     restarted_candidates = fold_candidate_records(candidate_records)
     assert restarted_candidates == tuple(
@@ -257,6 +274,67 @@ def test_restart_fold_is_idempotent_and_generation_membership_is_immutable() -> 
     )
     with pytest.raises(CandidateGenerationError):
         sealed.with_update(changed_generation, result={"status": "mutated"})
+
+
+def test_generation_fold_sorts_history_and_accepts_forward_transitions() -> None:
+    members = (_candidate(1), _candidate(2))
+    sealed = seal_generation(members, sealed_at=datetime(2026, 8, 9, 12, 1, tzinfo=UTC))
+    integrating_generation = sealed.generation.model_copy(
+        update={"state": GenerationState.INTEGRATING}
+    )
+    integrating = sealed.with_update(
+        integrating_generation,
+        result={"status": "integrating"},
+        recorded_at="2026-08-09T12:02:00Z",
+    )
+    current = fold_generation_records([integrating.to_record(), sealed.to_record()])[0]
+
+    assert current.generation.state == GenerationState.INTEGRATING
+    assert current.result == {"status": "integrating"}
+
+
+def test_generation_fold_rejects_regression_after_a_forward_transition() -> None:
+    members = (_candidate(1), _candidate(2))
+    sealed = seal_generation(members, sealed_at=datetime(2026, 8, 9, 12, 1, tzinfo=UTC))
+    integrating_generation = sealed.generation.model_copy(
+        update={"state": GenerationState.INTEGRATING}
+    )
+    integrating = sealed.with_update(
+        integrating_generation,
+        result={"status": "integrating"},
+        recorded_at="2026-08-09T12:02:00Z",
+    ).to_record()
+    regressed = dict(integrating)
+    regressed_generation = dict(regressed["generation"])
+    regressed_generation["state"] = GenerationState.SEALED.value
+    regressed["generation"] = regressed_generation
+    regressed["recorded_at"] = "2026-08-09T12:03:00Z"
+
+    with pytest.raises(CandidateGenerationError, match="illegal generation transition"):
+        fold_generation_records([sealed.to_record(), integrating, regressed])
+
+
+def test_generation_fold_rejects_divergent_same_timestamp_records() -> None:
+    members = (_candidate(1), _candidate(2))
+    sealed = seal_generation(members, sealed_at=datetime(2026, 8, 9, 12, 1, tzinfo=UTC))
+    integrating_generation = sealed.generation.model_copy(
+        update={"state": GenerationState.INTEGRATING}
+    )
+    first = sealed.with_update(
+        integrating_generation,
+        result={"status": "first"},
+        recorded_at="2026-08-09T12:02:00Z",
+    )
+    second = sealed.with_update(
+        integrating_generation,
+        result={"status": "second"},
+        recorded_at="2026-08-09T12:02:00Z",
+    )
+
+    with pytest.raises(CandidateGenerationError, match="one timestamp"):
+        fold_generation_records(
+            [sealed.to_record(), first.to_record(), second.to_record()]
+        )
 
 
 def test_bisection_isolates_one_bad_candidate_and_reuses_exact_good_evidence() -> None:
