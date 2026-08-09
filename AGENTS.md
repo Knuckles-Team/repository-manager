@@ -500,6 +500,11 @@ pip install -e .[all] # Install with all optional extras
 - `repository_manager/graph/` → **Hybrid Workspace Graph Engine** (NetworkX + LadybugDB)
   - `graph/engine.py` → Multi-faceted Search Engine (Semantic Vector + Structural Cypher)
   - `graph/schema.py` → Unified graph schema for workspace symbols and cross-repo dependencies
+- `repository_manager/execution/` → **Local fixed-argv execution boundary**
+  - `executor.py` → authorized-root validation, bounded cancellation, heartbeats, and fences
+  - `process_supervisor.py` → non-shell process groups and TERM/KILL/reap escalation
+  - `bounded_log.py` → redacted bounded streaming and terminal tails
+  - `fakes.py` → deterministic clock/process/executor fixtures for downstream lanes
 
 ## Code Style & Conventions
 
