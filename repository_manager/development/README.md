@@ -66,3 +66,19 @@ validation, authorized worktree roots, process-group cleanup, bounded redacted
 logs, cancellation, heartbeat, and publication fencing.  Build, validation,
 workspace, and remote lanes migrate their existing subprocess call sites to
 that seam only after their own scheduler/transport policies are ready.
+
+## Durable job service
+
+`jobs.py` provides the RMDD-06 `RepositoryJobService` and its injected
+`RepositoryJobPort`. `GraphRepositoryJobPort` delegates to the graph-os Agent
+Utilities repository WorkItem authority; `FakeRepositoryJobPort` is a durable-shaped
+test double. The service owns no `_jobs`/`_job_futures` state, requires a verified
+tenant/owner (including an owner-scoped read immediately before native cancel),
+and returns explicit keyset continuations for bounded lists.
+
+Reconciliation is read-only with respect to Git, processes, artifacts, and branches.
+It returns deterministic findings and previewable repair proposals; opting into repair
+enqueue creates an idempotent `operation=repair` WorkItem for a later worker. The
+`LegacyShadowAdapter` can compare current MCP records during RMDD-20 cutover without
+letting legacy memory overwrite durable WorkItem truth. See
+[`repository-job-service.md`](../../docs/architecture/repository-job-service.md).
