@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import random
 import socket
@@ -22,6 +23,7 @@ from repository_manager.development.workspace_release import (
     DependencyEdge,
     DependencySpec,
     Ecosystem,
+    FloorRewrite,
     GraphDiagnosticCode,
     GraphValidationError,
     PackageKey,
@@ -268,6 +270,296 @@ def test_frozen_c11_plan_has_stable_digest_and_no_push_without_consent() -> None
             stage=ReleaseStage.PUSH,
             project_id="packages/demo",
         )
+
+
+def _plan(
+    projects: tuple[ProjectRecord, ...],
+    *,
+    edges: tuple[DependencyEdge, ...] = (),
+    floor_rewrites: tuple[FloorRewrite, ...] = (),
+    stages: tuple[PlanStage, ...] = (),
+    parallel_groups: tuple[tuple[str, ...], ...] = (),
+) -> WorkspaceReleasePlan:
+    return WorkspaceReleasePlan(
+        workspace_id="workspace:test",
+        source_sha="b" * 40,
+        selected_projects=tuple(project.project_id for project in projects),
+        projects=projects,
+        edges=edges,
+        floor_rewrites=floor_rewrites,
+        stages=stages,
+        parallel_groups=parallel_groups,
+    )
+
+
+def test_plan_edges_and_rewrites_require_frozen_package_keys() -> None:
+    project = _project("packages/a", _package("packages/a", "a"))
+    dependency = _project("packages/b", _package("packages/b", "b"))
+    missing_edge = DependencyEdge(
+        dependent=PackageKey("packages/a", Ecosystem.PYTHON, "not-frozen"),
+        dependency=PackageKey("packages/b", Ecosystem.PYTHON, "b"),
+    )
+    with pytest.raises(WorkspaceReleaseError, match="dependent package is not frozen"):
+        _plan(
+            (project, dependency),
+            edges=(missing_edge,),
+            parallel_groups=(("packages/a", "packages/b"),),
+        )
+
+    missing_rewrite = FloorRewrite(
+        dependent=PackageKey("packages/a", Ecosystem.PYTHON, "a"),
+        dependency=PackageKey("packages/b", Ecosystem.PYTHON, "not-frozen"),
+        old_floor=VersionFloor.parse("^1.0.0"),
+        new_floor=VersionFloor.parse("^2.0.0"),
+    )
+    with pytest.raises(WorkspaceReleaseError, match="dependency package is not frozen"):
+        _plan(
+            (project, dependency),
+            floor_rewrites=(missing_rewrite,),
+            parallel_groups=(("packages/a", "packages/b"),),
+        )
+
+
+def test_plan_refuses_project_and_stage_cycles() -> None:
+    a = _project("packages/a", _package("packages/a", "a"))
+    b = _project("packages/b", _package("packages/b", "b"))
+    a_to_b = DependencyEdge(
+        dependent=PackageKey("packages/a", Ecosystem.PYTHON, "a"),
+        dependency=PackageKey("packages/b", Ecosystem.PYTHON, "b"),
+    )
+    b_to_a = DependencyEdge(
+        dependent=PackageKey("packages/b", Ecosystem.PYTHON, "b"),
+        dependency=PackageKey("packages/a", Ecosystem.PYTHON, "a"),
+    )
+    with pytest.raises(GraphValidationError) as captured:
+        _plan(
+            (a, b),
+            edges=(a_to_b, b_to_a),
+            parallel_groups=(("packages/a", "packages/b"),),
+        )
+    assert _codes(captured.value) == {GraphDiagnosticCode.CYCLE}
+
+    first = PlanStage(
+        stage_id="first:repo:packages/a",
+        stage=ReleaseStage.VALIDATE,
+        project_id="packages/a",
+        depends_on=("second:repo:packages/a",),
+    )
+    second = PlanStage(
+        stage_id="second:repo:packages/a",
+        stage=ReleaseStage.BUILD,
+        project_id="packages/a",
+        depends_on=("first:repo:packages/a",),
+    )
+    with pytest.raises(GraphValidationError) as captured:
+        _plan(
+            (a,),
+            stages=(first, second),
+            parallel_groups=(("packages/a",),),
+        )
+    assert _codes(captured.value) == {GraphDiagnosticCode.CYCLE}
+
+
+@pytest.mark.parametrize(
+    "groups",
+    [
+        (),
+        ((),),
+        (("packages/a",),),
+        (("packages/b",), ("packages/a",)),
+        (("packages/a", "packages/b"),),
+        (("packages/b", "packages/a"),),
+    ],
+)
+def test_plan_parallel_groups_must_be_complete_and_topologically_canonical(
+    groups: tuple[tuple[str, ...], ...],
+) -> None:
+    a = _project("packages/a", _package("packages/a", "a"))
+    b = _project("packages/b", _package("packages/b", "b"))
+    b_depends_on_a = DependencyEdge(
+        dependent=PackageKey("packages/b", Ecosystem.PYTHON, "b"),
+        dependency=PackageKey("packages/a", Ecosystem.PYTHON, "a"),
+    )
+
+    with pytest.raises(WorkspaceReleaseError):
+        _plan((a, b), edges=(b_depends_on_a,), parallel_groups=groups)
+
+
+def test_plan_accepts_only_exact_deterministic_parallel_groups() -> None:
+    a = _project("packages/a", _package("packages/a", "a"))
+    b = _project("packages/b", _package("packages/b", "b"))
+    b_depends_on_a = DependencyEdge(
+        dependent=PackageKey("packages/b", Ecosystem.PYTHON, "b"),
+        dependency=PackageKey("packages/a", Ecosystem.PYTHON, "a"),
+    )
+
+    plan = _plan(
+        (a, b),
+        edges=(b_depends_on_a,),
+        parallel_groups=(("packages/a",), ("packages/b",)),
+    )
+    assert plan.parallel_groups == (("repo:packages/a",), ("repo:packages/b",))
+
+
+def test_plan_duplicate_edge_and_rewrite_provenance_refuses_deterministically() -> None:
+    project = _project("packages/a", _package("packages/a", "a"))
+    dependency = _project("packages/b", _package("packages/b", "b"))
+    edges = tuple(
+        DependencyEdge(
+            dependent=PackageKey("packages/a", Ecosystem.PYTHON, "a"),
+            dependency=PackageKey("packages/b", Ecosystem.PYTHON, "b"),
+            source=source,
+        )
+        for source in ("source-z", "source-a")
+    )
+    errors = []
+    for ordered in itertools.permutations(edges):
+        with pytest.raises(GraphValidationError) as captured:
+            _plan(
+                (project, dependency),
+                edges=ordered,
+                parallel_groups=(("packages/a", "packages/b"),),
+            )
+        errors.append(captured.value)
+    assert all(
+        _codes(error) == {GraphDiagnosticCode.DUPLICATE_EDGE} for error in errors
+    )
+    assert str(errors[0]) == str(errors[1])
+
+    rewrites = tuple(
+        FloorRewrite(
+            dependent=PackageKey("packages/a", Ecosystem.PYTHON, "a"),
+            dependency=PackageKey("packages/b", Ecosystem.PYTHON, "b"),
+            old_floor=VersionFloor.parse("^1.0.0"),
+            new_floor=VersionFloor.parse("^2.0.0"),
+            source=source,
+        )
+        for source in ("source-z", "source-a")
+    )
+    with pytest.raises(GraphValidationError) as captured:
+        _plan(
+            (project, dependency),
+            floor_rewrites=tuple(reversed(rewrites)),
+            parallel_groups=(("packages/a", "packages/b"),),
+        )
+    assert _codes(captured.value) == {GraphDiagnosticCode.DUPLICATE_REWRITE}
+
+
+def test_same_project_package_edge_is_retained_without_project_self_cycle() -> None:
+    dependency = _package("packages/same", "dependency")
+    consumer = _package(
+        "packages/same",
+        "consumer",
+        dependencies=(
+            _edge_spec(
+                "dependency",
+                repository="packages/same",
+                floor=">=1.0.0",
+            ),
+        ),
+    )
+
+    graph = build_dependency_graph([_project("packages/same", consumer, dependency)])
+
+    assert len(graph.edges) == 1
+    assert graph.project_edges == ()
+    assert graph.parallel_groups == (("repo:packages/same",),)
+
+
+def test_multiple_overlay_owners_remain_ambiguous() -> None:
+    first = _project("services/foo", _package("services/foo", "foo"))
+    second = _project("agent-packages/foo", _package("agent-packages/foo", "foo"))
+    consumer = _project(
+        "apps/consumer",
+        _package(
+            "apps/consumer",
+            "consumer",
+            dependencies=(_edge_spec("foo"),),
+        ),
+    )
+    dependent = PackageKey("apps/consumer", Ecosystem.PYTHON, "consumer")
+    overlays = tuple(
+        DependencyEdge(
+            dependent=dependent,
+            dependency=PackageKey(repository, Ecosystem.PYTHON, "foo"),
+            source="fixture-overlay",
+        )
+        for repository in ("services/foo", "agent-packages/foo")
+    )
+
+    messages = []
+    for ordered in itertools.permutations(overlays):
+        with pytest.raises(GraphValidationError) as captured:
+            build_dependency_graph([consumer, first, second], overlay_edges=ordered)
+        assert _codes(captured.value) == {GraphDiagnosticCode.AMBIGUOUS_PACKAGE_OWNER}
+        messages.append(str(captured.value))
+    assert len(set(messages)) == 1
+
+
+def test_cargo_plain_version_uses_caret_floor(tmp_path: Path) -> None:
+    cargo = tmp_path / "Cargo.toml"
+    cargo.write_text(
+        "[package]\nname = 'demo'\nversion = '1.0.0'\n"
+        "[dependencies]\nother = { version = '1.2.3' }\n",
+        encoding="utf-8",
+    )
+
+    project = read_rust_metadata("packages/demo", cargo)
+
+    assert project.packages[0].dependencies[0].floor is not None
+    assert project.packages[0].dependencies[0].floor.value == "^1.2.3"
+
+
+@pytest.mark.parametrize(
+    "dependency_value,expected_floor",
+    [("1.2.3", "==1.2.3"), ("^2.0.0", "^2.0.0"), ("~3.0.0", "~3.0.0")],
+)
+def test_node_dependency_name_and_range_are_parsed_separately(
+    tmp_path: Path,
+    dependency_value: str,
+    expected_floor: str,
+) -> None:
+    package_json = tmp_path / "package.json"
+    package_json.write_text(
+        json.dumps(
+            {
+                "name": "demo",
+                "version": "1.0.0",
+                "dependencies": {"shared-package": dependency_value},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    project = read_node_metadata("packages/demo", package_json)
+    dependency = project.packages[0].dependencies[0]
+
+    assert dependency.target.name == "shared-package"
+    assert dependency.floor is not None
+    assert dependency.floor.value == expected_floor
+
+
+@pytest.mark.parametrize(
+    "dependency_value",
+    ["latest", "^1.2.3 || ^2.0.0", ">=1.0.0 <2.0.0"],
+)
+def test_node_tags_and_compound_ranges_fail_closed(
+    tmp_path: Path, dependency_value: str
+) -> None:
+    package_json = tmp_path / "package.json"
+    package_json.write_text(
+        json.dumps(
+            {
+                "name": "demo",
+                "version": "1.0.0",
+                "dependencies": {"shared-package": dependency_value},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MetadataError):
+        read_node_metadata("packages/demo", package_json)
 
 
 def test_conflicting_python_version_sources_refuse_with_locations(

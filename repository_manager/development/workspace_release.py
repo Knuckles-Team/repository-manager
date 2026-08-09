@@ -61,7 +61,9 @@ class GraphDiagnosticCode(StrEnum):
     MISSING_PACKAGE = "missing_package"
     AMBIGUOUS_PACKAGE_OWNER = "ambiguous_package_owner"
     DUPLICATE_EDGE = "duplicate_edge"
+    DUPLICATE_REWRITE = "duplicate_rewrite"
     CONFLICTING_FLOOR = "conflicting_floor"
+    CONFLICTING_REWRITE = "conflicting_rewrite"
     CYCLE = "cycle"
     UNKNOWN_FIELD = "unknown_field"
     INVALID_METADATA = "invalid_metadata"
@@ -666,7 +668,9 @@ class PlanStage:
             _bounded_text(dependency, "stage dependency ID")
             for dependency in dependency_values
         )
-        object.__setattr__(self, "depends_on", tuple(sorted(set(dependencies))))
+        if len(dependencies) != len(set(dependencies)):
+            raise WorkspaceReleaseError("stage dependencies must not be duplicated")
+        object.__setattr__(self, "depends_on", tuple(sorted(dependencies)))
         object.__setattr__(
             self,
             "requires_consent",
@@ -747,16 +751,39 @@ class WorkspaceReleasePlan:
         object.__setattr__(
             self, "projects", tuple(project_map[key] for key in selected)
         )
+        package_map: dict[str, PackageKey] = {}
+        duplicate_packages: list[Diagnostic] = []
+        for project in self.projects:
+            for package in project.packages:
+                package_id = package.key.value
+                if package_id in package_map:
+                    duplicate_packages.append(
+                        Diagnostic(
+                            GraphDiagnosticCode.DUPLICATE_PACKAGE,
+                            package_id,
+                            "frozen plan contains a duplicate package identity",
+                        )
+                    )
+                else:
+                    package_map[package_id] = package.key
+        if duplicate_packages:
+            raise GraphValidationError(duplicate_packages)
         edge_values = _typed_sequence(
             self.edges,
             "release plan edges",
             DependencyEdge,
             max_items=MAX_EDGES,
         )
-        object.__setattr__(
-            self, "edges", tuple(sorted(set(edge_values), key=lambda edge: edge.value))
-        )
+        object.__setattr__(self, "edges", _normalize_plan_edges(edge_values))
         for edge in self.edges:
+            if edge.dependent.value not in package_map:
+                raise WorkspaceReleaseError(
+                    "release plan edge dependent package is not frozen"
+                )
+            if edge.dependency.value not in package_map:
+                raise WorkspaceReleaseError(
+                    "release plan edge dependency package is not frozen"
+                )
             if {
                 edge.dependent_project_id,
                 edge.dependency_project_id,
@@ -773,19 +800,17 @@ class WorkspaceReleasePlan:
         object.__setattr__(
             self,
             "floor_rewrites",
-            tuple(
-                sorted(
-                    set(rewrite_values),
-                    key=lambda item: (
-                        item.dependent.value,
-                        item.dependency.value,
-                        item.old_floor.value,
-                        item.new_floor.value,
-                    ),
-                )
-            ),
+            _normalize_plan_rewrites(rewrite_values),
         )
         for rewrite in self.floor_rewrites:
+            if rewrite.dependent.value not in package_map:
+                raise WorkspaceReleaseError(
+                    "release plan floor rewrite dependent package is not frozen"
+                )
+            if rewrite.dependency.value not in package_map:
+                raise WorkspaceReleaseError(
+                    "release plan floor rewrite dependency package is not frozen"
+                )
             if {
                 rewrite.dependent.repository_id,
                 rewrite.dependency.repository_id,
@@ -825,11 +850,16 @@ class WorkspaceReleasePlan:
                 raise WorkspaceReleaseError(
                     "release plan stage depends on an unknown stage"
                 )
+        _validate_stage_dag(self.stages)
         group_values = _bounded_sequence(
             self.parallel_groups,
             "release plan parallel groups",
             max_items=MAX_PROJECTS,
         )
+        if not group_values:
+            raise WorkspaceReleaseError(
+                "release plan parallel groups must be complete and non-empty"
+            )
         normalized_groups: list[tuple[str, ...]] = []
         for group in group_values:
             members = _typed_sequence(
@@ -838,12 +868,22 @@ class WorkspaceReleasePlan:
                 str,
                 max_items=MAX_PROJECTS,
             )
-            normalized_groups.append(
-                tuple(
-                    sorted(set(canonical_repository_id(project) for project in members))
+            normalized = tuple(canonical_repository_id(project) for project in members)
+            if not normalized:
+                raise WorkspaceReleaseError(
+                    "release plan parallel groups must not contain empty groups"
                 )
-            )
-        object.__setattr__(self, "parallel_groups", tuple(normalized_groups))
+            if len(normalized) != len(set(normalized)):
+                raise WorkspaceReleaseError(
+                    "release plan parallel groups must not duplicate projects"
+                )
+            if normalized != tuple(sorted(normalized)):
+                raise WorkspaceReleaseError(
+                    "release plan parallel group members must be canonical and ordered"
+                )
+            normalized_groups.append(normalized)
+        normalized_parallel_groups = tuple(normalized_groups)
+        object.__setattr__(self, "parallel_groups", normalized_parallel_groups)
         grouped_projects = [
             project for group in self.parallel_groups for project in group
         ]
@@ -851,6 +891,24 @@ class WorkspaceReleasePlan:
             raise WorkspaceReleaseError("parallel groups name an unselected project")
         if len(grouped_projects) != len(set(grouped_projects)):
             raise WorkspaceReleaseError("parallel groups must not repeat a project")
+        project_edges = tuple(
+            sorted(
+                {
+                    (edge.dependent_project_id, edge.dependency_project_id)
+                    for edge in self.edges
+                    if edge.dependent_project_id != edge.dependency_project_id
+                }
+            )
+        )
+        expected_groups, cycle_diagnostics = _topological_groups(
+            selected, project_edges
+        )
+        if cycle_diagnostics:
+            raise GraphValidationError(cycle_diagnostics)
+        if normalized_parallel_groups != expected_groups:
+            raise WorkspaceReleaseError(
+                "release plan parallel groups must match deterministic dependency order"
+            )
         if not isinstance(self.plan_digest, str):
             raise WorkspaceReleaseError("plan digest must be a string")
         if self.plan_digest:
@@ -999,6 +1057,137 @@ def plan_digest(plan: WorkspaceReleasePlan) -> str:
     ).hexdigest()
 
 
+def _edge_sort_key(edge: DependencyEdge) -> tuple[str, str, str, str, str]:
+    return (
+        edge.dependent.value,
+        edge.dependency.value,
+        edge.floor.value if edge.floor else "",
+        edge.source,
+        edge.confidence.value,
+    )
+
+
+def _normalize_plan_edges(
+    values: Iterable[DependencyEdge],
+) -> tuple[DependencyEdge, ...]:
+    """Sort plan edges canonically and refuse duplicate endpoint declarations."""
+
+    ordered = tuple(sorted(values, key=_edge_sort_key))
+    grouped: dict[tuple[str, str], list[DependencyEdge]] = {}
+    for edge in ordered:
+        grouped.setdefault((edge.dependent.value, edge.dependency.value), []).append(
+            edge
+        )
+    diagnostics: list[Diagnostic] = []
+    for endpoint in sorted(grouped):
+        candidates = grouped[endpoint]
+        if len(candidates) <= 1:
+            continue
+        details = tuple(
+            (
+                f"edge_{index}",
+                f"{edge.floor.value if edge.floor else ''}|{edge.source}|{edge.confidence.value}",
+            )
+            for index, edge in enumerate(candidates)
+        )
+        code = (
+            GraphDiagnosticCode.CONFLICTING_FLOOR
+            if len({edge.floor.value if edge.floor else "" for edge in candidates}) > 1
+            else GraphDiagnosticCode.DUPLICATE_EDGE
+        )
+        diagnostics.append(
+            Diagnostic(
+                code,
+                f"{endpoint[0]}->{endpoint[1]}",
+                "frozen plan declares duplicate dependency endpoints",
+                details,
+            )
+        )
+    if diagnostics:
+        raise GraphValidationError(diagnostics)
+    return ordered
+
+
+def _normalize_plan_rewrites(
+    values: Iterable[FloorRewrite],
+) -> tuple[FloorRewrite, ...]:
+    """Sort floor rewrites canonically and refuse endpoint collisions."""
+
+    ordered = tuple(
+        sorted(
+            values,
+            key=lambda item: (
+                item.dependent.value,
+                item.dependency.value,
+                item.old_floor.value,
+                item.new_floor.value,
+                item.source,
+            ),
+        )
+    )
+    grouped: dict[tuple[str, str], list[FloorRewrite]] = {}
+    for rewrite in ordered:
+        grouped.setdefault(
+            (rewrite.dependent.value, rewrite.dependency.value), []
+        ).append(rewrite)
+    diagnostics: list[Diagnostic] = []
+    for endpoint in sorted(grouped):
+        candidates = grouped[endpoint]
+        if len(candidates) <= 1:
+            continue
+        details = tuple(
+            (
+                f"rewrite_{index}",
+                f"{item.old_floor.value}->{item.new_floor.value}|{item.source}",
+            )
+            for index, item in enumerate(candidates)
+        )
+        old_new = {(item.old_floor.value, item.new_floor.value) for item in candidates}
+        code = (
+            GraphDiagnosticCode.DUPLICATE_REWRITE
+            if len(old_new) == 1
+            else GraphDiagnosticCode.CONFLICTING_REWRITE
+        )
+        diagnostics.append(
+            Diagnostic(
+                code,
+                f"{endpoint[0]}->{endpoint[1]}",
+                "frozen plan declares duplicate floor rewrite endpoints",
+                details,
+            )
+        )
+    if diagnostics:
+        raise GraphValidationError(diagnostics)
+    return ordered
+
+
+def _validate_stage_dag(stages: tuple[PlanStage, ...]) -> None:
+    """Refuse cycles in the immutable stage dependency declarations."""
+
+    dependencies = {stage.stage_id: set(stage.depends_on) for stage in stages}
+    remaining = set(dependencies)
+    while remaining:
+        ready = tuple(
+            sorted(stage_id for stage_id in remaining if not dependencies[stage_id])
+        )
+        if not ready:
+            cycle = _cycle_path(remaining, dependencies)
+            raise GraphValidationError(
+                (
+                    Diagnostic(
+                        GraphDiagnosticCode.CYCLE,
+                        "release plan stages",
+                        "release stage declarations contain a cycle",
+                        (("path", " -> ".join(cycle)),),
+                    ),
+                )
+            )
+        for stage_id in ready:
+            remaining.remove(stage_id)
+            for dependents in dependencies.values():
+                dependents.discard(stage_id)
+
+
 def _sorted_diagnostics(diagnostics: Iterable[Diagnostic]) -> tuple[Diagnostic, ...]:
     return tuple(
         sorted(
@@ -1055,7 +1244,7 @@ def build_dependency_graph(
         raise WorkspaceReleaseError(
             "workspace overlay edges must be DependencyEdge values"
         )
-    overlay_values = tuple(sorted(overlay_values, key=lambda edge: edge.value))
+    overlay_values = tuple(sorted(overlay_values, key=_edge_sort_key))
     if len(overlay_values) > MAX_EDGES:
         raise WorkspaceReleaseError("workspace overlay edge count exceeds the bound")
     diagnostics: list[Diagnostic] = []
@@ -1117,6 +1306,24 @@ def build_dependency_graph(
                 )
             )
             if explicit_overlays:
+                if target.repository_id is None:
+                    overlay_owners = tuple(
+                        sorted({edge.dependency.value for edge in explicit_overlays})
+                    )
+                    if len(overlay_owners) > 1:
+                        diagnostics.append(
+                            Diagnostic(
+                                GraphDiagnosticCode.AMBIGUOUS_PACKAGE_OWNER,
+                                f"{package.key.value}->{target.ecosystem.value}:{target.name}",
+                                "overlay dependency has more than one possible owner",
+                                tuple(
+                                    (f"owner_{index}", owner)
+                                    for index, owner in enumerate(overlay_owners)
+                                ),
+                            )
+                        )
+                        consumed_overlay_edges.update(explicit_overlays)
+                        continue
                 if target.repository_id is not None:
                     mismatched = tuple(
                         edge
@@ -1227,7 +1434,11 @@ def build_dependency_graph(
         raise WorkspaceReleaseError("workspace dependency edge count exceeds the bound")
     project_edges = tuple(
         sorted(
-            {(edge.dependent_project_id, edge.dependency_project_id) for edge in edges}
+            {
+                (edge.dependent_project_id, edge.dependency_project_id)
+                for edge in edges
+                if edge.dependent_project_id != edge.dependency_project_id
+            }
         )
     )
     groups, cycle_diagnostics = _topological_groups(
@@ -1239,7 +1450,7 @@ def build_dependency_graph(
 
     ordered_projects = tuple(project_map[key] for key in sorted(project_map))
     ordered_packages = tuple(package_map[key] for key in sorted(package_map))
-    ordered_edges = tuple(sorted(edges, key=lambda edge: edge.value))
+    ordered_edges = tuple(sorted(edges, key=_edge_sort_key))
     payload = {
         "projects": [_project_payload(project) for project in ordered_projects],
         "packages": [_package_payload(package) for package in ordered_packages],
@@ -1298,6 +1509,8 @@ def _topological_groups(
     dependencies: dict[str, set[str]] = {project: set() for project in projects}
     dependents: dict[str, set[str]] = {project: set() for project in projects}
     for dependent, dependency in project_edges:
+        if dependent == dependency:
+            continue
         if dependent not in dependencies or dependency not in dependencies:
             continue
         dependencies[dependent].add(dependency)

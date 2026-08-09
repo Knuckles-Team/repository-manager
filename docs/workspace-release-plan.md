@@ -14,9 +14,17 @@ basenames in two repositories cannot silently collapse into one owner.
 status, symlinks, and a byte limit. Parsed values are checked for nesting,
 string, collection, package, and dependency bounds. JSON duplicate keys,
 unsupported overlay fields, static-version conflicts, unsupported floor syntax,
-ambiguous package owners, missing projects/packages, duplicate edges, and cycles
+ambiguous package owners (including competing explicit overlay owners), missing
+projects/packages, duplicate edge/rewrite provenance, and cycles
 are refusal diagnostics. No build backend, package manager, subprocess, network
 client, or project code is invoked.
+
+Frozen plans require every edge and floor rewrite endpoint to be present in the
+frozen package inventory. Their project groups and stage dependencies are
+complete, duplicate-free, and compared with the deterministic dependency-first
+topological order. Same-repository package edges remain in the package graph
+without creating a project-level self-cycle. Node ranges keep package names
+separate from exact/caret/tilde floors; Cargo bare versions use caret semantics.
 
 Path metadata and overlays are read-only inputs. `OverlayInput` is an explicit,
 strict in-memory schema for edges and version sources that cannot safely be

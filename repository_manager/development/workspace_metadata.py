@@ -57,9 +57,7 @@ _PARTIAL_FLOOR = re.compile(
     r"^(?P<operator>\^|~=|~|>=|>|==)?(?P<numbers>[0-9]+(?:\.[0-9]+){0,2})$"
 )
 _REQUIREMENT_NAME = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?P<rest>.*)$")
-_NPM_REQUIREMENT_NAME = re.compile(
-    r"^(?P<name>(?:@[A-Za-z0-9._~-]+/)?[A-Za-z0-9._~-]+)(?P<rest>.*)$"
-)
+_NODE_NAME = re.compile(r"^(?:@[A-Za-z0-9._~-]+/)?[A-Za-z0-9._~-]+$")
 
 
 class MetadataError(WorkspaceReleaseError):
@@ -137,7 +135,18 @@ class OverlayInput:
                 )
             normalized_versions.append((package, source))
         object.__setattr__(
-            self, "edges", tuple(sorted(edges, key=lambda edge: edge.value))
+            self,
+            "edges",
+            tuple(
+                sorted(
+                    edges,
+                    key=lambda edge: (
+                        edge.value,
+                        edge.source,
+                        edge.confidence.value,
+                    ),
+                )
+            ),
         )
         object.__setattr__(
             self,
@@ -145,7 +154,11 @@ class OverlayInput:
             tuple(
                 sorted(
                     normalized_versions,
-                    key=lambda item: (item[0].value, item[1].location),
+                    key=lambda item: (
+                        item[0].value,
+                        item[1].location,
+                        item[1].version.value,
+                    ),
                 )
             ),
         )
@@ -480,14 +493,13 @@ def _parse_requirement(
     source: str,
     limits: MetadataLimits,
 ) -> DependencySpec:
+    if ecosystem == Ecosystem.NODE:
+        return _parse_node_requirement(value, source, limits)
     text = _require_string(value, source, limits)
     # Environment markers are not part of the C-11 floor.  Retain the package
     # edge while refusing to execute or evaluate the marker expression.
     requirement = text.split(";", 1)[0].strip()
-    pattern = (
-        _NPM_REQUIREMENT_NAME if ecosystem == Ecosystem.NODE else _REQUIREMENT_NAME
-    )
-    match = pattern.fullmatch(requirement)
+    match = _REQUIREMENT_NAME.fullmatch(requirement)
     if match is None:
         raise MetadataError(f"unsupported dependency declaration: {text!r}")
     name = match.group("name")
@@ -499,16 +511,62 @@ def _parse_requirement(
         rest = rest[closing + 1 :].strip()
     if rest.startswith("@"):
         raise MetadataError(f"direct dependency references are unsupported: {text!r}")
-    if ecosystem == Ecosystem.NODE and rest.startswith(
-        ("workspace:", "file:", "git+", "http:")
-    ):
-        raise MetadataError(
-            f"non-versioned Node dependency requires an overlay: {text!r}"
-        )
     floor = _parse_floor(rest, source, limits, ecosystem) if rest else None
     try:
         return DependencySpec(
             target=_metadata_package_reference(ecosystem, name),
+            floor=floor,
+            source=source,
+        )
+    except WorkspaceReleaseError as exc:
+        raise MetadataError(str(exc)) from exc
+
+
+def _parse_node_requirement(
+    value: object,
+    source: str,
+    limits: MetadataLimits,
+    *,
+    package_name: str | None = None,
+) -> DependencySpec:
+    """Parse one Node package name/range without merging name and version text."""
+
+    text = _require_string(value, source, limits)
+    requirement = text.split(";", 1)[0].strip()
+    if package_name is None:
+        if requirement.startswith("@"):
+            slash = requirement.find("/")
+            if slash <= 1:
+                raise MetadataError(f"unsupported dependency declaration: {text!r}")
+            separator = requirement.find("@", slash + 1)
+        else:
+            separator = requirement.find("@")
+        if separator > 0:
+            package_name = requirement[:separator]
+            range_value = requirement[separator + 1 :]
+            if not range_value:
+                raise MetadataError(f"unsupported dependency declaration: {text!r}")
+        else:
+            package_name = requirement
+            range_value = ""
+    else:
+        range_value = requirement
+    if not _NODE_NAME.fullmatch(package_name):
+        raise MetadataError(f"unsupported Node package name: {package_name!r}")
+    if range_value.startswith(
+        ("workspace:", "file:", "link:", "git:", "git+", "npm:", "http:", "https:")
+    ):
+        raise MetadataError(
+            f"non-versioned Node dependency requires an overlay: {text!r}"
+        )
+    floor = (
+        _parse_floor(range_value, source, limits, Ecosystem.NODE)
+        if range_value
+        else None
+    )
+    try:
+        return DependencySpec(
+            target=_metadata_package_reference(Ecosystem.NODE, package_name),
             floor=floor,
             source=source,
         )
@@ -565,7 +623,7 @@ def _dependency_specs(
                     dep_version, f"{source}.{key}.version", limits
                 )
                 if raw_requirement and raw_requirement[0] not in "^~<>=":
-                    raw_requirement = f"=={raw_requirement}"
+                    raw_requirement = f"^{raw_requirement}"
                 specs.append(
                     DependencySpec(
                         target=_metadata_package_reference(
@@ -584,15 +642,21 @@ def _dependency_specs(
                     )
                 )
                 continue
-            if ecosystem == Ecosystem.NODE and not isinstance(raw, str):
-                raise MetadataError(f"{source}.{key} Node dependency must be a string")
+            if ecosystem == Ecosystem.NODE:
+                specs.append(
+                    _parse_node_requirement(
+                        raw,
+                        f"{source}.{key}",
+                        limits,
+                        package_name=key,
+                    )
+                )
+                continue
             if ecosystem == Ecosystem.PYTHON:
                 if not isinstance(raw, str):
                     raise MetadataError(
                         f"{source}.{key} Python dependency must be a string"
                     )
-                raw = f"{key}{raw}"
-            elif ecosystem == Ecosystem.NODE:
                 raw = f"{key}{raw}"
             else:
                 raw = f"{key} {raw}" if isinstance(raw, str) else raw
