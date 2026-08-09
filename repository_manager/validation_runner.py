@@ -658,13 +658,42 @@ class ValidationRunner:
                 "validation requires a graph-os WorkItem authority; no local job store is allowed"
             )
         submitted: list[SubmittedValidationJob] = []
-        for job in plan.jobs:
-            result = self.job_authority.submit(job)
-            if result.job_id != job.job_id:
-                raise ValidationRunnerError(
-                    f"durable authority changed immutable job ID for {job.gate_name}"
+        try:
+            for job in plan.jobs:
+                result = self.job_authority.submit(job)
+                if result.job_id != job.job_id:
+                    raise ValidationRunnerError(
+                        f"durable authority changed immutable job ID for {job.gate_name}"
+                    )
+                if result.input_digest != job.input_digest:
+                    raise ValidationRunnerError(
+                        f"durable authority changed immutable input for {job.gate_name}"
+                    )
+                submitted.append(result)
+        except Exception as exc:
+            cancellation_failures: list[str] = []
+            for previous in submitted:
+                try:
+                    if not self.job_authority.cancel(
+                        previous.job_id,
+                        reason="validation submission failed; canceling prefix",
+                    ):
+                        cancellation_failures.append(previous.job_id)
+                except Exception as cancel_exc:
+                    cancellation_failures.append(
+                        f"{previous.job_id} ({type(cancel_exc).__name__})"
+                    )
+            detail = (
+                f"validation job submission failed after {len(submitted)} job(s): "
+                f"{type(exc).__name__}: {exc}"
+            )
+            if cancellation_failures:
+                detail += "; submission reconciliation failed for job(s): " + ", ".join(
+                    cancellation_failures
                 )
-            submitted.append(result)
+            elif submitted:
+                detail += "; submitted prefix was cooperatively canceled"
+            raise ValidationRunnerError(detail) from exc
         return tuple(submitted)
 
     def run(
@@ -680,7 +709,6 @@ class ValidationRunner:
             preparation = self._prepare_request(request)
             prepared = preparation.request
             plan = self.plan(prepared)
-            submitted = self.submit(plan)
         except (
             ValidationRunnerError,
             ValidationPreparationError,
@@ -696,8 +724,21 @@ class ValidationRunner:
             return ValidationRunResult(
                 request=prepared,
                 plan=plan,
-                submitted=submitted,
                 preparation_error="no fixed-argv validation executor was configured",
+                snapshot_gate_deferred=preparation.snapshot_gate_deferred,
+            )
+        try:
+            submitted = self.submit(plan)
+        except (
+            ValidationRunnerError,
+            ValidationPreparationError,
+            OSError,
+            ValueError,
+        ) as exc:
+            return ValidationRunResult(
+                request=prepared,
+                plan=plan,
+                preparation_error=str(exc),
                 snapshot_gate_deferred=preparation.snapshot_gate_deferred,
             )
         evidence: list[GateEvidence] = []

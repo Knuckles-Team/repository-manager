@@ -511,11 +511,15 @@ def test_precommit_replay_proof_accepts_only_the_exact_full_repo_argv() -> None:
         ).runs_precommit
 
     assert runs(("pre-commit", "run", "--all-files"))
-    assert runs(("python3.14", "-m", "pre_commit", "run", "--all-files"))
+    assert runs(("python3", "-m", "pre_commit", "run", "--all-files"))
     assert not runs(("pre-commit", "run", "hook-id", "--all-files"))
     assert not runs(("pre-commit", "run", "--files", "tracked.py", "--all-files"))
     assert not runs(("echo", "pre-commit", "run", "--all-files"))
     assert not runs(("pre-commit-wrapper", "run", "--all-files"))
+    assert not runs(("./pre-commit", "run", "--all-files"))
+    assert not runs(("/tmp/pre-commit", "run", "--all-files"))
+    assert not runs(("python3.14", "-m", "pre_commit", "run", "--all-files"))
+    assert not runs(("./python3", "-m", "pre_commit", "run", "--all-files"))
 
 
 @pytest.mark.parametrize(
@@ -788,6 +792,69 @@ def test_resource_refusal_happens_before_executor(tmp_path: Path) -> None:
     assert result.evidence[0].outcome is EvidenceOutcome.DEFERRED
     assert result.evidence[0].failure_class is ValidationFailureClass.RESOURCE
     assert executor.calls == 0
+
+
+def test_missing_executor_fails_before_durable_submission(tmp_path: Path) -> None:
+    repo, sha = _repo(tmp_path)
+    profile = ValidationProfile(
+        "custom", 1, (_gate("feedback", ValidationStage.FEEDBACK),)
+    )
+    authority = FakeValidationJobAuthority()
+    result = ValidationRunner(
+        job_authority=authority,
+        resource_admission=LocalTestAdmission(),
+    ).run(_request(repo, sha, profile, (ValidationStage.FEEDBACK,)))
+    assert (
+        result.preparation_error == "no fixed-argv validation executor was configured"
+    )
+    assert result.plan is not None
+    assert result.submitted == ()
+    assert authority.jobs == []
+
+
+def test_submission_failure_cancels_prefix_and_reports_reconciliation(
+    tmp_path: Path,
+) -> None:
+    class FailingAuthority(FakeValidationJobAuthority):
+        def submit(self, job: Any) -> Any:
+            if self.jobs:
+                raise RuntimeError("second submission unavailable")
+            return super().submit(job)
+
+        def cancel(self, job_id: str, *, reason: str) -> bool:
+            super().cancel(job_id, reason=reason)
+            return False
+
+    repo, sha = _repo(tmp_path)
+    profile = ValidationProfile(
+        "custom",
+        1,
+        (
+            _gate("feedback", ValidationStage.FEEDBACK),
+            _gate("integration", ValidationStage.INTEGRATION),
+        ),
+    )
+    authority = FailingAuthority()
+    result = ValidationRunner(
+        job_authority=authority,
+        resource_admission=LocalTestAdmission(),
+        executor=FakeExecutor(),
+    ).run(
+        _request(
+            repo,
+            sha,
+            profile,
+            (ValidationStage.FEEDBACK, ValidationStage.INTEGRATION),
+        )
+    )
+    assert result.plan is not None
+    assert result.submitted == ()
+    assert len(authority.jobs) == 1
+    assert authority.cancelled == [
+        (authority.jobs[0].job_id, "validation submission failed; canceling prefix")
+    ]
+    assert result.preparation_error is not None
+    assert "submission reconciliation failed" in result.preparation_error
 
 
 def test_cancelled_and_timed_out_jobs_release_reservations(tmp_path: Path) -> None:

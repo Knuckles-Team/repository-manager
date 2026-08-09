@@ -60,7 +60,6 @@ class TimeoutPolicy(StrEnum):
 
 
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
-_PYTHON_EXECUTABLE = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
 _RELATIVE_PATTERN = re.compile(r"^[^\x00]+$")
 _SHELL_META = frozenset({";", "&&", "||", "|", ">", ">>", "<", "<<"})
 _VALID_COMPARE = frozenset({"exit", "lines", "pytest-ids"})
@@ -217,19 +216,21 @@ class ValidationGate:
 
         Replay proof must not be inferred from a gate name or from an arbitrary
         argument containing ``pre-commit``.  Only the two deliberately narrow
-        executable shapes below are admitted: the pre-commit executable itself
-        (including an absolute path), or the standard Python module form.  The
-        complete argv must be exactly ``run --all-files``; positional hook IDs,
-        ``--files``, config overrides, and arbitrary extra arguments are
-        refused because a partial hook invocation cannot certify a complete
-        deferred snapshot.
+        executable shapes below are admitted: the literal trusted
+        ``pre-commit`` command, or the literal trusted ``python``/``python3``
+        module form.  Relative and absolute paths are refused even when their
+        basename is ``pre-commit``; the candidate must not choose the
+        executable that supplies replay proof.  The complete argv must be
+        exactly ``run --all-files``; positional hook IDs, ``--files``, config
+        overrides, and arbitrary extra arguments are refused because a
+        partial hook invocation cannot certify a complete deferred snapshot.
         """
 
         argv = self.command
-        executable = Path(argv[0]).name
+        executable = argv[0]
         if executable == "pre-commit":
             return argv[1:] == ("run", "--all-files")
-        if _PYTHON_EXECUTABLE.fullmatch(executable):
+        if executable in {"python", "python3"}:
             return argv[1:] == ("-m", "pre_commit", "run", "--all-files")
         return False
 
