@@ -32,6 +32,8 @@ from repository_manager.validation import (
     ValidationCertificate,
 )
 
+_UNSET = object()
+
 SHA0 = "0" * 40
 SHA1 = "1" * 40
 SHA2 = "2" * 40
@@ -50,9 +52,11 @@ def _repository(repository_id: str = "repository:test") -> RepositoryIdentity:
 
 def _evidence(
     *,
-    generation_id: str = "generation:test",
+    generation_id: str | None = None,
     tree_sha: str = SHA2,
 ) -> GateEvidence:
+    if generation_id is None:
+        generation_id = _generation().generation_id
     return GateEvidence(
         evidence_id="evidence:certification",
         gate_name="certification",
@@ -77,19 +81,28 @@ def _generation(
     repository: RepositoryIdentity | None = None,
     state: GenerationState = GenerationState.CERTIFIED,
 ) -> Generation:
+    candidates = (
+        CandidateVersion(
+            candidate_id="candidate:test",
+            version=1,
+            candidate_sha=SHA1,
+        ),
+    )
+    generation_id = Generation.derive_id(
+        repository_id=(repository or _repository()).repository_id,
+        target_branch="main",
+        base_sha=SHA0,
+        candidate_versions=candidates,
+        config_digest=DIGEST0,
+        toolchain_digest=DIGEST1,
+    )
     return Generation(
-        generation_id="generation:test",
+        generation_id=generation_id,
         repository=repository or _repository(),
         target_branch="main",
         base_sha=SHA0,
         expected_landing_base_sha=SHA0,
-        candidate_versions=(
-            CandidateVersion(
-                candidate_id="candidate:test",
-                version=1,
-                candidate_sha=SHA1,
-            ),
-        ),
+        candidate_versions=candidates,
         config_digest=DIGEST0,
         toolchain_digest=DIGEST1,
         state=state,
@@ -97,15 +110,18 @@ def _generation(
         synthetic_commit_sha=SHA1,
         tree_sha=SHA2,
         validation_evidence_ids=("evidence:certification",),
+        landing_fence="fence:landing-1",
     )
 
 
 def _certificate(
     *,
-    generation_id: str = "generation:test",
+    generation_id: str | None = None,
     tree_sha: str = SHA2,
     evidence: GateEvidence | None = None,
 ) -> tuple[ValidationCertificate, tuple[GateEvidence, ...]]:
+    if generation_id is None:
+        generation_id = _generation().generation_id
     item = evidence or _evidence(generation_id=generation_id, tree_sha=tree_sha)
     certificate = ValidationCertificate.issue(
         certificate_id="certificate:test",
@@ -137,7 +153,22 @@ def _request(
     observed_landing_fence: str | None = "fence:landing-1",
     canonical: CanonicalCheckoutState | None = None,
     target_occupancy: TargetOccupancyState | None = None,
+    expected_certificate_digest: str | None | object = _UNSET,
+    expected_generation_id: str | None | object = _UNSET,
+    expected_synthetic_commit_sha: str | None | object = _UNSET,
 ) -> LandingVerificationRequest:
+    if expected_certificate_digest is _UNSET:
+        expected_certificate_digest = (
+            certificate.digest if certificate is not None else None
+        )
+    if expected_generation_id is _UNSET:
+        expected_generation_id = (
+            generation.generation_id if generation is not None else None
+        )
+    if expected_synthetic_commit_sha is _UNSET:
+        expected_synthetic_commit_sha = (
+            generation.synthetic_commit_sha if generation is not None else None
+        )
     return LandingVerificationRequest(
         repository=repository or _repository(),
         target_branch=target_branch,
@@ -151,6 +182,9 @@ def _request(
         canonical=canonical or CanonicalCheckoutState(True, True),
         target_occupancy=target_occupancy or TargetOccupancyState(0),
         evidence=evidence,
+        expected_certificate_digest=expected_certificate_digest,  # type: ignore[arg-type]
+        expected_generation_id=expected_generation_id,  # type: ignore[arg-type]
+        expected_synthetic_commit_sha=expected_synthetic_commit_sha,  # type: ignore[arg-type]
     )
 
 
@@ -172,7 +206,7 @@ def test_certified_landing_is_accepted_without_git_or_filesystem_effects(
 
     assert result.accepted
     assert result.refusal_code is None
-    assert result.generation_id == "generation:test"
+    assert result.generation_id == valid_request.generation.generation_id  # type: ignore[union-attr]
     assert result.synthetic_commit_sha == SHA1
     assert result.tree_sha == SHA2
     certificate = valid_request.certificate
@@ -213,7 +247,7 @@ def test_certificate_evidence_is_verified_not_trusted_as_a_status_bit() -> None:
 
     result = verify_landing(request)
     assert result.code is LandingRefusalCode.CERTIFICATE_INVALID
-    assert "tree SHA" in result.detail
+    assert "tree SHA" not in result.detail
 
 
 def test_certificate_generation_and_tree_identity_are_exact() -> None:
@@ -485,3 +519,227 @@ def test_inputs_and_results_are_closed_and_bounded() -> None:
     )
     assert refusal.refused
     assert len(refusal.detail.encode("utf-8")) <= 4096
+
+
+def test_model_copy_authority_values_are_rebuilt_and_anchored() -> None:
+    original_generation = _generation()
+    certificate, evidence = _certificate()
+    candidate = original_generation.candidate_versions[0]
+    forged_values = (
+        (
+            original_generation.model_copy(
+                update={
+                    "repository": original_generation.repository.model_copy(
+                        update={"repository_id": "repository:forged"}
+                    )
+                }
+            ),
+            LandingRefusalCode.GENERATION_ID_MISMATCH,
+        ),
+        (
+            original_generation.model_copy(
+                update={
+                    "target": TargetPolicy(
+                        kind=TargetKind.INVENTORY_ALIAS, alias="worker-one"
+                    )
+                }
+            ),
+            LandingRefusalCode.TARGET_MISMATCH,
+        ),
+        (
+            original_generation.model_copy(update={"base_sha": SHA3}),
+            LandingRefusalCode.GENERATION_ID_MISMATCH,
+        ),
+        (
+            original_generation.model_copy(
+                update={
+                    "candidate_versions": (
+                        candidate.model_copy(update={"candidate_sha": SHA3}),
+                    )
+                }
+            ),
+            LandingRefusalCode.GENERATION_ID_MISMATCH,
+        ),
+        (
+            original_generation.model_copy(update={"synthetic_commit_sha": SHA3}),
+            LandingRefusalCode.GENERATION_ANCHOR_MISMATCH,
+        ),
+        (
+            original_generation.model_copy(update={"tree_sha": SHA3}),
+            LandingRefusalCode.CERTIFICATE_TREE_MISMATCH,
+        ),
+        (
+            original_generation.model_copy(update={"validation_evidence_ids": ()}),
+            LandingRefusalCode.GENERATION_INVALID,
+        ),
+        (
+            original_generation.model_copy(update={"landing_fence": "fence:forged"}),
+            LandingRefusalCode.STALE_FENCE,
+        ),
+    )
+    for forged_generation, expected_code in forged_values:
+        result = verify_landing(
+            _request(
+                generation=forged_generation,
+                certificate=certificate,
+                evidence=evidence,
+                expected_certificate_digest=certificate.digest,
+                expected_generation_id=original_generation.generation_id,
+                expected_synthetic_commit_sha=original_generation.synthetic_commit_sha,
+            )
+        )
+        assert result.code is expected_code
+
+
+@pytest.mark.parametrize("state", [None, True, object()])
+def test_malformed_generation_state_is_a_typed_refusal(state: object) -> None:
+    generation = _generation().model_copy(update={"state": state})
+    certificate, evidence = _certificate()
+    result = verify_landing(
+        _request(
+            generation=generation,
+            certificate=certificate,
+            evidence=evidence,
+            expected_certificate_digest=certificate.digest,
+            expected_generation_id=_generation().generation_id,
+            expected_synthetic_commit_sha=SHA1,
+        )
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+def test_malformed_gate_evidence_fields_never_escape_as_attribute_errors() -> None:
+    generation = _generation()
+    certificate, evidence = _certificate()
+    malformed_differential = replace(
+        evidence[0], differential=True, baseline_tree_sha=SHA0
+    )
+    object.__setattr__(malformed_differential, "differential", 1)
+    malformed = (
+        replace(evidence[0], stage=object()),
+        malformed_differential,
+        replace(evidence[0], outcome=None),  # type: ignore[arg-type]
+    )
+    for item in malformed:
+        result = verify_landing(
+            _request(
+                generation=generation,
+                certificate=certificate,
+                evidence=(item,),
+            )
+        )
+        assert result.code is LandingRefusalCode.EVIDENCE_INVALID
+
+    unsafe = replace(evidence[0], detail="detail\u202ehidden")
+    result = verify_landing(
+        _request(generation=generation, certificate=certificate, evidence=(unsafe,))
+    )
+    assert result.code is LandingRefusalCode.EVIDENCE_INVALID
+
+
+def test_recomputed_certificate_cannot_replace_durable_content_anchor() -> None:
+    generation = _generation()
+    original_certificate, original_evidence = _certificate()
+    altered_evidence = replace(original_evidence[0], detail="altered evidence")
+    recomputed_certificate = ValidationCertificate.issue(
+        certificate_id=original_certificate.certificate_id,
+        generation_id=generation.generation_id,
+        tree_sha=original_certificate.tree_sha,
+        gate_config_digest=original_certificate.gate_config_digest,
+        toolchain_digest=original_certificate.toolchain_digest,
+        target_host=original_certificate.target_host,
+        resource_digest=original_certificate.resource_digest,
+        blocking_gate_names=original_certificate.blocking_gate_names,
+        evidence=(altered_evidence,),
+        issued_at=original_certificate.issued_at,
+        profile_digest=original_certificate.profile_digest,
+    )
+    result = verify_landing(
+        _request(
+            generation=generation,
+            certificate=recomputed_certificate,
+            evidence=(altered_evidence,),
+            expected_certificate_digest=original_certificate.digest,
+            expected_generation_id=generation.generation_id,
+            expected_synthetic_commit_sha=SHA1,
+        )
+    )
+    assert result.code is LandingRefusalCode.CERTIFICATE_ANCHOR_MISMATCH
+
+
+def test_generation_list_is_snapshotted_before_caller_mutation() -> None:
+    generation = _generation()
+    candidates = list(generation.candidate_versions)
+    copied_generation = generation.model_copy(update={"candidate_versions": candidates})
+    certificate, evidence = _certificate()
+    request = _request(
+        generation=copied_generation,
+        certificate=certificate,
+        evidence=evidence,
+        expected_certificate_digest=certificate.digest,
+        expected_generation_id=generation.generation_id,
+        expected_synthetic_commit_sha=SHA1,
+    )
+    candidates[0] = candidates[0].model_copy(update={"candidate_sha": SHA3})
+    assert verify_landing(request).accepted
+
+
+def test_generator_candidate_membership_is_rejected_without_consumption() -> None:
+    generation = _generation().model_copy(
+        update={
+            "candidate_versions": (item for item in _generation().candidate_versions)
+        }
+    )
+    certificate, evidence = _certificate()
+    result = verify_landing(
+        _request(
+            generation=generation,
+            certificate=certificate,
+            evidence=evidence,
+            expected_certificate_digest=certificate.digest,
+            expected_generation_id=_generation().generation_id,
+            expected_synthetic_commit_sha=SHA1,
+        )
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+@pytest.mark.parametrize(
+    "unsafe", ["\x7f", "\u0085", "\u202e", "\u2066", "\u2028", "\ue000"]
+)
+def test_unsafe_unicode_is_rejected_or_safely_normalized(unsafe: str) -> None:
+    with pytest.raises(LandingPolicyError):
+        _request(target_branch=f"main{unsafe}")
+    with pytest.raises(LandingPolicyError):
+        _request(expected_landing_fence=f"fence:{unsafe}")
+    refusal = LandingVerificationResult(
+        accepted=False,
+        refusal_code=LandingRefusalCode.CERTIFICATE_INVALID,
+        detail=f"safe{unsafe}detail",
+    )
+    assert unsafe not in refusal.detail
+
+
+def test_missing_trusted_anchors_is_fail_closed() -> None:
+    generation = _generation()
+    certificate, evidence = _certificate()
+    missing_certificate_anchor = _request(
+        generation=generation,
+        certificate=certificate,
+        evidence=evidence,
+        expected_certificate_digest=None,
+    )
+    assert (
+        verify_landing(missing_certificate_anchor).code
+        is LandingRefusalCode.CERTIFICATE_ANCHOR_REQUIRED
+    )
+    missing_generation_anchor = _request(
+        generation=generation,
+        certificate=certificate,
+        evidence=evidence,
+        expected_generation_id=None,
+    )
+    assert (
+        verify_landing(missing_generation_anchor).code
+        is LandingRefusalCode.GENERATION_ANCHOR_REQUIRED
+    )

@@ -15,19 +15,28 @@ landing caller needs an actionable answer without parsing free-form text.
 from __future__ import annotations
 
 import re
+import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum
+from datetime import datetime
+from enum import Enum, StrEnum
+
+from pydantic import BaseModel
 
 from repository_manager.development import (
+    CandidateVersion,
     Generation,
     GenerationState,
     RepositoryIdentity,
     TargetPolicy,
+    ValidationStage,
 )
 from repository_manager.development.serialization import canonical_json
 from repository_manager.validation import (
+    EvidenceOutcome,
     GateEvidence,
     ValidationCertificate,
+    ValidationFailureClass,
     verify_certificate,
 )
 
@@ -41,6 +50,25 @@ _MAX_EVIDENCE_SEQUENCE_ITEMS = 256
 _MAX_EVIDENCE_FIELD_BYTES = 1024
 _MAX_EVIDENCE_TOTAL_BYTES = 4 * 1024 * 1024
 _MAX_FENCE_BYTES = 256
+_MAX_MAPPING_KEYS = 64
+_MAX_AUTHORITY_BYTES = 1024 * 1024
+_UNSAFE_UNICODE_CATEGORIES = frozenset({"Cc", "Cf", "Co", "Cs", "Zl", "Zp"})
+_BIDI_CONTROLS = frozenset(
+    {
+        "\u061c",
+        "\u200e",
+        "\u200f",
+        "\u202a",
+        "\u202b",
+        "\u202c",
+        "\u202d",
+        "\u202e",
+        "\u2066",
+        "\u2067",
+        "\u2068",
+        "\u2069",
+    }
+)
 
 
 class LandingPolicyError(ValueError):
@@ -50,9 +78,17 @@ class LandingPolicyError(ValueError):
 class LandingRefusalCode(StrEnum):
     """Stable, actionable refusal values for the certified landing seam."""
 
+    REQUEST_INVALID = "request_invalid"
     GENERATION_REQUIRED = "generation_required"
+    GENERATION_INVALID = "generation_invalid"
+    GENERATION_ID_MISMATCH = "generation_id_mismatch"
+    GENERATION_ANCHOR_REQUIRED = "generation_anchor_required"
+    GENERATION_ANCHOR_MISMATCH = "generation_anchor_mismatch"
     CERTIFICATE_REQUIRED = "certificate_required"
+    CERTIFICATE_ANCHOR_REQUIRED = "certificate_anchor_required"
+    CERTIFICATE_ANCHOR_MISMATCH = "certificate_anchor_mismatch"
     CERTIFICATE_INVALID = "certificate_invalid"
+    EVIDENCE_INVALID = "evidence_invalid"
     CERTIFICATE_GENERATION_MISMATCH = "certificate_generation_mismatch"
     CERTIFICATE_TREE_MISMATCH = "certificate_tree_mismatch"
     CERTIFICATE_INPUT_MISMATCH = "certificate_input_mismatch"
@@ -102,9 +138,17 @@ def _require_bounded_text(
         raise LandingPolicyError(f"{field_name} must be a non-blank string")
     if value.strip() != value:
         raise LandingPolicyError(f"{field_name} must not have surrounding whitespace")
-    if any(ord(char) < 0x20 for char in value):
-        raise LandingPolicyError(f"{field_name} must not contain control characters")
-    if len(value.encode("utf-8")) > maximum_bytes:
+    if any(
+        unicodedata.category(char) in _UNSAFE_UNICODE_CATEGORIES
+        or char in _BIDI_CONTROLS
+        for char in value
+    ):
+        raise LandingPolicyError(f"{field_name} contains unsafe Unicode characters")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeError as exc:
+        raise LandingPolicyError(f"{field_name} contains invalid Unicode") from exc
+    if len(encoded) > maximum_bytes:
         raise LandingPolicyError(f"{field_name} exceeds its bounded size")
     return value
 
@@ -137,9 +181,20 @@ def _require_optional_fence(value: object, field_name: str) -> str | None:
 def _bounded_detail(value: str) -> str:
     if not isinstance(value, str):
         raise LandingPolicyError("landing detail must be a string")
-    encoded = value.encode("utf-8", errors="replace")
+    try:
+        normalized = unicodedata.normalize("NFC", value)
+    except (TypeError, ValueError):
+        normalized = ""
+    safe = "".join(
+        "?"
+        if unicodedata.category(char) in _UNSAFE_UNICODE_CATEGORIES
+        or char in _BIDI_CONTROLS
+        else char
+        for char in normalized
+    )
+    encoded = safe.encode("utf-8", errors="replace")
     if len(encoded) <= _MAX_DETAIL_BYTES:
-        return value
+        return safe
     # Refusal details may contain candidate-controlled gate names.  A detail
     # overflow must remain a typed refusal, never turn verification into an
     # exception.  Decode after truncation so a partial UTF-8 code point cannot
@@ -147,11 +202,271 @@ def _bounded_detail(value: str) -> str:
     return encoded[:_MAX_DETAIL_BYTES].decode("utf-8", errors="ignore")
 
 
-def _validate_certificate_bounds(certificate: ValidationCertificate) -> None:
-    """Apply this seam's bounds to the older certificate dataclass."""
+def _validate_plain_tree(value: object, *, depth: int = 0) -> None:
+    """Reject non-plain or unbounded values before any model validation."""
 
+    if depth > 8:
+        raise LandingPolicyError("authority nesting exceeds its bounded depth")
+    if isinstance(value, Mapping):
+        if len(value) > _MAX_MAPPING_KEYS:
+            raise LandingPolicyError("authority mapping exceeds its bounded count")
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise LandingPolicyError("authority mapping keys must be strings")
+            _require_bounded_text(key, "authority mapping key")
+            _validate_plain_tree(item, depth=depth + 1)
+        return
+    if isinstance(value, (list, tuple)):
+        if len(value) > _MAX_EVIDENCE_ITEMS:
+            raise LandingPolicyError("authority sequence exceeds its bounded count")
+        for item in value:
+            _validate_plain_tree(item, depth=depth + 1)
+        return
+    if value is None or type(value) in {bool, int, float, str}:
+        if isinstance(value, str):
+            _require_bounded_text(
+                value,
+                "authority text",
+                maximum_bytes=_MAX_AUTHORITY_BYTES,
+                allow_empty=True,
+            )
+        return
+    if isinstance(value, (datetime, Enum)):
+        return
+    raise LandingPolicyError("authority contains a non-plain value")
+
+
+def _plain_model_mapping(value: object, field_name: str) -> dict[str, object]:
+    """Take a bounded JSON-shaped snapshot of a Pydantic authority model."""
+
+    if not isinstance(value, BaseModel):
+        raise LandingPolicyError(f"{field_name} is not a typed authority model")
+    try:
+        raw = value.model_dump(mode="json", exclude_none=False)
+        if not isinstance(raw, dict):
+            raise LandingPolicyError(f"{field_name} did not produce a mapping")
+        _validate_plain_tree(raw)
+    except LandingPolicyError:
+        raise
+    except Exception as exc:
+        raise LandingPolicyError(f"{field_name} could not be serialized") from exc
+    return dict(raw)
+
+
+def _plain_payload_mapping(value: object, field_name: str) -> dict[str, object]:
+    """Take a bounded mapping from a legacy dataclass canonical payload."""
+
+    if not isinstance(value, Mapping):
+        raise LandingPolicyError(f"{field_name} did not produce a mapping")
+    try:
+        raw = dict(value)
+        _validate_plain_tree(raw)
+    except LandingPolicyError:
+        raise
+    except Exception as exc:
+        raise LandingPolicyError(f"{field_name} is not a plain mapping") from exc
+    return raw
+
+
+def _require_sequence(
+    value: object, field_name: str, *, maximum: int = _MAX_EVIDENCE_ITEMS
+) -> tuple[object, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise LandingPolicyError(f"{field_name} must be a bounded list or tuple")
+    if len(value) > maximum:
+        raise LandingPolicyError(f"{field_name} exceeds the bounded count")
+    return tuple(value)
+
+
+def _enum_value(value: object, enum_type: type[StrEnum], field_name: str) -> StrEnum:
+    if isinstance(value, enum_type):
+        return value
+    if type(value) is str:
+        try:
+            return enum_type(value)
+        except ValueError as exc:
+            raise LandingPolicyError(f"{field_name} is not a valid enum value") from exc
+    raise LandingPolicyError(f"{field_name} is not a valid enum value")
+
+
+def _rebuild_repository(value: object) -> RepositoryIdentity:
+    if not isinstance(value, RepositoryIdentity):
+        raise LandingPolicyError("repository is not a typed authority model")
+    if not isinstance(value.configured_roots, (list, tuple)):
+        raise LandingPolicyError("configured roots must be a bounded list or tuple")
+    raw = _plain_model_mapping(value, "repository")
+    try:
+        repository = RepositoryIdentity.model_validate(raw)
+    except Exception as exc:
+        raise LandingPolicyError("repository authority is invalid") from exc
+    _require_bounded_text(repository.repository_id, "repository_id")
+    _require_bounded_text(
+        repository.canonical_path, "canonical_path", maximum_bytes=4096
+    )
+    if len(repository.configured_roots) > _MAX_EVIDENCE_ITEMS:
+        raise LandingPolicyError("configured roots exceed the bounded count")
+    for root in repository.configured_roots:
+        _require_bounded_text(root, "configured root", maximum_bytes=4096)
+    if repository.origin is not None:
+        _require_bounded_text(
+            repository.origin, "repository origin", maximum_bytes=4096
+        )
+    return repository
+
+
+def _rebuild_target(value: object) -> TargetPolicy:
+    if not isinstance(value, TargetPolicy):
+        raise LandingPolicyError("target is not a typed authority model")
+    if not isinstance(value.capability_labels, (list, tuple)):
+        raise LandingPolicyError("target capabilities must be a bounded list or tuple")
+    raw = _plain_model_mapping(value, "target")
+    try:
+        target = TargetPolicy.model_validate(raw)
+    except Exception as exc:
+        raise LandingPolicyError("target authority is invalid") from exc
+    if target.alias is not None:
+        _require_bounded_text(target.alias, "target alias")
+    if len(target.capability_labels) > _MAX_EVIDENCE_ITEMS:
+        raise LandingPolicyError("target capabilities exceed the bounded count")
+    for label in target.capability_labels:
+        _require_bounded_text(label, "target capability")
+    return target
+
+
+def _rebuild_candidate(value: object) -> CandidateVersion:
+    raw = (
+        _plain_model_mapping(value, "candidate version")
+        if isinstance(value, BaseModel)
+        else _plain_payload_mapping(value, "candidate version")
+    )
+    try:
+        candidate = CandidateVersion.model_validate(raw)
+    except Exception as exc:
+        raise LandingPolicyError("candidate version authority is invalid") from exc
+    _require_bounded_text(candidate.candidate_id, "candidate_id")
+    if type(candidate.version) is not int:
+        raise LandingPolicyError("candidate version number is invalid")
+    _require_sha(candidate.candidate_sha, "candidate_sha")
+    return candidate
+
+
+def _rebuild_generation(value: object) -> Generation:
+    if not isinstance(value, Generation):
+        raise LandingPolicyError("generation is not a typed authority model")
+    for field_name in (
+        "candidate_versions",
+        "validation_evidence_ids",
+        "build_artifact_refs",
+        "bisection_lineage",
+    ):
+        if not isinstance(getattr(value, field_name, None), (list, tuple)):
+            raise LandingPolicyError(f"{field_name} must be a bounded list or tuple")
+    raw = _plain_model_mapping(value, "generation")
+    candidates = _require_sequence(raw.get("candidate_versions"), "candidate_versions")
+    raw["repository"] = _plain_payload_mapping(raw.get("repository"), "repository")
+    raw["target"] = _plain_payload_mapping(raw.get("target"), "target")
+    raw["candidate_versions"] = [
+        _plain_payload_mapping(item, "candidate version") for item in candidates
+    ]
+    try:
+        generation = Generation.model_validate(raw)
+    except Exception as exc:
+        raise LandingPolicyError("generation authority is invalid") from exc
+    _validate_generation_content(generation)
+    return generation
+
+
+def _validate_generation_content(generation: Generation) -> None:
+    _require_bounded_text(generation.generation_id, "generation_id")
+    _rebuild_repository(generation.repository)
+    _require_ref(generation.target_branch, "target_branch")
+    _rebuild_target(generation.target)
+    _require_sha(generation.base_sha, "generation base_sha")
+    _require_sha(generation.expected_landing_base_sha, "expected_landing_base_sha")
+    _require_digest(generation.config_digest, "generation config_digest")
+    _require_digest(generation.toolchain_digest, "generation toolchain_digest")
+    if not isinstance(generation.state, GenerationState):
+        raise LandingPolicyError("generation state is invalid")
+    if generation.sealed_at is not None and not isinstance(
+        generation.sealed_at, datetime
+    ):
+        raise LandingPolicyError("generation sealed_at is invalid")
+    if generation.synthetic_commit_sha is not None:
+        _require_sha(generation.synthetic_commit_sha, "synthetic_commit_sha")
+    if generation.tree_sha is not None:
+        _require_sha(generation.tree_sha, "tree_sha")
+    for candidate in generation.candidate_versions:
+        _rebuild_candidate(candidate)
+    if len(generation.validation_evidence_ids) > _MAX_EVIDENCE_ITEMS:
+        raise LandingPolicyError(
+            "generation validation evidence exceeds the bounded count"
+        )
+    for evidence_id in generation.validation_evidence_ids:
+        _require_bounded_text(evidence_id, "generation validation evidence ID")
+    if generation.landing_fence is not None:
+        _require_optional_fence(generation.landing_fence, "generation landing_fence")
+    _require_bounded_text(generation.reason, "generation reason", allow_empty=True)
+
+
+_CERTIFICATE_FIELDS = frozenset(
+    {
+        "certificate_id",
+        "generation_id",
+        "tree_sha",
+        "gate_config_digest",
+        "toolchain_digest",
+        "target_host",
+        "resource_digest",
+        "evidence_digests",
+        "blocking_gate_names",
+        "issued_at",
+        "profile_digest",
+    }
+)
+
+
+def _rebuild_certificate(value: object) -> ValidationCertificate:
+    if not isinstance(value, ValidationCertificate):
+        raise LandingPolicyError("certificate is not a typed authority value")
+    try:
+        raw = _plain_payload_mapping(value.canonical_payload(), "certificate")
+    except LandingPolicyError:
+        raise
+    except Exception as exc:
+        raise LandingPolicyError(
+            "certificate authority could not be serialized"
+        ) from exc
+    if set(raw) != _CERTIFICATE_FIELDS:
+        raise LandingPolicyError("certificate authority fields are not exact")
+    evidence_digests = _require_sequence(
+        raw.get("evidence_digests"), "certificate evidence digests"
+    )
+    blocking_names = _require_sequence(
+        raw.get("blocking_gate_names"), "certificate blocking gates"
+    )
+    raw["evidence_digests"] = tuple(evidence_digests)
+    raw["blocking_gate_names"] = tuple(blocking_names)
+    try:
+        certificate = ValidationCertificate(**raw)
+    except Exception as exc:
+        raise LandingPolicyError("certificate authority is invalid") from exc
+    _validate_certificate_content(certificate)
+    return certificate
+
+
+def _validate_certificate_content(certificate: ValidationCertificate) -> None:
     for field_name in ("certificate_id", "generation_id", "target_host"):
         _require_bounded_text(getattr(certificate, field_name), field_name)
+    _require_sha(certificate.tree_sha, "certificate tree_sha")
+    for field_name in (
+        "gate_config_digest",
+        "toolchain_digest",
+        "resource_digest",
+        "profile_digest",
+    ):
+        _require_digest(getattr(certificate, field_name), field_name)
+    if not isinstance(certificate.issued_at, datetime):
+        raise LandingPolicyError("certificate issued_at is invalid")
     if len(certificate.evidence_digests) > _MAX_EVIDENCE_ITEMS:
         raise LandingPolicyError("certificate evidence exceeds the bounded count")
     if len(certificate.blocking_gate_names) > _MAX_EVIDENCE_ITEMS:
@@ -162,63 +477,154 @@ def _validate_certificate_bounds(certificate: ValidationCertificate) -> None:
         _require_bounded_text(gate_name, "certificate blocking gate name")
 
 
-def _validate_evidence_bounds(evidence: tuple[GateEvidence, ...]) -> None:
-    """Bound legacy evidence fields before certificate verification consumes them."""
+_EVIDENCE_FIELDS = frozenset(
+    {
+        "evidence_id",
+        "gate_name",
+        "stage",
+        "tree_sha",
+        "generation_id",
+        "gate_config_digest",
+        "command_digest",
+        "target_host",
+        "toolchain_digest",
+        "resource_digest",
+        "profile_digest",
+        "started_at",
+        "finished_at",
+        "outcome",
+        "failure_class",
+        "job_id",
+        "dependency_job_ids",
+        "baseline_tree_sha",
+        "baseline_readable",
+        "differential",
+        "failure_ids",
+        "pre_existing_failure_ids",
+        "fixed_failure_ids",
+        "log_refs",
+        "artifact_refs",
+        "stdout_tail",
+        "stderr_tail",
+        "exit_code",
+        "snapshot_gate_deferred",
+        "snapshot_gate_replayed",
+        "detail",
+    }
+)
+_EVIDENCE_SEQUENCE_FIELDS = (
+    "dependency_job_ids",
+    "failure_ids",
+    "pre_existing_failure_ids",
+    "fixed_failure_ids",
+    "log_refs",
+    "artifact_refs",
+)
 
-    if len(evidence) > _MAX_EVIDENCE_ITEMS:
-        raise LandingPolicyError("landing evidence exceeds the bounded count")
-    total_bytes = 0
-    scalar_fields = (
+
+def _rebuild_evidence(value: object) -> GateEvidence:
+    if not isinstance(value, GateEvidence):
+        raise LandingPolicyError("evidence is not a typed value")
+    try:
+        raw = _plain_payload_mapping(value.canonical_payload(), "evidence")
+    except LandingPolicyError:
+        raise
+    except Exception as exc:
+        raise LandingPolicyError("evidence could not be serialized") from exc
+    if set(raw) != _EVIDENCE_FIELDS:
+        raise LandingPolicyError("evidence fields are not exact")
+    raw["stage"] = _enum_value(raw.get("stage"), ValidationStage, "evidence stage")
+    raw["outcome"] = _enum_value(
+        raw.get("outcome"), EvidenceOutcome, "evidence outcome"
+    )
+    if raw.get("failure_class") is not None:
+        raw["failure_class"] = _enum_value(
+            raw.get("failure_class"), ValidationFailureClass, "evidence failure class"
+        )
+    for field_name in _EVIDENCE_SEQUENCE_FIELDS:
+        values = _require_sequence(
+            raw.get(field_name),
+            field_name,
+            maximum=_MAX_EVIDENCE_SEQUENCE_ITEMS,
+        )
+        raw[field_name] = values
+        for item in values:
+            _require_bounded_text(item, f"{field_name} entry")
+    for field_name in (
         "evidence_id",
         "gate_name",
         "target_host",
         "stdout_tail",
         "stderr_tail",
         "detail",
-    )
-    optional_scalar_fields = ("generation_id", "job_id", "baseline_tree_sha")
-    sequence_fields = (
-        "dependency_job_ids",
-        "failure_ids",
-        "pre_existing_failure_ids",
-        "fixed_failure_ids",
-        "log_refs",
-        "artifact_refs",
-    )
-    for item in evidence:
-        for field_name in scalar_fields:
-            _require_bounded_text(
-                getattr(item, field_name),
-                field_name,
-                allow_empty=field_name in {"stdout_tail", "stderr_tail", "detail"},
-            )
-        for field_name in optional_scalar_fields:
-            value = getattr(item, field_name)
-            if value is not None:
-                _require_bounded_text(value, field_name)
-        for field_name in sequence_fields:
-            values = getattr(item, field_name)
-            if len(values) > _MAX_EVIDENCE_SEQUENCE_ITEMS:
-                raise LandingPolicyError(
-                    f"{field_name} exceeds the bounded evidence count"
-                )
-            for value in values:
-                _require_bounded_text(value, f"{field_name} entry")
-        total_bytes += len(canonical_json(item.canonical_payload()).encode("utf-8"))
-        if total_bytes > _MAX_EVIDENCE_TOTAL_BYTES:
-            raise LandingPolicyError("landing evidence exceeds the bounded size")
-
-
-def _validate_generation_bounds(generation: Generation) -> None:
-    """Bound the generation fields this pure seam returns or compares."""
-
-    _require_bounded_text(generation.generation_id, "generation_id")
-    if len(generation.validation_evidence_ids) > _MAX_EVIDENCE_ITEMS:
-        raise LandingPolicyError(
-            "generation validation evidence exceeds the bounded count"
+    ):
+        _require_bounded_text(
+            raw.get(field_name),
+            field_name,
+            maximum_bytes=_MAX_EVIDENCE_FIELD_BYTES,
+            allow_empty=field_name in {"stdout_tail", "stderr_tail", "detail"},
         )
-    for evidence_id in generation.validation_evidence_ids:
-        _require_bounded_text(evidence_id, "generation validation evidence ID")
+    for field_name in (
+        "generation_id",
+        "job_id",
+        "baseline_tree_sha",
+    ):
+        value_for_field = raw.get(field_name)
+        if value_for_field is not None:
+            _require_bounded_text(value_for_field, field_name)
+    _require_sha(raw.get("tree_sha"), "evidence tree_sha")
+    if raw.get("baseline_tree_sha") is not None:
+        _require_sha(raw.get("baseline_tree_sha"), "baseline_tree_sha")
+    for field_name in (
+        "gate_config_digest",
+        "command_digest",
+        "toolchain_digest",
+        "resource_digest",
+        "profile_digest",
+    ):
+        _require_digest(raw.get(field_name), field_name)
+    for field_name in ("started_at", "finished_at"):
+        if not isinstance(raw.get(field_name), datetime):
+            raise LandingPolicyError(f"{field_name} is not a timestamp")
+    for field_name in (
+        "differential",
+        "snapshot_gate_deferred",
+        "snapshot_gate_replayed",
+    ):
+        _require_bool(raw.get(field_name), field_name)
+    baseline_readable = raw.get("baseline_readable")
+    if baseline_readable is not None:
+        _require_bool(baseline_readable, "baseline_readable")
+    exit_code = raw.get("exit_code")
+    if exit_code is not None and (type(exit_code) is not int):
+        raise LandingPolicyError("exit_code must be an integer or None")
+    try:
+        evidence = GateEvidence(**raw)
+    except Exception as exc:
+        raise LandingPolicyError("evidence authority is invalid") from exc
+    try:
+        total_bytes = len(canonical_json(evidence.canonical_payload()).encode("utf-8"))
+    except Exception as exc:
+        raise LandingPolicyError("evidence canonical form is invalid") from exc
+    if total_bytes > _MAX_EVIDENCE_TOTAL_BYTES:
+        raise LandingPolicyError("landing evidence exceeds the bounded size")
+    return evidence
+
+
+def _validate_evidence_bounds(evidence: tuple[GateEvidence, ...]) -> None:
+    if len(evidence) > _MAX_EVIDENCE_ITEMS:
+        raise LandingPolicyError("landing evidence exceeds the bounded count")
+    for item in evidence:
+        if not isinstance(item, GateEvidence):
+            raise LandingPolicyError("evidence entries must be GateEvidence")
+        # Preserve the constructor's useful count/size errors while allowing a
+        # malformed model_copy to reach verify_landing and become a typed refusal.
+        try:
+            _rebuild_evidence(item)
+        except LandingPolicyError as exc:
+            message = str(exc)
+            if "bounded count" in message or "bounded size" in message:
+                raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +686,12 @@ class LandingVerificationRequest:
     canonical: CanonicalCheckoutState
     target_occupancy: TargetOccupancyState
     evidence: tuple[GateEvidence, ...] = ()
+    # These are trusted anchors read from the durable certified-generation
+    # authority by the later controller.  They must never be recomputed from
+    # the request-local generation, certificate, or evidence.
+    expected_certificate_digest: str | None = None
+    expected_generation_id: str | None = None
+    expected_synthetic_commit_sha: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.repository, RepositoryIdentity):
@@ -291,18 +703,25 @@ class LandingVerificationRequest:
         _require_sha(self.observed_target_sha, "observed_target_sha")
         _require_optional_fence(self.expected_landing_fence, "expected_landing_fence")
         _require_optional_fence(self.observed_landing_fence, "observed_landing_fence")
+        if self.expected_certificate_digest is not None:
+            _require_digest(
+                self.expected_certificate_digest, "expected_certificate_digest"
+            )
+        if self.expected_generation_id is not None:
+            _require_bounded_text(self.expected_generation_id, "expected_generation_id")
+        if self.expected_synthetic_commit_sha is not None:
+            _require_sha(
+                self.expected_synthetic_commit_sha,
+                "expected_synthetic_commit_sha",
+            )
         if self.generation is not None and not isinstance(self.generation, Generation):
             raise LandingPolicyError("generation must be Generation or None")
-        if self.generation is not None:
-            _validate_generation_bounds(self.generation)
         if self.certificate is not None and not isinstance(
             self.certificate, ValidationCertificate
         ):
             raise LandingPolicyError(
                 "certificate must be ValidationCertificate or None"
             )
-        if self.certificate is not None:
-            _validate_certificate_bounds(self.certificate)
         if not isinstance(self.canonical, CanonicalCheckoutState):
             raise LandingPolicyError("canonical must be CanonicalCheckoutState")
         if not isinstance(self.target_occupancy, TargetOccupancyState):
@@ -312,6 +731,33 @@ class LandingVerificationRequest:
         if not all(isinstance(item, GateEvidence) for item in self.evidence):
             raise LandingPolicyError("evidence entries must be GateEvidence")
         _validate_evidence_bounds(self.evidence)
+        # Snapshot every valid authority value at the boundary.  A caller can
+        # otherwise retain the mutable list supplied through Pydantic's
+        # model_copy(update=...) escape hatch and mutate it after construction.
+        # Invalid values remain available to verify_landing, which turns them
+        # into a stable typed refusal rather than leaking an AttributeError.
+        for field_name, rebuild in (
+            ("repository", _rebuild_repository),
+            ("target", _rebuild_target),
+            ("generation", _rebuild_generation),
+            ("certificate", _rebuild_certificate),
+        ):
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            try:
+                object.__setattr__(self, field_name, rebuild(value))
+            except LandingPolicyError:
+                pass
+        rebuilt_evidence: list[GateEvidence] = []
+        for item in self.evidence:
+            try:
+                rebuilt_evidence.append(_rebuild_evidence(item))
+            except LandingPolicyError:
+                rebuilt_evidence = []
+                break
+        if rebuilt_evidence:
+            object.__setattr__(self, "evidence", tuple(rebuilt_evidence))
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,30 +847,153 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
     """
 
     if not isinstance(request, LandingVerificationRequest):
-        raise LandingPolicyError("request must be LandingVerificationRequest")
+        return _refuse(
+            LandingRefusalCode.REQUEST_INVALID,
+            "landing request is not a closed typed value",
+        )
 
-    generation = request.generation
-    if generation is None:
+    # Keep missing-authority priority stable before inspecting any mutable or
+    # potentially malformed model_copy payload.
+    try:
+        request_generation = request.generation
+        request_certificate = request.certificate
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.REQUEST_INVALID,
+            "landing request authority fields are unavailable",
+        )
+    if request_generation is None:
         return _refuse(
             LandingRefusalCode.GENERATION_REQUIRED,
             "a sealed landing generation is required",
         )
-    certificate = request.certificate
-    if certificate is None:
+    if request_certificate is None:
         return _refuse(
             LandingRefusalCode.CERTIFICATE_REQUIRED,
             "a certification certificate is required",
         )
+
+    try:
+        repository = _rebuild_repository(request.repository)
+        target = _rebuild_target(request.target)
+        target_branch = _require_ref(request.target_branch, "target_branch")
+        expected_base_sha = _require_sha(request.expected_base_sha, "expected_base_sha")
+        observed_target_sha = _require_sha(
+            request.observed_target_sha, "observed_target_sha"
+        )
+        expected_fence = _require_optional_fence(
+            request.expected_landing_fence, "expected_landing_fence"
+        )
+        observed_fence = _require_optional_fence(
+            request.observed_landing_fence, "observed_landing_fence"
+        )
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.REQUEST_INVALID,
+            "landing request identity or observation is invalid",
+        )
+
+    try:
+        generation = _rebuild_generation(request_generation)
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.GENERATION_INVALID,
+            "generation authority could not be rebuilt",
+        )
+    try:
+        certificate = _rebuild_certificate(request_certificate)
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.CERTIFICATE_INVALID,
+            "certificate authority could not be rebuilt",
+        )
+    rebuilt_evidence: list[GateEvidence] = []
+    try:
+        if type(request.evidence) is not tuple:
+            raise LandingPolicyError("evidence must be an immutable tuple")
+        for item in request.evidence:
+            rebuilt_evidence.append(_rebuild_evidence(item))
+        evidence = tuple(rebuilt_evidence)
+        _validate_evidence_bounds(evidence)
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.EVIDENCE_INVALID,
+            "validation evidence could not be rebuilt",
+        )
+
+    try:
+        expected_generation_id = Generation.derive_id(
+            repository_id=generation.repository.repository_id,
+            target_branch=generation.target_branch,
+            base_sha=generation.base_sha,
+            candidate_versions=tuple(generation.candidate_versions),
+            config_digest=generation.config_digest,
+            toolchain_digest=generation.toolchain_digest,
+        )
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.GENERATION_INVALID,
+            "generation identity could not be derived",
+        )
+    if generation.generation_id != expected_generation_id:
+        return _refuse(
+            LandingRefusalCode.GENERATION_ID_MISMATCH,
+            "generation identity does not match immutable membership",
+        )
+    if request.expected_generation_id is None:
+        return _refuse(
+            LandingRefusalCode.GENERATION_ANCHOR_REQUIRED,
+            "durable generation identity anchor is required",
+        )
+    try:
+        expected_generation_anchor = _require_bounded_text(
+            request.expected_generation_id, "expected_generation_id"
+        )
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.REQUEST_INVALID,
+            "generation identity anchor is invalid",
+        )
+    if expected_generation_anchor != generation.generation_id:
+        return _refuse(
+            LandingRefusalCode.GENERATION_ANCHOR_MISMATCH,
+            "generation identity anchor does not match durable authority",
+        )
+
     if generation.state is not GenerationState.CERTIFIED:
         return _refuse(
             LandingRefusalCode.GENERATION_NOT_CERTIFIED,
-            f"generation {generation.generation_id!r} is {generation.state.value!r}, "
-            "not certified",
+            "generation is not certified for landing",
         )
     if generation.synthetic_commit_sha is None or generation.tree_sha is None:
         return _refuse(
             LandingRefusalCode.GENERATION_INCOMPLETE,
-            "certified generation must carry a synthetic commit and tree",
+            "certified generation is missing its immutable commit or tree",
+        )
+    if request.expected_synthetic_commit_sha is None:
+        return _refuse(
+            LandingRefusalCode.GENERATION_ANCHOR_REQUIRED,
+            "durable synthetic commit anchor is required",
+        )
+    try:
+        expected_synthetic_commit_sha = _require_sha(
+            request.expected_synthetic_commit_sha,
+            "expected_synthetic_commit_sha",
+        )
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.REQUEST_INVALID,
+            "synthetic commit anchor is invalid",
+        )
+    if expected_synthetic_commit_sha != generation.synthetic_commit_sha:
+        return _refuse(
+            LandingRefusalCode.GENERATION_ANCHOR_MISMATCH,
+            "synthetic commit anchor does not match durable authority",
+        )
+    if generation.landing_fence is None:
+        return _refuse(
+            LandingRefusalCode.FENCE_REQUIRED,
+            "certified generation is missing its landing fence",
         )
     if certificate.generation_id != generation.generation_id:
         return _refuse(
@@ -434,7 +1003,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
     if certificate.tree_sha != generation.tree_sha:
         return _refuse(
             LandingRefusalCode.CERTIFICATE_TREE_MISMATCH,
-            "certificate tree does not match the certified generation tree",
+            "certificate and generation trees differ",
         )
     if (
         certificate.gate_config_digest != generation.config_digest
@@ -442,87 +1011,139 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
     ):
         return _refuse(
             LandingRefusalCode.CERTIFICATE_INPUT_MISMATCH,
-            "certificate configuration or toolchain differs from the generation",
+            "certificate inputs differ from generation authority",
         )
-    if generation.validation_evidence_ids:
-        supplied_evidence_ids = tuple(item.evidence_id for item in request.evidence)
-        if len(set(supplied_evidence_ids)) != len(supplied_evidence_ids) or set(
-            supplied_evidence_ids
-        ) != set(generation.validation_evidence_ids):
-            return _refuse(
-                LandingRefusalCode.CERTIFICATE_INPUT_MISMATCH,
-                "certificate evidence identities differ from the generation",
-            )
-    certificate_check = verify_certificate(certificate, request.evidence)
+    supplied_evidence_ids = tuple(item.evidence_id for item in evidence)
+    expected_evidence_ids = tuple(generation.validation_evidence_ids)
+    if (
+        len(supplied_evidence_ids) != len(set(supplied_evidence_ids))
+        or tuple(sorted(supplied_evidence_ids)) != expected_evidence_ids
+    ):
+        return _refuse(
+            LandingRefusalCode.CERTIFICATE_INPUT_MISMATCH,
+            "generation evidence identities differ from rebuilt evidence",
+        )
+    try:
+        evidence_digests = tuple(sorted(item.digest for item in evidence))
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.EVIDENCE_INVALID,
+            "validation evidence digest could not be derived",
+        )
+    if tuple(certificate.evidence_digests) != evidence_digests:
+        return _refuse(
+            LandingRefusalCode.CERTIFICATE_INVALID,
+            "certificate evidence content differs from rebuilt evidence",
+        )
+    try:
+        certificate_check = verify_certificate(certificate, evidence)
+        certificate_digest = certificate.digest
+        if not isinstance(certificate_check.valid, bool):
+            raise LandingPolicyError("certificate verification result is invalid")
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.CERTIFICATE_INVALID,
+            "certificate verification failed safely",
+        )
     if not certificate_check.valid:
         return _refuse(
             LandingRefusalCode.CERTIFICATE_INVALID,
-            "certificate evidence is invalid: " + "; ".join(certificate_check.reasons),
+            "certificate evidence is not valid for landing",
         )
-    if generation.repository != request.repository:
+    if request.expected_certificate_digest is None:
+        return _refuse(
+            LandingRefusalCode.CERTIFICATE_ANCHOR_REQUIRED,
+            "durable certificate content anchor is required",
+        )
+    try:
+        expected_certificate_digest = _require_digest(
+            request.expected_certificate_digest, "expected_certificate_digest"
+        )
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.REQUEST_INVALID,
+            "certificate content anchor is invalid",
+        )
+    if expected_certificate_digest != certificate_digest:
+        return _refuse(
+            LandingRefusalCode.CERTIFICATE_ANCHOR_MISMATCH,
+            "certificate content anchor does not match durable authority",
+        )
+    if generation.repository != repository:
         return _refuse(
             LandingRefusalCode.REPOSITORY_MISMATCH,
             "generation repository does not match the requested repository",
         )
-    if generation.target_branch != request.target_branch:
+    if generation.target_branch != target_branch or generation.target != target:
         return _refuse(
             LandingRefusalCode.TARGET_MISMATCH,
-            "generation target branch does not match the requested target",
-        )
-    if generation.target != request.target:
-        return _refuse(
-            LandingRefusalCode.TARGET_MISMATCH,
-            "generation execution target does not match the requested target",
+            "generation target does not match the requested target",
         )
     if (
         generation.base_sha != generation.expected_landing_base_sha
-        or generation.expected_landing_base_sha != request.expected_base_sha
+        or generation.expected_landing_base_sha != expected_base_sha
     ):
         return _refuse(
             LandingRefusalCode.EXPECTED_BASE_MISMATCH,
-            "generation expected landing base does not match the requested base",
+            "generation expected landing base does not match the request",
         )
-    if request.observed_target_sha != request.expected_base_sha:
+    if observed_target_sha != expected_base_sha:
         return _refuse(
             LandingRefusalCode.TARGET_MOVED,
             "target branch moved after the expected base was captured",
         )
-    if request.expected_landing_fence is None or request.observed_landing_fence is None:
+    if expected_fence is None or observed_fence is None:
         return _refuse(
             LandingRefusalCode.FENCE_REQUIRED,
             "an expected and observed landing fence are required",
         )
-    if (
-        generation.landing_fence is not None
-        and generation.landing_fence != request.expected_landing_fence
-    ) or request.observed_landing_fence != request.expected_landing_fence:
+    if generation.landing_fence != expected_fence or observed_fence != expected_fence:
         return _refuse(
             LandingRefusalCode.STALE_FENCE,
             "the observed landing fence is not the current expected fence",
         )
-    if not request.canonical.mutation_lease_held:
+    try:
+        lease_held = _require_bool(
+            request.canonical.mutation_lease_held, "mutation_lease_held"
+        )
+        clean = _require_bool(request.canonical.clean, "clean")
+        occupancy = request.target_occupancy.other_worktree_count
+        if type(occupancy) is not int or not 0 <= occupancy <= _MAX_TARGET_HOLDERS:
+            raise LandingPolicyError("occupancy is invalid")
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.REQUEST_INVALID,
+            "canonical or occupancy observation is invalid",
+        )
+    if not lease_held:
         return _refuse(
             LandingRefusalCode.CANONICAL_LEASE_REQUIRED,
-            "canonical cleanliness must be observed while holding its mutation lease",
+            "canonical cleanliness requires its mutation lease",
         )
-    if not request.canonical.clean:
+    if not clean:
         return _refuse(
             LandingRefusalCode.CANONICAL_DIRTY,
-            "canonical checkout has uncommitted or untracked content",
+            "canonical checkout is not clean",
         )
-    if request.target_occupancy.other_worktree_count:
+    if occupancy:
         return _refuse(
             LandingRefusalCode.TARGET_OCCUPIED,
-            "target branch is checked out by another worktree",
+            "target branch is occupied by another worktree",
         )
-    return LandingVerificationResult(
-        accepted=True,
-        generation_id=generation.generation_id,
-        synthetic_commit_sha=generation.synthetic_commit_sha,
-        tree_sha=generation.tree_sha,
-        certificate_digest=certificate.digest,
-        landing_fence=request.expected_landing_fence,
-    )
+    try:
+        return LandingVerificationResult(
+            accepted=True,
+            generation_id=generation.generation_id,
+            synthetic_commit_sha=generation.synthetic_commit_sha,
+            tree_sha=generation.tree_sha,
+            certificate_digest=certificate_digest,
+            landing_fence=expected_fence,
+        )
+    except Exception:
+        return _refuse(
+            LandingRefusalCode.REQUEST_INVALID,
+            "landing result could not be constructed",
+        )
 
 
 def verify_landability(
