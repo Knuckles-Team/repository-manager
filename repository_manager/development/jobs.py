@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -36,6 +37,7 @@ from pydantic import (
 
 from .enums import JobState, OperationKind, RefusalCode
 from .models import DevelopmentRequest, ResourceRequest
+from .payloads import BuildExecutionDescriptor, operation_payload_from_mapping
 from .serialization import canonical_digest, canonical_json
 
 if TYPE_CHECKING:
@@ -47,6 +49,9 @@ _MAX_PAGE_SIZE = 1000
 _MAX_SCAN_ROWS = 1000
 _REPAIR_OPERATION = "repair"
 _RESOLVED_PROFILE_AUTHORITY = "repository_manager:resource_profile_registry:v1"
+_OPERATION_PAYLOAD_KIND = "repository.build-execution/v1"
+_OPERATION_PAYLOAD_VERSION = "1"
+_PAYLOAD_DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _OPERATION_KIND: Mapping[str, str] = {
     "lane.allocate": "repository.lane.allocate",
     "lane.check": "repository.lane.check",
@@ -96,6 +101,8 @@ class RepositoryJobServiceCode(StrEnum):
     CONFLICT = RefusalCode.CONFLICT_BASE_MOVED.value
     INVALID_STATE = RefusalCode.INVALID_STATE_COMBINATION.value
     DUPLICATE = RefusalCode.DUPLICATE_REQUEST.value
+    INPUT_CONFLICT = "input_conflict"
+    TYPED_EXECUTION_PAYLOAD_REQUIRED = "typed_execution_payload_required"
     RECONCILIATION_REQUIRED = RefusalCode.RECONCILIATION_REQUIRED.value
     INTERNAL = RefusalCode.INTERNAL_ERROR.value
 
@@ -121,6 +128,8 @@ _SAFE_ERROR_MESSAGES: Mapping[RepositoryJobServiceCode, str] = {
     RepositoryJobServiceCode.CONFLICT: "repository job conflicts with durable state",
     RepositoryJobServiceCode.INVALID_STATE: "repository job lifecycle state refuses this operation",
     RepositoryJobServiceCode.DUPLICATE: "repository job idempotency key conflicts with immutable input",
+    RepositoryJobServiceCode.INPUT_CONFLICT: "repository execution input conflicts with durable state",
+    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED: "typed repository execution input is required",
     RepositoryJobServiceCode.RECONCILIATION_REQUIRED: "repository job requires reconciliation",
     RepositoryJobServiceCode.INTERNAL: "repository job authority failed",
 }
@@ -229,6 +238,11 @@ class DurableJobView(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     completed_at: datetime | None = None
+    # Only the typed payload summary crosses ordinary projections.  The
+    # canonical body is available through the exact-input method below.
+    operation_payload_kind: StrictStr | None = None
+    operation_payload_version: StrictStr | None = None
+    operation_payload_digest: StrictStr | None = None
 
     @field_validator(
         "job_id",
@@ -265,10 +279,34 @@ class DurableJobView(BaseModel):
         "error_ref",
         "lease_owner",
         "lease_fence",
+        "operation_payload_kind",
+        "operation_payload_version",
+        "operation_payload_digest",
     )
     @classmethod
     def validate_optional_strings(cls, value: str | None, info: Any) -> str | None:
         return None if value is None else _nonblank(value, info.field_name)
+
+    @field_validator("operation_payload_kind")
+    @classmethod
+    def validate_payload_kind(cls, value: str | None) -> str | None:
+        if value is not None and value != _OPERATION_PAYLOAD_KIND:
+            raise ValueError("operation payload kind is unknown")
+        return value
+
+    @field_validator("operation_payload_version")
+    @classmethod
+    def validate_payload_version(cls, value: str | None) -> str | None:
+        if value is not None and value != _OPERATION_PAYLOAD_VERSION:
+            raise ValueError("operation payload version is unknown")
+        return value
+
+    @field_validator("operation_payload_digest")
+    @classmethod
+    def validate_payload_digest(cls, value: str | None) -> str | None:
+        if value is not None and not _PAYLOAD_DIGEST_RE.fullmatch(value):
+            raise ValueError("operation payload digest is invalid")
+        return value
 
     @field_validator("dependencies", "host_labels", "anti_affinity", mode="before")
     @classmethod
@@ -290,6 +328,17 @@ class DurableJobView(BaseModel):
             self.lease_owner is None or self.lease_fence is None
         ):
             raise ValueError("leased/running jobs require lease owner and fence")
+        summary = (
+            self.operation_payload_kind,
+            self.operation_payload_version,
+            self.operation_payload_digest,
+        )
+        if any(value is not None for value in summary) and not all(
+            value is not None for value in summary
+        ):
+            raise ValueError("operation payload summary must be complete")
+        if self.operation_payload_kind is not None and self.operation != "build":
+            raise ValueError("operation payload summary does not match operation")
         return self
 
 
@@ -551,6 +600,14 @@ class RepositoryJobPort(Protocol):
         now: datetime | None = None,
     ) -> JobSubmitResult: ...
 
+    def get_exact_execution_input(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+        owner_id: str,
+    ) -> BuildExecutionDescriptor | None: ...
+
 
 def _cursor_tenant_digest(tenant_id: str) -> str:
     return hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()
@@ -641,22 +698,32 @@ def _translate_authority_error(
     lowered = str(error).lower()[:256]
     conflict_type = getattr(authority, "RepositoryWorkItemConflict", ())
     error_type = getattr(authority, "RepositoryWorkItemError", ())
-    if conflict_type and isinstance(error, conflict_type):
-        if "tenant" in lowered or "authenticated" in lowered or "outside" in lowered:
-            code = RepositoryJobServiceCode.UNAUTHORIZED
-        elif "base moved" in lowered or "target moved" in lowered:
-            code = RepositoryJobServiceCode.CONFLICT
-        elif (
-            "idempot" in lowered
-            or "immutable" in lowered
-            or "operation" in lowered
-            or "identity" in lowered
-        ):
-            code = RepositoryJobServiceCode.DUPLICATE
-        else:
-            code = RepositoryJobServiceCode.CONFLICT
-    elif error_type and isinstance(error, error_type):
-        if "tenant" in lowered or "authenticated" in lowered or "outside" in lowered:
+    is_conflict = bool(conflict_type) and isinstance(error, conflict_type)
+    is_authority_error = bool(error_type) and isinstance(error, error_type)
+    if is_conflict or is_authority_error:
+        if "typed_execution_payload_required" in lowered:
+            code = RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED
+        elif "input_conflict" in lowered:
+            code = RepositoryJobServiceCode.INPUT_CONFLICT
+        elif is_conflict:
+            if (
+                "tenant" in lowered
+                or "authenticated" in lowered
+                or "outside" in lowered
+            ):
+                code = RepositoryJobServiceCode.UNAUTHORIZED
+            elif "base moved" in lowered or "target moved" in lowered:
+                code = RepositoryJobServiceCode.CONFLICT
+            elif (
+                "idempot" in lowered
+                or "immutable" in lowered
+                or "operation" in lowered
+                or "identity" in lowered
+            ):
+                code = RepositoryJobServiceCode.DUPLICATE
+            else:
+                code = RepositoryJobServiceCode.CONFLICT
+        elif "tenant" in lowered or "authenticated" in lowered or "outside" in lowered:
             code = RepositoryJobServiceCode.UNAUTHORIZED
         elif "base moved" in lowered or "target moved" in lowered:
             code = RepositoryJobServiceCode.CONFLICT
@@ -815,6 +882,7 @@ class GraphRepositoryJobPort:
             )
         except Exception as exc:  # noqa: BLE001 - translate authority contract errors
             raise _translate_authority_error(authority, exc) from exc
+
         raw = handle.model_dump(mode="json", exclude_none=False)
         job_id = str(raw["job_id"])
         # The AU handle intentionally does not carry tenant; the authenticated
@@ -832,6 +900,58 @@ class GraphRepositoryJobPort:
         return JobSubmitResult(
             job=view,
             deduplicated=bool(raw.get("deduplicated", False)),
+        )
+
+    def get_exact_execution_input(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+        owner_id: str,
+    ) -> BuildExecutionDescriptor | None:
+        """Read the typed body through AU's narrow authenticated seam.
+
+        The ordinary ``get`` projection intentionally carries only the
+        operation-payload summary.  This method delegates the body read to AU
+        so tenant/owner checks, legacy refusal, and persistence tamper checks
+        remain authoritative; RM revalidates the returned model once more at
+        its own boundary before exposing it to a caller.
+        """
+
+        authority = self._authority_module()
+        try:
+            payload = authority.get_repository_operation_payload(
+                self.engine,
+                job_id,
+                tenant=tenant_id,
+                owner_id=owner_id,
+            )
+            if payload is None:
+                return None
+            try:
+                return operation_payload_from_mapping(payload)
+            except (TypeError, ValueError) as exc:
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.INPUT_CONFLICT,
+                    _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
+                    job_id=job_id,
+                ) from exc
+        except RepositoryJobServiceError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - translate authority contract errors
+            raise _translate_authority_error(authority, exc) from exc
+
+    # Compatibility spelling for callers that use the shorter contract name;
+    # both paths retain the exact same authorization and validation boundary.
+    def get_execution_input(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+        owner_id: str,
+    ) -> BuildExecutionDescriptor | None:
+        return self.get_exact_execution_input(
+            job_id, tenant_id=tenant_id, owner_id=owner_id
         )
 
     def get(
@@ -974,7 +1094,19 @@ class GraphRepositoryJobPort:
         # old terminal row immutable and derive a deterministic idempotency
         # key from its full handle.  The correlation is durable in the new row.
         attempt = job.attempt + 1
-        request = _retry_request_mapping(job, owner_id=owner_id, attempt=attempt)
+        operation_payload = (
+            self.get_exact_execution_input(
+                job.job_id, tenant_id=tenant_id, owner_id=owner_id
+            )
+            if job.operation == "build"
+            else None
+        )
+        request = _retry_request_mapping(
+            job,
+            owner_id=owner_id,
+            attempt=attempt,
+            operation_payload=operation_payload,
+        )
         remaining_attempts = job.max_attempts - job.attempt
         if remaining_attempts < 1:
             raise RepositoryJobServiceError(
@@ -1000,19 +1132,31 @@ class GraphRepositoryJobPort:
                 "repair identity does not match the durable job",
                 job_id=job.job_id,
             )
+        operation_payload = (
+            self.get_exact_execution_input(
+                job.job_id, tenant_id=tenant_id, owner_id=owner_id
+            )
+            if job.operation == "build"
+            else None
+        )
         request = _repair_request_mapping(
             job,
             proposal,
             owner_id=owner_id,
             session_id=session_id,
+            operation_payload=operation_payload,
         )
         return self.submit(request, max_attempts=1, now=now)
 
 
 def _retry_request_mapping(
-    job: DurableJobView, *, owner_id: str, attempt: int
+    job: DurableJobView,
+    *,
+    owner_id: str,
+    attempt: int,
+    operation_payload: BuildExecutionDescriptor | None = None,
 ) -> dict[str, Any]:
-    return {
+    request = {
         "contract_version": "1",
         "request_id": f"retry:{job.job_id}:{attempt}:request",
         "idempotency_key": f"retry:{job.job_id}:{attempt}",
@@ -1057,6 +1201,11 @@ def _retry_request_mapping(
         "input_digest": job.input_digest,
         "retry_class": job.retry_class or "manual",
     }
+    if operation_payload is not None:
+        request["operation_payload"] = operation_payload.model_dump(
+            mode="json", exclude_none=False
+        )
+    return request
 
 
 def _repair_request_mapping(
@@ -1065,19 +1214,34 @@ def _repair_request_mapping(
     *,
     owner_id: str,
     session_id: str | None,
+    operation_payload: BuildExecutionDescriptor | None = None,
 ) -> dict[str, Any]:
-    request = _retry_request_mapping(job, owner_id=owner_id, attempt=job.attempt + 1)
+    request = _retry_request_mapping(
+        job,
+        owner_id=owner_id,
+        attempt=job.attempt + 1,
+        operation_payload=operation_payload,
+    )
     repair_intent = {
         "contract": "repository-repair:v1",
         "source_job_id": job.job_id,
         "classifications": tuple(proposal.classifications),
     }
     repair_intent_digest = canonical_digest(repair_intent)
+    # A typed build repair is still an executable build input.  The repair
+    # identity/intent remains deterministic in its request id, idempotency
+    # key, correlation, retry class, and intent digest; only the operation
+    # discriminator stays build so the closed payload union remains valid.
+    repair_operation = (
+        "build"
+        if job.operation == "build" and operation_payload is not None
+        else _REPAIR_OPERATION
+    )
     request.update(
         {
             "request_id": f"repair:{proposal.repair_id}:request",
             "idempotency_key": proposal.idempotency_key,
-            "operation": _REPAIR_OPERATION,
+            "operation": repair_operation,
             "session_id": session_id or job.session_id,
             "correlation_id": job.job_id,
             "retry_class": "reconciliation",
@@ -1133,6 +1297,7 @@ class RepositoryJobService:
                 "cancel",
                 "retry",
                 "submit_repair",
+                "get_exact_execution_input",
             )
             missing = [
                 name for name in required if not callable(getattr(port, name, None))
@@ -1193,22 +1358,113 @@ class RepositoryJobService:
             )
         except Exception as exc:  # noqa: BLE001 - normalize port boundary errors
             raise _safe_port_error(exc, job_id=job_id) from exc
-        if (
-            view is None
-            or view.tenant_id != auth.tenant_id
-            or view.owner_id != auth.owner_id
-        ):
+        if view is None:
             raise RepositoryJobServiceError(
                 RepositoryJobServiceCode.UNAUTHORIZED,
                 "repository job is not accessible to this tenant/owner",
                 job_id=job_id,
             )
-        return view
+        try:
+            # Rebuild through a mapping: Pydantic's default model_validate on
+            # an existing instance may trust ``model_copy(update=...)`` and
+            # skip validators.  Authority projections are therefore always
+            # revalidated before service logic or exact-input reads.
+            raw_view = (
+                view.model_dump(mode="python", exclude_none=False)
+                if isinstance(view, BaseModel)
+                else view
+            )
+            validated = DurableJobView.model_validate(raw_view)
+        except (TypeError, ValueError) as exc:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INTERNAL,
+                "repository job authority returned an invalid projection",
+                job_id=job_id,
+            ) from exc
+        if validated.tenant_id != auth.tenant_id or validated.owner_id != auth.owner_id:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.UNAUTHORIZED,
+                "repository job is not accessible to this tenant/owner",
+                job_id=job_id,
+            )
+        return validated
 
     def get(self, job_id: str, *, auth: JobAuthorization) -> DurableJobView:
         """Return one authorized durable job, refusing hidden identities."""
 
         return self._visible(job_id, auth)
+
+    def get_exact_execution_input(
+        self,
+        job_id: str,
+        *,
+        auth: JobAuthorization,
+    ) -> BuildExecutionDescriptor | None:
+        """Return the exact typed build body inside the authenticated scope.
+
+        Scope is established from the ordinary projection first, so a caller
+        cannot use this body-bearing method as a tenant/owner existence oracle.
+        The port result is revalidated and bound to the immutable projection
+        before it leaves the service.
+        """
+
+        view = self._visible(job_id, auth)
+        try:
+            payload = self._port.get_exact_execution_input(
+                job_id,
+                tenant_id=auth.tenant_id,
+                owner_id=auth.owner_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - normalize port boundary errors
+            raise _safe_port_error(exc, job_id=job_id) from exc
+        if payload is None:
+            if view.operation == "build" and view.operation_payload_digest is None:
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED,
+                    _SAFE_ERROR_MESSAGES[
+                        RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED
+                    ],
+                    job_id=job_id,
+                )
+            if view.operation_payload_digest is not None:
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.INPUT_CONFLICT,
+                    _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
+                    job_id=job_id,
+                )
+            return None
+        try:
+            validated = operation_payload_from_mapping(payload)
+        except (TypeError, ValueError) as exc:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INPUT_CONFLICT,
+                _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
+                job_id=job_id,
+            ) from exc
+        if (
+            view.operation_payload_digest != validated.payload_digest
+            or view.operation_payload_kind != validated.kind
+            or view.operation_payload_version != validated.schema_version
+            or view.operation != "build"
+            or validated.repository_id != view.repository_id
+            or validated.base_sha != view.base_sha
+        ):
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INPUT_CONFLICT,
+                _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
+                job_id=job_id,
+            )
+        return validated
+
+    def get_execution_input(
+        self,
+        job_id: str,
+        *,
+        auth: JobAuthorization,
+    ) -> BuildExecutionDescriptor | None:
+        """Short spelling for :meth:`get_exact_execution_input`."""
+
+        return self.get_exact_execution_input(job_id, auth=auth)
 
     def list(
         self,
@@ -1503,8 +1759,49 @@ class FakeRepositoryJobPort:
 
     def __init__(self) -> None:
         self.rows: dict[str, DurableJobView] = {}
+        # The fake mirrors the authority's separate typed extension store;
+        # ordinary rows retain only the summary fields.
+        self.execution_inputs: dict[str, BuildExecutionDescriptor] = {}
         self.submit_calls = 0
         self.cancel_calls = 0
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return a restart-safe fake snapshot, including typed bodies."""
+
+        return {
+            "rows": {
+                job_id: view.model_dump(mode="json", exclude_none=False)
+                for job_id, view in self.rows.items()
+            },
+            "execution_inputs": {
+                job_id: payload.model_dump(mode="json", exclude_none=False)
+                for job_id, payload in self.execution_inputs.items()
+            },
+        }
+
+    @classmethod
+    def from_snapshot(cls, snapshot: Mapping[str, Any]) -> FakeRepositoryJobPort:
+        """Restore a fake without dropping the separate exact-input store."""
+
+        if not isinstance(snapshot, Mapping):
+            raise TypeError("fake repository job snapshot must be a mapping")
+        rows = snapshot.get("rows", {})
+        inputs = snapshot.get("execution_inputs", {})
+        if not isinstance(rows, Mapping) or not isinstance(inputs, Mapping):
+            raise ValueError("fake repository job snapshot has invalid stores")
+        restored = cls()
+        try:
+            restored.rows = {
+                str(job_id): DurableJobView.model_validate(value)
+                for job_id, value in rows.items()
+            }
+            restored.execution_inputs = {
+                str(job_id): operation_payload_from_mapping(value)
+                for job_id, value in inputs.items()
+            }
+        except (TypeError, ValueError) as exc:
+            raise ValueError("fake repository job snapshot is invalid") from exc
+        return restored
 
     @staticmethod
     def _job_id(tenant_id: str, idempotency_key: str) -> str:
@@ -1516,10 +1813,33 @@ class FakeRepositoryJobPort:
         return "workitem:repository_manager:" + job_id.split(":", 1)[1]
 
     @staticmethod
+    def _request_payload(
+        request: Mapping[str, Any],
+    ) -> BuildExecutionDescriptor | None:
+        raw_payload = request.get("operation_payload")
+        if raw_payload is None:
+            # An untyped legacy build descriptor must never become executable
+            # input merely because it arrived under an old mapping key.
+            if request.get("build_descriptor") is not None:
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.INVALID_REQUEST,
+                    "repository execution input must use the typed operation_payload extension",
+                )
+            return None
+        try:
+            return operation_payload_from_mapping(raw_payload)
+        except (TypeError, ValueError) as exc:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INVALID_REQUEST,
+                "repository operation payload is invalid",
+            ) from exc
+
+    @staticmethod
     def _request_view(
         request: Mapping[str, Any], *, now: datetime, max_attempts: int
     ) -> DurableJobView:
         raw = dict(request)
+        payload = FakeRepositoryJobPort._request_payload(raw)
         repository = dict(raw.get("repository") or {})
         resources = dict(raw.get("resources") or {})
         target = dict(raw.get("target") or {})
@@ -1531,6 +1851,22 @@ class FakeRepositoryJobPort:
         session_id = str(raw.get("session_id") or "")
         job_id = FakeRepositoryJobPort._job_id(tenant_id, str(raw["idempotency_key"]))
         operation = str(raw.get("operation"))
+        if payload is not None:
+            if operation != "build":
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.INVALID_REQUEST,
+                    "operation payload discriminator does not match the operation",
+                )
+            if payload.repository_id != repository_id:
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.INVALID_REQUEST,
+                    "operation payload repository does not match the job",
+                )
+            if payload.base_sha != str(raw["base_sha"]):
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.INVALID_REQUEST,
+                    "operation payload base does not match the job",
+                )
         state = JobState.READY if not raw.get("dependencies") else JobState.SUBMITTED
         return DurableJobView(
             job_id=job_id,
@@ -1588,6 +1924,13 @@ class FakeRepositoryJobPort:
             retry_class=raw.get("retry_class"),
             created_at=now,
             updated_at=now,
+            operation_payload_kind=(None if payload is None else payload.kind),
+            operation_payload_version=(
+                None if payload is None else payload.schema_version
+            ),
+            operation_payload_digest=(
+                None if payload is None else payload.payload_digest
+            ),
         )
 
     def submit(
@@ -1600,12 +1943,24 @@ class FakeRepositoryJobPort:
         self.submit_calls += 1
         timestamp = _timestamp(now)
         raw = _as_mapping(request)
+        payload = self._request_payload(raw)
         tenant_id = str(raw.get("tenant_id") or "")
         idem = str(raw.get("idempotency_key") or "")
         job_id = self._job_id(tenant_id, idem)
         existing = self.rows.get(job_id)
         if existing is not None:
             incoming = self._request_view(raw, now=timestamp, max_attempts=max_attempts)
+            if (
+                existing.operation_payload_digest != incoming.operation_payload_digest
+                or existing.operation_payload_kind != incoming.operation_payload_kind
+                or existing.operation_payload_version
+                != incoming.operation_payload_version
+            ):
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.INPUT_CONFLICT,
+                    _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
+                    job_id=job_id,
+                )
             if existing.input_digest != incoming.input_digest:
                 raise RepositoryJobServiceError(
                     RepositoryJobServiceCode.DUPLICATE,
@@ -1615,6 +1970,8 @@ class FakeRepositoryJobPort:
             return JobSubmitResult(job=existing, deduplicated=True)
         view = self._request_view(raw, now=timestamp, max_attempts=max_attempts)
         self.rows[job_id] = view
+        if payload is not None:
+            self.execution_inputs[job_id] = payload
         return JobSubmitResult(job=view)
 
     def get(
@@ -1631,6 +1988,70 @@ class FakeRepositoryJobPort:
             and view.tenant_id == tenant_id
             and view.owner_id == owner_id
             else None
+        )
+
+    def get_exact_execution_input(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+        owner_id: str,
+    ) -> BuildExecutionDescriptor | None:
+        view = self.get(job_id, tenant_id=tenant_id, owner_id=owner_id)
+        if view is None:
+            return None
+        try:
+            view = DurableJobView.model_validate(
+                view.model_dump(mode="python", exclude_none=False)
+            )
+        except (TypeError, ValueError) as exc:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INPUT_CONFLICT,
+                _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
+                job_id=job_id,
+            ) from exc
+        stored = self.execution_inputs.get(job_id)
+        if stored is None:
+            if view.operation_payload_digest is not None:
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.INPUT_CONFLICT,
+                    _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
+                    job_id=job_id,
+                )
+            if view.operation == "build":
+                raise RepositoryJobServiceError(
+                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED,
+                    _SAFE_ERROR_MESSAGES[
+                        RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED
+                    ],
+                    job_id=job_id,
+                )
+            return None
+        try:
+            payload = operation_payload_from_mapping(stored)
+        except (TypeError, ValueError) as exc:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INPUT_CONFLICT,
+                _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
+                job_id=job_id,
+            ) from exc
+        if payload.payload_digest != view.operation_payload_digest:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INPUT_CONFLICT,
+                _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
+                job_id=job_id,
+            )
+        return payload
+
+    def get_execution_input(
+        self,
+        job_id: str,
+        *,
+        tenant_id: str,
+        owner_id: str,
+    ) -> BuildExecutionDescriptor | None:
+        return self.get_exact_execution_input(
+            job_id, tenant_id=tenant_id, owner_id=owner_id
         )
 
     def list_page(
@@ -1702,7 +2123,19 @@ class FakeRepositoryJobPort:
                 "retry identity does not match the durable job",
                 job_id=job.job_id,
             )
-        raw = _retry_request_mapping(job, owner_id=owner_id, attempt=job.attempt + 1)
+        operation_payload = (
+            self.get_exact_execution_input(
+                job.job_id, tenant_id=tenant_id, owner_id=owner_id
+            )
+            if job.operation == "build"
+            else None
+        )
+        raw = _retry_request_mapping(
+            job,
+            owner_id=owner_id,
+            attempt=job.attempt + 1,
+            operation_payload=operation_payload,
+        )
         remaining_attempts = job.max_attempts - job.attempt
         if remaining_attempts < 1:
             raise RepositoryJobServiceError(
@@ -1729,8 +2162,19 @@ class FakeRepositoryJobPort:
                 "repair identity does not match the durable job",
                 job_id=job.job_id,
             )
+        operation_payload = (
+            self.get_exact_execution_input(
+                job.job_id, tenant_id=tenant_id, owner_id=owner_id
+            )
+            if job.operation == "build"
+            else None
+        )
         raw = _repair_request_mapping(
-            job, proposal, owner_id=owner_id, session_id=session_id
+            job,
+            proposal,
+            owner_id=owner_id,
+            session_id=session_id,
+            operation_payload=operation_payload,
         )
         result = self.submit(raw, max_attempts=1, now=now)
         return result.model_copy(update={"retry_of": job.job_id})
@@ -1748,6 +2192,7 @@ def _parse_datetime(value: object) -> datetime | None:
 
 
 __all__ = [
+    "BuildExecutionDescriptor",
     "DurableJobView",
     "FakeRepositoryJobPort",
     "GraphRepositoryJobPort",

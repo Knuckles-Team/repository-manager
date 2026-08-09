@@ -209,8 +209,13 @@ def test_dependency_submission_has_no_executor_or_future() -> None:
 def test_cancel_lifecycle_rules(state: JobState, allowed: bool) -> None:
     service, port = _service()
     submitted = service.submit(_request(key=state.value), auth=_auth(), now=NOW)
+    lease_update = (
+        {"lease_owner": "worker-a", "lease_fence": "1"}
+        if state in {JobState.LEASED, JobState.RUNNING}
+        else {}
+    )
     port.rows[submitted.job.job_id] = port.rows[submitted.job.job_id].model_copy(
-        update={"state": state}
+        update={"state": state, **lease_update}
     )
     if allowed:
         result = service.cancel(submitted.job.job_id, auth=_auth(), now=NOW)
@@ -240,7 +245,9 @@ def test_retry_lifecycle_rules(
 ) -> None:
     service, port = _service()
     submitted = service.submit(
-        _request(key=f"retry-{state.value}-{attempt}"), auth=_auth(), now=NOW
+        _request(key=f"retry-{state.value}-{attempt}", operation="validation"),
+        auth=_auth(),
+        now=NOW,
     )
     _mark_terminal(
         port,
@@ -249,6 +256,10 @@ def test_retry_lifecycle_rules(
         attempt=attempt,
         max_attempts=max_attempts,
     )
+    if state in {JobState.LEASED, JobState.RUNNING}:
+        port.rows[submitted.job.job_id] = port.rows[submitted.job.job_id].model_copy(
+            update={"lease_owner": "worker-a", "lease_fence": "1"}
+        )
     if allowed:
         result = service.retry(submitted.job.job_id, auth=_auth(), now=NOW)
         assert result.retry_of == submitted.job.job_id
@@ -263,7 +274,10 @@ def test_retry_lifecycle_rules(
 def test_retry_chain_consumes_the_original_budget_without_replenishing_it() -> None:
     service, port = _service()
     original = service.submit(
-        _request(key="retry-budget"), auth=_auth(), max_attempts=3, now=NOW
+        _request(key="retry-budget", operation="validation"),
+        auth=_auth(),
+        max_attempts=3,
+        now=NOW,
     )
     _mark_terminal(
         port, original.job.job_id, JobState.FAILED, attempt=1, max_attempts=3
@@ -420,7 +434,7 @@ def test_reconcile_unobserved_process_and_worktree_is_clean() -> None:
 
 def test_reconcile_enqueues_idempotent_follow_up_without_inline_mutation() -> None:
     service, port = _service()
-    submitted = service.submit(_request(), auth=_auth(), now=NOW)
+    submitted = service.submit(_request(operation="validation"), auth=_auth(), now=NOW)
     observation = ReconciliationObservation(
         job_id=submitted.job.job_id,
         worktree_present=False,

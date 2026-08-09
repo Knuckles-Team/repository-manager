@@ -84,6 +84,15 @@ from .models import (
     WorkspaceProject,
     WorkspaceReleasePlan,
 )
+from .payloads import (
+    BuildExecutionDescriptor,
+    RepositoryBuildExecutionPayloadV1,
+    RepositoryCacheKeyComponent,
+    RepositoryOperationPayload,
+    canonical_payload_json,
+    operation_payload_from_mapping,
+    payload_digest,
+)
 from .serialization import (
     canonical_digest,
     canonical_json,
@@ -99,6 +108,7 @@ __all__ = [
     "ArtifactReference",
     "BuildKey",
     "BuildOutcome",
+    "BuildExecutionDescriptor",
     "BuildResult",
     "C10_FAILURE_CODES",
     "CONTRACT_NAME",
@@ -135,6 +145,9 @@ __all__ = [
     "ReleasePlanState",
     "RelativePath",
     "RepositoryIdentity",
+    "RepositoryBuildExecutionPayloadV1",
+    "RepositoryCacheKeyComponent",
+    "RepositoryOperationPayload",
     "RepositoryJobResult",
     "ResourceRequest",
     "ResourceReservation",
@@ -169,6 +182,7 @@ __all__ = [
     "ShadowMismatch",
     "canonical_digest",
     "canonical_json",
+    "canonical_payload_json",
     "canonicalize",
     "contract_schema",
     "contract_schema_bundle",
@@ -176,6 +190,8 @@ __all__ = [
     "decode_cursor",
     "encode_cursor",
     "is_legal_transition",
+    "operation_payload_from_mapping",
+    "payload_digest",
     "require_legal_transition",
     "serialize_contract",
 ]
