@@ -93,6 +93,24 @@ def test_safe_commit_supports_an_explicit_configured_gate(tmp_path: Path) -> Non
     assert called == [repo]
 
 
+def test_safe_commit_can_create_an_explicitly_deferred_snapshot(tmp_path: Path) -> None:
+    repo = _repo(tmp_path / "deferred-snapshot", "main")
+    (repo / "tracked.txt").write_text("deferred\n")
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 91\n")
+    hook.chmod(0o755)
+
+    result = safe_commit(repo, "deferred snapshot", defer_gate=True)
+
+    assert result["ok"] is True
+    assert result["gate_deferred"] is True
+    assert result["gate_invoked"] is False
+    assert result["gate_stage"] == "deferred"
+    assert _git(["show", "--format=%s", "-s", "HEAD"], repo).stdout.strip() == (
+        "deferred snapshot"
+    )
+
+
 def test_successful_commit_records_baseline_for_subsequent_diagnosis(
     tmp_path: Path,
 ) -> None:

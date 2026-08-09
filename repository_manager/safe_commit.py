@@ -8,6 +8,12 @@ complete tree (including deletions and untracked files), proves that no
 unstaged content remains, runs the configured gate, stages formatter output,
 proves the invariant again, and only then commits.
 
+Callers that must create a WIP snapshot before a heavy gate is admitted may
+pass ``defer_gate=True``.  That mode stages and verifies the complete tree,
+commits with ``--no-verify``, and returns ``gate_deferred=True``.  It confers
+no validation evidence; the caller must submit the real gate through the
+common scheduler/executor against the returned immutable SHA.
+
 CONCEPT:RM-SAFE-COMMIT (C-12)
 """
 
@@ -91,6 +97,7 @@ def _result(
     staged_paths: list[str],
     gate_stage: str,
     gate_invoked: bool,
+    gate_deferred: bool = False,
     commit_sha: str | None = None,
     nothing_left_unstaged: bool = False,
     error: str | None = None,
@@ -107,6 +114,7 @@ def _result(
         "staged_paths": staged_paths,
         "gate_stage": gate_stage,
         "gate_invoked": gate_invoked,
+        "gate_deferred": gate_deferred,
         "commit_sha": commit_sha,
         "nothing_left_unstaged": nothing_left_unstaged,
         "error": error,
@@ -144,6 +152,7 @@ def _safe_commit_locked(
     *,
     allow_empty: bool = False,
     gate: Sequence[str] | Callable[[Path], Any] | None = None,
+    defer_gate: bool = False,
     env: dict[str, str] | None = None,
     timeout: int = 1800,
 ) -> dict[str, Any]:
@@ -156,6 +165,10 @@ def _safe_commit_locked(
         gate: Optional fixed-argv gate or callable.  By default a repository
             with ``.pre-commit-config.yaml`` runs ``pre-commit run --all-files``;
             repositories without that file have no gate to invoke.
+        defer_gate: Stage and commit the complete snapshot without invoking any
+            repository hook.  The commit is made with ``--no-verify`` and the
+            result explicitly records ``gate_deferred=True``; a caller must run
+            the real gate through its admitted executor afterwards.
         env: Optional environment for the gate and git commands.
         timeout: Per-command timeout in seconds.
 
@@ -164,6 +177,17 @@ def _safe_commit_locked(
     """
     tree = Path(path).expanduser().resolve()
     lane = _lane_name(tree)
+    if defer_gate and gate is not None:
+        return _result(
+            path=tree,
+            lane=lane,
+            status="error",
+            staged_paths=[],
+            gate_stage="none",
+            gate_invoked=False,
+            gate_deferred=True,
+            error="defer_gate cannot be combined with an explicit gate",
+        )
     command_env = os.environ.copy()
     if env is not None:
         command_env.update(env)
@@ -228,9 +252,15 @@ def _safe_commit_locked(
             error="git add -A left content unstaged: " + ", ".join(unstaged[:20]),
         )
 
-    gate_stage = "none"
-    configured_gate: Sequence[str] | Callable[[Path], Any] | None = gate
-    if configured_gate is None and (tree / ".pre-commit-config.yaml").is_file():
+    gate_stage = "deferred" if defer_gate else "none"
+    configured_gate: Sequence[str] | Callable[[Path], Any] | None = (
+        None if defer_gate else gate
+    )
+    if (
+        not defer_gate
+        and configured_gate is None
+        and (tree / ".pre-commit-config.yaml").is_file()
+    ):
         configured_gate = ["pre-commit", "run", "--all-files"]
         gate_stage = "pre-commit"
     elif configured_gate is not None:
@@ -279,6 +309,8 @@ def _safe_commit_locked(
             )
 
     commit_argv = ["git", "commit"]
+    if defer_gate:
+        commit_argv.append("--no-verify")
     if allow_empty:
         commit_argv.append("--allow-empty")
     commit_argv.extend(["-m", message])
@@ -291,6 +323,7 @@ def _safe_commit_locked(
             staged_paths=staged_paths,
             gate_stage=gate_stage,
             gate_invoked=configured_gate is not None,
+            gate_deferred=defer_gate,
             nothing_left_unstaged=True,
             error=_detail(committed) or "git commit failed",
         )
@@ -324,6 +357,7 @@ def _safe_commit_locked(
         staged_paths=staged_paths,
         gate_stage=gate_stage,
         gate_invoked=configured_gate is not None,
+        gate_deferred=defer_gate,
         commit_sha=sha,
         nothing_left_unstaged=True,
         baseline=baseline,
@@ -338,15 +372,17 @@ def safe_commit(
     *,
     allow_empty: bool = False,
     gate: Sequence[str] | Callable[[Path], Any] | None = None,
+    defer_gate: bool = False,
     env: dict[str, str] | None = None,
     timeout: int = 1800,
 ) -> dict[str, Any]:
     """Commit under the per-worktree mutation lease.
 
-    The lease spans status, complete staging, the configured gate, commit, and
-    baseline refresh.  It is deliberately per-worktree, so independent lanes
-    continue to run concurrently while same-tree callers cannot interleave a
-    check with another mutation.
+    The lease spans status, complete staging, the configured gate (or an
+    explicitly deferred snapshot), commit, and baseline refresh.  It is
+    deliberately per-worktree, so independent lanes continue to run
+    concurrently while same-tree callers cannot interleave a check with
+    another mutation.
     """
     tree = Path(path).expanduser().resolve()
     from repository_manager import stash_guard
@@ -360,6 +396,7 @@ def safe_commit(
                 message,
                 allow_empty=allow_empty,
                 gate=gate,
+                defer_gate=defer_gate,
                 env=env,
                 timeout=timeout,
             )
@@ -371,6 +408,7 @@ def safe_commit(
             staged_paths=[],
             gate_stage="none",
             gate_invoked=False,
+            gate_deferred=defer_gate,
             error=str(exc),
         )
         response["reason"] = (
