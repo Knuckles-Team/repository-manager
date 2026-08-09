@@ -247,7 +247,147 @@ class FakeNativeClient:
         }
 
 
-def _port(client: FakeNativeClient) -> NativeWorkItemReservationPort:
+class SharedNativeAuthorityClient:
+    """Test-local shared authority for fresh adapter-instance recovery."""
+
+    _SUPPORTED_OPERATIONS = {
+        "ReserveWorkItemResources",
+        "ReleaseWorkItemResources",
+        "ReclaimWorkItemResources",
+        "QueryWorkItemReservation",
+        "ResourceReservationStatus",
+        "UpdateResourceHost",
+    }
+
+    def __init__(self, expected_record: ReservationRecord) -> None:
+        self.expected_record = expected_record
+        self.record: ReservationRecord | None = None
+        self.held = ResourceVector()
+        self.fairness_debt = 0
+        self.requests: list[tuple[str, Mapping[str, object]]] = []
+        self.reserve_calls = 0
+        self.query_calls = 0
+        self.status_calls = 0
+
+    def supports(self, operation: str) -> bool:
+        return operation in self._SUPPORTED_OPERATIONS
+
+    def reserve(self, request: Mapping[str, object]) -> dict[str, object]:
+        self.requests.append(("reserve", request))
+        self.reserve_calls += 1
+        self._assert_reservation_request(request)
+        if self.record is None:
+            self.record = self.expected_record
+            self.held = self.record.requirement
+            self.fairness_debt += self.record.fairness_cost
+            return self._native_result(decision="accepted", changed=True)
+        return self._native_result(decision="idempotent", changed=False)
+
+    def query_reservation(self, request: Mapping[str, object]) -> dict[str, object]:
+        self.requests.append(("query_reservation", request))
+        self.query_calls += 1
+        if self.record is None:
+            return self._not_found_result(request)
+        assert request["reservation_id"] == self.record.reservation_id
+        assert request["work_item_id"] == self.record.work_item_id
+        assert request["attempt"] == self.record.attempt
+        assert request["fence"] == self.record.fence
+        return self._native_result(decision="accepted", changed=False)
+
+    def status(self, request: Mapping[str, object]) -> dict[str, object]:
+        self.requests.append(("status", request))
+        self.status_calls += 1
+        record = self.record
+        held = self.held if record is not None else ResourceVector()
+        summary = []
+        if record is not None:
+            summary.append(
+                {
+                    "reservation_id": record.reservation_id,
+                    "work_item_id": record.work_item_id,
+                    "host_ref": record.host_id,
+                    "profile_name": record.profile_name,
+                    "attempt": record.attempt,
+                    "state": "reserved",
+                    "revision": record.revision,
+                    "expires_at_ms": int(record.expires_at.timestamp() * 1000),
+                    "held_cpu_weight": held.cpu_weight,
+                    "held_memory_mib": held.memory_mib,
+                    "held_disk_mib": held.disk_mib,
+                    "held_process_slots": held.process_slots,
+                    "tombstone": False,
+                }
+            )
+        return {
+            "schema_version": "1",
+            "complete": True,
+            "next_cursor": None,
+            "host_ref": None,
+            "host_revision": self.expected_record.capacity_snapshot["version"],
+            "held_cpu_weight": held.cpu_weight,
+            "held_memory_mib": held.memory_mib,
+            "held_disk_mib": held.disk_mib,
+            "held_process_slots": held.process_slots,
+            "fairness_debt": self.fairness_debt,
+            "reservations": summary,
+            "orphan_count": 0,
+            "superseded_count": 0,
+        }
+
+    def _assert_reservation_request(self, request: Mapping[str, object]) -> None:
+        expected = self.expected_record
+        assert request["reservation_id"] == expected.reservation_id
+        assert request["work_item_id"] == expected.work_item_id
+        assert request["attempt"] == expected.attempt
+        assert request["fence"] == expected.fence
+        assert request["host_ref"] == expected.host_id
+        assert request["input_fingerprint"] == expected.input_fingerprint
+        assert request["requirement"] == expected.requirement.as_dict()
+        assert request["profile_name"] == expected.profile_name
+        assert request["repository_id"] == expected.repository_id
+        assert request["branch"] == expected.branch
+
+    def _native_result(self, *, decision: str, changed: bool) -> dict[str, object]:
+        assert self.record is not None
+        result = _native_result(self.record, decision=decision, changed=changed)
+        result.update(
+            {
+                "held_cpu_weight": self.held.cpu_weight,
+                "held_memory_mib": self.held.memory_mib,
+                "held_disk_mib": self.held.disk_mib,
+                "held_process_slots": self.held.process_slots,
+                "fairness_debt": self.fairness_debt,
+            }
+        )
+        return result
+
+    def _not_found_result(self, request: Mapping[str, object]) -> dict[str, object]:
+        return {
+            "schema_version": "1",
+            "decision": "not_found",
+            "reservation_id": request.get("reservation_id"),
+            "work_item_id": request["work_item_id"],
+            "attempt": request["attempt"],
+            "lease_epoch": request["lease_epoch"],
+            "fencing_token": request["fencing_token"],
+            "lifecycle_revision": 0,
+            "host_ref": self.expected_record.host_id,
+            "host_revision": self.expected_record.capacity_snapshot["version"],
+            "record": None,
+            "state": "absent",
+            "held_cpu_weight": 0,
+            "held_memory_mib": 0,
+            "held_disk_mib": 0,
+            "held_process_slots": 0,
+            "fairness_debt": self.fairness_debt,
+            "tombstone": False,
+            "changed_work_item_ids": [],
+        }
+
+
+def _port(
+    client: FakeNativeClient | SharedNativeAuthorityClient,
+) -> NativeWorkItemReservationPort:
     return NativeWorkItemReservationPort(
         client,
         tenant_ref="tenant-one",
@@ -277,6 +417,71 @@ def test_reserve_maps_full_request_and_fixed_decision() -> None:
     assert request["fencing_token"] == 11
     assert request["now_ms"] == int(NOW.timestamp() * 1000)
     assert request["input_fingerprint"] == record.input_fingerprint
+
+
+def test_fresh_native_port_recovers_from_shared_authority_without_local_projection() -> (
+    None
+):
+    record = _record()
+    authority = SharedNativeAuthorityClient(record)
+    assert authority.record is None
+    first = _port(authority)
+    assert (
+        first.atomic_reserve(
+            work_item_id=record.work_item_id,
+            attempt=record.attempt,
+            fence=record.fence,
+            reservation=record,
+        )
+        is FenceDecision.ACCEPTED
+    )
+    assert authority.reserve_calls == 1
+    assert authority.record is record
+    assert authority.held == record.requirement
+    assert authority.fairness_debt == record.fairness_cost
+
+    # The fresh adapter has no copied reservation projection.  If the first
+    # reserve call were removed, this shared authority would still be empty and
+    # the exact query below would return NOT_FOUND.
+    fresh = _port(authority)
+    restored = fresh.query_reservation(
+        reservation_id=record.reservation_id,
+        work_item_id=record.work_item_id,
+        attempt=record.attempt,
+        fence=record.fence,
+        expected=record,
+    )
+    assert isinstance(restored, ReservationRecord)
+    assert restored.reservation_id == record.reservation_id
+    assert restored.work_item_id == record.work_item_id
+    assert restored.revision == record.revision
+    assert restored.requirement == record.requirement
+    assert restored.capacity_snapshot["host_revision"] == 4
+    assert authority.query_calls == 1
+    status = fresh.status(reservation_id=record.reservation_id)
+    assert status["held_cpu_weight"] == record.requirement.cpu_weight
+    assert status["held_memory_mib"] == record.requirement.memory_mib
+    assert status["held_disk_mib"] == record.requirement.disk_mib
+    assert status["held_process_slots"] == record.requirement.process_slots
+    assert status["fairness_debt"] == record.fairness_cost
+    assert status["reservations"] == [
+        {
+            "reservation_id": record.reservation_id,
+            "work_item_id": record.work_item_id,
+            "host_ref": record.host_id,
+            "profile_name": record.profile_name,
+            "attempt": record.attempt,
+            "state": "reserved",
+            "revision": record.revision,
+            "expires_at_ms": int(record.expires_at.timestamp() * 1000),
+            "held_cpu_weight": record.requirement.cpu_weight,
+            "held_memory_mib": record.requirement.memory_mib,
+            "held_disk_mib": record.requirement.disk_mib,
+            "held_process_slots": record.requirement.process_slots,
+            "tombstone": False,
+        }
+    ]
+    assert authority.status_calls == 1
 
 
 def test_reserve_uses_current_clock_on_retry() -> None:
