@@ -8,6 +8,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -25,7 +26,45 @@ from .process_supervisor import ProcessLike, ProcessSupervisor
 
 _SHELL_META = re.compile(r"[\x00\r\n\t;&|<>$`(){}\[\]`\\]")
 _SENSITIVE_ENV_NAME = re.compile(
-    r"(?i)(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|authorization)"
+    r"(?i)(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|"
+    r"authorization|credential|access[_-]?key|database[_-]?url|dsn|"
+    r"connection[_-]?string|(?:^|[_-])pat(?:$|[_-]))"
+)
+_CREDENTIAL_URL = re.compile(r"(?i)^[a-z][a-z0-9+.-]*://[^\s/:@]+(?::[^\s@]*)?@")
+_OPERATIONAL_ENV_NAMES = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_MESSAGES",
+        "TZ",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "CARGO_HOME",
+        "RUSTUP_HOME",
+        "CARGO_TARGET_DIR",
+        "VIRTUAL_ENV",
+        "UV_CACHE_DIR",
+        "GOPATH",
+        "GOMODCACHE",
+        "GOCACHE",
+        "NPM_CONFIG_USERCONFIG",
+        "npm_config_cache",
+        # Windows process lookup/toolchain compatibility.
+        "SYSTEMROOT",
+        "PATHEXT",
+    }
 )
 
 
@@ -62,12 +101,15 @@ class RealClock:
 
 
 class ApprovedEnvironment:
-    """Materialize only named environment references and track redactions.
+    """Materialize approved environment references and track redactions.
 
-    The process may inherit the ordinary host environment for tools such as
-    ``python`` and ``git``.  Callers can provide an explicit mapping for secret
-    references; the selected values are returned separately so output capture
-    can redact them before persistence or display.
+    The default inherited environment is a small operational allowlist rather
+    than the controller's complete environment.  It preserves process lookup,
+    locale, temporary directories, home/XDG paths, and common tool caches while
+    excluding ambient credentials.  Callers can provide an explicit mapping for
+    secret references; only requested references are materialized and every
+    selected value is returned separately so output capture can redact it before
+    persistence or display.
     """
 
     def __init__(
@@ -84,7 +126,15 @@ class ApprovedEnvironment:
     ) -> tuple[dict[str, str], tuple[str, ...]]:
         """Resolve approved references or fail closed before process creation."""
 
-        environment = dict(os.environ) if self._inherit else {}
+        environment = (
+            {
+                name: os.environ[name]
+                for name in _OPERATIONAL_ENV_NAMES
+                if name in os.environ
+            }
+            if self._inherit
+            else {}
+        )
         secrets: list[str] = []
         for reference in references:
             if reference in self._values:
@@ -99,7 +149,7 @@ class ApprovedEnvironment:
             secrets.append(value)
 
         for name, value in environment.items():
-            if _SENSITIVE_ENV_NAME.search(name):
+            if _SENSITIVE_ENV_NAME.search(name) or _CREDENTIAL_URL.match(value):
                 secrets.append(value)
         return environment, tuple(secret for secret in secrets if secret)
 
@@ -119,7 +169,7 @@ class CommandExecutor(Protocol):
         fence_check: Callable[[], bool] | None = None,
         heartbeat: Callable[[], bool | None] | None = None,
         log_sink: LogSink | None = None,
-        publish: Callable[[ExecutionResult], None] | None = None,
+        publisher: PublicationPort | None = None,
     ) -> ExecutionResult:
         """Execute one frozen command and return its structured result."""
 
@@ -131,6 +181,27 @@ class ExecutionRefused(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class PublicationDecision(StrEnum):
+    """Result of an atomic fence-aware execution publication attempt."""
+
+    ACCEPTED = "accepted"
+    FENCED = "fenced"
+
+
+class PublicationPort(Protocol):
+    """Atomic WorkItem/result publication boundary.
+
+    Implementations must compare ``fence`` with the currently leased WorkItem
+    and publish the supplied result in the same transaction/CAS.  They return
+    ``FENCED`` without publishing when the lease moved or expired; a boolean
+    pre-check by the executor is only an optimization and is never the
+    publication guarantee.
+    """
+
+    def publish(self, result: ExecutionResult, *, fence: str) -> PublicationDecision:
+        """Atomically accept the result or reject it as stale."""
 
 
 class LocalExecutor:
@@ -197,7 +268,7 @@ class LocalExecutor:
         fence_check: Callable[[], bool] | None = None,
         heartbeat: Callable[[], bool | None] | None = None,
         log_sink: LogSink | None = None,
-        publish: Callable[[ExecutionResult], None] | None = None,
+        publisher: PublicationPort | None = None,
     ) -> ExecutionResult:
         """Execute a command with bounded cancellation and fence checks."""
 
@@ -396,27 +467,37 @@ class LocalExecutor:
             failure_class = FailureClass.WORKER_ENVIRONMENT_FAILURE
             cleanup_ok = False
 
-        if outcome == ExecutionOutcome.SUCCEEDED and publish is not None:
+        if outcome == ExecutionOutcome.SUCCEEDED and publisher is not None:
+            publication_result = self._result(
+                command_id=command_id,
+                worker_id=effective_worker,
+                fence=fence,
+                outcome=outcome,
+                failure_class=None,
+                started_at=started_at,
+                started_mono=started_mono,
+                log_sink=sink,
+                exit_code=returncode if returncode == 0 else None,
+                signal_number=None,
+                cleanup_ok=cleanup_ok,
+            )
             try:
-                publish(
-                    self._result(
-                        command_id=command_id,
-                        worker_id=effective_worker,
-                        fence=fence,
-                        outcome=outcome,
-                        failure_class=None,
-                        started_at=started_at,
-                        started_mono=started_mono,
-                        log_sink=sink,
-                        exit_code=returncode if returncode == 0 else None,
-                        signal_number=None,
-                        cleanup_ok=cleanup_ok,
-                    )
+                decision = publisher.publish(
+                    publication_result,
+                    fence=fence,
                 )
             except Exception:  # pragma: no cover - defensive publication boundary
                 outcome = ExecutionOutcome.FAILED
                 failure_class = FailureClass.WORKER_ENVIRONMENT_FAILURE
                 cleanup_ok = False
+            else:
+                if decision != PublicationDecision.ACCEPTED:
+                    outcome = ExecutionOutcome.REFUSED
+                    failure_class = FailureClass.STALE_FENCE_DUPLICATE_EFFECT
+                    try:
+                        sink.abort()
+                    except Exception:  # pragma: no cover - defensive sink boundary
+                        cleanup_ok = False
 
         return self._result(
             command_id=command_id,
@@ -630,5 +711,7 @@ __all__ = [
     "CommandExecutor",
     "ExecutionRefused",
     "LocalExecutor",
+    "PublicationDecision",
+    "PublicationPort",
     "RealClock",
 ]

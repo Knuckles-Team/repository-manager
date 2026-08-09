@@ -26,6 +26,7 @@ from repository_manager.execution import (
     FakeExecutor,
     FakeProcess,
     LocalExecutor,
+    PublicationDecision,
 )
 from repository_manager.execution.process_supervisor import ProcessSupervisor
 
@@ -44,6 +45,20 @@ def _command(
         heartbeat_interval_seconds=heartbeat_interval_seconds,
         environment_refs=environment_refs,
     )
+
+
+class _RecordingPublisher:
+    """A test-only atomic publication port that accepts every current fence."""
+
+    def __init__(self) -> None:
+        self.results: list[ExecutionResult] = []
+        self.fences: list[str] = []
+
+    def publish(self, result: ExecutionResult, *, fence: str) -> PublicationDecision:
+        assert result.fence == fence
+        self.results.append(result)
+        self.fences.append(fence)
+        return PublicationDecision.ACCEPTED
 
 
 def test_bounded_log_sink_streams_redacted_tail_without_growth() -> None:
@@ -122,6 +137,18 @@ def test_bounded_log_sink_abort_discards_unresolved_redaction_overlap() -> None:
     assert sink.tail_bytes("stdout") == b"prefix-"
     assert secret not in b"".join(written)
     assert secret not in sink.tail_bytes("stdout")
+
+
+def test_bounded_log_sink_supports_abort_after_normal_close() -> None:
+    sink = BoundedLogSink(terminal_tail_bytes=64)
+    sink.write("stdout", b"safe output")
+    sink.close()
+
+    sink.abort()
+
+    assert sink.closed
+    assert sink.aborted
+    assert sink.tail_bytes("stdout") == b"safe output"
 
 
 class _OneByteReader(io.BytesIO):
@@ -232,7 +259,7 @@ def test_initial_cancellation_and_fence_never_spawn(tmp_path: Path) -> None:
 
 
 def test_success_streams_both_outputs_and_allows_publication(tmp_path: Path) -> None:
-    published: list[ExecutionResult] = []
+    publisher = _RecordingPublisher()
     command = _command(
         tmp_path,
         sys.executable,
@@ -240,15 +267,57 @@ def test_success_streams_both_outputs_and_allows_publication(tmp_path: Path) -> 
         "import sys; print('out'); print('err', file=sys.stderr)",
         timeout_seconds=5,
     )
-    result = LocalExecutor((tmp_path,)).run(command, publish=published.append)
+    result = LocalExecutor((tmp_path,)).run(command, publisher=publisher)
 
     assert result.outcome == ExecutionOutcome.SUCCEEDED
     assert result.exit_code == 0
     assert result.failure_class is None
     assert result.stdout_tail == "out\n"
     assert result.stderr_tail == "err\n"
-    assert len(published) == 1
-    assert published[0].outcome == ExecutionOutcome.SUCCEEDED
+    assert len(publisher.results) == 1
+    assert publisher.results[0].outcome == ExecutionOutcome.SUCCEEDED
+    assert publisher.fences == ["fence:local"]
+
+
+def test_atomic_publication_rejects_fence_revoked_during_publish(
+    tmp_path: Path,
+) -> None:
+    state = {"valid": True}
+    checks = [0]
+
+    class RevokingPublisher:
+        def __init__(self) -> None:
+            self.called = False
+            self.published: list[ExecutionResult] = []
+
+        def publish(
+            self, result: ExecutionResult, *, fence: str
+        ) -> PublicationDecision:
+            assert result.fence == fence
+            assert checks[0] >= 1
+            self.called = True
+            state["valid"] = False
+            return PublicationDecision.FENCED
+
+    publisher = RevokingPublisher()
+    injected_sink = BoundedLogSink(terminal_tail_bytes=64)
+
+    def fence_check() -> bool:
+        checks[0] += 1
+        return state["valid"]
+
+    result = LocalExecutor((tmp_path,)).run(
+        _command(tmp_path, sys.executable, "-c", "print('publication')"),
+        fence_check=fence_check,
+        publisher=publisher,
+        log_sink=injected_sink,
+    )
+
+    assert publisher.called
+    assert not publisher.published
+    assert injected_sink.aborted
+    assert result.outcome == ExecutionOutcome.REFUSED
+    assert result.failure_class == FailureClass.STALE_FENCE_DUPLICATE_EFFECT
 
 
 def test_nonzero_and_signal_results_are_distinguishable(tmp_path: Path) -> None:
@@ -296,6 +365,25 @@ def test_environment_reference_is_materialized_and_redacted(tmp_path: Path) -> N
     assert result.outcome == ExecutionOutcome.SUCCEEDED
     assert "secret-value-123" not in result.stdout_tail
     assert "[REDACTED]" in result.stdout_tail
+
+
+def test_default_environment_excludes_unrelated_host_secret(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host_value = "controller-only-value-123"
+    monkeypatch.setenv("UNRELATED_HOST_SECRET", host_value)
+    command = _command(
+        tmp_path,
+        sys.executable,
+        "-c",
+        "import os; print(os.environ.get('UNRELATED_HOST_SECRET', 'missing'))",
+    )
+
+    result = LocalExecutor((tmp_path,)).run(command)
+
+    assert result.outcome == ExecutionOutcome.SUCCEEDED
+    assert result.stdout_tail == "missing\n"
+    assert host_value not in result.stdout_tail
 
 
 def test_missing_environment_reference_fails_before_spawn(tmp_path: Path) -> None:
@@ -382,7 +470,7 @@ def test_cancellation_during_execution_terminates_child(tmp_path: Path) -> None:
 
 def test_stale_fence_quarantines_output_and_skips_publication(tmp_path: Path) -> None:
     checks = iter((True, False))
-    published: list[ExecutionResult] = []
+    publisher = _RecordingPublisher()
     command = _command(
         tmp_path,
         sys.executable,
@@ -393,12 +481,12 @@ def test_stale_fence_quarantines_output_and_skips_publication(tmp_path: Path) ->
     result = LocalExecutor((tmp_path,)).run(
         command,
         fence_check=lambda: next(checks, False),
-        publish=published.append,
+        publisher=publisher,
     )
 
     assert result.outcome == ExecutionOutcome.REFUSED
     assert result.failure_class == FailureClass.STALE_FENCE_DUPLICATE_EFFECT
-    assert not published
+    assert not publisher.results
 
 
 def test_heartbeat_failure_is_bounded_and_explicit(tmp_path: Path) -> None:

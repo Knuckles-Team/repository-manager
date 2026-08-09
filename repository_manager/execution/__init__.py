@@ -21,6 +21,8 @@ from .executor import (
     CommandExecutor,
     ExecutionRefused,
     LocalExecutor,
+    PublicationDecision,
+    PublicationPort,
     RealClock,
 )
 from .fakes import FakeClock, FakeExecutor, FakeProcess
@@ -44,6 +46,8 @@ __all__ = [
     "RedactingLogSink",
     "ProcessLike",
     "ProcessSupervisor",
+    "PublicationDecision",
+    "PublicationPort",
     "RealClock",
     "StreamName",
     "StreamingRedactor",
