@@ -31,6 +31,7 @@ stash push/pop elsewhere in this shared ``.git`` can never cross with it.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shlex
 import time
@@ -288,7 +289,12 @@ class WorktreeManager:
         worktree = self.worktree_path(repo, branch)
         key = idempotency_key or request_id
         if key is None:
-            key = f"{canonical}\0{branch}\0{owner_id}\0{session_id}"
+            # Keep the deterministic material out of the public key itself.
+            # LaneRecord rejects control characters, so forwarding the NUL-
+            # delimited digest input directly made the ordinary no-key path
+            # fail before a worktree could be created.
+            material = f"{canonical}\0{branch}\0{owner_id}\0{session_id}"
+            key = "auto:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
         try:
             if adopt:
                 if not operator_id:
@@ -354,7 +360,12 @@ class WorktreeManager:
                 # The original creation error is the actionable response; the
                 # durable row remains for reconciliation if abort itself fails.
                 pass
-            return {"ok": False, "stage": "worktree", "result": added, "lane_id": record.lane_id}
+            return {
+                "ok": False,
+                "stage": "worktree",
+                "result": added,
+                "lane_id": record.lane_id,
+            }
         try:
             active = record
             if not adopt:
@@ -411,7 +422,12 @@ class WorktreeManager:
             )
         except Exception as exc:
             return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
-        return {"ok": True, "lane_id": lane_id, "fence": record.fence, "record": record.model_dump(mode="json")}
+        return {
+            "ok": True,
+            "lane_id": lane_id,
+            "fence": record.fence,
+            "record": record.model_dump(mode="json"),
+        }
 
     heartbeat_lane = heartbeat
 
@@ -430,12 +446,14 @@ class WorktreeManager:
         if authority is None:
             return {"ok": False, "error": "lane registry is not configured"}
         try:
-            record = authority.finish(
-                lane_id, owner_id=owner_id, fence=fence, now=now
-            )
+            record = authority.finish(lane_id, owner_id=owner_id, fence=fence, now=now)
         except Exception as exc:
             return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
-        return {"ok": True, "lane_id": lane_id, "record": record.model_dump(mode="json")}
+        return {
+            "ok": True,
+            "lane_id": lane_id,
+            "record": record.model_dump(mode="json"),
+        }
 
     finish_lane = finish
 
@@ -454,7 +472,11 @@ class WorktreeManager:
             record = authority.status(lane_id)
         except Exception as exc:
             return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
-        return {"ok": True, "lane_id": lane_id, "record": record.model_dump(mode="json")}
+        return {
+            "ok": True,
+            "lane_id": lane_id,
+            "record": record.model_dump(mode="json"),
+        }
 
     lane_status = status
 
@@ -559,8 +581,7 @@ class WorktreeManager:
                 "skipped": True,
                 "reason": "worktree-locked",
                 "error": (
-                    f"refused to remove worktree {wt!r}: git's own worktree "
-                    "lock is set"
+                    f"refused to remove worktree {wt!r}: git's own worktree lock is set"
                 ),
             }
         with prune_guard.guarded_worktree_prune(
@@ -652,8 +673,7 @@ class WorktreeManager:
                         ),
                     }
         ancestor = self._run(
-            f"git merge-base --is-ancestor {shlex.quote(branch)} "
-            f"{shlex.quote(target)}",
+            f"git merge-base --is-ancestor {shlex.quote(branch)} {shlex.quote(target)}",
             canonical,
             quiet=True,
         )

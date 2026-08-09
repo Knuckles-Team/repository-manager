@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from repository_manager import lane_doctor
 from repository_manager.lane_quota import (
     DiskAccountingProbe,
     LaneQuotaPolicy,
@@ -27,6 +29,7 @@ from repository_manager.lane_registry import (
     NativeLaneAuthorityAdapter,
     StaleLaneFence,
 )
+from repository_manager.worktree import WorktreeManager
 
 NOW = datetime(2026, 8, 9, 15, 0, tzinfo=UTC)
 
@@ -93,7 +96,9 @@ class CleanupAuthority:
         self.receipts[str(payload["plan_id"])] = dict(payload)
         return True
 
-    def get_removal_receipt(self, _job_id: str, *, plan_id: str) -> dict[str, object] | None:
+    def get_removal_receipt(
+        self, _job_id: str, *, plan_id: str
+    ) -> dict[str, object] | None:
         return self.receipts.get(plan_id)
 
 
@@ -143,7 +148,9 @@ def _registry(
     return LaneRegistry(path, quota=quota, clock=clock, authority=shared)
 
 
-def test_repository_identity_includes_canonical_root_for_same_basename(tmp_path: Path) -> None:
+def test_repository_identity_includes_canonical_root_for_same_basename(
+    tmp_path: Path,
+) -> None:
     first = tmp_path / "one" / "repository-manager"
     second = tmp_path / "two" / "repository-manager"
     first.mkdir(parents=True)
@@ -152,7 +159,9 @@ def test_repository_identity_includes_canonical_root_for_same_basename(tmp_path:
     assert repository_id_for(first) == repository_id_for(first / ".")
 
 
-def test_duplicate_allocation_is_idempotent_but_changed_input_refuses(tmp_path: Path) -> None:
+def test_duplicate_allocation_is_idempotent_but_changed_input_refuses(
+    tmp_path: Path,
+) -> None:
     registry = _registry(tmp_path / "lanes.sqlite", clock=Clock())
     first = _allocate(registry, tmp_path / "repo")
     assert first.repository_basename == "repo"
@@ -179,7 +188,73 @@ def test_projection_scopes_request_key_by_repository(tmp_path: Path) -> None:
     assert projected_ids == {first.lane_id, second.lane_id}
 
 
-def test_managed_mutation_fails_closed_without_durable_authority(tmp_path: Path) -> None:
+def test_worktree_allocation_derives_a_valid_default_request_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    registry = _registry(tmp_path / "lanes.sqlite", clock=Clock())
+    git = SimpleNamespace(path=str(tmp_path), project_map={"origin": str(repository)})
+    manager = WorktreeManager(git, registry=registry)
+    expected_path = manager.worktree_path("repo", "feature/default-key")
+    monkeypatch.setattr(
+        manager,
+        "add",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "created": True,
+            "path": expected_path,
+            "branch": "feature/default-key",
+        },
+    )
+
+    result = manager.allocate(
+        "repo",
+        "feature/default-key",
+        owner_id="agent:one",
+        session_id="session:one",
+    )
+
+    assert result["ok"] is True
+    record = registry.require(str(result["lane_id"]))
+    assert record.request_key.startswith("auto:")
+    assert not any(ord(character) < 0x20 for character in record.request_key)
+
+
+def test_lane_doctor_finish_never_borrows_projected_owner_or_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    registry = _registry(tmp_path / "lanes.sqlite", clock=Clock())
+    record = _allocate(registry, repository)
+    record = registry.activate(
+        record.lane_id,
+        owner_id="agent:one",
+        fence=record.fence,
+    )
+    monkeypatch.setattr(
+        lane_doctor,
+        "diagnose",
+        lambda *_args, **_kwargs: {"ok": True, "blocking": [], "checks": []},
+    )
+
+    result = lane_doctor.finish(
+        repository,
+        branch=record.branch,
+        registry=registry,
+        lane_id=record.lane_id,
+    )
+
+    assert result["ok"] is False
+    assert result["stage"] == "registry"
+    assert "explicit owner_id and fence" in result["reason"]
+    assert registry.require(record.lane_id).state == LaneLifecycleState.ACTIVE
+
+
+def test_managed_mutation_fails_closed_without_durable_authority(
+    tmp_path: Path,
+) -> None:
     registry = LaneRegistry(tmp_path / "lanes.sqlite", clock=Clock())
     with pytest.raises(LaneRegistryError, match="durable lane authority"):
         _allocate(registry, tmp_path / "repo")
@@ -195,8 +270,12 @@ def test_independent_controllers_share_authoritative_identity_and_quota(
 ) -> None:
     policy = LaneQuotaPolicy(max_per_agent=1, max_predicted_disk_bytes=100)
     authority = FakeDurableLaneAuthority(quota=policy, clock=Clock())
-    first = _registry(tmp_path / "first.sqlite", authority=authority, quota=policy, clock=Clock())
-    second = _registry(tmp_path / "second.sqlite", authority=authority, quota=policy, clock=Clock())
+    first = _registry(
+        tmp_path / "first.sqlite", authority=authority, quota=policy, clock=Clock()
+    )
+    second = _registry(
+        tmp_path / "second.sqlite", authority=authority, quota=policy, clock=Clock()
+    )
     allocated = _allocate(first, tmp_path / "repo")
     assert second.require(allocated.lane_id).fence == allocated.fence
     with pytest.raises(LaneConflictError):
@@ -226,13 +305,17 @@ def test_branch_and_worktree_reservations_are_atomic(tmp_path: Path) -> None:
         )
 
 
-def test_restart_heartbeat_and_fence_refusal_with_injected_clock(tmp_path: Path) -> None:
+def test_restart_heartbeat_and_fence_refusal_with_injected_clock(
+    tmp_path: Path,
+) -> None:
     clock = Clock()
     path = tmp_path / "lanes.sqlite"
     authority = FakeDurableLaneAuthority(clock=clock)
     registry = _registry(path, clock=clock, authority=authority)
     record = _allocate(registry, tmp_path / "repo")
-    record = registry.activate(record.lane_id, owner_id=record.owner_id or "", fence=record.fence)
+    record = registry.activate(
+        record.lane_id, owner_id=record.owner_id or "", fence=record.fence
+    )
     clock.value += timedelta(seconds=15)
     beat = registry.heartbeat(
         record.lane_id,
@@ -273,7 +356,9 @@ def test_quota_refusal_reports_exact_usage_before_create(tmp_path: Path) -> None
     assert decision.usage.predicted_disk_bytes == 60
 
 
-def test_disk_accounting_is_cached_bounded_and_does_not_follow_symlink(tmp_path: Path) -> None:
+def test_disk_accounting_is_cached_bounded_and_does_not_follow_symlink(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "tree"
     root.mkdir()
     (root / "small").write_bytes(b"1234")
@@ -295,7 +380,9 @@ def test_legacy_discovery_requires_explicit_adoption_and_rollback_retains_rows(
     tmp_path: Path,
 ) -> None:
     registry = _registry(tmp_path / "lanes.sqlite", clock=Clock())
-    legacy = registry.observe_legacy(tmp_path / "repo", "feature/legacy", tmp_path / "lane")
+    legacy = registry.observe_legacy(
+        tmp_path / "repo", "feature/legacy", tmp_path / "lane"
+    )
     assert legacy.state == LaneLifecycleState.OBSERVED_LEGACY
     adopted = registry.adopt(
         legacy.lane_id,
@@ -329,7 +416,9 @@ def test_expiry_refuses_dirty_jobs_candidates_concepts_and_missing_anchor(
         now=NOW - timedelta(hours=2),
     )
     git = ReadOnlyGit(anchor=False)
-    candidate = LaneReclaimer(registry, git=git, clock=clock).assess(record, now=clock.value)
+    candidate = LaneReclaimer(registry, git=git, clock=clock).assess(
+        record, now=clock.value
+    )
     assert not candidate.eligible
     assert "backup_anchor" in candidate.refusal_codes
 
@@ -342,7 +431,9 @@ def test_expiry_refuses_dirty_jobs_candidates_concepts_and_missing_anchor(
     )
     # The registry projection remains authoritative; this assertion documents
     # all three independent claim checks without mutating the durable row.
-    checks = LaneReclaimer(registry, git=git, clock=clock).assess(blocked, now=clock.value)
+    checks = LaneReclaimer(registry, git=git, clock=clock).assess(
+        blocked, now=clock.value
+    )
     assert {"active_job", "active_candidate", "concept_claim"}.issubset(
         set(checks.refusal_codes)
     )
@@ -441,7 +532,9 @@ def test_stale_and_restart_cleanup_plans_require_current_durable_job(
         cleanup_authority=cleanup,
         clock=clock,
     )
-    preview = first.plan_cleanup(record.lane_id, owner_id="agent:one", fence=record.fence)
+    preview = first.plan_cleanup(
+        record.lane_id, owner_id="agent:one", fence=record.fence
+    )
     with pytest.raises(CleanupRefused):
         first.execute_cleanup(preview)
     durable = first.request_cleanup(preview, submit=cleanup.submit)
@@ -504,7 +597,9 @@ def test_successful_cleanup_uses_guarded_remove_and_is_reconciliation_visible(
         cleanup_authority=cleanup_authority,
         clock=clock,
     )
-    plan = reclaimer.plan_cleanup(record.lane_id, owner_id="agent:one", fence=record.fence)
+    plan = reclaimer.plan_cleanup(
+        record.lane_id, owner_id="agent:one", fence=record.fence
+    )
     assert plan.ok
     assert plan.preview_only
     with pytest.raises(CleanupRefused):
@@ -520,7 +615,9 @@ def test_successful_cleanup_uses_guarded_remove_and_is_reconciliation_visible(
     findings = registry.reconcile(
         [{"path": str(lane_path.resolve()), "branch": "feature/one"}]
     )
-    assert any(item.classification == ReconciliationClass.STATE_MISMATCH for item in findings)
+    assert any(
+        item.classification == ReconciliationClass.STATE_MISMATCH for item in findings
+    )
 
 
 def test_quarantined_lane_without_receipt_cannot_claim_removal(
@@ -618,7 +715,9 @@ def test_cleanup_never_claims_success_before_durable_receipt_and_retries_by_rece
         clock=clock,
     )
     plan = reclaimer.request_cleanup(
-        reclaimer.plan_cleanup(record.lane_id, owner_id="agent:one", fence=record.fence),
+        reclaimer.plan_cleanup(
+            record.lane_id, owner_id="agent:one", fence=record.fence
+        ),
         submit=authority.submit,
     )
     first = reclaimer.execute_cleanup(plan)

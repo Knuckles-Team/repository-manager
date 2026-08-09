@@ -1034,7 +1034,9 @@ def allocate(
 
 def _registry_lane_for_path(registry: Any, path: Path, branch: str = "") -> Any:
     for record in registry.list_records():
-        if Path(record.worktree_path) == path and (not branch or record.branch == branch):
+        if Path(record.worktree_path) == path and (
+            not branch or record.branch == branch
+        ):
             return record
     return None
 
@@ -1060,7 +1062,12 @@ def heartbeat(
         )
     except Exception as exc:
         return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
-    return {"ok": True, "lane_id": lane_id, "fence": record.fence, "record": record.model_dump(mode="json")}
+    return {
+        "ok": True,
+        "lane_id": lane_id,
+        "fence": record.fence,
+        "record": record.model_dump(mode="json"),
+    }
 
 
 def status(
@@ -1080,7 +1087,11 @@ def status(
             return {"ok": False, "error": "lane could not be resolved"}
     except Exception as exc:
         return {"ok": False, "error": str(exc), "error_type": type(exc).__name__}
-    return {"ok": True, "lane_id": record.lane_id, "record": record.model_dump(mode="json")}
+    return {
+        "ok": True,
+        "lane_id": record.lane_id,
+        "record": record.model_dump(mode="json"),
+    }
 
 
 def finish(
@@ -1118,6 +1129,14 @@ def finish(
 
     managed_record = None
     if registry is not None:
+        if not owner_id or not fence:
+            return {
+                "ok": False,
+                "stage": "registry",
+                "enqueued": False,
+                "reason": "managed lane finish requires explicit owner_id and fence",
+                "preflight": report,
+            }
         managed_record = (
             registry.require(lane_id)
             if lane_id
@@ -1131,13 +1150,11 @@ def finish(
                 "reason": "managed lane record could not be resolved",
                 "preflight": report,
             }
-        effective_owner = owner_id or managed_record.owner_id or ""
-        effective_fence = fence or managed_record.fence
         try:
             submitted_lane = registry.submit(
                 managed_record.lane_id,
-                owner_id=effective_owner,
-                fence=effective_fence,
+                owner_id=owner_id,
+                fence=fence,
             )
         except Exception as exc:
             return {
