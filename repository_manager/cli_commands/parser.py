@@ -13,9 +13,11 @@ import os
 import sys
 
 from repository_manager.cli_commands.build_queue import run_build_queue_cli
+from repository_manager.cli_commands.concepts import run_concepts_cli
 from repository_manager.cli_commands.context import CliRuntime
 from repository_manager.cli_commands.lane import run_lane_cli
 from repository_manager.cli_commands.merge_queue import run_merge_queue_cli
+from repository_manager.cli_commands.remote_workers import run_remote_workers_cli
 
 
 def run(runtime: CliRuntime) -> None:
@@ -437,6 +439,85 @@ Examples:
         help="For --build-broker gc: reclaim cache entries older than this (subject to --build-keep-recent).",
     )
 
+    # RMDD-20 — exposing RMDD-17's concept-claim coordination. The CLI and
+    # the MCP `rm_concepts` tool call the exact same
+    # `repository_manager.concept_actions.dispatch` core (parity chokepoint).
+    group_concepts = parser.add_argument_group(
+        "Concept-Claim Coordination (RMDD-17 via RMDD-20)"
+    )
+    group_concepts.add_argument(
+        "--concepts",
+        choices=[
+            "reserve",
+            "list",
+            "get",
+            "release",
+            "materialize",
+            "verify_candidate",
+            "verify_generation",
+            "reconcile",
+        ],
+        help="Concept-id claim lifecycle action against RMDD-16's injected authority.",
+    )
+    group_concepts.add_argument(
+        "--concepts-repo-root",
+        type=str,
+        default=".",
+        help="Repository working tree root for --concepts (default: cwd).",
+    )
+    group_concepts.add_argument(
+        "--concepts-tenant-ref",
+        type=str,
+        default="",
+        help="Authenticated tenant scope for --concepts.",
+    )
+    group_concepts.add_argument(
+        "--concepts-lane-ref",
+        type=str,
+        default="",
+        help="Lane/worktree identity for --concepts fragment provenance.",
+    )
+    group_concepts.add_argument(
+        "--concepts-params-json",
+        type=str,
+        default="",
+        help=(
+            "JSON object with the action's remaining fields (concept_id, "
+            "namespace, owner_ref, reservation_id, candidate, ...) -- the "
+            "same fields the rm_concepts MCP tool accepts."
+        ),
+    )
+
+    # RMDD-20 — exposing RMDD-15's remote worker registry/staging/artifact
+    # transport. The CLI and the MCP `rm_remote_workers` tool call the exact
+    # same `repository_manager.remote_worker_actions.dispatch` core.
+    group_remote_workers = parser.add_argument_group(
+        "Remote Worker Registry, Staging, and Artifacts (RMDD-15 via RMDD-20)"
+    )
+    group_remote_workers.add_argument(
+        "--remote-workers",
+        choices=[
+            "register_worker",
+            "profile",
+            "recheck",
+            "stage_source",
+            "verify_source",
+            "receive_artifact",
+            "host_loss_reconcile",
+        ],
+        help="Remote-worker registry/source-staging/artifact-transport action.",
+    )
+    group_remote_workers.add_argument(
+        "--remote-workers-params-json",
+        type=str,
+        default="",
+        help=(
+            "JSON object with the action's fields (host_id, origin, "
+            "tree_sha, relative_path, content_base64, ...) -- the same "
+            "fields the rm_remote_workers MCP tool accepts."
+        ),
+    )
+
     args = parser.parse_args()
 
     # Handled before every other verb and returns immediately: the queue drives a
@@ -446,6 +527,10 @@ Examples:
         sys.exit(run_merge_queue_cli(args))
     if args.build_broker:
         sys.exit(run_build_queue_cli(args))
+    if args.concepts:
+        sys.exit(run_concepts_cli(args))
+    if args.remote_workers:
+        sys.exit(run_remote_workers_cli(args))
 
     manifest_option_used = any(
         (
