@@ -611,6 +611,137 @@ def test_model_copy_authority_values_are_rebuilt_and_anchored() -> None:
         assert result.code is expected_code
 
 
+_GENERATION_REQUIRED_FIELDS = (
+    "generation_id",
+    "repository",
+    "target_branch",
+    "base_sha",
+    "expected_landing_base_sha",
+    "candidate_versions",
+    "config_digest",
+    "toolchain_digest",
+)
+_GENERATION_FIELDS = (
+    "contract_version",
+    *_GENERATION_REQUIRED_FIELDS,
+    "target",
+    "state",
+    "sealed_at",
+    "synthetic_commit_sha",
+    "tree_sha",
+    "validation_evidence_ids",
+    "build_artifact_refs",
+    "bisection_lineage",
+    "landing_fence",
+    "landing_result",
+    "reason",
+)
+
+
+@pytest.mark.parametrize(
+    "omitted_fields",
+    [
+        pytest.param((field,), id=f"missing-{field}")
+        for field in _GENERATION_REQUIRED_FIELDS
+    ]
+    + [pytest.param(None, id="missing-all-fields")],
+)
+def test_model_construct_missing_generation_fields_is_typed_refusal(
+    omitted_fields: tuple[str, ...] | None,
+) -> None:
+    original = _generation()
+    state = object.__getattribute__(original, "__dict__")
+    if omitted_fields is None:
+        forged = Generation.model_construct()
+    else:
+        forged = Generation.model_construct(
+            **{
+                field: state[field]
+                for field in _GENERATION_FIELDS
+                if field not in omitted_fields
+            }
+        )
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+    request = _request(
+        generation=forged,
+        certificate=certificate,
+        evidence=evidence,
+        expected_certificate_digest=certificate.digest,
+        expected_generation_id=original.generation_id,
+        expected_synthetic_commit_sha=SHA1,
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        result = verify_landing(request)
+
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+    assert "AttributeError" not in result.detail
+    assert "private" not in result.detail
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param(
+            "repository", RepositoryIdentity.model_construct(), id="repository"
+        ),
+        pytest.param(
+            "candidate_versions", (CandidateVersion.model_construct(),), id="candidate"
+        ),
+        pytest.param(
+            "target",
+            TargetPolicy.model_construct(capability_labels=_NeverIteratedList()),
+            id="target-container",
+        ),
+    ],
+)
+def test_model_construct_malformed_nested_values_are_typed_refusals(
+    field: str, replacement: object
+) -> None:
+    original = _generation()
+    forged = original.model_copy(update={field: replacement})
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+
+    request = _request(
+        generation=forged,
+        certificate=certificate,
+        evidence=evidence,
+        expected_certificate_digest=certificate.digest,
+        expected_generation_id=original.generation_id,
+        expected_synthetic_commit_sha=SHA1,
+    )
+    result = verify_landing(request)
+
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+    assert "AttributeError" not in result.detail
+    assert "private" not in result.detail
+
+
+def test_model_construct_generation_subclass_property_is_typed_refusal() -> None:
+    class ForgedGeneration(Generation):
+        repository = property(
+            lambda _self: (_ for _ in ()).throw(RuntimeError("private"))
+        )
+
+    original = _generation()
+    forged = ForgedGeneration.model_construct()
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+    request = _request(
+        generation=forged,
+        certificate=certificate,
+        evidence=evidence,
+        expected_certificate_digest=certificate.digest,
+        expected_generation_id=original.generation_id,
+        expected_synthetic_commit_sha=SHA1,
+    )
+
+    result = verify_landing(request)
+
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+    assert "private" not in result.detail
+
+
 @pytest.mark.parametrize(
     "forged_target",
     [

@@ -70,6 +70,43 @@ _BIDI_CONTROLS = frozenset(
     }
 )
 
+_REPOSITORY_FIELDS = (
+    "contract_version",
+    "repository_id",
+    "canonical_path",
+    "configured_roots",
+    "origin",
+)
+_TARGET_FIELDS = (
+    "contract_version",
+    "kind",
+    "alias",
+    "capability_labels",
+)
+_CANDIDATE_FIELDS = ("contract_version", "candidate_id", "version", "candidate_sha")
+_GENERATION_FIELDS = (
+    "contract_version",
+    "generation_id",
+    "repository",
+    "target_branch",
+    "target",
+    "base_sha",
+    "expected_landing_base_sha",
+    "candidate_versions",
+    "config_digest",
+    "toolchain_digest",
+    "state",
+    "sealed_at",
+    "synthetic_commit_sha",
+    "tree_sha",
+    "validation_evidence_ids",
+    "build_artifact_refs",
+    "bisection_lineage",
+    "landing_fence",
+    "landing_result",
+    "reason",
+)
+
 _EnumT = TypeVar("_EnumT", bound=StrEnum)
 
 
@@ -331,10 +368,27 @@ def _enum_value(value: object, enum_type: type[_EnumT], field_name: str) -> _Enu
     raise LandingPolicyError(f"{field_name} is not a valid enum value")
 
 
+def _model_field_values(
+    value: BaseModel, field_names: tuple[str, ...], field_name: str
+) -> dict[str, object]:
+    """Read model state without invoking forged field descriptors or properties."""
+
+    try:
+        state = object.__getattribute__(value, "__dict__")
+    except AttributeError as exc:
+        raise LandingPolicyError(f"{field_name} fields are unavailable") from exc
+    if type(state) is not dict:
+        raise LandingPolicyError(f"{field_name} fields are unavailable")
+    if any(name not in state for name in field_names):
+        raise LandingPolicyError(f"{field_name} fields are incomplete")
+    return {name: state[name] for name in field_names}
+
+
 def _rebuild_repository(value: object) -> RepositoryIdentity:
-    if not isinstance(value, RepositoryIdentity):
+    if type(value) is not RepositoryIdentity:
         raise LandingPolicyError("repository is not a typed authority model")
-    roots = _require_sequence(value.configured_roots, "configured roots")
+    fields = _model_field_values(value, _REPOSITORY_FIELDS, "repository")
+    roots = _require_sequence(fields["configured_roots"], "configured roots")
     for root in roots:
         _require_bounded_text(root, "configured root", maximum_bytes=4096)
     raw = _plain_model_mapping(value, "repository")
@@ -342,25 +396,32 @@ def _rebuild_repository(value: object) -> RepositoryIdentity:
         repository = RepositoryIdentity.model_validate(raw)
     except Exception as exc:
         raise LandingPolicyError("repository authority is invalid") from exc
-    _require_bounded_text(repository.repository_id, "repository_id")
-    _require_bounded_text(
-        repository.canonical_path, "canonical_path", maximum_bytes=4096
+    repository_fields = _model_field_values(
+        repository, _REPOSITORY_FIELDS, "repository"
     )
-    if len(repository.configured_roots) > _MAX_EVIDENCE_ITEMS:
+    _require_bounded_text(repository_fields["repository_id"], "repository_id")
+    _require_bounded_text(
+        repository_fields["canonical_path"], "canonical_path", maximum_bytes=4096
+    )
+    configured_roots = _require_sequence(
+        repository_fields["configured_roots"], "configured roots"
+    )
+    if len(configured_roots) > _MAX_EVIDENCE_ITEMS:
         raise LandingPolicyError("configured roots exceed the bounded count")
-    for root in repository.configured_roots:
+    for root in configured_roots:
         _require_bounded_text(root, "configured root", maximum_bytes=4096)
-    if repository.origin is not None:
+    if repository_fields["origin"] is not None:
         _require_bounded_text(
-            repository.origin, "repository origin", maximum_bytes=4096
+            repository_fields["origin"], "repository origin", maximum_bytes=4096
         )
     return repository
 
 
 def _rebuild_target(value: object) -> TargetPolicy:
-    if not isinstance(value, TargetPolicy):
+    if type(value) is not TargetPolicy:
         raise LandingPolicyError("target is not a typed authority model")
-    labels = _require_sequence(value.capability_labels, "target capabilities")
+    fields = _model_field_values(value, _TARGET_FIELDS, "target")
+    labels = _require_sequence(fields["capability_labels"], "target capabilities")
     for label in labels:
         _require_bounded_text(label, "target capability")
     raw = _plain_model_mapping(value, "target")
@@ -368,16 +429,22 @@ def _rebuild_target(value: object) -> TargetPolicy:
         target = TargetPolicy.model_validate(raw)
     except Exception as exc:
         raise LandingPolicyError("target authority is invalid") from exc
-    if target.alias is not None:
-        _require_bounded_text(target.alias, "target alias")
-    if len(target.capability_labels) > _MAX_EVIDENCE_ITEMS:
+    target_fields = _model_field_values(target, _TARGET_FIELDS, "target")
+    if target_fields["alias"] is not None:
+        _require_bounded_text(target_fields["alias"], "target alias")
+    target_labels = _require_sequence(
+        target_fields["capability_labels"], "target capabilities"
+    )
+    if len(target_labels) > _MAX_EVIDENCE_ITEMS:
         raise LandingPolicyError("target capabilities exceed the bounded count")
-    for label in target.capability_labels:
+    for label in target_labels:
         _require_bounded_text(label, "target capability")
     return target
 
 
 def _rebuild_candidate(value: object) -> CandidateVersion:
+    if isinstance(value, BaseModel) and type(value) is not CandidateVersion:
+        raise LandingPolicyError("candidate version is not a typed authority model")
     raw = (
         _plain_model_mapping(value, "candidate version")
         if isinstance(value, BaseModel)
@@ -387,19 +454,25 @@ def _rebuild_candidate(value: object) -> CandidateVersion:
         candidate = CandidateVersion.model_validate(raw)
     except Exception as exc:
         raise LandingPolicyError("candidate version authority is invalid") from exc
-    _require_bounded_text(candidate.candidate_id, "candidate_id")
-    if type(candidate.version) is not int:
+    candidate_fields = _model_field_values(
+        candidate, _CANDIDATE_FIELDS, "candidate version"
+    )
+    _require_bounded_text(candidate_fields["candidate_id"], "candidate_id")
+    if type(candidate_fields["version"]) is not int:
         raise LandingPolicyError("candidate version number is invalid")
-    _require_sha(candidate.candidate_sha, "candidate_sha")
+    _require_sha(candidate_fields["candidate_sha"], "candidate_sha")
     return candidate
 
 
 def _rebuild_generation(value: object) -> Generation:
-    if not isinstance(value, Generation):
+    if type(value) is not Generation:
         raise LandingPolicyError("generation is not a typed authority model")
-    if not isinstance(value.repository, RepositoryIdentity):
+    fields = _model_field_values(value, _GENERATION_FIELDS, "generation")
+    repository = fields["repository"]
+    target = fields["target"]
+    if type(repository) is not RepositoryIdentity:
         raise LandingPolicyError("generation repository is not a typed authority model")
-    if not isinstance(value.target, TargetPolicy):
+    if type(target) is not TargetPolicy:
         raise LandingPolicyError("generation target is not a typed authority model")
     sequences = (
         "candidate_versions",
@@ -408,10 +481,10 @@ def _rebuild_generation(value: object) -> Generation:
         "bisection_lineage",
     )
     for field_name in sequences:
-        _require_sequence(getattr(value, field_name, None), field_name)
-    candidates = _require_sequence(value.candidate_versions, "candidate_versions")
-    _rebuild_repository(value.repository)
-    _rebuild_target(value.target)
+        _require_sequence(fields[field_name], field_name)
+    candidates = _require_sequence(fields["candidate_versions"], "candidate_versions")
+    _rebuild_repository(repository)
+    _rebuild_target(target)
     for candidate in candidates:
         _rebuild_candidate(candidate)
     raw = _plain_model_mapping(value, "generation")
@@ -432,35 +505,40 @@ def _rebuild_generation(value: object) -> Generation:
 
 
 def _validate_generation_content(generation: Generation) -> None:
-    _require_bounded_text(generation.generation_id, "generation_id")
-    _rebuild_repository(generation.repository)
-    _require_ref(generation.target_branch, "target_branch")
-    _rebuild_target(generation.target)
-    _require_sha(generation.base_sha, "generation base_sha")
-    _require_sha(generation.expected_landing_base_sha, "expected_landing_base_sha")
-    _require_digest(generation.config_digest, "generation config_digest")
-    _require_digest(generation.toolchain_digest, "generation toolchain_digest")
-    if not isinstance(generation.state, GenerationState):
+    fields = _model_field_values(generation, _GENERATION_FIELDS, "generation")
+    _require_bounded_text(fields["generation_id"], "generation_id")
+    _rebuild_repository(fields["repository"])
+    _require_ref(fields["target_branch"], "target_branch")
+    _rebuild_target(fields["target"])
+    _require_sha(fields["base_sha"], "generation base_sha")
+    _require_sha(fields["expected_landing_base_sha"], "expected_landing_base_sha")
+    _require_digest(fields["config_digest"], "generation config_digest")
+    _require_digest(fields["toolchain_digest"], "generation toolchain_digest")
+    if not isinstance(fields["state"], GenerationState):
         raise LandingPolicyError("generation state is invalid")
-    if generation.sealed_at is not None and not isinstance(
-        generation.sealed_at, datetime
+    if fields["sealed_at"] is not None and not isinstance(
+        fields["sealed_at"], datetime
     ):
         raise LandingPolicyError("generation sealed_at is invalid")
-    if generation.synthetic_commit_sha is not None:
-        _require_sha(generation.synthetic_commit_sha, "synthetic_commit_sha")
-    if generation.tree_sha is not None:
-        _require_sha(generation.tree_sha, "tree_sha")
-    for candidate in generation.candidate_versions:
+    if fields["synthetic_commit_sha"] is not None:
+        _require_sha(fields["synthetic_commit_sha"], "synthetic_commit_sha")
+    if fields["tree_sha"] is not None:
+        _require_sha(fields["tree_sha"], "tree_sha")
+    candidates = _require_sequence(fields["candidate_versions"], "candidate_versions")
+    for candidate in candidates:
         _rebuild_candidate(candidate)
-    if len(generation.validation_evidence_ids) > _MAX_EVIDENCE_ITEMS:
+    evidence_ids = _require_sequence(
+        fields["validation_evidence_ids"], "generation validation evidence"
+    )
+    if len(evidence_ids) > _MAX_EVIDENCE_ITEMS:
         raise LandingPolicyError(
             "generation validation evidence exceeds the bounded count"
         )
-    for evidence_id in generation.validation_evidence_ids:
+    for evidence_id in evidence_ids:
         _require_bounded_text(evidence_id, "generation validation evidence ID")
-    if generation.landing_fence is not None:
-        _require_optional_fence(generation.landing_fence, "generation landing_fence")
-    _require_bounded_text(generation.reason, "generation reason", allow_empty=True)
+    if fields["landing_fence"] is not None:
+        _require_optional_fence(fields["landing_fence"], "generation landing_fence")
+    _require_bounded_text(fields["reason"], "generation reason", allow_empty=True)
 
 
 _CERTIFICATE_FIELDS = frozenset(
