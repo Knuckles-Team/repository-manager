@@ -120,3 +120,88 @@ workspace file):
 ```
 
 The preview is evidence for a later mutation owner, not a mutation request.
+
+## Frozen release plan and stage preview (checkpoint 4)
+
+`repository_manager.development.workspace_release_plan` is the pure C-11 freeze
+boundary for the later release/mutation lanes. `freeze_release_plan` consumes
+only the verified `DependencyGraph`, `SelectedChangeClosure`, and checkpoint-3
+`VersionPlan`, plus explicit bounded base/source/generation and profile inputs.
+It copies canonical repository/package identities, selected dependency-first
+groups, every selected project's immutable tree SHA, the version/floor preview
+digests, profile digests, and an exact SHA-256 `plan_digest`. No checkout is
+opened and no command, package manager, Git operation, WorkItem, or network
+client is available from this module.
+
+The resulting `StagePreview` records are a deterministic dependency DAG:
+
+```text
+validate(repo) -> bump(repo) -> local-land(repo) -> build(repo) -> package(repo)
+                         \-- bump also waits for each selected upstream bump
+```
+
+Independent projects share a topological group and remain parallel. A stage
+stores its immutable tree/base/generation/graph/selection/version-plan inputs,
+the relevant version/floor preview digests, profile digests, deterministic
+stage ID, deterministic input digest, and sorted upstream IDs. Failure behavior
+is declarative (`block_dependents`); this checkpoint does not inspect or run a
+stage. The optional push stages are a separate consent-gated extension and are
+created only with a `PushConsentReference` containing both an opaque reference
+and immutable digest. A boolean flag alone can never create a push stage.
+
+`FrozenReleasePlan.validate()` recomputes nested evidence and the exact plan
+preimage, while `validate_against(graph, selection)` additionally revalidates
+the current graph, closure, and checkpoint-3 previews. These paths are intended
+to reject dataclass/Pydantic copy/construct and `object.__new__` forgeries,
+cleared or stale digests, changed source/tree/base/generation/profile/preview
+fields, reordered dependencies, unknown stage dependencies, cycles, and graph
+or selection drift. Inputs are exact builtin bounded containers and all refusal
+messages are privacy-safe.
+
+The corrective CP4 contract also freezes a `ReleaseDecisionContext`: normalized
+target branch plus opaque name/digest references for the release profile,
+candidate, certificate, immutable config/toolchain/preview-command and artifact
+contract. Each stage carries the context digest and its resource profile,
+retry-policy/count, and timeout policy/seconds; changing any one decision field
+therefore changes the plan and stage identities. These are references only and
+do not grant execution authority.
+
+Source and base SHAs are independently required exact builtin strings; omitted
+or falsey aliases are never substituted. Push flags are descriptive selectors,
+not authorization: explicit `False` conflicts with consent, contradictory
+aliases refuse before construction, and an accepted plan hashes exactly the
+consent value it returns. A push stage is present only when its immutable
+`PushConsentReference` is present.
+
+Graph and closure provenance are snapshotted from exact bounded builtin
+containers before sorting or hashing. `validate()` re-materializes that source
+evidence and derives the complete required stage composition and dependencies,
+so rehashing a semantically altered DAG does not make it valid. Malformed
+containers and provider-data normalization errors are fixed privacy-safe
+refusals; trusted `RuntimeError` failures remain visible to callers.
+
+The snapshot also rebuilds the complete package inventory and dependency
+topology from the immutable project/package records. Duplicate or orphan
+records, unknown endpoints, inconsistent project edges/groups, and changed
+metadata-edge provenance are refused even when a caller recomputes every
+reported digest. Checkpoint-3 version/floor sites, previews, nested policies,
+and omission-valued text are copied into exact immutable records before the
+version planner is re-run against the snapshotted graph and closure. A changed
+site, source SHA, floor/version text, or semantic preview cannot be authorized
+by rehashing the nested and outer plans.
+
+Target branches use a single local `refs/heads/...` representation after
+bounded Git-branch validation; ref aliases, traversal, URL/scheme, controls,
+and ambiguous branch syntax are refused without invoking Git. The CP3
+validation boundary normalizes only documented malformed-data exceptions, so a
+trusted planner `RuntimeError` remains observable to its caller.
+
+Profile descriptors follow the same closed-boundary rule: a global or
+project-scoped validation/build profile is either an exact builtin name string
+or an exact owned immutable `ValidationProfile`, `BuildProfile`, or
+`ProfileBinding`. Mapping/sequence descriptor lookalikes, subclasses, Pydantic
+objects, and property-bearing duck types are refused before introspection;
+accepted records are deep-reconstructed, so later caller mutation cannot alter
+the frozen request or its digest. Release/config/toolchain/command/artifact/
+resource references and retry/timeout policies use exact owned reference or
+enum/scalar types as well.

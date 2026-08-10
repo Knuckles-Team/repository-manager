@@ -1712,7 +1712,16 @@ class VersionPlan:
                 )
         except VersionPlanningError:
             raise
-        except Exception:
+        except (
+            AttributeError,
+            IndexError,
+            KeyError,
+            OverflowError,
+            RecursionError,
+            TypeError,
+            UnicodeError,
+            ValueError,
+        ):
             # Forged construct/model-copy instances and lower-level bounded
             # record failures must not expose implementation or caller data.
             raise _fail(
