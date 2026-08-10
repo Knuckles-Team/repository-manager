@@ -332,7 +332,7 @@ class RemoteWorkerExecutor:
             thread.join(timeout=self.poll_interval_seconds)
 
         if error_box:
-            exc = error_box[0]
+            dispatch_error = error_box[0]
             return self._refused(
                 command_id,
                 effective_worker,
@@ -341,7 +341,7 @@ class RemoteWorkerExecutor:
                 RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
                 started_at,
                 log_sink,
-                f"remote dispatch raised {type(exc).__name__}",
+                f"remote dispatch raised {type(dispatch_error).__name__}",
             )
 
         result = from_remote_result(outcome_box[0])

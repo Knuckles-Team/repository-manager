@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from repository_manager.development import ExecutionCommand, ExecutionOutcome
+from repository_manager.execution.executor import CommandExecutor
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -93,7 +94,7 @@ class ImmutableSourceStaging:
 
     def check_local_source_clean(
         self,
-        executor: object,
+        executor: CommandExecutor,
         *,
         workdir: str,
         expected_sha: str,
@@ -193,7 +194,7 @@ class ImmutableSourceStaging:
 
     def verify_staged_sha(
         self,
-        executor: object,
+        executor: CommandExecutor,
         *,
         destination: str,
         expected_sha: str,
