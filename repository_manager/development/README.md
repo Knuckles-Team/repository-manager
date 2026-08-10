@@ -53,16 +53,21 @@ Certification evidence is tied to the exact generation ID, tree SHA, gate
 configuration digest, command digest, host, and toolchain digest.  Stage-0
 feedback is therefore not interchangeable with stage-2 certification.
 
-RMDD-13's `landing_reservation` controller delegates repository resolution,
-durable reservation, both existing `reconciliation-merge`/canonical-checkout
-leases, revisioned source reads, and the final reservation/lease/source barrier
-to one trusted authority.  A request path is only a hint: the authority's
-resolved canonical/common-dir/worktree identity and authority revision are
-bound into the private reservation digest.  No caller-supplied lease or
-reader object can prove state.  The controller returns only a bounded,
-privacy-safe immutable snapshot after the single final barrier; it performs no
-ref, worktree, build, job, or push mutation, and CP3 is the first consumer
-allowed to attempt a fenced target CAS.
+RMDD-13's `landing_reservation` controller accepts only the exact sealed
+authority handle emitted by `create_landing_authority()` (the private test
+factory is the only test seam).  One authority-owned critical section
+authenticates the controller/tenant/epoch, resolves the exact canonical
+repository identity, acquires both existing `reconciliation-merge` and
+canonical-checkout leases, records the repository/target reservation, captures
+revisioned state, performs the final reservation/lease/source barrier, and
+releases or records recovery.  A request path is only a hint: the trusted
+canonical/common-dir/worktree identity and authority revision are bound into
+the private reservation digest.  No caller-supplied lease, resolver, reader,
+barrier, or DTO can prove state.  The authority returns only a bounded,
+privacy-safe immutable snapshot carrying an opaque authority attestation;
+CP3 must verify that attestation through the same authority before attempting
+a fenced target CAS.  CP2 performs no ref, worktree, build, job, or push
+mutation.
 
 Lifecycle transitions are explicit in `transitions.py`; terminal states have
 no outgoing transition, retries are represented by a new WorkItem attempt, and
