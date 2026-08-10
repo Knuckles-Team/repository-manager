@@ -75,3 +75,48 @@ subprocess or network, or mutates a manifest.
 
 Checkpoint 2 still does not rewrite floors, plan versions, execute stages, create
 WorkItems, restart/resume, edit workspace manifests, or wire MCP/CLI surfaces.
+
+## Version and floor previews (checkpoint 3)
+
+`repository_manager.development.workspace_versions` consumes only the verified
+`DependencyGraph` and `SelectedChangeClosure`, plus immutable site descriptors
+from a declarative metadata reader. A site names its relative metadata file,
+selector, representation (`python`, `rust`, or `node`), exact old literal, and
+an explicit version or floor policy. The planner binds each resulting preview
+to the owning project tree SHA, package identity, graph digest, selection
+digest, and one stable plan digest. It never opens the file, invokes a build
+backend, or writes the proposed new text.
+
+Version transitions are explicit `major`, `minor`, `patch`, or `exact` policies;
+stable three-component SemVer is required. Floor transitions are explicit
+`range`, `compatible`, `caret`, `tilde`, or `exact` policies. The output keeps
+dependency-first package batches, emits one preview per rewrite site, and
+retains already-satisfied floors as explicit no-op evidence.
+
+Synthetic preview (illustrative only; it is not an instruction to edit a
+workspace file):
+
+```json
+{
+  "project_id": "repo:services/consumer",
+  "package": "repo:services/consumer::python:consumer",
+  "dependency": "repo:services/library::python:library",
+  "file_path": "pyproject.toml",
+  "source_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "old_text": ">=1.4.0",
+  "new_text": ">=1.5.0",
+  "old_normalized": ">=1.4.0",
+  "new_normalized": ">=1.5.0",
+  "reason": "transitive_minimum",
+  "witness": [
+    "edge:repo:services/consumer::python:consumer->repo:services/library::python:library",
+    "dependency-next:repo:services/library::python:library=1.5.0",
+    "topological-batch:0"
+  ],
+  "graph_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "selection_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "plan_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+}
+```
+
+The preview is evidence for a later mutation owner, not a mutation request.
