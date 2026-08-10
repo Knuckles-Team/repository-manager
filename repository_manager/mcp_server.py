@@ -48,7 +48,7 @@ from repository_manager.mcp_tools.contracts import (
 from repository_manager.models import GitResult
 from repository_manager.repository_manager import Git
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 DEFAULT_WORKSPACE = setting(
     "REPOSITORY_MANAGER_WORKSPACE",
