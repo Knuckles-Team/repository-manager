@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Manager Build Coordination"
+  short_description: "Content-addressed build/cache dedup for any repository"
+  default_prompt: "Use $repository-manager-build-coordination to request, inspect, explain, or reclaim a repository's content-addressed build cache through rm_build instead of a bare compiler invocation."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Manager Candidate Certification"
+  short_description: "Candidate/generation vocabulary and concept-marker verification before landing"
+  default_prompt: "Use $repository-manager-candidate-certification to explain a candidate's or generation's certification state and verify introduced CONCEPT markers via rm_concepts, then hand actual landing to repository-manager-merge-and-reconcile."

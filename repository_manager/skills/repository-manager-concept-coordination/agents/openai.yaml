@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Manager Concept Coordination"
+  short_description: "Reserve, verify, and reconcile CONCEPT:ID claims"
+  default_prompt: "Use $repository-manager-concept-coordination to reserve a CONCEPT:ID claim before writing its marker, or to verify a candidate/generation's markers, through rm_concepts — and check the ok field, since every mutating action can refuse."
