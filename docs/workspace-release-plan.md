@@ -120,3 +120,40 @@ workspace file):
 ```
 
 The preview is evidence for a later mutation owner, not a mutation request.
+
+## Frozen release plan and stage preview (checkpoint 4)
+
+`repository_manager.development.workspace_release_plan` is the pure C-11 freeze
+boundary for the later release/mutation lanes. `freeze_release_plan` consumes
+only the verified `DependencyGraph`, `SelectedChangeClosure`, and checkpoint-3
+`VersionPlan`, plus explicit bounded base/source/generation and profile inputs.
+It copies canonical repository/package identities, selected dependency-first
+groups, every selected project's immutable tree SHA, the version/floor preview
+digests, profile digests, and an exact SHA-256 `plan_digest`. No checkout is
+opened and no command, package manager, Git operation, WorkItem, or network
+client is available from this module.
+
+The resulting `StagePreview` records are a deterministic dependency DAG:
+
+```text
+validate(repo) -> bump(repo) -> local-land(repo) -> build(repo) -> package(repo)
+                         \-- bump also waits for each selected upstream bump
+```
+
+Independent projects share a topological group and remain parallel. A stage
+stores its immutable tree/base/generation/graph/selection/version-plan inputs,
+the relevant version/floor preview digests, profile digests, deterministic
+stage ID, deterministic input digest, and sorted upstream IDs. Failure behavior
+is declarative (`block_dependents`); this checkpoint does not inspect or run a
+stage. The optional push stages are a separate consent-gated extension and are
+created only with a `PushConsentReference` containing both an opaque reference
+and immutable digest. A boolean flag alone can never create a push stage.
+
+`FrozenReleasePlan.validate()` recomputes nested evidence and the exact plan
+preimage, while `validate_against(graph, selection)` additionally revalidates
+the current graph, closure, and checkpoint-3 previews. These paths are intended
+to reject dataclass/Pydantic copy/construct and `object.__new__` forgeries,
+cleared or stale digests, changed source/tree/base/generation/profile/preview
+fields, reordered dependencies, unknown stage dependencies, cycles, and graph
+or selection drift. Inputs are exact builtin bounded containers and all refusal
+messages are privacy-safe.
