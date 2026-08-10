@@ -18,6 +18,7 @@ import shlex
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, TypeVar
@@ -74,6 +75,138 @@ _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", re.DOTALL)
 _SHELL_CONTROL_TOKENS = {"&&", "||", ";", "|", "&", "(", ")"}
 _MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024
 _MutationResult = TypeVar("_MutationResult")
+
+# --- child-process reaping (CONCEPT:RM-CHILD-REAP) --------------------------
+#
+# Every repository operation spawns a `git` child. Reaping it was left to the
+# happy path, so any route that skipped `process.wait()` -- a `wait(timeout=5)`
+# that itself timed out and was swallowed with `pass`, or an exception raised
+# while streaming output -- abandoned a child that later exited with nobody to
+# collect its status. Those accumulate as zombies for the whole life of the
+# server process: a long-lived MCP server was found holding 140 unreaped `git`
+# children after six days, each pinning a PID-table slot and its parent's fd.
+#
+# Two layers, because the first one can only cover paths it is on:
+#   1. `_reap_child` in a `finally`, so the common path always collects.
+#   2. `_ChildReaper`, a daemon sweep that collects anything layer 1 missed and
+#      force-terminates children that outlive their deadline -- the GC backstop
+#      for paths not yet imagined.
+_CHILD_REAP_GRACE_SECONDS = 5.0
+_CHILD_SWEEP_INTERVAL_SECONDS = 30.0
+
+
+class _ChildReaper:
+    """Tracks spawned children and guarantees each is eventually collected."""
+
+    def __init__(self) -> None:
+        self._children: dict[int, tuple[subprocess.Popen[str], float | None]] = {}
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def register(
+        self, process: "subprocess.Popen[str]", deadline: float | None = None
+    ) -> None:
+        with self._lock:
+            self._children[process.pid] = (process, deadline)
+        self._ensure_thread()
+
+    def unregister(self, process: "subprocess.Popen[str]") -> None:
+        with self._lock:
+            self._children.pop(process.pid, None)
+
+    def tracked(self) -> int:
+        """Number of children still awaiting collection (diagnostics/tests)."""
+        with self._lock:
+            return len(self._children)
+
+    def _ensure_thread(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._thread = threading.Thread(
+                target=self._sweep_forever,
+                name="repository-manager-child-reaper",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def _sweep_forever(self) -> None:
+        while True:
+            time.sleep(_CHILD_SWEEP_INTERVAL_SECONDS)
+            try:
+                self.sweep()
+            except Exception:
+                # A reaper that dies stops reaping everything, so it must
+                # survive one bad child -- but never silently (the swallowed
+                # `pass` in the timeout path is the whole reason this exists).
+                logger.exception("child reaper sweep failed; continuing")
+
+    def sweep(self) -> int:
+        """Collect exited children; kill any past its deadline. Returns count."""
+        with self._lock:
+            snapshot = list(self._children.items())
+        collected = 0
+        now = time.monotonic()
+        for pid, (process, deadline) in snapshot:
+            if process.poll() is not None:  # poll() reaps an exited child
+                with self._lock:
+                    self._children.pop(pid, None)
+                collected += 1
+                continue
+            if deadline is not None and now > deadline:
+                logger.warning(
+                    "Child pid=%s outlived its deadline; terminating", pid
+                )
+                if _reap_child(process):
+                    with self._lock:
+                        self._children.pop(pid, None)
+                    collected += 1
+        return collected
+
+
+_child_reaper = _ChildReaper()
+
+
+def _terminate_process_group(process: "subprocess.Popen[str]", sig: int) -> None:
+    """Signal the child's whole group, falling back to the child alone."""
+    try:
+        os.killpg(os.getpgid(process.pid), sig)
+    except (ProcessLookupError, PermissionError, OSError) as exc:
+        logger.debug("killpg(%s) failed (%s); signalling child only", sig, exc)
+        try:
+            process.send_signal(sig)
+        except (ProcessLookupError, OSError):
+            pass  # already gone -- nothing left to signal
+
+
+def _reap_child(
+    process: "subprocess.Popen[str]", grace: float = _CHILD_REAP_GRACE_SECONDS
+) -> bool:
+    """Collect `process`, escalating SIGTERM -> SIGKILL. True if collected.
+
+    Always returns rather than raising: this runs from `finally` blocks, where
+    an exception would mask the real error being propagated.
+    """
+    if process.poll() is not None:
+        return True
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if hasattr(os, "killpg"):
+            _terminate_process_group(process, sig)
+        else:  # pragma: no cover - Windows
+            process.kill()
+        try:
+            process.wait(timeout=grace)
+            return True
+        except subprocess.TimeoutExpired:
+            continue
+    # Unreapable within the grace window (typically uninterruptible I/O). Say
+    # so loudly -- the reaper sweep will keep trying.
+    logger.error(
+        "Child pid=%s survived SIGKILL after %.1fs; left to the reaper sweep",
+        process.pid,
+        grace,
+    )
+    return False
 
 
 class _RepoMutationLock:
@@ -968,6 +1101,14 @@ class Git:
             bufsize=1,  # Line buffered
             start_new_session=True,  # Isolate process group so killpg only kills the command
         )
+        # Hand the child to the reaper before anything can fail: if the `try`
+        # below raises before its `finally` is armed, the sweep still collects.
+        _child_reaper.register(
+            process,
+            deadline=(time.monotonic() + timeout + _CHILD_REAP_GRACE_SECONDS)
+            if timeout
+            else None,
+        )
 
         output_lines: list[str] = []
         output_bytes = 0
@@ -1038,6 +1179,19 @@ class Git:
                         f"[{datetime.datetime.now().isoformat()}] ERROR: Command timed out after {timeout} seconds\n"
                     )
                     log_file.flush()
+        finally:
+            # Runs on EVERY exit -- including the timeout paths above whose
+            # inner `wait(timeout=5)` may itself have timed out, and any
+            # exception raised while streaming output. Without this, the child
+            # exits later with nobody to collect it and becomes a zombie for
+            # the life of the server process.
+            if process.stdout is not None and not process.stdout.closed:
+                try:
+                    process.stdout.close()
+                except OSError as exc:  # pragma: no cover - fd already gone
+                    logger.debug("closing child stdout failed: %s", exc)
+            _reap_child(process)
+            _child_reaper.unregister(process)
 
         if output_truncated:
             output_lines.append("\n[repository output truncated]\n")
