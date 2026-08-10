@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
+from typing import cast
 
 import pytest
 
@@ -25,6 +26,8 @@ from repository_manager.development.workspace_release_plan import (
     FailurePolicy,
     FrozenReleasePlan,
     FrozenReleasePlanInput,
+    ProfileBinding,
+    ProfileKind,
     PushConsentReference,
     ReleaseDecisionContext,
     ReleasePlanCode,
@@ -32,6 +35,7 @@ from repository_manager.development.workspace_release_plan import (
     RetryPolicy,
     StageKind,
     TimeoutPolicy,
+    ValidationProfile,
     _digest_payload,
     _plan_payload,
     _stage_identity,
@@ -48,10 +52,12 @@ from repository_manager.development.workspace_selection import (
 from repository_manager.development.workspace_versions import (
     _AUTO_PLAN_DIGEST,
     FloorPolicy,
+    FloorPreview,
     FloorRewriteSite,
     MetadataRepresentation,
     VersionBump,
     VersionPlan,
+    VersionPreview,
     VersionSourcePolicy,
     VersionSourceSite,
     plan_version_floors,
@@ -651,6 +657,360 @@ def test_decision_fields_bind_plan_and_stage_identity() -> None:
     assert first.stages[0].resource_profile == base_context.resource_profile
 
 
+def test_profile_and_decision_descriptor_matrix_rejects_without_introspection() -> None:
+    graph, selection, version_plan = _fixture()
+    project_id = selection.selected_project_ids[0]
+
+    class Evil:
+        calls = 0
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "calls":
+                return type(self).calls
+            type(self).calls += 1
+            raise RuntimeError("hostile property executed")
+
+        def __repr__(self) -> str:
+            type(self).calls += 1
+            raise RuntimeError("hostile repr executed")
+
+        def __str__(self) -> str:
+            type(self).calls += 1
+            raise RuntimeError("hostile str executed")
+
+        def __iter__(self):
+            type(self).calls += 1
+            raise RuntimeError("hostile iteration executed")
+
+        def __eq__(self, _other: object) -> bool:
+            type(self).calls += 1
+            raise RuntimeError("hostile equality executed")
+
+        def __hash__(self) -> int:
+            type(self).calls += 1
+            raise RuntimeError("hostile hash executed")
+
+    class HostileString(str):
+        def strip(self, *_args: object, **_kwargs: object) -> str:
+            raise RuntimeError("hostile strip executed")
+
+        def __len__(self) -> int:
+            raise RuntimeError("hostile len executed")
+
+        def __iter__(self):
+            raise RuntimeError("hostile iteration executed")
+
+        def __eq__(self, _other: object) -> bool:
+            raise RuntimeError("hostile equality executed")
+
+        def __hash__(self) -> int:
+            raise RuntimeError("hostile hash executed")
+
+        def encode(self, *_args: object, **_kwargs: object) -> bytes:
+            raise RuntimeError("hostile encode executed")
+
+    class HostileInt(int):
+        def __bool__(self) -> bool:
+            raise RuntimeError("hostile bool executed")
+
+        def __index__(self) -> int:
+            raise RuntimeError("hostile index executed")
+
+    class HostileBytes(bytes):
+        def decode(self, *_args: object, **_kwargs: object) -> str:
+            raise RuntimeError("hostile decode executed")
+
+    class HostileMapping(dict[object, object]):
+        def __iter__(self):
+            raise RuntimeError("hostile mapping iteration executed")
+
+        def __len__(self) -> int:
+            raise RuntimeError("hostile mapping length executed")
+
+    class HostileList(list[object]):
+        def __iter__(self):
+            raise RuntimeError("hostile list iteration executed")
+
+        def __len__(self) -> int:
+            raise RuntimeError("hostile list length executed")
+
+    evil = Evil()
+    descriptor_values: tuple[object, ...] = (
+        evil,
+        False,
+        1,
+        b"profile",
+        HostileString("profile"),
+        HostileInt(1),
+        HostileBytes(b"profile"),
+        HostileMapping(),
+        HostileList(),
+    )
+    profile_entrypoints = (
+        "validation_profile",
+        "build_profile",
+        "validation_profile_digest",
+        "build_profile_digest",
+        "validation_profiles",
+        "build_profiles",
+    )
+    for entrypoint in profile_entrypoints:
+        for value in descriptor_values:
+            kwargs: dict[str, object] = {entrypoint: value}
+            if entrypoint.endswith("profiles") and type(value) is dict:
+                kwargs[entrypoint] = {project_id: value}
+            with pytest.raises(ReleasePlanError):
+                freeze_release_plan(
+                    graph,
+                    selection,
+                    version_plan,
+                    source_sha=SOURCE_SHA,
+                    base_sha=BASE_SHA,
+                    generation_id="generation:fixture",
+                    **kwargs,  # type: ignore[arg-type]
+                )
+
+    decision_entrypoints = (
+        "release_profile",
+        "candidate",
+        "certificate",
+        "config",
+        "toolchain",
+        "command",
+        "artifact_contract",
+        "resource_profile",
+        "retry_policy",
+        "retry_count",
+        "timeout_policy",
+        "timeout_seconds",
+        "target_branch",
+        "decision_context",
+    )
+    for entrypoint in decision_entrypoints:
+        for value in descriptor_values:
+            with pytest.raises(ReleasePlanError):
+                freeze_release_plan(
+                    graph,
+                    selection,
+                    version_plan,
+                    source_sha=SOURCE_SHA,
+                    base_sha=BASE_SHA,
+                    generation_id="generation:fixture",
+                    **{entrypoint: value},  # type: ignore[arg-type]
+                )
+    assert Evil.calls == 0
+
+
+def test_profile_records_are_exact_and_deep_reconstructed() -> None:
+    graph, selection, version_plan = _fixture()
+    project_id = selection.selected_project_ids[0]
+
+    class TrapBuildProfile(BuildProfile):
+        calls = 0
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "calls":
+                return type(self).calls
+            type(self).calls += 1
+            raise RuntimeError("hostile build profile access")
+
+    class TrapValidationProfile(ValidationProfile):
+        calls = 0
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "calls":
+                return type(self).calls
+            type(self).calls += 1
+            raise RuntimeError("hostile validation profile access")
+
+    for trap_descriptor, trap_keyword in (
+        (object.__new__(TrapBuildProfile), "build_profile"),
+        (object.__new__(TrapValidationProfile), "validation_profile"),
+    ):
+        with pytest.raises(ReleasePlanError):
+            freeze_release_plan(
+                graph,
+                selection,
+                version_plan,
+                source_sha=SOURCE_SHA,
+                base_sha=BASE_SHA,
+                generation_id="generation:fixture",
+                **{trap_keyword: trap_descriptor},  # type: ignore[arg-type]
+            )
+    assert TrapBuildProfile.calls == 0
+    assert TrapValidationProfile.calls == 0
+
+    forged_build = object.__new__(BuildProfile)
+    forged_validation = object.__new__(ValidationProfile)
+    forged_binding = object.__new__(ProfileBinding)
+    for forged_descriptor, forged_keyword in (
+        (forged_build, "build_profile"),
+        (forged_validation, "validation_profile"),
+        (forged_binding, "build_profiles"),
+    ):
+        kwargs: dict[str, object] = {forged_keyword: forged_descriptor}
+        if forged_keyword == "build_profiles":
+            kwargs[forged_keyword] = {project_id: forged_descriptor}
+        with pytest.raises(ReleasePlanError) as captured:
+            freeze_release_plan(
+                graph,
+                selection,
+                version_plan,
+                source_sha=SOURCE_SHA,
+                base_sha=BASE_SHA,
+                generation_id="generation:fixture",
+                **kwargs,  # type: ignore[arg-type]
+            )
+        assert "object at" not in str(captured.value)
+
+    invalid_build = object.__new__(BuildProfile)
+    object.__setattr__(invalid_build, "name", "invalid/build")
+    object.__setattr__(invalid_build, "digest", "a" * 64)
+    invalid_validation = object.__new__(ValidationProfile)
+    object.__setattr__(invalid_validation, "name", True)
+    object.__setattr__(invalid_validation, "digest", b"")
+    invalid_binding = object.__new__(ProfileBinding)
+    object.__setattr__(invalid_binding, "project_id", project_id)
+    object.__setattr__(invalid_binding, "name", "binding")
+    object.__setattr__(invalid_binding, "digest", "not-a-digest")
+    object.__setattr__(invalid_binding, "kind", ProfileKind.BUILD)
+    for invalid_descriptor, invalid_keyword in (
+        (invalid_build, "build_profile"),
+        (invalid_validation, "validation_profile"),
+        (invalid_binding, "build_profiles"),
+    ):
+        invalid_kwargs: dict[str, object] = {invalid_keyword: invalid_descriptor}
+        if invalid_keyword == "build_profiles":
+            invalid_kwargs[invalid_keyword] = {project_id: invalid_descriptor}
+        with pytest.raises(ReleasePlanError):
+            freeze_release_plan(
+                graph,
+                selection,
+                version_plan,
+                source_sha=SOURCE_SHA,
+                base_sha=BASE_SHA,
+                generation_id="generation:fixture",
+                **invalid_kwargs,  # type: ignore[arg-type]
+            )
+
+    valid_build = BuildProfile("owned-build", "a" * 64)
+    valid_validation = ValidationProfile("owned-validation", "b" * 64)
+    valid_binding = ProfileBinding(
+        project_id=project_id,
+        name="owned-binding",
+        digest="c" * 64,
+        kind=ProfileKind.BUILD,
+    )
+    build_map = {
+        item: (
+            valid_binding
+            if item == project_id
+            else ProfileBinding(item, "owned-binding", "c" * 64, ProfileKind.BUILD)
+        )
+        for item in selection.selected_project_ids
+    }
+    validation_map = {
+        item: (
+            valid_validation
+            if item == project_id
+            else ValidationProfile("owned-validation", "b" * 64)
+        )
+        for item in selection.selected_project_ids
+    }
+    request = FrozenReleasePlanInput(
+        graph,
+        selection,
+        version_plan,
+        source_sha=SOURCE_SHA,
+        base_sha=BASE_SHA,
+        generation_id="generation:fixture",
+        validation_profiles=validation_map,
+        build_profiles=build_map,
+    )
+    request_validation = cast(tuple[ProfileBinding, ...], request.validation_profiles)
+    request_build = cast(tuple[ProfileBinding, ...], request.build_profiles)
+    assert request_validation[0] is not valid_validation
+    assert request_build[0] is not valid_binding
+    object.__setattr__(valid_validation, "name", "mutated-validation")
+    object.__setattr__(valid_binding, "name", "mutated-binding")
+    validation_map.clear()
+    build_map.clear()
+    assert request_validation[0].name == "owned-validation"
+    assert request_build[0].name == "owned-binding"
+    assert request_build[0].digest == "c" * 64
+
+    plan = freeze_release_plan(
+        graph,
+        selection,
+        version_plan,
+        source_sha=SOURCE_SHA,
+        base_sha=BASE_SHA,
+        generation_id="generation:fixture",
+        validation_profiles={
+            item: ValidationProfile("owned-validation", "b" * 64)
+            for item in selection.selected_project_ids
+        },
+        build_profiles={
+            item: BuildProfile("owned-build", "a" * 64)
+            for item in selection.selected_project_ids
+        },
+    )
+    assert plan.validation_profiles[0] is not valid_validation
+    assert plan.build_profiles[0] is not valid_build
+
+
+def test_malformed_exact_decision_records_are_privacy_safe() -> None:
+    graph, selection, version_plan = _fixture()
+    forged_reference = object.__new__(DecisionReference)
+    with pytest.raises(ReleasePlanError):
+        ReleaseDecisionContext(release_profile=forged_reference)
+
+    forged_context = object.__new__(ReleaseDecisionContext)
+    with pytest.raises(ReleasePlanError) as captured:
+        freeze_release_plan(
+            graph,
+            selection,
+            version_plan,
+            source_sha=SOURCE_SHA,
+            base_sha=BASE_SHA,
+            generation_id="generation:fixture",
+            decision_context=forged_context,
+        )
+    assert "object at" not in str(captured.value)
+
+    for field_name in (
+        "release_profile",
+        "candidate",
+        "certificate",
+        "config",
+        "toolchain",
+        "command",
+        "artifact_contract",
+        "resource_profile",
+    ):
+        invalid_reference = object.__new__(DecisionReference)
+        object.__setattr__(invalid_reference, "name", True)
+        object.__setattr__(invalid_reference, "digest", "e" * 64)
+        with pytest.raises(ReleasePlanError):
+            ReleaseDecisionContext(
+                **{field_name: invalid_reference},  # type: ignore[arg-type]
+            )
+
+    digest = "d" * 64
+    with pytest.raises(ReleasePlanError):
+        ReleaseDecisionContext(
+            release_profile=DecisionReference("release:one", digest),
+            retry_policy=RetryPolicy.FIXED,
+            retry_count=0,
+        )
+    with pytest.raises(ReleasePlanError):
+        ReleaseDecisionContext(
+            release_profile=DecisionReference("release:one", digest),
+            timeout_policy=TimeoutPolicy.FAIL,
+            timeout_seconds=0,
+        )
+
+
 def test_trusted_runtime_errors_are_not_normalized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -890,17 +1250,23 @@ def _rehashed_version_plan(
     version_preview: object | None = None,
     floor_preview: object | None = None,
 ) -> VersionPlan:
-    versions = tuple(
-        version_preview
-        if version_preview is not None and item is version_plan.version_previews[0]
-        else item
-        for item in version_plan.version_previews
+    versions = cast(
+        tuple[VersionPreview, ...],
+        tuple(
+            version_preview
+            if version_preview is not None and item is version_plan.version_previews[0]
+            else item
+            for item in version_plan.version_previews
+        ),
     )
-    floors = tuple(
-        floor_preview
-        if floor_preview is not None and item is version_plan.floor_previews[0]
-        else item
-        for item in version_plan.floor_previews
+    floors = cast(
+        tuple[FloorPreview, ...],
+        tuple(
+            floor_preview
+            if floor_preview is not None and item is version_plan.floor_previews[0]
+            else item
+            for item in version_plan.floor_previews
+        ),
     )
     return VersionPlan(
         graph_digest=version_plan.graph_digest,

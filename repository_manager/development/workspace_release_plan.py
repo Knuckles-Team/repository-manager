@@ -766,6 +766,17 @@ class ReleaseDecisionContext:
     timeout_seconds: int = 0
 
     def __post_init__(self) -> None:
+        try:
+            self._validate_decision_context()
+        except ReleasePlanError:
+            raise
+        except _UNTRUSTED_DATA_ERRORS:
+            raise _fail(
+                ReleasePlanCode.PROFILE,
+                "decision profile evidence could not be validated",
+            ) from None
+
+    def _validate_decision_context(self) -> None:
         fields = (
             ("release profile", "release_profile", self.release_profile),
             ("candidate reference", "candidate", self.candidate),
@@ -933,19 +944,47 @@ def _normalize_decision_context(
     return ReleaseDecisionContext(**values)  # type: ignore[arg-type]
 
 
-def _profile_digest_from_object(value: object, kind: ProfileKind) -> tuple[str, str]:
-    """Normalize only a bounded profile descriptor; never retain it."""
+def _profile_digest_from_object_unchecked(
+    value: object, kind: ProfileKind
+) -> tuple[str, str]:
+    """Normalize only exact owned descriptors or one exact builtin name scalar."""
 
-    if isinstance(value, (ValidationProfile, BuildProfile)):
-        if kind is ProfileKind.VALIDATION and not isinstance(value, ValidationProfile):
+    if type(value) is ProfileBinding:
+        if value.kind is not kind:
+            raise _fail(ReleasePlanCode.PROFILE, "profile kind does not match binding")
+        project = _canonical_repository_exact(value.project_id, "profile project")
+        name = _strict_text(
+            value.name, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
+        )
+        if "/" in name or "\\" in name or "://" in name:
             raise _fail(
-                ReleasePlanCode.PROFILE, "profile kind does not match descriptor"
+                ReleasePlanCode.PROFILE, "profile name must not be a path or URL"
             )
-        if kind is ProfileKind.BUILD and not isinstance(value, BuildProfile):
+        digest = _strict_digest(
+            value.digest, "profile digest", code=ReleasePlanCode.PROFILE
+        )
+        normalized = ProfileBinding(project, name, digest, kind)
+        return normalized.name, normalized.digest
+
+    descriptor_type: type[ValidationProfile] | type[BuildProfile]
+    if kind is ProfileKind.VALIDATION:
+        descriptor_type = ValidationProfile
+    else:
+        descriptor_type = BuildProfile
+    if type(value) is descriptor_type:
+        name = _strict_text(
+            value.name, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
+        )
+        if "/" in name or "\\" in name or "://" in name:
             raise _fail(
-                ReleasePlanCode.PROFILE, "profile kind does not match descriptor"
+                ReleasePlanCode.PROFILE, "profile name must not be a path or URL"
             )
-        return value.name, value.digest
+        digest = _strict_digest(
+            value.digest, "profile digest", code=ReleasePlanCode.PROFILE
+        )
+        normalized_profile = descriptor_type(name, digest)
+        return normalized_profile.name, normalized_profile.digest
+
     if type(value) is str:
         name = _strict_text(
             value, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
@@ -957,51 +996,21 @@ def _profile_digest_from_object(value: object, kind: ProfileKind) -> tuple[str, 
         if _DIGEST.fullmatch(name):
             return "declared", name.lower()
         return name, _digest_payload({"profile_kind": kind.value, "profile_name": name})
-    if type(value) is dict:
-        mapping = _strict_mapping(value, "profile descriptor")
-        if set(mapping) - {"name", "digest"}:
-            raise _fail(
-                ReleasePlanCode.PROFILE, "profile descriptor has unsupported fields"
-            )
-        if "name" not in mapping or "digest" not in mapping:
-            raise _fail(ReleasePlanCode.PROFILE, "profile descriptor is incomplete")
-        name = _strict_text(
-            mapping["name"],
-            "profile name",
-            max_length=256,
-            code=ReleasePlanCode.PROFILE,
-        )
-        digest = _strict_digest(
-            mapping["digest"], "profile digest", code=ReleasePlanCode.PROFILE
-        )
-        return name, digest
-    # Existing profile types from RMDD-11/10 are accepted through their two
-    # explicit public fields only.  Attribute access is guarded and any
-    # exception becomes a fixed privacy-safe refusal.
+    raise _fail(ReleasePlanCode.PROFILE, "profile descriptor is unsupported")
+
+
+def _profile_digest_from_object(value: object, kind: ProfileKind) -> tuple[str, str]:
     try:
-        name_value = value.name  # type: ignore[attr-defined]
-        try:
-            digest_value = value.config_digest  # type: ignore[attr-defined]
-        except AttributeError:
-            digest_value = value.digest  # type: ignore[attr-defined]
-        if digest_value is None:
-            digest_value = value.digest  # type: ignore[attr-defined]
-        name = _strict_text(
-            name_value, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
-        )
-        digest = _strict_digest(
-            digest_value, "profile digest", code=ReleasePlanCode.PROFILE
-        )
-        return name, digest
+        return _profile_digest_from_object_unchecked(value, kind)
     except ReleasePlanError:
         raise
     except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
-            ReleasePlanCode.PROFILE, "profile descriptor is unsupported"
+            ReleasePlanCode.PROFILE, "profile descriptor could not be validated"
         ) from None
 
 
-def _normalize_profiles(
+def _normalize_profiles_unchecked(
     value: object,
     selected: tuple[str, ...],
     kind: ProfileKind,
@@ -1086,6 +1095,25 @@ def _normalize_profiles(
         name, digest = _profile_digest_from_object(entries[project], kind)
         bindings.append(ProfileBinding(project, name, digest, kind))
     return tuple(bindings)
+
+
+def _normalize_profiles(
+    value: object,
+    selected: tuple[str, ...],
+    kind: ProfileKind,
+    *,
+    global_value: object | None = None,
+) -> tuple[ProfileBinding, ...]:
+    try:
+        return _normalize_profiles_unchecked(
+            value, selected, kind, global_value=global_value
+        )
+    except ReleasePlanError:
+        raise
+    except _UNTRUSTED_DATA_ERRORS:
+        raise _fail(
+            ReleasePlanCode.PROFILE, "profile collection could not be validated"
+        ) from None
 
 
 def _profile_map(

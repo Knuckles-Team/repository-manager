@@ -195,3 +195,13 @@ bounded Git-branch validation; ref aliases, traversal, URL/scheme, controls,
 and ambiguous branch syntax are refused without invoking Git. The CP3
 validation boundary normalizes only documented malformed-data exceptions, so a
 trusted planner `RuntimeError` remains observable to its caller.
+
+Profile descriptors follow the same closed-boundary rule: a global or
+project-scoped validation/build profile is either an exact builtin name string
+or an exact owned immutable `ValidationProfile`, `BuildProfile`, or
+`ProfileBinding`. Mapping/sequence descriptor lookalikes, subclasses, Pydantic
+objects, and property-bearing duck types are refused before introspection;
+accepted records are deep-reconstructed, so later caller mutation cannot alter
+the frozen request or its digest. Release/config/toolchain/command/artifact/
+resource references and retry/timeout policies use exact owned reference or
+enum/scalar types as well.
