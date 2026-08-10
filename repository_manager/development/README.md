@@ -53,21 +53,29 @@ Certification evidence is tied to the exact generation ID, tree SHA, gate
 configuration digest, command digest, host, and toolchain digest.  Stage-0
 feedback is therefore not interchangeable with stage-2 certification.
 
-RMDD-13's `landing_reservation` controller accepts only the exact sealed
-authority handle emitted by `create_landing_authority()` (the private test
-factory is the only test seam).  One authority-owned critical section
-authenticates the controller/tenant/epoch, resolves the exact canonical
-repository identity, acquires both existing `reconciliation-merge` and
-canonical-checkout leases, records the repository/target reservation, captures
-revisioned state, performs the final reservation/lease/source barrier, and
-releases or records recovery.  A request path is only a hint: the trusted
-canonical/common-dir/worktree identity and authority revision are bound into
-the private reservation digest.  No caller-supplied lease, resolver, reader,
-barrier, or DTO can prove state.  The authority returns only a bounded,
-privacy-safe immutable snapshot carrying an opaque authority attestation;
-CP3 must verify that attestation through the same authority before attempting
-a fenced target CAS.  CP2 performs no ref, worktree, build, job, or push
-mutation.
+RMDD-13 CP2 is a protocol checkpoint only: the native/durable landing
+authority is not wired in, and `create_landing_authority()` has no injection
+parameter and returns the fixed
+`landing_reservation_authority_unavailable` refusal.  No Python object,
+structural duck, reflected class, DTO, local lock, lease handle, digest, or
+caller-provided proof can change that result; production cannot accept a
+reservation until a separately authenticated native authority is bound (a
+follow-on RMDD-13/RMDD-20 or engine lane).
+
+The future native transaction must authenticate controller, tenant, authority
+epoch, principal, and session; resolve the exact repository/common-dir/
+worktree identity; acquire both existing `reconciliation-merge` and
+canonical-checkout leases; reserve one exact repository/target key; capture
+revisioned state after the hold; perform one end-of-barrier revalidation; and
+release or durably record recovery on every success, failure, cancellation, or
+timeout.  Its bounded result must carry a backend-issued opaque proof/reference
+covering the complete snapshot and original reservation/lease context,
+including target SHA/tree, canonical cleanliness/index/private-WIP,
+occupancy, generation/certificate/fence, all source revisions, and authority
+incarnation.  CP3 must call the native `verify_current_landing_reservation`
+operation again with those correlations before any fenced target CAS; local
+self-consistency or a recomputed digest is not authority.  CP2 performs no
+ref, worktree, build, job, or push mutation.
 
 Lifecycle transitions are explicit in `transitions.py`; terminal states have
 no outgoing transition, retries are represented by a new WorkItem attempt, and

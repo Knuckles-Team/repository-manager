@@ -1,53 +1,43 @@
-"""RMDD-13 checkpoint 2: a durable, controller-only landing reservation.
+"""RMDD-13 checkpoint 2: a fail-closed native landing protocol boundary.
 
 The landing policy in :mod:`repository_manager.landing_policy` is deliberately
 pure.  This module is the small controller seam that may precede a future
-target compare-and-swap (CP3): a trusted authority obtains one durable
-reservation for an exact repository/target pair, then provides a revisioned
-Git/canonical snapshot and one final reservation/lease/source barrier while its
-opaque leases are held.
+target compare-and-swap (CP3).  The native/durable authority is deliberately
+not wired in this checkpoint, so production entrypoints return a stable
+authority-unavailable refusal before any state read, lease, or mutation.
 
 There are three important boundaries here:
 
-* ``LandingReservationAuthority`` is the durable authority.  A local lock,
-  SQLite row, JSON file, or an authority-shaped public DTO is never enough to
-  authorize a reservation.  The authority authenticates the controller and
-  atomically applies request-id/repository/target uniqueness and fencing.
-* The authority owns the read-only source and final barrier.  Every returned
-  value is checked as a closed, bounded value before it is used.  The
-  controller does not run Git commands, move refs, submit jobs, build, clean,
-  or push.
-* The authority privately composes the already-existing
-  ``reconciliation-merge`` and canonical checkout leases.  Their handles are
-  opaque and are never accepted from a public request or controller call; this
-  is an arbitration seam, not a second queue or process-local store.
+* ``NativeLandingReservationPort`` is a type-only contract for the future
+  authenticated native/durable authority.  It is never accepted as a public
+  caller-supplied transport, resolver, lease, reader, or proof verifier.
+* ``LandingReservationAuthority`` is only a fail-closed production facade until
+  that native binding exists.  Python object identity, private globals, local
+  locks, SQLite/JSON rows, local authentication calculations, and
+  caller-computed digests are never authority evidence.
+* A future native transaction must own identity, both RMDD-26 leases,
+  reservation, post-hold reads, the end barrier, complete proof, rollback, and
+  recovery.  The controller does not run Git commands, move refs, submit jobs,
+  build, clean, or push.
 
-The post-acquire snapshot contains only opaque identities, Git object IDs, and
-bounded state.  It intentionally excludes canonical paths, worktree paths,
-hostnames, process IDs, exception text, and private WIP details.
+Any future native snapshot contains only opaque identities, Git object IDs,
+bounded state, and a backend-issued opaque proof reference.  It intentionally
+excludes canonical paths, worktree paths, hostnames, process IDs, exception
+text, and private WIP details.
 """
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
-import hmac
 import json
 import re
-import secrets
 import unicodedata
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import AbstractContextManager
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from threading import Lock
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
-from agent_utilities.governance.lanes import LeaseUnavailable, hold_lease
-
-from repository_manager.canonical_guard import BlockedByLease, hold_canonical_lease
 from repository_manager.development import RepositoryIdentity
-from repository_manager.merge_queue import MERGE_LEASE
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -60,7 +50,6 @@ _MAX_PATH_BYTES = 4096
 _MAX_DETAIL_BYTES = 1024
 _MAX_WORKTREE_COUNT = 1024
 _MAX_LEASE_EPOCH = (1 << 63) - 1
-_MAX_RECOVERY_RECORDS = 64
 _TARGET_PREFIX = "refs/heads/"
 _UNSAFE_UNICODE_CATEGORIES = frozenset({"Cc", "Cf", "Co", "Cs", "Zl", "Zp"})
 _BIDI_CONTROLS = frozenset(
@@ -80,15 +69,12 @@ _BIDI_CONTROLS = frozenset(
     }
 )
 
-_AUTHORITY_SEAL = object()
-_ISSUED_AUTHORITY_HANDLES: dict[int, object] = {}
-
 
 class LandingReservationRefusalCode(StrEnum):
     """Stable wire-level refusal codes for the reservation boundary."""
 
     REQUEST_INVALID = "request_invalid"
-    AUTHORITY_UNAVAILABLE = "authority_unavailable"
+    AUTHORITY_UNAVAILABLE = "landing_reservation_authority_unavailable"
     AUTHORITY_INVALID = "authority_invalid"
     ATTESTATION_INVALID = "attestation_invalid"
     LEASE_UNAVAILABLE = "lease_unavailable"
@@ -351,7 +337,7 @@ def _safe_detail(code: LandingReservationRefusalCode) -> str:
 
     messages = {
         LandingReservationRefusalCode.REQUEST_INVALID: "reservation request is invalid",
-        LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE: "reservation authority is unavailable",
+        LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE: "landing reservation authority unavailable",
         LandingReservationRefusalCode.AUTHORITY_INVALID: "reservation authority returned invalid data",
         LandingReservationRefusalCode.ATTESTATION_INVALID: "reservation attestation is invalid",
         LandingReservationRefusalCode.LEASE_UNAVAILABLE: "landing arbitration lease is unavailable",
@@ -1069,6 +1055,41 @@ class DurableLandingReservation:
 
 
 @dataclass(frozen=True, slots=True)
+class LandingReservationProofRef:
+    """Opaque proof reference minted by the future native authority.
+
+    The Python boundary validates only bounded shape.  It never mints,
+    verifies, or treats this reference as authority evidence.  Its repr is
+    deliberately redacted so backend material cannot leak through logs.
+    """
+
+    issuer: str
+    opaque_reference: str
+    correlation_digest: str
+
+    def __post_init__(self) -> None:
+        values = _strict_dataclass_values(
+            self,
+            LandingReservationProofRef,
+            ("issuer", "opaque_reference", "correlation_digest"),
+        )
+        _text(values["issuer"], "proof issuer", maximum=_MAX_ID_BYTES)
+        _text(values["opaque_reference"], "proof reference", maximum=_MAX_ID_BYTES)
+        _digest(values["correlation_digest"], "proof correlation digest")
+
+    def immutable_payload(self) -> dict[str, object]:
+        self.__post_init__()
+        return {
+            "issuer": self.issuer,
+            "opaque_reference": self.opaque_reference,
+            "correlation_digest": self.correlation_digest,
+        }
+
+    def __repr__(self) -> str:
+        return "<native landing proof ref redacted>"
+
+
+@dataclass(frozen=True, slots=True)
 class LandingReservationSnapshot:
     """Bounded immutable CP3 input captured after reservation and re-read."""
 
@@ -1107,7 +1128,7 @@ class LandingReservationSnapshot:
     canonical_lease_epoch: int
     canonical_lease_fence: str
     authority_incarnation: str
-    authority_attestation: str
+    proof_ref: LandingReservationProofRef
     digest: str
 
     def _immutable_payload_unchecked(self) -> dict[str, object]:
@@ -1152,11 +1173,15 @@ class LandingReservationSnapshot:
                 "canonical_lease_epoch",
                 "canonical_lease_fence",
                 "authority_incarnation",
-                "authority_attestation",
+                "proof_ref",
             ),
         )
         return {
-            name: values[name]
+            name: (
+                cast(LandingReservationProofRef, values[name]).immutable_payload()
+                if name == "proof_ref"
+                else values[name]
+            )
             for name in (
                 "reservation_id",
                 "request_digest",
@@ -1193,7 +1218,7 @@ class LandingReservationSnapshot:
                 "canonical_lease_epoch",
                 "canonical_lease_fence",
                 "authority_incarnation",
-                "authority_attestation",
+                "proof_ref",
             )
         }
 
@@ -1243,7 +1268,7 @@ class LandingReservationSnapshot:
                 "canonical_lease_epoch",
                 "canonical_lease_fence",
                 "authority_incarnation",
-                "authority_attestation",
+                "proof_ref",
                 "digest",
             ),
         )
@@ -1314,7 +1339,9 @@ class LandingReservationSnapshot:
             "snapshot authority incarnation",
             maximum=_MAX_ID_BYTES,
         )
-        _digest(values["authority_attestation"], "snapshot authority attestation")
+        if type(values["proof_ref"]) is not LandingReservationProofRef:
+            raise LandingReservationError("snapshot proof reference is invalid")
+        cast(LandingReservationProofRef, values["proof_ref"]).__post_init__()
         _digest(values["digest"], "snapshot digest")
         expected_digest = _snapshot_digest(
             {
@@ -1455,175 +1482,82 @@ class _LandingAuthorityInput:
 
 
 @dataclass(frozen=True, slots=True)
-class _LeaseEvidence:
-    """Opaque evidence for one already-held RMDD-26 arbitration pair."""
+class _HeldLandingContext:
+    """Strict future-native context transcript; never a local authority."""
 
+    reservation: DurableLandingReservation
+    repository: ResolvedRepositoryIdentity
+    controller: ControllerIdentity
+    request_digest: str
     reconciliation_lease_id: str
     reconciliation_lease_epoch: int
     reconciliation_lease_fence: str
     canonical_lease_id: str
     canonical_lease_epoch: int
     canonical_lease_fence: str
+    authority_incarnation: str
 
     def __post_init__(self) -> None:
         values = _strict_dataclass_values(
             self,
-            _LeaseEvidence,
+            _HeldLandingContext,
             (
+                "reservation",
+                "repository",
+                "controller",
+                "request_digest",
                 "reconciliation_lease_id",
                 "reconciliation_lease_epoch",
                 "reconciliation_lease_fence",
                 "canonical_lease_id",
                 "canonical_lease_epoch",
                 "canonical_lease_fence",
+                "authority_incarnation",
             ),
         )
-        _text(values["reconciliation_lease_id"], "reconciliation lease id")
+        if type(values["reservation"]) is not DurableLandingReservation:
+            raise LandingReservationError("native context reservation is invalid")
+        cast(DurableLandingReservation, values["reservation"]).__post_init__()
+        if type(values["repository"]) is not ResolvedRepositoryIdentity:
+            raise LandingReservationError("native context repository is invalid")
+        cast(ResolvedRepositoryIdentity, values["repository"]).__post_init__()
+        if type(values["controller"]) is not ControllerIdentity:
+            raise LandingReservationError("native context controller is invalid")
+        cast(ControllerIdentity, values["controller"]).__post_init__()
+        _digest(values["request_digest"], "native context request digest")
+        _text(values["reconciliation_lease_id"], "native reconciliation lease id")
         _positive_int(
-            values["reconciliation_lease_epoch"], "reconciliation lease epoch"
+            values["reconciliation_lease_epoch"], "native reconciliation lease epoch"
         )
-        _text(values["reconciliation_lease_fence"], "reconciliation lease fence")
-        _text(values["canonical_lease_id"], "canonical lease id")
-        _positive_int(values["canonical_lease_epoch"], "canonical lease epoch")
-        _text(values["canonical_lease_fence"], "canonical lease fence")
+        _text(values["reconciliation_lease_fence"], "native reconciliation lease fence")
+        _text(values["canonical_lease_id"], "native canonical lease id")
+        _positive_int(values["canonical_lease_epoch"], "native canonical lease epoch")
+        _text(values["canonical_lease_fence"], "native canonical lease fence")
+        _text(
+            values["authority_incarnation"],
+            "native authority incarnation",
+            maximum=_MAX_ID_BYTES,
+        )
 
     def immutable_payload(self) -> dict[str, object]:
+        self.__post_init__()
         return {
+            "reservation": _durable_payload(self.reservation),
+            "repository": self.repository.immutable_payload(),
+            "controller": self.controller.immutable_payload(),
+            "request_digest": self.request_digest,
             "reconciliation_lease_id": self.reconciliation_lease_id,
             "reconciliation_lease_epoch": self.reconciliation_lease_epoch,
             "reconciliation_lease_fence": self.reconciliation_lease_fence,
             "canonical_lease_id": self.canonical_lease_id,
             "canonical_lease_epoch": self.canonical_lease_epoch,
             "canonical_lease_fence": self.canonical_lease_fence,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class _HeldLandingContext:
-    """Single captured identity used by the final barrier and attestation."""
-
-    reservation: DurableLandingReservation
-    repository: ResolvedRepositoryIdentity
-    controller: ControllerIdentity
-    request_digest: str
-    lease_evidence: _LeaseEvidence
-    authority_incarnation: str
-
-    def immutable_payload(self) -> dict[str, object]:
-        reservation = self.reservation
-        return {
-            "reservation_id": reservation.reservation_id,
-            "request_id": reservation.request_id,
-            "invocation_id": reservation.invocation_id,
-            "repository_id": reservation.repository_id,
-            "target_ref": reservation.target_ref,
-            "request_digest": self.request_digest,
-            "resolved_repository_digest": self.repository.digest(),
-            "common_dir_id": self.repository.common_dir_id,
-            "worktree_id": self.repository.worktree_id,
-            "authority_revision": self.repository.authority_revision,
-            "controller": self.controller.immutable_payload(),
-            "lease_evidence": self.lease_evidence.immutable_payload(),
             "authority_incarnation": self.authority_incarnation,
         }
 
 
-class _AuthorityRuntime:
-    """Concrete native/test runtime owned by a sealed authority instance."""
-
-    __slots__ = (
-        "identity",
-        "resolved",
-        "states",
-        "state_index",
-        "on_before_hold",
-        "on_after_reservation",
-        "on_after_capture",
-        "on_before_barrier",
-        "on_after_barrier",
-        "fail_release",
-        "lease_lost",
-        "lease_overrides",
-        "held",
-        "enter_count",
-        "exit_count",
-        "events",
-    )
-
-    def __init__(
-        self,
-        identity: ControllerIdentity | None = None,
-        resolved: ResolvedRepositoryIdentity | None = None,
-        states: list[LandingStateSnapshot] | None = None,
-    ) -> None:
-        self.identity = identity
-        self.resolved = resolved
-        self.states = states or []
-        self.state_index = 0
-        self.on_before_hold: Callable[[object], None] | None = None
-        self.on_after_reservation: Callable[[object], None] | None = None
-        self.on_after_capture: Callable[[object], None] | None = None
-        self.on_before_barrier: Callable[[object], None] | None = None
-        self.on_after_barrier: Callable[[object], None] | None = None
-        self.fail_release = False
-        self.lease_lost = False
-        self.lease_overrides: dict[str, object] = {}
-        self.held = False
-        self.enter_count = 0
-        self.exit_count = 0
-        self.events: list[str] = []
-
-
-class _ExistingReconciliationLease:
-    """Default adapter composing RMDD-26 and the RMDD-12 merge lease."""
-
-    def hold(
-        self, canonical_path: str, *, operation: str
-    ) -> AbstractContextManager[_LeaseEvidence]:
-        @contextlib.contextmanager
-        def _held() -> Iterator[_LeaseEvidence]:
-            try:
-                with hold_lease(
-                    MERGE_LEASE,
-                    operation=operation,
-                    path=canonical_path,
-                ) as record:
-                    acquired_at = record.get("acquired_at", "unknown")
-                    reconciliation_id = (
-                        "reconciliation:"
-                        + _snapshot_digest({"acquired_at": acquired_at})[:32]
-                    )
-                    reconciliation_fence = _snapshot_digest(
-                        {"lease": reconciliation_id, "epoch": 1}
-                    )
-                    with hold_canonical_lease(canonical_path, note=operation):
-                        canonical_id = (
-                            "canonical:"
-                            + _snapshot_digest(
-                                {"path_digest": _path_digest(canonical_path)}
-                            )[:32]
-                        )
-                        canonical_fence = _snapshot_digest(
-                            {"lease": canonical_id, "epoch": 1}
-                        )
-                        yield _LeaseEvidence(
-                            reconciliation_lease_id=reconciliation_id,
-                            reconciliation_lease_epoch=1,
-                            reconciliation_lease_fence=reconciliation_fence,
-                            canonical_lease_id=canonical_id,
-                            canonical_lease_epoch=1,
-                            canonical_lease_fence=canonical_fence,
-                        )
-            except (BlockedByLease, LeaseUnavailable) as exc:
-                raise LandingReservationUnavailable(
-                    "canonical or reconciliation lease unavailable"
-                ) from exc
-
-        return _held()
-
-
 def _durable_payload(value: DurableLandingReservation) -> dict[str, object]:
-    """Read every durable reservation field for exact barrier comparison."""
+    """Return every strict native reservation field without aliases."""
 
     names = (
         "reservation_id",
@@ -1658,731 +1592,31 @@ def _durable_payload(value: DurableLandingReservation) -> dict[str, object]:
     return values
 
 
-def _clone_state_snapshot(value: object) -> LandingStateSnapshot:
-    """Reconstruct a state snapshot so provider aliases cannot cross the seam."""
+class NativeLandingReservationPort(Protocol):
+    """Type-only contract for the future authenticated native authority.
 
-    if type(value) is not LandingStateSnapshot:
-        raise LandingReservationError("state snapshot is invalid")
-    source = cast(LandingStateSnapshot, value)
-    source.__post_init__()
-    payload = source.immutable_payload()
-    target = cast(dict[str, object], payload["target"])
-    canonical = cast(dict[str, object], payload["canonical"])
-    occupancy = cast(dict[str, object], payload["occupancy"])
-    certification = cast(dict[str, object], payload["certification"])
-    return LandingStateSnapshot(
-        resolved_repository_digest=cast(str, payload["resolved_repository_digest"]),
-        target=TargetObservation(
-            repository_id=cast(str, target["repository_id"]),
-            target_ref=cast(str, target["target_ref"]),
-            commit_sha=cast(str, target["commit_sha"]),
-            tree_sha=cast(str, target["tree_sha"]),
-        ),
-        canonical=CanonicalObservation(
-            repository_id=cast(str, canonical["repository_id"]),
-            common_dir_id=cast(str, canonical["common_dir_id"]),
-            worktree_id=cast(str, canonical["worktree_id"]),
-            state=CanonicalState(cast(str, canonical["state"])),
-            private_wip=cast(bool, canonical["private_wip"]),
-            index_clean=cast(bool, canonical["index_clean"]),
-        ),
-        occupancy=OccupancyObservation(
-            repository_id=cast(str, occupancy["repository_id"]),
-            target_ref=cast(str, occupancy["target_ref"]),
-            other_worktree_count=cast(int, occupancy["other_worktree_count"]),
-            state=OccupancyState(cast(str, occupancy["state"])),
-        ),
-        certification=CertificationObservation(
-            repository_id=cast(str, certification["repository_id"]),
-            target_ref=cast(str, certification["target_ref"]),
-            generation_id=cast(str, certification["generation_id"]),
-            certificate_digest=cast(str, certification["certificate_digest"]),
-            base_sha=cast(str, certification["base_sha"]),
-            expected_landing_base_sha=cast(
-                str, certification["expected_landing_base_sha"]
-            ),
-            synthetic_commit_sha=cast(str, certification["synthetic_commit_sha"]),
-            generation_tree_sha=cast(str, certification["generation_tree_sha"]),
-            landing_fence=cast(str, certification["landing_fence"]),
-            certified=cast(bool, certification["certified"]),
-        ),
-        target_revision=cast(str, payload["target_revision"]),
-        canonical_revision=cast(str, payload["canonical_revision"]),
-        occupancy_revision=cast(str, payload["occupancy_revision"]),
-        certification_revision=cast(str, payload["certification_revision"]),
-        snapshot_revision=cast(str, payload["snapshot_revision"]),
-    )
-
-
-def _clone_controller_identity(value: object) -> ControllerIdentity:
-    """Copy trusted authentication identity before it enters held context."""
-
-    values = _strict_dataclass_values(
-        value,
-        ControllerIdentity,
-        (
-            "controller_id",
-            "owner_id",
-            "tenant_id",
-            "authority_epoch",
-            "principal_id",
-            "session_id",
-        ),
-    )
-    result = ControllerIdentity(
-        controller_id=cast(str, values["controller_id"]),
-        owner_id=cast(str, values["owner_id"]),
-        tenant_id=cast(str, values["tenant_id"]),
-        authority_epoch=cast(int, values["authority_epoch"]),
-        principal_id=cast(str | None, values["principal_id"]),
-        session_id=cast(str | None, values["session_id"]),
-    )
-    result.__post_init__()
-    return result
-
-
-def _clone_resolved_identity(value: object) -> ResolvedRepositoryIdentity:
-    """Copy canonical identity so provider aliases cannot mutate the context."""
-
-    values = _strict_dataclass_values(
-        value,
-        ResolvedRepositoryIdentity,
-        (
-            "repository_id",
-            "canonical_path",
-            "common_dir_id",
-            "worktree_id",
-            "authority_revision",
-        ),
-    )
-    result = ResolvedRepositoryIdentity(
-        repository_id=cast(str, values["repository_id"]),
-        canonical_path=cast(str, values["canonical_path"]),
-        common_dir_id=cast(str, values["common_dir_id"]),
-        worktree_id=cast(str, values["worktree_id"]),
-        authority_revision=cast(str, values["authority_revision"]),
-    )
-    result.__post_init__()
-    return result
-
-
-class _BoundLandingAuthority:
-    """Concrete sealed authority owning the complete landing critical section.
-
-    The controller accepts this exact class only after the module-issued seal
-    and issuance registry are verified.  It intentionally has no resolver,
-    reader, lease, or barrier arguments: the native durable backend and the
-    two RMDD-26 leases are private members of this one authority context.
+    This protocol is documentation and static typing only.  No public
+    constructor, controller, or production function accepts an implementation
+    supplied by Python callers.  The future binding must be authenticated
+    outside this module and own the complete transaction described in the
+    development contract.
     """
 
-    __slots__ = (
-        "_seal",
-        "_runtime",
-        "_incarnation",
-        "_attestation_secret",
-        "_gate",
-        "_active",
-        "_reservations",
-        "_records",
-        "_contexts",
-        "_recovery",
-        "_sequence",
-        "_sequence_lock",
-    )
-
-    def __init__(self, *, _seal: object, _runtime: _AuthorityRuntime) -> None:
-        if _seal is not _AUTHORITY_SEAL or type(_runtime) is not _AuthorityRuntime:
-            raise TypeError("landing authority can only be created by its factory")
-        self._seal = _seal
-        self._runtime = _runtime
-        self._incarnation = "authority:" + secrets.token_hex(16)
-        self._attestation_secret = secrets.token_bytes(32)
-        self._gate = Lock()
-        self._active: set[tuple[str, str]] = set()
-        self._reservations: dict[tuple[str, str], DurableLandingReservation] = {}
-        self._records: dict[str, LandingReservationResult] = {}
-        self._contexts: dict[str, _HeldLandingContext] = {}
-        self._recovery: dict[str, str] = {}
-        self._sequence = 0
-        self._sequence_lock = Lock()
-        _ISSUED_AUTHORITY_HANDLES[id(self)] = self
-
-    def _sealed(self) -> bool:
-        try:
-            return (
-                type(self) is _BoundLandingAuthority
-                and _ISSUED_AUTHORITY_HANDLES.get(id(self)) is self
-                and object.__getattribute__(self, "_seal") is _AUTHORITY_SEAL
-            )
-        except Exception:
-            return False
-
-    def __repr__(self) -> str:
-        return "<bound landing authority>"
-
-    def _hook(self, name: str) -> None:
-        hook = getattr(self._runtime, name)
-        if hook is not None:
-            hook(self)
-
-    def _identity(self) -> ControllerIdentity:
-        value = self._runtime.identity
-        if type(value) is not ControllerIdentity:
-            raise LandingReservationUnavailable("authority identity unavailable")
-        return _clone_controller_identity(value)
-
-    def _resolved(self) -> ResolvedRepositoryIdentity:
-        value = self._runtime.resolved
-        if type(value) is not ResolvedRepositoryIdentity:
-            raise LandingReservationUnavailable("authority repository unavailable")
-        return _clone_resolved_identity(value)
-
-    def _capture_state(self) -> LandingStateSnapshot:
-        states = self._runtime.states
-        if type(states) is not list or not states:
-            raise LandingReservationSourceUnavailable("authority state unavailable")
-        index = self._runtime.state_index
-        if type(index) is not int or index < 0 or index >= len(states):
-            raise LandingReservationSourceUnavailable("authority state unavailable")
-        self._runtime.events.append("state-read")
-        return _clone_state_snapshot(states[index])
-
-    def _current_evidence(self, original: _LeaseEvidence) -> _LeaseEvidence:
-        if self._runtime.lease_lost:
-            raise LandingReservationStale("authority lease was lost")
-        values: dict[str, object] = {}
-        try:
-            for name in (
-                "reconciliation_lease_id",
-                "reconciliation_lease_epoch",
-                "reconciliation_lease_fence",
-                "canonical_lease_id",
-                "canonical_lease_epoch",
-                "canonical_lease_fence",
-            ):
-                values[name] = self._runtime.lease_overrides.get(
-                    name, getattr(original, name)
-                )
-        except (AttributeError, KeyError, TypeError, ValueError) as exc:
-            raise LandingReservationStale("authority lease evidence changed") from exc
-        try:
-            evidence = _LeaseEvidence(
-                reconciliation_lease_id=cast(str, values["reconciliation_lease_id"]),
-                reconciliation_lease_epoch=cast(
-                    int, values["reconciliation_lease_epoch"]
-                ),
-                reconciliation_lease_fence=cast(
-                    str, values["reconciliation_lease_fence"]
-                ),
-                canonical_lease_id=cast(str, values["canonical_lease_id"]),
-                canonical_lease_epoch=cast(int, values["canonical_lease_epoch"]),
-                canonical_lease_fence=cast(str, values["canonical_lease_fence"]),
-            )
-            _text(evidence.reconciliation_lease_id, "lease id")
-            _positive_int(evidence.reconciliation_lease_epoch, "lease epoch")
-            _text(evidence.reconciliation_lease_fence, "lease fence")
-            _text(evidence.canonical_lease_id, "lease id")
-            _positive_int(evidence.canonical_lease_epoch, "lease epoch")
-            _text(evidence.canonical_lease_fence, "lease fence")
-            return evidence
-        except (LandingReservationError, TypeError) as exc:
-            raise LandingReservationStale("authority lease evidence changed") from exc
-
-    def _context_matches(
-        self,
-        request: LandingReservationRequest,
-        context: _HeldLandingContext,
-        key: tuple[str, str],
-    ) -> None:
-        try:
-            identity = self._identity()
-        except (LandingReservationError, AttributeError, KeyError, TypeError) as exc:
-            raise LandingReservationStale(
-                "authority controller identity changed"
-            ) from exc
-        current_identity = identity.immutable_payload()
-        original_identity = context.controller.immutable_payload()
-        if current_identity["owner_id"] != original_identity["owner_id"]:
-            raise LandingReservationOwnerMismatch("authority owner changed")
-        if current_identity["tenant_id"] != original_identity["tenant_id"]:
-            raise LandingReservationTenantMismatch("authority tenant changed")
-        if current_identity["principal_id"] != original_identity["principal_id"]:
-            raise LandingReservationPrincipalMismatch("authority principal changed")
-        if current_identity["session_id"] != original_identity["session_id"]:
-            raise LandingReservationSessionMismatch("authority session changed")
-        if current_identity["authority_epoch"] != original_identity["authority_epoch"]:
-            raise LandingReservationAuthorityEpochMismatch("authority epoch changed")
-        if current_identity["controller_id"] != original_identity["controller_id"]:
-            raise LandingReservationAuthorityEpochMismatch(
-                "authority controller changed"
-            )
-        try:
-            resolved = self._resolved()
-        except (LandingReservationError, AttributeError, KeyError, TypeError) as exc:
-            raise LandingReservationStale(
-                "authority repository identity changed"
-            ) from exc
-        if resolved.immutable_payload() != context.repository.immutable_payload():
-            raise LandingReservationStale("authority repository identity changed")
-        current = self._reservations.get(key)
-        replacement = self._runtime.lease_overrides.get("reservation")
-        if replacement is not None:
-            if type(replacement) is not DurableLandingReservation:
-                raise LandingReservationStale("authority reservation was replaced")
-            current = replacement
-        if type(current) is not DurableLandingReservation:
-            raise LandingReservationStale("authority reservation was lost")
-        try:
-            current_payload = _durable_payload(current)
-            original_payload = _durable_payload(context.reservation)
-        except (LandingReservationError, AttributeError, KeyError, TypeError) as exc:
-            raise LandingReservationStale("authority reservation changed") from exc
-        if current_payload != original_payload:
-            raise LandingReservationStale("authority reservation changed")
-        evidence = self._current_evidence(context.lease_evidence)
-        if evidence != context.lease_evidence:
-            raise LandingReservationStale("authority lease changed")
-        if self._incarnation != context.authority_incarnation:
-            raise LandingReservationStale("authority incarnation changed")
-        if request.repository_id != key[0] or request.target_ref != key[1]:
-            raise LandingReservationStale("authority target identity changed")
-
-    def _attestation_message(
-        self, snapshot: LandingReservationSnapshot, context: _HeldLandingContext
-    ) -> bytes:
-        payload = snapshot.immutable_payload()
-        payload.pop("authority_attestation", None)
-        return json.dumps(
-            {"snapshot": payload, "context": context.immutable_payload()},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-
-    def _attest(
-        self, snapshot: LandingReservationSnapshot, context: _HeldLandingContext
-    ) -> str:
-        return hmac.new(
-            self._attestation_secret,
-            self._attestation_message(snapshot, context),
-            hashlib.sha256,
-        ).hexdigest()
-
-    @contextlib.contextmanager
-    def _held_leases(
-        self, repository: ResolvedRepositoryIdentity, operation: str
-    ) -> Iterator[_LeaseEvidence]:
-        body_failed = False
-        entered = False
-        try:
-            with _ExistingReconciliationLease().hold(
-                repository.canonical_path, operation=operation
-            ) as evidence:
-                if type(evidence) is not _LeaseEvidence:
-                    raise LandingReservationError("lease evidence is invalid")
-                self._runtime.held = True
-                entered = True
-                self._runtime.enter_count += 1
-                self._runtime.events.append("lease-enter")
-                try:
-                    yield evidence
-                except BaseException:
-                    body_failed = True
-                    raise
-                finally:
-                    self._runtime.held = False
-                    self._runtime.exit_count += 1
-                    self._runtime.events.append("lease-exit")
-                    if self._runtime.fail_release:
-                        raise LandingReservationRecoveryRequired(
-                            "authority lease release requires recovery"
-                        )
-        except (BlockedByLease, LeaseUnavailable) as exc:
-            raise LandingReservationUnavailable(
-                "landing arbitration unavailable"
-            ) from exc
-        except OSError as exc:
-            if entered and not body_failed:
-                raise LandingReservationRecoveryRequired(
-                    "authority lease release requires recovery"
-                ) from exc
-            raise LandingReservationUnavailable(
-                "landing arbitration unavailable"
-            ) from exc
-        except LandingReservationRecoveryRequired:
-            raise
-        except Exception as exc:
-            if entered and not body_failed:
-                raise LandingReservationRecoveryRequired(
-                    "authority lease release requires recovery"
-                ) from exc
-            raise
-
-    def _make_snapshot(
-        self,
-        request: LandingReservationRequest,
-        state: LandingStateSnapshot,
-        context: _HeldLandingContext,
-        barrier_revision: str,
-    ) -> LandingReservationSnapshot:
-        reservation = context.reservation
-        evidence = context.lease_evidence
-        certification = state.certification
-        payload: dict[str, object] = {
-            "reservation_id": reservation.reservation_id,
-            "request_digest": context.request_digest,
-            "resolved_repository_digest": context.repository.digest(),
-            "repository_id": request.repository_id,
-            "target_ref": request.target_ref,
-            "expected_target_sha": request.expected_target_sha,
-            "expected_base_sha": request.expected_base_sha,
-            "observed_target_sha": state.target.commit_sha,
-            "observed_target_tree_sha": state.target.tree_sha,
-            "common_dir_id": state.canonical.common_dir_id,
-            "worktree_id": state.canonical.worktree_id,
-            "authority_revision": context.repository.authority_revision,
-            "lease_epoch": reservation.lease_epoch,
-            "lease_fence": reservation.fence,
-            "tenant_id": context.controller.tenant_id,
-            "authority_epoch": context.controller.authority_epoch,
-            "generation_id": certification.generation_id,
-            "certificate_digest": certification.certificate_digest,
-            "synthetic_commit_sha": certification.synthetic_commit_sha,
-            "generation_tree_sha": certification.generation_tree_sha,
-            "landing_fence": certification.landing_fence,
-            "target_worktree_count": state.occupancy.other_worktree_count,
-            "target_revision": state.target_revision,
-            "canonical_revision": state.canonical_revision,
-            "occupancy_revision": state.occupancy_revision,
-            "certification_revision": state.certification_revision,
-            "snapshot_revision": state.snapshot_revision,
-            "barrier_revision": barrier_revision,
-            "reconciliation_lease_id": evidence.reconciliation_lease_id,
-            "reconciliation_lease_epoch": evidence.reconciliation_lease_epoch,
-            "reconciliation_lease_fence": evidence.reconciliation_lease_fence,
-            "canonical_lease_id": evidence.canonical_lease_id,
-            "canonical_lease_epoch": evidence.canonical_lease_epoch,
-            "canonical_lease_fence": evidence.canonical_lease_fence,
-            "authority_incarnation": context.authority_incarnation,
-        }
-        unsigned_payload = {**payload, "authority_attestation": "0" * 64}
-        unsigned_digest = _snapshot_digest(
-            {"schema": "rmdd-13-landing-reservation:v2", **unsigned_payload}
-        )
-        snapshot_type = cast(Any, LandingReservationSnapshot)
-        unsigned = snapshot_type(
-            **unsigned_payload,
-            digest=unsigned_digest,
-        )
-        attestation = self._attest(unsigned, context)
-        payload["authority_attestation"] = attestation
-        digest = _snapshot_digest(
-            {"schema": "rmdd-13-landing-reservation:v2", **payload}
-        )
-        return snapshot_type(
-            **payload,
-            digest=digest,
-        )
-
-    def _final_barrier(
-        self,
-        request: LandingReservationRequest,
-        context: _HeldLandingContext,
-        captured: LandingStateSnapshot,
-        key: tuple[str, str],
-    ) -> LandingStateSnapshot:
-        self._hook("on_before_barrier")
-        self._context_matches(request, context, key)
-        latest = self._capture_state()
-        if latest.immutable_payload() != captured.immutable_payload():
-            raise LandingReservationStale("authoritative state changed")
-        state_code = LandingReservationController._check_state(
-            request, context.repository, latest
-        )
-        if state_code is not None:
-            raise LandingReservationStale("authoritative state no longer landable")
-        # Re-check every context and both lease identities at the end of the
-        # barrier, after the last source read and before attestation.
-        self._context_matches(request, context, key)
-        return latest
-
-    def _attempt(
-        self,
-        request: LandingReservationRequest,
-        controller: ControllerIdentity,
-        repository: ResolvedRepositoryIdentity,
-        request_digest: str,
-        key: tuple[str, str],
-    ) -> LandingReservationResult:
-        self._hook("on_before_hold")
-        with self._held_leases(repository, "reserve certified landing") as evidence:
-            self._runtime.events.append("reserve")
-            with self._sequence_lock:
-                self._sequence += 1
-                sequence = self._sequence
-            reservation = DurableLandingReservation(
-                reservation_id=f"reservation:{sequence}",
-                request_id=request.request_id,
-                invocation_id=request.invocation_id,
-                repository_id=request.repository_id,
-                target_ref=request.target_ref,
-                request_digest=request_digest,
-                resolved_repository_digest=repository.digest(),
-                common_dir_id=repository.common_dir_id,
-                worktree_id=repository.worktree_id,
-                authority_revision=repository.authority_revision,
-                controller_id=controller.controller_id,
-                owner_id=controller.owner_id,
-                tenant_id=controller.tenant_id,
-                lease_epoch=sequence,
-                fence=_snapshot_digest(
-                    {"reservation": sequence, "incarnation": self._incarnation}
-                ),
-                authority_epoch=controller.authority_epoch,
-                principal_id=controller.principal_id,
-                session_id=controller.session_id,
-                reconciliation_lease_id=evidence.reconciliation_lease_id,
-                reconciliation_lease_epoch=evidence.reconciliation_lease_epoch,
-                reconciliation_lease_fence=evidence.reconciliation_lease_fence,
-                canonical_lease_id=evidence.canonical_lease_id,
-                canonical_lease_epoch=evidence.canonical_lease_epoch,
-                canonical_lease_fence=evidence.canonical_lease_fence,
-                authority_incarnation=self._incarnation,
-            )
-            reservation.__post_init__()
-            if request.expected_lease_epoch is not None:
-                if reservation.lease_epoch != request.expected_lease_epoch:
-                    raise LandingReservationStale("reservation epoch is stale")
-                if reservation.fence != request.expected_lease_fence:
-                    raise LandingReservationFenceMismatch("reservation fence is stale")
-            self._reservations[key] = reservation
-            self._hook("on_after_reservation")
-            context = _HeldLandingContext(
-                reservation=reservation,
-                repository=repository,
-                controller=controller,
-                request_digest=request_digest,
-                lease_evidence=evidence,
-                authority_incarnation=self._incarnation,
-            )
-            captured = self._capture_state()
-            state_code = LandingReservationController._check_state(
-                request, repository, captured
-            )
-            if state_code is not None:
-                return _refuse(state_code)
-            self._hook("on_after_capture")
-            latest = self._final_barrier(request, context, captured, key)
-            snapshot = self._make_snapshot(
-                request, latest, context, f"barrier:{reservation.lease_epoch}"
-            )
-            result = LandingReservationResult(
-                accepted=True,
-                detail="landing reservation acquired and sealed barrier passed",
-                snapshot=snapshot,
-            )
-            self._contexts[reservation.reservation_id] = context
-            self._hook("on_after_barrier")
-            return result
-
-    def _record_recovery(self, key: tuple[str, str], detail: str) -> None:
-        token = _snapshot_digest({"repo": key[0], "target": key[1]})
-        self._recovery[token] = "recovery required"
-        while len(self._recovery) > _MAX_RECOVERY_RECORDS:
-            self._recovery.pop(next(iter(self._recovery)))
-
-    def acquire_landing(
+    def reserve_landing(
         self, request: LandingReservationRequest
     ) -> LandingReservationResult:
-        """Run the complete reservation/barrier operation in one authority."""
+        """Return a native-issued result or a fixed refusal."""
 
-        if not self._sealed():
-            return _refuse(LandingReservationRefusalCode.AUTHORITY_INVALID)
-        if type(request) is not LandingReservationRequest:
-            return _refuse(LandingReservationRefusalCode.REQUEST_INVALID)
-        try:
-            request.__post_init__()
-        except TrustedReservationRuntimeError:
-            raise
-        except (LandingReservationError, AttributeError, KeyError, TypeError):
-            return _refuse(LandingReservationRefusalCode.REQUEST_INVALID)
-        try:
-            controller = self._identity()
-            repository = self._resolved()
-            if (
-                repository.repository_id != request.repository_id
-                or repository.canonical_path != request.repository.canonical_path
-            ):
-                return _refuse(LandingReservationRefusalCode.REPOSITORY_MISMATCH)
-            request_digest = request.digest(repository, controller)
-            authority_input = _LandingAuthorityInput(
-                request_id=request.request_id,
-                invocation_id=request.invocation_id,
-                repository_id=request.repository_id,
-                target_ref=request.target_ref,
-                request_digest=request_digest,
-                resolved_repository=repository,
-                controller=controller,
-                expected_target_sha=request.expected_target_sha,
-                expected_base_sha=request.expected_base_sha,
-                generation_id=request.generation_id,
-                certificate_digest=request.certificate_digest,
-                synthetic_commit_sha=request.synthetic_commit_sha,
-                generation_tree_sha=request.generation_tree_sha,
-                landing_fence=request.landing_fence,
-                expected_lease_epoch=request.expected_lease_epoch,
-                expected_lease_fence=request.expected_lease_fence,
-            )
-            authority_input.__post_init__()
-        except TrustedReservationRuntimeError:
-            raise
-        except LandingReservationUnavailable:
-            return _refuse(LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE)
-        except (LandingReservationError, AttributeError, KeyError, TypeError):
-            return _refuse(LandingReservationRefusalCode.AUTHORITY_INVALID)
-
-        key = (request.repository_id, request.target_ref)
-        if not self._gate.acquire(blocking=False):
-            return _refuse(LandingReservationRefusalCode.RESERVATION_CONFLICT)
-        try:
-            existing = self._records.get(request_digest)
-            if existing is not None:
-                existing_snapshot = existing.snapshot
-                if (
-                    request.expected_lease_epoch is not None
-                    and existing_snapshot is not None
-                    and existing_snapshot.lease_epoch != request.expected_lease_epoch
-                ):
-                    return _refuse(LandingReservationRefusalCode.EPOCH_MISMATCH)
-                if (
-                    request.expected_lease_fence is not None
-                    and existing_snapshot is not None
-                    and existing_snapshot.lease_fence != request.expected_lease_fence
-                ):
-                    return _refuse(LandingReservationRefusalCode.FENCE_MISMATCH)
-                return existing
-            for prior in self._records.values():
-                prior_snapshot = prior.snapshot
-                if (
-                    prior_snapshot is not None
-                    and prior_snapshot.repository_id == request.repository_id
-                    and prior_snapshot.target_ref == request.target_ref
-                    and prior_snapshot.authority_epoch != controller.authority_epoch
-                ):
-                    return _refuse(
-                        LandingReservationRefusalCode.AUTHORITY_EPOCH_MISMATCH
-                    )
-            if key in self._active or key in self._reservations:
-                return _refuse(LandingReservationRefusalCode.RESERVATION_CONFLICT)
-            self._active.add(key)
-        finally:
-            self._gate.release()
-
-        success = False
-        try:
-            try:
-                result = self._attempt(
-                    request, controller, repository, request_digest, key
-                )
-            except TrustedReservationRuntimeError:
-                raise
-            except LandingReservationRecoveryRequired as exc:
-                self._record_recovery(key, str(exc))
-                return _refuse(LandingReservationRefusalCode.RECOVERY_REQUIRED)
-            except LandingReservationConflict:
-                return _refuse(LandingReservationRefusalCode.RESERVATION_CONFLICT)
-            except LandingReservationOwnerMismatch:
-                return _refuse(LandingReservationRefusalCode.OWNER_MISMATCH)
-            except LandingReservationTenantMismatch:
-                return _refuse(LandingReservationRefusalCode.TENANT_MISMATCH)
-            except LandingReservationPrincipalMismatch:
-                return _refuse(LandingReservationRefusalCode.PRINCIPAL_MISMATCH)
-            except LandingReservationSessionMismatch:
-                return _refuse(LandingReservationRefusalCode.SESSION_MISMATCH)
-            except LandingReservationAuthorityEpochMismatch:
-                return _refuse(LandingReservationRefusalCode.AUTHORITY_EPOCH_MISMATCH)
-            except LandingReservationFenceMismatch:
-                return _refuse(LandingReservationRefusalCode.FENCE_MISMATCH)
-            except LandingReservationStale:
-                return _refuse(LandingReservationRefusalCode.RESERVATION_LOST)
-            except LandingReservationSourceUnavailable:
-                return _refuse(LandingReservationRefusalCode.SOURCE_UNAVAILABLE)
-            except LandingReservationUnavailable:
-                return _refuse(LandingReservationRefusalCode.LEASE_UNAVAILABLE)
-            except LandingReservationError:
-                return _refuse(LandingReservationRefusalCode.SOURCE_INVALID)
-            except (
-                ValueError,
-                TypeError,
-                OSError,
-                KeyError,
-                IndexError,
-                AttributeError,
-                UnicodeError,
-            ):
-                return _refuse(LandingReservationRefusalCode.SOURCE_UNAVAILABLE)
-            if result.accepted:
-                self._records[request_digest] = result
-                success = True
-            else:
-                self._reservations.pop(key, None)
-            return result
-        except LandingReservationRecoveryRequired as exc:
-            self._record_recovery(key, str(exc))
-            self._reservations.pop(key, None)
-            return _refuse(LandingReservationRefusalCode.RECOVERY_REQUIRED)
-        finally:
-            if not success:
-                self._reservations.pop(key, None)
-            self._active.discard(key)
-
-    def verify_attested_snapshot(self, snapshot: LandingReservationSnapshot) -> bool:
-        """Verify a CP3 snapshot against this authority's secret/context."""
-
-        if not self._sealed() or type(snapshot) is not LandingReservationSnapshot:
-            return False
-        try:
-            snapshot.__post_init__()
-            context = self._contexts.get(snapshot.reservation_id)
-            if context is None:
-                return False
-            result = self._records.get(snapshot.request_digest)
-            if result is None or result.snapshot is None:
-                return False
-            if result.snapshot.immutable_payload() != snapshot.immutable_payload():
-                return False
-            expected = self._attest(snapshot, context)
-            return hmac.compare_digest(expected, snapshot.authority_attestation)
-        except (LandingReservationError, TypeError, ValueError):
-            return False
-
-
-def _new_bound_authority(runtime: _AuthorityRuntime) -> _BoundLandingAuthority:
-    return _BoundLandingAuthority(_seal=_AUTHORITY_SEAL, _runtime=runtime)
-
-
-def create_landing_authority() -> _BoundLandingAuthority:
-    """Create a sealed native authority handle for production wiring."""
-
-    return _new_bound_authority(_AuthorityRuntime())
-
-
-def _create_test_authority(
-    identity: ControllerIdentity,
-    resolved: ResolvedRepositoryIdentity,
-    states: list[LandingStateSnapshot],
-) -> _BoundLandingAuthority:
-    """Private exact-type test seam; not a public authority injection API."""
-
-    return _new_bound_authority(
-        _AuthorityRuntime(identity=identity, resolved=resolved, states=states)
-    )
-
-
-LandingReservationAuthority = _BoundLandingAuthority
+    def verify_current_landing_reservation(
+        self,
+        proof_ref: LandingReservationProofRef,
+        snapshot: LandingReservationSnapshot,
+    ) -> LandingReservationResult:
+        """Revalidate the native proof and every current correlation."""
 
 
 def _validate_observation(value: object, expected: type[Any]) -> object:
-    """Validate an exact observation before reconstructing the source snapshot."""
+    """Validate an exact observation before reconstructing a native transcript."""
 
     if type(value) is not expected:
         raise LandingReservationError("state source returned an invalid observation")
@@ -2404,16 +1638,96 @@ def _validate_observation(value: object, expected: type[Any]) -> object:
 
 
 def _snapshot_digest(payload: Mapping[str, object]) -> str:
-    """Hash one bounded canonical mapping without exposing source values."""
+    """Hash a bounded transcript for serialization correlation only."""
 
     encoded = json.dumps(dict(payload), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _path_digest(path: str) -> str:
-    """Hash a trusted path before it enters opaque lease evidence."""
+def _authority_unavailable() -> LandingReservationResult:
+    return _refuse(LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE)
 
-    return hashlib.sha256(path.encode("utf-8")).hexdigest()
+
+class LandingReservationAuthority:
+    """Fail-closed production facade until the native authority is bound.
+
+    This object contains no lease, resolver, transport, secret, lock, or local
+    durable state.  It cannot be made authoritative by subclassing, DTO
+    copying, reflection, or a caller-provided proof.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<native landing reservation authority unavailable>"
+
+    def reserve_landing(
+        self, request: LandingReservationRequest
+    ) -> LandingReservationResult:
+        del request
+        return _authority_unavailable()
+
+    def acquire_landing(
+        self, request: LandingReservationRequest
+    ) -> LandingReservationResult:
+        del request
+        return _authority_unavailable()
+
+    def verify_current_landing_reservation(
+        self,
+        proof_ref: object,
+        snapshot: object,
+    ) -> LandingReservationResult:
+        del proof_ref, snapshot
+        return _authority_unavailable()
+
+    def verify_attested_snapshot(self, snapshot: object) -> LandingReservationResult:
+        del snapshot
+        return _authority_unavailable()
+
+
+def create_landing_authority() -> LandingReservationAuthority:
+    """Return the unbound native facade; no backend injection is permitted."""
+
+    return LandingReservationAuthority()
+
+
+def reserve_landing(
+    request: LandingReservationRequest,
+) -> LandingReservationResult:
+    """Production entrypoint; unavailable until native binding is installed."""
+
+    if type(request) is not LandingReservationRequest:
+        return _refuse(LandingReservationRefusalCode.REQUEST_INVALID)
+    try:
+        request.__post_init__()
+    except TrustedReservationRuntimeError:
+        raise
+    except (LandingReservationError, AttributeError, KeyError, TypeError):
+        return _refuse(LandingReservationRefusalCode.REQUEST_INVALID)
+    return _authority_unavailable()
+
+
+def verify_current_landing_reservation(
+    proof_ref: object,
+    snapshot: object,
+) -> LandingReservationResult:
+    """CP3 verification entrypoint; unavailable without native authority."""
+
+    del proof_ref, snapshot
+    return _authority_unavailable()
+
+
+class LandingReservationController:
+    """Immutable production controller with no injectable authority."""
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        pass
+
+    def reserve(self, request: LandingReservationRequest) -> LandingReservationResult:
+        return reserve_landing(request)
 
 
 __all__ = [
@@ -2436,6 +1750,7 @@ __all__ = [
     "LandingReservationRequest",
     "LandingReservationResult",
     "LandingReservationSnapshot",
+    "LandingReservationProofRef",
     "LandingReservationStale",
     "LandingReservationTenantMismatch",
     "LandingReservationSessionMismatch",
@@ -2447,116 +1762,8 @@ __all__ = [
     "ResolvedRepositoryIdentity",
     "TargetObservation",
     "TrustedReservationRuntimeError",
+    "NativeLandingReservationPort",
     "normalize_target_ref",
     "reserve_landing",
+    "verify_current_landing_reservation",
 ]
-
-
-class LandingReservationController:
-    """Small public controller over one sealed authority capability.
-
-    There is intentionally no protocol or duck-typed authority path here.  A
-    controller can only operate a handle emitted by this module's factory;
-    all repository resolution, authentication, lease acquisition, state reads,
-    fencing, and attestation remain inside that authority.
-    """
-
-    def __init__(self, authority: _BoundLandingAuthority) -> None:
-        if type(authority) is not _BoundLandingAuthority or not authority._sealed():
-            raise TypeError("landing controller requires a sealed authority")
-        self._authority = authority
-
-    @staticmethod
-    def _check_state(
-        request: LandingReservationRequest,
-        repository: ResolvedRepositoryIdentity,
-        state: LandingStateSnapshot,
-    ) -> LandingReservationRefusalCode | None:
-        """Check one closed, canonical source snapshot against the request."""
-
-        if type(request) is not LandingReservationRequest:
-            return LandingReservationRefusalCode.REQUEST_INVALID
-        if type(repository) is not ResolvedRepositoryIdentity:
-            return LandingReservationRefusalCode.SOURCE_INVALID
-        if type(state) is not LandingStateSnapshot:
-            return LandingReservationRefusalCode.SOURCE_INVALID
-        try:
-            request.__post_init__()
-            repository.__post_init__()
-            state.__post_init__()
-            if state.resolved_repository_digest != repository.digest():
-                return LandingReservationRefusalCode.REPOSITORY_MISMATCH
-            target = state.target
-            canonical = state.canonical
-            occupancy = state.occupancy
-            certification = state.certification
-            if (
-                target.repository_id != request.repository_id
-                or canonical.repository_id != request.repository_id
-                or certification.repository_id != request.repository_id
-            ):
-                return LandingReservationRefusalCode.REPOSITORY_MISMATCH
-            if target.target_ref != request.target_ref:
-                return LandingReservationRefusalCode.TARGET_MISMATCH
-            if target.commit_sha != request.expected_target_sha:
-                return LandingReservationRefusalCode.TARGET_MOVED
-            if (
-                canonical.common_dir_id != repository.common_dir_id
-                or canonical.worktree_id != repository.worktree_id
-            ):
-                return LandingReservationRefusalCode.CANONICAL_STATE_CHANGED
-            if canonical.state is CanonicalState.UNKNOWN:
-                return LandingReservationRefusalCode.CANONICAL_STATE_INVALID
-            if (
-                canonical.state is CanonicalState.PRIVATE_WIP
-                or canonical.private_wip
-                or not canonical.index_clean
-            ):
-                return LandingReservationRefusalCode.PRIVATE_WIP
-            if canonical.state is not CanonicalState.CLEAN:
-                return LandingReservationRefusalCode.CANONICAL_DIRTY
-            if (
-                occupancy.repository_id != request.repository_id
-                or occupancy.target_ref != request.target_ref
-            ):
-                return LandingReservationRefusalCode.TARGET_MISMATCH
-            if occupancy.state is OccupancyState.UNKNOWN:
-                return LandingReservationRefusalCode.TARGET_OCCUPANCY_UNKNOWN
-            if (
-                occupancy.state is not OccupancyState.FREE
-                or occupancy.other_worktree_count
-            ):
-                return LandingReservationRefusalCode.TARGET_OCCUPIED
-            if certification.target_ref != request.target_ref:
-                return LandingReservationRefusalCode.TARGET_MISMATCH
-            if (
-                certification.generation_id != request.generation_id
-                or certification.certificate_digest != request.certificate_digest
-                or certification.base_sha != request.expected_base_sha
-                or certification.expected_landing_base_sha != request.expected_base_sha
-                or certification.synthetic_commit_sha != request.synthetic_commit_sha
-                or certification.generation_tree_sha != request.generation_tree_sha
-                or certification.landing_fence != request.landing_fence
-                or not certification.certified
-            ):
-                return LandingReservationRefusalCode.CERTIFICATION_INVALID
-            return None
-        except TrustedReservationRuntimeError:
-            raise
-        except (LandingReservationError, AttributeError, KeyError, TypeError):
-            return LandingReservationRefusalCode.SOURCE_INVALID
-
-    def reserve(self, request: LandingReservationRequest) -> LandingReservationResult:
-        """Acquire one bounded reservation through the sealed authority."""
-
-        return self._authority.acquire_landing(request)
-
-
-def reserve_landing(
-    request: LandingReservationRequest,
-    *,
-    authority: _BoundLandingAuthority,
-) -> LandingReservationResult:
-    """Functional adapter for the exact sealed authority handle."""
-
-    return LandingReservationController(authority).reserve(request)

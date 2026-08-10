@@ -1,14 +1,22 @@
-"""Adversarial RMDD-13 CP2 coverage for the sealed atomic authority."""
+"""RMDD-13 CP2 protocol and adversarial-boundary coverage.
+
+The production authority is intentionally unavailable in this checkpoint.
+The successful/racing/barrier cases below use ``AtomicHarness``, a test-only
+transcript simulator.  Its result and snapshot types are deliberately not the
+production result/snapshot types: a passing harness test is not deployment
+evidence and cannot authorize CP3.
+"""
 
 from __future__ import annotations
 
-import subprocess
-from collections.abc import Iterator
+import inspect
+import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-from dataclasses import replace
-from threading import Event
+from dataclasses import dataclass, replace
+from threading import Event, Lock
 from time import monotonic
+from typing import Any, cast
 
 import pytest
 
@@ -19,12 +27,16 @@ from repository_manager.landing_reservation import (
     CanonicalState,
     CertificationObservation,
     ControllerIdentity,
+    DurableLandingReservation,
     LandingReservationController,
     LandingReservationError,
+    LandingReservationProofRef,
     LandingReservationRefusalCode,
     LandingReservationRequest,
     LandingReservationResult,
+    LandingReservationSnapshot,
     LandingStateSnapshot,
+    NativeLandingReservationPort,
     OccupancyObservation,
     OccupancyState,
     ResolvedRepositoryIdentity,
@@ -144,8 +156,24 @@ def _cert(
     )
 
 
+def _resolved(
+    repository_id: str = REPOSITORY_ID,
+    canonical_path: str = CANONICAL_PATH,
+    common_dir_id: str = "common-dir:one",
+    worktree_id: str = "worktree:canonical",
+    revision: str = "repository-revision:1",
+) -> ResolvedRepositoryIdentity:
+    return ResolvedRepositoryIdentity(
+        repository_id,
+        canonical_path,
+        common_dir_id,
+        worktree_id,
+        revision,
+    )
+
+
 def _state(
-    resolved: ResolvedRepositoryIdentity,
+    resolved: ResolvedRepositoryIdentity | None = None,
     *,
     revision: str = "source-revision:1",
     target: TargetObservation | None = None,
@@ -153,6 +181,7 @@ def _state(
     occupancy: OccupancyObservation | None = None,
     certification: CertificationObservation | None = None,
 ) -> LandingStateSnapshot:
+    resolved = resolved or _resolved()
     return LandingStateSnapshot(
         resolved_repository_digest=resolved.digest(),
         target=target or _target(resolved.repository_id),
@@ -172,64 +201,259 @@ def _state(
     )
 
 
-def _authority(
-    *,
-    repository_id: str = REPOSITORY_ID,
-    canonical_path: str = CANONICAL_PATH,
-    common_dir_id: str = "common-dir:one",
-    worktree_id: str = "worktree:canonical",
-    states: list[LandingStateSnapshot] | None = None,
-) -> tuple[
-    landing._BoundLandingAuthority,
-    landing._AuthorityRuntime,
-    ResolvedRepositoryIdentity,
-]:
-    resolved = ResolvedRepositoryIdentity(
-        repository_id,
-        canonical_path,
-        common_dir_id,
-        worktree_id,
-        "repository-revision:1",
+@dataclass(frozen=True, slots=True)
+class HarnessSnapshot:
+    """Test-only result; never accepted as a production snapshot."""
+
+    request_digest: str
+    target_sha: str
+    target_tree_sha: str
+    state_revision: str
+    proof_marker: str = "test-only"
+
+    def __repr__(self) -> str:
+        return "<test-only landing harness snapshot>"
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessResult:
+    """Test-only result with no production proof or accepted snapshot."""
+
+    accepted: bool
+    code: LandingReservationRefusalCode | None = None
+    snapshot: HarnessSnapshot | None = None
+
+
+class AtomicHarness:
+    """A bounded test transcript for the future native transaction.
+
+    This deliberately lives in the test module.  It uses no Git, leases,
+    process execution, or durable storage and is never passed to production.
+    Hooks model provider changes at each reservation boundary.
+    """
+
+    def __init__(
+        self,
+        states: list[LandingStateSnapshot],
+        resolved: ResolvedRepositoryIdentity | None = None,
+    ) -> None:
+        self.states = states
+        self.resolved = resolved or _resolved()
+        self._lock = Lock()
+        self.active: set[tuple[str, str]] = set()
+        self.completed: dict[tuple[str, str, str, str], tuple[str, HarnessResult]] = {}
+        self.state_index = 0
+        self.events: list[str] = []
+        self.on_after_hold: Callable[[], None] | None = None
+        self.on_after_capture: Callable[[], None] | None = None
+        self.on_before_barrier: Callable[[], None] | None = None
+        self.barrier_valid = True
+        self.fail_release = False
+        self.recovery_required = False
+
+    def _state_refusal(
+        self, request: LandingReservationRequest, state: LandingStateSnapshot
+    ) -> LandingReservationRefusalCode | None:
+        if state.resolved_repository_digest != self.resolved.digest():
+            return LandingReservationRefusalCode.REPOSITORY_MISMATCH
+        if state.target.repository_id != request.repository_id:
+            return LandingReservationRefusalCode.TARGET_MISMATCH
+        if state.target.target_ref != request.target_ref:
+            return LandingReservationRefusalCode.TARGET_MISMATCH
+        if state.target.commit_sha != request.expected_target_sha:
+            return LandingReservationRefusalCode.TARGET_MOVED
+        if state.target.tree_sha != request.generation_tree_sha:
+            return LandingReservationRefusalCode.TARGET_TREE_MISMATCH
+        canonical = state.canonical
+        if (
+            canonical.repository_id != self.resolved.repository_id
+            or canonical.common_dir_id != self.resolved.common_dir_id
+            or canonical.worktree_id != self.resolved.worktree_id
+        ):
+            return LandingReservationRefusalCode.CANONICAL_STATE_CHANGED
+        if canonical.state is CanonicalState.UNKNOWN:
+            return LandingReservationRefusalCode.CANONICAL_STATE_INVALID
+        if canonical.state is CanonicalState.DIRTY:
+            return LandingReservationRefusalCode.CANONICAL_DIRTY
+        if canonical.private_wip or not canonical.index_clean:
+            return LandingReservationRefusalCode.PRIVATE_WIP
+        if state.occupancy.state is OccupancyState.UNKNOWN:
+            return LandingReservationRefusalCode.TARGET_OCCUPANCY_UNKNOWN
+        if state.occupancy.state is OccupancyState.OCCUPIED:
+            return LandingReservationRefusalCode.TARGET_OCCUPIED
+        cert = state.certification
+        if (
+            not cert.certified
+            or cert.generation_id != request.generation_id
+            or cert.certificate_digest != request.certificate_digest
+            or cert.base_sha != request.expected_base_sha
+            or cert.synthetic_commit_sha != request.synthetic_commit_sha
+            or cert.generation_tree_sha != request.generation_tree_sha
+            or cert.landing_fence != request.landing_fence
+        ):
+            return LandingReservationRefusalCode.CERTIFICATION_INVALID
+        if not self.barrier_valid:
+            return LandingReservationRefusalCode.RESERVATION_LOST
+        return None
+
+    def reserve(self, request: LandingReservationRequest) -> HarnessResult:
+        try:
+            if type(request) is not LandingReservationRequest:
+                raise LandingReservationError("request is invalid")
+            request.__post_init__()
+            request_digest = request.digest()
+        except LandingReservationError:
+            return HarnessResult(False, LandingReservationRefusalCode.REQUEST_INVALID)
+
+        key = (request.repository_id, request.target_ref)
+        replay_key = (*key, request.request_id, request.invocation_id)
+        with self._lock:
+            prior = self.completed.get(replay_key)
+            if prior is not None:
+                if prior[0] == request_digest:
+                    return prior[1]
+                return HarnessResult(
+                    False, LandingReservationRefusalCode.RESERVATION_CONFLICT
+                )
+            if key in self.active:
+                return HarnessResult(
+                    False, LandingReservationRefusalCode.RESERVATION_CONFLICT
+                )
+            self.active.add(key)
+            self.events.append("hold")
+
+        result: HarnessResult
+        try:
+            if self.on_after_hold is not None:
+                self.on_after_hold()
+            if not self.states or type(self.state_index) is not int:
+                result = HarnessResult(
+                    False, LandingReservationRefusalCode.SOURCE_UNAVAILABLE
+                )
+            else:
+                first = self.states[self.state_index]
+                first.__post_init__()
+                # Freeze the payload now, before any hook runs.  ``states``
+                # holds live object references, not copies: an
+                # ``object.__setattr__`` mutation between "first" and
+                # "second" mutates the *same* object, so reading
+                # ``first.immutable_payload()`` after the hooks would just
+                # re-read the already-mutated object and trivially agree
+                # with ``second`` -- the drift this barrier exists to catch
+                # would never be detected.
+                first_payload = json.dumps(first.immutable_payload(), sort_keys=True)
+                self.events.append("capture")
+                if self.on_after_capture is not None:
+                    self.on_after_capture()
+                if self.on_before_barrier is not None:
+                    self.on_before_barrier()
+                second = self.states[self.state_index]
+                second.__post_init__()
+                if first_payload != json.dumps(
+                    second.immutable_payload(), sort_keys=True
+                ):
+                    result = HarnessResult(
+                        False, LandingReservationRefusalCode.RESERVATION_LOST
+                    )
+                else:
+                    code = self._state_refusal(request, second)
+                    if code is not None:
+                        result = HarnessResult(False, code)
+                    else:
+                        result = HarnessResult(
+                            True,
+                            snapshot=HarnessSnapshot(
+                                request_digest=request_digest,
+                                target_sha=second.target.commit_sha,
+                                target_tree_sha=second.target.tree_sha,
+                                state_revision=second.snapshot_revision,
+                            ),
+                        )
+        except LandingReservationError:
+            result = HarnessResult(False, LandingReservationRefusalCode.SOURCE_INVALID)
+        except RuntimeError:
+            result = HarnessResult(False, LandingReservationRefusalCode.SOURCE_INVALID)
+        finally:
+            self.events.append("barrier")
+            with self._lock:
+                self.active.discard(key)
+            if self.fail_release:
+                self.recovery_required = True
+                result = HarnessResult(
+                    False, LandingReservationRefusalCode.RECOVERY_REQUIRED
+                )
+            else:
+                self.events.append("release")
+        if result.accepted:
+            self.completed[replay_key] = (request_digest, result)
+        return result
+
+
+def _production_snapshot(
+    request: LandingReservationRequest | None = None,
+) -> LandingReservationSnapshot:
+    """Build a shape-valid DTO for proving that shape is not authority."""
+
+    request = request or _request()
+    resolved = _resolved(request.repository_id)
+    proof = LandingReservationProofRef(
+        issuer="native:test",
+        opaque_reference="opaque-backend-token-that-must-not-be-logged",
+        correlation_digest=DIGEST,
     )
-    identity = ControllerIdentity(
-        "controller:one",
-        "owner:one",
-        "tenant:one",
-        1,
-        "principal:one",
-        "session:one",
-    )
-    authority = landing._create_test_authority(
-        identity, resolved, states or [_state(resolved)]
-    )
-    return authority, authority._runtime, resolved
-
-
-@pytest.fixture(autouse=True)
-def fake_rmdd26_leases(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
-    """Keep tests deterministic while exercising the module-owned adapter."""
-
-    calls: list[tuple[str, str]] = []
-
-    @contextmanager
-    def hold(
-        _self: object, canonical_path: str, *, operation: str
-    ) -> Iterator[landing._LeaseEvidence]:
-        calls.append((canonical_path, operation))
-        yield landing._LeaseEvidence(
-            reconciliation_lease_id="reconciliation:test",
-            reconciliation_lease_epoch=1,
-            reconciliation_lease_fence="reconciliation-fence:test",
-            canonical_lease_id="canonical:test",
-            canonical_lease_epoch=1,
-            canonical_lease_fence="canonical-fence:test",
+    fields: dict[str, object] = {
+        "reservation_id": "reservation:test",
+        "request_digest": request.digest(),
+        "resolved_repository_digest": resolved.digest(),
+        "repository_id": request.repository_id,
+        "target_ref": request.target_ref,
+        "expected_target_sha": request.expected_target_sha,
+        "expected_base_sha": request.expected_base_sha,
+        "observed_target_sha": request.expected_target_sha,
+        "observed_target_tree_sha": request.generation_tree_sha,
+        "common_dir_id": resolved.common_dir_id,
+        "worktree_id": resolved.worktree_id,
+        "authority_revision": resolved.authority_revision,
+        "lease_epoch": 1,
+        "lease_fence": "lease:test",
+        "tenant_id": "tenant:test",
+        "authority_epoch": 1,
+        "generation_id": request.generation_id,
+        "certificate_digest": request.certificate_digest,
+        "synthetic_commit_sha": request.synthetic_commit_sha,
+        "generation_tree_sha": request.generation_tree_sha,
+        "landing_fence": request.landing_fence,
+        "target_worktree_count": 0,
+        "target_revision": "target:test",
+        "canonical_revision": "canonical:test",
+        "occupancy_revision": "occupancy:test",
+        "certification_revision": "certification:test",
+        "snapshot_revision": "snapshot:test",
+        "barrier_revision": "barrier:test",
+        "reconciliation_lease_id": "reconciliation:test",
+        "reconciliation_lease_epoch": 1,
+        "reconciliation_lease_fence": "reconciliation-fence:test",
+        "canonical_lease_id": "canonical:test",
+        "canonical_lease_epoch": 1,
+        "canonical_lease_fence": "canonical-fence:test",
+        "authority_incarnation": "authority:test",
+        "proof_ref": proof,
+    }
+    payload = {
+        key: (
+            cast(LandingReservationProofRef, value).immutable_payload()
+            if key == "proof_ref"
+            else value
         )
+        for key, value in fields.items()
+    }
+    fields["digest"] = landing._snapshot_digest(
+        {"schema": "rmdd-13-landing-reservation:v2", **payload}
+    )
+    return LandingReservationSnapshot(**fields)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(landing._ExistingReconciliationLease, "hold", hold)
-    return calls
 
-
-def test_normalizes_local_ref_and_rejects_injection() -> None:
+def test_target_normalization_rejects_injection() -> None:
     assert normalize_target_ref("main") == "refs/heads/main"
     assert normalize_target_ref("refs/heads/release/v1") == "refs/heads/release/v1"
     for value in (
@@ -248,581 +472,392 @@ def test_normalizes_local_ref_and_rejects_injection() -> None:
             normalize_target_ref(value)
 
 
-def test_public_structural_authority_is_rejected_before_any_lease_call(
-    fake_rmdd26_leases: list[tuple[str, str]],
-) -> None:
-    class NoopAuthority:
-        calls = 0
+def test_production_entrypoints_are_always_unavailable() -> None:
+    request = _request()
+    calls: list[str] = []
+    result = landing.reserve_landing(request)
+    assert result.refused
+    assert result.code is LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE
+    assert result.detail == "landing reservation authority unavailable"
+    service = landing.create_landing_authority()
+    for candidate in (
+        service.reserve_landing(request),
+        service.acquire_landing(request),
+        LandingReservationController().reserve(request),
+        landing.verify_current_landing_reservation(object(), object()),
+        service.verify_current_landing_reservation(object(), object()),
+        service.verify_attested_snapshot(object()),
+    ):
+        assert candidate.refused
+        assert candidate.code is LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE
+    assert calls == []
+    assert repr(service) == "<native landing reservation authority unavailable>"
 
-        def acquire_landing(self, _request: object) -> object:
+
+def test_no_python_backend_or_authority_injection_is_accepted() -> None:
+    class NoopAuthority:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def reserve_landing(self, _request: object) -> object:
             self.calls += 1
             return object()
 
     noop = NoopAuthority()
     with pytest.raises(TypeError):
-        LandingReservationController(noop)  # type: ignore[arg-type]
-    assert noop.calls == 0
-    assert fake_rmdd26_leases == []
-
-    authority, _, _ = _authority()
-    forged = object.__new__(type(authority))
+        landing.create_landing_authority(noop)  # type: ignore[call-arg]
     with pytest.raises(TypeError):
-        LandingReservationController(forged)
+        LandingReservationController(noop)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        landing.reserve_landing(_request(), authority=noop)  # type: ignore[call-arg]
+    assert noop.calls == 0
+    assert not hasattr(landing, "_AUTHORITY_SEAL")
+    assert not hasattr(landing, "_create_test_authority")
+    assert not hasattr(landing, "_BoundLandingAuthority")
+    source = inspect.getsource(landing).lower()
+    assert "import hmac" not in source
+    assert "hmac.new" not in source
+    assert "_attestation_secret" not in source
+    assert "_issued_authority_handles" not in source
 
 
-def test_success_is_one_atomic_hold_capture_barrier_and_attested_snapshot(
-    fake_rmdd26_leases: list[tuple[str, str]],
-) -> None:
-    authority, runtime, _ = _authority()
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.accepted and result.snapshot is not None
-    assert authority.verify_attested_snapshot(result.snapshot)
-    assert runtime.events == [
-        "lease-enter",
-        "reserve",
-        "state-read",
-        "state-read",
-        "lease-exit",
-    ]
-    assert len(fake_rmdd26_leases) == 1
-    assert fake_rmdd26_leases[0][0] == CANONICAL_PATH
-    assert not runtime.held
-    assert runtime.enter_count == runtime.exit_count == 1
+def test_structural_native_port_is_documentation_only() -> None:
+    class StructuralPort:
+        def reserve_landing(
+            self, _request: LandingReservationRequest
+        ) -> LandingReservationResult:
+            raise AssertionError("must never be called")
 
+        def verify_current_landing_reservation(
+            self,
+            _proof: LandingReservationProofRef,
+            _snapshot: LandingReservationSnapshot,
+        ) -> LandingReservationResult:
+            raise AssertionError("must never be called")
 
-def test_exact_repository_identity_prevents_path_alias_and_same_basename_collision() -> (
-    None
-):
-    first, _, _ = _authority(
-        repository_id="repository:first", canonical_path="/tmp/one/same"
-    )
-    second, _, _ = _authority(
-        repository_id="repository:second", canonical_path="/tmp/two/same"
-    )
-    first_result = LandingReservationController(first).reserve(
-        _request(repository=_repository("repository:first", "/tmp/one/same"))
-    )
-    second_result = LandingReservationController(second).reserve(
-        _request(repository=_repository("repository:second", "/tmp/two/same"))
-    )
-    assert first_result.accepted and second_result.accepted
-    assert first_result.snapshot and second_result.snapshot
-    assert (
-        first_result.snapshot.resolved_repository_digest
-        != second_result.snapshot.resolved_repository_digest
-    )
-
-    forged, forged_runtime, _ = _authority(canonical_path="/tmp/actual/repository")
-    forged_runtime.resolved = ResolvedRepositoryIdentity(
-        REPOSITORY_ID,
-        "/tmp/other/same",
-        "common-dir:other",
-        "worktree:other",
-        "repository-revision:2",
-    )
-    request = _request(repository=_repository(canonical_path="/tmp/actual/repository"))
-    refused = LandingReservationController(forged).reserve(request)
-    assert refused.code is LandingReservationRefusalCode.REPOSITORY_MISMATCH
-
-
-def test_request_path_disagreement_refuses_before_rmdd26_acquisition(
-    fake_rmdd26_leases: list[tuple[str, str]],
-) -> None:
-    authority, runtime, _ = _authority(canonical_path="/tmp/trusted/actual")
-    request = _request(repository=_repository(canonical_path="/tmp/forged/other"))
-    result = LandingReservationController(authority).reserve(request)
-    assert result.code is LandingReservationRefusalCode.REPOSITORY_MISMATCH
-    assert runtime.enter_count == 0
-    assert fake_rmdd26_leases == []
-
-
-def test_exact_replay_and_changed_input_conflict() -> None:
-    authority, _, _ = _authority()
-    controller = LandingReservationController(authority)
-    request = _request()
-    first = controller.reserve(request)
-    replay = controller.reserve(request)
-    changed = controller.reserve(
-        _request(request_id="request:two", invocation_id="invocation:two")
-    )
-    assert first.accepted and replay.accepted and first.snapshot and replay.snapshot
-    assert first.snapshot.digest == replay.snapshot.digest
-    assert changed.code is LandingReservationRefusalCode.RESERVATION_CONFLICT
-
-
-def test_authority_epoch_advance_invalidates_old_replay() -> None:
-    authority, runtime, _ = _authority()
-    controller = LandingReservationController(authority)
-    assert controller.reserve(_request()).accepted
-    assert runtime.identity is not None
-    runtime.identity = replace(runtime.identity, authority_epoch=2)
-    replay = controller.reserve(_request())
-    assert replay.code is LandingReservationRefusalCode.AUTHORITY_EPOCH_MISMATCH
-
-
-def test_replay_anchor_must_match_current_epoch_and_fence() -> None:
-    authority, _, _ = _authority()
-    controller = LandingReservationController(authority)
-    first = controller.reserve(_request())
-    assert first.accepted and first.snapshot
-    wrong_epoch = controller.reserve(
-        _request(
-            expected_lease_epoch=2, expected_lease_fence=first.snapshot.lease_fence
-        )
-    )
-    wrong_fence = controller.reserve(
-        _request(
-            expected_lease_epoch=first.snapshot.lease_epoch, expected_lease_fence="bad"
-        )
-    )
-    assert wrong_epoch.code is LandingReservationRefusalCode.EPOCH_MISMATCH
-    assert wrong_fence.code is LandingReservationRefusalCode.FENCE_MISMATCH
-
-
-def test_two_threads_racing_one_target_have_one_nonblocking_winner() -> None:
-    authority, runtime, _ = _authority()
-    entered = Event()
-    release = Event()
-
-    def hold_after_reservation(_authority: object) -> None:
-        entered.set()
-        release.wait(timeout=2)
-
-    runtime.on_after_reservation = hold_after_reservation
-    requests = (
-        _request(request_id="request:first", invocation_id="invocation:first"),
-        _request(request_id="request:second", invocation_id="invocation:second"),
-    )
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        first_future = pool.submit(
-            LandingReservationController(authority).reserve, requests[0]
-        )
-        assert entered.wait(timeout=2)
-        started = monotonic()
-        second = LandingReservationController(authority).reserve(requests[1])
-        elapsed = monotonic() - started
-        release.set()
-        first = first_future.result(timeout=2)
-    assert elapsed < 2
-    assert first.accepted
-    assert second.code is LandingReservationRefusalCode.RESERVATION_CONFLICT
-    assert not runtime.held
-
-
-def test_same_thread_reentrant_reservation_is_fixed_conflict() -> None:
-    authority, runtime, _ = _authority()
-    controller = LandingReservationController(authority)
-    nested: list[LandingReservationResult] = []
-
-    def reenter(_authority: object) -> None:
-        nested.append(
-            controller.reserve(_request(request_id="nested", invocation_id="nested"))
-        )
-
-    runtime.on_after_reservation = reenter
-    result = controller.reserve(_request())
-    assert result.accepted
-    assert len(nested) == 1
-    assert nested[0].code is LandingReservationRefusalCode.RESERVATION_CONFLICT
-
-
-@pytest.mark.parametrize(
-    ("state", "expected"),
-    [
-        (
-            _state(
-                ResolvedRepositoryIdentity(
-                    REPOSITORY_ID,
-                    CANONICAL_PATH,
-                    "common-dir:one",
-                    "worktree:canonical",
-                    "repository-revision:1",
-                ),
-                canonical=_canonical(state=CanonicalState.DIRTY),
-            ),
-            LandingReservationRefusalCode.CANONICAL_DIRTY,
-        ),
-        (
-            _state(
-                ResolvedRepositoryIdentity(
-                    REPOSITORY_ID,
-                    CANONICAL_PATH,
-                    "common-dir:one",
-                    "worktree:canonical",
-                    "repository-revision:1",
-                ),
-                canonical=_canonical(private_wip=True),
-            ),
-            LandingReservationRefusalCode.PRIVATE_WIP,
-        ),
-        (
-            _state(
-                ResolvedRepositoryIdentity(
-                    REPOSITORY_ID,
-                    CANONICAL_PATH,
-                    "common-dir:one",
-                    "worktree:canonical",
-                    "repository-revision:1",
-                ),
-                canonical=_canonical(index_clean=False),
-            ),
-            LandingReservationRefusalCode.PRIVATE_WIP,
-        ),
-        (
-            _state(
-                ResolvedRepositoryIdentity(
-                    REPOSITORY_ID,
-                    CANONICAL_PATH,
-                    "common-dir:one",
-                    "worktree:canonical",
-                    "repository-revision:1",
-                ),
-                canonical=_canonical(state=CanonicalState.UNKNOWN),
-            ),
-            LandingReservationRefusalCode.CANONICAL_STATE_INVALID,
-        ),
-        (
-            _state(
-                ResolvedRepositoryIdentity(
-                    REPOSITORY_ID,
-                    CANONICAL_PATH,
-                    "common-dir:one",
-                    "worktree:canonical",
-                    "repository-revision:1",
-                ),
-                occupancy=_occupancy(count=1, state=OccupancyState.OCCUPIED),
-            ),
-            LandingReservationRefusalCode.TARGET_OCCUPIED,
-        ),
-        (
-            _state(
-                ResolvedRepositoryIdentity(
-                    REPOSITORY_ID,
-                    CANONICAL_PATH,
-                    "common-dir:one",
-                    "worktree:canonical",
-                    "repository-revision:1",
-                ),
-                occupancy=_occupancy(state=OccupancyState.UNKNOWN),
-            ),
-            LandingReservationRefusalCode.TARGET_OCCUPANCY_UNKNOWN,
-        ),
-    ],
-)
-def test_dirty_private_index_unknown_and_occupied_state_refuse(
-    state: LandingStateSnapshot, expected: LandingReservationRefusalCode
-) -> None:
-    authority, runtime, _ = _authority(states=[state])
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is expected
-    assert not runtime.held
-
-
-def test_target_tree_drift_with_stable_revision_refuses() -> None:
-    authority, runtime, resolved = _authority(
-        states=[
-            _state(
-                resolved := ResolvedRepositoryIdentity(
-                    REPOSITORY_ID,
-                    CANONICAL_PATH,
-                    "common-dir:one",
-                    "worktree:canonical",
-                    "repository-revision:1",
-                )
-            ),
-            _state(resolved, target=_target(tree_sha=SHA_ALT)),
-        ]
-    )
-    runtime.on_before_barrier = lambda _authority: setattr(runtime, "state_index", 1)
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
-
-
-def test_all_source_revision_movement_before_final_barrier_refuses() -> None:
-    base_resolved = ResolvedRepositoryIdentity(
-        REPOSITORY_ID,
-        CANONICAL_PATH,
-        "common-dir:one",
-        "worktree:canonical",
-        "repository-revision:1",
-    )
-    authority, runtime, _ = _authority(
-        states=[
-            _state(base_resolved),
-            _state(base_resolved, revision="source-revision:2"),
-        ]
-    )
-    runtime.on_before_barrier = lambda _authority: setattr(runtime, "state_index", 1)
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
-
-
-def test_object_setattr_source_mutation_is_revalidated() -> None:
-    authority, runtime, _ = _authority()
-
-    def mutate(_authority: object) -> None:
-        object.__setattr__(runtime.states[0].target, "tree_sha", SHA_ALT)
-
-    runtime.on_after_capture = mutate
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
-
-
-def test_barrier_replacement_reservation_epoch_or_fence_refuses() -> None:
-    authority, runtime, _ = _authority()
-
-    def replace_reservation(bound: object) -> None:
-        current = authority._reservations[(REPOSITORY_ID, "refs/heads/main")]
-        runtime.lease_overrides["reservation"] = replace(current, lease_epoch=9)
-
-    runtime.on_before_barrier = replace_reservation
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
-
-
-def test_lease_loss_and_identity_alias_loss_refuse() -> None:
-    authority, runtime, _ = _authority()
-    runtime.on_before_barrier = lambda _authority: setattr(runtime, "lease_lost", True)
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
-
-    authority, runtime, _ = _authority()
-    runtime.on_before_barrier = lambda _authority: setattr(
-        runtime,
-        "resolved",
-        ResolvedRepositoryIdentity(
-            REPOSITORY_ID,
-            CANONICAL_PATH,
-            "common-dir:forged",
-            "worktree:forged",
-            "repository-revision:2",
-        ),
-    )
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
-
-
-@pytest.mark.parametrize(
-    ("field", "expected"),
-    [
-        ("owner_id", LandingReservationRefusalCode.OWNER_MISMATCH),
-        ("tenant_id", LandingReservationRefusalCode.TENANT_MISMATCH),
-        ("principal_id", LandingReservationRefusalCode.PRINCIPAL_MISMATCH),
-        ("session_id", LandingReservationRefusalCode.SESSION_MISMATCH),
-        ("authority_epoch", LandingReservationRefusalCode.AUTHORITY_EPOCH_MISMATCH),
-    ],
-)
-def test_authenticated_dimensions_are_bound_to_original_context(
-    field: str, expected: LandingReservationRefusalCode
-) -> None:
-    authority, runtime, _ = _authority()
-
-    def mutate(_authority: object) -> None:
-        assert runtime.identity is not None
-        if field == "owner_id":
-            runtime.identity = replace(runtime.identity, owner_id="other:value")
-        elif field == "tenant_id":
-            runtime.identity = replace(runtime.identity, tenant_id="other:value")
-        elif field == "principal_id":
-            runtime.identity = replace(runtime.identity, principal_id="other:value")
-        elif field == "session_id":
-            runtime.identity = replace(runtime.identity, session_id="other:value")
-        else:
-            runtime.identity = replace(runtime.identity, authority_epoch=2)
-
-    runtime.on_before_barrier = mutate
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is expected
-
-
-def test_release_failure_records_recovery_and_clears_held_flag() -> None:
-    authority, runtime, _ = _authority()
-    runtime.fail_release = True
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is LandingReservationRefusalCode.RECOVERY_REQUIRED
-    assert not runtime.held
-    assert runtime.enter_count == runtime.exit_count == 1
-    assert authority._recovery
-
-
-def test_partial_acquire_failure_never_leaves_a_held_flag(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    authority, runtime, _ = _authority()
-
-    @contextmanager
-    def fail_before_yield(
-        _self: object, _path: str, *, operation: str
-    ) -> Iterator[landing._LeaseEvidence]:
-        raise landing.BlockedByLease("blocked")
-        yield landing._LeaseEvidence("r", 1, "rf", "c", 1, "cf")
-
-    monkeypatch.setattr(landing._ExistingReconciliationLease, "hold", fail_before_yield)
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is LandingReservationRefusalCode.LEASE_UNAVAILABLE
-    assert not runtime.held
-    assert runtime.enter_count == runtime.exit_count == 0
-    assert not authority._reservations
-
-
-def test_factory_without_native_backend_fails_closed() -> None:
-    authority = landing.create_landing_authority()
-    result = LandingReservationController(authority).reserve(_request())
+    port: NativeLandingReservationPort = StructuralPort()
+    assert port is not None
+    result = landing.reserve_landing(_request())
     assert result.code is LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE
 
 
-def test_attestation_rejects_rehashed_modified_snapshot() -> None:
-    authority, _, _ = _authority()
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.accepted and result.snapshot
-    original = result.snapshot
-    payload = original.immutable_payload()
-    payload["observed_target_tree_sha"] = SHA_ALT
-    digest = landing._snapshot_digest(
-        {"schema": "rmdd-13-landing-reservation:v2", **payload}
-    )
-    forged = replace(original, observed_target_tree_sha=SHA_ALT, digest=digest)
-    assert not authority.verify_attested_snapshot(forged)
-    assert authority.verify_attested_snapshot(original)
-
-
-def test_forged_missing_fields_and_hostile_models_fail_closed_without_attribute_error() -> (
-    None
-):
-    identity = ControllerIdentity("controller:one", "owner:one", "tenant:one", 1)
+def test_production_rejects_malformed_requests_without_attribute_error() -> None:
     request = _request()
-    for value in (identity, request, _target(), _canonical(), _occupancy(), _cert()):
-        forged = object.__new__(type(value))
-        names = tuple(value.__dataclass_fields__)
-        for name in names[1:]:
-            object.__setattr__(forged, name, getattr(value, name))
-        with pytest.raises(LandingReservationError):
-            forged.__post_init__()
-
-    authority, runtime, _ = _authority()
-    object.__delattr__(request, "request_id")
-    result = LandingReservationController(authority).reserve(request)
+    forged = object.__new__(LandingReservationRequest)
+    for name in LandingReservationRequest.__dataclass_fields__:
+        if name != "request_id":
+            object.__setattr__(forged, name, getattr(request, name))
+    result = landing.reserve_landing(forged)
     assert result.code is LandingReservationRefusalCode.REQUEST_INVALID
-    object.__setattr__(runtime, "states", {"secret": "/private/path"})
-    result = LandingReservationController(authority).reserve(
-        _request(request_id="request:two", invocation_id="invocation:two")
-    )
-    assert result.code is LandingReservationRefusalCode.SOURCE_UNAVAILABLE
-    assert "/private/path" not in result.detail
 
-
-def test_forged_pydantic_repository_and_target_aliases_do_not_prove_identity() -> None:
-    authority, runtime, _ = _authority()
-    copied = _request().repository.model_copy(
-        update={"repository_id": "repository:forged"}
+    repository = _repository()
+    forged_repository = repository.model_copy(update={"repository_id": True})
+    # ``dataclasses.replace`` calls ``__init__``/``__post_init__``, which
+    # already refuses eagerly (a stronger guarantee than a production
+    # refusal).  Bypass construction, matching ``forged`` above, to exercise
+    # the actual claim: a forged instance that skipped construction-time
+    # validation is still refused by the production entrypoint itself,
+    # without ever raising ``AttributeError``.
+    bad = object.__new__(LandingReservationRequest)
+    for name in LandingReservationRequest.__dataclass_fields__:
+        value = forged_repository if name == "repository" else getattr(request, name)
+        object.__setattr__(bad, name, value)
+    assert (
+        landing.reserve_landing(bad).code
+        is LandingReservationRefusalCode.REQUEST_INVALID
     )
-    result = LandingReservationController(authority).reserve(
-        _request(repository=copied)
-    )
-    assert result.code is LandingReservationRefusalCode.REPOSITORY_MISMATCH
-    forged = RepositoryIdentity.model_construct(
+    constructed = RepositoryIdentity.model_construct(
         contract_version=CONTRACT_VERSION,
         repository_id=True,
         canonical_path=CANONICAL_PATH,
         configured_roots=(),
         origin=None,
     )
-    bad_request = _request(request_id="request:bad", invocation_id="invocation:bad")
-    object.__setattr__(bad_request, "repository", forged)
+    object.__setattr__(bad, "repository", constructed)
     assert (
-        LandingReservationController(authority).reserve(bad_request).code
+        landing.reserve_landing(bad).code
         is LandingReservationRefusalCode.REQUEST_INVALID
     )
-    object.__setattr__(runtime, "state_index", True)
-    assert (
-        LandingReservationController(authority)
-        .reserve(_request(request_id="request:three", invocation_id="invocation:three"))
-        .code
-        is LandingReservationRefusalCode.SOURCE_UNAVAILABLE
-    )
 
 
-def test_runtime_programmer_error_propagates_but_provider_values_are_private() -> None:
-    authority, runtime, _ = _authority()
-    runtime.on_before_hold = lambda _authority: (_ for _ in ()).throw(
-        RuntimeError("trusted programmer failure")
-    )
-    with pytest.raises(RuntimeError, match="trusted programmer failure"):
-        LandingReservationController(authority).reserve(_request())
+def test_production_models_are_strict_and_missing_fields_are_normalized() -> None:
+    identity = ControllerIdentity("controller:one", "owner:one", "tenant:one", 1)
+    proof = LandingReservationProofRef("native:test", "opaque:test", DIGEST)
+    candidates: list[Any] = [
+        identity,
+        proof,
+        _target(),
+        _canonical(),
+        _occupancy(),
+        _cert(),
+    ]
+    for value in candidates:
+        forged = object.__new__(type(value))
+        names = tuple(value.__dataclass_fields__)
+        for name in names[1:]:
+            object.__setattr__(forged, name, getattr(value, name))
+        with pytest.raises(LandingReservationError):
+            forged.__post_init__()
+    snapshot = _production_snapshot()
+    forged_snapshot = object.__new__(LandingReservationSnapshot)
+    for name in LandingReservationSnapshot.__dataclass_fields__:
+        if name != "proof_ref":
+            object.__setattr__(forged_snapshot, name, getattr(snapshot, name))
+    with pytest.raises(LandingReservationError):
+        forged_snapshot.__post_init__()
 
-    authority, runtime, _ = _authority()
-    runtime.states = None  # type: ignore[assignment]
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is LandingReservationRefusalCode.SOURCE_UNAVAILABLE
-    assert "/tmp/" not in result.detail
 
-
-def test_actual_git_repository_is_only_read_and_no_subprocess_effect(tmp_path) -> None:
-    repo = tmp_path / "repository-manager"
-    repo.mkdir()
-    for command in (
-        ("git", "init", "-b", "main"),
-        ("git", "config", "user.email", "test@example.invalid"),
-        ("git", "config", "user.name", "test"),
-    ):
-        subprocess.run(command, cwd=repo, check=True, capture_output=True)
-    (repo / "README.md").write_text("stable\n", encoding="utf-8")
-    subprocess.run(
-        ("git", "add", "README.md"), cwd=repo, check=True, capture_output=True
+def test_held_native_context_is_strict_and_complete() -> None:
+    request = _request()
+    resolved = _resolved()
+    controller = ControllerIdentity("controller:one", "owner:one", "tenant:one", 1)
+    reservation = DurableLandingReservation(
+        reservation_id="reservation:test",
+        request_id=request.request_id,
+        invocation_id=request.invocation_id,
+        repository_id=request.repository_id,
+        target_ref=request.target_ref,
+        request_digest=request.digest(resolved, controller),
+        resolved_repository_digest=resolved.digest(),
+        common_dir_id=resolved.common_dir_id,
+        worktree_id=resolved.worktree_id,
+        authority_revision=resolved.authority_revision,
+        controller_id=controller.controller_id,
+        owner_id=controller.owner_id,
+        tenant_id=controller.tenant_id,
+        lease_epoch=1,
+        fence="fence:test",
+        authority_epoch=1,
+        principal_id=controller.principal_id,
+        session_id=controller.session_id,
+        reconciliation_lease_id="reconciliation:test",
+        reconciliation_lease_epoch=1,
+        reconciliation_lease_fence="reconciliation-fence:test",
+        canonical_lease_id="canonical:test",
+        canonical_lease_epoch=1,
+        canonical_lease_fence="canonical-fence:test",
+        authority_incarnation="authority:test",
     )
-    subprocess.run(
-        ("git", "commit", "-m", "initial"), cwd=repo, check=True, capture_output=True
-    )
-    before = subprocess.check_output(
-        ("git", "rev-parse", "HEAD"), cwd=repo, text=True
-    ).strip()
-    repository = _repository(canonical_path=str(repo))
-    resolved = ResolvedRepositoryIdentity(
-        REPOSITORY_ID, str(repo), "common:git", "worktree:git", "revision:git"
-    )
-    authority = landing._create_test_authority(
-        ControllerIdentity("controller:one", "owner:one", "tenant:one", 1),
+    context = landing._HeldLandingContext(
+        reservation,
         resolved,
-        [_state(resolved, target=_target(commit_sha=before))],
+        controller,
+        request.digest(resolved, controller),
+        "reconciliation:test",
+        1,
+        "reconciliation-fence:test",
+        "canonical:test",
+        1,
+        "canonical-fence:test",
+        "authority:test",
     )
-    request = _request(repository=repository, expected_target_sha=before)
-    result = LandingReservationController(authority).reserve(request)
+    assert context.immutable_payload()["authority_incarnation"] == "authority:test"
+    forged = object.__new__(type(context))
+    for name in type(context).__dataclass_fields__:
+        if name != "authority_incarnation":
+            object.__setattr__(forged, name, getattr(context, name))
+    with pytest.raises(LandingReservationError):
+        forged.__post_init__()
+
+
+def test_proof_reference_is_opaque_and_rehashed_shape_is_not_authority() -> None:
+    proof = LandingReservationProofRef(
+        "native:test", "raw-backend-token-should-not-appear", DIGEST
+    )
+    assert "raw-backend-token" not in repr(proof)
+    assert repr(proof) == "<native landing proof ref redacted>"
+    snapshot = _production_snapshot()
+    payload = snapshot.immutable_payload()
+    payload["observed_target_tree_sha"] = SHA_ALT
+    rehashed = landing._snapshot_digest(
+        {"schema": "rmdd-13-landing-reservation:v2", **payload}
+    )
+    forged = replace(snapshot, observed_target_tree_sha=SHA_ALT, digest=rehashed)
+    result = landing.create_landing_authority().verify_attested_snapshot(forged)
+    assert result.code is LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE
+    assert landing.verify_current_landing_reservation(proof, forged).code is (
+        LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE
+    )
+
+
+def test_request_digest_binds_resolved_identity_without_exposing_path() -> None:
+    request = _request()
+    controller = ControllerIdentity("controller:one", "owner:one", "tenant:one", 1)
+    first = _resolved(canonical_path="/tmp/one/same")
+    second = _resolved(canonical_path="/tmp/two/same")
+    assert first.repository_id == second.repository_id
+    assert first.digest() != second.digest()
+    assert request.digest(first, controller) != request.digest(second, controller)
+    assert "/tmp/" not in repr(_production_snapshot())
+
+
+def test_harness_success_is_not_a_production_result() -> None:
+    harness = AtomicHarness([_state()])
+    result = harness.reserve(_request())
+    assert result.accepted and result.snapshot is not None
+    assert type(result) is HarnessResult
+    assert type(result.snapshot) is HarnessSnapshot
+    assert not isinstance(result, LandingReservationResult)
+    assert not isinstance(result.snapshot, LandingReservationSnapshot)
+    assert result.snapshot.proof_marker == "test-only"
+    assert landing.create_landing_authority().verify_attested_snapshot(
+        result.snapshot
+    ).code is (LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE)
+    assert harness.events == ["hold", "capture", "barrier", "release"]
+
+
+def test_harness_same_request_replays_and_changed_input_conflicts() -> None:
+    harness = AtomicHarness([_state()])
+    request = _request()
+    first = harness.reserve(request)
+    replay = harness.reserve(request)
+    changed = harness.reserve(
+        _request(
+            request_id=request.request_id,
+            invocation_id=request.invocation_id,
+            target_ref="release",
+        )
+    )
+    assert first.accepted and replay.accepted
+    assert first.snapshot == replay.snapshot
+    assert (
+        changed.code is LandingReservationRefusalCode.TARGET_MOVED
+        or changed.code is LandingReservationRefusalCode.TARGET_MISMATCH
+    )
+
+
+def test_harness_racing_same_target_is_bounded_and_has_one_winner() -> None:
+    entered = Event()
+    release = Event()
+    harness = AtomicHarness([_state()])
+
+    def after_hold() -> None:
+        entered.set()
+        release.wait(timeout=2)
+
+    harness.on_after_hold = after_hold
+    first_request = _request(
+        request_id="request:first", invocation_id="invocation:first"
+    )
+    second_request = _request(
+        request_id="request:second", invocation_id="invocation:second"
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future = pool.submit(harness.reserve, first_request)
+        assert entered.wait(timeout=2)
+        started = monotonic()
+        second = harness.reserve(second_request)
+        elapsed = monotonic() - started
+        release.set()
+        first = future.result(timeout=2)
+    assert elapsed < 2
+    assert first.accepted
+    assert second.code is LandingReservationRefusalCode.RESERVATION_CONFLICT
+    assert not harness.active
+
+
+def test_harness_same_thread_reentry_is_fixed_conflict() -> None:
+    harness = AtomicHarness([_state()])
+    nested: list[HarnessResult] = []
+    harness.on_after_hold = lambda: nested.append(
+        harness.reserve(_request(request_id="nested", invocation_id="nested"))
+    )
+    result = harness.reserve(_request())
     assert result.accepted
     assert (
-        subprocess.check_output(
-            ("git", "rev-parse", "HEAD"), cwd=repo, text=True
-        ).strip()
-        == before
-    )
-    assert (
-        subprocess.check_output(
-            ("git", "status", "--porcelain"), cwd=repo, text=True
-        ).strip()
-        == ""
+        nested and nested[0].code is LandingReservationRefusalCode.RESERVATION_CONFLICT
     )
 
 
-def test_snapshot_is_bounded_and_never_contains_private_path_or_owner() -> None:
-    authority, _, _ = _authority()
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.accepted and result.snapshot
-    snapshot = result.snapshot
-    assert "/tmp/" not in repr(snapshot)
-    assert "owner:one" not in repr(snapshot)
-    assert "controller:one" not in repr(snapshot)
-    assert "canonical_path" not in snapshot.__dataclass_fields__
-    assert not hasattr(snapshot, "__dict__")
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        (
+            _state(canonical=_canonical(state=CanonicalState.DIRTY)),
+            LandingReservationRefusalCode.CANONICAL_DIRTY,
+        ),
+        (
+            _state(canonical=_canonical(private_wip=True)),
+            LandingReservationRefusalCode.PRIVATE_WIP,
+        ),
+        (
+            _state(canonical=_canonical(index_clean=False)),
+            LandingReservationRefusalCode.PRIVATE_WIP,
+        ),
+        (
+            _state(canonical=_canonical(state=CanonicalState.UNKNOWN)),
+            LandingReservationRefusalCode.CANONICAL_STATE_INVALID,
+        ),
+        (
+            _state(occupancy=_occupancy(count=1, state=OccupancyState.OCCUPIED)),
+            LandingReservationRefusalCode.TARGET_OCCUPIED,
+        ),
+        (
+            _state(occupancy=_occupancy(state=OccupancyState.UNKNOWN)),
+            LandingReservationRefusalCode.TARGET_OCCUPANCY_UNKNOWN,
+        ),
+    ],
+)
+def test_harness_state_policy_is_fail_closed(
+    state: LandingStateSnapshot, expected: LandingReservationRefusalCode
+) -> None:
+    result = AtomicHarness([state]).reserve(_request())
+    assert result.code is expected
 
 
-def test_no_mutating_git_or_job_effect_on_refusal() -> None:
-    authority, runtime, _ = _authority()
-    runtime.states = []
-    result = LandingReservationController(authority).reserve(_request())
-    assert result.code is LandingReservationRefusalCode.SOURCE_UNAVAILABLE
-    assert not any(
-        token in runtime.events
-        for token in ("merge", "reset", "checkout", "push", "build", "cleanup")
+def test_harness_target_tree_drift_with_stable_revision_refuses() -> None:
+    states = [_state(), _state(target=_target(tree_sha=SHA_ALT))]
+    harness = AtomicHarness(states)
+    harness.on_before_barrier = lambda: setattr(harness, "state_index", 1)
+    result = harness.reserve(_request())
+    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
+
+
+def test_harness_object_setattr_source_mutation_is_revalidated() -> None:
+    state = _state()
+    harness = AtomicHarness([state])
+
+    def mutate() -> None:
+        object.__setattr__(state.target, "tree_sha", SHA_ALT)
+
+    harness.on_after_capture = mutate
+    result = harness.reserve(_request())
+    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
+
+
+def test_harness_barrier_lease_loss_and_identity_alias_refuse() -> None:
+    harness = AtomicHarness([_state()])
+    harness.on_before_barrier = lambda: setattr(harness, "barrier_valid", False)
+    result = harness.reserve(_request())
+    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
+
+    resolved = _resolved()
+    alias_state = _state(
+        _resolved(common_dir_id="common-dir:forged", worktree_id="worktree:forged")
     )
+    result = AtomicHarness([alias_state], resolved).reserve(_request())
+    assert result.code is LandingReservationRefusalCode.REPOSITORY_MISMATCH
+
+
+def test_harness_release_failure_records_recovery_even_after_body_failure() -> None:
+    harness = AtomicHarness([_state()])
+    harness.fail_release = True
+    harness.on_after_capture = lambda: (_ for _ in ()).throw(RuntimeError("body"))
+    result = harness.reserve(_request())
+    assert result.code is LandingReservationRefusalCode.RECOVERY_REQUIRED
+    assert harness.recovery_required
+    assert not harness.active
+
+
+def test_production_refusal_has_no_mutation_or_provider_effect() -> None:
+    class HostileRequest:
+        def __getattribute__(self, _name: str) -> object:
+            raise AssertionError("hostile request must not reach provider")
+
+    result = landing.reserve_landing(HostileRequest())  # type: ignore[arg-type]
+    assert result.code is LandingReservationRefusalCode.REQUEST_INVALID
+    result = landing.reserve_landing(_request())
+    assert result.code is LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE
 
 
 @pytest.mark.parametrize("seed", [0, 1, 17, 31337])
