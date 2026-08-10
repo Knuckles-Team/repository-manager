@@ -38,9 +38,19 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
 | `rm_workspace` | `list`, `list_branches`, `setup`, `template`, `save`, `maintain`, `maintain_status` |
 
 ### Key parameters
-- `projects` — comma-separated project names/paths to scope; omit to target all.
+- `repositories` — comma-separated project names/paths to scope `rm_projects(action="validate")`;
+  omit to target all. **Not `projects`** — that is `rm_workspace(action="maintain")`'s scoping
+  field (see below); the two condensed tools use different parameter names for the same idea.
 - `validate` returns a **job id**; poll it with `validate_status` (pass `job_id`, `summary`).
-- `part` — version part to bump for `maintain` (`major`|`minor`|`patch`).
+- `failed_only` — for `validate`: re-validate only repositories whose most-recent run failed
+  (ignored if `repositories` is set; forces re-validation of that set).
+- `commit_code` / `commit_message` — for `validate`: after validation passes, stage + pre-commit +
+  commit across the targeted repos before any bump.
+- `auto_bump` / `auto_push` / `bump_part` — for `validate`: chain a phased version bump and/or push
+  once validation passes (see `repository-manager-workspace-release` for the full DAG/consent story).
+- `part` — version part to bump for `rm_workspace(action="maintain")` (`major`|`minor`|`patch`).
+- `projects` — comma-separated repo names to scope `rm_workspace(action="maintain")` (this tool's
+  field IS named `projects`, unlike `rm_projects`'s `repositories`).
 - `phase` / `auto_start` — phased maintenance controls; `dry_run` to preview bumps.
 - `yml_path` / `config_dict` / `use_default` — for `setup` / `template` / `save`.
 
@@ -52,7 +62,7 @@ rm_projects(action="validate_status", job_id="<id>", summary=true)
 ```
 Validate only two projects:
 ```
-rm_projects(action="validate", projects="agent-utilities,gitlab-api")
+rm_projects(action="validate", repositories="agent-utilities,gitlab-api")
 ```
 Dry-run a patch bump across the workspace:
 ```
@@ -66,12 +76,21 @@ rm_workspace(action="list")
 ## Gotchas
 - `validate` and `maintain` run as **background jobs** — use `validate_status` / `maintain_status`
   with the returned `job_id`; don't expect inline results.
+- ★ **`rm_projects(action="validate")` scopes on `repositories`; `rm_workspace(action="maintain")`
+  scopes on `projects`.** The two condensed tools do not share a parameter name for the same idea
+  — do not assume the field you used to scope one also scopes the other.
 - Validation covers pre-commit hooks **and** pytest; a project is only clean when both pass.
 - `maintain` bumps are phased/dependency-ordered — `auto_start` begins at the lowest phase with
   pending work; use `dry_run` first on a large workspace.
 - `save` overwrites `workspace.yml` — pass an explicit `yml_path` when you don't want the default.
+- Any tool's live action set is self-discoverable: `rm_projects(action="list_actions")` /
+  `rm_workspace(action="list_actions")` return the current set instead of running anything.
 
 ## Related
 - `repository-manager-worktree-orchestration` to audit which projects have unmerged/unpushed work.
+- `repository-manager-workspace-release` for the DAG-ordered version/floor plan and the consented
+  auto-bump/auto-push chain this skill's `validate` action can trigger.
+- `repository-manager-development-lifecycle` — the governed entrypoint; per-repo validation is one
+  step of that larger lifecycle, not a replacement for it.
 - The universal-skills `workspace-validator` workflow composes these `validate` calls to fix all
   project errors until zero remain.

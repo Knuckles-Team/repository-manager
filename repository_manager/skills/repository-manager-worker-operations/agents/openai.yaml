@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Manager Worker Operations"
+  short_description: "Register remote-worker capacity and stage immutable source without raw SSH"
+  default_prompt: "Use $repository-manager-worker-operations to register, recheck, and stage work on a remote worker through rm_remote_workers — and report its fail-closed refusals (recheck without tunnel-manager, host_loss_reconcile) truthfully rather than routing around them."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Manager Development Lifecycle"
+  short_description: "Run one unit of work end to end through the governed lane/merge-queue surface"
+  default_prompt: "Use $repository-manager-development-lifecycle to plan, start, check, submit, and watch one unit of work through repository-manager's governed lane and merge-queue surface."

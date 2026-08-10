@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Manager Workspace Release"
+  short_description: "Preview and run the topologically-phased validate/bump/push release chain"
+  default_prompt: "Use $repository-manager-workspace-release to preview the phased version-bump plan with dry_run, then run the validate -> consented auto_bump -> consented auto_push chain via rm_projects/rm_workspace."

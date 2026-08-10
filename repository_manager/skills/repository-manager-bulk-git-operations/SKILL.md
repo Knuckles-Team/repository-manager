@@ -4,13 +4,13 @@ skill_type: skill
 description: >-
   Bulk, parallel git operations across a whole workspace of repositories via the
   repository-manager MCP server — clone, pull, push, add, commit, pre-commit,
-  phased push, run raw git commands, and enumerate every repo across a GitLab
-  instance / GitHub org into an ingest manifest (which also natively ingests them
-  into the knowledge graph as typed :GitRepository nodes). Use when the agent must
-  operate over many repos at once or discover the full repo inventory. Do NOT use
-  for single-session worktree branches (repository-manager-worktree-orchestration)
-  or per-project install/validate/version bumps
-  (repository-manager-workspace-validation).
+  phased push, and enumerate every repo across a GitLab instance / GitHub org into
+  an ingest manifest (which also natively ingests them into the knowledge graph as
+  typed :GitRepository nodes). Raw host git commands are permanently retired and
+  always refused. Use when the agent must operate over many repos at once or
+  discover the full repo inventory. Do NOT use for single-session worktree branches
+  (repository-manager-worktree-orchestration) or per-project install/validate/
+  version bumps (repository-manager-workspace-validation).
 license: MIT
 tags: [repository-manager, git, bulk, enumerate, mcp]
 metadata:
@@ -27,9 +27,15 @@ run as background jobs; poll them via the job status path.
 - Clone / pull / push / add / commit across many repos in parallel.
 - Run pre-commit hooks or a gated `commit_code` (hooks then commit) across projects.
 - Phased push (push respecting inter-repo dependency phases).
-- Run an arbitrary `raw` git command in a repo.
 - `enumerate` every repository across a GitLab instance / GitHub org into an ingest
   manifest — and natively ingest them into the KG as `:GitRepository` nodes.
+
+★ **There is no arbitrary/raw git command action.** `action="raw"` is accepted by
+the action resolver (so it does not read as a typo) but the handler always returns
+a refusal — `"Raw host commands are permanently retired; use a typed
+repository-manager action through governed delegation."` — regardless of
+`command`. If the task genuinely has no typed action here, that is a signal to stop
+and report the gap, not to route around it with a raw command.
 
 ## When NOT to use
 - Isolated per-session branch worktrees → `repository-manager-worktree-orchestration`.
@@ -53,7 +59,8 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
 | `rm_git` | `raw`, `clone`, `enumerate`, `pull`, `push`, `phased_push`, `add`, `commit`, `pre_commit`, `commit_code`, `status`, `cancel` |
 
 ### Key parameters
-- `command` — the git command for `raw`; also the VCS selector (`gitlab`|`github`) for `enumerate`.
+- `command` — the VCS selector (`gitlab`|`github`) for `enumerate`. (`raw` also reads
+  `command` for its message, but the action always refuses — see above.)
 - `projects` — comma-separated repo URLs (clone) or directory names/paths (pull/push/add/commit);
   for `enumerate`, comma-separated GitLab groups / GitHub orgs (omit for whole instance / your user).
 - `message` — commit message for `commit` / `commit_code`.
@@ -89,9 +96,16 @@ rm_git(action="enumerate", command="github", projects="my-org,another-org")
 - `enumerate` returns `{count, run_id, manifest, ingested}`; `ingested` is `null` when no KG engine is
   reachable (best-effort, non-fatal).
 - `push` honors the pre-push gate when `RM_GATE_BEFORE_PUSH` is set — a failing gate blocks the push.
-- `raw` requires `command`; `commit`/`commit_code` require `message`.
+- `commit`/`commit_code` require `message`. `raw` is permanently retired (see above) — do not
+  build a workflow that depends on it succeeding.
+- Any tool's live action set is self-discoverable: `rm_git(action="list_actions")` (or `"help"`/
+  `"actions"`) returns the current set instead of running anything — use it if this table and the
+  live server ever disagree.
 
 ## Related
 - `repository_ingest_repositories` — the Wire-First native ingestion tool that enumerates a VCS and pushes
   the repos into the knowledge graph as typed `:GitRepository` nodes (the same ingestion `enumerate` triggers).
 - `repository-manager-worktree-orchestration` for isolated session branches.
+- `repository-manager-development-lifecycle` — the governed entrypoint; this skill is the
+  lower-level bulk verb surface underneath it, for many-repo fan-out rather than one lane's
+  lifecycle.
