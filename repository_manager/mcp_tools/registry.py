@@ -43,6 +43,24 @@ def register_project_management_tools(mcp: Any) -> None:
     register_project_tools(mcp, context=context)
 
 
+def register_development_surface_tools(mcp: Any) -> None:
+    """Register RMDD-20's newest exposed development surfaces.
+
+    A dedicated registrar (rather than folding into
+    ``register_project_management_tools``) so the two lanes RMDD-20 exposes
+    (RMDD-15 remote execution, RMDD-17 concept coordination) each land as
+    one deterministic, independently toggleable entry.
+    """
+    from repository_manager.mcp_tools.concepts import register_concepts_tools
+    from repository_manager.mcp_tools.remote_workers import (
+        register_remote_workers_tools,
+    )
+
+    context = from_server()
+    register_concepts_tools(mcp, context=context)
+    register_remote_workers_tools(mcp, context=context)
+
+
 def register_workspace_management_tools(mcp: Any) -> None:
     from repository_manager.mcp_tools.workspace import (
         register_workspace_management_tools as register,
@@ -59,6 +77,11 @@ MCP_TOOL_REGISTRY: tuple[tuple[str, str, Any], ...] = (
         "workspace_management",
         "WORKSPACE_MANAGEMENTTOOL",
         register_workspace_management_tools,
+    ),
+    (
+        "development_surfaces",
+        "DEVELOPMENT_SURFACESTOOL",
+        register_development_surface_tools,
     ),
 )
 

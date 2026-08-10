@@ -14,6 +14,7 @@ EXPECTED_REGISTRY = (
     ("misc", "MISCTOOL"),
     ("project_management", "PROJECT_MANAGEMENTTOOL"),
     ("workspace_management", "WORKSPACE_MANAGEMENTTOOL"),
+    ("development_surfaces", "DEVELOPMENT_SURFACESTOOL"),
 )
 EXPECTED_TOOL_NAMES = (
     "rm_git",
@@ -24,13 +25,20 @@ EXPECTED_TOOL_NAMES = (
     "rm_build",
     "rm_projects",
     "rm_workspace",
+    "rm_concepts",
+    "rm_remote_workers",
 )
 
-# SHA-256 of the ordered, normalized FastMCP catalog on the pre-extraction
-# baseline.  This covers names, descriptions, tags, parameter schemas,
-# defaults, and required fields without duplicating a 21-KB fixture here.
+# SHA-256 of the ordered, normalized FastMCP catalog.  This covers names,
+# descriptions, tags, parameter schemas, defaults, and required fields
+# without duplicating a fixture here.  Originally the RMDD-04 pre-extraction
+# baseline; RMDD-20 is the first lane to deliberately grow the catalog past
+# it (exposing RMDD-15's remote-worker surface and RMDD-17's concept
+# coordination as ``rm_remote_workers``/``rm_concepts``), so both the tool
+# name list and this digest were recomputed against the live registry as
+# part of that change — not drift.
 BASELINE_CATALOG_SHA256 = (
-    "8b810e50a6749ead3f75ea9be23a32bec64a22b82544ccb6ec8d8818a1db5b38"
+    "fd1220cb353267719d7b7f2baf864382c047d66bca0c18131100006ec248ac69"
 )
 
 
