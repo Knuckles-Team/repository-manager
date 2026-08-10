@@ -53,6 +53,15 @@ Certification evidence is tied to the exact generation ID, tree SHA, gate
 configuration digest, command digest, host, and toolchain digest.  Stage-0
 feedback is therefore not interchangeable with stage-2 certification.
 
+RMDD-13's `landing_reservation` controller composes the existing
+`reconciliation-merge` and canonical-checkout leases around a durable authority
+reservation.  It authenticates the controller through that authority, keys
+uniqueness by exact repository identity plus normalized `refs/heads/*` target,
+and performs a bounded read-only target/canonical/occupancy/certification
+re-read before returning an immutable snapshot.  It exposes no owner, process,
+or private path details and performs no ref, worktree, build, job, or push
+mutation; CP3 is the first consumer allowed to attempt a fenced target CAS.
+
 Lifecycle transitions are explicit in `transitions.py`; terminal states have
 no outgoing transition, retries are represented by a new WorkItem attempt, and
 the model validators enforce the corresponding state/evidence combinations.
