@@ -179,3 +179,19 @@ evidence and derives the complete required stage composition and dependencies,
 so rehashing a semantically altered DAG does not make it valid. Malformed
 containers and provider-data normalization errors are fixed privacy-safe
 refusals; trusted `RuntimeError` failures remain visible to callers.
+
+The snapshot also rebuilds the complete package inventory and dependency
+topology from the immutable project/package records. Duplicate or orphan
+records, unknown endpoints, inconsistent project edges/groups, and changed
+metadata-edge provenance are refused even when a caller recomputes every
+reported digest. Checkpoint-3 version/floor sites, previews, nested policies,
+and omission-valued text are copied into exact immutable records before the
+version planner is re-run against the snapshotted graph and closure. A changed
+site, source SHA, floor/version text, or semantic preview cannot be authorized
+by rehashing the nested and outer plans.
+
+Target branches use a single local `refs/heads/...` representation after
+bounded Git-branch validation; ref aliases, traversal, URL/scheme, controls,
+and ambiguous branch syntax are refused without invoking Git. The CP3
+validation boundary normalizes only documented malformed-data exceptions, so a
+trusted planner `RuntimeError` remains observable to its caller.

@@ -51,18 +51,28 @@ from .workspace_release import (
     VersionSource,
     WorkspaceReleaseError,
     _canonical_json,
+    build_dependency_graph,
 )
 from .workspace_selection import (
+    InclusionMode,
     SelectedChangeClosure,
     SelectionExplanation,
     SelectionPolicy,
     SelectionReason,
 )
 from .workspace_versions import (
+    FloorPolicy,
     FloorPreview,
+    FloorPreviewReason,
+    FloorRewriteSite,
+    MetadataRepresentation,
+    VersionBump,
     VersionPlan,
     VersionPlanningError,
     VersionPreview,
+    VersionPreviewReason,
+    VersionSourcePolicy,
+    VersionSourceSite,
 )
 
 C11_FROZEN_PLAN_VERSION = 1
@@ -336,10 +346,27 @@ def _canonical_repository(value: object) -> str:
         ) from None
 
 
-def _canonical_project_ids(value: object, field_name: str) -> tuple[str, ...]:
+def _canonical_repository_exact(value: object, field_name: str) -> str:
+    """Require a CP2/CP3 identity to already use its canonical wire form."""
+
+    normalized = _canonical_repository(value)
+    if normalized != value:
+        raise _fail(ReleasePlanCode.IDENTITY, f"{field_name} is not canonical")
+    return normalized
+
+
+def _canonical_project_ids(
+    value: object, field_name: str, *, allow_empty: bool = False
+) -> tuple[str, ...]:
     raw = _bounded_tuple(value, field_name, max_items=MAX_PROJECTS)
-    result = tuple(_canonical_repository(item) for item in raw)
-    if not result or tuple(sorted(result)) != result or len(set(result)) != len(result):
+    result = tuple(
+        _canonical_repository_exact(item, f"{field_name} entry") for item in raw
+    )
+    if (
+        (not result and not allow_empty)
+        or tuple(sorted(result)) != result
+        or len(set(result)) != len(result)
+    ):
         raise _fail(
             ReleasePlanCode.IDENTITY, f"{field_name} must be unique and ordered"
         )
@@ -354,6 +381,67 @@ def _canonical_dependencies(value: object, field_name: str) -> tuple[str, ...]:
             ReleasePlanCode.STAGE_DEPENDENCY, f"{field_name} must be ordered and unique"
         )
     return result
+
+
+def _strict_selection_policy(policy: SelectionPolicy) -> SelectionPolicy:
+    """Rebuild CP2 policy only after exact scalar/container validation."""
+
+    if type(policy) is not SelectionPolicy:
+        raise _fail(ReleasePlanCode.SELECTION_DRIFT, "selection policy is unsupported")
+    changed = _canonical_project_ids(
+        policy.changed_projects, "changed projects", allow_empty=False
+    )
+    explicit = _canonical_project_ids(
+        policy.selected_projects, "policy selected projects", allow_empty=True
+    )
+    if type(policy.upstream_mode) is not InclusionMode:
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT, "upstream selection mode is invalid"
+        )
+    if type(policy.downstream_mode) is not InclusionMode:
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT, "downstream selection mode is invalid"
+        )
+    return SelectionPolicy(
+        changed_projects=changed,
+        selected_projects=explicit,
+        upstream_mode=policy.upstream_mode,
+        downstream_mode=policy.downstream_mode,
+    )
+
+
+def _strict_selection_explanation(
+    explanation: SelectionExplanation,
+) -> SelectionExplanation:
+    """Rebuild a CP2 explanation after exact bool/enum/provenance checks."""
+
+    if type(explanation) is not SelectionExplanation:
+        raise _fail(ReleasePlanCode.SELECTION_DRIFT, "selection explanation is invalid")
+    project_id = _canonical_repository_exact(
+        explanation.project_id, "selection explanation project"
+    )
+    if type(explanation.included) is not bool:
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT, "selection explanation flag is invalid"
+        )
+    reasons = _bounded_tuple(
+        explanation.reasons, "selection explanation reasons", max_items=5
+    )
+    if any(type(reason) is not SelectionReason for reason in reasons):
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT, "selection explanation reason is invalid"
+        )
+    via_projects = _canonical_project_ids(
+        explanation.via_projects,
+        "selection explanation witnesses",
+        allow_empty=True,
+    )
+    return SelectionExplanation(
+        project_id=project_id,
+        included=explanation.included,
+        reasons=cast(tuple[SelectionReason, ...], reasons),
+        via_projects=via_projects,
+    )
 
 
 def _project_payload(project: ProjectRecord) -> dict[str, object]:
@@ -432,7 +520,7 @@ class ProfileBinding:
             raise _fail(
                 ReleasePlanCode.PROFILE, "profile name must not be a path or URL"
             )
-        if not isinstance(self.kind, ProfileKind):
+        if type(self.kind) is not ProfileKind:
             raise _fail(ReleasePlanCode.PROFILE, "profile kind is unsupported")
         digest = _strict_digest(
             self.digest, "profile digest", code=ReleasePlanCode.PROFILE
@@ -606,21 +694,41 @@ def _normalize_target_branch(value: object) -> str:
         max_length=256,
         code=ReleasePlanCode.IDENTITY,
     )
+    if text == "@":
+        raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
     if text.startswith("refs/heads/"):
         suffix = text[len("refs/heads/") :]
     else:
         suffix = text
+    if text.startswith("refs/") and not text.startswith("refs/heads/"):
+        raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
     if (
         not suffix
         or suffix.startswith("/")
         or suffix.endswith("/")
+        or suffix.startswith(".")
+        or suffix.endswith(".")
+        or "//" in suffix
         or ".." in suffix
-        or "\\" in suffix
-        or suffix.startswith("refs/")
-        or any(ord(char) < 0x21 or ord(char) == 0x7F for char in suffix)
+        or "@{" in suffix
+        or any(char in suffix for char in (":", "~", "^", "?", "*", "[", "]", "\\"))
+        or "://" in suffix
+        or suffix.startswith("/")
+        or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in suffix)
     ):
         raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
-    return "refs/heads/" + suffix
+    components = suffix.split("/")
+    if any(
+        not component
+        or component in {".", ".."}
+        or component.startswith(".")
+        or component.endswith(".")
+        or component.endswith(".lock")
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+\-]*", component)
+        for component in components
+    ):
+        raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
+    return "refs/heads/" + "/".join(components)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1170,7 +1278,7 @@ class StagePreview:
         stage_id = _strict_text(
             self.stage_id, "stage ID", max_length=256, code=ReleasePlanCode.DIGEST
         )
-        if not isinstance(self.kind, StageKind):
+        if type(self.kind) is not StageKind:
             raise _fail(ReleasePlanCode.UNKNOWN_STAGE, "stage kind is unsupported")
         project_id = _canonical_repository(self.project_id)
         base_sha = _strict_sha(
@@ -1245,7 +1353,7 @@ class StagePreview:
             raise _fail(
                 ReleasePlanCode.PUSH_CONSENT, "push stage requires immutable consent"
             )
-        if not isinstance(self.failure_policy, FailurePolicy):
+        if type(self.failure_policy) is not FailurePolicy:
             raise _fail(
                 ReleasePlanCode.INVALID_INPUT, "stage failure policy is unsupported"
             )
@@ -1769,6 +1877,7 @@ class FrozenReleasePlan:
                     ReleasePlanCode.VERSION_PLAN_DRIFT,
                     "current version plan is unsupported",
                 )
+            current_version_plan = _revalidate_version_plan(current_version_plan)
             if current_version_plan.plan_digest != self.version_plan_digest:
                 raise _fail(
                     ReleasePlanCode.VERSION_PLAN_DRIFT,
@@ -1860,11 +1969,12 @@ def _revalidate_package_key(value: object, field_name: str) -> PackageKey:
         raise _fail(ReleasePlanCode.IDENTITY, f"{field_name} is not a package identity")
     if type(value.ecosystem) is not Ecosystem:
         raise _fail(ReleasePlanCode.IDENTITY, f"{field_name} ecosystem is invalid")
-    return PackageKey(
-        _canonical_repository(value.repository_id),
-        value.ecosystem,
-        _strict_text(value.name, f"{field_name} name", max_length=256),
-    )
+    repository_id = _canonical_repository_exact(value.repository_id, field_name)
+    name = _strict_text(value.name, f"{field_name} name", max_length=256)
+    candidate = PackageKey(repository_id, value.ecosystem, name)
+    if candidate.repository_id != repository_id or candidate.name != name:
+        raise _fail(ReleasePlanCode.IDENTITY, f"{field_name} is not canonical")
+    return candidate
 
 
 def _revalidate_floor(value: object, field_name: str) -> VersionFloor:
@@ -1915,7 +2025,9 @@ def _revalidate_package(package: PackageRecord) -> PackageRecord:
             )
         repository_id = target.repository_id
         if repository_id is not None:
-            repository_id = _canonical_repository(repository_id)
+            repository_id = _canonical_repository_exact(
+                repository_id, "dependency target repository"
+            )
         floor = (
             None
             if dependency.floor is None
@@ -1967,7 +2079,9 @@ def _revalidate_project(project: ProjectRecord) -> ProjectRecord:
         if type(tree_value) is not str:
             raise _fail(ReleasePlanCode.TREE_SHA, "project tree SHA is not a string")
         return ProjectRecord(
-            repository_id=_canonical_repository(project.repository_id),
+            repository_id=_canonical_repository_exact(
+                project.repository_id, "project repository"
+            ),
             tree_sha=(
                 ""
                 if len(tree_value) == 0
@@ -2001,6 +2115,270 @@ def _revalidate_edge(edge: DependencyEdge) -> DependencyEdge:
     )
 
 
+def _revalidate_representation(
+    value: object, field_name: str
+) -> MetadataRepresentation:
+    if type(value) is not MetadataRepresentation:
+        raise _fail(ReleasePlanCode.VERSION_PLAN_DRIFT, f"{field_name} is invalid")
+    return cast(MetadataRepresentation, value)
+
+
+def _revalidate_version_policy(policy: VersionSourcePolicy) -> VersionSourcePolicy:
+    if type(policy) is not VersionSourcePolicy:
+        raise _fail(ReleasePlanCode.VERSION_PLAN_DRIFT, "version policy is invalid")
+    exact_version = policy.exact_version
+    if exact_version is not None:
+        exact_version = _strict_text(
+            exact_version, "exact next version", max_length=256
+        )
+    if type(policy.representation) is not MetadataRepresentation:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT,
+            "version policy representation is invalid",
+        )
+    if type(policy.bump) is not VersionBump:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "version policy bump is invalid"
+        )
+    return VersionSourcePolicy(
+        source_location=_strict_text(policy.source_location, "version source location"),
+        representation=policy.representation,
+        bump=policy.bump,
+        exact_version=exact_version,
+    )
+
+
+def _revalidate_version_site(site: VersionSourceSite) -> VersionSourceSite:
+    if type(site) is not VersionSourceSite:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "version source site is invalid"
+        )
+    if type(site.symlink) is not bool:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "version source site flag is invalid"
+        )
+    return VersionSourceSite(
+        package=_revalidate_package_key(site.package, "version source site package"),
+        file_path=_strict_text(site.file_path, "version source site path"),
+        old_text=_strict_text(site.old_text, "version source site old text"),
+        policy=_revalidate_version_policy(site.policy),
+        symlink=site.symlink,
+    )
+
+
+def _revalidate_floor_site(site: FloorRewriteSite) -> FloorRewriteSite:
+    if type(site) is not FloorRewriteSite:
+        raise _fail(ReleasePlanCode.VERSION_PLAN_DRIFT, "floor source site is invalid")
+    if type(site.representation) is not MetadataRepresentation:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "floor site representation is invalid"
+        )
+    if type(site.policy) is not FloorPolicy:
+        raise _fail(ReleasePlanCode.VERSION_PLAN_DRIFT, "floor site policy is invalid")
+    if type(site.symlink) is not bool:
+        raise _fail(ReleasePlanCode.VERSION_PLAN_DRIFT, "floor site flag is invalid")
+    return FloorRewriteSite(
+        dependent=_revalidate_package_key(site.dependent, "floor site dependent"),
+        dependency=_revalidate_package_key(site.dependency, "floor site dependency"),
+        file_path=_strict_text(site.file_path, "floor site path"),
+        source_location=_strict_text(site.source_location, "floor site location"),
+        representation=site.representation,
+        old_text=_strict_text(site.old_text, "floor site old text", max_length=256),
+        policy=site.policy,
+        symlink=site.symlink,
+    )
+
+
+def _revalidate_witness(value: object, field_name: str) -> tuple[str, ...]:
+    raw = _bounded_tuple(value, field_name, max_items=16)
+    return tuple(_strict_text(item, f"{field_name} entry") for item in raw)
+
+
+def _revalidate_optional_digest(value: object, field_name: str) -> str:
+    if type(value) is not str:
+        raise _fail(ReleasePlanCode.VERSION_PLAN_DRIFT, f"{field_name} is invalid")
+    if value == "":
+        return ""
+    return _strict_digest(value, field_name)
+
+
+def _revalidate_optional_text(
+    value: object, field_name: str, *, max_length: int = MAX_STRING_LENGTH
+) -> str:
+    """Validate an optional CP3 text field before testing its omission value."""
+
+    if type(value) is not str:
+        raise _fail(ReleasePlanCode.VERSION_PLAN_DRIFT, f"{field_name} is invalid")
+    if value == "":
+        return ""
+    return _strict_text(value, field_name, max_length=max_length)
+
+
+def _revalidate_version_preview(preview: VersionPreview) -> VersionPreview:
+    if type(preview) is not VersionPreview:
+        raise _fail(ReleasePlanCode.VERSION_PLAN_DRIFT, "version preview is invalid")
+    if type(preview.reason) is not VersionPreviewReason:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "version preview reason is invalid"
+        )
+    if type(preview.is_noop) is not bool:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "version preview flag is invalid"
+        )
+    return VersionPreview(
+        project_id=_canonical_repository_exact(
+            preview.project_id, "version preview project"
+        ),
+        package=_revalidate_package_key(preview.package, "version preview package"),
+        file_path=_strict_text(preview.file_path, "version preview path"),
+        source_location=_strict_text(
+            preview.source_location, "version preview location"
+        ),
+        representation=_revalidate_representation(
+            preview.representation, "version preview representation"
+        ),
+        source_sha=_strict_sha(preview.source_sha, "version preview source SHA"),
+        old_text=_strict_text(preview.old_text, "version preview old text"),
+        new_text=_strict_text(preview.new_text, "version preview new text"),
+        current_version=_revalidate_version(
+            preview.current_version, "version preview current"
+        ),
+        next_version=_revalidate_version(preview.next_version, "version preview next"),
+        policy=_revalidate_version_policy(preview.policy),
+        reason=preview.reason,
+        witness=_revalidate_witness(preview.witness, "version preview witness"),
+        graph_digest=_strict_digest(
+            preview.graph_digest, "version preview graph digest"
+        ),
+        selection_digest=_strict_digest(
+            preview.selection_digest, "version preview selection digest"
+        ),
+        is_noop=preview.is_noop,
+        plan_digest=_revalidate_optional_digest(
+            preview.plan_digest, "version preview plan digest"
+        ),
+    )
+
+
+def _revalidate_floor_preview(preview: FloorPreview) -> FloorPreview:
+    if type(preview) is not FloorPreview:
+        raise _fail(ReleasePlanCode.VERSION_PLAN_DRIFT, "floor preview is invalid")
+    if type(preview.representation) is not MetadataRepresentation:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT,
+            "floor preview representation is invalid",
+        )
+    if type(preview.policy) is not FloorPolicy:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "floor preview policy is invalid"
+        )
+    if type(preview.reason) is not FloorPreviewReason:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "floor preview reason is invalid"
+        )
+    if type(preview.is_noop) is not bool:
+        raise _fail(ReleasePlanCode.VERSION_PLAN_DRIFT, "floor preview flag is invalid")
+    old_text = _revalidate_optional_text(
+        preview.old_text, "floor preview old text", max_length=256
+    )
+    new_text = _revalidate_optional_text(
+        preview.new_text, "floor preview new text", max_length=256
+    )
+    old_normalized = _revalidate_optional_text(
+        preview.old_normalized, "floor preview old normalized", max_length=256
+    )
+    new_normalized = _revalidate_optional_text(
+        preview.new_normalized, "floor preview new normalized", max_length=256
+    )
+    return FloorPreview(
+        project_id=_canonical_repository_exact(
+            preview.project_id, "floor preview project"
+        ),
+        dependent=_revalidate_package_key(preview.dependent, "floor preview dependent"),
+        dependency=_revalidate_package_key(
+            preview.dependency, "floor preview dependency"
+        ),
+        file_path=_strict_text(preview.file_path, "floor preview path"),
+        source_location=_strict_text(preview.source_location, "floor preview location"),
+        representation=preview.representation,
+        source_sha=_strict_sha(preview.source_sha, "floor preview source SHA"),
+        old_text=old_text,
+        new_text=new_text,
+        old_normalized=old_normalized,
+        new_normalized=new_normalized,
+        policy=preview.policy,
+        reason=preview.reason,
+        witness=_revalidate_witness(preview.witness, "floor preview witness"),
+        graph_digest=_strict_digest(preview.graph_digest, "floor preview graph digest"),
+        selection_digest=_strict_digest(
+            preview.selection_digest, "floor preview selection digest"
+        ),
+        is_noop=preview.is_noop,
+        plan_digest=_revalidate_optional_digest(
+            preview.plan_digest, "floor preview plan digest"
+        ),
+    )
+
+
+def _validate_edge_source_evidence(
+    projects: tuple[ProjectRecord, ...], edges: tuple[DependencyEdge, ...]
+) -> None:
+    """Bind graph edges to package dependency declarations before derivation.
+
+    An explicit overlay may resolve an ambiguous owner or supply a missing
+    floor, so the C-11 edge itself remains the source evidence in those two
+    bounded cases.  For an unambiguous metadata edge, however, changing its
+    floor or provenance while recomputing the graph digest is not a valid
+    graph: both values must still match the package declaration.
+    """
+
+    packages = tuple(package for project in projects for package in project.packages)
+    package_map = {package.key.value: package for package in packages}
+    owner_counts: dict[tuple[Ecosystem, str], int] = {}
+    for package in packages:
+        owner_key = (package.key.ecosystem, package.key.name)
+        owner_counts[owner_key] = owner_counts.get(owner_key, 0) + 1
+    for edge in edges:
+        dependent = package_map.get(edge.dependent.value)
+        if dependent is None or edge.dependency.value not in package_map:
+            raise _fail(
+                ReleasePlanCode.MISSING,
+                "graph edge names an unknown package",
+            )
+        candidates = tuple(
+            spec
+            for spec in dependent.dependencies
+            if spec.target.ecosystem is edge.dependency.ecosystem
+            and spec.target.name == edge.dependency.name
+            and (
+                spec.target.repository_id is None
+                or spec.target.repository_id == edge.dependency.repository_id
+            )
+        )
+        if not candidates:
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT,
+                "graph edge is not supported by package dependency evidence",
+            )
+        target = candidates[0].target
+        owner_count = owner_counts.get(
+            (target.ecosystem, target.name),
+            0,
+        )
+        # A uniquely resolved target with a declared floor has a complete
+        # source declaration. Overlay-only edges are permitted to resolve an
+        # explicit owner or fill a missing floor.
+        if candidates[0].floor is not None and (
+            target.repository_id is not None or owner_count == 1
+        ):
+            spec = candidates[0]
+            if spec.floor != edge.floor or spec.source != edge.source:
+                raise _fail(
+                    ReleasePlanCode.GRAPH_DRIFT,
+                    "graph edge provenance does not match package evidence",
+                )
+
+
 def _snapshot_graph(graph: DependencyGraph) -> DependencyGraph:
     """Copy a graph only after proving every container is bounded and builtin."""
 
@@ -2029,6 +2407,7 @@ def _snapshot_graph(graph: DependencyGraph) -> DependencyGraph:
         edges = tuple(
             _revalidate_edge(cast(DependencyEdge, item)) for item in raw_edges
         )
+        _validate_edge_source_evidence(projects, edges)
         project_edges: list[tuple[str, str]] = []
         for pair in raw_project_edges:
             if (
@@ -2041,8 +2420,8 @@ def _snapshot_graph(graph: DependencyGraph) -> DependencyGraph:
             left, right = cast(tuple[object, ...] | list[object], pair)
             project_edges.append(
                 (
-                    _canonical_repository(left),
-                    _canonical_repository(right),
+                    _canonical_repository_exact(left, "graph project edge endpoint"),
+                    _canonical_repository_exact(right, "graph project edge endpoint"),
                 )
             )
         groups: list[tuple[str, ...]] = []
@@ -2050,6 +2429,7 @@ def _snapshot_graph(graph: DependencyGraph) -> DependencyGraph:
             group = _canonical_project_ids(raw_group, "graph parallel group")
             groups.append(group)
         digest = _strict_digest(graph.digest, "graph digest")
+        derived = build_dependency_graph(projects, overlay_edges=edges)
         candidate = DependencyGraph(
             projects=projects,
             packages=packages,
@@ -2058,6 +2438,24 @@ def _snapshot_graph(graph: DependencyGraph) -> DependencyGraph:
             parallel_groups=tuple(groups),
             digest=digest,
         )
+        if (
+            tuple(project.project_id for project in projects)
+            != tuple(project.project_id for project in derived.projects)
+            or tuple(package.key.value for package in packages)
+            != tuple(package.key.value for package in derived.packages)
+            or tuple(edge.value for edge in edges)
+            != tuple(edge.value for edge in derived.edges)
+            or tuple(project_edges) != derived.project_edges
+            or tuple(groups) != derived.parallel_groups
+        ):
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT,
+                "graph inventory does not match package evidence",
+            )
+        if derived.digest != digest:
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT, "graph digest does not match sources"
+            )
         if candidate.projects != projects or candidate.packages != packages:
             raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph records are not canonical")
         if candidate.digest != _digest_payload(candidate.canonical_payload()):
@@ -2088,37 +2486,12 @@ def _snapshot_selection(selection: SelectedChangeClosure) -> SelectedChangeClosu
                 ReleasePlanCode.SELECTION_DRIFT, "selection is not a C-11 record"
             )
         source = _snapshot_graph(selection.source_graph)
-        if type(selection.policy) is not SelectionPolicy:
-            raise _fail(
-                ReleasePlanCode.SELECTION_DRIFT, "selection policy is unsupported"
-            )
-        policy = SelectionPolicy(
-            changed_projects=cast(
-                tuple[str, ...],
-                _exact_nested_tuple(
-                    selection.policy.changed_projects,
-                    "changed projects",
-                    max_items=MAX_PROJECTS,
-                ),
-            ),
-            selected_projects=cast(
-                tuple[str, ...],
-                _exact_nested_tuple(
-                    selection.policy.selected_projects,
-                    "policy selected projects",
-                    max_items=MAX_PROJECTS,
-                ),
-            ),
-            upstream_mode=selection.policy.upstream_mode,
-            downstream_mode=selection.policy.downstream_mode,
+        policy = _strict_selection_policy(selection.policy)
+        known = _canonical_project_ids(
+            selection.known_project_ids, "known project IDs", allow_empty=False
         )
-        known = _exact_nested_tuple(
-            selection.known_project_ids, "known project IDs", max_items=MAX_PROJECTS
-        )
-        selected = _exact_nested_tuple(
-            selection.selected_project_ids,
-            "selected project IDs",
-            max_items=MAX_PROJECTS,
+        selected = _canonical_project_ids(
+            selection.selected_project_ids, "selected project IDs", allow_empty=False
         )
         projects = tuple(
             _revalidate_project(cast(ProjectRecord, item))
@@ -2146,11 +2519,13 @@ def _snapshot_selection(selection: SelectedChangeClosure) -> SelectedChangeClosu
                 )
             project_edges.append(
                 (
-                    _canonical_repository(
-                        cast(tuple[object, ...] | list[object], pair)[0]
+                    _canonical_repository_exact(
+                        cast(tuple[object, ...] | list[object], pair)[0],
+                        "closure project edge endpoint",
                     ),
-                    _canonical_repository(
-                        cast(tuple[object, ...] | list[object], pair)[1]
+                    _canonical_repository_exact(
+                        cast(tuple[object, ...] | list[object], pair)[1],
+                        "closure project edge endpoint",
                     ),
                 )
             )
@@ -2164,41 +2539,15 @@ def _snapshot_selection(selection: SelectedChangeClosure) -> SelectedChangeClosu
         raw_explanations = _exact_nested_tuple(
             selection.explanations, "closure explanations", max_items=MAX_PROJECTS
         )
-        explanations: list[SelectionExplanation] = []
-        for item in raw_explanations:
-            if type(item) is not SelectionExplanation:
-                raise _fail(
-                    ReleasePlanCode.SELECTION_DRIFT, "selection explanation is invalid"
-                )
-            reasons_raw = _exact_nested_tuple(
-                item.reasons, "selection explanation reasons", max_items=5
-            )
-            via_raw = _exact_nested_tuple(
-                item.via_projects,
-                "selection explanation witnesses",
-                max_items=MAX_PROJECTS,
-            )
-            if type(item.included) is not bool or any(
-                type(reason) is not SelectionReason for reason in reasons_raw
-            ):
-                raise _fail(
-                    ReleasePlanCode.SELECTION_DRIFT, "selection explanation is invalid"
-                )
-            explanations.append(
-                SelectionExplanation(
-                    project_id=_canonical_repository(item.project_id),
-                    included=item.included,
-                    reasons=tuple(cast(tuple[SelectionReason, ...], reasons_raw)),
-                    via_projects=tuple(
-                        _canonical_repository(value) for value in via_raw
-                    ),
-                )
-            )
+        explanations = [
+            _strict_selection_explanation(cast(SelectionExplanation, item))
+            for item in raw_explanations
+        ]
         digest = _strict_digest(selection.digest, "selection digest")
         candidate = SelectedChangeClosure(
             policy=policy,
-            known_project_ids=cast(tuple[str, ...], known),
-            selected_project_ids=cast(tuple[str, ...], selected),
+            known_project_ids=known,
+            selected_project_ids=selected,
             projects=projects,
             edges=edges,
             project_edges=tuple(project_edges),
@@ -2229,11 +2578,19 @@ def _revalidate_version_plan(version_plan: VersionPlan) -> VersionPlan:
             raise _fail(
                 ReleasePlanCode.VERSION_PLAN_DRIFT, "version plan is not a C-11 record"
             )
+        graph_digest = _strict_digest(
+            version_plan.graph_digest, "version plan graph digest"
+        )
+        selection_digest = _strict_digest(
+            version_plan.selection_digest, "version plan selection digest"
+        )
+        plan_digest = _strict_digest(version_plan.plan_digest, "version plan digest")
         raw_next = _exact_nested_tuple(
             version_plan.next_versions,
             "version plan next versions",
             max_items=MAX_PACKAGES,
         )
+        next_versions: list[tuple[str, Version]] = []
         for pair in raw_next:
             if (
                 type(pair) not in (tuple, list)
@@ -2243,14 +2600,28 @@ def _revalidate_version_plan(version_plan: VersionPlan) -> VersionPlan:
                     ReleasePlanCode.VERSION_PLAN_DRIFT,
                     "version plan next version pair is invalid",
                 )
+            pair_values = cast(tuple[object, ...] | list[object], pair)
+            next_versions.append(
+                (
+                    _strict_text(pair_values[0], "version plan package identity"),
+                    _revalidate_version(pair_values[1], "version plan next version"),
+                )
+            )
         raw_batches = _exact_nested_tuple(
             version_plan.package_batches,
             "version plan package batches",
             max_items=MAX_PACKAGES,
         )
+        package_batches: list[tuple[str, ...]] = []
         for batch in raw_batches:
-            _exact_nested_tuple(
+            raw_batch = _exact_nested_tuple(
                 batch, "version plan package batch", max_items=MAX_PACKAGES
+            )
+            package_batches.append(
+                tuple(
+                    _strict_text(item, "version plan package identity")
+                    for item in raw_batch
+                )
             )
         raw_versions = _exact_nested_tuple(
             version_plan.version_previews,
@@ -2262,24 +2633,34 @@ def _revalidate_version_plan(version_plan: VersionPlan) -> VersionPlan:
             "version plan floor previews",
             max_items=MAX_EDGES,
         )
-        if any(type(item) is not VersionPreview for item in raw_versions):
+        versions = tuple(
+            _revalidate_version_preview(cast(VersionPreview, item))
+            for item in raw_versions
+        )
+        floors = tuple(
+            _revalidate_floor_preview(cast(FloorPreview, item)) for item in raw_floors
+        )
+        candidate = VersionPlan(
+            graph_digest=graph_digest,
+            selection_digest=selection_digest,
+            next_versions=tuple(next_versions),
+            package_batches=tuple(package_batches),
+            version_previews=versions,
+            floor_previews=floors,
+            plan_digest=plan_digest,
+        )
+        if (
+            candidate.next_versions != tuple(next_versions)
+            or candidate.package_batches != tuple(package_batches)
+            or candidate.version_previews != versions
+            or candidate.floor_previews != floors
+            or candidate.plan_digest != plan_digest
+        ):
             raise _fail(
                 ReleasePlanCode.VERSION_PLAN_DRIFT,
-                "version preview evidence is invalid",
+                "version plan evidence is not canonical",
             )
-        if any(type(item) is not FloorPreview for item in raw_floors):
-            raise _fail(
-                ReleasePlanCode.VERSION_PLAN_DRIFT, "floor preview evidence is invalid"
-            )
-        return VersionPlan(
-            graph_digest=version_plan.graph_digest,
-            selection_digest=version_plan.selection_digest,
-            next_versions=cast(tuple[tuple[str, Version], ...], raw_next),
-            package_batches=cast(tuple[tuple[str, ...], ...], raw_batches),
-            version_previews=cast(tuple[VersionPreview, ...], raw_versions),
-            floor_previews=cast(tuple[FloorPreview, ...], raw_floors),
-            plan_digest=version_plan.plan_digest,
-        )
+        return candidate
     except ReleasePlanError:
         raise
     except VersionPlanningError:
@@ -2303,7 +2684,7 @@ def _revalidate_stage(stage: StagePreview) -> StagePreview:
         return StagePreview(
             stage_id=stage.stage_id,
             kind=stage.kind,
-            project_id=stage.project_id,
+            project_id=_canonical_repository_exact(stage.project_id, "stage project"),
             base_sha=stage.base_sha,
             tree_sha=stage.tree_sha,
             generation_id=stage.generation_id,
@@ -2340,7 +2721,9 @@ def _revalidate_profile(binding: ProfileBinding) -> ProfileBinding:
                 ReleasePlanCode.PROFILE, "profile binding is not a frozen record"
             )
         return ProfileBinding(
-            project_id=binding.project_id,
+            project_id=_canonical_repository_exact(
+                binding.project_id, "profile project"
+            ),
             name=binding.name,
             digest=binding.digest,
             kind=binding.kind,
@@ -2556,6 +2939,7 @@ def _validate_frozen_plan_fields(
                 ReleasePlanCode.VERSION_PLAN_DRIFT,
                 "version plan graph or selection is not bound",
             )
+        version_plan.validate_against(source_graph, source_selection)
         version_digests = tuple(
             sorted(
                 _preview_digest(preview) for preview in version_plan.version_previews
@@ -2806,6 +3190,7 @@ class FrozenReleasePlanInput:
             )
         graph = _snapshot_graph(self.graph)
         selection = _snapshot_selection(self.selection)
+        frozen_version_plan = _revalidate_version_plan(self.version_plan)
         if (
             graph.digest != selection.source_graph.digest
             or graph.canonical_payload() != selection.source_graph.canonical_payload()
@@ -2815,7 +3200,10 @@ class FrozenReleasePlanInput:
             )
         object.__setattr__(self, "graph", graph)
         object.__setattr__(self, "selection", selection)
-        _strict_opaque(self.workspace_id, "workspace ID", max_length=MAX_STRING_LENGTH)
+        workspace = _strict_opaque(
+            self.workspace_id, "workspace ID", max_length=MAX_STRING_LENGTH
+        )
+        object.__setattr__(self, "workspace_id", workspace)
         if self.source_sha is None:
             raise _fail(ReleasePlanCode.SOURCE_SHA, "source SHA is required")
         if self.base_sha is None:
@@ -2826,30 +3214,25 @@ class FrozenReleasePlanInput:
         base = _strict_sha(self.base_sha, "base SHA", code=ReleasePlanCode.BASE_SHA)
         object.__setattr__(self, "source_sha", source)
         object.__setattr__(self, "base_sha", base)
-        _strict_opaque(
+        generation = _strict_opaque(
             self.generation_id,
             "generation ID",
             max_length=MAX_GENERATION_LENGTH,
         )
+        object.__setattr__(self, "generation_id", generation)
         if self.include_push is not None:
             _strict_bool(self.include_push, "push inclusion flag")
         if self.allow_push is not None:
             _strict_bool(self.allow_push, "push authorization flag")
-        if (
-            self.push_consent is not None
-            and type(self.push_consent) is not PushConsentReference
-        ):
-            raise _fail(
-                ReleasePlanCode.CONSENT,
-                "input push consent must be immutable evidence",
-            )
-        if (
-            self.decision_context is not None
-            and type(self.decision_context) is not ReleaseDecisionContext
-        ):
-            raise _fail(
-                ReleasePlanCode.PROFILE, "input decision context is unsupported"
-            )
+        consent = _revalidate_consent(self.push_consent)
+        object.__setattr__(self, "push_consent", consent)
+        decisions = (
+            None
+            if self.decision_context is None
+            else _revalidate_decision_context(self.decision_context)
+        )
+        object.__setattr__(self, "decision_context", decisions)
+        object.__setattr__(self, "version_plan", frozen_version_plan)
         # Materialize the two profile collections now, rather than retaining a
         # caller-owned dict/list.  This also makes missing profiles explicit via
         # deterministic defaults.
@@ -2991,6 +3374,7 @@ def freeze_release_plan(
             )
         graph = _snapshot_graph(graph)
         selection = _snapshot_selection(selection)
+        version_plan = _revalidate_version_plan(version_plan)
         if (
             graph.digest != selection.source_graph.digest
             or graph.canonical_payload() != selection.source_graph.canonical_payload()
@@ -3090,6 +3474,9 @@ def freeze_release_plan(
             raise _fail(
                 ReleasePlanCode.CONSENT, "push consent must be immutable evidence"
             )
+        # Rebuild every exact-type consent before comparing aliases.  A forged
+        # dataclass shell may carry hostile scalar fields whose hash/equality
+        # methods must never run during alias conflict detection.
         consent_candidates = tuple(
             cast(PushConsentReference, _revalidate_consent(item))
             for item in consent_candidates

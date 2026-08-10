@@ -46,6 +46,7 @@ from repository_manager.development.workspace_selection import (
     derive_selected_closure,
 )
 from repository_manager.development.workspace_versions import (
+    _AUTO_PLAN_DIGEST,
     FloorPolicy,
     FloorRewriteSite,
     MetadataRepresentation,
@@ -661,6 +662,339 @@ def test_trusted_runtime_errors_are_not_normalized(
 
     monkeypatch.setattr(module, "_canonical_json", explode)
     with pytest.raises(RuntimeError, match="trusted injected failure"):
+        freeze_release_plan(
+            graph,
+            selection,
+            version_plan,
+            source_sha=SOURCE_SHA,
+            base_sha=BASE_SHA,
+            generation_id="generation:fixture",
+        )
+
+
+@pytest.mark.parametrize(
+    "branch",
+    (
+        ":",
+        "feature~one",
+        "feature^one",
+        "feature?one",
+        "feature*one",
+        "feature[one",
+        "feature]one",
+        "feature\\one",
+        "feature one",
+        "feature..one",
+        "feature@{one}",
+        "/feature",
+        "feature/",
+        ".feature",
+        "feature.",
+        "feature//one",
+        "feature/./one",
+        "feature/../one",
+        "feature/.lock",
+        "feature.lock",
+        "@",
+        "refs/tags/v1",
+        "refs/remotes/origin/main",
+        "http://example.invalid/main",
+        "../main",
+        "/absolute/main",
+        "refs/heads/feature.lock",
+        "refs/heads/./feature",
+    ),
+)
+def test_target_branch_uses_one_strict_local_representation(branch: str) -> None:
+    with pytest.raises(ReleasePlanError) as captured:
+        ReleaseDecisionContext(target_branch=branch)
+    assert captured.value.code is ReleasePlanCode.IDENTITY
+
+
+def test_target_branch_accepts_safe_components_and_normalizes_once() -> None:
+    assert ReleaseDecisionContext(target_branch="release/v1").target_branch == (
+        "refs/heads/release/v1"
+    )
+    assert ReleaseDecisionContext(
+        target_branch="refs/heads/release/v1"
+    ).target_branch == ("refs/heads/release/v1")
+
+
+def test_selection_nested_scalars_are_rejected_before_cp2_normalization() -> None:
+    class HostileString(str):
+        def strip(self, *args: object, **kwargs: object) -> str:
+            raise RuntimeError("hostile strip executed")
+
+        def __len__(self) -> int:
+            raise RuntimeError("hostile len executed")
+
+        def __iter__(self):
+            raise RuntimeError("hostile iter executed")
+
+        def __eq__(self, other: object) -> bool:
+            raise RuntimeError("hostile eq executed")
+
+        def __hash__(self) -> int:
+            raise RuntimeError("hostile hash executed")
+
+        def encode(self, *args: object, **kwargs: object) -> bytes:
+            raise RuntimeError("hostile encode executed")
+
+    graph, selection, version_plan = _fixture()
+    hostile = HostileString("packages/a")
+
+    def clone(value: object) -> object:
+        forged = object.__new__(type(value))
+        for field_name in value.__dataclass_fields__:  # type: ignore[attr-defined]
+            object.__setattr__(forged, field_name, getattr(value, field_name))
+        return forged
+
+    forged_cases: list[SelectedChangeClosure] = []
+    for field_name in ("known_project_ids", "selected_project_ids"):
+        forged = clone(selection)
+        object.__setattr__(forged, field_name, (hostile,))
+        forged_cases.append(forged)  # type: ignore[arg-type]
+
+    forged_policy = clone(selection.policy)
+    object.__setattr__(forged_policy, "changed_projects", (hostile,))
+    forged_selection = clone(selection)
+    object.__setattr__(forged_selection, "policy", forged_policy)
+    forged_cases.append(forged_selection)  # type: ignore[arg-type]
+
+    forged_policy = clone(selection.policy)
+    object.__setattr__(forged_policy, "selected_projects", (hostile,))
+    forged_selection = clone(selection)
+    object.__setattr__(forged_selection, "policy", forged_policy)
+    forged_cases.append(forged_selection)  # type: ignore[arg-type]
+
+    for forged in forged_cases:
+        with pytest.raises(ReleasePlanError) as captured:
+            freeze_release_plan(
+                graph,
+                forged,
+                version_plan,
+                source_sha=SOURCE_SHA,
+                base_sha=BASE_SHA,
+                generation_id="generation:fixture",
+            )
+        assert captured.value.code in {
+            ReleasePlanCode.IDENTITY,
+            ReleasePlanCode.SELECTION_DRIFT,
+        }
+        assert "hostile" not in str(captured.value)
+
+
+def test_selection_hostile_nested_containers_are_rejected_without_iteration() -> None:
+    graph, selection, version_plan = _fixture()
+
+    class HostileList(list[object]):
+        def __iter__(self):
+            raise RuntimeError("hostile list iteration executed")
+
+        def __len__(self) -> int:
+            raise RuntimeError("hostile list length executed")
+
+    forged = object.__new__(SelectedChangeClosure)
+    for field_name in selection.__dataclass_fields__:
+        object.__setattr__(forged, field_name, getattr(selection, field_name))
+    object.__setattr__(
+        forged, "known_project_ids", HostileList(selection.known_project_ids)
+    )
+    with pytest.raises(ReleasePlanError) as captured:
+        freeze_release_plan(
+            graph,
+            forged,
+            version_plan,
+            source_sha=SOURCE_SHA,
+            base_sha=BASE_SHA,
+            generation_id="generation:fixture",
+        )
+    assert captured.value.code in {
+        ReleasePlanCode.INVALID_INPUT,
+        ReleasePlanCode.SELECTION_DRIFT,
+    }
+
+
+@pytest.mark.parametrize(
+    "attack",
+    (
+        "duplicate_project",
+        "orphan_package",
+        "unknown_edge",
+        "changed_edge_source",
+        "changed_edge_floor",
+        "bad_groups",
+    ),
+)
+def test_graph_inventory_is_rederived_before_accepting_rehashed_shells(
+    attack: str,
+) -> None:
+    graph, selection, version_plan = _fixture()
+    forged = object.__new__(DependencyGraph)
+    for field_name in graph.__dataclass_fields__:
+        object.__setattr__(forged, field_name, getattr(graph, field_name))
+    if attack == "duplicate_project":
+        object.__setattr__(forged, "projects", (graph.projects[0],) + graph.projects)
+    elif attack == "orphan_package":
+        orphan = PackageRecord(
+            PackageKey("orphan/project", Ecosystem.PYTHON, "orphan"),
+            Version("1.0.0"),
+            (VersionSource("fixture", Version("1.0.0")),),
+        )
+        object.__setattr__(forged, "packages", graph.packages + (orphan,))
+    elif attack == "unknown_edge":
+        edge = replace(
+            graph.edges[0],
+            dependency=PackageKey("unknown/project", Ecosystem.PYTHON, "unknown"),
+        )
+        object.__setattr__(forged, "edges", graph.edges + (edge,))
+    elif attack == "changed_edge_source":
+        object.__setattr__(
+            forged,
+            "edges",
+            (replace(graph.edges[0], source="forged-source"),) + graph.edges[1:],
+        )
+    elif attack == "changed_edge_floor":
+        object.__setattr__(
+            forged,
+            "edges",
+            (replace(graph.edges[0], floor=VersionFloor.parse(">=9.0.0")),)
+            + graph.edges[1:],
+        )
+    else:
+        object.__setattr__(
+            forged, "parallel_groups", tuple(reversed(graph.parallel_groups))
+        )
+    object.__setattr__(forged, "digest", _digest_payload(forged.canonical_payload()))
+
+    with pytest.raises(ReleasePlanError) as captured:
+        freeze_release_plan(
+            forged,
+            selection,
+            version_plan,
+            source_sha=SOURCE_SHA,
+            base_sha=BASE_SHA,
+            generation_id="generation:fixture",
+        )
+    assert captured.value.code in {
+        ReleasePlanCode.GRAPH_DRIFT,
+        ReleasePlanCode.DUPLICATE,
+        ReleasePlanCode.MISSING,
+        ReleasePlanCode.CYCLE,
+    }
+
+
+def _rehashed_version_plan(
+    version_plan: VersionPlan,
+    *,
+    version_preview: object | None = None,
+    floor_preview: object | None = None,
+) -> VersionPlan:
+    versions = tuple(
+        version_preview
+        if version_preview is not None and item is version_plan.version_previews[0]
+        else item
+        for item in version_plan.version_previews
+    )
+    floors = tuple(
+        floor_preview
+        if floor_preview is not None and item is version_plan.floor_previews[0]
+        else item
+        for item in version_plan.floor_previews
+    )
+    return VersionPlan(
+        graph_digest=version_plan.graph_digest,
+        selection_digest=version_plan.selection_digest,
+        next_versions=version_plan.next_versions,
+        package_batches=version_plan.package_batches,
+        version_previews=versions,
+        floor_previews=floors,
+        plan_digest=_AUTO_PLAN_DIGEST,
+    )
+
+
+@pytest.mark.parametrize("mutation", ("version_sha", "version_site", "floor_text"))
+def test_rehashed_nested_version_evidence_still_requires_source_semantics(
+    mutation: str,
+) -> None:
+    graph, selection, version_plan = _fixture()
+    if mutation == "version_sha":
+        forged_version = replace(version_plan.version_previews[0], source_sha="1" * 40)
+        forged = _rehashed_version_plan(version_plan, version_preview=forged_version)
+    elif mutation == "version_site":
+        forged_version = replace(
+            version_plan.version_previews[0],
+            file_path="nested/pyproject.toml",
+            source_location="nested/pyproject.toml:[project].version",
+            policy=replace(
+                version_plan.version_previews[0].policy,
+                source_location="nested/pyproject.toml:[project].version",
+            ),
+        )
+        forged = _rehashed_version_plan(version_plan, version_preview=forged_version)
+    else:
+        forged_floor = replace(
+            version_plan.floor_previews[0],
+            old_text='">=1.0.1"',
+            new_text='">=1.0.2"',
+            old_normalized=">=1.0.1",
+            new_normalized=">=1.0.2",
+        )
+        forged = _rehashed_version_plan(version_plan, floor_preview=forged_floor)
+
+    with pytest.raises(ReleasePlanError) as captured:
+        freeze_release_plan(
+            graph,
+            selection,
+            forged,
+            source_sha=SOURCE_SHA,
+            base_sha=BASE_SHA,
+            generation_id="generation:fixture",
+        )
+    assert captured.value.code is ReleasePlanCode.VERSION_PLAN_DRIFT
+
+
+def test_frozen_input_bundle_reconstructs_nested_cp3_evidence() -> None:
+    graph, selection, version_plan = _fixture()
+    profile_map = {
+        project_id: BuildProfile("build-input", "a" * 64)
+        for project_id in selection.selected_project_ids
+    }
+    request = FrozenReleasePlanInput(
+        graph,
+        selection,
+        version_plan,
+        source_sha=SOURCE_SHA,
+        base_sha=BASE_SHA,
+        generation_id="generation:fixture",
+        build_profiles=profile_map,
+    )
+    assert request.graph is not graph
+    assert request.selection is not selection
+    assert request.version_plan is not version_plan
+    original_digest = request.version_plan.plan_digest
+    object.__setattr__(version_plan, "plan_digest", "0" * 64)
+    profile_map.clear()
+    assert request.version_plan.plan_digest == original_digest
+    assert request.build_profiles
+    plan = freeze_release_plan(request)
+    assert plan.graph is not request.graph
+    assert plan.selection is not request.selection
+    assert plan.version_plan is not request.version_plan
+    plan.validate()
+
+
+def test_cp3_trusted_version_planner_runtime_error_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph, selection, version_plan = _fixture()
+    import repository_manager.development.workspace_versions as versions
+
+    def explode(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("trusted version planner failure")
+
+    monkeypatch.setattr(versions, "plan_version_floors", explode)
+    with pytest.raises(RuntimeError, match="trusted version planner failure"):
         freeze_release_plan(
             graph,
             selection,
