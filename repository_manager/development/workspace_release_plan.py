@@ -235,6 +235,21 @@ def _strict_digest(
     return text.lower()
 
 
+def _strict_optional_digest(
+    value: object,
+    field_name: str,
+    *,
+    code: ReleasePlanCode = ReleasePlanCode.DIGEST,
+) -> str:
+    """Accept only an exact builtin empty omission or an exact digest string."""
+
+    if type(value) is not str:
+        raise _fail(code, f"{field_name} must be a builtin string")
+    if value == "":
+        return ""
+    return _strict_digest(value, field_name, code=code)
+
+
 def _strict_opaque(value: object, field_name: str, *, max_length: int) -> str:
     text = _strict_text(
         value,
@@ -1301,7 +1316,7 @@ class StagePreview:
     timeout_seconds: int = 0
 
     def __post_init__(self) -> None:
-        if type(self.stage_id) is not str or not self.stage_id:
+        if type(self.stage_id) is not str:
             raise _fail(ReleasePlanCode.DIGEST, "stage ID is required")
         stage_id = _strict_text(
             self.stage_id, "stage ID", max_length=256, code=ReleasePlanCode.DIGEST
@@ -1357,23 +1372,15 @@ class StagePreview:
                 ReleasePlanCode.DIGEST,
                 "stage floor preview digests must be ordered and unique",
             )
-        validation_digest = (
-            ""
-            if not self.validation_profile_digest
-            else _strict_digest(
-                self.validation_profile_digest,
-                "stage validation profile digest",
-                code=ReleasePlanCode.PROFILE,
-            )
+        validation_digest = _strict_optional_digest(
+            self.validation_profile_digest,
+            "stage validation profile digest",
+            code=ReleasePlanCode.PROFILE,
         )
-        build_digest = (
-            ""
-            if not self.build_profile_digest
-            else _strict_digest(
-                self.build_profile_digest,
-                "stage build profile digest",
-                code=ReleasePlanCode.PROFILE,
-            )
+        build_digest = _strict_optional_digest(
+            self.build_profile_digest,
+            "stage build profile digest",
+            code=ReleasePlanCode.PROFILE,
         )
         dependencies = _canonical_dependencies(self.depends_on, "stage dependencies")
         consent_reference = _revalidate_consent(self.consent_reference)
@@ -1406,15 +1413,13 @@ class StagePreview:
             raise _fail(
                 ReleasePlanCode.INVALID_INPUT, "stage timeout policy is unsupported"
             )
-        if type(self.retry_count) is not int or isinstance(self.retry_count, bool):
+        if type(self.retry_count) is not int:
             raise _fail(ReleasePlanCode.INVALID_INPUT, "stage retry count is invalid")
         if not 0 <= self.retry_count <= 32:
             raise _fail(
                 ReleasePlanCode.UNBOUNDED_INPUT, "stage retry count exceeds bound"
             )
-        if type(self.timeout_seconds) is not int or isinstance(
-            self.timeout_seconds, bool
-        ):
+        if type(self.timeout_seconds) is not int:
             raise _fail(ReleasePlanCode.INVALID_INPUT, "stage timeout is invalid")
         if not 0 <= self.timeout_seconds <= 604800:
             raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "stage timeout exceeds bound")
@@ -1500,6 +1505,10 @@ class StagePreview:
         return self.depends_on
 
     def canonical_payload(self, *, include_digests: bool = True) -> dict[str, object]:
+        normalized = _revalidate_stage(self)
+        return normalized._canonical_payload(include_digests=include_digests)
+
+    def _canonical_payload(self, *, include_digests: bool = True) -> dict[str, object]:
         payload: dict[str, object] = _stage_payload_without_digests(
             kind=self.kind,
             project_id=self.project_id,
@@ -1858,6 +1867,7 @@ class FrozenReleasePlan:
         return self.repository_trees
 
     def canonical_payload(self, *, include_digest: bool = False) -> dict[str, object]:
+        _validate_frozen_plan_fields(self, require_digest=True)
         return _plan_payload(self, include_digest=include_digest)
 
     def validate(self) -> None:
@@ -1880,6 +1890,9 @@ class FrozenReleasePlan:
         """Refuse reuse when graph, closure, tree, preview, or profile evidence drifts."""
 
         try:
+            # Validate and deep-reconstruct every frozen stage before any
+            # comparison or canonicalization can touch caller-controlled data.
+            _validate_frozen_plan_fields(self, require_digest=True)
             graph = _snapshot_graph(graph)
             selection = _snapshot_selection(selection)
             if graph.digest != self.graph_digest:
@@ -3092,7 +3105,39 @@ def _validate_frozen_plan_fields(
                 ReleasePlanCode.STAGE_DEPENDENCY,
                 "stage composition does not match frozen source evidence",
             )
-        expected_digest = _digest_payload(_plan_payload(plan, include_digest=False))
+        # Build the digest preimage only from the exact, reconstructed evidence
+        # above.  Never canonicalize the caller's stage objects here: an exact
+        # dataclass shell may still carry hostile scalar/container values, and
+        # a self-consistent rehash must not become an authenticity shortcut.
+        trusted_plan = object.__new__(FrozenReleasePlan)
+        trusted_fields: dict[str, object] = {
+            "workspace_id": workspace_id,
+            "source_sha": source_sha,
+            "base_sha": base_sha,
+            "generation_id": generation_id,
+            "graph_digest": graph_digest,
+            "selection_digest": selection_digest,
+            "version_plan_digest": version_plan_digest,
+            "selected_projects": selected,
+            "projects": project_values,
+            "edges": edge_tuple,
+            "parallel_groups": tuple(groups),
+            "version_plan": version_plan,
+            "validation_profiles": validation,
+            "build_profiles": build,
+            "stages": stages,
+            "graph": source_graph,
+            "selection": source_selection,
+            "decision_context": decision_context,
+            "push_consent": consent,
+            "plan_digest": "",
+            "contract_version": C11_FROZEN_PLAN_VERSION,
+        }
+        for field_name, value in trusted_fields.items():
+            object.__setattr__(trusted_plan, field_name, value)
+        expected_digest = _digest_payload(
+            _plan_payload(trusted_plan, include_digest=False)
+        )
         if require_digest:
             supplied = _strict_digest(plan.plan_digest, "plan digest")
             if supplied != expected_digest:

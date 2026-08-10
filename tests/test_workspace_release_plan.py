@@ -34,6 +34,7 @@ from repository_manager.development.workspace_release_plan import (
     ReleasePlanError,
     RetryPolicy,
     StageKind,
+    StagePreview,
     TimeoutPolicy,
     ValidationProfile,
     _digest_payload,
@@ -311,6 +312,125 @@ def test_frozen_plan_rejects_digest_and_nested_stage_tampering() -> None:
     object.__setattr__(forged, "stages", forged_stages)
     with pytest.raises(ReleasePlanError):
         validate_frozen_release_plan(forged)
+
+
+def test_stage_preview_rejects_hostile_falsy_profile_digest_before_type_check() -> None:
+    """RMDD-18 CP4 residual repro: StagePreview must refuse any non-exact-``str``
+    profile digest unconditionally.  A hostile ``str`` subclass that fakes
+    emptiness (``__bool__``/``__len__`` lie and report False/0 despite carrying
+    real content) must not be able to dodge the exact-type check by making the
+    surrounding code take the "empty" branch before ever calling
+    ``_strict_digest``."""
+
+    plan = _plan()
+    template = plan.stages[0]
+
+    class FalsyHostileDigest(str):
+        """A same-value digest string that fakes emptiness to a truthiness probe."""
+
+        def __bool__(self) -> bool:
+            return False
+
+        def __len__(self) -> int:
+            return 0
+
+    hostile = FalsyHostileDigest("a" * 64)
+    assert hostile == "a" * 64
+    assert not hostile  # exploit precondition: real content, but reads as falsy
+
+    # The stage_id/input_digest that would result if the hostile value were
+    # honestly sanitized to "" (the outcome the truthiness branch produces).
+    sanitized_payload = _stage_payload_without_digests(
+        kind=template.kind,
+        project_id=template.project_id,
+        base_sha=template.base_sha,
+        tree_sha=template.tree_sha,
+        generation_id=template.generation_id,
+        graph_digest=template.graph_digest,
+        selection_digest=template.selection_digest,
+        version_plan_digest=template.version_plan_digest,
+        version_preview_digests=template.version_preview_digests,
+        floor_preview_digests=template.floor_preview_digests,
+        validation_profile_digest="",
+        build_profile_digest=template.build_profile_digest,
+        depends_on=template.depends_on,
+        consent_reference=template.consent_reference,
+        decision_digest=template.decision_digest,
+        resource_profile=template.resource_profile,
+        retry_policy=template.retry_policy,
+        retry_count=template.retry_count,
+        timeout_policy=template.timeout_policy,
+        timeout_seconds=template.timeout_seconds,
+    )
+    sanitized_id, sanitized_input_digest = _stage_identity(sanitized_payload)
+
+    with pytest.raises(ReleasePlanError):
+        StagePreview(
+            stage_id=sanitized_id,
+            kind=template.kind,
+            project_id=template.project_id,
+            base_sha=template.base_sha,
+            tree_sha=template.tree_sha,
+            generation_id=template.generation_id,
+            graph_digest=template.graph_digest,
+            selection_digest=template.selection_digest,
+            version_plan_digest=template.version_plan_digest,
+            version_preview_digests=template.version_preview_digests,
+            floor_preview_digests=template.floor_preview_digests,
+            validation_profile_digest=hostile,
+            build_profile_digest=template.build_profile_digest,
+            depends_on=template.depends_on,
+            consent_reference=template.consent_reference,
+            failure_policy=template.failure_policy,
+            input_digest=sanitized_input_digest,
+            decision_digest=template.decision_digest,
+            resource_profile=template.resource_profile,
+            retry_policy=template.retry_policy,
+            retry_count=template.retry_count,
+            timeout_policy=template.timeout_policy,
+            timeout_seconds=template.timeout_seconds,
+        )
+
+
+def test_validate_against_rejects_a_forged_stage_masked_by_hostile_equality() -> None:
+    """RMDD-18 CP4 residual repro: ``validate_against`` must strictly
+    revalidate/rederive every stage of ``self``, not merely compare it against
+    a freshly frozen ``expected`` plan by value equality.  A forged stage
+    carrying a hostile ``str`` subclass whose ``__eq__`` always reports True
+    must not be able to masquerade as the genuine, freshly derived stage."""
+
+    graph, selection, _version_plan = _fixture()
+    plan = _plan()
+    plan.validate_against(graph, selection)  # sanity: the genuine plan validates
+
+    class AlwaysEqualString(str):
+        def __eq__(self, _other: object) -> bool:
+            return True
+
+        def __hash__(self) -> int:
+            return str.__hash__(self)
+
+    target = next(
+        stage
+        for stage in plan.stages
+        if stage.kind is StageKind.BUMP and stage.project_id == "repo:packages/a"
+    )
+    forged_stage = object.__new__(type(target))
+    for field_name in target.__dataclass_fields__:
+        object.__setattr__(forged_stage, field_name, getattr(target, field_name))
+    object.__setattr__(
+        forged_stage, "build_profile_digest", AlwaysEqualString("9" * 64)
+    )
+    forged_stages = tuple(
+        forged_stage if stage is target else stage for stage in plan.stages
+    )
+    forged = object.__new__(FrozenReleasePlan)
+    for field_name in plan.__dataclass_fields__:
+        object.__setattr__(forged, field_name, getattr(plan, field_name))
+    object.__setattr__(forged, "stages", forged_stages)
+
+    with pytest.raises(ReleasePlanError):
+        forged.validate_against(graph, selection)
 
 
 def test_profile_source_and_consent_changes_change_exact_digest() -> None:
