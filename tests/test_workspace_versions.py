@@ -9,6 +9,7 @@ import sys
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from textwrap import dedent
+from typing import cast
 
 import pytest
 
@@ -37,6 +38,7 @@ from repository_manager.development.workspace_versions import (
     FloorRewriteSite,
     MetadataRepresentation,
     VersionBump,
+    VersionPlan,
     VersionPlanningCode,
     VersionPlanningError,
     VersionPlanningInput,
@@ -397,6 +399,176 @@ def test_bounds_and_adversarial_iterables_fail_closed() -> None:
             ),
         )
     assert captured.value.code is VersionPlanningCode.UNSUPPORTED_SPECIFIER
+
+
+def test_version_overflow_is_normalized_to_privacy_safe_planning_error() -> None:
+    key = PackageKey("packages/a", Ecosystem.PYTHON, "a")
+    current = Version(f"{'9' * 124}.0.0")
+    package = PackageRecord(
+        key,
+        current,
+        (VersionSource("pyproject.toml:[project].version", current),),
+        (),
+        ("pyproject.toml",),
+    )
+    project = ProjectRecord("packages/a", "a" * 40, (package,), ("pyproject.toml",))
+    graph = build_dependency_graph([project])
+    selection = derive_selected_closure(graph, SelectionPolicy(("packages/a",)))
+    site = VersionSourceSite(
+        key,
+        "pyproject.toml",
+        current.value,
+        VersionSourcePolicy(
+            "pyproject.toml:[project].version",
+            MetadataRepresentation.PYTHON,
+            VersionBump.MAJOR,
+        ),
+    )
+
+    with pytest.raises(VersionPlanningError) as captured:
+        plan_version_floors(graph, selection, version_sites=(site,), floor_sites=())
+    assert captured.value.code is VersionPlanningCode.NON_SEMVER
+    assert type(captured.value) is VersionPlanningError
+    assert "WorkspaceReleaseError" not in str(captured.value)
+
+
+def test_hostile_nested_builtin_subclasses_fail_before_introspection() -> None:
+    class EvilList(list):
+        def __len__(self) -> int:
+            raise RuntimeError("private detail")
+
+        def __iter__(self):
+            raise RuntimeError("private detail")
+
+    with pytest.raises(VersionPlanningError) as captured:
+        VersionPlanningError(
+            VersionPlanningCode.INVALID_INPUT,
+            "bounded diagnostic",
+            details=cast(list[tuple[str, str]], [EvilList(("secret", "value"))]),
+        )
+    assert "private detail" not in str(captured.value)
+
+    graph, selection, keys = _chain()
+    with pytest.raises(VersionPlanningError) as captured:
+        VersionPlan(
+            graph_digest=graph.digest,
+            selection_digest=selection.digest,
+            next_versions=cast(
+                tuple[tuple[str, Version], ...],
+                (EvilList((keys["a"].value, Version("1.0.0"))),),
+            ),
+            package_batches=((keys["a"].value,),),
+        )
+    assert "private detail" not in str(captured.value)
+
+    with pytest.raises(VersionPlanningError) as captured:
+        VersionPlan(
+            graph_digest=graph.digest,
+            selection_digest=selection.digest,
+            next_versions=((keys["a"].value, Version("1.0.0")),),
+            package_batches=cast(
+                tuple[tuple[str, ...], ...], (EvilList((keys["a"].value,)),)
+            ),
+        )
+    assert "private detail" not in str(captured.value)
+
+
+def test_node_sites_require_canonical_json_string_literals() -> None:
+    _, _, keys = _chain()
+    with pytest.raises(VersionPlanningError) as captured:
+        FloorRewriteSite(
+            dependent=keys["c"],
+            dependency=keys["b"],
+            file_path="package.json",
+            source_location="package.json:dependencies.b",
+            representation=MetadataRepresentation.NODE,
+            old_text="'~1.0.0'",
+            policy=FloorPolicy.TILDE,
+        )
+    assert captured.value.code is VersionPlanningCode.UNSUPPORTED_SPECIFIER
+
+    with pytest.raises(VersionPlanningError) as captured:
+        FloorRewriteSite(
+            dependent=keys["c"],
+            dependency=keys["b"],
+            file_path="package.json",
+            source_location="package.json:dependencies.b",
+            representation=MetadataRepresentation.NODE,
+            old_text="~1.0.0",
+            policy=FloorPolicy.TILDE,
+        )
+    assert captured.value.code is VersionPlanningCode.UNSUPPORTED_SPECIFIER
+
+
+def test_plan_rejects_missing_digest_and_recomputed_forged_preview() -> None:
+    graph, selection, keys = _chain()
+    versions, floors = _sites(keys)
+    plan = plan_version_floors(
+        graph, selection, version_sites=versions, floor_sites=floors
+    )
+    missing_preview_digest = replace(plan.floor_previews[0], plan_digest="")
+    with pytest.raises(VersionPlanningError, match="plan digest"):
+        type(plan)(
+            graph_digest=plan.graph_digest,
+            selection_digest=plan.selection_digest,
+            next_versions=plan.next_versions,
+            package_batches=plan.package_batches,
+            version_previews=plan.version_previews,
+            floor_previews=(missing_preview_digest, *plan.floor_previews[1:]),
+            plan_digest=plan.plan_digest,
+        )
+
+    forged_preview = replace(plan.floor_previews[0], new_text="not-semver")
+    forged = object.__new__(type(plan))
+    object.__setattr__(forged, "graph_digest", plan.graph_digest)
+    object.__setattr__(forged, "selection_digest", plan.selection_digest)
+    object.__setattr__(forged, "next_versions", plan.next_versions)
+    object.__setattr__(forged, "package_batches", plan.package_batches)
+    object.__setattr__(forged, "version_previews", plan.version_previews)
+    object.__setattr__(
+        forged, "floor_previews", (forged_preview, *plan.floor_previews[1:])
+    )
+    object.__setattr__(forged, "plan_digest", plan.plan_digest)
+    with pytest.raises(VersionPlanningError, match="plan digest"):
+        forged.validate_against(graph, selection)
+
+
+def test_input_payload_canonicalizes_unordered_site_collections() -> None:
+    graph, selection, keys = _chain()
+    versions, floors = _sites(keys)
+    first = VersionPlanningInput(graph, selection, versions, floors)
+    reversed_input = VersionPlanningInput(
+        graph, selection, tuple(reversed(versions)), tuple(reversed(floors))
+    )
+    assert first.canonical_payload() == reversed_input.canonical_payload()
+
+
+def test_site_representation_is_bound_to_package_ecosystem() -> None:
+    _, _, keys = _chain()
+    with pytest.raises(VersionPlanningError) as captured:
+        VersionSourceSite(
+            package=keys["a"],
+            file_path="Cargo.toml",
+            old_text="1.0.0",
+            policy=VersionSourcePolicy(
+                "Cargo.toml:[package].version",
+                MetadataRepresentation.RUST,
+                VersionBump.PATCH,
+            ),
+        )
+    assert captured.value.code is VersionPlanningCode.INVALID_INPUT
+
+    with pytest.raises(VersionPlanningError) as captured:
+        FloorRewriteSite(
+            dependent=keys["b"],
+            dependency=keys["a"],
+            file_path="pyproject.toml",
+            source_location="pyproject.toml:dependencies.a",
+            representation=MetadataRepresentation.PYTHON,
+            old_text="^1.0.0",
+            policy=FloorPolicy.RANGE,
+        )
+    assert captured.value.code is VersionPlanningCode.INVALID_INPUT
 
 
 @pytest.mark.parametrize(

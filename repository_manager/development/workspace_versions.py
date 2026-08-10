@@ -28,6 +28,7 @@ from .workspace_release import (
     MAX_STRING_LENGTH,
     DependencyEdge,
     DependencyGraph,
+    Ecosystem,
     PackageKey,
     PackageRecord,
     ProjectRecord,
@@ -49,6 +50,7 @@ _PARTIAL_VERSION = re.compile(
     r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*))?(?:\.(0|[1-9][0-9]*))?$"
 )
 _T = TypeVar("_T")
+_AUTO_PLAN_DIGEST = "__version_plan_digest_auto__"
 
 
 class VersionPlanningCode(StrEnum):
@@ -173,6 +175,11 @@ def _bounded_text(
 def _bounded_pairs(
     value: object, field_name: str, *, max_items: int = MAX_WITNESSES
 ) -> tuple[tuple[str, str], ...]:
+    if type(value) not in (tuple, list):
+        raise _fail(
+            VersionPlanningCode.INVALID_INPUT,
+            f"{field_name} must use an exact builtin sequence",
+        )
     if isinstance(value, (str, bytes, bytearray, Mapping)) or not isinstance(
         value, Iterable
     ):
@@ -195,7 +202,10 @@ def _bounded_pairs(
             raise _fail(
                 VersionPlanningCode.UNBOUNDED_INPUT, f"{field_name} could not be read"
             ) from None
-        if not isinstance(item, (tuple, list)) or len(item) != 2:
+        # A list/tuple subclass can override ``__len__`` (or iteration).  Check
+        # exact builtin containers before touching either operation so hostile
+        # nested diagnostics fail closed without executing caller code.
+        if type(item) not in (tuple, list) or len(item) != 2:
             raise _fail(
                 VersionPlanningCode.INVALID_INPUT, f"{field_name} must contain pairs"
             )
@@ -218,8 +228,17 @@ def _bounded_pairs(
 
 
 def _bounded_sequence(
-    value: object, field_name: str, *, max_items: int
+    value: object,
+    field_name: str,
+    *,
+    max_items: int,
+    exact_builtin: bool = False,
 ) -> tuple[object, ...]:
+    if exact_builtin and type(value) not in (tuple, list):
+        raise _fail(
+            VersionPlanningCode.INVALID_INPUT,
+            f"{field_name} must use an exact builtin sequence",
+        )
     if isinstance(value, (str, bytes, bytearray, Mapping)) or not isinstance(
         value, Iterable
     ):
@@ -333,13 +352,17 @@ def _stable_version(value: object, field_name: str) -> Version:
         )
     try:
         return Version(text)
-    except WorkspaceReleaseError as exc:
+    except WorkspaceReleaseError:
         raise _fail(
             VersionPlanningCode.NON_SEMVER, f"{field_name} is not semantic-version data"
-        ) from exc
+        ) from None
 
 
-def _version_literal(value: str, field_name: str) -> tuple[str, str]:
+def _version_literal(
+    value: str,
+    field_name: str,
+    representation: MetadataRepresentation | None = None,
+) -> tuple[str, str]:
     text = _bounded_text(value, field_name)
     if len(text) >= 2 and text[0] in {'"', "'"} and text[-1] == text[0]:
         inner = text[1:-1]
@@ -348,18 +371,56 @@ def _version_literal(value: str, field_name: str) -> tuple[str, str]:
                 VersionPlanningCode.UNSUPPORTED_SPECIFIER,
                 f"{field_name} has an unsupported quoted value",
             )
+        if representation is MetadataRepresentation.NODE and text[0] != '"':
+            raise _fail(
+                VersionPlanningCode.UNSUPPORTED_SPECIFIER,
+                f"{field_name} must use JSON double quotes",
+            )
         return inner, text[0]
     if text[:1] in {'"', "'"} or text[-1:] in {'"', "'"}:
         raise _fail(
             VersionPlanningCode.UNSUPPORTED_SPECIFIER,
             f"{field_name} has an unterminated quoted value",
         )
+    if representation is MetadataRepresentation.NODE:
+        raise _fail(
+            VersionPlanningCode.UNSUPPORTED_SPECIFIER,
+            f"{field_name} must be a JSON string literal",
+        )
     return text, ""
 
 
-def _render_literal(value: str, new_value: str) -> str:
-    _, quote = _version_literal(value, "metadata value")
+def _render_literal(
+    value: str,
+    new_value: str,
+    representation: MetadataRepresentation | None = None,
+) -> str:
+    _, quote = _version_literal(value, "metadata value", representation)
     return f"{quote}{new_value}{quote}" if quote else new_value
+
+
+def _validate_package_representation(
+    package: PackageKey,
+    representation: MetadataRepresentation,
+    field_name: str,
+) -> None:
+    """Bind a metadata representation to the package it describes."""
+
+    if not isinstance(representation, MetadataRepresentation):
+        raise _fail(
+            VersionPlanningCode.INVALID_INPUT,
+            f"{field_name} representation is unsupported",
+        )
+    if not isinstance(package.ecosystem, Ecosystem):
+        raise _fail(
+            VersionPlanningCode.INVALID_INPUT,
+            f"{field_name} package ecosystem is unsupported",
+        )
+    if package.ecosystem.value != representation.value:
+        raise _fail(
+            VersionPlanningCode.INVALID_INPUT,
+            f"{field_name} representation does not match its package ecosystem",
+        )
 
 
 def _validate_representation_path(
@@ -477,10 +538,18 @@ class VersionSourceSite:
                 VersionPlanningCode.INVALID_INPUT,
                 "version site policy must be explicit",
             )
+        _validate_package_representation(
+            self.package, self.policy.representation, "version site"
+        )
         _validate_representation_path(self.policy.representation, file_path)
         _validate_selector(file_path, self.policy.source_location)
         object.__setattr__(
             self, "old_text", _bounded_text(self.old_text, "version site old text")
+        )
+        _version_literal(
+            self.old_text,
+            "version site old text",
+            self.policy.representation,
         )
         if type(self.symlink) is not bool:
             raise _fail(
@@ -528,6 +597,9 @@ class FloorRewriteSite:
                 VersionPlanningCode.INVALID_INPUT,
                 "floor representation must be explicit",
             )
+        _validate_package_representation(
+            self.dependent, self.representation, "floor site"
+        )
         _validate_representation_path(self.representation, file_path)
         object.__setattr__(
             self, "source_location", _validate_selector(file_path, self.source_location)
@@ -539,6 +611,7 @@ class FloorRewriteSite:
                 self.old_text, "floor site old text", max_length=MAX_VERSION_TEXT
             ),
         )
+        _floor_literal(self.old_text, self.representation)
         if not isinstance(self.policy, FloorPolicy):
             raise _fail(
                 VersionPlanningCode.INVALID_INPUT, "floor policy must be explicit"
@@ -603,6 +676,29 @@ class VersionPlanningInput:
                 "planning input floor sites",
                 FloorRewriteSite,
                 max_items=MAX_FLOOR_SITES,
+            ),
+        )
+        # Site collections are evidence sets, not ordered instructions.  Keep
+        # duplicates/conflicts intact while making their payload independent of
+        # caller iteration order.
+        object.__setattr__(
+            self,
+            "version_sites",
+            tuple(
+                sorted(
+                    self.version_sites,
+                    key=lambda site: _canonical_json(site.canonical_payload()),
+                )
+            ),
+        )
+        object.__setattr__(
+            self,
+            "floor_sites",
+            tuple(
+                sorted(
+                    self.floor_sites,
+                    key=lambda site: _canonical_json(site.canonical_payload()),
+                )
             ),
         )
 
@@ -679,10 +775,10 @@ def _partial_floor(text: str, representation: MetadataRepresentation) -> Version
         )
     try:
         return VersionFloor(operator=operator, version=Version(".".join(components)))
-    except WorkspaceReleaseError as exc:
+    except WorkspaceReleaseError:
         raise _fail(
             VersionPlanningCode.UNSUPPORTED_SPECIFIER, "dependency floor is unsupported"
-        ) from exc
+        ) from None
 
 
 def _floor_literal(
@@ -691,21 +787,10 @@ def _floor_literal(
     if value == "":
         return None, ""
     text = _bounded_text(value, "floor site old text", max_length=MAX_VERSION_TEXT)
-    if text == "*":
-        return None, ""
-    if len(text) >= 2 and text[0] in {'"', "'"} and text[-1] == text[0]:
-        inner = text[1:-1]
-        if not inner or "\\" in inner or text[0] in inner:
-            raise _fail(
-                VersionPlanningCode.UNSUPPORTED_SPECIFIER,
-                "quoted floor value is unsupported",
-            )
-        return _partial_floor(inner, representation), text[0]
-    if text[:1] in {'"', "'"} or text[-1:] in {'"', "'"}:
-        raise _fail(
-            VersionPlanningCode.UNSUPPORTED_SPECIFIER, "unterminated floor literal"
-        )
-    return _partial_floor(text, representation), ""
+    inner, quote = _version_literal(text, "floor site old text", representation)
+    if inner == "*":
+        return None, quote
+    return _partial_floor(inner, representation), quote
 
 
 def _floor_operator(policy: FloorPolicy, representation: MetadataRepresentation) -> str:
@@ -777,8 +862,12 @@ def _metadata_file_known(
     return not known or file_path in known
 
 
-def _current_version_literal(old_text: str, expected: Version) -> None:
-    literal, _ = _version_literal(old_text, "version site old text")
+def _current_version_literal(
+    old_text: str,
+    expected: Version,
+    representation: MetadataRepresentation,
+) -> None:
+    literal, _ = _version_literal(old_text, "version site old text", representation)
     observed = _stable_version(literal, "version site old text")
     if observed != expected:
         raise _fail(
@@ -795,10 +884,14 @@ def _next_version(current: Version, policy: VersionSourcePolicy) -> Version:
         return _stable_version(policy.exact_version, "exact next version")
     major, minor, patch = stable.numeric
     if policy.bump is VersionBump.MAJOR:
-        return Version(f"{major + 1}.0.0")
-    if policy.bump is VersionBump.MINOR:
-        return Version(f"{major}.{minor + 1}.0")
-    return Version(f"{major}.{minor}.{patch + 1}")
+        candidate = f"{major + 1}.0.0"
+    elif policy.bump is VersionBump.MINOR:
+        candidate = f"{major}.{minor + 1}.0"
+    else:
+        candidate = f"{major}.{minor}.{patch + 1}"
+    # Reuse the bounded semantic-version adapter so an overflowing numeric
+    # component cannot leak WorkspaceReleaseError from Version(...).
+    return _stable_version(candidate, "next package version")
 
 
 def _package_batches(
@@ -884,6 +977,9 @@ class VersionPreview:
                 VersionPlanningCode.INVALID_INPUT,
                 "version preview representation is invalid",
             )
+        _validate_package_representation(
+            self.package, self.representation, "version preview"
+        )
         file_path = _safe_relative_path(self.file_path)
         object.__setattr__(self, "file_path", file_path)
         _validate_representation_path(self.representation, file_path)
@@ -905,6 +1001,17 @@ class VersionPreview:
         object.__setattr__(
             self, "new_text", _bounded_text(self.new_text, "version preview new text")
         )
+        _version_literal(
+            self.old_text,
+            "version preview old text",
+            self.representation,
+        )
+        if self.representation is MetadataRepresentation.NODE:
+            _version_literal(
+                self.new_text,
+                "version preview new text",
+                self.representation,
+            )
         project_id = _bounded_text(
             self.project_id,
             "version preview project ID",
@@ -923,6 +1030,11 @@ class VersionPreview:
             raise _fail(
                 VersionPlanningCode.CONFLICTING_VERSION_SOURCE,
                 "version preview policy is not bound to its source",
+            )
+        if self.policy.representation is not self.representation:
+            raise _fail(
+                VersionPlanningCode.INVALID_INPUT,
+                "version preview policy representation is not bound to its site",
             )
         if not isinstance(self.reason, VersionPreviewReason):
             raise _fail(
@@ -1023,6 +1135,9 @@ class FloorPreview:
                 VersionPlanningCode.INVALID_INPUT,
                 "floor preview endpoints must be PackageKey values",
             )
+        _validate_package_representation(
+            self.dependent, self.representation, "floor preview"
+        )
         file_path = _safe_relative_path(self.file_path)
         object.__setattr__(self, "file_path", file_path)
         if not isinstance(self.representation, MetadataRepresentation):
@@ -1055,6 +1170,9 @@ class FloorPreview:
             if self.new_text
             else "",
         )
+        _floor_literal(self.old_text, self.representation)
+        if self.representation is MetadataRepresentation.NODE and self.new_text:
+            _floor_literal(self.new_text, self.representation)
         project_id = _bounded_text(
             self.project_id,
             "floor preview project ID",
@@ -1158,6 +1276,95 @@ class FloorPreview:
         return payload
 
 
+def _preview_digest_failure() -> VersionPlanningError:
+    """Return one privacy-safe error for any forged preview evidence."""
+
+    return _fail(
+        VersionPlanningCode.DIGEST,
+        "preview evidence does not match the enclosing plan digest",
+    )
+
+
+def _validate_version_preview_evidence(preview: VersionPreview) -> None:
+    """Cross-bind version text, parsed values, policy, and site identity."""
+
+    try:
+        old_literal, old_quote = _version_literal(
+            preview.old_text,
+            "version preview old text",
+            preview.representation,
+        )
+        new_literal, new_quote = _version_literal(
+            preview.new_text,
+            "version preview new text",
+            preview.representation,
+        )
+        old_version = _stable_version(old_literal, "version preview old text")
+        new_version = _stable_version(new_literal, "version preview new text")
+        if old_version != preview.current_version:
+            raise _preview_digest_failure()
+        if new_version != preview.next_version or old_quote != new_quote:
+            raise _preview_digest_failure()
+        if (
+            _next_version(preview.current_version, preview.policy)
+            != preview.next_version
+        ):
+            raise _preview_digest_failure()
+        if (
+            _render_literal(
+                preview.old_text,
+                preview.next_version.value,
+                preview.representation,
+            )
+            != preview.new_text
+        ):
+            raise _preview_digest_failure()
+    except VersionPlanningError:
+        raise _preview_digest_failure() from None
+    except WorkspaceReleaseError:
+        raise _preview_digest_failure() from None
+
+
+def _validate_floor_preview_evidence(preview: FloorPreview) -> None:
+    """Cross-bind floor text, normalized values, policy, and site identity."""
+
+    try:
+        old_floor, old_quote = _floor_literal(preview.old_text, preview.representation)
+        new_floor, new_quote = _floor_literal(preview.new_text, preview.representation)
+        old_normalized = old_floor.value if old_floor is not None else ""
+        new_normalized = new_floor.value if new_floor is not None else ""
+        if (
+            old_normalized != preview.old_normalized
+            or new_normalized != preview.new_normalized
+            or old_quote != new_quote
+        ):
+            raise _preview_digest_failure()
+        if preview.is_noop:
+            if preview.new_text != preview.old_text:
+                raise _preview_digest_failure()
+            return
+        if new_floor is None:
+            raise _preview_digest_failure()
+        if new_floor.operator != _floor_operator(
+            preview.policy, preview.representation
+        ):
+            raise _preview_digest_failure()
+        if (
+            _render_floor(
+                new_floor,
+                preview.policy,
+                preview.representation,
+                old_quote,
+            )
+            != preview.new_text
+        ):
+            raise _preview_digest_failure()
+    except VersionPlanningError:
+        raise _preview_digest_failure() from None
+    except WorkspaceReleaseError:
+        raise _preview_digest_failure() from None
+
+
 def _version_plan_payload(
     plan: VersionPlan, *, include_preview_plan_digest: bool = False
 ) -> dict[str, object]:
@@ -1201,22 +1408,30 @@ class VersionPlan:
         graph_digest = _digest(self.graph_digest, "plan graph digest")
         selection_digest = _digest(self.selection_digest, "plan selection digest")
         raw_versions = _bounded_sequence(
-            self.next_versions, "plan next versions", max_items=MAX_PACKAGES
+            self.next_versions,
+            "plan next versions",
+            max_items=MAX_PACKAGES,
+            exact_builtin=True,
         )
         normalized_versions: list[tuple[str, Version]] = []
         for item in raw_versions:
+            if type(item) not in (tuple, list):
+                raise _fail(
+                    VersionPlanningCode.INVALID_INPUT,
+                    "plan next versions must contain package/version pairs",
+                )
+            pair = cast(tuple[object, object], item)
             if (
-                not isinstance(item, (tuple, list))
-                or len(item) != 2
-                or type(item[0]) is not str
-                or not isinstance(item[1], Version)
+                len(pair) != 2
+                or type(pair[0]) is not str
+                or not isinstance(pair[1], Version)
             ):
                 raise _fail(
                     VersionPlanningCode.INVALID_INPUT,
                     "plan next versions must contain package/version pairs",
                 )
-            package_id = _bounded_text(item[0], "plan package identity")
-            version = _stable_version(item[1], "plan next version")
+            package_id = _bounded_text(pair[0], "plan package identity")
+            version = _stable_version(pair[1], "plan next version")
             normalized_versions.append((package_id, version))
         normalized_versions.sort(key=lambda item: item[0])
         if not normalized_versions or len(
@@ -1229,13 +1444,19 @@ class VersionPlan:
         version_map = dict(normalized_versions)
 
         raw_batches = _bounded_sequence(
-            self.package_batches, "plan package batches", max_items=MAX_PACKAGES
+            self.package_batches,
+            "plan package batches",
+            max_items=MAX_PACKAGES,
+            exact_builtin=True,
         )
         batches: list[tuple[str, ...]] = []
         seen_packages: set[str] = set()
         for raw_batch in raw_batches:
             values = _bounded_sequence(
-                raw_batch, "plan package batch", max_items=MAX_PACKAGES
+                raw_batch,
+                "plan package batch",
+                max_items=MAX_PACKAGES,
+                exact_builtin=True,
             )
             if not values or any(type(item) is not str for item in values):
                 raise _fail(
@@ -1310,6 +1531,10 @@ class VersionPlan:
             )
         )
         for version_preview in versions:
+            _validate_version_preview_evidence(version_preview)
+        for floor_preview in floors:
+            _validate_floor_preview_evidence(floor_preview)
+        for version_preview in versions:
             if (
                 version_preview.graph_digest != graph_digest
                 or version_preview.selection_digest != selection_digest
@@ -1350,20 +1575,34 @@ class VersionPlan:
         object.__setattr__(self, "version_previews", versions)
         object.__setattr__(self, "floor_previews", floors)
         expected = _version_plan_digest(self)
-        if self.plan_digest:
+        if not isinstance(self.plan_digest, str):
+            raise _fail(
+                VersionPlanningCode.DIGEST, "plan digest must be a SHA-256 digest"
+            )
+        auto_digest = self.plan_digest == _AUTO_PLAN_DIGEST
+        if not auto_digest and not self.plan_digest:
+            raise _fail(
+                VersionPlanningCode.DIGEST,
+                "plan digest is required for a frozen plan",
+            )
+        if not auto_digest:
             supplied = _digest(self.plan_digest, "plan digest")
             if supplied != expected:
                 raise _fail(
                     VersionPlanningCode.DIGEST,
                     "plan digest does not match frozen contents",
                 )
-        if any(
-            version_preview.plan_digest and version_preview.plan_digest != expected
-            for version_preview in versions
-        ) or any(
-            floor_preview.plan_digest and floor_preview.plan_digest != expected
-            for floor_preview in floors
-        ):
+        if (
+            any(
+                (not version_preview.plan_digest)
+                or version_preview.plan_digest != expected
+                for version_preview in versions
+            )
+            or any(
+                (not floor_preview.plan_digest) or floor_preview.plan_digest != expected
+                for floor_preview in floors
+            )
+        ) and not auto_digest:
             raise _fail(
                 VersionPlanningCode.DIGEST,
                 "preview plan digest does not match enclosing contents",
@@ -1401,21 +1640,85 @@ class VersionPlan:
     def validate_against(
         self, graph: DependencyGraph, selection: SelectedChangeClosure
     ) -> None:
-        """Refuse reuse after graph/selection drift; no state is changed."""
+        """Refuse reuse after graph/selection or preview-evidence drift."""
 
-        if not isinstance(graph, DependencyGraph) or graph.digest != self.graph_digest:
-            raise _fail(
-                VersionPlanningCode.GRAPH_DRIFT,
-                "current graph does not match the frozen plan",
+        try:
+            if (
+                not isinstance(graph, DependencyGraph)
+                or graph.digest != self.graph_digest
+            ):
+                raise _fail(
+                    VersionPlanningCode.GRAPH_DRIFT,
+                    "current graph does not match the frozen plan",
+                )
+            if (
+                not isinstance(selection, SelectedChangeClosure)
+                or selection.digest != self.selection_digest
+            ):
+                raise _fail(
+                    VersionPlanningCode.SELECTION_DRIFT,
+                    "current selection does not match the frozen plan",
+                )
+            if not self.plan_digest:
+                raise _fail(
+                    VersionPlanningCode.DIGEST,
+                    "plan digest is required for validation",
+                )
+            if any(not preview.plan_digest for preview in self.version_previews) or any(
+                not preview.plan_digest for preview in self.floor_previews
+            ):
+                raise _fail(
+                    VersionPlanningCode.DIGEST,
+                    "preview plan digest is required for validation",
+                )
+            if _version_plan_digest(self) != self.plan_digest:
+                raise _fail(
+                    VersionPlanningCode.DIGEST,
+                    "plan digest does not match frozen contents",
+                )
+            version_sites = tuple(
+                VersionSourceSite(
+                    package=preview.package,
+                    file_path=preview.file_path,
+                    old_text=preview.old_text,
+                    policy=preview.policy,
+                )
+                for preview in self.version_previews
             )
-        if (
-            not isinstance(selection, SelectedChangeClosure)
-            or selection.digest != self.selection_digest
-        ):
-            raise _fail(
-                VersionPlanningCode.SELECTION_DRIFT,
-                "current selection does not match the frozen plan",
+            floor_sites = tuple(
+                FloorRewriteSite(
+                    dependent=preview.dependent,
+                    dependency=preview.dependency,
+                    file_path=preview.file_path,
+                    source_location=preview.source_location,
+                    representation=preview.representation,
+                    old_text=preview.old_text,
+                    policy=preview.policy,
+                )
+                for preview in self.floor_previews
             )
+            expected = plan_version_floors(
+                graph,
+                selection,
+                version_sites=version_sites,
+                floor_sites=floor_sites,
+            )
+            if self.canonical_payload(
+                include_digest=True
+            ) != expected.canonical_payload(include_digest=True):
+                raise _fail(
+                    VersionPlanningCode.DIGEST,
+                    "plan evidence does not match recomputed contents",
+                )
+        except VersionPlanningError:
+            raise
+        except Exception:
+            # Forged construct/model-copy instances and lower-level bounded
+            # record failures must not expose implementation or caller data.
+            raise _fail(
+                VersionPlanningCode.DIGEST,
+                "plan evidence could not be validated",
+            ) from None
 
 
 def _site_project_and_package(
@@ -1518,7 +1821,9 @@ def plan_version_floors(
                 "version site file is not in frozen metadata files",
             )
         _current_version_literal(
-            version_site.old_text, _stable_version(package.version, "package version")
+            version_site.old_text,
+            _stable_version(package.version, "package version"),
+            version_site.policy.representation,
         )
         if not any(
             source.location == version_site.policy.source_location
@@ -1560,7 +1865,11 @@ def plan_version_floors(
                 representation=version_site.policy.representation,
                 source_sha=project.tree_sha,
                 old_text=version_site.old_text,
-                new_text=_render_literal(version_site.old_text, next_value.value),
+                new_text=_render_literal(
+                    version_site.old_text,
+                    next_value.value,
+                    version_site.policy.representation,
+                ),
                 current_version=current,
                 next_version=next_value,
                 policy=version_site.policy,
@@ -1643,7 +1952,7 @@ def plan_version_floors(
         raise _fail(
             VersionPlanningCode.MISSING_FLOOR_SITE,
             "a changed dependency has no exact rewrite site",
-            details=(
+            details=tuple(
                 ("edge", f"{dependent}->{dependency}")
                 for dependent, dependency in missing_sites
             ),
@@ -1738,6 +2047,7 @@ def plan_version_floors(
         package_batches=batches,
         version_previews=tuple(version_previews),
         floor_previews=tuple(floor_previews),
+        plan_digest=_AUTO_PLAN_DIGEST,
     )
 
 
