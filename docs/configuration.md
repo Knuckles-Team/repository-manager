@@ -20,6 +20,13 @@ skill whose certification or tool-schema fingerprint does not match the
 installed package. Use the compact/intent-oriented tool surface for delegated
 agents; expose verbose per-operation tools only for compatibility or debugging.
 
+Repository declarations are versioned separately from capability configuration.
+See [config-schema-migration](config-schema-migration.md) for the v2
+`.buildcache.yaml`/`.mergequeue.yaml` contracts, legacy-shape compatibility,
+strict unknown-key policy, and the preview/atomic-apply/rollback API. Parsing is
+pure: it validates resource, path, command, stage, and artifact fields without
+starting builds, gates, generators, or remote work.
+
 ## Runtime values and secrets
 
 - Supply service endpoints, tenant identifiers, credentials, and model keys

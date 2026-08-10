@@ -89,9 +89,11 @@ nav:
   - Overview: overview.md
   - Installation: installation.md
   - Configuration, trust, and privacy: configuration.md
+  - Configuration schemas and migration: config-schema-migration.md
   - Deployment: deployment.md
   - Usage (API / CLI / MCP): usage.md
   - Phased Maintenance: phased_maintenance.md
   - Phased Push: phased_push.md
   - Merge Queue (universal): merge-queue.md
+  - Adapter boundaries: adapter-extraction.md
   - Concepts: concepts.md

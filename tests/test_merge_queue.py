@@ -20,7 +20,9 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -1191,3 +1193,276 @@ def test_landing_still_works_when_canonical_IS_on_the_base(shell_repo: Path) -> 
     # The working tree moved too, not just the ref.
     assert (shell_repo / "y.txt").is_file()
     assert _run("git rev-parse HEAD", shell_repo) == outcome["to"]
+
+
+# ---------------------------------------------------------------------------
+# RMDD-12 checkpoint 2 — the existing queue store is the only authority
+# ---------------------------------------------------------------------------
+_SHADOW_CONFIG = "1" * 64
+_SHADOW_TOOLCHAIN = "2" * 64
+_SHADOW_RESOURCE = "3" * 64
+
+
+def _shadow_kwargs(repo: Path) -> dict[str, object]:
+    return {
+        "config_digest": _SHADOW_CONFIG,
+        "toolchain_digest": _SHADOW_TOOLCHAIN,
+        "resource_digest": _SHADOW_RESOURCE,
+        "now": "2099-01-01T00:00:00Z",
+        "path": repo,
+    }
+
+
+def test_shadow_generation_uses_mixed_queue_fragments_and_replays_idempotently(
+    shell_repo: Path,
+) -> None:
+    """Domain records share queue_store while legacy candidates stay queued."""
+
+    _branch_with(shell_repo, "feat/shadow", {"shadow.txt": "shadow\n"}, "shadow")
+    mq.enqueue("feat/shadow", path=shell_repo)
+    refs_before = _run(
+        "git for-each-ref --format='%(refname) %(objectname)' refs/heads", shell_repo
+    )
+    first = mq.shadow_generation(**_shadow_kwargs(shell_repo))
+    refs_after = _run(
+        "git for-each-ref --format='%(refname) %(objectname)' refs/heads", shell_repo
+    )
+
+    assert first["landed"] is False
+    assert first["candidate_snapshot_appends"] == 1
+    assert first["generation_record_appends"] == 2
+    assert first["generations"][0]["result"]["status"] == "trial-merged"
+    assert first["generations"][0]["result"]["certifiable"] is False
+    assert refs_after == refs_before
+    assert [item.branch for item in mq.queued(shell_repo)] == ["feat/shadow"]
+
+    raw = mq._queue_raw_records(shell_repo)
+    assert {item.get("kind") for item in raw} == {
+        "candidate_snapshot",
+        "generation",
+        None,
+    }
+    for item in raw:
+        if item.get("kind") in {"candidate_snapshot", "generation"}:
+            assert item["id"] == item["record_id"]
+
+    second = mq.shadow_generation(**_shadow_kwargs(shell_repo))
+    assert second["candidate_snapshot_appends"] == 0
+    assert second["generation_record_appends"] == 0
+    assert (
+        second["generations"][0]["result"]["synthetic_commit_sha"]
+        == first["generations"][0]["result"]["synthetic_commit_sha"]
+    )
+    assert mq._queue_raw_records(shell_repo) == raw
+
+
+def test_shadow_generation_lease_serializes_callers_and_cleans_up(
+    shell_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One caller owns the existing merge lease; replay is stable after release."""
+
+    from agent_utilities.governance.lanes import LeaseUnavailable, lease_status
+
+    _branch_with(shell_repo, "feat/lease", {"lease.txt": "lease\n"}, "lease")
+    mq.enqueue("feat/lease", path=shell_repo)
+    entered = Event()
+    release = Event()
+    real_trial = mq._shadow_trial_merge
+
+    def blocked_trial(repo: Path, record):
+        entered.set()
+        if not release.wait(10):
+            raise AssertionError("test trial release timed out")
+        return real_trial(repo, record)
+
+    monkeypatch.setattr(mq, "_shadow_trial_merge", blocked_trial)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            mq.shadow_generation, **_shadow_kwargs(shell_repo)
+        )
+        try:
+            assert entered.wait(10), "first caller did not reach the leased trial"
+            second_future = executor.submit(
+                mq.shadow_generation, **_shadow_kwargs(shell_repo)
+            )
+            with pytest.raises(LeaseUnavailable):
+                second_future.result(timeout=10)
+        finally:
+            release.set()
+        first = first_future.result(timeout=10)
+
+    assert first["generations"][0]["result"]["status"] == "trial-merged"
+    assert lease_status(mq.MERGE_LEASE, shell_repo) is None
+    replay = mq.shadow_generation(**_shadow_kwargs(shell_repo))
+    assert replay["candidate_snapshot_appends"] == 0
+    assert replay["generation_record_appends"] == 0
+    raw = mq._queue_raw_records(shell_repo)
+    assert sum(item.get("kind") == "candidate_snapshot" for item in raw) == 1
+    assert sum(item.get("kind") == "generation" for item in raw) == 2
+    from repository_manager.candidate_generation import fold_generation_records
+
+    assert len(fold_generation_records(raw)) == 1
+
+
+def test_shadow_generation_lease_cleans_up_after_failure(shell_repo: Path) -> None:
+    """A failed snapshot cannot strand the shared merge lease."""
+
+    from agent_utilities.governance.lanes import lease_status
+
+    _branch_with(shell_repo, "feat/failure", {"failure.txt": "failure\n"}, "failure")
+    mq.enqueue("feat/failure", path=shell_repo)
+    with pytest.raises(mq.MergeQueueError, match="config_digest"):
+        mq.shadow_generation(
+            config_digest="not-a-digest",
+            toolchain_digest=_SHADOW_TOOLCHAIN,
+            resource_digest=_SHADOW_RESOURCE,
+            now="2099-01-01T00:00:00Z",
+            path=shell_repo,
+        )
+    assert lease_status(mq.MERGE_LEASE, shell_repo) is None
+
+
+def test_shadow_generation_attributes_conflict_and_differential_paths_without_refs(
+    shell_repo: Path,
+) -> None:
+    """Conflict attribution comes from merge-tree, with no index/worktree/ref use."""
+
+    (shell_repo / "shared.txt").write_text("base\n")
+    _commit(shell_repo, "add shared base")
+    _branch_with(shell_repo, "feat/a", {"shared.txt": "a\n"}, "a")
+    _branch_with(shell_repo, "feat/b", {"shared.txt": "b\n"}, "b")
+    mq.enqueue("feat/a", path=shell_repo)
+    mq.enqueue("feat/b", path=shell_repo)
+    refs_before = _run(
+        "git for-each-ref --format='%(refname) %(objectname)' refs/heads", shell_repo
+    )
+    status_before = _run("git status --porcelain", shell_repo)
+
+    result = mq.shadow_generation(**_shadow_kwargs(shell_repo))
+    outcome = result["generations"][0]["result"]
+    refs_after = _run(
+        "git for-each-ref --format='%(refname) %(objectname)' refs/heads", shell_repo
+    )
+
+    assert outcome["status"] == "conflicted"
+    assert outcome["certifiable"] is False
+    assert outcome["conflicted_candidate_ids"]
+    assert outcome["conflicts"][0]["conflicts"]
+    assert outcome["conflicts"][0]["conflict_count"] >= 1
+    assert outcome["conflicts"][0]["conflict_against"]["kind"] == (
+        "rolling-synthetic-head"
+    )
+    assert outcome["conflicts"][0]["conflict_against"]["members"] == [
+        {
+            "candidate_id": outcome["accepted_candidate_ids"][0],
+            "version": 1,
+        }
+    ]
+    assert outcome["differential_paths"] == ["shared.txt"]
+    assert outcome["differential_path_count"] == 1
+    assert outcome["differential_paths_truncated"] is False
+    assert refs_after == refs_before
+    assert _run("git status --porcelain", shell_repo) == status_before
+    assert mq.queued(shell_repo)
+
+
+def test_domain_only_queue_fragments_fold_without_legacy_projection(
+    shell_repo: Path,
+) -> None:
+    """The additive view also works when a migrated fragment has no legacy row."""
+
+    from repository_manager.candidate_generation import (
+        fold_candidate_records,
+        fold_generation_records,
+        generation_record,
+        snapshot_candidate,
+    )
+    from repository_manager.development import RepositoryIdentity
+
+    _branch_with(shell_repo, "feat/domain", {"domain.txt": "domain\n"}, "domain")
+    base_sha = _run("git rev-parse main", shell_repo)
+    candidate_sha = _run("git rev-parse feat/domain", shell_repo)
+    snapshot = snapshot_candidate(
+        SimpleNamespace(
+            branch="feat/domain",
+            lane="domain-lane",
+            base="main",
+            enqueued_at="2026-08-09T10:00:00Z",
+        ),
+        repository=RepositoryIdentity(
+            repository_id="repository:test-domain-only",
+            canonical_path=str(shell_repo.resolve()),
+        ),
+        candidate_sha=candidate_sha,
+        base_sha=base_sha,
+        config_digest=_SHADOW_CONFIG,
+        toolchain_digest=_SHADOW_TOOLCHAIN,
+        resource_digest=_SHADOW_RESOURCE,
+        target_branch="main",
+    )
+    generation = generation_record(
+        (snapshot,),
+        target_branch="main",
+        sealed_at="2099-01-01T00:00:00Z",
+    )
+    store = mq.queue_store(shell_repo)
+    for domain_record in (snapshot.to_record(), generation.to_record()):
+        store.append(
+            {**domain_record, "id": domain_record["record_id"]},
+            lane="domain-only",
+        )
+
+    raw = mq._queue_raw_records(shell_repo)
+    assert all(item.get("kind") in {"candidate_snapshot", "generation"} for item in raw)
+    assert len(fold_candidate_records(raw)) == 1
+    assert len(fold_generation_records(raw)) == 1
+    assert mq._all_candidates(shell_repo) == []
+
+
+def test_shadow_generation_uses_canonical_repository_identity_for_same_basenames(
+    tmp_path: Path,
+) -> None:
+    """Two repositories with the same display name cannot share candidate IDs."""
+
+    first = _init_repo(tmp_path / "one" / "same")
+    second = _init_repo(tmp_path / "two" / "same")
+    for repo, branch in ((first, "feat/one"), (second, "feat/two")):
+        _write_config(repo, "base: main\ngates: []\n")
+        (repo / "base.txt").write_text("base\n")
+        _commit(repo, "init")
+        _branch_with(repo, branch, {f"{branch.replace('/', '-')}.txt": "x\n"}, branch)
+        mq.enqueue(branch, path=repo)
+
+    first_result = mq.shadow_generation(**_shadow_kwargs(first))
+    second_result = mq.shadow_generation(**_shadow_kwargs(second))
+    first_id = first_result["generations"][0]["generation_id"]
+    second_id = second_result["generations"][0]["generation_id"]
+    assert first_id != second_id
+
+
+def test_shadow_generation_marks_base_move_stale_before_trial(
+    shell_repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ref moved after sealing is stale evidence, never a certification."""
+
+    _branch_with(shell_repo, "feat/stale", {"stale.txt": "stale\n"}, "stale")
+    mq.enqueue("feat/stale", path=shell_repo)
+    real_trial = mq._shadow_trial_merge
+
+    def move_base_then_trial(repo: Path, record):
+        branch_tip = _run("git rev-parse feat/stale", repo)
+        _run(f"git update-ref refs/heads/main {branch_tip}", repo)
+        return real_trial(repo, record)
+
+    monkeypatch.setattr(mq, "_shadow_trial_merge", move_base_then_trial)
+    result = mq.shadow_generation(**_shadow_kwargs(shell_repo))
+    outcome = result["generations"][0]["result"]
+
+    assert outcome["status"] == "stale-base"
+    assert outcome["stale_base"] is True
+    assert outcome["certifiable"] is False
+    assert outcome["synthetic_commit_sha"] == ""
+    assert outcome["accepted"] == []
+    assert outcome["conflicts"] == []

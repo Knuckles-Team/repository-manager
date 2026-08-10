@@ -21,6 +21,7 @@
 # after `rm_build artifacts` to confirm what got published.
 
 base: main
+schema_version: 2
 
 specs:
   - name: numeric-kernel
@@ -51,6 +52,22 @@ specs:
     # committed.
     artifacts:
       - "epistemic_graph/numeric*.so"
+
+    resource_class: rust-build
+    resources:
+      cpu_weight: 8
+      memory_mb: 16384
+      disk_mb: 16384
+      process_slots: 2
+    placement:
+      anti_affinity: [rust-build]
+    artifact_contract:
+      patterns: ["epistemic_graph/numeric*.so"]
+      required: true
+      publish: true
+      retention: content-addressed
+    stage: feedback
+    generation_compatible: true
 
     # A release cargo build of a pyo3 extension; generous but bounded.
     timeout: 1800

@@ -1,0 +1,108 @@
+# Repository-development contracts
+
+This package freezes the versioned data boundary used by the Repository Manager
+development program.  It is intentionally additive and effect-free: importing
+the models does not inspect a checkout, contact Graph-OS, resolve a
+tunnel-manager host, execute a command, or create durable state.
+
+## Authority and consumers
+
+| Contract | Authority | First consumers |
+| --- | --- | --- |
+| `DevelopmentRequest` | MCP/CLI application service after validation | RMDD-02, RMDD-06, RMDD-20 |
+| `RepositoryJobResult` and `LeaseRecord` | graph-os WorkItem projection | RMDD-02, RMDD-05, RMDD-06, RMDD-19 |
+| `ResourceRequest` and `ResourceReservation` | scheduler admission | RMDD-07, RMDD-08, RMDD-09, RMDD-15 |
+| `ExecutionCommand` and `ExecutionResult` | local/remote executor boundary | RMDD-07, RMDD-14, RMDD-15 |
+| `BuildKey` and `BuildResult` | content-addressed build broker | RMDD-10, RMDD-12 |
+| `ValidationEvidence` and `ValidationPolicy` | staged validation service | RMDD-11, RMDD-12, RMDD-13 |
+| `Candidate`, `Generation`, and `CandidateVersion` | candidate/generation controller | RMDD-12, RMDD-13, RMDD-17 |
+| `LaneReference` | durable lane registry | RMDD-09, RMDD-17, RMDD-20 |
+| `TargetPolicy` and `RepositoryIdentity` | identity/configuration resolvers | RMDD-07, RMDD-14, RMDD-18 |
+| `WorkspaceReleasePlan` and dependency records | workspace DAG/release planner | RMDD-18, RMDD-20, RMDD-24 |
+
+Graph-os `WorkItem` remains the only durable job authority.  FastMCP task
+operations and the CLI are projections/adapters; this package does not add a
+second task store or scheduler.  Repository fragments, host inventory, and
+workspace manifests retain their existing authorities.
+
+## Version and compatibility
+
+Every serialized model carries `contract_version: "1"` and rejects unknown
+fields.  Additive fields require a new consumer-compatible release; changing
+the meaning or validation of a persisted v1 field requires a new contract
+version and an explicit migration decision.  `canonical_json` sorts mapping
+keys, normalizes sets, and preserves declared sequence order.  `digest()` is a
+full SHA-256 of that canonical payload and is suitable for idempotency/config
+correlation.
+
+The contract deliberately uses full Git object SHAs for immutable inputs and
+named refs only for moving branch/base labels.  Absolute paths must already be
+canonical and may be constrained by `configured_roots`; relative artifact and
+changed-file paths cannot contain traversal components.
+
+## Security and resource boundaries
+
+`TargetPolicy` accepts only `local` or an authorized tunnel-manager inventory
+alias.  Hostnames, usernames, passwords, key paths, proxy settings, and raw SSH
+material are not model fields and are rejected as extras.  `ExecutionCommand`
+contains fixed argv and bounded output/artifact limits, never a public shell
+string.  `ResourceRequest` is an admission request; only a
+`ResourceReservation` is evidence that capacity was actually reserved.
+
+Certification evidence is tied to the exact generation ID, tree SHA, gate
+configuration digest, command digest, host, and toolchain digest.  Stage-0
+feedback is therefore not interchangeable with stage-2 certification.
+
+RMDD-13 CP2 is a protocol checkpoint only: the native/durable landing
+authority is not wired in, and `create_landing_authority()` has no injection
+parameter and returns the fixed
+`landing_reservation_authority_unavailable` refusal.  No Python object,
+structural duck, reflected class, DTO, local lock, lease handle, digest, or
+caller-provided proof can change that result; production cannot accept a
+reservation until a separately authenticated native authority is bound (a
+follow-on RMDD-13/RMDD-20 or engine lane).
+
+The future native transaction must authenticate controller, tenant, authority
+epoch, principal, and session; resolve the exact repository/common-dir/
+worktree identity; acquire both existing `reconciliation-merge` and
+canonical-checkout leases; reserve one exact repository/target key; capture
+revisioned state after the hold; perform one end-of-barrier revalidation; and
+release or durably record recovery on every success, failure, cancellation, or
+timeout.  Its bounded result must carry a backend-issued opaque proof/reference
+covering the complete snapshot and original reservation/lease context,
+including target SHA/tree, canonical cleanliness/index/private-WIP,
+occupancy, generation/certificate/fence, all source revisions, and authority
+incarnation.  CP3 must call the native `verify_current_landing_reservation`
+operation again with those correlations before any fenced target CAS; local
+self-consistency or a recomputed digest is not authority.  CP2 performs no
+ref, worktree, build, job, or push mutation.
+
+Lifecycle transitions are explicit in `transitions.py`; terminal states have
+no outgoing transition, retries are represented by a new WorkItem attempt, and
+the model validators enforce the corresponding state/evidence combinations.
+
+## Local execution consumer
+
+The additive `repository_manager.execution` package consumes
+`ExecutionCommand`/`ExecutionResult` without changing this contract boundary.
+Its [local executor guide](../execution/README.md) documents fixed-argv
+validation, authorized worktree roots, process-group cleanup, bounded redacted
+logs, cancellation, heartbeat, and publication fencing.  Build, validation,
+workspace, and remote lanes migrate their existing subprocess call sites to
+that seam only after their own scheduler/transport policies are ready.
+
+## Durable job service
+
+`jobs.py` provides the RMDD-06 `RepositoryJobService` and its injected
+`RepositoryJobPort`. `GraphRepositoryJobPort` delegates to the graph-os Agent
+Utilities repository WorkItem authority; `FakeRepositoryJobPort` is a durable-shaped
+test double. The service owns no `_jobs`/`_job_futures` state, requires a verified
+tenant/owner (including an owner-scoped read immediately before native cancel),
+and returns explicit keyset continuations for bounded lists.
+
+Reconciliation is read-only with respect to Git, processes, artifacts, and branches.
+It returns deterministic findings and previewable repair proposals; opting into repair
+enqueue creates an idempotent `operation=repair` WorkItem for a later worker. The
+`LegacyShadowAdapter` can compare current MCP records during RMDD-20 cutover without
+letting legacy memory overwrite durable WorkItem truth. See
+[`repository-job-service.md`](../../docs/architecture/repository-job-service.md).

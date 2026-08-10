@@ -91,10 +91,10 @@ import re
 import shutil
 import subprocess  # nosec B404 - fixed argv, never shell=True
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -108,7 +108,28 @@ from agent_utilities.governance.lanes import (
     partitioned_paths,
 )
 
+from repository_manager.candidate_generation import (
+    CandidateGenerationError,
+    CandidateSnapshot,
+    GenerationRecord,
+    candidate_identity,
+    fold_candidate_records,
+    fold_generation_records,
+    snapshot_branch_candidate,
+    timestamp_value,
+)
 from repository_manager.canonical_guard import guarded_canonical_mutation
+from repository_manager.config_schema import (
+    ConfigSchemaError,
+    ResourceRequest,
+    load_yaml_mapping,
+    load_yaml_mapping_text,
+    parse_merge_config,
+    runtime_tier,
+)
+from repository_manager.development import RepositoryIdentity, TargetPolicy
+from repository_manager.generation_coalescing import seal_generation, select_batches
+from repository_manager.lane_record import repository_id_for
 
 #: The per-repository gate declaration. Its ABSENCE is a refusal, not a default:
 #: a queue that invents gates for a repository that declared none would be a gate
@@ -128,6 +149,15 @@ MERGE_LEASE = "reconciliation-merge"
 #: worktree of that repo, and untouched by any checkout/reset/merge.
 QUEUE_DIRNAME = "merge-queue"
 BASELINE_CACHE_DIRNAME = "gate-baseline-cache"
+
+# RMDD-12 records share the existing queue store.  ``FragmentStore`` predates
+# these records and groups by ``id``; the domain records keep their authoritative
+# ``record_id`` and carry this one compatibility alias only at the queue seam.
+CANDIDATE_SNAPSHOT_KIND = "candidate_snapshot"
+GENERATION_RECORD_KIND = "generation"
+_ADDITIVE_RECORD_KINDS = frozenset({CANDIDATE_SNAPSHOT_KIND, GENERATION_RECORD_KIND})
+_MAX_SHADOW_EVIDENCE_PATHS = 128
+_MAX_SHADOW_DETAIL_CHARS = 4096
 
 QUEUED = "queued"
 LANDED = "landed"
@@ -166,7 +196,13 @@ class GitResult:
         return self.code == 0
 
 
-def _run_git(args: list[str], cwd: Path, *, timeout: int = 300) -> GitResult:
+def _run_git(
+    args: list[str],
+    cwd: Path,
+    *,
+    timeout: int = 300,
+    env: dict[str, str] | None = None,
+) -> GitResult:
     """Run git and hand back the exit code unmodified.
 
     Deliberately NOT routed through ``GitLike.git_action``: that surface reports
@@ -181,6 +217,9 @@ def _run_git(args: list[str], cwd: Path, *, timeout: int = 300) -> GitResult:
     git_executable = shutil.which("git")
     if git_executable is None:
         raise MergeQueueError("git executable was not found on PATH")
+    process_env = os.environ.copy()
+    if env:
+        process_env.update(env)
     proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
         [git_executable, *args],
         cwd=str(cwd),
@@ -188,12 +227,15 @@ def _run_git(args: list[str], cwd: Path, *, timeout: int = 300) -> GitResult:
         text=True,
         check=False,
         timeout=timeout,
+        env=process_env,
     )
     return GitResult(proc.returncode, proc.stdout.strip(), proc.stderr.strip())
 
 
-def _require_git(args: list[str], cwd: Path) -> str:
-    res = _run_git(args, cwd)
+def _require_git(
+    args: list[str], cwd: Path, *, env: dict[str, str] | None = None
+) -> str:
+    res = _run_git(args, cwd) if env is None else _run_git(args, cwd, env=env)
     if not res.ok:
         raise MergeQueueError(f"git {' '.join(args)} failed in {cwd}: {res.err}")
     return res.out
@@ -253,6 +295,14 @@ class GateSpec:
     #: queue that gets bypassed. Exceeding the BASELINE budget is always a
     #: refusal regardless — see point 1 in the module docstring.
     on_timeout: str = "fail"
+    #: Explicit v2 validation stage. ``tier`` remains the compatibility
+    #: projection used by the current queue; staged consumers use this field.
+    stage: str = "integration"
+    baseline_mode: str = "differential"
+    path_exclude: tuple[str, ...] = ()
+    resource_class: str = "light-check"
+    resources: ResourceRequest = field(default_factory=ResourceRequest)
+    artifact_dependencies: tuple[str, ...] = ()
 
     @property
     def effective_baseline_timeout(self) -> int:
@@ -294,6 +344,7 @@ class QueueConfig:
     #: Where the config was read from — reported in every result so an operator
     #: can see WHICH declaration produced a verdict.
     source: str = ""
+    schema_version: int = 2
 
     def fast_gates(self) -> tuple[GateSpec, ...]:
         return tuple(g for g in self.gates if g.tier == "fast")
@@ -321,77 +372,39 @@ def parse_config(data: dict[str, Any], *, source: str = "") -> QueueConfig:
     without a filesystem — and so a bad config fails LOUDLY at parse time with
     the offending key named, rather than at gate time with a confusing traceback.
     """
-    gates: list[GateSpec] = []
-    for index, raw in enumerate(data.get("gates") or []):
-        if not isinstance(raw, dict):
-            raise MergeQueueError(
-                f"{source or CONFIG_FILENAME}: gates[{index}] is not a mapping"
-            )
-        name = str(raw.get("name") or "").strip()
-        if not name:
-            raise MergeQueueError(
-                f"{source or CONFIG_FILENAME}: gates[{index}] has no name"
-            )
-        compare = str(raw.get("compare", "lines"))
-        if compare not in {"exit", "lines", "pytest-ids"}:
-            raise MergeQueueError(
-                f"{source or CONFIG_FILENAME}: gate {name!r} declares compare="
-                f"{compare!r}; supported: exit, lines, pytest-ids"
-            )
-        tier = str(raw.get("tier", "fast"))
-        if tier not in {"fast", "slow"}:
-            raise MergeQueueError(
-                f"{source or CONFIG_FILENAME}: gate {name!r} declares tier={tier!r}; "
-                "supported: fast, slow"
-            )
-        on_timeout = str(raw.get("on_timeout", "fail"))
-        if on_timeout not in {"fail", "defer"}:
-            raise MergeQueueError(
-                f"{source or CONFIG_FILENAME}: gate {name!r} declares on_timeout="
-                f"{on_timeout!r}; supported: fail, defer"
-            )
-        gates.append(
-            GateSpec(
-                name=name,
-                command=_as_argv(raw.get("command"), where=f"gate {name!r}"),
-                tier=tier,
-                timeout=int(raw.get("timeout", 300)),
-                baseline_timeout=int(raw.get("baseline_timeout", 0)),
-                compare=compare,
-                when_changed=tuple(str(p) for p in raw.get("when_changed") or ()),
-                keep_lines=tuple(str(p) for p in raw.get("keep_lines") or ()),
-                ignore_lines=tuple(str(p) for p in raw.get("ignore_lines") or ()),
-                on_timeout=on_timeout,
-            )
+    try:
+        schema = parse_merge_config(data, source=source)
+    except ConfigSchemaError as exc:
+        raise MergeQueueError(str(exc)) from exc
+    gates = tuple(
+        GateSpec(
+            name=gate.name,
+            command=gate.command,
+            tier=runtime_tier(gate.stage),
+            timeout=gate.timeout,
+            baseline_timeout=gate.baseline_timeout,
+            compare=gate.compare,
+            when_changed=gate.path_selection.include,
+            keep_lines=gate.keep_lines,
+            ignore_lines=gate.ignore_lines,
+            on_timeout=gate.on_timeout,
+            stage=gate.stage,
+            baseline_mode=gate.baseline_mode,
+            path_exclude=gate.path_selection.exclude,
+            resource_class=gate.resource_class,
+            resources=gate.resources,
+            artifact_dependencies=gate.artifact_dependencies,
         )
-    names = [g.name for g in gates]
-    duplicates = sorted({n for n in names if names.count(n) > 1})
-    if duplicates:
-        raise MergeQueueError(
-            f"{source or CONFIG_FILENAME}: duplicate gate name(s) {duplicates} — "
-            "a gate name keys its own baseline cache and must be unique"
-        )
-    regenerate = tuple(
-        _as_argv(cmd, where="regenerate") for cmd in data.get("regenerate") or ()
+        for gate in schema.gates
     )
-    generated = frozenset(str(p) for p in data.get("generated_files") or ())
-    if generated and not regenerate:
-        raise MergeQueueError(
-            f"{source or CONFIG_FILENAME}: generated_files are declared but no "
-            "`regenerate` commands are — regenerate-on-land would then resolve a "
-            "conflict by leaving both sides' stale copies, which is worse than "
-            "rejecting it. Declare the generators or drop generated_files."
-        )
-    env_sig = data.get("environment_signature")
     return QueueConfig(
-        base=str(data.get("base", "main")),
-        batch_size=int(data.get("batch_size", DEFAULT_BATCH_SIZE)),
-        gates=tuple(gates),
-        generated_files=generated,
-        regenerate=regenerate,
-        environment_signature=_as_argv(env_sig, where="environment_signature")
-        if env_sig
-        else (),
+        base=schema.base,
+        batch_size=schema.batch_size,
+        schema_version=schema.schema_version,
+        gates=gates,
+        generated_files=schema.generated.files,
+        regenerate=schema.generated.regenerate,
+        environment_signature=schema.environment_signature,
         source=source,
     )
 
@@ -417,15 +430,11 @@ def load_config(tree: Path | str) -> QueueConfig:
             "defaulting to none; add the file (see "
             "repository_manager/mergequeue_presets/) and re-run."
         )
-    import yaml
-
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        raise MergeQueueError(f"{path} is not valid YAML: {exc}") from exc
-    if not isinstance(data, dict):
-        raise MergeQueueError(f"{path} must contain a mapping at the top level")
-    return parse_config(data, source=str(path))
+        data = load_yaml_mapping(str(path))
+        return parse_config(data, source=str(path))
+    except ConfigSchemaError as exc:
+        raise MergeQueueError(str(exc)) from exc
 
 
 def config_at_ref(repo: Path, ref: str) -> QueueConfig | None:
@@ -438,12 +447,11 @@ def config_at_ref(repo: Path, ref: str) -> QueueConfig | None:
     res = _run_git(["show", f"{ref}:{CONFIG_FILENAME}"], repo)
     if not res.ok:
         return None
-    import yaml
-
-    data = yaml.safe_load(res.out) or {}
-    if not isinstance(data, dict):
-        raise MergeQueueError(f"{CONFIG_FILENAME} on {ref} is not a mapping")
-    return parse_config(data, source=f"{ref}:{CONFIG_FILENAME}")
+    try:
+        data = load_yaml_mapping_text(res.out, source=f"{ref}:{CONFIG_FILENAME}")
+        return parse_config(data, source=f"{ref}:{CONFIG_FILENAME}")
+    except ConfigSchemaError as exc:
+        raise MergeQueueError(str(exc)) from exc
 
 
 def _dropped_gates(merged: QueueConfig, base: QueueConfig | None) -> list[str]:
@@ -523,6 +531,124 @@ def queue_store(path: Path | str | None = None) -> FragmentStore:
     """
     scope = lane_scope(path)
     return FragmentStore(root=scope.arbitration_dir / QUEUE_DIRNAME, key="id")
+
+
+def _queue_raw_records(path: Path | str | None = None) -> tuple[dict[str, Any], ...]:
+    """Read every queue fragment without replacing the store's legacy view.
+
+    The generation folds need all append-only records, while the historical
+    candidate view intentionally collapses one ``id`` at a time.  Reading the
+    fragments directly keeps those two projections separate and still uses the
+    one authoritative :func:`queue_store` root.
+    """
+
+    store = queue_store(path)
+    records: list[dict[str, Any]] = []
+    for lane in store.lanes():
+        records.extend(store.read_fragment(lane))
+    return tuple(records)
+
+
+@dataclass
+class _SnapshotQueueCandidate:
+    """Writable-shape view required by the storage-neutral snapshot port."""
+
+    branch: str
+    lane: str
+    base: str
+    enqueued_at: datetime | str
+
+
+def _queue_domain_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Add the fixed-store key to one RMDD-12 record, fail closed on identity."""
+
+    if not isinstance(record, dict):
+        raise MergeQueueError("queue domain record must be a mapping")
+    kind = record.get("kind")
+    if kind not in _ADDITIVE_RECORD_KINDS:
+        raise MergeQueueError(f"unsupported queue domain record kind: {kind!r}")
+    record_id = record.get("record_id")
+    if not isinstance(record_id, str) or not record_id:
+        raise MergeQueueError("queue domain record requires a non-blank record_id")
+    existing_id = record.get("id")
+    if existing_id is not None and existing_id != record_id:
+        raise MergeQueueError(
+            f"queue domain record id disagrees with record_id {record_id!r}"
+        )
+    result = dict(record)
+    result["id"] = record_id
+    return result
+
+
+def _append_domain_record(
+    record: CandidateSnapshot | GenerationRecord,
+    *,
+    path: Path | str | None,
+    lane: str,
+) -> bool:
+    """Append one domain record, making restart replay idempotent.
+
+    Candidate snapshots are immutable by record ID.  Generation records may
+    restate a result, but their sealed membership remains immutable and their
+    state transition is checked before the append so an illegal record never
+    enters the append-only authority.
+    """
+
+    raw = _queue_domain_record(record.to_record())
+    kind = raw["kind"]
+    existing_raw = tuple(
+        item
+        for item in _queue_raw_records(path)
+        if item.get("kind") == kind and item.get("record_id") == raw["record_id"]
+    )
+    try:
+        if kind == CANDIDATE_SNAPSHOT_KIND:
+            decoded = [CandidateSnapshot.from_record(item) for item in existing_raw]
+            for previous_snapshot in decoded:
+                if previous_snapshot.immutable_digest() != record.immutable_digest():
+                    raise MergeQueueError(
+                        f"candidate snapshot {raw['record_id']} changed immutable inputs"
+                    )
+            if decoded:
+                return False
+            try:
+                fold_candidate_records((*existing_raw, raw))
+            except CandidateGenerationError as exc:
+                raise MergeQueueError(str(exc)) from exc
+        else:
+            if not isinstance(record, GenerationRecord):
+                raise MergeQueueError("generation record kind has the wrong type")
+            decoded_generations = [
+                GenerationRecord.from_record(item) for item in existing_raw
+            ]
+            for previous_generation in decoded_generations:
+                if previous_generation.immutable_digest() != record.immutable_digest():
+                    raise MergeQueueError(
+                        f"generation {raw['record_id']} changed immutable inputs"
+                    )
+            if decoded_generations:
+                latest = fold_generation_records(existing_raw)[0]
+                if (
+                    latest.result == record.result
+                    and latest.generation == record.generation
+                ):
+                    return False
+                try:
+                    latest.with_update(
+                        record.generation,
+                        result=record.result,
+                        recorded_at=record.recorded_at,
+                    )
+                except CandidateGenerationError as exc:
+                    raise MergeQueueError(str(exc)) from exc
+            try:
+                fold_generation_records((*existing_raw, raw))
+            except CandidateGenerationError as exc:
+                raise MergeQueueError(str(exc)) from exc
+    except CandidateGenerationError as exc:
+        raise MergeQueueError(str(exc)) from exc
+    queue_store(path).append(raw, lane=lane)
+    return True
 
 
 def enqueue(
@@ -632,13 +758,20 @@ def _resolve_latest_candidate_record(group: list[dict[str, Any]]) -> dict[str, A
     """
     from repository_manager.task_queue import resolve_latest_record
 
-    return resolve_latest_record(group)
+    # A generation record may share the fixed FragmentStore key with a legacy
+    # branch by coincidence.  The legacy projection must remain authoritative
+    # for that branch; domain records are folded separately from raw fragments.
+    legacy = [
+        record for record in group if record.get("kind") not in _ADDITIVE_RECORD_KINDS
+    ]
+    return resolve_latest_record(legacy or group)
 
 
 def _all_candidates(path: Path | str | None = None) -> list[Candidate]:
     return [
         Candidate.from_record(r)
         for r in queue_store(path).fold(resolve=_resolve_latest_candidate_record)
+        if r.get("kind") not in _ADDITIVE_RECORD_KINDS
     ]
 
 
@@ -748,6 +881,393 @@ def changed_paths(repo: Path, base_ref: str, ref: str) -> list[str]:
     merge_base = _require_git(["merge-base", base_ref, ref], repo)
     out = _require_git(["diff", "--name-only", f"{merge_base}..{ref}"], repo)
     return [line for line in out.splitlines() if line]
+
+
+def _bounded_shadow_paths(paths: Iterable[str]) -> dict[str, Any]:
+    ordered = sorted({str(path) for path in paths if str(path)})
+    return {
+        "paths": ordered[:_MAX_SHADOW_EVIDENCE_PATHS],
+        "count": len(ordered),
+        "truncated": len(ordered) > _MAX_SHADOW_EVIDENCE_PATHS,
+    }
+
+
+def _bounded_shadow_detail(detail: str) -> dict[str, Any]:
+    text = str(detail)
+    return {
+        "detail": text[:_MAX_SHADOW_DETAIL_CHARS],
+        "detail_chars": len(text),
+        "detail_truncated": len(text) > _MAX_SHADOW_DETAIL_CHARS,
+    }
+
+
+def _commit_shadow_trial(
+    repo: Path,
+    tree: str,
+    parents: list[str],
+    message: str,
+    *,
+    sealed_at: datetime,
+) -> str:
+    """Create a replay-stable private trial commit with no ref update."""
+
+    epoch = str(int(timestamp_value(sealed_at).timestamp()))
+    env = {
+        "GIT_AUTHOR_NAME": "repository-manager-shadow",
+        "GIT_AUTHOR_EMAIL": "shadow@repository-manager.invalid",
+        "GIT_COMMITTER_NAME": "repository-manager-shadow",
+        "GIT_COMMITTER_EMAIL": "shadow@repository-manager.invalid",
+        "GIT_AUTHOR_DATE": f"@{epoch}",
+        "GIT_COMMITTER_DATE": f"@{epoch}",
+    }
+    args = ["commit-tree", tree]
+    for parent in parents:
+        args += ["-p", parent]
+    return _require_git([*args, "-m", message], repo, env=env)
+
+
+def _shadow_trial_merge(repo: Path, record: GenerationRecord) -> dict[str, Any]:
+    """Classify one sealed generation with object-only Git operations.
+
+    This deliberately calls the same :func:`trial_merge` and
+    :func:`changed_paths` primitives as the live queue, but feeds them the
+    immutable snapshot SHAs rather than moving branch names.  It never invokes
+    gate execution, materialization, landing, or cleanup.
+    """
+
+    generation = record.generation
+    target_ref = generation.target_branch
+    target_before = _require_git(
+        ["rev-parse", "--verify", f"{target_ref}^{{commit}}"], repo
+    )
+    if generation.sealed_at is None:
+        raise MergeQueueError(
+            f"generation {record.record_id} has no seal timestamp for shadow replay"
+        )
+    sealed_at = timestamp_value(generation.sealed_at)
+    if target_before != generation.base_sha:
+        target_after = _require_git(
+            ["rev-parse", "--verify", f"{target_ref}^{{commit}}"], repo
+        )
+        return {
+            "mode": "shadow",
+            "objects_only": True,
+            "execution": "not-run",
+            "landing": "not-run",
+            "certifiable": False,
+            "status": "stale-base",
+            "stale_base": True,
+            "target_ref": target_ref,
+            "target_ref_before": target_before,
+            "target_ref_after": target_after,
+            "target_ref_stable": target_before == target_after,
+            "base_sha": generation.base_sha,
+            "synthetic_commit_sha": "",
+            "tree_sha": "",
+            "accepted": [],
+            "conflicts": [],
+            "accepted_candidate_ids": [],
+            "conflicted_candidate_ids": [],
+            "differential_paths": [],
+            "differential_path_count": 0,
+            "differential_paths_truncated": False,
+        }
+    head = generation.base_sha
+    tree = _require_git(["rev-parse", f"{head}^{{tree}}"], repo)
+    differential: set[str] = set()
+    accepted: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+
+    for member in record.members:
+        member_changed = changed_paths(repo, generation.base_sha, member.candidate_sha)
+        differential.update(member_changed)
+        trial = trial_merge(repo, head, member.candidate_sha)
+        member_identity = {
+            "candidate_id": member.candidate_id,
+            "version": member.version,
+            "branch": member.branch,
+            "candidate_sha": member.candidate_sha,
+        }
+        if not trial.ok:
+            conflict_paths = _bounded_shadow_paths(trial.conflicts)
+            member_paths = _bounded_shadow_paths(member_changed)
+            detail = _bounded_shadow_detail(trial.detail)
+            against = [
+                {
+                    "candidate_id": item["candidate_id"],
+                    "version": item["version"],
+                }
+                for item in accepted
+            ]
+            conflicts.append(
+                {
+                    **member_identity,
+                    "conflicts": conflict_paths["paths"],
+                    "conflict_count": conflict_paths["count"],
+                    "conflicts_truncated": conflict_paths["truncated"],
+                    **detail,
+                    "differential_paths": member_paths["paths"],
+                    "differential_path_count": member_paths["count"],
+                    "differential_paths_truncated": member_paths["truncated"],
+                    "conflict_against": {
+                        "kind": "rolling-synthetic-head",
+                        "members": against,
+                        "base_sha": generation.base_sha,
+                    },
+                }
+            )
+            continue
+
+        already_contained = (
+            member.candidate_sha == head
+            or _run_git(
+                ["merge-base", "--is-ancestor", member.candidate_sha, head], repo
+            ).ok
+        )
+        if already_contained:
+            tree = trial.tree or tree
+            accepted.append({**member_identity, "already_contained": True})
+            continue
+        head = _commit_shadow_trial(
+            repo,
+            trial.tree,
+            [head, member.candidate_sha],
+            f"shadow merge({member.lane_id}): {member.branch}",
+            sealed_at=sealed_at,
+        )
+        tree = trial.tree
+        accepted.append({**member_identity, "already_contained": False})
+
+    target_after = _require_git(
+        ["rev-parse", "--verify", f"{target_ref}^{{commit}}"], repo
+    )
+    differential_paths = _bounded_shadow_paths(differential)
+    target_stable = target_before == target_after
+    return {
+        "mode": "shadow",
+        "objects_only": True,
+        "execution": "not-run",
+        "landing": "not-run",
+        "certifiable": False,
+        "target_ref": target_ref,
+        "target_ref_before": target_before,
+        "target_ref_after": target_after,
+        "target_ref_stable": target_stable,
+        "base_sha": generation.base_sha,
+        "synthetic_commit_sha": head,
+        "tree_sha": tree,
+        "accepted": accepted,
+        "conflicts": conflicts,
+        "accepted_candidate_ids": [item["candidate_id"] for item in accepted],
+        "conflicted_candidate_ids": [item["candidate_id"] for item in conflicts],
+        "differential_paths": differential_paths["paths"],
+        "differential_path_count": differential_paths["count"],
+        "differential_paths_truncated": differential_paths["truncated"],
+        "status": (
+            "stale-base"
+            if not target_stable
+            else "conflicted"
+            if conflicts
+            else "trial-merged"
+        ),
+        "stale_base": not target_stable,
+    }
+
+
+def _shadow_generation_unlocked(
+    *,
+    config_digest: str,
+    toolchain_digest: str,
+    resource_digest: str,
+    base: str = "",
+    batch_size: int = 0,
+    debounce: float | int | timedelta = 0,
+    maximum_age: float | int | timedelta = 0,
+    build_target: str = "default",
+    concept_claims: Iterable[object] = (),
+    incompatibility_labels: Iterable[object] = (),
+    target: TargetPolicy | None = None,
+    now: datetime | str | None = None,
+    path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Snapshot and trial a queue batch without execution or ref movement.
+
+    This is an internal RMDD-12 adapter, not a public queue action.  The three
+    digest arguments are deliberately required and validated by
+    ``snapshot_branch_candidate``; callers must supply canonical immutable
+    inputs rather than deriving an authoritative digest from a short or
+    unpinned environment label.  RMDD-29 owns any execution/landing handoff.
+    """
+
+    scope = lane_scope(path)
+    repo = scope.main_tree
+    config = _repo_config(scope)
+    target_branch = base or config.base
+    limit = batch_size or config.batch_size
+    current = timestamp_value(now or _now())
+    repository = RepositoryIdentity(
+        repository_id=repository_id_for(repo),
+        canonical_path=str(repo.resolve()),
+    )
+    try:
+        folded_snapshots = fold_candidate_records(_queue_raw_records(repo))
+        folded_generations = fold_generation_records(_queue_raw_records(repo))
+    except CandidateGenerationError as exc:
+        raise MergeQueueError(str(exc)) from exc
+    previous_by_candidate: dict[str, CandidateSnapshot] = {}
+    for snapshot in folded_snapshots:
+        previous = previous_by_candidate.get(snapshot.candidate_id)
+        if previous is None or snapshot.version > previous.version:
+            previous_by_candidate[snapshot.candidate_id] = snapshot
+    existing_generations = {item.record_id: item for item in folded_generations}
+
+    pending = [
+        candidate for candidate in queued(repo) if candidate.base == target_branch
+    ]
+    snapshots: list[CandidateSnapshot] = []
+    snapshot_appends = 0
+
+    def resolve_ref(ref: str) -> str:
+        return _require_git(["rev-parse", "--verify", f"{ref}^{{commit}}"], repo)
+
+    for candidate in pending:
+        logical_id = candidate_identity(
+            repository.repository_id, candidate.branch, candidate.lane
+        )
+        try:
+            snapshot = snapshot_branch_candidate(
+                _SnapshotQueueCandidate(
+                    branch=candidate.branch,
+                    lane=candidate.lane,
+                    base=candidate.base,
+                    enqueued_at=candidate.enqueued_at,
+                ),
+                repository=repository,
+                resolve_ref=resolve_ref,
+                target_branch=target_branch,
+                config_digest=config_digest,
+                toolchain_digest=toolchain_digest,
+                resource_digest=resource_digest,
+                build_target=build_target,
+                concept_claims=concept_claims,
+                incompatibility_labels=incompatibility_labels,
+                target=target,
+                previous=previous_by_candidate.get(logical_id),
+            )
+        except (CandidateGenerationError, TypeError, ValueError) as exc:
+            raise MergeQueueError(
+                f"could not snapshot queued candidate {candidate.branch!r}: {exc}"
+            ) from exc
+        snapshots.append(snapshot)
+        if _append_domain_record(snapshot, path=repo, lane=scope.lane):
+            snapshot_appends += 1
+
+    # A replay may construct the same immutable snapshot with a fresh
+    # observation timestamp.  Continue with the canonical stored member so the
+    # nested member record in a sealed generation is byte-stable as well.
+    try:
+        canonical_snapshots = {
+            item.record_id: item
+            for item in fold_candidate_records(_queue_raw_records(repo))
+        }
+    except CandidateGenerationError as exc:
+        raise MergeQueueError(str(exc)) from exc
+    snapshots = [canonical_snapshots[item.record_id] for item in snapshots]
+
+    try:
+        selection = select_batches(
+            snapshots,
+            now=current,
+            debounce=debounce,
+            maximum_age=maximum_age,
+            batch_size=limit,
+            sealed_at=current,
+        )
+    except (CandidateGenerationError, TypeError, ValueError) as exc:
+        raise MergeQueueError(f"could not select a shadow generation: {exc}") from exc
+
+    generation_results: list[dict[str, Any]] = []
+    generation_appends = 0
+    for batch in selection.batches:
+        sealed = seal_generation(batch, sealed_at=selection.sealed_at, target=target)
+        generation = existing_generations.get(sealed.record_id, sealed)
+        if generation is sealed:
+            if _append_domain_record(generation, path=repo, lane=scope.lane):
+                generation_appends += 1
+        result = _shadow_trial_merge(repo, generation)
+        result_time = selection.sealed_at + timedelta(microseconds=1)
+        updated = generation.with_update(
+            generation.generation,
+            result=result,
+            recorded_at=result_time,
+        )
+        if _append_domain_record(updated, path=repo, lane=scope.lane):
+            generation_appends += 1
+        generation_results.append(
+            {
+                "generation_id": generation.record_id,
+                "candidate_ids": [member.candidate_id for member in generation.members],
+                "versioned_members": [
+                    member.record_id for member in generation.members
+                ],
+                "result": result,
+            }
+        )
+
+    return {
+        "repo": repo.name,
+        "mode": "shadow",
+        "landed": False,
+        "target_branch": target_branch,
+        "candidate_snapshot_appends": snapshot_appends,
+        "generation_record_appends": generation_appends,
+        "generations": generation_results,
+        "late": [item.record_id for item in selection.late],
+        "waiting": [item.record_id for item in selection.waiting],
+        "selected": [item.record_id for item in selection.selected],
+        "execution_handoff": "RMDD-29-gated",
+    }
+
+
+def shadow_generation(
+    *,
+    config_digest: str,
+    toolchain_digest: str,
+    resource_digest: str,
+    base: str = "",
+    batch_size: int = 0,
+    debounce: float | int | timedelta = 0,
+    maximum_age: float | int | timedelta = 0,
+    build_target: str = "default",
+    concept_claims: Iterable[object] = (),
+    incompatibility_labels: Iterable[object] = (),
+    target: TargetPolicy | None = None,
+    now: datetime | str | None = None,
+    path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Serialize shadow snapshot/seal/replay through the merge lease."""
+
+    scope = lane_scope(path)
+    with hold_lease(
+        MERGE_LEASE,
+        operation=f"shadow generation for {scope.main_tree.name}",
+        path=scope.tree,
+    ):
+        return _shadow_generation_unlocked(
+            config_digest=config_digest,
+            toolchain_digest=toolchain_digest,
+            resource_digest=resource_digest,
+            base=base,
+            batch_size=batch_size,
+            debounce=debounce,
+            maximum_age=maximum_age,
+            build_target=build_target,
+            concept_claims=concept_claims,
+            incompatibility_labels=incompatibility_labels,
+            target=target,
+            now=now,
+            path=path,
+        )
 
 
 @contextmanager
