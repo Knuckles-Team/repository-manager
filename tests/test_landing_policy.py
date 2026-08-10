@@ -10,10 +10,13 @@ from typing import cast
 
 import pytest
 
+import repository_manager.landing_policy as landing_policy
 from repository_manager.development import (
+    CONTRACT_VERSION,
     CandidateVersion,
     Generation,
     GenerationState,
+    LandingOutcome,
     RepositoryIdentity,
     TargetKind,
     TargetPolicy,
@@ -35,6 +38,7 @@ from repository_manager.validation import (
     EvidenceOutcome,
     GateEvidence,
     ValidationCertificate,
+    ValidationFailureClass,
 )
 
 _UNSET = object()
@@ -70,8 +74,11 @@ NOW = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 
 def _repository(repository_id: str = "repository:test") -> RepositoryIdentity:
     return RepositoryIdentity(
+        contract_version=CONTRACT_VERSION,
         repository_id=repository_id,
         canonical_path="/home/apps/workspace/agent-packages/agents/repository-manager",
+        configured_roots=(),
+        origin=None,
     )
 
 
@@ -108,6 +115,7 @@ def _generation(
 ) -> Generation:
     candidates = (
         CandidateVersion(
+            contract_version=CONTRACT_VERSION,
             candidate_id="candidate:test",
             version=1,
             candidate_sha=SHA1,
@@ -122,9 +130,16 @@ def _generation(
         toolchain_digest=DIGEST1,
     )
     return Generation(
+        contract_version=CONTRACT_VERSION,
         generation_id=generation_id,
         repository=repository or _repository(),
         target_branch="main",
+        target=TargetPolicy(
+            contract_version=CONTRACT_VERSION,
+            kind=TargetKind.LOCAL,
+            alias=None,
+            capability_labels=(),
+        ),
         base_sha=SHA0,
         expected_landing_base_sha=SHA0,
         candidate_versions=candidates,
@@ -135,7 +150,11 @@ def _generation(
         synthetic_commit_sha=SHA1,
         tree_sha=SHA2,
         validation_evidence_ids=("evidence:certification",),
+        build_artifact_refs=(),
+        bisection_lineage=(),
         landing_fence="fence:landing-1",
+        landing_result=None,
+        reason="",
     )
 
 
@@ -197,7 +216,13 @@ def _request(
     return LandingVerificationRequest(
         repository=repository or _repository(),
         target_branch=target_branch,
-        target=target or TargetPolicy(),
+        target=target
+        or TargetPolicy(
+            contract_version=CONTRACT_VERSION,
+            kind=TargetKind.LOCAL,
+            alias=None,
+            capability_labels=(),
+        ),
         expected_base_sha=expected_base_sha,
         observed_target_sha=observed_target_sha,
         expected_landing_fence=expected_landing_fence,
@@ -389,7 +414,12 @@ def test_repository_and_target_identity_are_exact() -> None:
             generation=generation,
             certificate=certificate,
             evidence=evidence,
-            target=TargetPolicy(kind=TargetKind.INVENTORY_ALIAS, alias="worker-one"),
+            target=TargetPolicy(
+                contract_version=CONTRACT_VERSION,
+                kind=TargetKind.INVENTORY_ALIAS,
+                alias="worker-one",
+                capability_labels=(),
+            ),
         )
     )
     assert wrong_target.code is LandingRefusalCode.TARGET_MISMATCH
@@ -560,7 +590,10 @@ def test_model_copy_authority_values_are_rebuilt_and_anchored() -> None:
             original_generation.model_copy(
                 update={
                     "target": TargetPolicy(
-                        kind=TargetKind.INVENTORY_ALIAS, alias="worker-one"
+                        contract_version=CONTRACT_VERSION,
+                        kind=TargetKind.INVENTORY_ALIAS,
+                        alias="worker-one",
+                        capability_labels=(),
                     )
                 }
             ),
@@ -611,20 +644,17 @@ def test_model_copy_authority_values_are_rebuilt_and_anchored() -> None:
         assert result.code is expected_code
 
 
-_GENERATION_REQUIRED_FIELDS = (
+_GENERATION_FIELDS = (
+    "contract_version",
     "generation_id",
     "repository",
     "target_branch",
+    "target",
     "base_sha",
     "expected_landing_base_sha",
     "candidate_versions",
     "config_digest",
     "toolchain_digest",
-)
-_GENERATION_FIELDS = (
-    "contract_version",
-    *_GENERATION_REQUIRED_FIELDS,
-    "target",
     "state",
     "sealed_at",
     "synthetic_commit_sha",
@@ -640,10 +670,7 @@ _GENERATION_FIELDS = (
 
 @pytest.mark.parametrize(
     "omitted_fields",
-    [
-        pytest.param((field,), id=f"missing-{field}")
-        for field in _GENERATION_REQUIRED_FIELDS
-    ]
+    [pytest.param((field,), id=f"missing-{field}") for field in _GENERATION_FIELDS]
     + [pytest.param(None, id="missing-all-fields")],
 )
 def test_model_construct_missing_generation_fields_is_typed_refusal(
@@ -678,6 +705,303 @@ def test_model_construct_missing_generation_fields_is_typed_refusal(
     assert result.code is LandingRefusalCode.GENERATION_INVALID
     assert "AttributeError" not in result.detail
     assert "private" not in result.detail
+
+
+_REPOSITORY_FIELDS = (
+    "contract_version",
+    "repository_id",
+    "canonical_path",
+    "configured_roots",
+    "origin",
+)
+_TARGET_FIELDS = (
+    "contract_version",
+    "kind",
+    "alias",
+    "capability_labels",
+)
+_CANDIDATE_FIELDS = (
+    "contract_version",
+    "candidate_id",
+    "version",
+    "candidate_sha",
+)
+
+
+@pytest.mark.parametrize(
+    "omitted_fields",
+    [pytest.param((field,), id=f"missing-{field}") for field in _REPOSITORY_FIELDS]
+    + [pytest.param(None, id="missing-all-fields")],
+)
+def test_model_construct_missing_repository_fields_is_typed_refusal(
+    omitted_fields: tuple[str, ...] | None,
+) -> None:
+    original = _generation()
+    state = object.__getattribute__(original.repository, "__dict__")
+    if omitted_fields is None:
+        forged_repository = RepositoryIdentity.model_construct()
+    else:
+        forged_repository = RepositoryIdentity.model_construct(
+            **{
+                field: state[field]
+                for field in _REPOSITORY_FIELDS
+                if field not in omitted_fields
+            }
+        )
+    forged_generation = original.model_copy(update={"repository": forged_repository})
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+    result = verify_landing(
+        _request(
+            generation=forged_generation,
+            certificate=certificate,
+            evidence=evidence,
+        )
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+@pytest.mark.parametrize(
+    "omitted_fields",
+    [pytest.param((field,), id=f"missing-{field}") for field in _TARGET_FIELDS]
+    + [pytest.param(None, id="missing-all-fields")],
+)
+def test_model_construct_missing_target_fields_is_typed_refusal(
+    omitted_fields: tuple[str, ...] | None,
+) -> None:
+    original = _generation()
+    state = object.__getattribute__(original.target, "__dict__")
+    if omitted_fields is None:
+        forged_target = TargetPolicy.model_construct()
+    else:
+        forged_target = TargetPolicy.model_construct(
+            **{
+                field: state[field]
+                for field in _TARGET_FIELDS
+                if field not in omitted_fields
+            }
+        )
+    forged_generation = original.model_copy(update={"target": forged_target})
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+    result = verify_landing(
+        _request(
+            generation=forged_generation,
+            certificate=certificate,
+            evidence=evidence,
+        )
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+@pytest.mark.parametrize(
+    "omitted_fields",
+    [pytest.param((field,), id=f"missing-{field}") for field in _CANDIDATE_FIELDS]
+    + [pytest.param(None, id="missing-all-fields")],
+)
+def test_model_construct_missing_candidate_fields_is_typed_refusal(
+    omitted_fields: tuple[str, ...] | None,
+) -> None:
+    original = _generation()
+    candidate = original.candidate_versions[0]
+    state = object.__getattribute__(candidate, "__dict__")
+    if omitted_fields is None:
+        forged_candidate = CandidateVersion.model_construct()
+    else:
+        forged_candidate = CandidateVersion.model_construct(
+            **{
+                field: state[field]
+                for field in _CANDIDATE_FIELDS
+                if field not in omitted_fields
+            }
+        )
+    forged_generation = original.model_copy(
+        update={"candidate_versions": (forged_candidate,)}
+    )
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+    result = verify_landing(
+        _request(
+            generation=forged_generation,
+            certificate=certificate,
+            evidence=evidence,
+        )
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+def test_model_construct_target_string_enum_is_not_coerced() -> None:
+    original = _generation()
+    target_state = object.__getattribute__(original.target, "__dict__")
+    forged_target = TargetPolicy.model_construct(
+        **{**target_state, "kind": TargetKind.LOCAL.value}
+    )
+    forged_generation = original.model_copy(update={"target": forged_target})
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+
+    result = verify_landing(
+        _request(
+            generation=forged_generation,
+            certificate=certificate,
+            evidence=evidence,
+        )
+    )
+
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("state", GenerationState.CERTIFIED.value, id="state"),
+        pytest.param(
+            "landing_result", LandingOutcome.LANDED.value, id="landing-result"
+        ),
+    ],
+)
+def test_model_construct_generation_string_enums_are_not_coerced(
+    field: str, value: str
+) -> None:
+    original = _generation()
+    state = dict(object.__getattribute__(original, "__dict__"))
+    state[field] = value
+    forged_generation = Generation.model_construct(**state)
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+
+    result = verify_landing(
+        _request(
+            generation=forged_generation,
+            certificate=certificate,
+            evidence=evidence,
+        )
+    )
+
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        pytest.param("stage", ValidationStage.CERTIFICATION.value, id="stage"),
+        pytest.param("outcome", EvidenceOutcome.PASSED.value, id="outcome"),
+        pytest.param(
+            "failure_class", ValidationFailureClass.CODE.value, id="failure-class"
+        ),
+    ],
+)
+def test_evidence_string_enums_are_not_coerced(field: str, value: str) -> None:
+    generation = _generation()
+    certificate, evidence = _certificate()
+    forged_evidence = replace(evidence[0])
+    object.__setattr__(forged_evidence, field, value)
+
+    result = verify_landing(
+        _request(
+            generation=generation,
+            certificate=certificate,
+            evidence=(forged_evidence,),
+        )
+    )
+
+    assert result.code is LandingRefusalCode.EVIDENCE_INVALID
+
+
+_EVIDENCE_FIELDS = (
+    "evidence_id",
+    "gate_name",
+    "stage",
+    "tree_sha",
+    "generation_id",
+    "gate_config_digest",
+    "command_digest",
+    "target_host",
+    "toolchain_digest",
+    "resource_digest",
+    "profile_digest",
+    "started_at",
+    "finished_at",
+    "outcome",
+    "failure_class",
+    "job_id",
+    "dependency_job_ids",
+    "baseline_tree_sha",
+    "baseline_readable",
+    "differential",
+    "failure_ids",
+    "pre_existing_failure_ids",
+    "fixed_failure_ids",
+    "log_refs",
+    "artifact_refs",
+    "stdout_tail",
+    "stderr_tail",
+    "exit_code",
+    "snapshot_gate_deferred",
+    "snapshot_gate_replayed",
+    "detail",
+)
+_CERTIFICATE_FIELDS = (
+    "certificate_id",
+    "generation_id",
+    "tree_sha",
+    "gate_config_digest",
+    "toolchain_digest",
+    "target_host",
+    "resource_digest",
+    "evidence_digests",
+    "blocking_gate_names",
+    "issued_at",
+    "profile_digest",
+)
+
+
+@pytest.mark.parametrize(
+    "omitted_fields",
+    [pytest.param((field,), id=f"missing-{field}") for field in _EVIDENCE_FIELDS]
+    + [pytest.param(None, id="missing-all-fields")],
+)
+def test_missing_evidence_fields_are_typed_refusals(
+    omitted_fields: tuple[str, ...] | None,
+) -> None:
+    generation = _generation()
+    certificate, evidence = _certificate()
+    forged_evidence = replace(evidence[0])
+    fields_to_delete = _EVIDENCE_FIELDS if omitted_fields is None else omitted_fields
+    for field in fields_to_delete:
+        object.__delattr__(forged_evidence, field)
+
+    result = verify_landing(
+        _request(
+            generation=generation,
+            certificate=certificate,
+            evidence=(forged_evidence,),
+        )
+    )
+
+    assert result.code is LandingRefusalCode.EVIDENCE_INVALID
+
+
+@pytest.mark.parametrize(
+    "omitted_fields",
+    [pytest.param((field,), id=f"missing-{field}") for field in _CERTIFICATE_FIELDS]
+    + [pytest.param(None, id="missing-all-fields")],
+)
+def test_missing_certificate_fields_are_typed_refusals(
+    omitted_fields: tuple[str, ...] | None,
+) -> None:
+    generation = _generation()
+    certificate, evidence = _certificate()
+    forged_certificate = replace(certificate)
+    fields_to_delete = _CERTIFICATE_FIELDS if omitted_fields is None else omitted_fields
+    for field in fields_to_delete:
+        object.__delattr__(forged_certificate, field)
+
+    result = verify_landing(
+        _request(
+            generation=generation,
+            certificate=forged_certificate,
+            evidence=evidence,
+            expected_certificate_digest=DIGEST0,
+        )
+    )
+
+    assert result.code is LandingRefusalCode.CERTIFICATE_INVALID
 
 
 @pytest.mark.parametrize(
@@ -988,3 +1312,32 @@ def test_missing_trusted_anchors_is_fail_closed() -> None:
         verify_landing(missing_generation_anchor).code
         is LandingRefusalCode.GENERATION_ANCHOR_REQUIRED
     )
+
+
+def test_generation_identity_runtime_error_propagates(
+    valid_request: LandingVerificationRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_runtime_error(_cls: type[Generation], **_kwargs: object) -> str:
+        raise RuntimeError("injected generation identity failure")
+
+    monkeypatch.setattr(Generation, "derive_id", classmethod(raise_runtime_error))
+
+    with pytest.raises(RuntimeError, match="injected generation identity failure"):
+        verify_landing(valid_request)
+
+
+def test_certificate_verification_runtime_error_propagates(
+    valid_request: LandingVerificationRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_runtime_error(
+        _certificate: ValidationCertificate,
+        _evidence: tuple[GateEvidence, ...],
+    ) -> object:
+        raise RuntimeError("injected certificate verification failure")
+
+    monkeypatch.setattr(landing_policy, "verify_certificate", raise_runtime_error)
+
+    with pytest.raises(RuntimeError, match="injected certificate verification failure"):
+        verify_landing(valid_request)

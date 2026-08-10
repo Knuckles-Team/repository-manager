@@ -22,12 +22,15 @@ from enum import Enum, StrEnum
 from typing import TypeVar, cast
 
 from pydantic import BaseModel
+from pydantic_core import PydanticSerializationError
 
 from repository_manager.development import (
     CandidateVersion,
     Generation,
     GenerationState,
+    LandingOutcome,
     RepositoryIdentity,
+    TargetKind,
     TargetPolicy,
     ValidationStage,
 )
@@ -112,6 +115,20 @@ _EnumT = TypeVar("_EnumT", bound=StrEnum)
 
 class LandingPolicyError(ValueError):
     """A landing-policy input is not one of the closed typed values."""
+
+
+# These are malformed-input/validation failures only.  In particular,
+# RuntimeError and other programmer/system failures must cross trusted
+# computation seams instead of being converted into a refusal.
+_MALFORMED_INPUT_ERRORS: tuple[type[Exception], ...] = (
+    LandingPolicyError,
+    ValueError,
+    TypeError,
+    AttributeError,
+    KeyError,
+    IndexError,
+    PydanticSerializationError,
+)
 
 
 class LandingRefusalCode(StrEnum):
@@ -304,6 +321,18 @@ def _plain_model_mapping(value: object, field_name: str) -> dict[str, object]:
     if not isinstance(value, BaseModel):
         raise LandingPolicyError(f"{field_name} is not a typed authority model")
     try:
+        state = object.__getattribute__(value, "__dict__")
+        fields_set = object.__getattribute__(value, "__pydantic_fields_set__")
+        model_fields = type(value).model_fields
+        if (
+            type(state) is not dict
+            or type(fields_set) is not set
+            or type(model_fields) is not dict
+        ):
+            raise LandingPolicyError(f"{field_name} fields are unavailable")
+        expected_fields = set(model_fields)
+        if set(state) != expected_fields or fields_set != expected_fields:
+            raise LandingPolicyError(f"{field_name} fields are incomplete")
         # ``warnings=False`` is deliberate: callers must receive a typed
         # refusal from the shape checks below, never a disposition that depends
         # on Pydantic's serializer warning policy.
@@ -315,7 +344,7 @@ def _plain_model_mapping(value: object, field_name: str) -> dict[str, object]:
         _validate_plain_tree(raw)
     except LandingPolicyError:
         raise
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError(f"{field_name} could not be serialized") from exc
     return dict(raw)
 
@@ -336,7 +365,7 @@ def _plain_payload_mapping(value: object, field_name: str) -> dict[str, object]:
         _validate_plain_tree(raw)
     except LandingPolicyError:
         raise
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError(f"{field_name} is not a plain mapping") from exc
     return raw
 
@@ -358,28 +387,31 @@ def _require_sequence(
 
 
 def _enum_value(value: object, enum_type: type[_EnumT], field_name: str) -> _EnumT:
-    if isinstance(value, enum_type):
+    if type(value) is enum_type:
         return value
-    if type(value) is str:
-        try:
-            return enum_type(value)
-        except ValueError as exc:
-            raise LandingPolicyError(f"{field_name} is not a valid enum value") from exc
     raise LandingPolicyError(f"{field_name} is not a valid enum value")
 
 
 def _model_field_values(
     value: BaseModel, field_names: tuple[str, ...], field_name: str
 ) -> dict[str, object]:
-    """Read model state without invoking forged field descriptors or properties."""
+    """Read a complete, explicitly supplied model state.
+
+    Pydantic's ``model_construct`` materializes default values in ``__dict__``
+    even when the caller did not supply those fields.  The internal fields-set
+    provenance is therefore part of this authority boundary: a model is only
+    trusted when every declared field is both present and explicitly supplied.
+    """
 
     try:
         state = object.__getattribute__(value, "__dict__")
+        fields_set = object.__getattribute__(value, "__pydantic_fields_set__")
     except AttributeError as exc:
         raise LandingPolicyError(f"{field_name} fields are unavailable") from exc
-    if type(state) is not dict:
+    expected_fields = set(field_names)
+    if type(state) is not dict or type(fields_set) is not set:
         raise LandingPolicyError(f"{field_name} fields are unavailable")
-    if any(name not in state for name in field_names):
+    if set(state) != expected_fields or fields_set != expected_fields:
         raise LandingPolicyError(f"{field_name} fields are incomplete")
     return {name: state[name] for name in field_names}
 
@@ -394,7 +426,7 @@ def _rebuild_repository(value: object) -> RepositoryIdentity:
     raw = _plain_model_mapping(value, "repository")
     try:
         repository = RepositoryIdentity.model_validate(raw)
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("repository authority is invalid") from exc
     repository_fields = _model_field_values(
         repository, _REPOSITORY_FIELDS, "repository"
@@ -421,13 +453,15 @@ def _rebuild_target(value: object) -> TargetPolicy:
     if type(value) is not TargetPolicy:
         raise LandingPolicyError("target is not a typed authority model")
     fields = _model_field_values(value, _TARGET_FIELDS, "target")
+    if type(fields["kind"]) is not TargetKind:
+        raise LandingPolicyError("target kind is invalid")
     labels = _require_sequence(fields["capability_labels"], "target capabilities")
     for label in labels:
         _require_bounded_text(label, "target capability")
     raw = _plain_model_mapping(value, "target")
     try:
         target = TargetPolicy.model_validate(raw)
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("target authority is invalid") from exc
     target_fields = _model_field_values(target, _TARGET_FIELDS, "target")
     if target_fields["alias"] is not None:
@@ -445,6 +479,8 @@ def _rebuild_target(value: object) -> TargetPolicy:
 def _rebuild_candidate(value: object) -> CandidateVersion:
     if isinstance(value, BaseModel) and type(value) is not CandidateVersion:
         raise LandingPolicyError("candidate version is not a typed authority model")
+    if isinstance(value, BaseModel):
+        _model_field_values(value, _CANDIDATE_FIELDS, "candidate version")
     raw = (
         _plain_model_mapping(value, "candidate version")
         if isinstance(value, BaseModel)
@@ -452,7 +488,7 @@ def _rebuild_candidate(value: object) -> CandidateVersion:
     )
     try:
         candidate = CandidateVersion.model_validate(raw)
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("candidate version authority is invalid") from exc
     candidate_fields = _model_field_values(
         candidate, _CANDIDATE_FIELDS, "candidate version"
@@ -474,6 +510,11 @@ def _rebuild_generation(value: object) -> Generation:
         raise LandingPolicyError("generation repository is not a typed authority model")
     if type(target) is not TargetPolicy:
         raise LandingPolicyError("generation target is not a typed authority model")
+    if type(fields["state"]) is not GenerationState:
+        raise LandingPolicyError("generation state is invalid")
+    landing_result = fields["landing_result"]
+    if landing_result is not None and type(landing_result) is not LandingOutcome:
+        raise LandingPolicyError("generation landing result is invalid")
     sequences = (
         "candidate_versions",
         "validation_evidence_ids",
@@ -486,6 +527,10 @@ def _rebuild_generation(value: object) -> Generation:
     _rebuild_repository(repository)
     _rebuild_target(target)
     for candidate in candidates:
+        if type(candidate) is not CandidateVersion:
+            raise LandingPolicyError(
+                "generation candidate is not a typed authority model"
+            )
         _rebuild_candidate(candidate)
     raw = _plain_model_mapping(value, "generation")
     raw_candidates = _require_sequence(
@@ -498,7 +543,7 @@ def _rebuild_generation(value: object) -> Generation:
     ]
     try:
         generation = Generation.model_validate(raw)
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("generation authority is invalid") from exc
     _validate_generation_content(generation)
     return generation
@@ -514,8 +559,13 @@ def _validate_generation_content(generation: Generation) -> None:
     _require_sha(fields["expected_landing_base_sha"], "expected_landing_base_sha")
     _require_digest(fields["config_digest"], "generation config_digest")
     _require_digest(fields["toolchain_digest"], "generation toolchain_digest")
-    if not isinstance(fields["state"], GenerationState):
+    if type(fields["state"]) is not GenerationState:
         raise LandingPolicyError("generation state is invalid")
+    if (
+        fields["landing_result"] is not None
+        and type(fields["landing_result"]) is not LandingOutcome
+    ):
+        raise LandingPolicyError("generation landing result is invalid")
     if fields["sealed_at"] is not None and not isinstance(
         fields["sealed_at"], datetime
     ):
@@ -559,13 +609,13 @@ _CERTIFICATE_FIELDS = frozenset(
 
 
 def _rebuild_certificate(value: object) -> ValidationCertificate:
-    if not isinstance(value, ValidationCertificate):
+    if type(value) is not ValidationCertificate:
         raise LandingPolicyError("certificate is not a typed authority value")
     try:
         raw = _plain_payload_mapping(value.canonical_payload(), "certificate")
     except LandingPolicyError:
         raise
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError(
             "certificate authority could not be serialized"
         ) from exc
@@ -610,7 +660,7 @@ def _rebuild_certificate(value: object) -> ValidationCertificate:
             issued_at=issued_at,
             profile_digest=profile_digest,
         )
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("certificate authority is invalid") from exc
     _validate_certificate_content(certificate)
     return certificate
@@ -685,13 +735,13 @@ _EVIDENCE_SEQUENCE_FIELDS = (
 
 
 def _rebuild_evidence(value: object) -> GateEvidence:
-    if not isinstance(value, GateEvidence):
+    if type(value) is not GateEvidence:
         raise LandingPolicyError("evidence is not a typed value")
     try:
         raw = _plain_payload_mapping(value.canonical_payload(), "evidence")
     except LandingPolicyError:
         raise
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("evidence could not be serialized") from exc
     if set(raw) != _EVIDENCE_FIELDS:
         raise LandingPolicyError("evidence fields are not exact")
@@ -812,11 +862,11 @@ def _rebuild_evidence(value: object) -> GateEvidence:
             snapshot_gate_replayed=snapshot_gate_replayed,
             detail=detail,
         )
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("evidence authority is invalid") from exc
     try:
         total_bytes = len(canonical_json(evidence.canonical_payload()).encode("utf-8"))
-    except Exception as exc:
+    except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("evidence canonical form is invalid") from exc
     if total_bytes > _MAX_EVIDENCE_TOTAL_BYTES:
         raise LandingPolicyError("landing evidence exceeds the bounded size")
@@ -1058,7 +1108,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
     fresh target CAS or canonical lease check.
     """
 
-    if not isinstance(request, LandingVerificationRequest):
+    if type(request) is not LandingVerificationRequest:
         return _refuse(
             LandingRefusalCode.REQUEST_INVALID,
             "landing request is not a closed typed value",
@@ -1069,7 +1119,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
     try:
         request_generation = request.generation
         request_certificate = request.certificate
-    except Exception:
+    except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.REQUEST_INVALID,
             "landing request authority fields are unavailable",
@@ -1099,7 +1149,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
         observed_fence = _require_optional_fence(
             request.observed_landing_fence, "observed_landing_fence"
         )
-    except Exception:
+    except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.REQUEST_INVALID,
             "landing request identity or observation is invalid",
@@ -1107,14 +1157,14 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
 
     try:
         generation = _rebuild_generation(request_generation)
-    except Exception:
+    except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.GENERATION_INVALID,
             "generation authority could not be rebuilt",
         )
     try:
         certificate = _rebuild_certificate(request_certificate)
-    except Exception:
+    except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.CERTIFICATE_INVALID,
             "certificate authority could not be rebuilt",
@@ -1127,7 +1177,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             rebuilt_evidence.append(_rebuild_evidence(item))
         evidence = tuple(rebuilt_evidence)
         _validate_evidence_bounds(evidence)
-    except Exception:
+    except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.EVIDENCE_INVALID,
             "validation evidence could not be rebuilt",
@@ -1142,7 +1192,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             config_digest=generation.config_digest,
             toolchain_digest=generation.toolchain_digest,
         )
-    except Exception:
+    except ValueError:
         return _refuse(
             LandingRefusalCode.GENERATION_INVALID,
             "generation identity could not be derived",
@@ -1161,7 +1211,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
         expected_generation_anchor = _require_bounded_text(
             request.expected_generation_id, "expected_generation_id"
         )
-    except Exception:
+    except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.REQUEST_INVALID,
             "generation identity anchor is invalid",
@@ -1192,7 +1242,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             request.expected_synthetic_commit_sha,
             "expected_synthetic_commit_sha",
         )
-    except Exception:
+    except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.REQUEST_INVALID,
             "synthetic commit anchor is invalid",
@@ -1237,7 +1287,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
         )
     try:
         evidence_digests = tuple(sorted(item.digest for item in evidence))
-    except Exception:
+    except ValueError:
         return _refuse(
             LandingRefusalCode.EVIDENCE_INVALID,
             "validation evidence digest could not be derived",
@@ -1252,7 +1302,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
         certificate_digest = certificate.digest
         if not isinstance(certificate_check.valid, bool):
             raise LandingPolicyError("certificate verification result is invalid")
-    except Exception:
+    except ValueError:
         return _refuse(
             LandingRefusalCode.CERTIFICATE_INVALID,
             "certificate verification failed safely",
@@ -1271,7 +1321,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
         expected_certificate_digest = _require_digest(
             request.expected_certificate_digest, "expected_certificate_digest"
         )
-    except Exception:
+    except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.REQUEST_INVALID,
             "certificate content anchor is invalid",
@@ -1315,6 +1365,10 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             "the observed landing fence is not the current expected fence",
         )
     try:
+        if type(request.canonical) is not CanonicalCheckoutState:
+            raise LandingPolicyError("canonical observation is invalid")
+        if type(request.target_occupancy) is not TargetOccupancyState:
+            raise LandingPolicyError("occupancy observation is invalid")
         lease_held = _require_bool(
             request.canonical.mutation_lease_held, "mutation_lease_held"
         )
@@ -1322,7 +1376,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
         occupancy = request.target_occupancy.other_worktree_count
         if type(occupancy) is not int or not 0 <= occupancy <= _MAX_TARGET_HOLDERS:
             raise LandingPolicyError("occupancy is invalid")
-    except Exception:
+    except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.REQUEST_INVALID,
             "canonical or occupancy observation is invalid",
@@ -1351,7 +1405,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             certificate_digest=certificate_digest,
             landing_fence=expected_fence,
         )
-    except Exception:
+    except ValueError:
         return _refuse(
             LandingRefusalCode.REQUEST_INVALID,
             "landing result could not be constructed",
