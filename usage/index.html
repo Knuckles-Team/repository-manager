@@ -312,6 +312,25 @@
   
   
     <li class="md-tabs__item">
+      <a href="../config-schema-migration/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Configuration schemas and migration
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
       <a href="../deployment/" class="md-tabs__link">
         
   
@@ -378,6 +397,44 @@
     
   
   Phased Push
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../merge-queue/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Merge Queue (universal)
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../adapter-extraction/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Adapter boundaries
 
       </a>
     </li>
@@ -569,6 +626,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../config-schema-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration schemas and migration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../deployment/" class="md-nav__link">
         
   
@@ -686,6 +770,45 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="As a CLI">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#lane-lifecycle-conceptrm-lane-doctor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lane lifecycle (CONCEPT:RM-LANE-DOCTOR)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#working-tree-mutation-safety-conceptrm-safe-commit-conceptrm-destructive-guard-conceptrm-tree-repair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Working-tree mutation safety (CONCEPT:RM-SAFE-COMMIT, CONCEPT:RM-DESTRUCTIVE-GUARD, CONCEPT:RM-TREE-REPAIR)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#canonical-manifest-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Canonical manifest gate
+      
+    </span>
+  </a>
+  
 </li>
       
     </ul>
@@ -738,6 +861,60 @@
     
   
     Phased Push
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../merge-queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Merge Queue (universal)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adapter-extraction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapter boundaries
   
 
     
@@ -830,6 +1007,45 @@
     <span class="md-ellipsis">
       
         As a CLI
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="As a CLI">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#lane-lifecycle-conceptrm-lane-doctor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lane lifecycle (CONCEPT:RM-LANE-DOCTOR)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#working-tree-mutation-safety-conceptrm-safe-commit-conceptrm-destructive-guard-conceptrm-tree-repair" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Working-tree mutation safety (CONCEPT:RM-SAFE-COMMIT, CONCEPT:RM-DESTRUCTIVE-GUARD, CONCEPT:RM-TREE-REPAIR)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#canonical-manifest-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Canonical manifest gate
       
     </span>
   </a>
@@ -961,6 +1177,205 @@ that aborts on the first failure:</p>
 </ul>
 <p>The phased mechanics are documented in detail in
 <a href="../phased_maintenance/">Phased Maintenance</a> and <a href="../phased_push/">Phased Push</a>.</p>
+<h3 id="lane-lifecycle-conceptrm-lane-doctor">Lane lifecycle (<code>CONCEPT:RM-LANE-DOCTOR</code>)<a class="headerlink" href="#lane-lifecycle-conceptrm-lane-doctor" title="Permanent link">&para;</a></h3>
+<p>When many agents and humans develop the same repositories at once, each unit of
+work runs as an isolated <strong>lane</strong>. The <code>--lane</code> verbs make that lifecycle
+executable rather than a convention:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Open a lane: a worktree PLUS a partitioned cargo target dir, pytest basetemp,</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="c1"># TMPDIR and PRE_COMMIT_HOME -- and a preflight that proves the isolation.</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>repository-manager<span class="w"> </span>--lane<span class="w"> </span>start<span class="w"> </span>--lane-repo<span class="w"> </span>agent-utilities<span class="w"> </span>--lane-branch<span class="w"> </span>lane/my-change
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="c1"># Adopt the environment in your shell.</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="nb">eval</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>repository-manager<span class="w"> </span>--lane<span class="w"> </span>env<span class="w"> </span>--lane-path<span class="w"> </span>.<span class="w"> </span>--lane-shell<span class="k">)</span><span class="s2">&quot;</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1"># Diagnose a lane that is behaving impossibly. Mutates nothing, answers in &lt;1s.</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>repository-manager<span class="w"> </span>--lane<span class="w"> </span>doctor<span class="w"> </span>--lane-path<span class="w"> </span>.
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="c1"># Close it out: blocking preflight, then hand the branch to the merge queue.</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>repository-manager<span class="w"> </span>--lane<span class="w"> </span>finish<span class="w"> </span>--lane-path<span class="w"> </span>.<span class="w"> </span>--lane-base<span class="w"> </span>main
+</span></code></pre></div>
+<p><code>doctor</code> is the one to reach for when a test fails in a way that cannot be true,
+a build will not go green, a merge keeps being refused, or work has gone missing.
+Each check reports its verdict, its evidence, and a <strong>literal remedy command</strong>;
+<code>fail</code> blocks <code>finish</code>, <code>warn</code> never does. What it checks, and why each check
+exists:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Failure it exists to catch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>not-canonical</code></td>
+<td>editing a canonical checkout a background <code>git reset</code> can discard</td>
+</tr>
+<tr>
+<td><code>no-worktree-venv</code></td>
+<td>a foreign or stale worktree-local <code>.venv</code> shadowing the workspace environment; the exact all-extras environment managed by <code>scripts/uv_workspace.py</code> is accepted</td>
+</tr>
+<tr>
+<td><code>cargo-partition</code></td>
+<td>a shared <code>CARGO_TARGET_DIR</code>, which corrupts concurrent builds rather than merely serializing them</td>
+</tr>
+<tr>
+<td><code>precommit-home</code></td>
+<td>the shared pre-commit store, where a crash inside <code>staged_files_only()</code>'s window loses unstaged work to an orphaned patch</td>
+</tr>
+<tr>
+<td><code>pytest-basetemp</code></td>
+<td>concurrent lanes contending on one pytest temp root</td>
+</tr>
+<tr>
+<td><code>shared-stash-ref</code></td>
+<td><code>refs/stash</code> — one ref shared by every worktree of the repository</td>
+</tr>
+<tr>
+<td><code>test-runner</code></td>
+<td><code>uv run pytest</code> silently resolving the <em>system</em> interpreter</td>
+</tr>
+<tr>
+<td><code>canonical-clean</code></td>
+<td>a dirty canonical tree, which blocks <strong>every</strong> lane's landing</td>
+</tr>
+<tr>
+<td><code>merge-queue-config</code></td>
+<td>a repository declaring no gates, which the queue refuses rather than defaults</td>
+</tr>
+<tr>
+<td><code>base-drift</code></td>
+<td>reasoning about the branch tip when the merged tree is what lands</td>
+</tr>
+<tr>
+<td><code>committed-work</code></td>
+<td>uncommitted work, the only kind a tree reset can take</td>
+</tr>
+</tbody>
+</table>
+<p>The same action core backs the <code>rm_lane</code> MCP tool and
+<code>python -m repository_manager.lane_doctor</code>, so the surfaces cannot drift.</p>
+<h3 id="working-tree-mutation-safety-conceptrm-safe-commit-conceptrm-destructive-guard-conceptrm-tree-repair">Working-tree mutation safety (<code>CONCEPT:RM-SAFE-COMMIT</code>, <code>CONCEPT:RM-DESTRUCTIVE-GUARD</code>, <code>CONCEPT:RM-TREE-REPAIR</code>)<a class="headerlink" href="#working-tree-mutation-safety-conceptrm-safe-commit-conceptrm-destructive-guard-conceptrm-tree-repair" title="Permanent link">&para;</a></h3>
+<p>The pure safety primitives are available to lane and job implementations without
+changing MCP registration:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">repository_manager.destructive_guard</span><span class="w"> </span><span class="kn">import</span> <span class="n">guard</span><span class="p">,</span> <span class="n">issue_override_token</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">repository_manager.safe_commit</span><span class="w"> </span><span class="kn">import</span> <span class="n">safe_commit</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">repository_manager.tree_repair</span><span class="w"> </span><span class="kn">import</span> <span class="n">diagnose</span><span class="p">,</span> <span class="n">repair</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">commit</span> <span class="o">=</span> <span class="n">safe_commit</span><span class="p">(</span><span class="s2">&quot;/path/to/lane&quot;</span><span class="p">,</span> <span class="s2">&quot;implement the reviewed change&quot;</span><span class="p">)</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">finding</span> <span class="o">=</span> <span class="n">diagnose</span><span class="p">(</span><span class="s2">&quot;/path/to/lane&quot;</span><span class="p">)</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="k">if</span> <span class="n">finding</span><span class="p">[</span><span class="s2">&quot;finding&quot;</span><span class="p">]</span> <span class="o">!=</span> <span class="s2">&quot;clean&quot;</span><span class="p">:</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="n">repair</span><span class="p">(</span><span class="s2">&quot;/path/to/lane&quot;</span><span class="p">,</span> <span class="n">finding</span><span class="o">=</span><span class="n">finding</span><span class="p">)</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="c1"># Destructive argv is refused unless this explicit token is consumed once.</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="n">decision</span> <span class="o">=</span> <span class="n">guard</span><span class="p">([</span><span class="s2">&quot;git&quot;</span><span class="p">,</span> <span class="s2">&quot;clean&quot;</span><span class="p">,</span> <span class="s2">&quot;-fd&quot;</span><span class="p">],</span> <span class="n">path</span><span class="o">=</span><span class="s2">&quot;/path/to/lane&quot;</span><span class="p">)</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="n">override</span> <span class="o">=</span> <span class="n">guard</span><span class="p">(</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>    <span class="p">[</span><span class="s2">&quot;git&quot;</span><span class="p">,</span> <span class="s2">&quot;clean&quot;</span><span class="p">,</span> <span class="s2">&quot;-fd&quot;</span><span class="p">],</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>    <span class="n">path</span><span class="o">=</span><span class="s2">&quot;/path/to/lane&quot;</span><span class="p">,</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>    <span class="n">lane</span><span class="o">=</span><span class="s2">&quot;lane-id&quot;</span><span class="p">,</span>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>    <span class="n">override</span><span class="o">=</span><span class="n">issue_override_token</span><span class="p">(</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>        <span class="n">authorization</span><span class="o">=</span><span class="n">operator_authorization_callback</span><span class="p">,</span>
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>        <span class="n">audit_context</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>            <span class="s2">&quot;actor&quot;</span><span class="p">:</span> <span class="s2">&quot;operator&quot;</span><span class="p">,</span>
+</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>            <span class="s2">&quot;lane&quot;</span><span class="p">:</span> <span class="s2">&quot;lane-id&quot;</span><span class="p">,</span>
+</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>            <span class="s2">&quot;repository&quot;</span><span class="p">:</span> <span class="s2">&quot;/path/to/lane&quot;</span><span class="p">,</span>
+</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a>            <span class="s2">&quot;argv&quot;</span><span class="p">:</span> <span class="s2">&quot;git clean -fd&quot;</span><span class="p">,</span>
+</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>            <span class="s2">&quot;operation&quot;</span><span class="p">:</span> <span class="s2">&quot;git clean -fd&quot;</span><span class="p">,</span>
+</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a>        <span class="p">},</span>
+</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a>    <span class="p">),</span>
+</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>Override context is mandatory and exact: the repository is resolved before
+consumption and <code>argv</code> must be normalized fixed-argument text. Unknown commands,
+alternate <code>--git-dir</code>/<code>--work-tree</code> targets, aliases/config injection, and
+non-<code>git</code> executables are refused. The mutation lease is cooperative; a raw
+external Git process that ignores it remains outside this boundary, and a
+post-execution tree invariant is returned when such a process races it.</p>
+<p><code>safe_commit</code> stages deletions and untracked files before invoking the configured
+gate and returns an explicit <code>nothing_left_unstaged</code> assertion plus the staged
+path set, commit SHA, and refreshed tree baseline evidence. <code>destructive_guard</code> refuses <code>reset --hard</code>, broad
+checkout/clean/stash operations, forced branch deletion, and force-push by
+default. A token cannot be minted from configuration or an environment flag;
+the caller must supply a live authorization callback and
+actor/lane/repository/argv/operation audit context. An override first creates
+<code>refs/lane-backup/pre-destructive/&lt;lane&gt;-&lt;uuid&gt;</code> and parks dirty WIP at the
+lane-private ref; a missing snapshot is a refusal. Use <code>stash_guard.park</code> and
+<code>stash_guard.unpark</code> for a temporary clean tree instead of the shared
+<code>refs/stash</code> stack.</p>
+<pre class="mermaid"><code>flowchart LR
+    TREE[Dirty worktree] --&gt; STAGE[git add -A]
+    STAGE --&gt; PROVE{nothing left unstaged?}
+    PROVE --&gt;|yes| GATE[Configured gate]
+    GATE --&gt; RESTAGE[Restage formatter output]
+    RESTAGE --&gt; COMMIT[Commit + SHA]
+    DANGER[Destructive argv] --&gt; REFUSE[Refuse + safer alternative]
+    DANGER --&gt;|single-use override| SNAP[Backup ref + private WIP park]
+    SNAP --&gt; EXEC[Execute fixed argv]</code></pre>
+<pre class="mermaid"><code>flowchart LR
+    V{Worktree has .venv} --&gt;|No| OK[Isolation check passes]
+    V --&gt;|Yes| M{Launcher marker config and interpreter are valid}
+    M --&gt;|Yes| MANAGED[Managed all-extras environment passes]
+    M --&gt;|No| FAIL[Foreign or stale environment blocks finish]</code></pre>
+<h2 id="canonical-manifest-gate">Canonical manifest gate<a class="headerlink" href="#canonical-manifest-gate" title="Permanent link">&para;</a></h2>
+<p>For a development bootstrap, the root <code>workspace.yml</code> is the only authority.
+The Graph-OS XDG copy retains its canonical bytes, including private runtime
+values. This package's <code>workspace.yml</code> is a separate portable projection: the
+workspace root becomes <code>${AGENT_UTILITIES_WORKSPACE_ROOT}</code>, private URL origins
+become <code>${AGENT_UTILITIES_REPO_ORIGIN}</code>, and private service suffixes become
+<code>${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}</code>. The gate rejects embedded URL
+credentials, secret fields, and absolute paths outside the declared workspace
+before either destination can be written.</p>
+<p>Validate all three before cloning. <code>--manifest-check</code> never writes and exits 1
+when either mirror has drifted. <code>--manifest-sync --manifest-dry-run</code> previews
+the two updates. A real <code>--manifest-sync</code> stages both files first, replaces them
+atomically, and rolls back the first replacement if the second one fails.</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>repository-manager<span class="w"> </span>--manifest-check<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>--manifest-source<span class="w"> </span>&lt;workspace-root&gt;/workspace.yml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>--manifest-profile<span class="w"> </span>development
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>repository-manager<span class="w"> </span>--manifest-sync<span class="w"> </span>--manifest-dry-run<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">  </span>--manifest-source<span class="w"> </span>&lt;workspace-root&gt;/workspace.yml
+</span></code></pre></div>
+<p>Every destination is overridable for an isolated bootstrap or test. The command
+does not search for a source manifest and never treats the packaged seed as
+authority. The runtime mirror must match the canonical source byte-for-byte;
+the portable seed is compared semantically, so seed-only formatting changes do
+not trigger a replacement. Its JSON
+result reports only roles, SHA-256 digests, declared profiles/selectors, and
+selected workspace-relative repository identifiers; it omits local paths.</p>
+<pre class="mermaid"><code>flowchart LR
+    ROOT[Canonical root workspace.yml] --&gt; GATE[repository-manager manifest gate]
+    GATE --&gt;|canonical projection / atomic replace| XDG[Graph-OS runtime copy]
+    GATE --&gt;|portable projection / atomic replace| SEED[Packaged distribution seed]
+    GATE --&gt;|profile + selector resolution| BOOT[Bounded development bootstrap]</code></pre>
+<p>Profiles make a development subset explicit without changing the repository
+tree. A profile names one or more selectors. Selectors use stable,
+workspace-relative identifiers, unambiguous basenames, or <code>*</code>:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">profiles</span><span class="p">:</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">development</span><span class="p">:</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span><span class="nt">selectors</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">core</span><span class="p p-Indicator">]</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="nt">selectors</span><span class="p">:</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="nt">core</span><span class="p">:</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">    </span><span class="nt">include</span><span class="p">:</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">agent-packages/agent-utilities</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">agent-packages/agents/repository-manager</span>
+</span></code></pre></div>
+<p>The rules are fail-closed:</p>
+<ul>
+<li>a missing <code>include</code> starts with every repository, while <code>include: []</code> starts
+  empty;</li>
+<li><code>exclude</code> is applied within each selector, then multiple selectors are
+  unioned;</li>
+<li><code>*</code> cannot be combined with another value in the same list;</li>
+<li>every profile reference and every selector member is validated, even when
+  that profile was not requested;</li>
+<li>a basename that occurs in more than one directory is rejected as ambiguous;
+  use its workspace-relative identifier instead.</li>
+</ul>
+<p>A manifest with no requested profile or selector exposes every declared
+repository. Automation should consume the reported <code>selected_repositories</code>
+identifiers directly; do not collapse them to basenames when the manifest
+contains duplicate names.</p>
 
 
 

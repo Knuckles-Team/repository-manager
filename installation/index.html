@@ -314,6 +314,25 @@
   
   
     <li class="md-tabs__item">
+      <a href="../config-schema-migration/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Configuration schemas and migration
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
       <a href="../deployment/" class="md-tabs__link">
         
   
@@ -378,6 +397,44 @@
     
   
   Phased Push
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../merge-queue/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Merge Queue (universal)
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../adapter-extraction/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Adapter boundaries
 
       </a>
     </li>
@@ -625,6 +682,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#pre-commit-in-an-isolated-worktree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pre-commit in an isolated worktree
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#prebuilt-docker-image" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -680,6 +748,33 @@
     
   
     Configuration, trust, and privacy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config-schema-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration schemas and migration
   
 
     
@@ -807,6 +902,60 @@
   
   
     <li class="md-nav__item">
+      <a href="../merge-queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Merge Queue (universal)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adapter-extraction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapter boundaries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../concepts/" class="md-nav__link">
         
   
@@ -897,6 +1046,17 @@
     <span class="md-ellipsis">
       
         From source
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pre-commit-in-an-isolated-worktree" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pre-commit in an isolated worktree
       
     </span>
   </a>
@@ -1015,6 +1175,17 @@ Pick the path that matches how you want to run it.</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">&quot;.[all]&quot;</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>uv<span class="w"> </span>run<span class="w"> </span>repository-manager-mcp
 </span></code></pre></div>
+<h2 id="pre-commit-in-an-isolated-worktree">Pre-commit in an isolated worktree<a class="headerlink" href="#pre-commit-in-an-isolated-worktree" title="Permanent link">&para;</a></h2>
+<p>The framework-owned checks run in the locked <code>agent-utilities</code> environment so
+they exercise the same implementation as the workspace gate. In a normal
+workspace, the hook discovers the canonical <code>repository-manager</code> worktree and
+its sibling <code>agent-utilities</code> checkout. For a standalone clone, set
+<code>AGENT_UTILITIES_ROOT</code> to that checkout before running <code>pre-commit run
+--all-files</code>.</p>
+<p>Docker Compose validation uses the checked-in synthetic digest fixture at
+<code>scripts/fixtures/precommit-compose.env</code>; it is never used for deployment.
+Deployment still requires its own <code>REPOSITORY_MANAGER_MCP_IMAGE</code> and
+<code>REPOSITORY_MANAGER_AGENT_IMAGE</code> values.</p>
 <h2 id="prebuilt-docker-image">Prebuilt Docker image<a class="headerlink" href="#prebuilt-docker-image" title="Permanent link">&para;</a></h2>
 <p>A multi-stage runtime image is published on every release (installs
 <code>repository-manager[all]</code>):</p>

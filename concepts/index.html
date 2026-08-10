@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://knuckles-team.github.io/repository-manager/concepts/">
       
       
-        <link rel="prev" href="../phased_push/">
+        <link rel="prev" href="../adapter-extraction/">
       
       
       
@@ -310,6 +310,25 @@
   
   
     <li class="md-tabs__item">
+      <a href="../config-schema-migration/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Configuration schemas and migration
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
       <a href="../deployment/" class="md-tabs__link">
         
   
@@ -374,6 +393,44 @@
     
   
   Phased Push
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../merge-queue/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Merge Queue (universal)
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../adapter-extraction/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Adapter boundaries
 
       </a>
     </li>
@@ -567,6 +624,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../config-schema-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration schemas and migration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../deployment/" class="md-nav__link">
         
   
@@ -656,6 +740,60 @@
     
   
     Phased Push
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../merge-queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Merge Queue (universal)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adapter-extraction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapter boundaries
   
 
     
@@ -891,6 +1029,21 @@
 <td>Workspace Management</td>
 <td>MCP tool domain <code>workspace_management</code> — Action-routed dynamic tool registration</td>
 </tr>
+<tr>
+<td><code>CONCEPT:RM-SAFE-COMMIT</code></td>
+<td>Safe commit</td>
+<td>Stages the complete tree before a gate and proves <code>nothing_left_unstaged</code> before commit (C-12)</td>
+</tr>
+<tr>
+<td><code>CONCEPT:RM-DESTRUCTIVE-GUARD</code></td>
+<td>Destructive git guard</td>
+<td>Refuses destructive verbs unless a logged, single-use, snapshot-backed override is supplied (C-12)</td>
+</tr>
+<tr>
+<td><code>CONCEPT:RM-TREE-REPAIR</code></td>
+<td>Working-tree repair</td>
+<td>Detects index collapse and <code>core.bare</code> drift and applies content-preserving mechanical repairs (C-12)</td>
+</tr>
 </tbody>
 </table>
 <h2 id="cross-project-references-from-agent-utilities">Cross-Project References (from agent-utilities)<a class="headerlink" href="#cross-project-references-from-agent-utilities" title="Permanent link">&para;</a></h2>
@@ -979,7 +1132,7 @@
       <nav class="md-footer__inner md-grid" aria-label="Footer" >
         
           
-          <a href="../phased_push/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Phased Push">
+          <a href="../adapter-extraction/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Adapter boundaries">
             <div class="md-footer__button md-icon">
               
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
@@ -989,7 +1142,7 @@
                 Previous
               </span>
               <div class="md-ellipsis">
-                Phased Push
+                Adapter boundaries
               </div>
             </div>
           </a>

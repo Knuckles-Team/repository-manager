@@ -10,13 +10,9 @@
       
       
       
-        <link rel="canonical" href="https://knuckles-team.github.io/repository-manager/phased_maintenance/">
+        <link rel="canonical" href="https://knuckles-team.github.io/repository-manager/architecture/lane-registry/">
       
       
-        <link rel="prev" href="../usage/">
-      
-      
-        <link rel="next" href="../phased_push/">
       
       
         
@@ -27,14 +23,14 @@
     
     
       
-        <title>Phased Maintenance - repository-manager</title>
+        <title>Durable lane registry boundary - repository-manager</title>
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
-        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -53,7 +49,7 @@
       
     
     
-    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -78,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#phased-maintenance-workflows" class="md-skip">
+        <a href="#durable-lane-registry-boundary" class="md-skip">
           Skip to content
         </a>
       
@@ -94,7 +90,7 @@
 
 <header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href=".." title="repository-manager" class="md-header__button md-logo" aria-label="repository-manager" data-md-component="logo">
+    <a href="../.." title="repository-manager" class="md-header__button md-logo" aria-label="repository-manager" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19.5 17c-.14 0-.26 0-.39.04L17.5 13.8c.45-.45.75-1.09.75-1.8a2.5 2.5 0 0 0-2.5-2.5c-.14 0-.25 0-.4.04L13.74 6.3c.47-.46.76-1.09.76-1.8a2.5 2.5 0 0 0-5 0c0 .7.29 1.34.76 1.79L8.65 9.54c-.15-.04-.26-.04-.4-.04a2.5 2.5 0 0 0-2.5 2.5c0 .71.29 1.34.75 1.79l-1.61 3.25C4.76 17 4.64 17 4.5 17a2.5 2.5 0 0 0 0 5A2.5 2.5 0 0 0 7 19.5c0-.7-.29-1.34-.76-1.79l1.62-3.25c.14.04.26.04.39.04s.25 0 .38-.04l1.63 3.25c-.47.45-.76 1.09-.76 1.79a2.5 2.5 0 0 0 5 0A2.5 2.5 0 0 0 12 17c-.13 0-.26 0-.39.04L10 13.8c.45-.45.75-1.09.75-1.8 0-.7-.29-1.33-.75-1.79l1.61-3.25c.13.04.26.04.39.04s.26 0 .39-.04L14 10.21a2.5 2.5 0 0 0 1.75 4.29c.13 0 .25 0 .38-.04l1.63 3.25c-.47.45-.76 1.09-.76 1.79a2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0-2.5-2.5m-15 3.5c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1m8.5-1c0 .55-.45 1-1 1s-1-.45-1-1 .45-1 1-1 1 .45 1 1M7.25 12c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1M11 4.5c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1m3.75 7.5c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1m4.75 8.5c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1"/></svg>
@@ -114,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Phased Maintenance
+              Durable lane registry boundary
             
           </span>
         </div>
@@ -236,7 +232,7 @@
   
   
     <li class="md-tabs__item">
-      <a href=".." class="md-tabs__link">
+      <a href="../.." class="md-tabs__link">
         
   
   
@@ -255,7 +251,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../overview/" class="md-tabs__link">
+      <a href="../../overview/" class="md-tabs__link">
         
   
   
@@ -274,7 +270,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../installation/" class="md-tabs__link">
+      <a href="../../installation/" class="md-tabs__link">
         
   
   
@@ -293,7 +289,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../configuration/" class="md-tabs__link">
+      <a href="../../configuration/" class="md-tabs__link">
         
   
   
@@ -312,7 +308,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../config-schema-migration/" class="md-tabs__link">
+      <a href="../../config-schema-migration/" class="md-tabs__link">
         
   
   
@@ -331,7 +327,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../deployment/" class="md-tabs__link">
+      <a href="../../deployment/" class="md-tabs__link">
         
   
   
@@ -350,7 +346,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../usage/" class="md-tabs__link">
+      <a href="../../usage/" class="md-tabs__link">
         
   
   
@@ -367,11 +363,9 @@
   
   
   
-    
   
-  
-    <li class="md-tabs__item md-tabs__item--active">
-      <a href="./" class="md-tabs__link">
+    <li class="md-tabs__item">
+      <a href="../../phased_maintenance/" class="md-tabs__link">
         
   
   
@@ -390,7 +384,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../phased_push/" class="md-tabs__link">
+      <a href="../../phased_push/" class="md-tabs__link">
         
   
   
@@ -409,7 +403,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../merge-queue/" class="md-tabs__link">
+      <a href="../../merge-queue/" class="md-tabs__link">
         
   
   
@@ -428,7 +422,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../adapter-extraction/" class="md-tabs__link">
+      <a href="../../adapter-extraction/" class="md-tabs__link">
         
   
   
@@ -447,7 +441,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../concepts/" class="md-tabs__link">
+      <a href="../../concepts/" class="md-tabs__link">
         
   
   
@@ -488,7 +482,7 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href=".." title="repository-manager" class="md-nav__button md-logo" aria-label="repository-manager" data-md-component="logo">
+    <a href="../.." title="repository-manager" class="md-nav__button md-logo" aria-label="repository-manager" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19.5 17c-.14 0-.26 0-.39.04L17.5 13.8c.45-.45.75-1.09.75-1.8a2.5 2.5 0 0 0-2.5-2.5c-.14 0-.25 0-.4.04L13.74 6.3c.47-.46.76-1.09.76-1.8a2.5 2.5 0 0 0-5 0c0 .7.29 1.34.76 1.79L8.65 9.54c-.15-.04-.26-.04-.4-.04a2.5 2.5 0 0 0-2.5 2.5c0 .71.29 1.34.75 1.79l-1.61 3.25C4.76 17 4.64 17 4.5 17a2.5 2.5 0 0 0 0 5A2.5 2.5 0 0 0 7 19.5c0-.7-.29-1.34-.76-1.79l1.62-3.25c.14.04.26.04.39.04s.25 0 .38-.04l1.63 3.25c-.47.45-.76 1.09-.76 1.79a2.5 2.5 0 0 0 5 0A2.5 2.5 0 0 0 12 17c-.13 0-.26 0-.39.04L10 13.8c.45-.45.75-1.09.75-1.8 0-.7-.29-1.33-.75-1.79l1.61-3.25c.13.04.26.04.39.04s.26 0 .39-.04L14 10.21a2.5 2.5 0 0 0 1.75 4.29c.13 0 .25 0 .38-.04l1.63 3.25c-.47.45-.76 1.09-.76 1.79a2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0-2.5-2.5m-15 3.5c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1m8.5-1c0 .55-.45 1-1 1s-1-.45-1-1 .45-1 1-1 1 .45 1 1M7.25 12c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1M11 4.5c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1m3.75 7.5c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1m4.75 8.5c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1"/></svg>
@@ -518,7 +512,7 @@
   
   
     <li class="md-nav__item">
-      <a href=".." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -545,7 +539,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../overview/" class="md-nav__link">
+      <a href="../../overview/" class="md-nav__link">
         
   
   
@@ -572,7 +566,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../installation/" class="md-nav__link">
+      <a href="../../installation/" class="md-nav__link">
         
   
   
@@ -599,7 +593,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../configuration/" class="md-nav__link">
+      <a href="../../configuration/" class="md-nav__link">
         
   
   
@@ -626,7 +620,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../config-schema-migration/" class="md-nav__link">
+      <a href="../../config-schema-migration/" class="md-nav__link">
         
   
   
@@ -653,7 +647,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deployment/" class="md-nav__link">
+      <a href="../../deployment/" class="md-nav__link">
         
   
   
@@ -680,7 +674,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../usage/" class="md-nav__link">
+      <a href="../../usage/" class="md-nav__link">
         
   
   
@@ -704,37 +698,10 @@
       
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Phased Maintenance
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../phased_maintenance/" class="md-nav__link">
         
   
   
@@ -750,81 +717,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#phased-maintenance-phases" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Phased Maintenance Phases
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#change-aware-start-phase-default" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Change-aware Start Phase (default)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cli-usage" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        CLI Usage
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#example-the-sequential-execution-pipeline" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example: The Sequential Execution Pipeline
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#example-targeting-specific-phases-or-projects" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example: Targeting specific phases or projects
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -836,7 +728,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../phased_push/" class="md-nav__link">
+      <a href="../../phased_push/" class="md-nav__link">
         
   
   
@@ -863,7 +755,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../merge-queue/" class="md-nav__link">
+      <a href="../../merge-queue/" class="md-nav__link">
         
   
   
@@ -890,7 +782,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../adapter-extraction/" class="md-nav__link">
+      <a href="../../adapter-extraction/" class="md-nav__link">
         
   
   
@@ -917,7 +809,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/" class="md-nav__link">
+      <a href="../../concepts/" class="md-nav__link">
         
   
   
@@ -964,10 +856,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#phased-maintenance-phases" class="md-nav__link">
+  <a href="#authority-boundary" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Phased Maintenance Phases
+        Authority boundary
       
     </span>
   </a>
@@ -975,10 +867,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#change-aware-start-phase-default" class="md-nav__link">
+  <a href="#reclamation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Change-aware Start Phase (default)
+        Reclamation
       
     </span>
   </a>
@@ -986,32 +878,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#cli-usage" class="md-nav__link">
+  <a href="#migration-and-rollback" class="md-nav__link">
     <span class="md-ellipsis">
       
-        CLI Usage
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#example-the-sequential-execution-pipeline" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example: The Sequential Execution Pipeline
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#example-targeting-specific-phases-or-projects" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Example: Targeting specific phases or projects
+        Migration and rollback
       
     </span>
   </a>
@@ -1038,78 +908,63 @@
   
 
 
-<h1 id="phased-maintenance-workflows">Phased Maintenance Workflows<a class="headerlink" href="#phased-maintenance-workflows" title="Permanent link">&para;</a></h1>
-<p>The <code>repository-manager</code> includes powerful workflow automation features to execute phased, sequential updates across the workspace. This is primarily controlled via the <code>workspace.yml</code> configuration and the command-line interface.</p>
-<h2 id="phased-maintenance-phases">Phased Maintenance Phases<a class="headerlink" href="#phased-maintenance-phases" title="Permanent link">&para;</a></h2>
-<p>The agent ecosystem enforces dependency order updates through sequential maintenance phases. By default, three core phases govern the ecosystem:</p>
-<ol>
-<li>
-<p><strong>Phase 1: Core Tools and UIs</strong>
-   Updates the foundation (<code>universal-skills</code>, <code>skill-graphs</code>, <code>agent-webui</code>, <code>agent-terminal-ui</code>).
-   Wait Interval: 10 minutes (allows CI/CD or CD pipeline deployments to propagate).</p>
-</li>
-<li>
-<p><strong>Phase 2: agent-utilities</strong>
-   Updates the primary orchestrator that depends on core tools.
-   Wait Interval: 5 minutes.</p>
-</li>
-<li>
-<p><strong>Phase 3: Agents</strong>
-   Executes a bulk update for all <code>agent</code> projects using a wildcard strategy to deploy final updates to the ecosystem.</p>
-</li>
-</ol>
-<h2 id="change-aware-start-phase-default">Change-aware Start Phase (default)<a class="headerlink" href="#change-aware-start-phase-default" title="Permanent link">&para;</a></h2>
-<p>Phased bump and push are <strong>change-aware by default</strong>: instead of blindly starting at
-Phase 1, they first detect the <strong>lowest phase that contains a repo with pending work</strong>
-and start there, skipping unchanged upstream phases and their inter-phase waits. This
-applies everywhere — the CLI (<code>--maintain</code> / <code>--push</code>), the MCP tools
-(<code>rm_workspace action="maintain"</code>, <code>rm_git action="phased_push"</code>), and the
-<code>workspace-validator</code> skill's <code>auto_bump</code> / <code>auto_push</code>.</p>
-<p>This is safe because phases are topologically ordered — a change in phase <em>N</em> can only
-cascade downstream to phases <code>&gt;= N</code> (dependency-pin propagation flows from upstream to
-downstream, never the reverse). So:</p>
-<ul>
-<li>Edit something in <strong>Phase 2</strong> → the bump/push runs <strong>Phase 2, 3, 4, …</strong> and skips Phase 1.</li>
-<li>No repo has pending work → the bump/push is a <strong>no-op</strong> (nothing to do).</li>
-</ul>
-<p>A repo is considered to have pending work when it is <em>not</em> both clean and in sync with
-origin: i.e. it has uncommitted changes, an unpushed feature commit, or an unpushed
-version bump awaiting delivery. An explicit starting phase (<code>--phase</code>) is honored as a
-floor — the effective start is <code>max(explicit_phase, detected_phase)</code>.</p>
-<p><strong>Opting out.</strong> Pass <code>--no-auto-start</code> on the CLI, or <code>auto_start=False</code> to the MCP
-tools / library functions, to force a start at the explicit <code>--phase</code> (default 1).
-Change-aware start also <strong>stands down automatically</strong> for explicit-targeting requests —
-when a <code>--project</code> / <code>project_filter</code> is given (bump and push), or <code>--force</code> (bump) —
-since those deliberately bypass change detection.</p>
-<h2 id="cli-usage">CLI Usage<a class="headerlink" href="#cli-usage" title="Permanent link">&para;</a></h2>
-<p>The following flags control phased update and push sequences:</p>
-<ul>
-<li><code>--validate</code>: Executes a full pre-release validation. If this fails, the next steps are aborted.</li>
-<li><code>--bump [patch/minor/major]</code>: Executes a version bump.</li>
-<li><code>--maintain</code>: Executes phased dependency updates across the workspace. Modifies <code>pyproject.toml</code> automatically based on dependency tree.</li>
-<li><code>--push</code>: Executes a parallelized Git Push sequence per-phase, respecting <code>wait_minutes</code> pauses.</li>
-<li><code>--phase [int]</code>: Starting phase (1-3). Acts as a floor under change-aware start.</li>
-<li><code>--no-auto-start</code>: Opt out of change-aware start; begin at <code>--phase</code> (default 1) instead of the lowest changed phase.</li>
-<li><code>--single-phase</code>: Execute only the specified starting phase and halt.</li>
-<li><code>--project [name]</code>: Execute bumps or pushes exclusively for a targeted project name (disables change-aware start).</li>
-</ul>
-<h2 id="example-the-sequential-execution-pipeline">Example: The Sequential Execution Pipeline<a class="headerlink" href="#example-the-sequential-execution-pipeline" title="Permanent link">&para;</a></h2>
-<p>To run a safe end-to-end update sequence that stops if errors are detected:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>repository-manager<span class="w"> </span>--validate<span class="w"> </span>--bump<span class="w"> </span>patch<span class="w"> </span>--maintain<span class="w"> </span>--push
+<h1 id="durable-lane-registry-boundary">Durable lane registry boundary<a class="headerlink" href="#durable-lane-registry-boundary" title="Permanent link">&para;</a></h1>
+<p>RMDD-09 models one linked worktree as a fenced lane. <code>LaneRecord</code> carries the
+collision-safe repository identity, branch/worktree reservation, owner/session,
+heartbeat/TTL, quota observations, active claims, recovery anchors, and
+lifecycle state. Repository identity includes the canonical repository path;
+the display basename is never an identity key.</p>
+<h2 id="authority-boundary">Authority boundary<a class="headerlink" href="#authority-boundary" title="Permanent link">&para;</a></h2>
+<p><code>LaneRegistry</code> is a bounded controller and SQLite is only a local projection for
+status and diagnostics. A registry constructed without an injected durable
+<code>LaneAuthority</code> refuses every managed mutation. The projection, a process lock,
+or a local quota snapshot cannot authorize allocation, heartbeat, adoption,
+transition, expiry, quarantine, or cleanup.</p>
+<p>The production adapter is <code>NativeLaneAuthorityAdapter</code>. It accepts only the
+typed native authority seam that atomically implements <code>allocate_lane</code>,
+<code>get_lane</code>, <code>list_lanes</code>, <code>transition_lane</code>, and <code>heartbeat_lane</code>; optional
+adoption, anchor, rollback, and cleanup-job methods remain on that same
+authority. RMDD-06's current <code>RepositoryJobService</code> does not yet expose this
+atomic lane transaction, so the adapter fails closed until the engine/AU native
+lane lease/quota contract is available. <code>FakeDurableLaneAuthority</code> is explicitly
+test-only and is useful for two-controller/restart tests when both controllers
+share the same fake object.</p>
+<p>The lifecycle is fenced and owner-bound:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>allocating -&gt; active -&gt; submitted -&gt; landed
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>     |          |          |          |
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>     +-------&gt; aborted/expired -&gt; quarantined
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>                              \-&gt; rejected (finish only)
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>observed_legacy --(operator adoption)--&gt; active
 </span></code></pre></div>
-<ol>
-<li><strong>Validation</strong>: Verifies static analysis and imports.</li>
-<li><strong>Bump</strong>: Bumps semantic versions.</li>
-<li><strong>Maintain</strong>: Propagates version changes in dependency trees.</li>
-<li><strong>Push</strong>: Pushes all projects upstream in parallel chunks, grouped by phase.</li>
-</ol>
-<h2 id="example-targeting-specific-phases-or-projects">Example: Targeting specific phases or projects<a class="headerlink" href="#example-targeting-specific-phases-or-projects" title="Permanent link">&para;</a></h2>
-<p>Run only Phase 2 pushing:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>repository-manager<span class="w"> </span>--push<span class="w"> </span>--phase<span class="w"> </span><span class="m">2</span><span class="w"> </span>--single-phase
-</span></code></pre></div></p>
-<p>Target only <code>agent-utilities</code> during a phased bump:
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>repository-manager<span class="w"> </span>--maintain<span class="w"> </span>--bump<span class="w"> </span>patch<span class="w"> </span>--project<span class="w"> </span>agent-utilities
-</span></code></pre></div></p>
+<p>Repeated operations with the current fence are idempotent where the target is
+already reached. A stale owner/fence is refused. Branch and worktree uniqueness,
+quota admission, and idempotency must be performed by the injected authority in
+one durable transaction before <code>WorktreeManager.add</code> is called.</p>
+<h2 id="reclamation">Reclamation<a class="headerlink" href="#reclamation" title="Permanent link">&para;</a></h2>
+<p>Assessment is read-only. It fails closed when process liveness, occupancy, Git,
+job/candidate/concept, or recovery-anchor evidence is missing or unavailable. A
+recorded anchor is not trusted merely because it is nonempty: it must resolve to
+an exact ref/commit and prove that the lane tip is an ancestor of the anchor.</p>
+<p><code>request_cleanup(submit=None)</code> is preview-only. Execution requires a separate
+durable cleanup WorkItem/job id and lease fence, supplied by a cleanup authority;
+an in-memory callback or preview cannot authorize removal. Execution re-reads
+the authoritative lane and cleanup job, then rechecks process, claims, Git,
+anchor, occupancy, and fence immediately before delegating to
+<code>WorktreeManager.remove</code>. Removal remains guarded; failure leaves the lane
+expired for reconciliation. A guarded remove is not reported complete until an
+exact durable removal receipt and quarantine transition are persisted. A later
+run can reconcile that receipt without trying to remove an already-removed path
+again.</p>
+<h2 id="migration-and-rollback">Migration and rollback<a class="headerlink" href="#migration-and-rollback" title="Permanent link">&para;</a></h2>
+<p>Discovery creates <code>observed_legacy</code> records without claiming ownership. Adoption
+requires an explicit operator and a fresh durable uniqueness check. Rollback is
+the durable allocation switch: it stops new allocations while retaining existing
+records and worktrees. No cleanup path assumes the registry projection is
+available or silently falls back to local SQLite truth.</p>
+<p>Reconciliation compares durable records with a read-only worktree listing and
+classifies managed, observed-legacy, missing/path/branch/state mismatches, and
+orphan worktrees. Repairs are separate fenced jobs and are not direct filesystem
+mutations.</p>
 
 
 
@@ -1142,44 +997,6 @@ since those deliberately bypass change detection.</p>
       
         <footer class="md-footer">
   
-    
-      
-      <nav class="md-footer__inner md-grid" aria-label="Footer" >
-        
-          
-          <a href="../usage/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Usage (API / CLI / MCP)">
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
-            </div>
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Previous
-              </span>
-              <div class="md-ellipsis">
-                Usage (API / CLI / MCP)
-              </div>
-            </div>
-          </a>
-        
-        
-          
-          <a href="../phased_push/" class="md-footer__link md-footer__link--next" aria-label="Next: Phased Push">
-            <div class="md-footer__title">
-              <span class="md-footer__direction">
-                Next
-              </span>
-              <div class="md-ellipsis">
-                Phased Push
-              </div>
-            </div>
-            <div class="md-footer__button md-icon">
-              
-              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
-            </div>
-          </a>
-        
-      </nav>
     
   
   <div class="md-footer-meta md-typeset">
@@ -1240,10 +1057,10 @@ since those deliberately bypass change detection.</p>
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.instant.progress", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.instant.progress", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

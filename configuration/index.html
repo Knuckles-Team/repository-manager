@@ -16,7 +16,7 @@
         <link rel="prev" href="../installation/">
       
       
-        <link rel="next" href="../deployment/">
+        <link rel="next" href="../config-schema-migration/">
       
       
         
@@ -314,6 +314,25 @@
   
   
     <li class="md-tabs__item">
+      <a href="../config-schema-migration/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Configuration schemas and migration
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
       <a href="../deployment/" class="md-tabs__link">
         
   
@@ -378,6 +397,44 @@
     
   
   Phased Push
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../merge-queue/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Merge Queue (universal)
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../adapter-extraction/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Adapter boundaries
 
       </a>
     </li>
@@ -671,6 +728,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../config-schema-migration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration schemas and migration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../deployment/" class="md-nav__link">
         
   
@@ -760,6 +844,60 @@
     
   
     Phased Push
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../merge-queue/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Merge Queue (universal)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adapter-extraction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adapter boundaries
   
 
     
@@ -918,6 +1056,12 @@ content, traces, or generated reports.</p>
 skill whose certification or tool-schema fingerprint does not match the
 installed package. Use the compact/intent-oriented tool surface for delegated
 agents; expose verbose per-operation tools only for compatibility or debugging.</p>
+<p>Repository declarations are versioned separately from capability configuration.
+See <a href="../config-schema-migration/">config-schema-migration</a> for the v2
+<code>.buildcache.yaml</code>/<code>.mergequeue.yaml</code> contracts, legacy-shape compatibility,
+strict unknown-key policy, and the preview/atomic-apply/rollback API. Parsing is
+pure: it validates resource, path, command, stage, and artifact fields without
+starting builds, gates, generators, or remote work.</p>
 <h2 id="runtime-values-and-secrets">Runtime values and secrets<a class="headerlink" href="#runtime-values-and-secrets" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Supply service endpoints, tenant identifiers, credentials, and model keys
@@ -1018,13 +1162,13 @@ references only.</p>
         
         
           
-          <a href="../deployment/" class="md-footer__link md-footer__link--next" aria-label="Next: Deployment">
+          <a href="../config-schema-migration/" class="md-footer__link md-footer__link--next" aria-label="Next: Configuration schemas and migration">
             <div class="md-footer__title">
               <span class="md-footer__direction">
                 Next
               </span>
               <div class="md-ellipsis">
-                Deployment
+                Configuration schemas and migration
               </div>
             </div>
             <div class="md-footer__button md-icon">
