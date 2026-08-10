@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import UTC, datetime
 
 import pytest
 
@@ -28,6 +27,11 @@ tunnel_manager = pytest.importorskip(
         "optional dependency: RMDD-14's tunnel_manager.remote_execution seam "
         "is not installed in this environment (see remote_execution/README.md)"
     ),
+)
+
+from tunnel_manager.remote_execution import (  # noqa: E402
+    AuthorizedTarget,
+    RemoteCommandRequest,
 )
 
 from repository_manager.development import (  # noqa: E402
@@ -49,15 +53,13 @@ from repository_manager.remote_execution.executor import (  # noqa: E402
 from repository_manager.remote_execution.fakes import (  # noqa: E402
     FakeRemoteExecutorPort,
 )
-from tunnel_manager.remote_execution import (  # noqa: E402
-    AuthorizedTarget,
-    RemoteCommandRequest,
-)
 
 _TARGET = AuthorizedTarget(alias="build-1")
 
 
-def _command(*argv: str, workdir: str = "/srv/remote-worktrees/demo") -> ExecutionCommand:
+def _command(
+    *argv: str, workdir: str = "/srv/remote-worktrees/demo"
+) -> ExecutionCommand:
     return ExecutionCommand(argv=argv, workdir=workdir, timeout_seconds=30)
 
 
@@ -151,7 +153,9 @@ def test_cancellation_before_dispatch_never_calls_the_port() -> None:
     token.cancel("test cancel")
 
     result = executor.run(
-        _command("git", "status"), command_id="command:3", fence="fence:3",
+        _command("git", "status"),
+        command_id="command:3",
+        fence="fence:3",
         cancellation=token,
     )
 
@@ -265,10 +269,6 @@ def test_fence_invalid_before_dispatch_refuses_without_calling_the_port() -> Non
 
 
 def test_fence_lost_during_dispatch_downgrades_success_to_refused() -> None:
-    port = FakeRemoteExecutorPort()
-    executor = RemoteWorkerExecutor(
-        _TARGET, actor=None, port=port, poll_interval_seconds=0.05
-    )
     fence_valid = {"value": True}
 
     def _lose_fence_shortly() -> None:
@@ -281,7 +281,10 @@ def test_fence_lost_during_dispatch_downgrades_success_to_refused() -> None:
         time.sleep(0.2)
         return FakeRemoteExecutorPort.succeeded(context)
 
-    port._responder = _slow_responder  # noqa: SLF001 - test wiring only
+    port = FakeRemoteExecutorPort(responder=_slow_responder)
+    executor = RemoteWorkerExecutor(
+        _TARGET, actor=None, port=port, poll_interval_seconds=0.05
+    )
 
     result = executor.run(
         _command("git", "status"),
@@ -306,7 +309,9 @@ def test_stale_attempt_cannot_publish_after_a_second_attempt_already_did() -> No
     """
 
     class _AlreadyMovedPublisher:
-        def publish(self, result: ExecutionResult, *, fence: str) -> PublicationDecision:
+        def publish(
+            self, result: ExecutionResult, *, fence: str
+        ) -> PublicationDecision:
             assert fence == "fence:attempt-1"
             return PublicationDecision.FENCED  # the WorkItem already advanced
 
@@ -328,7 +333,9 @@ def test_publisher_accepting_the_result_leaves_success_untouched() -> None:
     published: list[ExecutionResult] = []
 
     class _AcceptingPublisher:
-        def publish(self, result: ExecutionResult, *, fence: str) -> PublicationDecision:
+        def publish(
+            self, result: ExecutionResult, *, fence: str
+        ) -> PublicationDecision:
             published.append(result)
             return PublicationDecision.ACCEPTED
 

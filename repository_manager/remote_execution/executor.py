@@ -31,9 +31,8 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import ValidationError
 
-from repository_manager.development import ExecutionCommand
+from repository_manager.development import ExecutionCommand, ExecutionResult
 from repository_manager.development import ExecutionOutcome as RmExecutionOutcome
-from repository_manager.development import ExecutionResult
 from repository_manager.development import FailureClass as RmFailureClass
 from repository_manager.execution.cancellation import CancellationToken
 from repository_manager.execution.executor import (
@@ -258,14 +257,24 @@ class RemoteWorkerExecutor:
 
         if token.is_cancelled():
             return self._refused(
-                command_id, effective_worker, fence, RmExecutionOutcome.CANCELLED,
-                RmFailureClass.CANCELLED_DEADLINE, started_at, log_sink,
+                command_id,
+                effective_worker,
+                fence,
+                RmExecutionOutcome.CANCELLED,
+                RmFailureClass.CANCELLED_DEADLINE,
+                started_at,
+                log_sink,
                 "cancelled before remote dispatch",
             )
         if not self._checker_ok(checker):
             return self._refused(
-                command_id, effective_worker, fence, RmExecutionOutcome.REFUSED,
-                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT, started_at, log_sink,
+                command_id,
+                effective_worker,
+                fence,
+                RmExecutionOutcome.REFUSED,
+                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+                started_at,
+                log_sink,
                 "fence invalid before remote dispatch",
             )
 
@@ -273,8 +282,13 @@ class RemoteWorkerExecutor:
             request = to_remote_request(command)
         except ValidationError as exc:
             return self._refused(
-                command_id, effective_worker, fence, RmExecutionOutcome.REFUSED,
-                RmFailureClass.INVALID_REQUEST, started_at, log_sink,
+                command_id,
+                effective_worker,
+                fence,
+                RmExecutionOutcome.REFUSED,
+                RmFailureClass.INVALID_REQUEST,
+                started_at,
+                log_sink,
                 f"command failed remote translation: {exc.error_count()} error(s)",
             )
 
@@ -288,9 +302,7 @@ class RemoteWorkerExecutor:
         def _dispatch() -> None:
             try:
                 outcome_box.append(
-                    self.port.execute(
-                        self.target, request, self.actor, context=context
-                    )
+                    self.port.execute(self.target, request, self.actor, context=context)
                 )
             except BaseException as exc:  # noqa: BLE001 - reported, never swallowed
                 error_box.append(exc)
@@ -322,15 +334,25 @@ class RemoteWorkerExecutor:
         if error_box:
             exc = error_box[0]
             return self._refused(
-                command_id, effective_worker, fence, RmExecutionOutcome.FAILED,
-                RmFailureClass.WORKER_ENVIRONMENT_FAILURE, started_at, log_sink,
+                command_id,
+                effective_worker,
+                fence,
+                RmExecutionOutcome.FAILED,
+                RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
+                started_at,
+                log_sink,
                 f"remote dispatch raised {type(exc).__name__}",
             )
 
         result = from_remote_result(outcome_box[0])
 
-        _CANCEL_REASON_OUTCOMES: dict[str, tuple[RmExecutionOutcome, RmFailureClass]] = {
-            "cancelled": (RmExecutionOutcome.CANCELLED, RmFailureClass.CANCELLED_DEADLINE),
+        _CANCEL_REASON_OUTCOMES: dict[
+            str, tuple[RmExecutionOutcome, RmFailureClass]
+        ] = {
+            "cancelled": (
+                RmExecutionOutcome.CANCELLED,
+                RmFailureClass.CANCELLED_DEADLINE,
+            ),
             "fence": (
                 RmExecutionOutcome.REFUSED,
                 RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
@@ -475,9 +497,7 @@ class RemoteWorkerExecutor:
             outcome=outcome,
             started_at=started_at,
             finished_at=finished_at,
-            duration_ms=max(
-                0, int((finished_at - started_at).total_seconds() * 1000)
-            ),
+            duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
             worker_id=worker_id,
             fence=fence,
             stderr_tail=note,

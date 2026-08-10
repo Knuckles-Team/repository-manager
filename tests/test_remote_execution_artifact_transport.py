@@ -186,7 +186,7 @@ def test_receive_log_bounds_the_tail_and_publishes_content_addressed(tmp_path) -
 
 
 def test_receiver_root_directories_are_created_and_isolated(tmp_path) -> None:
-    receiver = _receiver(tmp_path)
+    _receiver(tmp_path)
     assert (tmp_path / "artifacts" / ".staging").is_dir()
     assert (tmp_path / "artifacts" / ".quarantine").is_dir()
 

@@ -15,8 +15,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from repository_manager.development import ExecutionCommand, JobId, WorkItemId
 from pydantic import TypeAdapter, ValidationError
+
+from repository_manager.development import ExecutionCommand, JobId, WorkItemId
 
 # Mirrors the shell-metacharacter policy enforced by
 # ``repository_manager.execution.executor.LocalExecutor`` for the bootstrap

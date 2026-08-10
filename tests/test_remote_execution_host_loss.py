@@ -12,9 +12,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
-from repository_manager.capacity import CapacityInventory, HostCapacity, HostState, ResourceVector
+from repository_manager.capacity import (
+    CapacityInventory,
+    HostCapacity,
+    HostState,
+    ResourceVector,
+)
 from repository_manager.remote_execution.host_loss import (
     HostLossDecision,
     HostLossReconciler,

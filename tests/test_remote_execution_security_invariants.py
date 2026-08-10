@@ -9,8 +9,11 @@ import ast
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-_PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "repository_manager" / "remote_execution"
+_PACKAGE_ROOT = (
+    Path(__file__).resolve().parent.parent / "repository_manager" / "remote_execution"
+)
 
 
 def _iter_source_files():
@@ -56,15 +59,17 @@ def test_no_controller_local_lock_or_branch_mutation_primitives_are_used() -> No
         "guarded_canonical_mutation",
         "hold_canonical_lease",
         "flock",
-        "git\", \"push",
-        "git\", \"branch\", \"-f",
-        "git\", \"merge",
-        "git\", \"checkout\", \"main",
+        'git", "push',
+        'git", "branch", "-f',
+        'git", "merge',
+        'git", "checkout", "main',
     )
     for path in _iter_source_files():
         text = path.read_text()
         for forbidden in forbidden_substrings:
-            assert forbidden not in text, f"{path} contains forbidden primitive {forbidden!r}"
+            assert forbidden not in text, (
+                f"{path} contains forbidden primitive {forbidden!r}"
+            )
 
 
 def test_authorized_target_model_has_no_credential_or_host_fields() -> None:
@@ -72,7 +77,7 @@ def test_authorized_target_model_has_no_credential_or_host_fields() -> None:
     public target/result surface (C-09): only ``kind``/``alias``/labels.
     """
 
-    tunnel_manager = pytest.importorskip(
+    pytest.importorskip(
         "tunnel_manager", reason="optional dependency, see remote_execution/README.md"
     )
     from tunnel_manager.remote_execution import AuthorizedTarget
@@ -100,17 +105,17 @@ def test_authorized_target_model_has_no_credential_or_host_fields() -> None:
 
     # extra="forbid" means a caller cannot smuggle a credential field past
     # validation even if they try.
-    with pytest.raises(Exception):  # pydantic ValidationError
+    with pytest.raises(ValidationError):
         AuthorizedTarget(alias="build-1", hostname="10.0.0.5")  # type: ignore[call-arg]
 
 
 def test_remote_command_request_forbids_extra_caller_supplied_fields() -> None:
-    tunnel_manager = pytest.importorskip(
+    pytest.importorskip(
         "tunnel_manager", reason="optional dependency, see remote_execution/README.md"
     )
     from tunnel_manager.remote_execution import RemoteCommandRequest
 
-    with pytest.raises(Exception):  # pydantic ValidationError: extra="forbid"
+    with pytest.raises(ValidationError):
         RemoteCommandRequest(
             argv=("git", "status"),
             workdir="/srv/x",
@@ -126,16 +131,19 @@ def test_execution_result_stdout_stderr_never_carry_a_raw_hostname_or_password(
     redacted, per RMDD-14) TM result tail carried.
     """
 
-    tunnel_manager = pytest.importorskip(
+    pytest.importorskip(
         "tunnel_manager", reason="optional dependency, see remote_execution/README.md"
     )
+    from tunnel_manager.remote_execution import AuthorizedTarget
+
     from repository_manager.development import ExecutionCommand
     from repository_manager.remote_execution.executor import RemoteWorkerExecutor
     from repository_manager.remote_execution.fakes import FakeRemoteExecutorPort
-    from tunnel_manager.remote_execution import AuthorizedTarget
 
     port = FakeRemoteExecutorPort()
-    executor = RemoteWorkerExecutor(AuthorizedTarget(alias="build-1"), actor=None, port=port)
+    executor = RemoteWorkerExecutor(
+        AuthorizedTarget(alias="build-1"), actor=None, port=port
+    )
     result = executor.run(
         ExecutionCommand(argv=("echo", "ok"), workdir="/srv/x", timeout_seconds=10),
         command_id="command:sec-1",

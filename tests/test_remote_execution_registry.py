@@ -15,7 +15,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from repository_manager.capacity import CapacityInventory, HostCapacity, HostState, ResourceVector
+from repository_manager.capacity import (
+    CapacityInventory,
+    HostCapacity,
+    HostState,
+    ResourceVector,
+)
 from repository_manager.remote_execution.registry import (
     RemoteWorkerProfile,
     RemoteWorkerRegistry,
@@ -176,9 +181,7 @@ def test_recheck_at_claim_refuses_a_stale_heartbeat() -> None:
 
 
 def test_recheck_at_claim_refuses_an_unauthorized_repository() -> None:
-    registry, _ = _registry(
-        _host("host:build-1"), authorized_aliases={"build-1"}
-    )
+    registry, _ = _registry(_host("host:build-1"), authorized_aliases={"build-1"})
     registry.register_profile(
         RemoteWorkerProfile(
             host_id="host:build-1",
@@ -193,9 +196,7 @@ def test_recheck_at_claim_refuses_an_unauthorized_repository() -> None:
 
 
 def test_recheck_at_claim_refuses_a_missing_required_toolchain() -> None:
-    registry, _ = _registry(
-        _host("host:build-1"), authorized_aliases={"build-1"}
-    )
+    registry, _ = _registry(_host("host:build-1"), authorized_aliases={"build-1"})
     registry.register_profile(
         RemoteWorkerProfile(
             host_id="host:build-1",
