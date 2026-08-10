@@ -27,7 +27,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TypeVar, cast
 
@@ -39,14 +39,25 @@ from .workspace_release import (
     MAX_STRING_LENGTH,
     DependencyEdge,
     DependencyGraph,
+    DependencySpec,
+    Ecosystem,
+    EdgeConfidence,
     PackageKey,
     PackageRecord,
+    PackageReference,
     ProjectRecord,
     Version,
+    VersionFloor,
+    VersionSource,
     WorkspaceReleaseError,
     _canonical_json,
 )
-from .workspace_selection import SelectedChangeClosure
+from .workspace_selection import (
+    SelectedChangeClosure,
+    SelectionExplanation,
+    SelectionPolicy,
+    SelectionReason,
+)
 from .workspace_versions import (
     FloorPreview,
     VersionPlan,
@@ -65,6 +76,20 @@ _SHA = re.compile(r"^[0-9a-fA-F]{40,64}$")
 _DIGEST = re.compile(r"^[0-9a-fA-F]{64}$")
 _OPAQUE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 _T = TypeVar("_T")
+
+# Only these failures are treated as malformed/untrusted provider data.  In
+# particular, RuntimeError is deliberately absent: an injected RuntimeError
+# from a trusted model/helper is a programmer failure and must remain visible.
+_UNTRUSTED_DATA_ERRORS = (
+    AttributeError,
+    IndexError,
+    KeyError,
+    OverflowError,
+    RecursionError,
+    TypeError,
+    UnicodeError,
+    ValueError,
+)
 
 
 class ReleasePlanCode(StrEnum):
@@ -280,7 +305,7 @@ def _canonical(value: object) -> str:
 
     try:
         return _canonical_json(value)
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         # A malformed/forged nested object must never expose its repr/details.
         raise _fail(
             ReleasePlanCode.DIGEST, "canonical payload could not be encoded"
@@ -292,7 +317,7 @@ def _digest_payload(value: object) -> str:
         return hashlib.sha256(_canonical(value).encode("utf-8")).hexdigest()
     except ReleasePlanError:
         raise
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         raise _fail(ReleasePlanCode.DIGEST, "digest could not be computed") from None
 
 
@@ -305,7 +330,7 @@ def _canonical_repository(value: object) -> str:
         from .workspace_release import canonical_repository_id
 
         return canonical_repository_id(value)
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
             ReleasePlanCode.IDENTITY, "repository identity is invalid"
         ) from None
@@ -521,6 +546,285 @@ ConsentReference = PushConsentReference
 PushConsent = PushConsentReference
 
 
+@dataclass(frozen=True, slots=True)
+class ImmutableDigestReference:
+    """Opaque, content-addressed decision evidence.
+
+    These references deliberately contain names and digests only.  They are
+    labels for later adapters, never commands, paths, credentials, or execution
+    authority.
+    """
+
+    name: str
+    digest: str
+
+    def __post_init__(self) -> None:
+        name = _strict_opaque(self.name, "reference name", max_length=256)
+        digest = _strict_digest(
+            self.digest, "reference digest", code=ReleasePlanCode.DIGEST
+        )
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "digest", digest)
+
+    def canonical_payload(self) -> dict[str, str]:
+        return {"name": self.name, "digest": self.digest}
+
+
+DecisionReference = ImmutableDigestReference
+OpaqueDigestReference = ImmutableDigestReference
+ReleaseProfileReference = ImmutableDigestReference
+CandidateReference = ImmutableDigestReference
+CertificateReference = ImmutableDigestReference
+ConfigReference = ImmutableDigestReference
+ToolchainReference = ImmutableDigestReference
+CommandReference = ImmutableDigestReference
+ArtifactContractReference = ImmutableDigestReference
+ResourceProfileReference = ImmutableDigestReference
+
+
+class RetryPolicy(StrEnum):
+    NONE = "none"
+    FIXED = "fixed"
+
+
+class TimeoutPolicy(StrEnum):
+    NONE = "none"
+    FAIL = "fail"
+
+
+def _default_reference(name: str) -> ImmutableDigestReference:
+    return ImmutableDigestReference(
+        name=name,
+        digest=hashlib.sha256(("rmdd18:" + name).encode("ascii")).hexdigest(),
+    )
+
+
+def _normalize_target_branch(value: object) -> str:
+    text = _strict_text(
+        value,
+        "target branch",
+        max_length=256,
+        code=ReleasePlanCode.IDENTITY,
+    )
+    if text.startswith("refs/heads/"):
+        suffix = text[len("refs/heads/") :]
+    else:
+        suffix = text
+    if (
+        not suffix
+        or suffix.startswith("/")
+        or suffix.endswith("/")
+        or ".." in suffix
+        or "\\" in suffix
+        or suffix.startswith("refs/")
+        or any(ord(char) < 0x21 or ord(char) == 0x7F for char in suffix)
+    ):
+        raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
+    return "refs/heads/" + suffix
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseDecisionContext:
+    """All immutable CP4 decisions which influence a release preview."""
+
+    release_profile: ImmutableDigestReference = field(
+        default_factory=lambda: _default_reference("release-profile:default")
+    )
+    target_branch: str = "refs/heads/main"
+    candidate: ImmutableDigestReference = field(
+        default_factory=lambda: _default_reference("candidate:default")
+    )
+    certificate: ImmutableDigestReference = field(
+        default_factory=lambda: _default_reference("certificate:default")
+    )
+    config: ImmutableDigestReference = field(
+        default_factory=lambda: _default_reference("config:default")
+    )
+    toolchain: ImmutableDigestReference = field(
+        default_factory=lambda: _default_reference("toolchain:default")
+    )
+    command: ImmutableDigestReference = field(
+        default_factory=lambda: _default_reference("command:preview")
+    )
+    artifact_contract: ImmutableDigestReference = field(
+        default_factory=lambda: _default_reference("artifact-contract:default")
+    )
+    resource_profile: ImmutableDigestReference = field(
+        default_factory=lambda: _default_reference("resource-profile:default")
+    )
+    retry_policy: RetryPolicy = RetryPolicy.NONE
+    retry_count: int = 0
+    timeout_policy: TimeoutPolicy = TimeoutPolicy.NONE
+    timeout_seconds: int = 0
+
+    def __post_init__(self) -> None:
+        fields = (
+            ("release profile", "release_profile", self.release_profile),
+            ("candidate reference", "candidate", self.candidate),
+            ("certificate reference", "certificate", self.certificate),
+            ("config reference", "config", self.config),
+            ("toolchain reference", "toolchain", self.toolchain),
+            ("command reference", "command", self.command),
+            (
+                "artifact contract reference",
+                "artifact_contract",
+                self.artifact_contract,
+            ),
+            ("resource profile reference", "resource_profile", self.resource_profile),
+        )
+        for field_name, attribute, value in fields:
+            if type(value) is not ImmutableDigestReference:
+                raise _fail(
+                    ReleasePlanCode.PROFILE,
+                    f"{field_name} must be an immutable name/digest reference",
+                )
+            # Re-materialize even exact-type forged dataclass shells.
+            normalized = ImmutableDigestReference(value.name, value.digest)
+            object.__setattr__(self, attribute, normalized)
+        object.__setattr__(
+            self, "target_branch", _normalize_target_branch(self.target_branch)
+        )
+        if type(self.retry_policy) is not RetryPolicy:
+            raise _fail(ReleasePlanCode.INVALID_INPUT, "retry policy is unsupported")
+        if type(self.timeout_policy) is not TimeoutPolicy:
+            raise _fail(ReleasePlanCode.INVALID_INPUT, "timeout policy is unsupported")
+        if type(self.retry_count) is not int or isinstance(self.retry_count, bool):
+            raise _fail(ReleasePlanCode.INVALID_INPUT, "retry count must be an integer")
+        if not 0 <= self.retry_count <= 32:
+            raise _fail(
+                ReleasePlanCode.UNBOUNDED_INPUT, "retry count exceeds the bound"
+            )
+        if type(self.timeout_seconds) is not int or isinstance(
+            self.timeout_seconds, bool
+        ):
+            raise _fail(ReleasePlanCode.INVALID_INPUT, "timeout must be an integer")
+        if not 0 <= self.timeout_seconds <= 604800:
+            raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "timeout exceeds the bound")
+        if self.retry_policy is RetryPolicy.NONE and self.retry_count != 0:
+            raise _fail(
+                ReleasePlanCode.CONFLICT, "retry count conflicts with retry policy"
+            )
+        if self.retry_policy is RetryPolicy.FIXED and self.retry_count < 1:
+            raise _fail(ReleasePlanCode.CONFLICT, "fixed retry policy requires retries")
+        if self.timeout_policy is TimeoutPolicy.NONE and self.timeout_seconds != 0:
+            raise _fail(
+                ReleasePlanCode.CONFLICT, "timeout seconds conflict with timeout policy"
+            )
+        if self.timeout_policy is TimeoutPolicy.FAIL and self.timeout_seconds < 1:
+            raise _fail(
+                ReleasePlanCode.CONFLICT, "timeout policy requires timeout seconds"
+            )
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "release_profile": self.release_profile.canonical_payload(),
+            "target_branch": self.target_branch,
+            "candidate": self.candidate.canonical_payload(),
+            "certificate": self.certificate.canonical_payload(),
+            "config": self.config.canonical_payload(),
+            "toolchain": self.toolchain.canonical_payload(),
+            "command": self.command.canonical_payload(),
+            "artifact_contract": self.artifact_contract.canonical_payload(),
+            "resource_profile": self.resource_profile.canonical_payload(),
+            "retry_policy": self.retry_policy.value,
+            "retry_count": self.retry_count,
+            "timeout_policy": self.timeout_policy.value,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
+    @property
+    def digest(self) -> str:
+        return _digest_payload(self.canonical_payload())
+
+
+ReleaseProfile = ImmutableDigestReference
+DecisionContext = ReleaseDecisionContext
+ReleasePlanDecisions = ReleaseDecisionContext
+
+
+def _normalize_decision_context(
+    context: object | None,
+    *,
+    release_profile: object | None = None,
+    target_branch: object | None = None,
+    candidate: object | None = None,
+    certificate: object | None = None,
+    config: object | None = None,
+    toolchain: object | None = None,
+    command: object | None = None,
+    artifact_contract: object | None = None,
+    resource_profile: object | None = None,
+    retry_policy: object | None = None,
+    retry_count: object | None = None,
+    timeout_policy: object | None = None,
+    timeout_seconds: object | None = None,
+) -> ReleaseDecisionContext:
+    aliases = (
+        release_profile,
+        target_branch,
+        candidate,
+        certificate,
+        config,
+        toolchain,
+        command,
+        artifact_contract,
+        resource_profile,
+        retry_policy,
+        retry_count,
+        timeout_policy,
+        timeout_seconds,
+    )
+    if context is not None and type(context) is not ReleaseDecisionContext:
+        raise _fail(ReleasePlanCode.PROFILE, "decision context is unsupported")
+    if context is not None and any(item is not None for item in aliases):
+        raise _fail(ReleasePlanCode.CONFLICT, "decision context aliases conflict")
+    if context is not None:
+        return ReleaseDecisionContext(
+            release_profile=context.release_profile,
+            target_branch=context.target_branch,
+            candidate=context.candidate,
+            certificate=context.certificate,
+            config=context.config,
+            toolchain=context.toolchain,
+            command=context.command,
+            artifact_contract=context.artifact_contract,
+            resource_profile=context.resource_profile,
+            retry_policy=context.retry_policy,
+            retry_count=context.retry_count,
+            timeout_policy=context.timeout_policy,
+            timeout_seconds=context.timeout_seconds,
+        )
+    defaults = ReleaseDecisionContext()
+    values = {
+        "release_profile": defaults.release_profile
+        if release_profile is None
+        else release_profile,
+        "target_branch": defaults.target_branch
+        if target_branch is None
+        else target_branch,
+        "candidate": defaults.candidate if candidate is None else candidate,
+        "certificate": defaults.certificate if certificate is None else certificate,
+        "config": defaults.config if config is None else config,
+        "toolchain": defaults.toolchain if toolchain is None else toolchain,
+        "command": defaults.command if command is None else command,
+        "artifact_contract": defaults.artifact_contract
+        if artifact_contract is None
+        else artifact_contract,
+        "resource_profile": defaults.resource_profile
+        if resource_profile is None
+        else resource_profile,
+        "retry_policy": defaults.retry_policy if retry_policy is None else retry_policy,
+        "retry_count": defaults.retry_count if retry_count is None else retry_count,
+        "timeout_policy": defaults.timeout_policy
+        if timeout_policy is None
+        else timeout_policy,
+        "timeout_seconds": defaults.timeout_seconds
+        if timeout_seconds is None
+        else timeout_seconds,
+    }
+    return ReleaseDecisionContext(**values)  # type: ignore[arg-type]
+
+
 def _profile_digest_from_object(value: object, kind: ProfileKind) -> tuple[str, str]:
     """Normalize only a bounded profile descriptor; never retain it."""
 
@@ -583,7 +887,7 @@ def _profile_digest_from_object(value: object, kind: ProfileKind) -> tuple[str, 
         return name, digest
     except ReleasePlanError:
         raise
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
             ReleasePlanCode.PROFILE, "profile descriptor is unsupported"
         ) from None
@@ -785,6 +1089,12 @@ def _stage_payload_without_digests(
     build_profile_digest: str,
     depends_on: tuple[str, ...],
     consent_reference: PushConsentReference | None,
+    decision_digest: str,
+    resource_profile: ImmutableDigestReference,
+    retry_policy: RetryPolicy,
+    retry_count: int,
+    timeout_policy: TimeoutPolicy,
+    timeout_seconds: int,
 ) -> dict[str, object]:
     return {
         "kind": kind.value,
@@ -803,6 +1113,12 @@ def _stage_payload_without_digests(
         "consent_reference": consent_reference.canonical_payload()
         if consent_reference
         else None,
+        "decision_digest": decision_digest,
+        "resource_profile": resource_profile.canonical_payload(),
+        "retry_policy": retry_policy.value,
+        "retry_count": retry_count,
+        "timeout_policy": timeout_policy.value,
+        "timeout_seconds": timeout_seconds,
         "failure_policy": FailurePolicy.BLOCK_DEPENDENTS.value,
     }
 
@@ -839,6 +1155,14 @@ class StagePreview:
     consent_reference: PushConsentReference | None = None
     failure_policy: FailurePolicy = FailurePolicy.BLOCK_DEPENDENTS
     input_digest: str = ""
+    decision_digest: str = ""
+    resource_profile: ImmutableDigestReference = field(
+        default_factory=lambda: _default_reference("resource-profile:default")
+    )
+    retry_policy: RetryPolicy = RetryPolicy.NONE
+    retry_count: int = 0
+    timeout_policy: TimeoutPolicy = TimeoutPolicy.NONE
+    timeout_seconds: int = 0
 
     def __post_init__(self) -> None:
         if type(self.stage_id) is not str or not self.stage_id:
@@ -916,14 +1240,8 @@ class StagePreview:
             )
         )
         dependencies = _canonical_dependencies(self.depends_on, "stage dependencies")
-        if (
-            self.consent_reference is not None
-            and type(self.consent_reference) is not PushConsentReference
-        ):
-            raise _fail(
-                ReleasePlanCode.CONSENT, "stage consent must be an immutable reference"
-            )
-        if self.kind is StageKind.PUSH and self.consent_reference is None:
+        consent_reference = _revalidate_consent(self.consent_reference)
+        if self.kind is StageKind.PUSH and consent_reference is None:
             raise _fail(
                 ReleasePlanCode.PUSH_CONSENT, "push stage requires immutable consent"
             )
@@ -934,6 +1252,47 @@ class StagePreview:
         if self.failure_policy is not FailurePolicy.BLOCK_DEPENDENTS:
             raise _fail(
                 ReleasePlanCode.INVALID_INPUT, "stage failure policy is unsupported"
+            )
+        decision_digest = _strict_digest(self.decision_digest, "stage decision digest")
+        if type(self.resource_profile) is not ImmutableDigestReference:
+            raise _fail(
+                ReleasePlanCode.PROFILE,
+                "stage resource profile must be an immutable reference",
+            )
+        resource_profile = ImmutableDigestReference(
+            self.resource_profile.name, self.resource_profile.digest
+        )
+        if type(self.retry_policy) is not RetryPolicy:
+            raise _fail(
+                ReleasePlanCode.INVALID_INPUT, "stage retry policy is unsupported"
+            )
+        if type(self.timeout_policy) is not TimeoutPolicy:
+            raise _fail(
+                ReleasePlanCode.INVALID_INPUT, "stage timeout policy is unsupported"
+            )
+        if type(self.retry_count) is not int or isinstance(self.retry_count, bool):
+            raise _fail(ReleasePlanCode.INVALID_INPUT, "stage retry count is invalid")
+        if not 0 <= self.retry_count <= 32:
+            raise _fail(
+                ReleasePlanCode.UNBOUNDED_INPUT, "stage retry count exceeds bound"
+            )
+        if type(self.timeout_seconds) is not int or isinstance(
+            self.timeout_seconds, bool
+        ):
+            raise _fail(ReleasePlanCode.INVALID_INPUT, "stage timeout is invalid")
+        if not 0 <= self.timeout_seconds <= 604800:
+            raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "stage timeout exceeds bound")
+        if self.retry_policy is RetryPolicy.NONE and self.retry_count != 0:
+            raise _fail(
+                ReleasePlanCode.CONFLICT, "stage retry count conflicts with policy"
+            )
+        if self.retry_policy is RetryPolicy.FIXED and self.retry_count < 1:
+            raise _fail(ReleasePlanCode.CONFLICT, "stage retry policy requires retries")
+        if self.timeout_policy is TimeoutPolicy.NONE and self.timeout_seconds != 0:
+            raise _fail(ReleasePlanCode.CONFLICT, "stage timeout conflicts with policy")
+        if self.timeout_policy is TimeoutPolicy.FAIL and self.timeout_seconds < 1:
+            raise _fail(
+                ReleasePlanCode.CONFLICT, "stage timeout policy requires seconds"
             )
         input_digest = _strict_digest(self.input_digest, "stage input digest")
         payload = _stage_payload_without_digests(
@@ -950,7 +1309,13 @@ class StagePreview:
             validation_profile_digest=validation_digest,
             build_profile_digest=build_digest,
             depends_on=dependencies,
-            consent_reference=self.consent_reference,
+            consent_reference=consent_reference,
+            decision_digest=decision_digest,
+            resource_profile=resource_profile,
+            retry_policy=self.retry_policy,
+            retry_count=self.retry_count,
+            timeout_policy=self.timeout_policy,
+            timeout_seconds=self.timeout_seconds,
         )
         expected_id, expected_input = _stage_identity(payload)
         if stage_id != expected_id or input_digest != expected_input:
@@ -971,7 +1336,10 @@ class StagePreview:
         object.__setattr__(self, "validation_profile_digest", validation_digest)
         object.__setattr__(self, "build_profile_digest", build_digest)
         object.__setattr__(self, "depends_on", dependencies)
+        object.__setattr__(self, "consent_reference", consent_reference)
         object.__setattr__(self, "input_digest", input_digest)
+        object.__setattr__(self, "decision_digest", decision_digest)
+        object.__setattr__(self, "resource_profile", resource_profile)
 
     @property
     def stage(self) -> StageKind:
@@ -1011,6 +1379,12 @@ class StagePreview:
             build_profile_digest=self.build_profile_digest,
             depends_on=self.depends_on,
             consent_reference=self.consent_reference,
+            decision_digest=self.decision_digest,
+            resource_profile=self.resource_profile,
+            retry_policy=self.retry_policy,
+            retry_count=self.retry_count,
+            timeout_policy=self.timeout_policy,
+            timeout_seconds=self.timeout_seconds,
         )
         if include_digests:
             payload["stage_id"] = self.stage_id
@@ -1057,9 +1431,124 @@ def _validate_stage_dag(stages: tuple[StagePreview, ...]) -> None:
             dependencies[stage_id].difference_update(ready)
 
 
+def _derive_stage_sequence(
+    *,
+    selected: tuple[str, ...],
+    project_map: dict[str, ProjectRecord],
+    project_edges: tuple[tuple[str, str], ...],
+    groups: tuple[tuple[str, ...], ...],
+    base_sha: str,
+    generation_id: str,
+    graph_digest: str,
+    selection_digest: str,
+    version_plan_digest: str,
+    version_preview_digests: tuple[str, ...],
+    floor_preview_digests: tuple[str, ...],
+    validation: dict[str, ProfileBinding],
+    build: dict[str, ProfileBinding],
+    decision_context: ReleaseDecisionContext,
+    consent: PushConsentReference | None,
+) -> tuple[StagePreview, ...]:
+    """Derive the only accepted stage composition from frozen source fields."""
+
+    project_dependencies: dict[str, set[str]] = {project: set() for project in selected}
+    for dependent, dependency in project_edges:
+        if (
+            dependent not in project_dependencies
+            or dependency not in project_dependencies
+        ):
+            raise _fail(
+                ReleasePlanCode.MISSING, "stage source edge names an unknown project"
+            )
+        project_dependencies[dependent].add(dependency)
+    stage_by_key: dict[tuple[StageKind, str], StagePreview] = {}
+    stage_order = (
+        StageKind.VALIDATE,
+        StageKind.BUMP,
+        StageKind.LOCAL_LAND,
+        StageKind.BUILD,
+        StageKind.PACKAGE,
+    )
+    for kind in stage_order:
+        for group in groups:
+            for project_id in group:
+                project = project_map[project_id]
+                dependencies: list[str] = []
+                if kind is StageKind.BUMP:
+                    dependencies.append(
+                        stage_by_key[(StageKind.VALIDATE, project_id)].stage_id
+                    )
+                    dependencies.extend(
+                        stage_by_key[(StageKind.BUMP, dependency)].stage_id
+                        for dependency in sorted(project_dependencies[project_id])
+                    )
+                elif kind is StageKind.LOCAL_LAND:
+                    dependencies.append(
+                        stage_by_key[(StageKind.BUMP, project_id)].stage_id
+                    )
+                elif kind is StageKind.BUILD:
+                    dependencies.append(
+                        stage_by_key[(StageKind.LOCAL_LAND, project_id)].stage_id
+                    )
+                elif kind is StageKind.PACKAGE:
+                    dependencies.append(
+                        stage_by_key[(StageKind.BUILD, project_id)].stage_id
+                    )
+                stage_by_key[(kind, project_id)] = _stage_preview(
+                    kind=kind,
+                    project=project,
+                    base_sha=base_sha,
+                    generation_id=generation_id,
+                    graph_digest=graph_digest,
+                    selection_digest=selection_digest,
+                    version_plan_digest=version_plan_digest,
+                    version_preview_digests=version_preview_digests,
+                    floor_preview_digests=floor_preview_digests,
+                    validation_profile_digest=validation[project_id].digest,
+                    build_profile_digest=build[project_id].digest,
+                    depends_on=tuple(sorted(set(dependencies))),
+                    consent_reference=None,
+                    decision_context=decision_context,
+                )
+    if consent is not None:
+        for group in groups:
+            for project_id in group:
+                dependencies = [stage_by_key[(StageKind.PACKAGE, project_id)].stage_id]
+                dependencies.extend(
+                    stage_by_key[(StageKind.PUSH, dependency)].stage_id
+                    for dependency in sorted(project_dependencies[project_id])
+                )
+                stage_by_key[(StageKind.PUSH, project_id)] = _stage_preview(
+                    kind=StageKind.PUSH,
+                    project=project_map[project_id],
+                    base_sha=base_sha,
+                    generation_id=generation_id,
+                    graph_digest=graph_digest,
+                    selection_digest=selection_digest,
+                    version_plan_digest=version_plan_digest,
+                    version_preview_digests=version_preview_digests,
+                    floor_preview_digests=floor_preview_digests,
+                    validation_profile_digest=validation[project_id].digest,
+                    build_profile_digest=build[project_id].digest,
+                    depends_on=tuple(sorted(set(dependencies))),
+                    consent_reference=consent,
+                    decision_context=decision_context,
+                )
+    stages = tuple(
+        stage_by_key[(kind, project_id)]
+        for kind in (*stage_order, *((StageKind.PUSH,) if consent is not None else ()))
+        for group in groups
+        for project_id in group
+    )
+    _validate_stage_dag(stages)
+    return stages
+
+
 def _plan_payload(
     plan: FrozenReleasePlan, *, include_digest: bool = False
 ) -> dict[str, object]:
+    source_graph = _snapshot_graph(plan.graph)
+    source_selection = _snapshot_selection(plan.selection)
     payload: dict[str, object] = {
         "contract_version": plan.contract_version,
         "workspace_id": plan.workspace_id,
@@ -1076,12 +1565,18 @@ def _plan_payload(
         "version_preview_digests": plan.version_preview_digests,
         "floor_preview_digests": plan.floor_preview_digests,
         "version_plan": plan.version_plan.canonical_payload(include_digest=True),
+        "source_graph": {
+            **source_graph.canonical_payload(),
+            "digest": source_graph.digest,
+        },
+        "selection": source_selection.canonical_payload(include_digest=True),
         "validation_profiles": tuple(
             binding.canonical_payload() for binding in plan.validation_profiles
         ),
         "build_profiles": tuple(
             binding.canonical_payload() for binding in plan.build_profiles
         ),
+        "decision_context": plan.decision_context.canonical_payload(),
         "stages": tuple(
             stage.canonical_payload(include_digests=True) for stage in plan.stages
         ),
@@ -1113,6 +1608,9 @@ class FrozenReleasePlan:
     validation_profiles: tuple[ProfileBinding, ...]
     build_profiles: tuple[ProfileBinding, ...]
     stages: tuple[StagePreview, ...]
+    graph: DependencyGraph
+    selection: SelectedChangeClosure
+    decision_context: ReleaseDecisionContext
     push_consent: PushConsentReference | None = None
     plan_digest: str = ""
     contract_version: int = C11_FROZEN_PLAN_VERSION
@@ -1123,6 +1621,38 @@ class FrozenReleasePlan:
     @property
     def digest(self) -> str:
         return self.plan_digest
+
+    @property
+    def release_profile(self) -> ImmutableDigestReference:
+        return self.decision_context.release_profile
+
+    @property
+    def target_branch(self) -> str:
+        return self.decision_context.target_branch
+
+    @property
+    def candidate(self) -> ImmutableDigestReference:
+        return self.decision_context.candidate
+
+    @property
+    def certificate(self) -> ImmutableDigestReference:
+        return self.decision_context.certificate
+
+    @property
+    def config(self) -> ImmutableDigestReference:
+        return self.decision_context.config
+
+    @property
+    def toolchain(self) -> ImmutableDigestReference:
+        return self.decision_context.toolchain
+
+    @property
+    def command(self) -> ImmutableDigestReference:
+        return self.decision_context.command
+
+    @property
+    def artifact_contract(self) -> ImmutableDigestReference:
+        return self.decision_context.artifact_contract
 
     @property
     def push_stages(self) -> tuple[StagePreview, ...]:
@@ -1214,15 +1744,14 @@ class FrozenReleasePlan:
         """Refuse reuse when graph, closure, tree, preview, or profile evidence drifts."""
 
         try:
-            if type(graph) is not DependencyGraph or graph.digest != self.graph_digest:
+            graph = _snapshot_graph(graph)
+            selection = _snapshot_selection(selection)
+            if graph.digest != self.graph_digest:
                 raise _fail(
                     ReleasePlanCode.GRAPH_DRIFT,
                     "current graph does not match frozen plan",
                 )
-            if (
-                type(selection) is not SelectedChangeClosure
-                or selection.digest != self.selection_digest
-            ):
+            if selection.digest != self.selection_digest:
                 raise _fail(
                     ReleasePlanCode.SELECTION_DRIFT,
                     "current selection does not match frozen plan",
@@ -1232,7 +1761,9 @@ class FrozenReleasePlan:
                     ReleasePlanCode.GRAPH_DRIFT,
                     "current graph evidence does not match frozen selection",
                 )
-            current_version_plan = version_plan or self.version_plan
+            current_version_plan = (
+                self.version_plan if version_plan is None else version_plan
+            )
             if type(current_version_plan) is not VersionPlan:
                 raise _fail(
                     ReleasePlanCode.VERSION_PLAN_DRIFT,
@@ -1255,6 +1786,7 @@ class FrozenReleasePlan:
                 validation_profiles=self.validation_profiles,
                 build_profiles=self.build_profiles,
                 push_consent=self.push_consent,
+                decision_context=self.decision_context,
             )
             if expected.canonical_payload(
                 include_digest=True
@@ -1270,7 +1802,7 @@ class FrozenReleasePlan:
                 ReleasePlanCode.VERSION_PLAN_DRIFT,
                 "version plan evidence could not be validated",
             ) from None
-        except Exception:
+        except _UNTRUSTED_DATA_ERRORS:
             raise _fail(
                 ReleasePlanCode.DIGEST, "frozen release plan could not be validated"
             ) from None
@@ -1300,6 +1832,7 @@ class FrozenReleasePlan:
             validation_profiles=frozen.validation_profiles,
             build_profiles=frozen.build_profiles,
             push_consent=frozen.push_consent,
+            decision_context=frozen.decision_context,
         )
 
 
@@ -1308,43 +1841,383 @@ FrozenPlan = FrozenReleasePlan
 ReleasePlan = FrozenReleasePlan
 
 
+def _exact_nested_tuple(
+    value: object, field_name: str, *, max_items: int
+) -> tuple[object, ...]:
+    """Reject lazy/subclass containers before any iteration or sorting."""
+
+    return _bounded_tuple(value, field_name, max_items=max_items)
+
+
+def _revalidate_version(value: object, field_name: str) -> Version:
+    if type(value) is not Version:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, f"{field_name} is not a Version")
+    return Version(_strict_text(value.value, field_name, max_length=128))
+
+
+def _revalidate_package_key(value: object, field_name: str) -> PackageKey:
+    if type(value) is not PackageKey:
+        raise _fail(ReleasePlanCode.IDENTITY, f"{field_name} is not a package identity")
+    if type(value.ecosystem) is not Ecosystem:
+        raise _fail(ReleasePlanCode.IDENTITY, f"{field_name} ecosystem is invalid")
+    return PackageKey(
+        _canonical_repository(value.repository_id),
+        value.ecosystem,
+        _strict_text(value.name, f"{field_name} name", max_length=256),
+    )
+
+
+def _revalidate_floor(value: object, field_name: str) -> VersionFloor:
+    if type(value) is not VersionFloor:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT, f"{field_name} is not a version floor"
+        )
+    return VersionFloor(
+        _strict_text(value.operator, f"{field_name} operator", max_length=2),
+        _revalidate_version(value.version, f"{field_name} version"),
+    )
+
+
+def _revalidate_package(package: PackageRecord) -> PackageRecord:
+    if type(package) is not PackageRecord:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "plan package is not a C-11 record")
+    key = _revalidate_package_key(package.key, "package key")
+    version = _revalidate_version(package.version, "package version")
+    raw_sources = _exact_nested_tuple(
+        package.version_sources, "package version sources", max_items=MAX_STRING_LENGTH
+    )
+    sources: list[VersionSource] = []
+    for source in raw_sources:
+        if type(source) is not VersionSource:
+            raise _fail(
+                ReleasePlanCode.INVALID_INPUT, "package version source is invalid"
+            )
+        sources.append(
+            VersionSource(
+                _strict_text(source.location, "version source location"),
+                _revalidate_version(source.version, "version source version"),
+            )
+        )
+    raw_dependencies = _exact_nested_tuple(
+        package.dependencies, "package dependencies", max_items=MAX_EDGES
+    )
+    dependencies: list[DependencySpec] = []
+    for dependency in raw_dependencies:
+        if type(dependency) is not DependencySpec:
+            raise _fail(ReleasePlanCode.INVALID_INPUT, "package dependency is invalid")
+        target = dependency.target
+        if (
+            type(target) is not PackageReference
+            or type(target.ecosystem) is not Ecosystem
+        ):
+            raise _fail(
+                ReleasePlanCode.IDENTITY, "package dependency target is invalid"
+            )
+        repository_id = target.repository_id
+        if repository_id is not None:
+            repository_id = _canonical_repository(repository_id)
+        floor = (
+            None
+            if dependency.floor is None
+            else _revalidate_floor(dependency.floor, "dependency floor")
+        )
+        dependencies.append(
+            DependencySpec(
+                PackageReference(
+                    target.ecosystem,
+                    _strict_text(target.name, "dependency target name", max_length=256),
+                    repository_id,
+                ),
+                floor,
+                _strict_text(dependency.source, "dependency source"),
+            )
+        )
+    raw_metadata = _exact_nested_tuple(
+        package.metadata_files, "package metadata files", max_items=MAX_STRING_LENGTH
+    )
+    metadata = tuple(
+        _strict_text(item, "package metadata file") for item in raw_metadata
+    )
+    return PackageRecord(key, version, tuple(sources), tuple(dependencies), metadata)
+
+
 def _revalidate_project(project: ProjectRecord) -> ProjectRecord:
-    """Re-materialize nested C-11 records so forged ``__new__`` values fail."""
+    """Re-materialize all nested C-11 records before any provider traversal."""
 
     try:
         if type(project) is not ProjectRecord:
             raise _fail(
                 ReleasePlanCode.INVALID_INPUT, "plan project is not a C-11 record"
             )
-        raw_packages = _bounded_tuple(
+        raw_packages = _exact_nested_tuple(
             project.packages, "project packages", max_items=MAX_PACKAGES
         )
-        packages: list[PackageRecord] = []
-        for raw_package in raw_packages:
-            if type(raw_package) is not PackageRecord:
-                raise _fail(
-                    ReleasePlanCode.INVALID_INPUT, "plan package is not a C-11 record"
-                )
-            packages.append(
-                PackageRecord(
-                    key=raw_package.key,
-                    version=raw_package.version,
-                    version_sources=raw_package.version_sources,
-                    dependencies=raw_package.dependencies,
-                    metadata_files=raw_package.metadata_files,
-                )
-            )
+        packages = tuple(
+            _revalidate_package(cast(PackageRecord, item)) for item in raw_packages
+        )
+        raw_metadata = _exact_nested_tuple(
+            project.metadata_files,
+            "project metadata files",
+            max_items=MAX_STRING_LENGTH,
+        )
+        metadata = tuple(
+            _strict_text(item, "project metadata file") for item in raw_metadata
+        )
+        tree_value = project.tree_sha
+        if type(tree_value) is not str:
+            raise _fail(ReleasePlanCode.TREE_SHA, "project tree SHA is not a string")
         return ProjectRecord(
-            repository_id=project.repository_id,
-            tree_sha=project.tree_sha,
-            packages=tuple(packages),
-            metadata_files=project.metadata_files,
+            repository_id=_canonical_repository(project.repository_id),
+            tree_sha=(
+                ""
+                if len(tree_value) == 0
+                else _strict_sha(
+                    tree_value, "project tree SHA", code=ReleasePlanCode.TREE_SHA
+                )
+            ),
+            packages=packages,
+            metadata_files=metadata,
         )
     except ReleasePlanError:
         raise
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
             ReleasePlanCode.DIGEST, "nested project evidence could not be validated"
+        ) from None
+
+
+def _revalidate_edge(edge: DependencyEdge) -> DependencyEdge:
+    if type(edge) is not DependencyEdge:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "dependency edge is unsupported")
+    floor = None if edge.floor is None else _revalidate_floor(edge.floor, "edge floor")
+    if type(edge.confidence) is not EdgeConfidence:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "edge confidence is unsupported")
+    return DependencyEdge(
+        _revalidate_package_key(edge.dependent, "edge dependent"),
+        _revalidate_package_key(edge.dependency, "edge dependency"),
+        floor,
+        _strict_text(edge.source, "edge source"),
+        edge.confidence,
+    )
+
+
+def _snapshot_graph(graph: DependencyGraph) -> DependencyGraph:
+    """Copy a graph only after proving every container is bounded and builtin."""
+
+    try:
+        if type(graph) is not DependencyGraph:
+            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph is not a C-11 record")
+        raw_projects = _exact_nested_tuple(
+            graph.projects, "graph projects", max_items=MAX_PROJECTS
+        )
+        raw_packages = _exact_nested_tuple(
+            graph.packages, "graph packages", max_items=MAX_PACKAGES
+        )
+        raw_edges = _exact_nested_tuple(graph.edges, "graph edges", max_items=MAX_EDGES)
+        raw_project_edges = _exact_nested_tuple(
+            graph.project_edges, "graph project edges", max_items=MAX_EDGES
+        )
+        raw_groups = _exact_nested_tuple(
+            graph.parallel_groups, "graph parallel groups", max_items=MAX_PROJECTS
+        )
+        projects = tuple(
+            _revalidate_project(cast(ProjectRecord, item)) for item in raw_projects
+        )
+        packages = tuple(
+            _revalidate_package(cast(PackageRecord, item)) for item in raw_packages
+        )
+        edges = tuple(
+            _revalidate_edge(cast(DependencyEdge, item)) for item in raw_edges
+        )
+        project_edges: list[tuple[str, str]] = []
+        for pair in raw_project_edges:
+            if (
+                type(pair) not in (tuple, list)
+                or len(cast(tuple[object, ...] | list[object], pair)) != 2
+            ):
+                raise _fail(
+                    ReleasePlanCode.INVALID_INPUT, "graph project edge is invalid"
+                )
+            left, right = cast(tuple[object, ...] | list[object], pair)
+            project_edges.append(
+                (
+                    _canonical_repository(left),
+                    _canonical_repository(right),
+                )
+            )
+        groups: list[tuple[str, ...]] = []
+        for raw_group in raw_groups:
+            group = _canonical_project_ids(raw_group, "graph parallel group")
+            groups.append(group)
+        digest = _strict_digest(graph.digest, "graph digest")
+        candidate = DependencyGraph(
+            projects=projects,
+            packages=packages,
+            edges=edges,
+            project_edges=tuple(project_edges),
+            parallel_groups=tuple(groups),
+            digest=digest,
+        )
+        if candidate.projects != projects or candidate.packages != packages:
+            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph records are not canonical")
+        if candidate.digest != _digest_payload(candidate.canonical_payload()):
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT, "graph digest does not match contents"
+            )
+        if (
+            tuple(project_edges) != candidate.project_edges
+            or tuple(groups) != candidate.parallel_groups
+            or candidate.edges != edges
+        ):
+            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph topology is not canonical")
+        return candidate
+    except ReleasePlanError:
+        raise
+    except _UNTRUSTED_DATA_ERRORS:
+        raise _fail(
+            ReleasePlanCode.GRAPH_DRIFT, "graph evidence could not be validated"
+        ) from None
+
+
+def _snapshot_selection(selection: SelectedChangeClosure) -> SelectedChangeClosure:
+    """Copy a selected closure without walking lazy/hostile containers."""
+
+    try:
+        if type(selection) is not SelectedChangeClosure:
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT, "selection is not a C-11 record"
+            )
+        source = _snapshot_graph(selection.source_graph)
+        if type(selection.policy) is not SelectionPolicy:
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT, "selection policy is unsupported"
+            )
+        policy = SelectionPolicy(
+            changed_projects=cast(
+                tuple[str, ...],
+                _exact_nested_tuple(
+                    selection.policy.changed_projects,
+                    "changed projects",
+                    max_items=MAX_PROJECTS,
+                ),
+            ),
+            selected_projects=cast(
+                tuple[str, ...],
+                _exact_nested_tuple(
+                    selection.policy.selected_projects,
+                    "policy selected projects",
+                    max_items=MAX_PROJECTS,
+                ),
+            ),
+            upstream_mode=selection.policy.upstream_mode,
+            downstream_mode=selection.policy.downstream_mode,
+        )
+        known = _exact_nested_tuple(
+            selection.known_project_ids, "known project IDs", max_items=MAX_PROJECTS
+        )
+        selected = _exact_nested_tuple(
+            selection.selected_project_ids,
+            "selected project IDs",
+            max_items=MAX_PROJECTS,
+        )
+        projects = tuple(
+            _revalidate_project(cast(ProjectRecord, item))
+            for item in _exact_nested_tuple(
+                selection.projects, "closure projects", max_items=MAX_PROJECTS
+            )
+        )
+        edges = tuple(
+            _revalidate_edge(cast(DependencyEdge, item))
+            for item in _exact_nested_tuple(
+                selection.edges, "closure edges", max_items=MAX_EDGES
+            )
+        )
+        raw_project_edges = _exact_nested_tuple(
+            selection.project_edges, "closure project edges", max_items=MAX_EDGES
+        )
+        project_edges: list[tuple[str, str]] = []
+        for pair in raw_project_edges:
+            if (
+                type(pair) not in (tuple, list)
+                or len(cast(tuple[object, ...] | list[object], pair)) != 2
+            ):
+                raise _fail(
+                    ReleasePlanCode.SELECTION_DRIFT, "closure project edge is invalid"
+                )
+            project_edges.append(
+                (
+                    _canonical_repository(
+                        cast(tuple[object, ...] | list[object], pair)[0]
+                    ),
+                    _canonical_repository(
+                        cast(tuple[object, ...] | list[object], pair)[1]
+                    ),
+                )
+            )
+        raw_groups = _exact_nested_tuple(
+            selection.parallel_groups, "closure parallel groups", max_items=MAX_PROJECTS
+        )
+        groups = tuple(
+            _canonical_project_ids(group, "closure parallel group")
+            for group in raw_groups
+        )
+        raw_explanations = _exact_nested_tuple(
+            selection.explanations, "closure explanations", max_items=MAX_PROJECTS
+        )
+        explanations: list[SelectionExplanation] = []
+        for item in raw_explanations:
+            if type(item) is not SelectionExplanation:
+                raise _fail(
+                    ReleasePlanCode.SELECTION_DRIFT, "selection explanation is invalid"
+                )
+            reasons_raw = _exact_nested_tuple(
+                item.reasons, "selection explanation reasons", max_items=5
+            )
+            via_raw = _exact_nested_tuple(
+                item.via_projects,
+                "selection explanation witnesses",
+                max_items=MAX_PROJECTS,
+            )
+            if type(item.included) is not bool or any(
+                type(reason) is not SelectionReason for reason in reasons_raw
+            ):
+                raise _fail(
+                    ReleasePlanCode.SELECTION_DRIFT, "selection explanation is invalid"
+                )
+            explanations.append(
+                SelectionExplanation(
+                    project_id=_canonical_repository(item.project_id),
+                    included=item.included,
+                    reasons=tuple(cast(tuple[SelectionReason, ...], reasons_raw)),
+                    via_projects=tuple(
+                        _canonical_repository(value) for value in via_raw
+                    ),
+                )
+            )
+        digest = _strict_digest(selection.digest, "selection digest")
+        candidate = SelectedChangeClosure(
+            policy=policy,
+            known_project_ids=cast(tuple[str, ...], known),
+            selected_project_ids=cast(tuple[str, ...], selected),
+            projects=projects,
+            edges=edges,
+            project_edges=tuple(project_edges),
+            parallel_groups=groups,
+            explanations=tuple(explanations),
+            source_graph=source,
+            digest=digest,
+        )
+        if candidate.digest != digest:
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT,
+                "selection digest does not match contents",
+            )
+        return candidate
+    except ReleasePlanError:
+        raise
+    except _UNTRUSTED_DATA_ERRORS:
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT, "selection evidence could not be validated"
         ) from None
 
 
@@ -1356,13 +2229,55 @@ def _revalidate_version_plan(version_plan: VersionPlan) -> VersionPlan:
             raise _fail(
                 ReleasePlanCode.VERSION_PLAN_DRIFT, "version plan is not a C-11 record"
             )
+        raw_next = _exact_nested_tuple(
+            version_plan.next_versions,
+            "version plan next versions",
+            max_items=MAX_PACKAGES,
+        )
+        for pair in raw_next:
+            if (
+                type(pair) not in (tuple, list)
+                or len(cast(tuple[object, ...] | list[object], pair)) != 2
+            ):
+                raise _fail(
+                    ReleasePlanCode.VERSION_PLAN_DRIFT,
+                    "version plan next version pair is invalid",
+                )
+        raw_batches = _exact_nested_tuple(
+            version_plan.package_batches,
+            "version plan package batches",
+            max_items=MAX_PACKAGES,
+        )
+        for batch in raw_batches:
+            _exact_nested_tuple(
+                batch, "version plan package batch", max_items=MAX_PACKAGES
+            )
+        raw_versions = _exact_nested_tuple(
+            version_plan.version_previews,
+            "version plan version previews",
+            max_items=MAX_PACKAGES,
+        )
+        raw_floors = _exact_nested_tuple(
+            version_plan.floor_previews,
+            "version plan floor previews",
+            max_items=MAX_EDGES,
+        )
+        if any(type(item) is not VersionPreview for item in raw_versions):
+            raise _fail(
+                ReleasePlanCode.VERSION_PLAN_DRIFT,
+                "version preview evidence is invalid",
+            )
+        if any(type(item) is not FloorPreview for item in raw_floors):
+            raise _fail(
+                ReleasePlanCode.VERSION_PLAN_DRIFT, "floor preview evidence is invalid"
+            )
         return VersionPlan(
             graph_digest=version_plan.graph_digest,
             selection_digest=version_plan.selection_digest,
-            next_versions=version_plan.next_versions,
-            package_batches=version_plan.package_batches,
-            version_previews=version_plan.version_previews,
-            floor_previews=version_plan.floor_previews,
+            next_versions=cast(tuple[tuple[str, Version], ...], raw_next),
+            package_batches=cast(tuple[tuple[str, ...], ...], raw_batches),
+            version_previews=cast(tuple[VersionPreview, ...], raw_versions),
+            floor_previews=cast(tuple[FloorPreview, ...], raw_floors),
             plan_digest=version_plan.plan_digest,
         )
     except ReleasePlanError:
@@ -1371,7 +2286,7 @@ def _revalidate_version_plan(version_plan: VersionPlan) -> VersionPlan:
         raise _fail(
             ReleasePlanCode.VERSION_PLAN_DRIFT, "version plan evidence is invalid"
         ) from None
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
             ReleasePlanCode.VERSION_PLAN_DRIFT,
             "version plan evidence could not be validated",
@@ -1384,6 +2299,7 @@ def _revalidate_stage(stage: StagePreview) -> StagePreview:
     try:
         if type(stage) is not StagePreview:
             raise _fail(ReleasePlanCode.INVALID_INPUT, "stage is not a stage preview")
+        consent = _revalidate_consent(stage.consent_reference)
         return StagePreview(
             stage_id=stage.stage_id,
             kind=stage.kind,
@@ -1399,13 +2315,19 @@ def _revalidate_stage(stage: StagePreview) -> StagePreview:
             validation_profile_digest=stage.validation_profile_digest,
             build_profile_digest=stage.build_profile_digest,
             depends_on=stage.depends_on,
-            consent_reference=stage.consent_reference,
+            consent_reference=consent,
             failure_policy=stage.failure_policy,
             input_digest=stage.input_digest,
+            decision_digest=stage.decision_digest,
+            resource_profile=stage.resource_profile,
+            retry_policy=stage.retry_policy,
+            retry_count=stage.retry_count,
+            timeout_policy=stage.timeout_policy,
+            timeout_seconds=stage.timeout_seconds,
         )
     except ReleasePlanError:
         raise
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
             ReleasePlanCode.DIGEST, "stage evidence could not be validated"
         ) from None
@@ -1425,7 +2347,7 @@ def _revalidate_profile(binding: ProfileBinding) -> ProfileBinding:
         )
     except ReleasePlanError:
         raise
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
             ReleasePlanCode.PROFILE, "profile binding could not be validated"
         ) from None
@@ -1448,9 +2370,38 @@ def _revalidate_consent(
         )
     except ReleasePlanError:
         raise
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
             ReleasePlanCode.CONSENT, "consent reference could not be validated"
+        ) from None
+
+
+def _revalidate_decision_context(
+    context: ReleaseDecisionContext,
+) -> ReleaseDecisionContext:
+    try:
+        if type(context) is not ReleaseDecisionContext:
+            raise _fail(ReleasePlanCode.PROFILE, "decision context is unsupported")
+        return ReleaseDecisionContext(
+            release_profile=context.release_profile,
+            target_branch=context.target_branch,
+            candidate=context.candidate,
+            certificate=context.certificate,
+            config=context.config,
+            toolchain=context.toolchain,
+            command=context.command,
+            artifact_contract=context.artifact_contract,
+            resource_profile=context.resource_profile,
+            retry_policy=context.retry_policy,
+            retry_count=context.retry_count,
+            timeout_policy=context.timeout_policy,
+            timeout_seconds=context.timeout_seconds,
+        )
+    except ReleasePlanError:
+        raise
+    except _UNTRUSTED_DATA_ERRORS:
+        raise _fail(
+            ReleasePlanCode.PROFILE, "decision context could not be validated"
         ) from None
 
 
@@ -1486,6 +2437,25 @@ def _validate_frozen_plan_fields(
             raise _fail(
                 ReleasePlanCode.INVALID_INPUT, "unsupported frozen plan contract"
             )
+        if type(plan.decision_context) is not ReleaseDecisionContext:
+            raise _fail(ReleasePlanCode.PROFILE, "decision context is not frozen")
+        decision_context = _revalidate_decision_context(plan.decision_context)
+        source_graph = _snapshot_graph(plan.graph)
+        source_selection = _snapshot_selection(plan.selection)
+        if source_graph.digest != graph_digest:
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT, "frozen graph evidence is not bound"
+            )
+        if source_selection.digest != selection_digest:
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT,
+                "frozen selection evidence is not bound",
+            )
+        if (
+            source_selection.source_graph.canonical_payload()
+            != source_graph.canonical_payload()
+        ):
+            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "frozen selection source drifted")
         selected = _canonical_project_ids(plan.selected_projects, "selected projects")
         projects = _bounded_tuple(
             plan.projects, "plan projects", max_items=MAX_PROJECTS
@@ -1506,6 +2476,14 @@ def _validate_frozen_plan_fields(
             )
         if tuple(project_map[project_id] for project_id in selected) != project_values:
             raise _fail(ReleasePlanCode.IDENTITY, "frozen projects are not canonical")
+        if (
+            selected != source_selection.selected_project_ids
+            or project_values != source_selection.projects
+        ):
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT,
+                "frozen projects do not match selection evidence",
+            )
         packages = _package_map(project_values)
         edge_values = _bounded_tuple(plan.edges, "plan edges", max_items=MAX_EDGES)
         if any(type(edge) is not DependencyEdge for edge in edge_values):
@@ -1513,13 +2491,7 @@ def _validate_frozen_plan_fields(
                 ReleasePlanCode.INVALID_INPUT, "plan edges must be C-11 records"
             )
         edge_tuple = tuple(
-            DependencyEdge(
-                dependent=edge.dependent,
-                dependency=edge.dependency,
-                floor=edge.floor,
-                source=edge.source,
-                confidence=edge.confidence,
-            )
+            _revalidate_edge(edge)
             for edge in cast(tuple[DependencyEdge, ...], edge_values)
         )
         if tuple(sorted(edge_tuple, key=lambda edge: edge.value)) != edge_tuple:
@@ -1539,6 +2511,11 @@ def _validate_frozen_plan_fields(
                     ReleasePlanCode.IDENTITY, "frozen edge names an unselected project"
                 )
         project_edges = _project_edges(edge_tuple)
+        if edge_tuple != source_selection.edges:
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT,
+                "frozen edges do not match selection evidence",
+            )
         raw_groups = _bounded_tuple(
             plan.parallel_groups, "parallel groups", max_items=MAX_PROJECTS
         )
@@ -1557,6 +2534,11 @@ def _validate_frozen_plan_fields(
             raise _fail(
                 ReleasePlanCode.DIGEST,
                 "parallel groups do not match frozen dependency order",
+            )
+        if tuple(groups) != source_selection.parallel_groups:
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT,
+                "frozen groups do not match selection evidence",
             )
         if (
             type(plan.version_plan) is not VersionPlan
@@ -1645,6 +2627,19 @@ def _validate_frozen_plan_fields(
             raise _fail(
                 ReleasePlanCode.DIGEST, "stage evidence is not bound to the frozen plan"
             )
+        if any(
+            stage.decision_digest != decision_context.digest
+            or stage.resource_profile != decision_context.resource_profile
+            or stage.retry_policy is not decision_context.retry_policy
+            or stage.retry_count != decision_context.retry_count
+            or stage.timeout_policy is not decision_context.timeout_policy
+            or stage.timeout_seconds != decision_context.timeout_seconds
+            for stage in stages
+        ):
+            raise _fail(
+                ReleasePlanCode.DIGEST,
+                "stage decision evidence is not bound to the frozen plan",
+            )
         if any(stage.project_id not in selected for stage in stages):
             raise _fail(ReleasePlanCode.IDENTITY, "stage names an unselected project")
         if any(
@@ -1663,6 +2658,28 @@ def _validate_frozen_plan_fields(
             raise _fail(
                 ReleasePlanCode.INVALID_INPUT, "frozen plan must contain stages"
             )
+        expected_stages = _derive_stage_sequence(
+            selected=selected,
+            project_map=project_map,
+            project_edges=project_edges,
+            groups=tuple(groups),
+            base_sha=base_sha,
+            generation_id=generation_id,
+            graph_digest=graph_digest,
+            selection_digest=selection_digest,
+            version_plan_digest=version_plan_digest,
+            version_preview_digests=version_digests,
+            floor_preview_digests=floor_digests,
+            validation=_profile_map(validation, ProfileKind.VALIDATION),
+            build=_profile_map(build, ProfileKind.BUILD),
+            decision_context=decision_context,
+            consent=consent,
+        )
+        if stages != expected_stages:
+            raise _fail(
+                ReleasePlanCode.STAGE_DEPENDENCY,
+                "stage composition does not match frozen source evidence",
+            )
         expected_digest = _digest_payload(_plan_payload(plan, include_digest=False))
         if require_digest:
             supplied = _strict_digest(plan.plan_digest, "plan digest")
@@ -1675,7 +2692,7 @@ def _validate_frozen_plan_fields(
         _ = (workspace_id, source_sha, base_sha, generation_id)
     except ReleasePlanError:
         raise
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
             ReleasePlanCode.DIGEST, "frozen plan evidence could not be validated"
         ) from None
@@ -1696,6 +2713,7 @@ def _stage_preview(
     build_profile_digest: str,
     depends_on: tuple[str, ...],
     consent_reference: PushConsentReference | None,
+    decision_context: ReleaseDecisionContext,
 ) -> StagePreview:
     payload = _stage_payload_without_digests(
         kind=kind,
@@ -1712,6 +2730,12 @@ def _stage_preview(
         build_profile_digest=build_profile_digest,
         depends_on=depends_on,
         consent_reference=consent_reference,
+        decision_digest=decision_context.digest,
+        resource_profile=decision_context.resource_profile,
+        retry_policy=decision_context.retry_policy,
+        retry_count=decision_context.retry_count,
+        timeout_policy=decision_context.timeout_policy,
+        timeout_seconds=decision_context.timeout_seconds,
     )
     stage_id, input_digest = _stage_identity(payload)
     return StagePreview(
@@ -1731,6 +2755,12 @@ def _stage_preview(
         depends_on=depends_on,
         consent_reference=consent_reference,
         input_digest=input_digest,
+        decision_digest=decision_context.digest,
+        resource_profile=decision_context.resource_profile,
+        retry_policy=decision_context.retry_policy,
+        retry_count=decision_context.retry_count,
+        timeout_policy=decision_context.timeout_policy,
+        timeout_seconds=decision_context.timeout_seconds,
     )
 
 
@@ -1748,13 +2778,15 @@ class FrozenReleasePlanInput:
     selection: SelectedChangeClosure
     version_plan: VersionPlan
     workspace_id: str = "workspace"
-    source_sha: str = ""
-    base_sha: str = ""
+    source_sha: str | None = None
+    base_sha: str | None = None
     generation_id: str = ""
     validation_profiles: object | None = None
     build_profiles: object | None = None
     push_consent: PushConsentReference | None = None
     include_push: bool | None = None
+    allow_push: bool | None = None
+    decision_context: ReleaseDecisionContext | None = None
 
     def __post_init__(self) -> None:
         if type(self.graph) is not DependencyGraph:
@@ -1772,17 +2804,26 @@ class FrozenReleasePlanInput:
                 ReleasePlanCode.VERSION_PLAN_DRIFT,
                 "input version plan must be a frozen C-11 model",
             )
+        graph = _snapshot_graph(self.graph)
+        selection = _snapshot_selection(self.selection)
+        if (
+            graph.digest != selection.source_graph.digest
+            or graph.canonical_payload() != selection.source_graph.canonical_payload()
+        ):
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT, "input graph does not match selection"
+            )
+        object.__setattr__(self, "graph", graph)
+        object.__setattr__(self, "selection", selection)
         _strict_opaque(self.workspace_id, "workspace ID", max_length=MAX_STRING_LENGTH)
+        if self.source_sha is None:
+            raise _fail(ReleasePlanCode.SOURCE_SHA, "source SHA is required")
+        if self.base_sha is None:
+            raise _fail(ReleasePlanCode.BASE_SHA, "base SHA is required")
         source = _strict_sha(
-            self.source_sha or self.base_sha,
-            "source SHA",
-            code=ReleasePlanCode.SOURCE_SHA,
+            self.source_sha, "source SHA", code=ReleasePlanCode.SOURCE_SHA
         )
-        base = _strict_sha(
-            self.base_sha or source,
-            "base SHA",
-            code=ReleasePlanCode.BASE_SHA,
-        )
+        base = _strict_sha(self.base_sha, "base SHA", code=ReleasePlanCode.BASE_SHA)
         object.__setattr__(self, "source_sha", source)
         object.__setattr__(self, "base_sha", base)
         _strict_opaque(
@@ -1792,6 +2833,8 @@ class FrozenReleasePlanInput:
         )
         if self.include_push is not None:
             _strict_bool(self.include_push, "push inclusion flag")
+        if self.allow_push is not None:
+            _strict_bool(self.allow_push, "push authorization flag")
         if (
             self.push_consent is not None
             and type(self.push_consent) is not PushConsentReference
@@ -1800,10 +2843,19 @@ class FrozenReleasePlanInput:
                 ReleasePlanCode.CONSENT,
                 "input push consent must be immutable evidence",
             )
+        if (
+            self.decision_context is not None
+            and type(self.decision_context) is not ReleaseDecisionContext
+        ):
+            raise _fail(
+                ReleasePlanCode.PROFILE, "input decision context is unsupported"
+            )
         # Materialize the two profile collections now, rather than retaining a
         # caller-owned dict/list.  This also makes missing profiles explicit via
         # deterministic defaults.
-        selected = tuple(self.selection.selected_project_ids)
+        selected = _canonical_project_ids(
+            self.selection.selected_project_ids, "selected project IDs"
+        )
         validation = _normalize_profiles(
             self.validation_profiles,
             selected,
@@ -1840,6 +2892,12 @@ class FrozenReleasePlanInput:
             if self.push_consent
             else None,
             "include_push": self.include_push,
+            "allow_push": self.allow_push,
+            "decision_context": (
+                self.decision_context.canonical_payload()
+                if self.decision_context is not None
+                else None
+            ),
         }
 
 
@@ -1868,6 +2926,20 @@ def freeze_release_plan(
     consent_ref: PushConsentReference | None = None,
     include_push: bool | None = None,
     allow_push: bool | None = None,
+    decision_context: ReleaseDecisionContext | None = None,
+    release_profile: object | None = None,
+    target_branch: object | None = None,
+    candidate: object | None = None,
+    certificate: object | None = None,
+    config: object | None = None,
+    toolchain: object | None = None,
+    command: object | None = None,
+    artifact_contract: object | None = None,
+    resource_profile: object | None = None,
+    retry_policy: object | None = None,
+    retry_count: object | None = None,
+    timeout_policy: object | None = None,
+    timeout_seconds: object | None = None,
 ) -> FrozenReleasePlan:
     """Freeze a verified graph/version plan and translate its stage DAG.
 
@@ -1890,12 +2962,14 @@ def freeze_release_plan(
                 request.version_plan,
                 workspace_id=request.workspace_id,
                 source_sha=request.source_sha,
-                base_sha=request.base_sha or request.source_sha,
+                base_sha=request.base_sha,
                 generation_id=request.generation_id,
                 validation_profiles=request.validation_profiles,
                 build_profiles=request.build_profiles,
                 push_consent=request.push_consent,
                 include_push=request.include_push,
+                allow_push=request.allow_push,
+                decision_context=request.decision_context,
             )
         if selection is None or version_plan is None:
             raise _fail(
@@ -1915,6 +2989,8 @@ def freeze_release_plan(
                 ReleasePlanCode.VERSION_PLAN_DRIFT,
                 "version plan must be a frozen C-11 model",
             )
+        graph = _snapshot_graph(graph)
+        selection = _snapshot_selection(selection)
         if (
             graph.digest != selection.source_graph.digest
             or graph.canonical_payload() != selection.source_graph.canonical_payload()
@@ -1927,20 +3003,30 @@ def freeze_release_plan(
         workspace = _strict_opaque(
             workspace_id, "workspace ID", max_length=MAX_STRING_LENGTH
         )
-        source = _strict_sha(
-            source_sha
-            if source_sha is not None
-            else (base_sha if base_sha is not None else ""),
-            "source SHA",
-            code=ReleasePlanCode.SOURCE_SHA,
-        )
-        base = _strict_sha(
-            base_sha if base_sha is not None else source,
-            "base SHA",
-            code=ReleasePlanCode.BASE_SHA,
-        )
+        if source_sha is None:
+            raise _fail(ReleasePlanCode.SOURCE_SHA, "source SHA is required")
+        if base_sha is None:
+            raise _fail(ReleasePlanCode.BASE_SHA, "base SHA is required")
+        source = _strict_sha(source_sha, "source SHA", code=ReleasePlanCode.SOURCE_SHA)
+        base = _strict_sha(base_sha, "base SHA", code=ReleasePlanCode.BASE_SHA)
         generation = _strict_opaque(
             generation_id, "generation ID", max_length=MAX_GENERATION_LENGTH
+        )
+        decisions = _normalize_decision_context(
+            decision_context,
+            release_profile=release_profile,
+            target_branch=target_branch,
+            candidate=candidate,
+            certificate=certificate,
+            config=config,
+            toolchain=toolchain,
+            command=command,
+            artifact_contract=artifact_contract,
+            resource_profile=resource_profile,
+            retry_policy=retry_policy,
+            retry_count=retry_count,
+            timeout_policy=timeout_policy,
+            timeout_seconds=timeout_seconds,
         )
         selected = tuple(selection.selected_project_ids)
         projects = tuple(selection.projects)
@@ -1998,18 +3084,19 @@ def freeze_release_plan(
         )
         validation_map = _profile_map(validation, ProfileKind.VALIDATION)
         build_map = _profile_map(build, ProfileKind.BUILD)
+        consent_aliases = (push_consent, consent_reference, consent_ref)
+        consent_candidates = tuple(item for item in consent_aliases if item is not None)
+        if any(type(item) is not PushConsentReference for item in consent_candidates):
+            raise _fail(
+                ReleasePlanCode.CONSENT, "push consent must be immutable evidence"
+            )
         consent_candidates = tuple(
-            item
-            for item in (push_consent, consent_reference, consent_ref)
-            if item is not None
+            cast(PushConsentReference, _revalidate_consent(item))
+            for item in consent_candidates
         )
         if len(set(consent_candidates)) > 1:
             raise _fail(ReleasePlanCode.CONFLICT, "push consent references conflict")
         consent = consent_candidates[0] if consent_candidates else None
-        if consent is not None and type(consent) is not PushConsentReference:
-            raise _fail(
-                ReleasePlanCode.CONSENT, "push consent must be immutable evidence"
-            )
         if include_push is not None and type(include_push) is not bool:
             raise _fail(
                 ReleasePlanCode.PUSH_CONSENT, "push inclusion flag must be boolean"
@@ -2018,20 +3105,29 @@ def freeze_release_plan(
             raise _fail(
                 ReleasePlanCode.PUSH_CONSENT, "push authorization flag must be boolean"
             )
-        requested_push = (
-            bool(include_push)
-            if include_push is not None
-            else bool(allow_push)
-            if allow_push is not None
-            else consent is not None
-        )
+        if (
+            include_push is not None
+            and allow_push is not None
+            and include_push != allow_push
+        ):
+            raise _fail(ReleasePlanCode.CONFLICT, "push flags conflict")
+        if (include_push is False or allow_push is False) and consent is not None:
+            raise _fail(
+                ReleasePlanCode.CONFLICT,
+                "explicit push exclusion conflicts with immutable consent",
+            )
+        if include_push is not None:
+            requested_push = include_push
+        elif allow_push is not None:
+            requested_push = allow_push
+        else:
+            requested_push = consent is not None
         if requested_push and consent is None:
             raise _fail(
                 ReleasePlanCode.PUSH_CONSENT,
                 "push requires an immutable consent reference",
             )
-        if allow_push is True and include_push is False:
-            raise _fail(ReleasePlanCode.CONFLICT, "push flags conflict")
+        accepted_consent = consent if requested_push else None
         version_digests = tuple(
             sorted(
                 _preview_digest(preview) for preview in version_plan.version_previews
@@ -2040,97 +3136,23 @@ def freeze_release_plan(
         floor_digests = tuple(
             sorted(_preview_digest(preview) for preview in version_plan.floor_previews)
         )
-        # Keep stage ordering semantically useful: all dependency-independent
-        # validation stages, then bump/land/build/package, followed by optional
-        # dependency-linked pushes.  IDs themselves remain opaque content hashes.
-        stage_by_key: dict[tuple[StageKind, str], StagePreview] = {}
-        project_dependencies: dict[str, set[str]] = {
-            project: set() for project in selected
-        }
-        for dependent, dependency in project_edges:
-            project_dependencies[dependent].add(dependency)
-        stage_order = (
-            StageKind.VALIDATE,
-            StageKind.BUMP,
-            StageKind.LOCAL_LAND,
-            StageKind.BUILD,
-            StageKind.PACKAGE,
+        stages = _derive_stage_sequence(
+            selected=selected,
+            project_map=project_map,
+            project_edges=project_edges,
+            groups=groups,
+            base_sha=base,
+            generation_id=generation,
+            graph_digest=graph.digest,
+            selection_digest=selection.digest,
+            version_plan_digest=version_plan.plan_digest,
+            version_preview_digests=version_digests,
+            floor_preview_digests=floor_digests,
+            validation=validation_map,
+            build=build_map,
+            decision_context=decisions,
+            consent=accepted_consent,
         )
-        for kind in stage_order:
-            for group in groups:
-                for project_id in group:
-                    project = project_map[project_id]
-                    dependencies: list[str] = []
-                    if kind is StageKind.BUMP:
-                        dependencies.append(
-                            stage_by_key[(StageKind.VALIDATE, project_id)].stage_id
-                        )
-                        dependencies.extend(
-                            stage_by_key[(StageKind.BUMP, dependency)].stage_id
-                            for dependency in sorted(project_dependencies[project_id])
-                        )
-                    elif kind is StageKind.LOCAL_LAND:
-                        dependencies.append(
-                            stage_by_key[(StageKind.BUMP, project_id)].stage_id
-                        )
-                    elif kind is StageKind.BUILD:
-                        dependencies.append(
-                            stage_by_key[(StageKind.LOCAL_LAND, project_id)].stage_id
-                        )
-                    elif kind is StageKind.PACKAGE:
-                        dependencies.append(
-                            stage_by_key[(StageKind.BUILD, project_id)].stage_id
-                        )
-                    preview = _stage_preview(
-                        kind=kind,
-                        project=project,
-                        base_sha=base,
-                        generation_id=generation,
-                        graph_digest=graph.digest,
-                        selection_digest=selection.digest,
-                        version_plan_digest=version_plan.plan_digest,
-                        version_preview_digests=version_digests,
-                        floor_preview_digests=floor_digests,
-                        validation_profile_digest=validation_map[project_id].digest,
-                        build_profile_digest=build_map[project_id].digest,
-                        depends_on=tuple(sorted(set(dependencies))),
-                        consent_reference=None,
-                    )
-                    stage_by_key[(kind, project_id)] = preview
-        if requested_push:
-            assert consent is not None
-            for group in groups:
-                for project_id in group:
-                    project = project_map[project_id]
-                    dependencies = [
-                        stage_by_key[(StageKind.PACKAGE, project_id)].stage_id
-                    ]
-                    dependencies.extend(
-                        stage_by_key[(StageKind.PUSH, dependency)].stage_id
-                        for dependency in sorted(project_dependencies[project_id])
-                    )
-                    stage_by_key[(StageKind.PUSH, project_id)] = _stage_preview(
-                        kind=StageKind.PUSH,
-                        project=project,
-                        base_sha=base,
-                        generation_id=generation,
-                        graph_digest=graph.digest,
-                        selection_digest=selection.digest,
-                        version_plan_digest=version_plan.plan_digest,
-                        version_preview_digests=version_digests,
-                        floor_preview_digests=floor_digests,
-                        validation_profile_digest=validation_map[project_id].digest,
-                        build_profile_digest=build_map[project_id].digest,
-                        depends_on=tuple(sorted(set(dependencies))),
-                        consent_reference=consent,
-                    )
-        stages = tuple(
-            stage_by_key[(kind, project)]
-            for kind in (*stage_order, *((StageKind.PUSH,) if requested_push else ()))
-            for group in groups
-            for project in group
-        )
-        _validate_stage_dag(stages)
         # Constructing the plan itself requires a digest.  Compute from an
         # equivalent object with a temporary impossible digest is avoided by
         # calculating a self-contained preimage payload here.
@@ -2150,14 +3172,22 @@ def freeze_release_plan(
             "version_preview_digests": version_digests,
             "floor_preview_digests": floor_digests,
             "version_plan": version_plan.canonical_payload(include_digest=True),
+            "source_graph": {
+                **graph.canonical_payload(),
+                "digest": graph.digest,
+            },
+            "selection": selection.canonical_payload(include_digest=True),
             "validation_profiles": tuple(
                 binding.canonical_payload() for binding in validation
             ),
             "build_profiles": tuple(binding.canonical_payload() for binding in build),
+            "decision_context": decisions.canonical_payload(),
             "stages": tuple(
                 stage.canonical_payload(include_digests=True) for stage in stages
             ),
-            "push_consent": consent.canonical_payload() if consent else None,
+            "push_consent": accepted_consent.canonical_payload()
+            if accepted_consent
+            else None,
         }
         digest = _digest_payload(preimage)
         return FrozenReleasePlan(
@@ -2176,7 +3206,10 @@ def freeze_release_plan(
             validation_profiles=validation,
             build_profiles=build,
             stages=stages,
-            push_consent=consent if requested_push else None,
+            graph=graph,
+            selection=selection,
+            decision_context=decisions,
+            push_consent=accepted_consent,
             plan_digest=digest,
         )
     except ReleasePlanError:
@@ -2186,7 +3219,7 @@ def freeze_release_plan(
             ReleasePlanCode.VERSION_PLAN_DRIFT,
             "version plan evidence could not be validated",
         ) from None
-    except Exception:
+    except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
             ReleasePlanCode.INVALID_INPUT,
             "release plan inputs could not be materialized",
@@ -2264,8 +3297,15 @@ frozen_plan_digest = plan_digest
 __all__ = [
     "BuildProfile",
     "BuildProfileBinding",
+    "ArtifactContractReference",
+    "CandidateReference",
+    "CertificateReference",
     "C11_FROZEN_PLAN_VERSION",
+    "CommandReference",
+    "ConfigReference",
     "ConsentReference",
+    "DecisionContext",
+    "DecisionReference",
     "FailurePolicy",
     "FrozenPlan",
     "FrozenPlanCode",
@@ -2274,10 +3314,16 @@ __all__ = [
     "FrozenReleasePlan",
     "FrozenReleasePlanInput",
     "FrozenWorkspaceReleasePlan",
+    "ImmutableDigestReference",
+    "OpaqueDigestReference",
     "ProfileBinding",
     "ProfileKind",
     "PushConsent",
     "PushConsentReference",
+    "ReleaseDecisionContext",
+    "ReleasePlanDecisions",
+    "ReleaseProfile",
+    "ReleaseProfileReference",
     "ReleasePlan",
     "ReleasePlanCode",
     "ReleasePlanError",
@@ -2290,6 +3336,10 @@ __all__ = [
     "StagePlan",
     "StagePreview",
     "StageType",
+    "RetryPolicy",
+    "ResourceProfileReference",
+    "TimeoutPolicy",
+    "ToolchainReference",
     "PlanFreezeInput",
     "ValidationProfile",
     "ValidationProfileBinding",

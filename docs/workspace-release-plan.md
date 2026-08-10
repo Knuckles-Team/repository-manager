@@ -157,3 +157,25 @@ cleared or stale digests, changed source/tree/base/generation/profile/preview
 fields, reordered dependencies, unknown stage dependencies, cycles, and graph
 or selection drift. Inputs are exact builtin bounded containers and all refusal
 messages are privacy-safe.
+
+The corrective CP4 contract also freezes a `ReleaseDecisionContext`: normalized
+target branch plus opaque name/digest references for the release profile,
+candidate, certificate, immutable config/toolchain/preview-command and artifact
+contract. Each stage carries the context digest and its resource profile,
+retry-policy/count, and timeout policy/seconds; changing any one decision field
+therefore changes the plan and stage identities. These are references only and
+do not grant execution authority.
+
+Source and base SHAs are independently required exact builtin strings; omitted
+or falsey aliases are never substituted. Push flags are descriptive selectors,
+not authorization: explicit `False` conflicts with consent, contradictory
+aliases refuse before construction, and an accepted plan hashes exactly the
+consent value it returns. A push stage is present only when its immutable
+`PushConsentReference` is present.
+
+Graph and closure provenance are snapshotted from exact bounded builtin
+containers before sorting or hashing. `validate()` re-materializes that source
+evidence and derives the complete required stage composition and dependencies,
+so rehashing a semantically altered DAG does not make it valid. Malformed
+containers and provider-data normalization errors are fixed privacy-safe
+refusals; trusted `RuntimeError` failures remain visible to callers.
