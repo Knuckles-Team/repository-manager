@@ -63,6 +63,11 @@ class _NeverIteratedList(list[object]):
         raise AssertionError("hostile list length was requested")
 
 
+class _ExplodingText(str):
+    def strip(self, *_args: object, **_kwargs: object) -> str:
+        raise RuntimeError("private text method must not run")
+
+
 SHA0 = "0" * 40
 SHA1 = "1" * 40
 SHA2 = "2" * 40
@@ -569,6 +574,205 @@ def test_inputs_and_results_are_closed_and_bounded() -> None:
     )
     assert refusal.refused
     assert len(refusal.detail.encode("utf-8")) <= 4096
+
+
+def test_hostile_text_subclasses_are_refused_before_text_methods_run() -> None:
+    with pytest.raises(LandingPolicyError) as construction_error:
+        _request(target_branch=_ExplodingText("main"))
+    assert "private text method" not in str(construction_error.value)
+
+    generation = _generation()
+    certificate, evidence = _certificate(generation_id=generation.generation_id)
+    request = _request(
+        generation=generation,
+        certificate=certificate,
+        evidence=evidence,
+    )
+    object.__setattr__(request, "target_branch", _ExplodingText("main"))
+    result = verify_landing(request)
+    assert result.code is LandingRefusalCode.REQUEST_INVALID
+    assert "private text method" not in result.detail
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param("contract_version", 1, id="contract-version-int"),
+        pytest.param("generation_id", True, id="generation-id-bool"),
+        pytest.param("target_branch", 1, id="target-branch-int"),
+        pytest.param("base_sha", SHA0.encode(), id="base-sha-bytes"),
+        pytest.param(
+            "expected_landing_base_sha", SHA0.encode(), id="expected-base-bytes"
+        ),
+        pytest.param("sealed_at", 0, id="sealed-at-int"),
+        pytest.param("synthetic_commit_sha", SHA1.encode(), id="commit-sha-bytes"),
+        pytest.param("tree_sha", SHA2.encode(), id="tree-sha-bytes"),
+        pytest.param("state", GenerationState.CERTIFIED.value, id="state-string"),
+        pytest.param("landing_result", LandingOutcome.LANDED.value, id="result-string"),
+        pytest.param("reason", b"bytes", id="reason-bytes"),
+        pytest.param("bisection_lineage", (True,), id="bisection-lineage-bool"),
+    ],
+)
+def test_generation_scalar_swaps_are_typed_refusals(
+    field: str, replacement: object
+) -> None:
+    original = _generation()
+    forged = original.model_copy(update={field: replacement})
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+    result = verify_landing(
+        _request(
+            generation=forged,
+            certificate=certificate,
+            evidence=evidence,
+            expected_certificate_digest=certificate.digest,
+            expected_generation_id=original.generation_id,
+            expected_synthetic_commit_sha=SHA1,
+        )
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+    assert "private" not in result.detail
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param("contract_version", b"1", id="contract-version-bytes"),
+        pytest.param("candidate_id", 1, id="candidate-id-int"),
+        pytest.param("version", True, id="version-bool"),
+        pytest.param("version", "1", id="version-string"),
+        pytest.param("candidate_sha", SHA1.encode(), id="candidate-sha-bytes"),
+    ],
+)
+def test_candidate_scalar_swaps_are_typed_refusals(
+    field: str, replacement: object
+) -> None:
+    original = _generation()
+    candidate = original.candidate_versions[0].model_copy(update={field: replacement})
+    forged = original.model_copy(update={"candidate_versions": (candidate,)})
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+    result = verify_landing(
+        _request(
+            generation=forged,
+            certificate=certificate,
+            evidence=evidence,
+            expected_certificate_digest=certificate.digest,
+            expected_generation_id=original.generation_id,
+            expected_synthetic_commit_sha=SHA1,
+        )
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param("kind", TargetKind.LOCAL.value, id="kind-string"),
+        pytest.param("alias", b"worker-one", id="alias-bytes"),
+        pytest.param("capability_labels", (1,), id="capability-int"),
+    ],
+)
+def test_target_scalar_and_nested_swaps_are_typed_refusals(
+    field: str, replacement: object
+) -> None:
+    original = _generation()
+    forged_target = original.target.model_copy(update={field: replacement})
+    forged = original.model_copy(update={"target": forged_target})
+    certificate, evidence = _certificate(generation_id=original.generation_id)
+    result = verify_landing(
+        _request(
+            generation=forged,
+            certificate=certificate,
+            evidence=evidence,
+            expected_certificate_digest=certificate.digest,
+            expected_generation_id=original.generation_id,
+            expected_synthetic_commit_sha=SHA1,
+        )
+    )
+    assert result.code is LandingRefusalCode.GENERATION_INVALID
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param("certificate_id", b"certificate:test", id="id-bytes"),
+        pytest.param("tree_sha", SHA2.encode(), id="tree-bytes"),
+        pytest.param("issued_at", 0, id="issued-at-int"),
+        pytest.param("evidence_digests", b"digest", id="digests-bytes"),
+        pytest.param("blocking_gate_names", (1,), id="gate-int"),
+    ],
+)
+def test_certificate_scalar_and_nested_swaps_are_typed_refusals(
+    field: str, replacement: object
+) -> None:
+    generation = _generation()
+    certificate, evidence = _certificate(generation_id=generation.generation_id)
+    forged = replace(certificate)
+    object.__setattr__(forged, field, replacement)
+    result = verify_landing(
+        _request(
+            generation=generation,
+            certificate=forged,
+            evidence=evidence,
+            expected_certificate_digest=certificate.digest,
+            expected_generation_id=generation.generation_id,
+            expected_synthetic_commit_sha=SHA1,
+        )
+    )
+    assert result.code is LandingRefusalCode.CERTIFICATE_INVALID
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        pytest.param("evidence_id", b"evidence:certification", id="id-bytes"),
+        pytest.param("stage", ValidationStage.CERTIFICATION.value, id="stage-string"),
+        pytest.param("started_at", 0, id="started-at-int"),
+        pytest.param("outcome", True, id="outcome-bool"),
+        pytest.param("differential", 1, id="differential-int"),
+        pytest.param("exit_code", True, id="exit-code-bool"),
+        pytest.param("dependency_job_ids", (1,), id="dependency-int"),
+    ],
+)
+def test_evidence_scalar_and_nested_swaps_are_typed_refusals(
+    field: str, replacement: object
+) -> None:
+    generation = _generation()
+    certificate, evidence = _certificate(generation_id=generation.generation_id)
+    forged = replace(evidence[0])
+    object.__setattr__(forged, field, replacement)
+    result = verify_landing(
+        _request(
+            generation=generation,
+            certificate=certificate,
+            evidence=(forged,),
+            expected_certificate_digest=certificate.digest,
+            expected_generation_id=generation.generation_id,
+            expected_synthetic_commit_sha=SHA1,
+        )
+    )
+    assert result.code is LandingRefusalCode.EVIDENCE_INVALID
+
+
+def test_request_and_decision_scalars_are_strict() -> None:
+    generation = _generation()
+    certificate, evidence = _certificate(generation_id=generation.generation_id)
+    request = _request(
+        generation=generation,
+        certificate=certificate,
+        evidence=evidence,
+    )
+    object.__setattr__(request, "expected_base_sha", True)
+    result = verify_landing(request)
+    assert result.code is LandingRefusalCode.REQUEST_INVALID
+
+    with pytest.raises(LandingPolicyError):
+        LandingVerificationResult(accepted=cast(bool, 1))
+    with pytest.raises(LandingPolicyError):
+        LandingVerificationResult(
+            accepted=False,
+            refusal_code=LandingRefusalCode.CERTIFICATE_INVALID,
+            detail=_ExplodingText("detail"),
+        )
 
 
 def test_model_copy_authority_values_are_rebuilt_and_anchored() -> None:

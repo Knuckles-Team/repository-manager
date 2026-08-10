@@ -25,6 +25,8 @@ from pydantic import BaseModel
 from pydantic_core import PydanticSerializationError
 
 from repository_manager.development import (
+    CONTRACT_VERSION,
+    ArtifactReference,
     CandidateVersion,
     Generation,
     GenerationState,
@@ -168,7 +170,7 @@ def _require_bool(value: object, field_name: str) -> bool:
 
 
 def _require_sha(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or _SHA_RE.fullmatch(value) is None:
+    if type(value) is not str or _SHA_RE.fullmatch(value) is None:
         raise LandingPolicyError(
             f"{field_name} must be a 40-character lowercase Git SHA"
         )
@@ -176,7 +178,7 @@ def _require_sha(value: object, field_name: str) -> str:
 
 
 def _require_digest(value: object, field_name: str) -> str:
-    if not isinstance(value, str) or _DIGEST_RE.fullmatch(value) is None:
+    if type(value) is not str or _DIGEST_RE.fullmatch(value) is None:
         raise LandingPolicyError(
             f"{field_name} must be a 64-character lowercase digest"
         )
@@ -190,7 +192,9 @@ def _require_bounded_text(
     maximum_bytes: int = _MAX_EVIDENCE_FIELD_BYTES,
     allow_empty: bool = False,
 ) -> str:
-    if not isinstance(value, str) or (not allow_empty and not value):
+    if type(value) is not str:
+        raise LandingPolicyError(f"{field_name} must be a non-blank string")
+    if not allow_empty and not value:
         raise LandingPolicyError(f"{field_name} must be a non-blank string")
     if value.strip() != value:
         raise LandingPolicyError(f"{field_name} must not have surrounding whitespace")
@@ -210,8 +214,8 @@ def _require_bounded_text(
 
 
 def _require_ref(value: object, field_name: str) -> str:
-    _require_bounded_text(value, field_name)
-    if not isinstance(value, str) or not value or value.strip() != value:
+    value = _require_bounded_text(value, field_name)
+    if not value or value.strip() != value:
         raise LandingPolicyError(f"{field_name} must be a non-blank Git ref")
     if (
         _REF_FORBIDDEN_RE.search(value)
@@ -235,9 +239,15 @@ def _require_optional_fence(value: object, field_name: str) -> str | None:
 
 
 def _require_datetime(value: object, field_name: str) -> datetime:
-    if not isinstance(value, datetime):
+    if type(value) is not datetime:
         raise LandingPolicyError(f"{field_name} is not a timestamp")
     return value
+
+
+def _require_optional_datetime(value: object, field_name: str) -> datetime | None:
+    if value is None:
+        return None
+    return _require_datetime(value, field_name)
 
 
 def _require_optional_int(value: object, field_name: str) -> int | None:
@@ -249,7 +259,7 @@ def _require_optional_int(value: object, field_name: str) -> int | None:
 
 
 def _bounded_detail(value: str) -> str:
-    if not isinstance(value, str):
+    if type(value) is not str:
         raise LandingPolicyError("landing detail must be a string")
     try:
         normalized = unicodedata.normalize("NFC", value)
@@ -282,7 +292,7 @@ def _validate_plain_tree(value: object, *, depth: int = 0) -> None:
         if len(mapping) > _MAX_MAPPING_KEYS:
             raise LandingPolicyError("authority mapping exceeds its bounded count")
         for key, item in mapping.items():
-            if not isinstance(key, str):
+            if type(key) is not str:
                 raise LandingPolicyError("authority mapping keys must be strings")
             _require_bounded_text(key, "authority mapping key")
             _validate_plain_tree(item, depth=depth + 1)
@@ -302,7 +312,7 @@ def _validate_plain_tree(value: object, *, depth: int = 0) -> None:
             _validate_plain_tree(item, depth=depth + 1)
         return
     if value is None or type(value) in {bool, int, float, str}:
-        if isinstance(value, str):
+        if type(value) is str:
             _require_bounded_text(
                 value,
                 "authority text",
@@ -310,13 +320,54 @@ def _validate_plain_tree(value: object, *, depth: int = 0) -> None:
                 allow_empty=True,
             )
         return
-    if isinstance(value, (datetime, Enum)):
+    if type(value) is datetime or isinstance(value, Enum):
         return
     raise LandingPolicyError("authority contains a non-plain value")
 
 
+def _require_contract_version(value: object, field_name: str) -> str:
+    version = _require_bounded_text(value, field_name, allow_empty=True)
+    if version != CONTRACT_VERSION:
+        raise LandingPolicyError(f"{field_name} is not the supported contract version")
+    return version
+
+
+def _require_optional_text(
+    value: object,
+    field_name: str,
+    *,
+    maximum_bytes: int = _MAX_EVIDENCE_FIELD_BYTES,
+) -> str | None:
+    if value is None:
+        return None
+    return _require_bounded_text(
+        value,
+        field_name,
+        maximum_bytes=maximum_bytes,
+    )
+
+
+def _require_exact_field_keys(
+    mapping: object,
+    expected_fields: set[str],
+    field_name: str,
+) -> None:
+    """Check field names before comparing or indexing an untrusted mapping."""
+
+    if type(mapping) is dict:
+        keys = tuple(cast(dict[object, object], mapping))
+    elif type(mapping) is set:
+        keys = tuple(cast(set[object], mapping))
+    else:
+        raise LandingPolicyError(f"{field_name} fields are unavailable")
+    if any(type(key) is not str for key in keys):
+        raise LandingPolicyError(f"{field_name} fields are unavailable")
+    if set(keys) != expected_fields:
+        raise LandingPolicyError(f"{field_name} fields are incomplete")
+
+
 def _plain_model_mapping(value: object, field_name: str) -> dict[str, object]:
-    """Take a bounded JSON-shaped snapshot of a Pydantic authority model."""
+    """Take a bounded plain-Python snapshot of a Pydantic authority model."""
 
     if not isinstance(value, BaseModel):
         raise LandingPolicyError(f"{field_name} is not a typed authority model")
@@ -331,13 +382,13 @@ def _plain_model_mapping(value: object, field_name: str) -> dict[str, object]:
         ):
             raise LandingPolicyError(f"{field_name} fields are unavailable")
         expected_fields = set(model_fields)
-        if set(state) != expected_fields or fields_set != expected_fields:
-            raise LandingPolicyError(f"{field_name} fields are incomplete")
+        _require_exact_field_keys(state, expected_fields, field_name)
+        _require_exact_field_keys(fields_set, expected_fields, field_name)
         # ``warnings=False`` is deliberate: callers must receive a typed
         # refusal from the shape checks below, never a disposition that depends
         # on Pydantic's serializer warning policy.
         raw = BaseModel.model_dump(
-            value, mode="json", exclude_none=False, warnings=False
+            value, mode="python", exclude_none=False, warnings=False
         )
         if type(raw) is not dict:
             raise LandingPolicyError(f"{field_name} did not produce a mapping")
@@ -386,6 +437,20 @@ def _require_sequence(
     raise LandingPolicyError(f"{field_name} must be a bounded list or tuple")
 
 
+def _require_text_sequence(
+    value: object,
+    field_name: str,
+    *,
+    maximum: int = _MAX_EVIDENCE_ITEMS,
+    maximum_bytes: int = _MAX_EVIDENCE_FIELD_BYTES,
+) -> tuple[str, ...]:
+    values = _require_sequence(value, field_name, maximum=maximum)
+    return tuple(
+        _require_bounded_text(item, f"{field_name} entry", maximum_bytes=maximum_bytes)
+        for item in values
+    )
+
+
 def _enum_value(value: object, enum_type: type[_EnumT], field_name: str) -> _EnumT:
     if type(value) is enum_type:
         return value
@@ -411,41 +476,78 @@ def _model_field_values(
     expected_fields = set(field_names)
     if type(state) is not dict or type(fields_set) is not set:
         raise LandingPolicyError(f"{field_name} fields are unavailable")
-    if set(state) != expected_fields or fields_set != expected_fields:
-        raise LandingPolicyError(f"{field_name} fields are incomplete")
+    _require_exact_field_keys(state, expected_fields, field_name)
+    _require_exact_field_keys(fields_set, expected_fields, field_name)
     return {name: state[name] for name in field_names}
+
+
+def _validate_repository_fields(
+    fields: dict[str, object], field_name: str = "repository"
+) -> None:
+    _require_contract_version(
+        fields["contract_version"], f"{field_name} contract_version"
+    )
+    _require_bounded_text(fields["repository_id"], f"{field_name}_id")
+    _require_bounded_text(
+        fields["canonical_path"],
+        f"{field_name} canonical_path",
+        maximum_bytes=4096,
+    )
+    _require_text_sequence(
+        fields["configured_roots"],
+        "configured roots",
+        maximum_bytes=4096,
+    )
+    _require_optional_text(
+        fields["origin"],
+        f"{field_name} origin",
+        maximum_bytes=4096,
+    )
+
+
+def _validate_target_fields(
+    fields: dict[str, object], field_name: str = "target"
+) -> None:
+    _require_contract_version(
+        fields["contract_version"], f"{field_name} contract_version"
+    )
+    if type(fields["kind"]) is not TargetKind:
+        raise LandingPolicyError(f"{field_name} kind is invalid")
+    _require_optional_text(fields["alias"], f"{field_name} alias")
+    _require_text_sequence(fields["capability_labels"], "target capabilities")
+
+
+def _validate_candidate_fields(
+    fields: dict[str, object], field_name: str = "candidate version"
+) -> None:
+    _require_contract_version(
+        fields["contract_version"], f"{field_name} contract_version"
+    )
+    _require_bounded_text(fields["candidate_id"], "candidate_id")
+    if type(fields["version"]) is not int:
+        raise LandingPolicyError("candidate version number is invalid")
+    _require_sha(fields["candidate_sha"], "candidate_sha")
 
 
 def _rebuild_repository(value: object) -> RepositoryIdentity:
     if type(value) is not RepositoryIdentity:
         raise LandingPolicyError("repository is not a typed authority model")
     fields = _model_field_values(value, _REPOSITORY_FIELDS, "repository")
-    roots = _require_sequence(fields["configured_roots"], "configured roots")
-    for root in roots:
-        _require_bounded_text(root, "configured root", maximum_bytes=4096)
+    _validate_repository_fields(fields)
     raw = _plain_model_mapping(value, "repository")
+    raw["configured_roots"] = _require_text_sequence(
+        raw["configured_roots"],
+        "configured roots",
+        maximum_bytes=4096,
+    )
     try:
-        repository = RepositoryIdentity.model_validate(raw)
+        repository = RepositoryIdentity.model_validate(raw, strict=True)
     except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("repository authority is invalid") from exc
     repository_fields = _model_field_values(
         repository, _REPOSITORY_FIELDS, "repository"
     )
-    _require_bounded_text(repository_fields["repository_id"], "repository_id")
-    _require_bounded_text(
-        repository_fields["canonical_path"], "canonical_path", maximum_bytes=4096
-    )
-    configured_roots = _require_sequence(
-        repository_fields["configured_roots"], "configured roots"
-    )
-    if len(configured_roots) > _MAX_EVIDENCE_ITEMS:
-        raise LandingPolicyError("configured roots exceed the bounded count")
-    for root in configured_roots:
-        _require_bounded_text(root, "configured root", maximum_bytes=4096)
-    if repository_fields["origin"] is not None:
-        _require_bounded_text(
-            repository_fields["origin"], "repository origin", maximum_bytes=4096
-        )
+    _validate_repository_fields(repository_fields)
     return repository
 
 
@@ -453,50 +555,38 @@ def _rebuild_target(value: object) -> TargetPolicy:
     if type(value) is not TargetPolicy:
         raise LandingPolicyError("target is not a typed authority model")
     fields = _model_field_values(value, _TARGET_FIELDS, "target")
-    if type(fields["kind"]) is not TargetKind:
-        raise LandingPolicyError("target kind is invalid")
-    labels = _require_sequence(fields["capability_labels"], "target capabilities")
-    for label in labels:
-        _require_bounded_text(label, "target capability")
+    _validate_target_fields(fields)
     raw = _plain_model_mapping(value, "target")
+    raw["capability_labels"] = _require_text_sequence(
+        raw["capability_labels"], "target capabilities"
+    )
     try:
-        target = TargetPolicy.model_validate(raw)
+        target = TargetPolicy.model_validate(raw, strict=True)
     except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("target authority is invalid") from exc
     target_fields = _model_field_values(target, _TARGET_FIELDS, "target")
-    if target_fields["alias"] is not None:
-        _require_bounded_text(target_fields["alias"], "target alias")
-    target_labels = _require_sequence(
-        target_fields["capability_labels"], "target capabilities"
-    )
-    if len(target_labels) > _MAX_EVIDENCE_ITEMS:
-        raise LandingPolicyError("target capabilities exceed the bounded count")
-    for label in target_labels:
-        _require_bounded_text(label, "target capability")
+    _validate_target_fields(target_fields)
     return target
 
 
 def _rebuild_candidate(value: object) -> CandidateVersion:
-    if isinstance(value, BaseModel) and type(value) is not CandidateVersion:
-        raise LandingPolicyError("candidate version is not a typed authority model")
-    if isinstance(value, BaseModel):
+    if type(value) is CandidateVersion:
         _model_field_values(value, _CANDIDATE_FIELDS, "candidate version")
-    raw = (
-        _plain_model_mapping(value, "candidate version")
-        if isinstance(value, BaseModel)
-        else _plain_payload_mapping(value, "candidate version")
-    )
+        raw = _plain_model_mapping(value, "candidate version")
+    elif type(value) is dict:
+        raw = _plain_payload_mapping(value, "candidate version")
+        _require_exact_field_keys(raw, set(_CANDIDATE_FIELDS), "candidate version")
+    else:
+        raise LandingPolicyError("candidate version is not a typed authority model")
+    _validate_candidate_fields(raw)
     try:
-        candidate = CandidateVersion.model_validate(raw)
+        candidate = CandidateVersion.model_validate(raw, strict=True)
     except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("candidate version authority is invalid") from exc
     candidate_fields = _model_field_values(
         candidate, _CANDIDATE_FIELDS, "candidate version"
     )
-    _require_bounded_text(candidate_fields["candidate_id"], "candidate_id")
-    if type(candidate_fields["version"]) is not int:
-        raise LandingPolicyError("candidate version number is invalid")
-    _require_sha(candidate_fields["candidate_sha"], "candidate_sha")
+    _validate_candidate_fields(candidate_fields)
     return candidate
 
 
@@ -510,11 +600,26 @@ def _rebuild_generation(value: object) -> Generation:
         raise LandingPolicyError("generation repository is not a typed authority model")
     if type(target) is not TargetPolicy:
         raise LandingPolicyError("generation target is not a typed authority model")
+    _require_contract_version(fields["contract_version"], "generation contract_version")
+    _require_bounded_text(fields["generation_id"], "generation_id")
+    _require_ref(fields["target_branch"], "target_branch")
+    _require_sha(fields["base_sha"], "generation base_sha")
+    _require_sha(fields["expected_landing_base_sha"], "expected_landing_base_sha")
+    _require_digest(fields["config_digest"], "generation config_digest")
+    _require_digest(fields["toolchain_digest"], "generation toolchain_digest")
     if type(fields["state"]) is not GenerationState:
         raise LandingPolicyError("generation state is invalid")
     landing_result = fields["landing_result"]
     if landing_result is not None and type(landing_result) is not LandingOutcome:
         raise LandingPolicyError("generation landing result is invalid")
+    _require_optional_datetime(fields["sealed_at"], "generation sealed_at")
+    _require_optional_text(fields["synthetic_commit_sha"], "synthetic_commit_sha")
+    if fields["synthetic_commit_sha"] is not None:
+        _require_sha(fields["synthetic_commit_sha"], "synthetic_commit_sha")
+    if fields["tree_sha"] is not None:
+        _require_sha(fields["tree_sha"], "tree_sha")
+    _require_optional_text(fields["landing_fence"], "generation landing_fence")
+    _require_bounded_text(fields["reason"], "generation reason", allow_empty=True)
     sequences = (
         "candidate_versions",
         "validation_evidence_ids",
@@ -523,6 +628,11 @@ def _rebuild_generation(value: object) -> Generation:
     )
     for field_name in sequences:
         _require_sequence(fields[field_name], field_name)
+    _require_text_sequence(
+        fields["validation_evidence_ids"],
+        "generation validation evidence",
+    )
+    _require_text_sequence(fields["bisection_lineage"], "bisection lineage")
     candidates = _require_sequence(fields["candidate_versions"], "candidate_versions")
     _rebuild_repository(repository)
     _rebuild_target(target)
@@ -532,17 +642,58 @@ def _rebuild_generation(value: object) -> Generation:
                 "generation candidate is not a typed authority model"
             )
         _rebuild_candidate(candidate)
+    artifacts = _require_sequence(fields["build_artifact_refs"], "build_artifact_refs")
+    for artifact in artifacts:
+        if type(artifact) is not ArtifactReference:
+            raise LandingPolicyError(
+                "generation artifact is not a typed authority model"
+            )
     raw = _plain_model_mapping(value, "generation")
     raw_candidates = _require_sequence(
         raw.get("candidate_versions"), "candidate_versions"
     )
-    raw["repository"] = _plain_payload_mapping(raw.get("repository"), "repository")
-    raw["target"] = _plain_payload_mapping(raw.get("target"), "target")
-    raw["candidate_versions"] = [
-        _plain_payload_mapping(item, "candidate version") for item in raw_candidates
-    ]
+    raw_repository = _plain_payload_mapping(raw.get("repository"), "repository")
+    _require_exact_field_keys(raw_repository, set(_REPOSITORY_FIELDS), "repository")
+    _validate_repository_fields(raw_repository)
+    raw_repository["configured_roots"] = _require_text_sequence(
+        raw_repository["configured_roots"],
+        "configured roots",
+        maximum_bytes=4096,
+    )
+    raw["repository"] = raw_repository
+    raw_target = _plain_payload_mapping(raw.get("target"), "target")
+    _require_exact_field_keys(raw_target, set(_TARGET_FIELDS), "target")
+    _validate_target_fields(raw_target)
+    raw_target["capability_labels"] = _require_text_sequence(
+        raw_target["capability_labels"], "target capabilities"
+    )
+    raw["target"] = raw_target
+    raw_candidates_values: list[dict[str, object]] = []
+    for item in raw_candidates:
+        raw_candidate = _plain_payload_mapping(item, "candidate version")
+        _require_exact_field_keys(
+            raw_candidate, set(_CANDIDATE_FIELDS), "candidate version"
+        )
+        _validate_candidate_fields(raw_candidate)
+        raw_candidates_values.append(raw_candidate)
+    raw["candidate_versions"] = tuple(raw_candidates_values)
+    raw_artifacts = _require_sequence(
+        raw.get("build_artifact_refs"), "build_artifact_refs"
+    )
+    raw_artifact_values: list[dict[str, object]] = []
+    for item in raw_artifacts:
+        raw_artifact = _plain_payload_mapping(item, "artifact reference")
+        raw_artifact_values.append(raw_artifact)
+    raw["build_artifact_refs"] = tuple(raw_artifact_values)
+    raw["validation_evidence_ids"] = _require_text_sequence(
+        raw.get("validation_evidence_ids"),
+        "generation validation evidence",
+    )
+    raw["bisection_lineage"] = _require_text_sequence(
+        raw.get("bisection_lineage"), "bisection lineage"
+    )
     try:
-        generation = Generation.model_validate(raw)
+        generation = Generation.model_validate(raw, strict=True)
     except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("generation authority is invalid") from exc
     _validate_generation_content(generation)
@@ -551,6 +702,7 @@ def _rebuild_generation(value: object) -> Generation:
 
 def _validate_generation_content(generation: Generation) -> None:
     fields = _model_field_values(generation, _GENERATION_FIELDS, "generation")
+    _require_contract_version(fields["contract_version"], "generation contract_version")
     _require_bounded_text(fields["generation_id"], "generation_id")
     _rebuild_repository(fields["repository"])
     _require_ref(fields["target_branch"], "target_branch")
@@ -566,10 +718,7 @@ def _validate_generation_content(generation: Generation) -> None:
         and type(fields["landing_result"]) is not LandingOutcome
     ):
         raise LandingPolicyError("generation landing result is invalid")
-    if fields["sealed_at"] is not None and not isinstance(
-        fields["sealed_at"], datetime
-    ):
-        raise LandingPolicyError("generation sealed_at is invalid")
+    _require_optional_datetime(fields["sealed_at"], "generation sealed_at")
     if fields["synthetic_commit_sha"] is not None:
         _require_sha(fields["synthetic_commit_sha"], "synthetic_commit_sha")
     if fields["tree_sha"] is not None:
@@ -577,6 +726,12 @@ def _validate_generation_content(generation: Generation) -> None:
     candidates = _require_sequence(fields["candidate_versions"], "candidate_versions")
     for candidate in candidates:
         _rebuild_candidate(candidate)
+    artifacts = _require_sequence(fields["build_artifact_refs"], "build_artifact_refs")
+    for artifact in artifacts:
+        if type(artifact) is not ArtifactReference:
+            raise LandingPolicyError(
+                "generation artifact is not a typed authority model"
+            )
     evidence_ids = _require_sequence(
         fields["validation_evidence_ids"], "generation validation evidence"
     )
@@ -586,6 +741,7 @@ def _validate_generation_content(generation: Generation) -> None:
         )
     for evidence_id in evidence_ids:
         _require_bounded_text(evidence_id, "generation validation evidence ID")
+    _require_text_sequence(fields["bisection_lineage"], "bisection lineage")
     if fields["landing_fence"] is not None:
         _require_optional_fence(fields["landing_fence"], "generation landing_fence")
     _require_bounded_text(fields["reason"], "generation reason", allow_empty=True)
@@ -619,6 +775,7 @@ def _rebuild_certificate(value: object) -> ValidationCertificate:
         raise LandingPolicyError(
             "certificate authority could not be serialized"
         ) from exc
+    _require_exact_field_keys(raw, set(_CERTIFICATE_FIELDS), "certificate")
     if set(raw) != _CERTIFICATE_FIELDS:
         raise LandingPolicyError("certificate authority fields are not exact")
     evidence_digests = _require_sequence(
@@ -677,15 +834,20 @@ def _validate_certificate_content(certificate: ValidationCertificate) -> None:
         "profile_digest",
     ):
         _require_digest(getattr(certificate, field_name), field_name)
-    if not isinstance(certificate.issued_at, datetime):
-        raise LandingPolicyError("certificate issued_at is invalid")
-    if len(certificate.evidence_digests) > _MAX_EVIDENCE_ITEMS:
+    _require_datetime(certificate.issued_at, "issued_at")
+    evidence_digests = _require_sequence(
+        certificate.evidence_digests, "certificate evidence digests"
+    )
+    blocking_gate_names = _require_sequence(
+        certificate.blocking_gate_names, "certificate blocking gates"
+    )
+    if len(evidence_digests) > _MAX_EVIDENCE_ITEMS:
         raise LandingPolicyError("certificate evidence exceeds the bounded count")
-    if len(certificate.blocking_gate_names) > _MAX_EVIDENCE_ITEMS:
+    if len(blocking_gate_names) > _MAX_EVIDENCE_ITEMS:
         raise LandingPolicyError("certificate blocking gates exceed the bounded count")
-    for digest in certificate.evidence_digests:
+    for digest in evidence_digests:
         _require_digest(digest, "certificate evidence digest")
-    for gate_name in certificate.blocking_gate_names:
+    for gate_name in blocking_gate_names:
         _require_bounded_text(gate_name, "certificate blocking gate name")
 
 
@@ -743,6 +905,7 @@ def _rebuild_evidence(value: object) -> GateEvidence:
         raise
     except _MALFORMED_INPUT_ERRORS as exc:
         raise LandingPolicyError("evidence could not be serialized") from exc
+    _require_exact_field_keys(raw, set(_EVIDENCE_FIELDS), "evidence")
     if set(raw) != _EVIDENCE_FIELDS:
         raise LandingPolicyError("evidence fields are not exact")
     evidence_id = _require_bounded_text(raw.get("evidence_id"), "evidence_id")
@@ -1040,17 +1203,17 @@ class LandingVerificationResult:
         if self.accepted:
             if self.refusal_code is not None:
                 raise LandingPolicyError("accepted result cannot carry a refusal")
-            if not self.generation_id:
+            if self.generation_id is None:
                 raise LandingPolicyError("accepted result requires generation_id")
-            if not self.synthetic_commit_sha:
+            if self.synthetic_commit_sha is None:
                 raise LandingPolicyError(
                     "accepted result requires synthetic_commit_sha"
                 )
-            if not self.tree_sha:
+            if self.tree_sha is None:
                 raise LandingPolicyError("accepted result requires tree_sha")
-            if not self.certificate_digest:
+            if self.certificate_digest is None:
                 raise LandingPolicyError("accepted result requires certificate_digest")
-            if not self.landing_fence:
+            if self.landing_fence is None:
                 raise LandingPolicyError("accepted result requires landing_fence")
             _require_bounded_text(self.generation_id, "generation_id")
             _require_sha(self.synthetic_commit_sha, "synthetic_commit_sha")
@@ -1058,7 +1221,7 @@ class LandingVerificationResult:
             _require_digest(self.certificate_digest, "certificate_digest")
             _require_optional_fence(self.landing_fence, "landing_fence")
         else:
-            if not isinstance(self.refusal_code, LandingRefusalCode):
+            if type(self.refusal_code) is not LandingRefusalCode:
                 raise LandingPolicyError(
                     "refused result requires one LandingRefusalCode"
                 )
@@ -1300,7 +1463,7 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
     try:
         certificate_check = verify_certificate(certificate, evidence)
         certificate_digest = certificate.digest
-        if not isinstance(certificate_check.valid, bool):
+        if type(certificate_check.valid) is not bool:
             raise LandingPolicyError("certificate verification result is invalid")
     except ValueError:
         return _refuse(
