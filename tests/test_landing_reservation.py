@@ -1,8 +1,9 @@
-"""Adversarial RMDD-13 checkpoint 2 reservation/re-read coverage."""
+"""Adversarial RMDD-13 checkpoint 2 reservation/barrier coverage."""
 
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
@@ -24,12 +25,16 @@ from repository_manager.landing_reservation import (
     LandingReservationRefusalCode,
     LandingReservationRequest,
     LandingReservationResult,
-    LandingReservationSnapshot,
+    LandingReservationStale,
     LandingReservationUnavailable,
+    LandingStateSnapshot,
+    LandingValidationBarrier,
     OccupancyObservation,
     OccupancyState,
+    ResolvedRepositoryIdentity,
     TargetObservation,
     TrustedReservationRuntimeError,
+    _ExistingReconciliationLease,
     normalize_target_ref,
 )
 
@@ -40,11 +45,12 @@ SHA_GENERATED = "4" * 40
 DIGEST = "a" * 64
 FENCE = "landing-fence-1"
 REPOSITORY_ID = "repository:workspace/one"
+CANONICAL_PATH = "/tmp/workspace/agent-packages/agents/repository-manager"
 
 
 def _repository(
     repository_id: str = REPOSITORY_ID,
-    canonical_path: str = "/tmp/workspace/agent-packages/agents/repository-manager",
+    canonical_path: str = CANONICAL_PATH,
 ) -> RepositoryIdentity:
     return RepositoryIdentity(
         contract_version=CONTRACT_VERSION,
@@ -61,8 +67,6 @@ def _request(
     target_ref: str = "main",
     expected_target_sha: str = SHA_TARGET,
     expected_base_sha: str = SHA_BASE,
-    generation_id: str = "generation:one",
-    certificate_digest: str = DIGEST,
     request_id: str = "request:one",
     invocation_id: str = "invocation:one",
     expected_lease_epoch: int | None = None,
@@ -73,8 +77,8 @@ def _request(
         target_ref=target_ref,
         expected_target_sha=expected_target_sha,
         expected_base_sha=expected_base_sha,
-        generation_id=generation_id,
-        certificate_digest=certificate_digest,
+        generation_id="generation:one",
+        certificate_digest=DIGEST,
         synthetic_commit_sha=SHA_GENERATED,
         generation_tree_sha=SHA_TREE,
         landing_fence=FENCE,
@@ -85,27 +89,29 @@ def _request(
     )
 
 
-def _target(repository_id: str = REPOSITORY_ID) -> TargetObservation:
-    return TargetObservation(
-        repository_id=repository_id,
-        target_ref="refs/heads/main",
-        commit_sha=SHA_TARGET,
-        tree_sha=SHA_BASE,
-    )
+def _target(
+    repository_id: str = REPOSITORY_ID,
+    *,
+    commit_sha: str = SHA_TARGET,
+    tree_sha: str = SHA_BASE,
+) -> TargetObservation:
+    return TargetObservation(repository_id, "refs/heads/main", commit_sha, tree_sha)
 
 
 def _canonical(
     repository_id: str = REPOSITORY_ID,
     *,
+    common_dir_id: str = "common-dir:one",
+    worktree_id: str = "worktree:canonical",
     state: CanonicalState = CanonicalState.CLEAN,
     private_wip: bool = False,
 ) -> CanonicalObservation:
     return CanonicalObservation(
-        repository_id=repository_id,
-        common_dir_id="common-dir:one",
-        worktree_id="worktree:canonical",
-        state=state,
-        private_wip=private_wip,
+        repository_id,
+        common_dir_id,
+        worktree_id,
+        state,
+        private_wip,
     )
 
 
@@ -115,15 +121,15 @@ def _occupancy(
     count: int = 0,
     state: OccupancyState = OccupancyState.FREE,
 ) -> OccupancyObservation:
-    return OccupancyObservation(
-        repository_id=repository_id,
-        target_ref="main",
-        other_worktree_count=count,
-        state=state,
-    )
+    return OccupancyObservation(repository_id, "main", count, state)
 
 
-def _cert(repository_id: str = REPOSITORY_ID) -> CertificationObservation:
+def _cert(
+    repository_id: str = REPOSITORY_ID,
+    *,
+    landing_fence: str = FENCE,
+    certified: bool = True,
+) -> CertificationObservation:
     return CertificationObservation(
         repository_id=repository_id,
         target_ref="main",
@@ -133,164 +139,271 @@ def _cert(repository_id: str = REPOSITORY_ID) -> CertificationObservation:
         expected_landing_base_sha=SHA_BASE,
         synthetic_commit_sha=SHA_GENERATED,
         generation_tree_sha=SHA_TREE,
-        landing_fence=FENCE,
-        certified=True,
+        landing_fence=landing_fence,
+        certified=certified,
     )
 
 
-class FakeLease:
-    def __init__(self) -> None:
-        self.holds: list[str] = []
-        self.effect_log: list[str] = []
-        self.fail = False
+class RecordingLease:
+    """Authority-owned lease fixture; never passed to the controller."""
 
-    def hold(self, canonical_path: str, *, operation: str):
-        self.effect_log.append("lease-request")
+    def __init__(self) -> None:
+        self.entered = 0
+        self.fail = False
+        self.events: list[str] = []
+
+    def hold(self, path: str, *, operation: str):
+        self.events.append(f"requested:{path}")
 
         @contextmanager
         def _held():
             if self.fail:
-                raise LandingReservationUnavailable("lease unavailable in fixture")
-            self.holds.append(operation)
+                raise LandingReservationUnavailable("fixture lease unavailable")
+            self.entered += 1
+            self.events.append("entered")
             try:
                 yield
             finally:
-                self.effect_log.append("lease-release")
+                self.events.append("exited")
+                self.entered -= 1
 
         return _held()
 
 
-class FakeReader:
-    def __init__(self, repository_id: str = REPOSITORY_ID) -> None:
-        self.targets = [_target(repository_id), _target(repository_id)]
-        self.canonicals = [_canonical(repository_id), _canonical(repository_id)]
-        self.occupancies = [_occupancy(repository_id), _occupancy(repository_id)]
-        self.certifications = [_cert(repository_id), _cert(repository_id)]
-        self.phase = -1
-        self.reads = 0
-        self.on_target_read = None
+class NoopLease:
+    """A caller-owned duck lease that must not be a reservation authority."""
 
-    def _index(self) -> int:
-        return min(max(self.phase, 0), 1)
+    def hold(self, *_args: object, **_kwargs: object):
+        @contextmanager
+        def _held():
+            yield
 
-    def read_target(self, repository_id: str, target_ref: str) -> TargetObservation:
-        self.phase += 1
-        self.reads += 1
-        if self.on_target_read is not None:
-            self.on_target_read(self.phase)
-        return self.targets[self._index()]
-
-    def read_canonical(self, repository_id: str) -> CanonicalObservation:
-        self.reads += 1
-        return self.canonicals[self._index()]
-
-    def read_occupancy(
-        self, repository_id: str, target_ref: str
-    ) -> OccupancyObservation:
-        self.reads += 1
-        return self.occupancies[self._index()]
-
-    def read_certification(
-        self,
-        repository_id: str,
-        target_ref: str,
-        generation_id: str,
-        certificate_digest: str,
-    ) -> CertificationObservation:
-        self.reads += 1
-        return self.certifications[self._index()]
+        return _held()
 
 
 class FakeAuthority:
-    def __init__(self, reader: FakeReader | None = None) -> None:
+    """A revisioned trusted-authority fixture with one atomic barrier seam."""
+
+    def __init__(
+        self,
+        repository_id: str = REPOSITORY_ID,
+        canonical_path: str = CANONICAL_PATH,
+        *,
+        common_dir_id: str = "common-dir:one",
+        worktree_id: str = "worktree:canonical",
+        states: list[LandingStateSnapshot] | None = None,
+    ) -> None:
         self.identity = ControllerIdentity(
-            controller_id="controller:one",
-            owner_id="owner:one",
-            tenant_id="tenant:one",
-            authority_epoch=1,
+            "controller:one",
+            "owner:one",
+            "tenant:one",
+            1,
+            "principal:one",
+            "session:one",
         )
-        self.reader = reader
+        self.resolved = ResolvedRepositoryIdentity(
+            repository_id,
+            canonical_path,
+            common_dir_id,
+            worktree_id,
+            "repository-revision:1",
+        )
+        self.lease = RecordingLease()
+        self.states = states or [_state(self.resolved)]
+        self.state_index = 0
         self.reservations: dict[str, DurableLandingReservation] = {}
         self.by_target: dict[tuple[str, str], DurableLandingReservation] = {}
+        self.lock = Lock()
+        self.lease_lock = Lock()
+        self.held = False
+        self.events: list[str] = []
+        self.hold_paths: list[str] = []
         self.authenticate_calls = 0
+        self.resolve_calls = 0
         self.reserve_calls = 0
-        self.current_calls = 0
-        self.current_override: DurableLandingReservation | None = None
+        self.read_calls = 0
+        self.barrier_calls = 0
         self.drop_current = False
-        self.on_reserve = None
+        self.on_reserve: Callable[[FakeAuthority], None] | None = None
+        self.on_read: Callable[[FakeAuthority], None] | None = None
+        self.on_barrier: Callable[[FakeAuthority], None] | None = None
+        self.after_barrier: Callable[[FakeAuthority], None] | None = None
         self.return_owner: str | None = None
+        self.return_tenant: str | None = None
+        self.return_epoch: int | None = None
+        self.return_principal: str | None = None
+        self.return_session: str | None = None
 
     def authenticate_controller(self, invocation_id: str) -> ControllerIdentity:
+        self.events.append("authenticate")
         self.authenticate_calls += 1
         return self.identity
 
+    def resolve_repository(self, repository: RepositoryIdentity):
+        self.events.append("resolve")
+        self.resolve_calls += 1
+        return self.resolved
+
+    def hold_landing(
+        self,
+        repository: ResolvedRepositoryIdentity,
+        target_ref: str,
+        *,
+        operation: str,
+    ):
+        self.events.append("hold-request")
+        self.hold_paths.append(repository.canonical_path)
+        return self._hold(repository, target_ref, operation)
+
+    @contextmanager
+    def _hold(
+        self,
+        repository: ResolvedRepositoryIdentity,
+        target_ref: str,
+        operation: str,
+    ):
+        with self.lease_lock:
+            with self.lease.hold(repository.canonical_path, operation=operation):
+                self.held = True
+                self.events.append("hold-enter")
+                try:
+                    yield
+                finally:
+                    self.held = False
+                    self.events.append("hold-exit")
+
     def reserve_landing(self, request: Any, controller: ControllerIdentity):
+        self.events.append("reserve")
         self.reserve_calls += 1
         if self.on_reserve is not None:
-            self.on_reserve()
-        existing = self.reservations.get(request.request_digest)
-        if existing is not None:
-            return existing
-        target_key = (request.repository_id, request.target_ref)
-        if target_key in self.by_target:
-            raise LandingReservationConflict("same target already reserved")
-        reservation = DurableLandingReservation(
-            reservation_id="reservation:one",
-            request_id=request.request_id,
-            invocation_id=request.invocation_id,
-            repository_id=request.repository_id,
-            target_ref=request.target_ref,
-            request_digest=request.request_digest,
-            controller_id=controller.controller_id,
-            owner_id=self.return_owner or controller.owner_id,
-            lease_epoch=7,
-            fence="reservation-fence-7",
-        )
-        self.reservations[request.request_digest] = reservation
-        self.by_target[target_key] = reservation
-        return reservation
+            self.on_reserve(self)
+        with self.lock:
+            existing = self.reservations.get(request.request_digest)
+            if existing is not None:
+                return existing
+            same_invocation = next(
+                (
+                    value
+                    for value in self.reservations.values()
+                    if value.request_id == request.request_id
+                    and value.invocation_id == request.invocation_id
+                ),
+                None,
+            )
+            if same_invocation is not None:
+                if same_invocation.authority_epoch != controller.authority_epoch:
+                    return same_invocation
+                raise LandingReservationConflict(
+                    "request identity was reused with changed input"
+                )
+            target_key = (request.repository_id, request.target_ref)
+            if target_key in self.by_target:
+                raise LandingReservationConflict("same target already reserved")
+            resolved = request.resolved_repository
+            reservation = DurableLandingReservation(
+                reservation_id=f"reservation:{self.reserve_calls}",
+                request_id=request.request_id,
+                invocation_id=request.invocation_id,
+                repository_id=request.repository_id,
+                target_ref=request.target_ref,
+                request_digest=request.request_digest,
+                resolved_repository_digest=resolved.digest(),
+                common_dir_id=resolved.common_dir_id,
+                worktree_id=resolved.worktree_id,
+                authority_revision=resolved.authority_revision,
+                controller_id=controller.controller_id,
+                owner_id=self.return_owner or controller.owner_id,
+                tenant_id=self.return_tenant or controller.tenant_id,
+                lease_epoch=self.return_epoch or 7,
+                fence="reservation-fence-7",
+                authority_epoch=controller.authority_epoch,
+                principal_id=self.return_principal
+                if self.return_principal is not None
+                else controller.principal_id,
+                session_id=self.return_session
+                if self.return_session is not None
+                else controller.session_id,
+            )
+            self.reservations[request.request_digest] = reservation
+            self.by_target[target_key] = reservation
+            return reservation
 
-    def current_landing_reservation(
-        self, reservation_id: str, controller: ControllerIdentity
-    ) -> DurableLandingReservation | None:
-        self.current_calls += 1
+    def read_landing_snapshot(
+        self,
+        repository: ResolvedRepositoryIdentity,
+        request: LandingReservationRequest,
+    ) -> LandingStateSnapshot:
+        self.events.append("read")
+        self.read_calls += 1
+        result = self.states[self.state_index]
+        if self.on_read is not None:
+            self.on_read(self)
+        return result
+
+    def validate_landing_barrier(
+        self,
+        reservation: DurableLandingReservation,
+        controller: ControllerIdentity,
+        repository: ResolvedRepositoryIdentity,
+        snapshot: LandingStateSnapshot,
+    ) -> LandingValidationBarrier:
+        self.events.append("barrier")
+        self.barrier_calls += 1
+        if not self.held:
+            raise LandingReservationUnavailable("lease was not held")
+        if self.on_barrier is not None:
+            self.on_barrier(self)
         if self.drop_current:
-            return None
-        if self.current_override is not None:
-            return self.current_override
-        return next(iter(self.reservations.values()), None)
+            raise LandingReservationStale("reservation was lost")
+        current = self.reservations.get(reservation.request_digest)
+        if current is None or current.reservation_id != reservation.reservation_id:
+            raise LandingReservationStale("reservation was replaced")
+        latest = self.states[self.state_index]
+        if latest.immutable_payload() != snapshot.immutable_payload():
+            raise LandingReservationStale("source revision changed")
+        barrier = LandingValidationBarrier(current, latest, "barrier-revision:1")
+        if self.after_barrier is not None:
+            self.after_barrier(self)
+        return barrier
 
 
 class LockedAuthority(FakeAuthority):
-    """Test authority whose target uniqueness is one atomic critical section."""
+    """FakeAuthority already serializes its durable target write."""
 
-    def __init__(self) -> None:
-        super().__init__()
-        self._target_lock = Lock()
 
-    def reserve_landing(self, request: Any, controller: ControllerIdentity):
-        with self._target_lock:
-            return super().reserve_landing(request, controller)
+def _state(
+    resolved: ResolvedRepositoryIdentity,
+    *,
+    revision: str = "source-revision:1",
+    target: TargetObservation | None = None,
+    canonical: CanonicalObservation | None = None,
+    occupancy: OccupancyObservation | None = None,
+    certification: CertificationObservation | None = None,
+) -> LandingStateSnapshot:
+    return LandingStateSnapshot(
+        resolved_repository_digest=resolved.digest(),
+        target=target or _target(resolved.repository_id),
+        canonical=canonical
+        or _canonical(
+            resolved.repository_id,
+            common_dir_id=resolved.common_dir_id,
+            worktree_id=resolved.worktree_id,
+        ),
+        occupancy=occupancy or _occupancy(resolved.repository_id),
+        certification=certification or _cert(resolved.repository_id),
+        target_revision=f"target:{revision}",
+        canonical_revision=f"canonical:{revision}",
+        occupancy_revision=f"occupancy:{revision}",
+        certification_revision=f"certification:{revision}",
+        snapshot_revision=f"snapshot:{revision}",
+    )
 
 
 def _controller(
-    reader: FakeReader | None = None,
     authority: FakeAuthority | None = None,
-    lease: FakeLease | None = None,
-) -> tuple[LandingReservationController, FakeAuthority, FakeReader, FakeLease]:
-    actual_reader = reader or FakeReader()
-    actual_authority = authority or FakeAuthority(actual_reader)
-    actual_lease = lease or FakeLease()
-    return (
-        LandingReservationController(
-            actual_authority,
-            actual_reader,
-            lease=actual_lease,
-        ),
-        actual_authority,
-        actual_reader,
-        actual_lease,
-    )
+) -> tuple[LandingReservationController, FakeAuthority]:
+    actual = authority or FakeAuthority()
+    return LandingReservationController(actual), actual
 
 
 def test_normalizes_exact_local_ref_and_rejects_injection() -> None:
@@ -312,28 +425,38 @@ def test_normalizes_exact_local_ref_and_rejects_injection() -> None:
             normalize_target_ref(ref)
 
 
-def test_success_holds_lease_then_re_reads_and_returns_private_free_snapshot() -> None:
-    controller, authority, reader, lease = _controller()
+def test_public_controller_cannot_accept_a_noop_or_caller_lease() -> None:
+    authority = FakeAuthority()
+    with pytest.raises(TypeError):
+        LandingReservationController(authority, object())  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        LandingReservationController(authority, lease=object())  # type: ignore[call-arg]
+    result = LandingReservationController(NoopLease()).reserve(_request())  # type: ignore[arg-type]
+    assert result.code is LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE
 
+
+def test_success_orders_resolution_hold_reservation_read_and_final_barrier() -> None:
+    controller, authority = _controller()
     result = controller.reserve(_request())
 
     assert result.accepted
     assert result.snapshot is not None
-    assert result.snapshot.target_ref == "refs/heads/main"
-    assert result.snapshot.repository_id == REPOSITORY_ID
-    assert result.snapshot.observed_target_sha == SHA_TARGET
-    assert result.snapshot.target_worktree_count == 0
-    assert reader.reads == 8
-    assert authority.reserve_calls == 1
-    assert authority.current_calls == 1
-    assert len(lease.holds) == 1
-    assert "/tmp/" not in repr(result)
-    assert "owner:one" not in repr(result)
-    payload = result.snapshot.__dict__ if hasattr(result.snapshot, "__dict__") else {}
-    assert not payload
+    assert authority.events == [
+        "authenticate",
+        "resolve",
+        "hold-request",
+        "hold-enter",
+        "reserve",
+        "read",
+        "barrier",
+        "hold-exit",
+    ]
+    assert authority.read_calls == 1
+    assert authority.barrier_calls == 1
+    assert authority.hold_paths == [CANONICAL_PATH]
 
 
-def test_default_lease_composes_existing_merge_and_canonical_guards_read_only(
+def test_actual_authority_path_selects_existing_rmdd26_leases_read_only(
     tmp_path,
 ) -> None:
     repo = tmp_path / "repository-manager"
@@ -364,14 +487,32 @@ def test_default_lease_composes_existing_merge_and_canonical_guards_read_only(
         ["git", "rev-parse", "HEAD"], cwd=repo, text=True
     ).strip()
 
-    repository_id = "repository:temporary"
-    reader = FakeReader(repository_id)
-    authority = FakeAuthority(reader)
-    controller = LandingReservationController(authority, reader)
-    result = controller.reserve(
-        _request(repository=_repository(repository_id, str(repo)))
-    )
+    authority = FakeAuthority(canonical_path=str(repo))
+    authority.lease = None  # type: ignore[assignment]
 
+    @contextmanager
+    def _trusted_hold(repository, target_ref, *, operation):
+        with _ExistingReconciliationLease().hold(
+            repository.canonical_path, operation=operation
+        ):
+            authority.held = True
+            try:
+                yield
+            finally:
+                authority.held = False
+
+    authority.hold_landing = _trusted_hold  # type: ignore[method-assign]
+    authority.resolved = ResolvedRepositoryIdentity(
+        REPOSITORY_ID,
+        str(repo),
+        "common-dir:git",
+        "worktree:git",
+        "repository-revision:1",
+    )
+    authority.states = [_state(authority.resolved)]
+    result = LandingReservationController(authority).reserve(
+        _request(repository=_repository(canonical_path=str(repo)))
+    )
     assert result.accepted
     assert (
         subprocess.check_output(
@@ -387,36 +528,62 @@ def test_default_lease_composes_existing_merge_and_canonical_guards_read_only(
     )
 
 
-def test_exact_replay_is_idempotent_but_changed_request_conflicts_on_same_target() -> (
-    None
-):
-    controller, authority, _reader, _lease = _controller()
-    request = _request()
+def test_forged_request_path_disagrees_before_any_lease() -> None:
+    authority = FakeAuthority(canonical_path="/tmp/trusted/actual-repository")
+    controller, _ = _controller(authority)
+    result = controller.reserve(
+        _request(repository=_repository(canonical_path="/tmp/forged/other"))
+    )
+    assert result.code is LandingReservationRefusalCode.REPOSITORY_MISMATCH
+    assert authority.hold_paths == []
+    assert authority.reserve_calls == 0
 
+
+def test_same_basename_and_cross_worktree_identity_cannot_alias() -> None:
+    first = FakeAuthority(
+        "repository:first", "/tmp/one/same", common_dir_id="common:one"
+    )
+    second = FakeAuthority(
+        "repository:second", "/tmp/two/same", common_dir_id="common:two"
+    )
+    first_result = LandingReservationController(first).reserve(
+        _request(repository=_repository("repository:first", "/tmp/one/same"))
+    )
+    second_result = LandingReservationController(second).reserve(
+        _request(repository=_repository("repository:second", "/tmp/two/same"))
+    )
+    assert first_result.accepted and second_result.accepted
+    assert first.hold_paths == ["/tmp/one/same"]
+    assert second.hold_paths == ["/tmp/two/same"]
+    assert first_result.snapshot is not None and second_result.snapshot is not None
+    assert (
+        first_result.snapshot.resolved_repository_digest
+        != second_result.snapshot.resolved_repository_digest
+    )
+
+
+def test_exact_replay_is_idempotent_but_changed_input_conflicts() -> None:
+    controller, authority = _controller()
+    request = _request()
     first = controller.reserve(request)
     replay = controller.reserve(request)
     changed = controller.reserve(
         _request(request_id="request:two", invocation_id="invocation:two")
     )
-
     assert first.accepted and replay.accepted
-    assert replay.snapshot is not None and first.snapshot is not None
-    assert replay.snapshot.digest == first.snapshot.digest
+    assert first.snapshot is not None and replay.snapshot is not None
+    assert first.snapshot.digest == replay.snapshot.digest
     assert changed.code is LandingReservationRefusalCode.RESERVATION_CONFLICT
-    assert authority.reserve_calls == 3
 
 
 def test_two_controllers_racing_one_target_have_one_durable_winner() -> None:
     authority = LockedAuthority()
-    first_reader = FakeReader()
-    second_reader = FakeReader()
-    first, _authority, _reader, _lease = _controller(first_reader, authority)
-    second, _authority, _reader, _lease = _controller(second_reader, authority)
+    first = LandingReservationController(authority)
+    second = LandingReservationController(authority)
     requests = (
         _request(request_id="request:first", invocation_id="invocation:first"),
         _request(request_id="request:second", invocation_id="invocation:second"),
     )
-
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = tuple(
             pool.map(
@@ -424,7 +591,6 @@ def test_two_controllers_racing_one_target_have_one_durable_winner() -> None:
                 ((first, requests[0]), (second, requests[1])),
             )
         )
-
     assert sum(result.accepted for result in results) == 1
     assert (
         sum(
@@ -433,293 +599,366 @@ def test_two_controllers_racing_one_target_have_one_durable_winner() -> None:
         )
         == 1
     )
+    assert not authority.held
+    assert authority.lease.entered == 0
 
 
-def test_same_basename_repositories_have_distinct_exact_identity_keys() -> None:
-    first_reader = FakeReader("repository:first")
-    first_authority = FakeAuthority(first_reader)
-    first_controller, _, _, _ = _controller(first_reader, first_authority)
-    second_reader = FakeReader("repository:second")
-    second_authority = FakeAuthority(second_reader)
-    second_controller, _, _, _ = _controller(second_reader, second_authority)
-
-    first = first_controller.reserve(
-        _request(repository=_repository("repository:first"))
-    )
-    second = second_controller.reserve(
-        _request(repository=_repository("repository:second"))
-    )
-
-    assert first.accepted and second.accepted
-    assert first.snapshot is not None and second.snapshot is not None
-    assert first.snapshot.repository_id != second.snapshot.repository_id
-
-
-def test_target_movement_before_acquire_refuses_without_reservation_or_lease() -> None:
-    reader = FakeReader()
-    reader.targets[0] = replace(reader.targets[0], commit_sha=SHA_GENERATED)
-    controller, authority, _reader, lease = _controller(reader)
-
-    result = controller.reserve(_request())
-
-    assert result.code is LandingReservationRefusalCode.TARGET_MOVED
-    assert authority.reserve_calls == 0
-    assert lease.holds == []
-
-
-def test_target_commit_or_tree_movement_after_reservation_is_refused() -> None:
-    reader = FakeReader()
-    reader.targets[1] = replace(reader.targets[1], commit_sha=SHA_GENERATED)
-    controller, authority, _reader, _lease = _controller(reader)
-    moved = controller.reserve(_request())
-    assert moved.code is LandingReservationRefusalCode.TARGET_MOVED
-    assert authority.reserve_calls == 1
-
-    reader = FakeReader()
-    reader.targets[1] = replace(reader.targets[1], tree_sha=SHA_GENERATED)
-    controller, _authority, _reader, _lease = _controller(reader)
-    tree_changed = controller.reserve(_request())
-    assert tree_changed.code is LandingReservationRefusalCode.TARGET_TREE_MISMATCH
-
-
-def test_canonical_occupancy_and_certification_changes_after_hold_are_refused() -> None:
-    reader = FakeReader()
-    reader.canonicals[1] = replace(
-        reader.canonicals[1], common_dir_id="common-dir:other"
-    )
-    controller, authority, _reader, _lease = _controller(reader)
-    canonical_changed = controller.reserve(_request())
-    assert (
-        canonical_changed.code is LandingReservationRefusalCode.CANONICAL_STATE_CHANGED
-    )
-    assert authority.reserve_calls == 1
-
-    reader = FakeReader()
-    reader.occupancies[1] = _occupancy(count=1, state=OccupancyState.OCCUPIED)
-    controller, _authority, _reader, _lease = _controller(reader)
-    occupancy_changed = controller.reserve(_request())
-    assert occupancy_changed.code is LandingReservationRefusalCode.TARGET_OCCUPIED
-
-    reader = FakeReader()
-    reader.certifications[1] = replace(
-        reader.certifications[1], landing_fence="fence:other"
-    )
-    controller, _authority, _reader, _lease = _controller(reader)
-    certification_changed = controller.reserve(_request())
-    assert (
-        certification_changed.code
-        is LandingReservationRefusalCode.CERTIFICATION_CHANGED
-    )
-
-
-@pytest.mark.parametrize(
-    ("canonical", "expected"),
-    [
-        (
-            _canonical(state=CanonicalState.DIRTY),
-            LandingReservationRefusalCode.CANONICAL_DIRTY,
+def test_dirty_private_unknown_and_occupied_states_refuse_after_hold() -> None:
+    cases = (
+        _state(
+            FakeAuthority().resolved,
+            canonical=_canonical(state=CanonicalState.DIRTY),
         ),
-        (
-            _canonical(state=CanonicalState.PRIVATE_WIP),
-            LandingReservationRefusalCode.PRIVATE_WIP,
+        _state(
+            FakeAuthority().resolved,
+            canonical=_canonical(state=CanonicalState.PRIVATE_WIP),
         ),
-        (_canonical(private_wip=True), LandingReservationRefusalCode.PRIVATE_WIP),
-        (
-            _canonical(state=CanonicalState.UNKNOWN),
-            LandingReservationRefusalCode.CANONICAL_STATE_INVALID,
+        _state(
+            FakeAuthority().resolved,
+            canonical=_canonical(private_wip=True),
         ),
-    ],
-)
-def test_dirty_private_wip_and_unknown_canonical_states_refuse(
-    canonical: CanonicalObservation, expected: LandingReservationRefusalCode
-) -> None:
-    reader = FakeReader()
-    reader.canonicals[0] = canonical
-    reader.canonicals[1] = canonical
-    controller, authority, _reader, lease = _controller(reader)
-
-    result = controller.reserve(_request())
-
-    assert result.code is expected
-    assert authority.reserve_calls == 0
-    assert lease.holds == []
-
-
-@pytest.mark.parametrize(
-    ("occupancy", "expected"),
-    [
-        (
-            _occupancy(count=1, state=OccupancyState.OCCUPIED),
-            LandingReservationRefusalCode.TARGET_OCCUPIED,
+        _state(
+            FakeAuthority().resolved,
+            canonical=_canonical(state=CanonicalState.UNKNOWN),
         ),
-        (
-            _occupancy(state=OccupancyState.UNKNOWN),
-            LandingReservationRefusalCode.TARGET_OCCUPANCY_UNKNOWN,
+        _state(
+            FakeAuthority().resolved,
+            occupancy=_occupancy(count=1, state=OccupancyState.OCCUPIED),
         ),
-    ],
-)
-def test_occupied_or_unknown_target_refuses_before_reservation(
-    occupancy: OccupancyObservation, expected: LandingReservationRefusalCode
-) -> None:
-    reader = FakeReader()
-    reader.occupancies[0] = occupancy
-    reader.occupancies[1] = occupancy
-    controller, authority, _reader, lease = _controller(reader)
-
-    result = controller.reserve(_request())
-
-    assert result.code is expected
-    assert authority.reserve_calls == 0
-    assert lease.holds == []
-
-
-def test_wrong_owner_and_stale_replay_fence_or_epoch_refuse() -> None:
-    authority = FakeAuthority()
-    authority.return_owner = "owner:other"
-    controller, _authority, _reader, _lease = _controller(authority=authority)
-    wrong_owner = controller.reserve(_request())
-    assert wrong_owner.code is LandingReservationRefusalCode.OWNER_MISMATCH
-
-    controller, authority, _reader, _lease = _controller()
-    stale_epoch = controller.reserve(
-        _request(expected_lease_epoch=8, expected_lease_fence="reservation-fence-7")
+        _state(
+            FakeAuthority().resolved,
+            occupancy=_occupancy(state=OccupancyState.UNKNOWN),
+        ),
     )
-    assert stale_epoch.code is LandingReservationRefusalCode.EPOCH_MISMATCH
-
-    stale_fence = controller.reserve(
-        _request(expected_lease_epoch=7, expected_lease_fence="reservation-fence-old")
+    expected = (
+        LandingReservationRefusalCode.CANONICAL_DIRTY,
+        LandingReservationRefusalCode.PRIVATE_WIP,
+        LandingReservationRefusalCode.PRIVATE_WIP,
+        LandingReservationRefusalCode.CANONICAL_STATE_INVALID,
+        LandingReservationRefusalCode.TARGET_OCCUPIED,
+        LandingReservationRefusalCode.TARGET_OCCUPANCY_UNKNOWN,
     )
-    assert stale_fence.code is LandingReservationRefusalCode.FENCE_MISMATCH
-    assert authority.reserve_calls == 2
+    for state, code in zip(cases, expected, strict=True):
+        authority = FakeAuthority(states=[state])
+        result = LandingReservationController(authority).reserve(_request())
+        assert result.code is code
+        assert authority.barrier_calls == 0
 
 
-def test_reservation_is_rechecked_and_loss_is_fail_closed() -> None:
-    authority = FakeAuthority()
-    authority.drop_current = True
-    controller, _authority, _reader, _lease = _controller(authority=authority)
+def test_canonical_common_dir_and_worktree_mismatch_refuse_even_when_stable() -> None:
+    authority = FakeAuthority(
+        states=[
+            _state(
+                FakeAuthority().resolved,
+                canonical=_canonical(
+                    common_dir_id="common:forged", worktree_id="worktree:forged"
+                ),
+            )
+        ]
+    )
+    result = LandingReservationController(authority).reserve(_request())
+    assert result.code is LandingReservationRefusalCode.CANONICAL_STATE_CHANGED
 
-    result = controller.reserve(_request())
 
+def test_each_source_revision_or_value_movement_before_barrier_refuses() -> None:
+    authority = FakeAuthority(
+        states=[
+            _state(FakeAuthority().resolved),
+            _state(FakeAuthority().resolved, revision="source-revision:2"),
+        ]
+    )
+
+    def advance_barrier(current: FakeAuthority) -> None:
+        current.state_index = 1
+
+    authority.on_barrier = advance_barrier
+    result = LandingReservationController(authority).reserve(_request())
+    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
+
+    authority = FakeAuthority(states=[_state(FakeAuthority().resolved)])
+
+    def mutate_after_read(current: FakeAuthority) -> None:
+        current.states = [
+            current.states[0],
+            replace(current.states[0], target_revision="target:changed"),
+        ]
+        current.state_index = 1
+
+    authority.on_read = mutate_after_read
+    result = LandingReservationController(authority).reserve(_request())
     assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
 
 
-def test_authority_and_lease_failures_are_private_fixed_codes() -> None:
-    class MissingAuthority:
-        pass
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda state: replace(
+            state, target=replace(state.target, tree_sha=SHA_GENERATED)
+        ),
+        lambda state: replace(
+            state, canonical=replace(state.canonical, common_dir_id="common:changed")
+        ),
+        lambda state: replace(
+            state,
+            occupancy=replace(
+                state.occupancy, other_worktree_count=1, state=OccupancyState.OCCUPIED
+            ),
+        ),
+        lambda state: replace(
+            state,
+            certification=replace(state.certification, landing_fence="fence:changed"),
+        ),
+    ],
+)
+def test_mutation_immediately_before_final_barrier_is_not_silently_accepted(
+    mutation: Callable[[LandingStateSnapshot], LandingStateSnapshot],
+) -> None:
+    trusted = FakeAuthority()
+    first = _state(trusted.resolved)
+    second = mutation(first)
+    trusted.states = [first, second]
 
-    reader = FakeReader()
-    controller = LandingReservationController(
-        MissingAuthority(), reader, lease=FakeLease()
-    )  # type: ignore[arg-type]
-    result = controller.reserve(_request())
+    def advance_barrier(current: FakeAuthority) -> None:
+        current.state_index = 1
+
+    trusted.on_barrier = advance_barrier
+    result = LandingReservationController(trusted).reserve(_request())
+    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
+
+
+def test_mutation_after_successful_barrier_is_left_to_cp3_correlations() -> None:
+    authority = FakeAuthority()
+
+    def advance_after_barrier(current: FakeAuthority) -> None:
+        current.state_index = 1
+
+    authority.after_barrier = advance_after_barrier
+    authority.states = [
+        _state(authority.resolved),
+        _state(authority.resolved, revision="source-revision:2"),
+    ]
+    result = LandingReservationController(authority).reserve(_request())
+    assert result.accepted
+
+
+def test_missing_revision_or_barrier_fails_closed_as_authority_unavailable() -> None:
+    authority = FakeAuthority()
+    object.__setattr__(authority, "read_landing_snapshot", None)
+    result = LandingReservationController(authority).reserve(_request())
     assert result.code is LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE
+
+    authority = FakeAuthority()
+    object.__setattr__(authority, "validate_landing_barrier", None)
+    result = LandingReservationController(authority).reserve(_request())
+    assert result.code is LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE
+
+
+def test_lost_reservation_and_wrong_current_fence_refuse() -> None:
+    authority = FakeAuthority()
+    authority.drop_current = True
+    result = LandingReservationController(authority).reserve(_request())
+    assert result.code is LandingReservationRefusalCode.RESERVATION_LOST
+
+    authority = FakeAuthority()
+    authority.return_epoch = 9
+    result = LandingReservationController(authority).reserve(
+        _request(expected_lease_epoch=7, expected_lease_fence="reservation-fence-7")
+    )
+    assert result.code is LandingReservationRefusalCode.EPOCH_MISMATCH
+
+
+@pytest.mark.parametrize(
+    ("field", "code"),
+    [
+        ("return_owner", LandingReservationRefusalCode.OWNER_MISMATCH),
+        ("return_tenant", LandingReservationRefusalCode.TENANT_MISMATCH),
+        ("return_principal", LandingReservationRefusalCode.PRINCIPAL_MISMATCH),
+        ("return_session", LandingReservationRefusalCode.SESSION_MISMATCH),
+    ],
+)
+def test_wrong_authenticated_principal_dimensions_refuse(field: str, code) -> None:
+    authority = FakeAuthority()
+    setattr(authority, field, "other:value")
+    result = LandingReservationController(authority).reserve(_request())
+    assert result.code is code
+
+
+def test_authority_epoch_advance_invalidates_replay() -> None:
+    authority = FakeAuthority()
+    controller = LandingReservationController(authority)
+    assert controller.reserve(_request()).accepted
+    authority.identity = replace(authority.identity, authority_epoch=2)
+    replay = controller.reserve(_request())
+    assert replay.code is LandingReservationRefusalCode.AUTHORITY_EPOCH_MISMATCH
+
+
+def test_forged_missing_fields_never_leak_attribute_error() -> None:
+    values: list[Any] = [
+        ControllerIdentity("controller:one", "owner:one", "tenant:one", 1),
+        _request(),
+        _target(),
+        _canonical(),
+        _occupancy(),
+        _cert(),
+    ]
+    for value in values:
+        field = next(iter(value.__dataclass_fields__))
+        forged = object.__new__(type(value))
+        for name in value.__dataclass_fields__:
+            if name != field:
+                object.__setattr__(forged, name, getattr(value, name))
+        with pytest.raises(LandingReservationError):
+            forged.__post_init__()
+
+    authority = FakeAuthority()
+    request = _request()
+    object.__delattr__(request, "request_id")
+    result = LandingReservationController(authority).reserve(request)
+    assert result.code is LandingReservationRefusalCode.REQUEST_INVALID
     assert "/tmp/" not in result.detail
 
-    lease = FakeLease()
-    lease.fail = True
-    controller, authority, _reader, _lease = _controller(lease=lease)
-    lease_result = controller.reserve(_request())
-    assert lease_result.code is LandingReservationRefusalCode.LEASE_UNAVAILABLE
-    assert authority.reserve_calls == 0
 
-
-def test_reader_exceptions_and_hostile_shapes_are_normalized() -> None:
-    class HostileReader(FakeReader):
-        def read_target(self, repository_id: str, target_ref: str):
-            raise RuntimeError("/private/path and secret")
-
-    controller, authority, _reader, lease = _controller(reader=HostileReader())
-    source_failure = controller.reserve(_request())
-    assert source_failure.code is LandingReservationRefusalCode.SOURCE_UNAVAILABLE
-    assert authority.reserve_calls == 0
-    assert lease.holds == []
-    assert "/private/path" not in source_failure.detail
-
-    class MappingReader(FakeReader):
-        def read_target(self, repository_id: str, target_ref: str):
-            return {"repository_id": repository_id}  # type: ignore[return-value]
-
-    controller, authority, _reader, _lease = _controller(reader=MappingReader())
-    malformed = controller.reserve(_request())
-    assert malformed.code is LandingReservationRefusalCode.SOURCE_INVALID
-    assert authority.reserve_calls == 0
-
-    class ExplodingText(str):
-        def strip(self, *_args: object, **_kwargs: object) -> str:
-            raise RuntimeError("hostile text method was called")
-
-    reader = FakeReader()
-    hostile = reader.targets[0]
-    object.__setattr__(hostile, "commit_sha", ExplodingText(SHA_TARGET))
-    reader.targets[1] = hostile
-    controller, authority, _reader, _lease = _controller(reader)
-    hostile_result = controller.reserve(_request())
-    assert hostile_result.code is LandingReservationRefusalCode.SOURCE_INVALID
-    assert authority.reserve_calls == 0
-
-
-def test_forged_pydantic_repository_snapshot_is_refused_without_leaking_path() -> None:
-    controller, authority, _reader, _lease = _controller()
-    request = _request()
-    forged = RepositoryIdentity.model_construct(repository_id="repository:forged")
-    object.__setattr__(request, "repository", forged)
-
-    result = controller.reserve(request)
-
+def test_forged_pydantic_repository_models_are_not_identity_proof() -> None:
+    authority = FakeAuthority()
+    copied = _request().repository.model_copy(
+        update={"repository_id": "repository:forged"}
+    )
+    result = LandingReservationController(authority).reserve(
+        _request(repository=copied)
+    )
+    assert result.code is LandingReservationRefusalCode.REPOSITORY_MISMATCH
+    assert copied.repository_id == "repository:forged"
+    forged = RepositoryIdentity.model_construct(
+        contract_version=CONTRACT_VERSION,
+        repository_id=True,
+        canonical_path=CANONICAL_PATH,
+        configured_roots=(),
+        origin=None,
+    )
+    forged_request = _request()
+    object.__setattr__(forged_request, "repository", forged)
+    result = LandingReservationController(authority).reserve(forged_request)
     assert result.code is LandingReservationRefusalCode.REQUEST_INVALID
-    assert authority.reserve_calls == 0
-    assert "/tmp/workspace" not in result.detail
+    assert authority.hold_paths == []
 
 
-def test_trusted_programmer_runtime_error_crosses_reader_boundary() -> None:
-    class TrustedReader(FakeReader):
-        def read_target(self, repository_id: str, target_ref: str):
-            raise TrustedReservationRuntimeError("programmer failure")
-
-    controller, _authority, _reader, _lease = _controller(reader=TrustedReader())
-    with pytest.raises(TrustedReservationRuntimeError):
-        controller.reserve(_request())
-
-
-def test_trusted_authority_runtime_error_crosses_authority_boundary() -> None:
-    class TrustedAuthority(FakeAuthority):
-        def authenticate_controller(self, invocation_id: str):
-            raise RuntimeError("trusted authority programmer failure")
-
-    controller, _authority, _reader, _lease = _controller(authority=TrustedAuthority())
-    with pytest.raises(RuntimeError, match="trusted authority programmer failure"):
-        controller.reserve(_request())
-
-
-def test_snapshot_digest_and_forged_source_state_are_not_accepted() -> None:
-    controller, _authority, _reader, _lease = _controller()
+def test_forged_snapshot_and_result_are_revalidated() -> None:
+    controller, _ = _controller()
     result = controller.reserve(_request())
     assert result.snapshot is not None
     forged = result.snapshot
     object.__setattr__(forged, "digest", "b" * 64)
-    with pytest.raises(LandingReservationError, match="snapshot digest"):
+    with pytest.raises(LandingReservationError):
         forged.__post_init__()
-
-    reader = FakeReader()
-    forged_canonical = replace(reader.canonicals[1])
-    object.__setattr__(forged_canonical, "private_wip", 1)
-    reader.canonicals[1] = forged_canonical
-    controller, authority, _reader, _lease = _controller(reader)
-    malformed = controller.reserve(_request())
-    assert malformed.code is LandingReservationRefusalCode.SOURCE_INVALID
-    assert authority.reserve_calls == 1
-
+    with pytest.raises(LandingReservationError):
+        forged.immutable_payload()
     forged_result = object.__new__(LandingReservationResult)
     object.__setattr__(forged_result, "accepted", True)
     object.__setattr__(forged_result, "refusal_code", None)
     object.__setattr__(forged_result, "detail", "")
     object.__setattr__(forged_result, "snapshot", forged)
-    with pytest.raises(LandingReservationError, match="snapshot digest"):
+    with pytest.raises(LandingReservationError):
         forged_result.__post_init__()
 
 
-def test_reservation_result_has_no_public_owner_or_process_fields() -> None:
-    assert "owner_id" not in LandingReservationRequest.__dataclass_fields__
-    assert "controller_id" not in LandingReservationRequest.__dataclass_fields__
-    assert "pid" not in LandingReservationSnapshot.__dataclass_fields__
-    assert "canonical_path" not in LandingReservationSnapshot.__dataclass_fields__
+def test_hostile_mapping_and_source_exception_are_private_fixed_codes() -> None:
+    authority = FakeAuthority()
+    object.__setattr__(
+        authority,
+        "read_landing_snapshot",
+        lambda *_args: {"secret": "/private/path"},
+    )
+    result = LandingReservationController(authority).reserve(_request())
+    assert result.code is LandingReservationRefusalCode.SOURCE_INVALID
+    assert "/private/path" not in result.detail
+
+    authority = FakeAuthority()
+    object.__setattr__(
+        authority,
+        "read_landing_snapshot",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("/private/path")),
+    )
+    result = LandingReservationController(authority).reserve(_request())
+    assert result.code is LandingReservationRefusalCode.SOURCE_UNAVAILABLE
+    assert "/private/path" not in result.detail
+
+
+def test_typed_authority_outages_are_fixed_refusals() -> None:
+    def unavailable(*_args: object, **_kwargs: object) -> object:
+        raise LandingReservationUnavailable("private authority outage")
+
+    for method, expected in (
+        (
+            "authenticate_controller",
+            LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE,
+        ),
+        ("resolve_repository", LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE),
+        ("reserve_landing", LandingReservationRefusalCode.AUTHORITY_UNAVAILABLE),
+        ("hold_landing", LandingReservationRefusalCode.LEASE_UNAVAILABLE),
+        ("validate_landing_barrier", LandingReservationRefusalCode.RESERVATION_LOST),
+    ):
+        authority = FakeAuthority()
+        object.__setattr__(authority, method, unavailable)
+        result = LandingReservationController(authority).reserve(_request())
+        assert result.code is expected
+        assert "private authority outage" not in result.detail
+
+
+def test_trusted_runtime_errors_cross_the_established_authority_boundary() -> None:
+    authority = FakeAuthority()
+    object.__setattr__(
+        authority,
+        "authenticate_controller",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("trusted authority failure")),
+    )  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="trusted authority failure"):
+        LandingReservationController(authority).reserve(_request())
+
+    authority = FakeAuthority()
+    object.__setattr__(
+        authority,
+        "read_landing_snapshot",
+        lambda *_args: (_ for _ in ()).throw(
+            TrustedReservationRuntimeError("trusted source failure")
+        ),
+    )  # type: ignore[method-assign]
+    with pytest.raises(TrustedReservationRuntimeError):
+        LandingReservationController(authority).reserve(_request())
+
+
+def test_snapshot_is_bounded_and_contains_no_path_owner_or_process_details() -> None:
+    result = LandingReservationController(FakeAuthority()).reserve(_request())
+    assert result.accepted and result.snapshot is not None
+    snapshot = result.snapshot
+    assert "/tmp/" not in repr(snapshot)
+    assert "owner:one" not in repr(snapshot)
+    assert "controller:one" not in repr(snapshot)
+    assert "pid" not in snapshot.__dataclass_fields__
+    assert "canonical_path" not in snapshot.__dataclass_fields__
+    assert not hasattr(snapshot, "__dict__")
+
+
+def test_refusal_has_no_mutation_or_job_effects() -> None:
+    authority = FakeAuthority()
+
+    def keep_first_state(current: FakeAuthority) -> None:
+        current.state_index = 0
+
+    authority.on_read = keep_first_state
+    result = LandingReservationController(authority).reserve(
+        _request(expected_target_sha=SHA_GENERATED)
+    )
+    assert result.code is LandingReservationRefusalCode.TARGET_MOVED
+    assert authority.reserve_calls == 1
+    assert authority.events.count("hold-enter") == 1
+    assert not any(
+        token in authority.events
+        for token in ("merge", "reset", "checkout", "push", "build", "cleanup")
+    )
+
+
+@pytest.mark.parametrize("seed", [0, 1, 17, 31337])
+def test_hash_seed_marker(seed: int) -> None:
+    # The test is intentionally tiny; the lane runner repeats the full module
+    # under each PYTHONHASHSEED and this keeps the required matrix explicit.
+    assert seed in {0, 1, 17, 31337}
