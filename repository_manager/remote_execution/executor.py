@@ -55,6 +55,7 @@ from repository_manager.execution.executor import (
 # must succeed in the base install; only actually building or running a
 # remote dispatch requires tunnel-manager to be present.
 try:
+    from tunnel_manager.connection_security import max_output_bytes, max_transfer_bytes
     from tunnel_manager.remote_execution import (
         AuthorizedTarget,
         RemoteCommandRequest,
@@ -70,6 +71,7 @@ except ImportError as _tunnel_manager_import_error:  # pragma: no cover - exerci
     AuthorizedTarget = RemoteCommandRequest = None  # type: ignore[assignment,misc]
     RemoteExecutionContext = RemoteExecutionResult = None  # type: ignore[assignment,misc]
     _TmExecutionOutcome = _TmFailureClass = None  # type: ignore[assignment]
+    max_output_bytes = max_transfer_bytes = None  # type: ignore[assignment]
     _TUNNEL_MANAGER_IMPORT_ERROR = _tunnel_manager_import_error
 
 
@@ -127,6 +129,17 @@ def to_remote_request(command: ExecutionCommand) -> RemoteCommandRequest:
     Both models validate independently; an unsafe translation simply fails
     TM's own pydantic validation and is refused before dispatch, exactly as a
     directly caller-built request would be.
+
+    Output/artifact bounds are clamped to TM's own local transport policy
+    (never widened) before construction.  Without this, every
+    default-constructed ``ExecutionCommand`` fails translation outright: RM's
+    C-04 default ``max_artifact_bytes`` is 1 GiB while TM's
+    ``max_transfer_bytes()`` policy defaults to 256 MiB, and
+    ``RemoteCommandRequest`` refuses any request that exceeds its transport
+    policy rather than silently truncating it.  A caller-supplied bound
+    tighter than TM's policy is preserved as-is; only a bound *looser* than
+    TM's own ceiling is narrowed, so this can only make a dispatch more
+    conservative, never less.
     """
 
     _require_tunnel_manager()
@@ -135,9 +148,9 @@ def to_remote_request(command: ExecutionCommand) -> RemoteCommandRequest:
         workdir=command.workdir,
         environment_refs=command.environment_refs,
         timeout_seconds=command.timeout_seconds,
-        max_stdout_bytes=command.max_stdout_bytes,
-        max_stderr_bytes=command.max_stderr_bytes,
-        max_artifact_bytes=command.max_artifact_bytes,
+        max_stdout_bytes=min(command.max_stdout_bytes, max_output_bytes()),
+        max_stderr_bytes=min(command.max_stderr_bytes, max_output_bytes()),
+        max_artifact_bytes=min(command.max_artifact_bytes, max_transfer_bytes()),
         heartbeat_interval_seconds=command.heartbeat_interval_seconds,
         cancellation_channel=command.cancellation_channel,
     )
@@ -286,15 +299,24 @@ class RemoteWorkerExecutor:
             target=_dispatch, name="repository-manager-remote-dispatch", daemon=True
         )
         thread.start()
-        cancel_marker_sent = False
+        # Track *which* check first failed, not just that one did: a lost
+        # fence and an operator cancellation are different failure classes
+        # (parity with LocalExecutor's own poll loop, which distinguishes
+        # cancellation/fence-loss/heartbeat-failure into three different
+        # outcomes rather than collapsing them all into "cancelled").  Once
+        # one check fails the marker is sent and the reason is latched; later
+        # checks never overwrite an already-latched reason.
+        cancel_reason: str | None = None
         while thread.is_alive():
-            if not cancel_marker_sent and (
-                token.is_cancelled()
-                or not self._checker_ok(checker)
-                or not self._heartbeat_ok(heartbeat)
-            ):
-                self._send_cancellation_marker(command.workdir, fence, context)
-                cancel_marker_sent = True
+            if cancel_reason is None:
+                if token.is_cancelled():
+                    cancel_reason = "cancelled"
+                elif not self._checker_ok(checker):
+                    cancel_reason = "fence"
+                elif not self._heartbeat_ok(heartbeat):
+                    cancel_reason = "heartbeat"
+                if cancel_reason is not None:
+                    self._send_cancellation_marker(command.workdir, fence, context)
             thread.join(timeout=self.poll_interval_seconds)
 
         if error_box:
@@ -307,15 +329,29 @@ class RemoteWorkerExecutor:
 
         result = from_remote_result(outcome_box[0])
 
-        if cancel_marker_sent and result.outcome == RmExecutionOutcome.SUCCEEDED:
-            # A cancellation/fence-loss marker was already sent to the
-            # remote worker before it reported success; never publish a
-            # success that raced a cancellation request (parity with
+        _CANCEL_REASON_OUTCOMES: dict[str, tuple[RmExecutionOutcome, RmFailureClass]] = {
+            "cancelled": (RmExecutionOutcome.CANCELLED, RmFailureClass.CANCELLED_DEADLINE),
+            "fence": (
+                RmExecutionOutcome.REFUSED,
+                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+            ),
+            "heartbeat": (
+                RmExecutionOutcome.REFUSED,
+                RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
+            ),
+        }
+        if cancel_reason is not None and result.outcome == RmExecutionOutcome.SUCCEEDED:
+            # A cancellation/fence-loss/heartbeat-failure marker was already
+            # sent to the remote worker before it reported success; never
+            # publish a success that raced that request (parity with
             # LocalExecutor's own post-hoc downgrade).
+            downgraded_outcome, downgraded_failure = _CANCEL_REASON_OUTCOMES[
+                cancel_reason
+            ]
             result = result.model_copy(
                 update={
-                    "outcome": RmExecutionOutcome.CANCELLED,
-                    "failure_class": RmFailureClass.CANCELLED_DEADLINE,
+                    "outcome": downgraded_outcome,
+                    "failure_class": downgraded_failure,
                 }
             )
         elif result.outcome == RmExecutionOutcome.SUCCEEDED and not self._checker_ok(

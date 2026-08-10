@@ -24,6 +24,52 @@ flowchart LR
     HL[HostLossReconciler] -->|quarantine + release| S
 ```
 
+## Defects found and fixed while writing this lane's tests
+
+The module composition below was salvaged from a prior worker's uncommitted,
+never-tested draft and audited/tested for the first time in this lane. Two
+real, previously-undetected functional defects were found by the new test
+suite and fixed in `executor.py` (neither is a rewrite; both are narrow,
+surgical fixes to the existing design):
+
+1. **`to_remote_request` broke every default-constructed command.** RM's
+   `ExecutionCommand.max_artifact_bytes` defaults to 1 GiB; TM's own
+   `max_transfer_bytes()` local transport policy defaults to 256 MiB, and
+   `RemoteCommandRequest` refuses (does not truncate) a request that exceeds
+   its transport policy. The translation forwarded RM's bound unchanged, so
+   *any* command built with RM's own defaults failed pydantic validation
+   before ever reaching a transport -- silently defeating this lane's core
+   acceptance gate ("one immutable job can run locally or on an inventory
+   host with identical domain result"). Fixed by clamping
+   `max_stdout_bytes`/`max_stderr_bytes`/`max_artifact_bytes` to
+   `min(command bound, TM policy bound)` -- this can only make a remote
+   dispatch more conservative than requested, never less.
+   `test_to_remote_request_translates_a_malicious_looking_argv_as_one_opaque_token`
+   and the local/remote parity tests in `tests/test_remote_execution_executor.py`
+   reproduced this failing before the fix.
+2. **Cancellation, fence loss, and heartbeat failure were collapsed into one
+   outcome.** The cooperative poll loop sent the same fixed marker command
+   for all three triggers and then downgraded every post-marker success to
+   `CANCELLED`/`CANCELLED_DEADLINE`, regardless of which check actually
+   failed. `LocalExecutor` deliberately reports three *different* outcomes
+   for these causes (`CANCELLED`/`CANCELLED_DEADLINE` for a token,
+   `REFUSED`/`STALE_FENCE_DUPLICATE_EFFECT` for a lost fence,
+   `REFUSED`/`WORKER_ENVIRONMENT_FAILURE` for a failed heartbeat), so the
+   remote path silently lost that parity and precision. Fixed by latching
+   *which* check failed first and mapping it to the matching outcome/failure
+   class, matching `LocalExecutor` exactly.
+   `test_fence_lost_during_dispatch_downgrades_success_to_refused` and
+   `test_heartbeat_failure_mid_dispatch_sends_marker_and_refuses_not_cancels`
+   reproduced this failing before the fix (the fence test asserted
+   `REFUSED` and got `CANCELLED`; the heartbeat test's original
+   `CANCELLED` assertion was itself wrong and was corrected alongside the
+   fix -- see that test's docstring).
+
+Everything else audited (`bootstrap.py`, `source_staging.py`,
+`artifact_transport.py`, `host_loss.py`, `registry.py`'s non-import logic)
+passed its new tests on the first run with no code changes; see the lane
+handoff for the full per-file verdict.
+
 ## What this package owns
 
 | Module | Responsibility |
