@@ -65,6 +65,21 @@ repos:
   - id: nbqa-ruff
 - repo: local
   hooks:
+  # Tier 0 (CONCEPT:RM-PARSE-GATE). Deliberately FIRST among the local hooks
+  # and deliberately cheap: it answers only "does every source file still
+  # parse?", in seconds, with no build, environment or network. Five
+  # epistemic-graph branches once merged into a tree where four files did not
+  # parse at all — including a Cargo.toml with a duplicate `members` key that
+  # cargo refused outright — and nothing caught it until something tried to
+  # compile, hours later. Everything below this line is more expensive and none
+  # of it can produce a meaningful verdict on a tree that is not even
+  # syntactically valid.
+  - id: parse-gate
+    name: Tier 0 — every source file parses
+    entry: python -m repository_manager.parse_gate .
+    language: system
+    pass_filenames: false
+    always_run: true
   - id: okf-no-legacy-concepts
     name: OKF-CIS — no legacy CONCEPT ids
     entry: python scripts/run_agent_utilities_gate.py --script scripts/check_no_legacy_markers.py -- .
