@@ -255,6 +255,54 @@ def _check_not_canonical(tree: Path, scope: Any) -> Check:
     )
 
 
+def _probe_interpreter(python: Path) -> tuple[str, str]:
+    """Classify a venv interpreter BEHAVIOURALLY: ``(state, detail)``.
+
+    D-CDX-62 — the structural test this replaces (``python.is_file()``) cannot
+    distinguish "this environment is broken" from "this environment's
+    interpreter is not visible to the process asking". A uv-managed venv's
+    ``bin/python`` is a SYMLINK into the uv interpreter store
+    (``~/.local/share/uv/python/...``); ``Path.is_file()`` resolves symlinks,
+    so wherever that store is not mounted — exactly the repository-manager-mcp
+    in-pod case — a perfectly healthy interpreter reports as ABSENT and the
+    lane is handed a blocking failure it cannot act on. That happened to a
+    genuinely healthy lane on 2026-08-11.
+
+    So: ask the interpreter, don't inspect it. Executing it is the only test
+    that answers the question this check exists to ask.
+
+    States: ``ok`` (it ran), ``absent`` (nothing at that path), ``broken``
+    (present and resolvable, but will not execute), ``unevaluable`` (a symlink
+    whose target does not resolve here — indistinguishable from a mount
+    namespace that cannot see the interpreter store).
+    """
+    if not python.is_symlink() and not python.exists():
+        return "absent", f"no such path ({python})"
+    try:
+        proc = subprocess.run(  # nosec B603 - fixed argv, no shell
+            [str(python), "-c", "import sys; print(sys.executable)"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError:
+        if python.is_symlink():
+            return (
+                "unevaluable",
+                f"interpreter is a symlink to {os.readlink(python)}, which does "
+                "not resolve from this process — indistinguishable from a mount "
+                "namespace that cannot see the interpreter store, so the "
+                "environment is NOT judged from here",
+            )
+        return "broken", f"interpreter will not execute ({python})"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "unevaluable", f"could not probe interpreter ({python}): {exc}"
+    if proc.returncode != 0:
+        return "broken", f"interpreter exited {proc.returncode} ({python})"
+    return "ok", proc.stdout.strip()
+
+
 def _check_no_local_venv(tree: Path) -> Check:
     """A worktree-local ``.venv`` produced ~167 phantom test failures."""
     venv = tree / ".venv"
@@ -266,6 +314,7 @@ def _check_no_local_venv(tree: Path) -> Check:
     python = venv / "bin" / "python"
     expected = {"label": "", "selection": ["--all-extras"]}
     reason = ""
+    unevaluable = ""
     loaded: Any = None
     if venv.is_symlink():
         reason = "the environment directory is a symlink"
@@ -282,10 +331,25 @@ def _check_no_local_venv(tree: Path) -> Check:
             reason = "the ownership marker does not identify the canonical all-extras selection"
         elif not reason and not (venv / "pyvenv.cfg").is_file():
             reason = f"the environment metadata is absent ({venv / 'pyvenv.cfg'})"
-        elif not reason and not python.is_file():
-            reason = f"the environment interpreter is absent ({python})"
-        elif not reason and not os.access(python, os.X_OK):
-            reason = f"the environment interpreter is not executable ({python})"
+        elif not reason:
+            state, detail = _probe_interpreter(python)
+            if state == "unevaluable":
+                unevaluable = detail
+            elif state != "ok":
+                reason = f"the environment interpreter is unusable: {detail}"
+
+    if unevaluable:
+        return Check(
+            "no-worktree-venv",
+            SKIP,
+            f"cannot evaluate {venv} from this process: {unevaluable}",
+            remedy=(
+                "re-run the doctor from inside the lane's own namespace (the "
+                f"local CLI: `lane doctor --path {tree}`) — a check that cannot "
+                "see the lane's filesystem must not rule on it"
+            ),
+            evidence={"venv": str(venv), "marker": str(marker)},
+        )
 
     if not reason:
         return Check(
@@ -344,14 +408,20 @@ def _project_name(tree: Path) -> str | None:
     pyproject = tree / "pyproject.toml"
     if not pyproject.is_file():
         return None
-    try:
-        import tomllib
+    import tomllib
 
+    try:
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
         name = data.get("project", {}).get("name")
         if isinstance(name, str) and name:
             return name
-    except Exception:  # pragma: no cover - malformed/unusual pyproject.toml
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, AttributeError):
+        # Falling through to the regex fallback below is the INTENDED handling
+        # for each of these: an unreadable or malformed pyproject (OSError /
+        # UnicodeDecodeError / TOMLDecodeError), or a `[project]` key that is
+        # not a table (AttributeError from `.get` on a non-dict). Narrowed from
+        # a bare `except Exception: pass`, which also swallowed genuine bugs in
+        # this function and tripped bandit B110.
         pass
     # Regex fallback: tolerate a pyproject.toml tomllib cannot parse rather than
     # silently skipping the ownership half of this check.
@@ -881,11 +951,43 @@ def _check_tree_repair(tree: Path) -> Check:
     )
 
 
+def _unevaluable_env_check(name: str) -> Check:
+    """An environment-derived check whose environment cannot be attributed.
+
+    D-CDX-62, the companion to D-CDX-61. That fix let a remote caller PASS its
+    own environment so the env-derived checks judge the right one — but left
+    the default intact: omit ``env`` over the MCP surface and the checks still
+    read the PROVIDER's ``os.environ`` and rule on it. On 2026-08-11 that gave
+    a healthy lane a blocking ``precommit-home`` failure naming
+    ``/home/rm/.cache/pre-commit``, a path belonging to the in-pod server that
+    the lane neither set nor can write.
+
+    An opt-in mitigation does not fix a failure mode whose trigger is
+    *forgetting to opt in*. So when the environment cannot be attributed to the
+    lane, these checks report SKIP. A gate that issues verdicts it cannot
+    support teaches callers to ignore its verdicts, and then it protects
+    nothing.
+    """
+    return Check(
+        name,
+        SKIP,
+        "not evaluated: this process's environment is not the lane's. "
+        "Environment-derived checks are only meaningful when the process "
+        "asking is the process that will run the gate.",
+        remedy=(
+            "pass the lane's exported environment explicitly "
+            "(`doctor(..., env=<exports>)`, obtainable from `lane env --path "
+            "<tree>`), or run the doctor locally inside the lane"
+        ),
+    )
+
+
 def diagnose(
     path: Path | str | None = None,
     *,
     base: str = "main",
     env: dict[str, str] | None = None,
+    env_is_lane: bool = True,
 ) -> dict[str, Any]:
     """Run every lane-isolation check against a working tree. Mutates nothing.
 
@@ -901,9 +1003,19 @@ def diagnose(
         _check_not_canonical(tree, scope),
         _check_no_local_venv(tree),
         _check_venv_package_count(tree),
-        _check_cargo_partition(tree, environ),
-        _check_precommit_home(tree, environ),
-        _check_pytest_basetemp(environ),
+        *(
+            [
+                _check_cargo_partition(tree, environ),
+                _check_precommit_home(tree, environ),
+                _check_pytest_basetemp(environ),
+            ]
+            if env_is_lane
+            else [
+                _unevaluable_env_check("cargo-partition"),
+                _unevaluable_env_check("precommit-home"),
+                _unevaluable_env_check("pytest-basetemp"),
+            ]
+        ),
         _check_stash_ref(tree, scope),
         _check_test_runner(tree, scope),
         _check_precommit_hook_installed(tree),
@@ -1235,10 +1347,17 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     evaluates the checks against it, the same evidence the local doctor uses.
     """
     if action == "doctor":
+        # D-CDX-62 — when the caller supplied no ``env``, this process's
+        # environment cannot be attributed to the lane, so the env-derived
+        # checks report SKIP instead of ruling on a foreign environment.
+        # ``env_is_lane`` is overridable for the local CLI, where the caller
+        # IS this process and ``os.environ`` is exactly right.
+        env = kwargs.get("env")
         return diagnose(
             kwargs.get("path"),
             base=kwargs.get("base") or "main",
-            env=kwargs.get("env"),
+            env=env,
+            env_is_lane=bool(kwargs.get("env_is_lane", env is not None)),
         )
     if action == "env":
         exports = lane_exports(kwargs.get("path"))
@@ -1307,6 +1426,10 @@ def main(argv: list[str] | None = None) -> int:
         base=args.base,
         workspace=args.workspace,
         force=args.force,
+        # D-CDX-62 — the local CLI IS the lane's process, so its own
+        # os.environ is exactly the environment the gate will run under.
+        # This is the one caller that can honestly assert that.
+        env_is_lane=True,
     )
     if args.shell and "shell" in result:
         print(result["shell"])
