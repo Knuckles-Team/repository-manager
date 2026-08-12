@@ -54,6 +54,23 @@ What it does
        daemon, but is itself a heuristic over what the Dockerfile author
        intended to install -- the ``--image`` mode against a real build is
        the authoritative check.
+5. Reports one of THREE verdicts per binary, not two -- "the binary is on
+   PATH" is necessary but not always sufficient:
+     - ``OK``      -- present, and (for binaries with no further policy)
+       that is the whole requirement.
+     - ``MISSING`` -- absent; install it or explain why not.
+     - ``GAP``     -- present, but a specific invocation needs a resource
+       this image deliberately does not provide (currently: ``docker``,
+       where every subcommand except ``compose config``/``compose
+       convert`` needs a live daemon -- see ``DAEMON_DEPENDENCE_POLICY``
+       and its docstring). This is NOT the same as MISSING: it is a
+       reviewed, deliberate decision (mounting the host's docker.sock or
+       running a DinD sidecar grants effective host root, which this
+       script will not silently assume is acceptable), documented and
+       visible rather than asserted away by installing a CLI and calling
+       it done. A run with only GAPs exits 3 (not 0, not 1) so a caller
+       can tell "fully covered" from "covered except an accepted,
+       documented exception" from "something is actually missing".
 
 Explicit scope boundary: this only sees command TEXT in these two file
 types. A toolchain pulled in transitively (e.g. ``cmake`` via a Rust
@@ -84,6 +101,7 @@ import re
 import shlex
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -183,6 +201,9 @@ BASE_PROVIDED: frozenset[str] = frozenset(
         "true",
         "false",
         "exit",
+        "break",
+        "continue",
+        "return",
         "sha256sum",
         "md5sum",
         "which",
@@ -201,11 +222,14 @@ BASE_PROVIDED: frozenset[str] = frozenset(
 )
 
 # Shell control-flow keywords: never a command themselves, and (other than
-# do/then/else/() they do not put the NEXT token in command position either
-# -- e.g. the loop variable/list after `for`/`in` is not a command.
-_STRUCTURAL_NO_TRIGGER = {"for", "in", "while", "until", "if", "elif", "case", "esac", "}", "!"}
+# do/then/else/(/{) they do not put the NEXT token in command position
+# either -- e.g. the loop variable/list after `for`/`in` is not a command.
+_STRUCTURAL_NO_TRIGGER = {"for", "in", "while", "until", "if", "elif", "case", "esac", "fi", "done", "!"}
 _STRUCTURAL_TRIGGER = {"do", "then", "else"}
-_SEPARATOR_TRIGGER = {";", "&&", "||", "|", "("}
+# `{` opens a brace command-group exactly like `(` opens a subshell -- both
+# put the next token in command position (e.g. `cmd || { echo err; exit 1; }`,
+# used by this fleet's own check-agent-standards hook).
+_SEPARATOR_TRIGGER = {";", "&&", "||", "|", "(", "{"}
 _NON_TRIGGER_PUNCTUATION = {")", "}", ">", ">>", "<", "&"}
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -232,6 +256,66 @@ DOCKERFILE_PROVISION_SIGNATURES: dict[str, re.Pattern[str]] = {
     "gem": re.compile(r"apt-get install[^\n]*\bruby\b|rvm\.io"),
 }
 
+# A THIRD verdict, beyond OK/MISSING: "the binary can be installed, but
+# THIS specific invocation needs a resource this image deliberately does
+# not provide" -- concretely, a live Docker daemon. Mounting the host's
+# docker.sock (or running a DinD sidecar) into this pod grants its process
+# effective host root; that is a real deployment/security decision, not
+# something a toolchain-coverage gate should make by installing a CLI and
+# calling it done. Installing `docker` and stopping there would make THIS
+# gate pass while the hook still fails against a real daemon-dependent
+# subcommand -- exactly the "gate reports coverage it doesn't have"
+# pattern this whole phase exists to eliminate. So: `docker` gets the CLI
+# (safe, see below) but is also registered here, and any site whose
+# specific invocation needs a daemon is reported as STRUCTURAL_GAP, never
+# silently folded into OK.
+#
+# `docker compose ... config` (and its `convert` alias) are the ONE
+# exception, verified empirically, not assumed: both succeed with
+# DOCKER_HOST pointed at a nonexistent socket AND an unroutable TCP
+# address (tested against this fleet's own repository-manager and
+# paperless-ngx-mcp compose files) -- they are pure client-side YAML
+# merge/interpolate/render operations per the Compose spec, never a
+# daemon call. Every other docker subcommand (build/run/push/pull/exec/
+# ps/...) does talk to the daemon. `docker`/`docker-compose` are the only
+# TOOLCHAIN_BINARIES entries where "the binary exists" does not imply
+# "every invocation of it succeeds" -- everything else in this fleet
+# (node, pnpm, cargo, go) is a plain interpreter/build-tool with no
+# comparable split, so this stays a targeted special case, not a general
+# mechanism every binary must define.
+_DOCKER_DAEMON_INDEPENDENT_COMPOSE_SUBCOMMANDS = frozenset({"config", "convert"})
+
+
+def _docker_invocation_is_daemon_independent(entry_text: str) -> bool:
+    """Best-effort check of ONE `docker ...` command-position invocation.
+
+    Regex-based over the raw entry text (not the general token walker) --
+    scoped narrowly to this one binary's policy, see the module-level
+    comment above. Finds the first `docker <rest>` occurrence, takes the
+    first non-flag word as the subcommand, and requires it to be
+    `compose` with `config`/`convert` somewhere in the remaining
+    arguments. Anything unrecognised is treated as daemon-DEPENDENT --
+    fail conservatively (assume it needs the daemon) rather than assume
+    safety, matching this whole script's "fail loud, never silently
+    assume fine" posture.
+    """
+    match = re.search(r"\bdocker\s+([^;&|()]*)", entry_text)
+    if not match:
+        return False
+    rest = [t.strip("\"'") for t in match.group(1).split()]
+    non_flags = [t for t in rest if not t.startswith("-")]
+    if not non_flags or non_flags[0] != "compose":
+        return False
+    return any(t in _DOCKER_DAEMON_INDEPENDENT_COMPOSE_SUBCOMMANDS for t in non_flags[1:])
+
+
+# binary -> per-site policy function. Only "docker" has one today; see the
+# comment above for why this stays targeted rather than a blanket per-binary
+# hook every TOOLCHAIN_BINARIES entry must implement.
+DAEMON_DEPENDENCE_POLICY: dict[str, Callable[[str], bool]] = {
+    "docker": _docker_invocation_is_daemon_independent,
+}
+
 
 @dataclass
 class RequiredUse:
@@ -241,6 +325,7 @@ class RequiredUse:
     source_file: str
     site_id: str
     snippet: str
+    full_text: str
 
 
 @dataclass
@@ -270,7 +355,39 @@ def _command_tokens(script: str) -> list[str]:
     `||`, `|`, `(`, `)`, `>`, `<` become their own tokens) and tracks
     whether the next token is in "command position" -- the start of the
     script, or immediately after a separator/`do`/`then`/`else`/`(`.
+
+    RECURSES into `bash -c '<script>'` / `sh -c '<script>'` (whichever
+    command position finds it): shlex's quote handling collapses the
+    quoted script into a single opaque token, so without this recursion
+    every `.pre-commit-config.yaml` local hook in this fleet -- which
+    universally writes `entry: bash -c '...'`, not a bare command --
+    would be scanned as nothing but "bash" and the real command inside
+    would never be seen at all. This was caught empirically: an earlier
+    version returned only `['bash']` for agent-webui's own
+    `entry: bash -c 'node scripts/no_fabrication_gate.mjs'`, silently
+    missing the exact `node` requirement this script exists to catch.
+    (`.mergequeue.yaml`'s argv-list form doesn't hit this path -- its own
+    `["bash", "-c", "<script>", ...]` unwrap happens earlier, in
+    `_iter_mergequeue_entries` -- but recursing here too is harmless and
+    keeps both code paths consistent.)
+    Also neutralises backslash-escaped shell metacharacters (`\\(`, `\\)`,
+    `\\;`, `\\|`) before tokenizing. This fleet's `check-cli-help` hook
+    (byte-identical across dozens of repos) writes
+    `find . -type f \\( -name "mcp_server.py" -o -name "agent_server.py" \\)`
+    -- `\\(`/`\\)` there are LITERAL characters passed to `find`, not shell
+    grouping, but Python's `shlex` module has a documented limitation where
+    `punctuation_chars` splitting does not respect escaping (verified
+    empirically: `shlex.shlex(r'\\(', punctuation_chars=True)` yields a bare
+    `(` token indistinguishable from real grouping syntax). Left unhandled,
+    every `-name` after the escaped paren reads as being in command
+    position and floods the UNCLASSIFIED report with a false positive that
+    is byte-identical across every repo using this one hook -- noise that
+    would bury the failures worth a human's attention. This substitution is
+    scoped to exactly the `\\(`/`\\)`/`\\;`/`\\|` shapes actually observed
+    in this fleet, not general escape handling.
     """
+    _ESCAPE_NAMES = {"(": "LPAREN", ")": "RPAREN", "{": "LBRACE", "}": "RBRACE", ";": "SEMI", "|": "PIPE"}
+    script = re.sub(r"\\([(){};|])", lambda m: f"ESCAPED_{_ESCAPE_NAMES[m.group(1)]}_CHAR", script)
     try:
         lexer = shlex.shlex(script, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
@@ -282,23 +399,38 @@ def _command_tokens(script: str) -> list[str]:
 
     commands: list[str] = []
     expect_command = True
-    for tok in tokens:
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
         if tok in _SEPARATOR_TRIGGER or tok in _STRUCTURAL_TRIGGER:
             expect_command = True
+            i += 1
             continue
         if tok in _NON_TRIGGER_PUNCTUATION:
             expect_command = False
+            i += 1
             continue
         if tok in _STRUCTURAL_NO_TRIGGER:
             expect_command = False
+            i += 1
             continue
         if not expect_command:
+            i += 1
             continue
         if _ASSIGNMENT_RE.match(tok):
             # `FOO=bar cmd` -- still waiting for the real command.
+            i += 1
+            continue
+        if tok in ("bash", "sh") and i + 2 < n and tokens[i + 1] == "-c":
+            commands.append(tok)  # base-provided; recorded for completeness
+            commands.extend(_command_tokens(tokens[i + 2]))
+            i += 3
+            expect_command = False
             continue
         commands.append(tok)
         expect_command = False
+        i += 1
     return commands
 
 
@@ -426,11 +558,12 @@ def scan_fleet(fleet_root: Path) -> ScanResult:
     def _handle(rel: str, site_id: str, text: str) -> None:
         for tok in _command_tokens(text):
             kind, binary = _classify(tok)
-            snippet = text.strip().replace("\n", " ")[:160]
+            full_text = text.strip().replace("\n", " ")
+            snippet = full_text[:160]
             if kind == "toolchain":
                 assert binary is not None
                 result.add_required(
-                    binary, RequiredUse(binary, rel, site_id, snippet)
+                    binary, RequiredUse(binary, rel, site_id, snippet, full_text)
                 )
             elif kind == "unclassified":
                 result.unclassified.append(Unclassified(tok, rel, site_id, snippet))
@@ -557,25 +690,42 @@ def main() -> int:
     print(f"# {len(required_binaries)} distinct toolchain(s) declared by language: system "
           f"hooks / mergequeue gates fleet-wide\n")
 
-    ok = True
+    hard_failure = False
+    structural_gap = False
     for binary in required_binaries:
         uses = result.required[binary]
         verdict = verdicts.get(binary)
+        gap_sites: list[RequiredUse] = []
         if verdict is True:
-            status = "OK"
+            policy = DAEMON_DEPENDENCE_POLICY.get(binary)
+            if policy is not None:
+                gap_sites = [u for u in uses if not policy(u.full_text)]
+            if gap_sites:
+                status = "GAP"
+                structural_gap = True
+            else:
+                status = "OK"
         elif verdict is False:
             status = "MISSING"
-            ok = False
+            hard_failure = True
         else:
             status = "UNKNOWN (no static signature for this binary — rerun with --image)"
-            ok = False
+            hard_failure = True
         sites = ", ".join(f"{u.source_file}::{u.site_id}" for u in uses[:3])
         more = f" (+{len(uses) - 3} more)" if len(uses) > 3 else ""
         print(f"[{status:7}] {binary:16} — {TOOLCHAIN_BINARIES[binary]}")
         print(f"          required by: {sites}{more}")
+        if gap_sites:
+            gap_desc = ", ".join(f"{u.source_file}::{u.site_id}" for u in gap_sites[:3])
+            gap_more = f" (+{len(gap_sites) - 3} more)" if len(gap_sites) > 3 else ""
+            print(f"          STRUCTURAL GAP, BY DECISION: {binary} is installed (CLI present), "
+                  f"but this specific invocation needs a live daemon this image deliberately does "
+                  f"NOT provide (mounting the host socket / a DinD sidecar grants effective host "
+                  f"root -- an operator decision, not a default). Not covered by \"OK\": {gap_desc}"
+                  f"{gap_more}")
 
     if result.unclassified:
-        ok = False
+        hard_failure = True
         print(f"\n{len(result.unclassified)} UNCLASSIFIED command(s) — a language: system hook or "
               f"mergequeue gate invokes something outside both TOOLCHAIN_BINARIES and BASE_PROVIDED. "
               f"This fails LOUD rather than silently assuming the command is harmless (that silent "
@@ -589,11 +739,18 @@ def main() -> int:
             seen.add(key)
             print(f"  - {u.token!r} in {u.source_file}::{u.site_id}: {u.snippet}")
 
-    if ok:
-        print("\nPASS — every declared toolchain is covered.")
-        return 0
-    print("\nFAIL — see MISSING/UNKNOWN/UNCLASSIFIED above.")
-    return 1
+    if hard_failure:
+        print("\nFAIL — see MISSING/UNKNOWN/UNCLASSIFIED above.")
+        return 1
+    if structural_gap:
+        print("\nPASS WITH DOCUMENTED GAP(S) — every declared toolchain that CAN be safely "
+              "provided in-container is covered; the GAP(S) above are a deliberate, reviewed "
+              "decision (not an oversight), left for an operator to resolve (mount a socket, add "
+              "a DinD sidecar, or declare the hook out-of-scope for in-container execution) rather "
+              "than silently satisfied by installing a CLI that cannot actually run the hook.")
+        return 3
+    print("\nPASS — every declared toolchain is covered.")
+    return 0
 
 
 if __name__ == "__main__":
