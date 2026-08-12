@@ -50,6 +50,9 @@ repository-manager-agent = "repository_manager.agent_server:agent_server"
 repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "prompts/**", "skills/**", "ontology/**", "connectors/**", "mergequeue_presets/*.yaml", "buildcache_presets/*.yaml",]
 
 [tool.uv]
+override-dependencies = [
+    "fastmcp-slim[client,server]>=4.0.0b1",
+]
 managed = true
 
 [project.entry-points."agent_utilities.skill_providers"]
@@ -66,6 +69,9 @@ repository-manager = "repository_manager.prompts"
 
 [tool.setuptools]
 include-package-data = true
+
+[tool.uv.sources]
+agent-utilities = { path = ".uv-workspace-siblings/agent-utilities", editable = true }
 
 [tool.ruff]
 line-length = 88
