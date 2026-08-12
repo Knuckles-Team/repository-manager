@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, TypeVar
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 
 __all__ = [
     "Git",

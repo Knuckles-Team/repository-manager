@@ -20,7 +20,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 3.2.0*
+*Version: 3.3.0*
 
 > **Documentation** — Installation, deployment, usage across the CLI, API, MCP, and
 > agent interfaces, and the phased multi-repository release workflows are maintained
@@ -67,10 +67,12 @@ This table is auto-generated from the live server — do not edit by hand.
 |----------|----------------|-------------|
 | `repository_ingest_repositories` | `MISCTOOL` | Natively ingest git repositories into epistemic-graph as typed :GitRepository nodes. |
 | `rm_build` | `PROJECT_MANAGEMENTTOOL` | Content-addressed build broker for ANY repository (CONCEPT:RM-TASK-LEDGER). |
+| `rm_concepts` | `DEVELOPMENT_SURFACESTOOL` | Concept-id claim coordination against RMDD-16's central authority. |
 | `rm_git` | `GIT_OPERATIONSTOOL` | Typed bulk Git operations; arbitrary host commands are prohibited. |
 | `rm_lane` | `PROJECT_MANAGEMENTTOOL` | The lane lifecycle for concurrent agents and humans (CONCEPT:RM-LANE-DOCTOR). |
 | `rm_merge_queue` | `PROJECT_MANAGEMENTTOOL` | Serialized merge queue for ANY git repository (CONCEPT:RM-MERGE-QUEUE). |
 | `rm_projects` | `PROJECT_MANAGEMENTTOOL` | Bulk install, build, and validate Python projects. |
+| `rm_remote_workers` | `DEVELOPMENT_SURFACESTOOL` | Remote worker registry, immutable source staging, and artifact transport. |
 | `rm_workspace` | `WORKSPACE_MANAGEMENTTOOL` | Core workspace organization, configuration, and maintenance. |
 | `rm_worktree` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
 
@@ -126,7 +128,7 @@ This table is auto-generated from the live server — do not edit by hand.
 
 </details>
 
-_8 action-routed tool(s) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
+_10 action-routed tool(s) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
 <!-- MCP-TOOLS-TABLE:END -->
 
 Detailed tool schemas, parameter shapes, and validation constraints are preserved in [docs/usage.md](docs/usage.md).
