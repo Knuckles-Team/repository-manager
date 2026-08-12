@@ -93,6 +93,58 @@ RUN apt-get update \
     # --offline` gate (epistemic-graph's cargo-check/clippy are not `--offline`).
     && chmod -R a+rwX "$RUSTUP_HOME" "$CARGO_HOME" \
     && rm -rf /var/lib/apt/lists/*
+
+# node + pnpm — the SAME defect class as D-MQ-8 above, never mirrored from
+# cargo to node until now. `agent-webui/.pre-commit-config.yaml` declares
+# three `language: system` hooks that shell out to `node`/`pnpm` directly
+# (no-fabrication-gate, pnpm-build, typecheck), and those gate subprocesses
+# run INSIDE this container the same way the cargo ones do. Without a
+# node/pnpm on PATH, every candidate for agent-webui (and any other repo
+# whose `.pre-commit-config.yaml`/`.mergequeue.yaml` declares a `language:
+# system` node hook) auto-rejects in seconds with `[Errno 2] No such file
+# or directory: 'node'` — reads exactly like a real gate failure, silently
+# stranding the candidate. `rm_gates_toolchain_coverage.py` (run in CI
+# against the built image, see its own header) is what stops this
+# particular gap from being reintroduced by the next repo that adopts a
+# new toolchain — this block is only what today's fleet needs.
+#
+# Installed as the official prebuilt linux-x64 tarball into a FIXED,
+# HOME-INDEPENDENT path (/usr/local/node) — the same requirement as
+# CARGO_HOME/RUSTUP_HOME above, for the same reason (this stage's
+# build-time HOME is root's; the runtime HOME below is not). pnpm is
+# installed with a plain `npm install -g` rather than `corepack prepare
+# --activate`: corepack's own package cache defaults to $COREPACK_HOME,
+# which resolves under HOME the same way rustup's default `$HOME/.cargo`
+# does — the exact HOME-relative-install trap already named above. `npm
+# install -g` instead drops the pnpm binary under node's own install
+# prefix ($NODE_HOME), which carries no HOME dependency at all.
+#
+# Versions pinned to what agent-webui's own toolchain declares, so gate
+# output here matches what that repo's own CI/local runs produce: Node 22
+# (agent-webui/docker/Dockerfile's `FROM node:22-slim`) and pnpm 10.29.3
+# (agent-webui/package.json's `packageManager` field — keep these in
+# sync, same discipline as the rust-toolchain.toml pin above). sha256
+# verified against nodejs.org's own published SHASUMS256.txt for this
+# release.
+ENV NODE_HOME=/usr/local/node
+RUN curl --proto '=https' --tlsv1.2 -sSfL \
+        https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz \
+        -o /tmp/node.tar.xz \
+    && echo "d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307  /tmp/node.tar.xz" \
+        | sha256sum -c - \
+    && mkdir -p "$NODE_HOME" \
+    && tar -xJf /tmp/node.tar.xz -C "$NODE_HOME" --strip-components=1 \
+    && rm -f /tmp/node.tar.xz \
+    # npm's own shebang execs `node` via PATH lookup (not a hardcoded path),
+    # so PATH must carry $NODE_HOME/bin for THIS invocation even though the
+    # image-wide PATH ENV is only set below.
+    && PATH="$NODE_HOME/bin:$PATH" "$NODE_HOME/bin/npm" install -g pnpm@10.29.3 \
+    && PATH="$NODE_HOME/bin:$PATH" "$NODE_HOME/bin/npm" cache clean --force \
+    # Read+execute only (unlike CARGO_HOME/RUSTUP_HOME): pnpm's own runtime
+    # store/cache is HOME-relative by design and created under the
+    # deployed runtime HOME on first use, not under $NODE_HOME — nothing
+    # here needs a runtime write.
+    && chmod -R a+rX "$NODE_HOME"
 ARG HOST=127.0.0.1
 ARG PORT=8000
 ARG TRANSPORT="stdio"
@@ -102,7 +154,7 @@ ENV HOST=${HOST} \
     TRANSPORT=${TRANSPORT} \
     AUTH_TYPE=${AUTH_TYPE} \
     PYTHONUNBUFFERED=1 \
-    PATH="/usr/local/cargo/bin:/usr/local/bin:${PATH}" \
+    PATH="/usr/local/cargo/bin:/usr/local/node/bin:/usr/local/bin:${PATH}" \
     UV_HTTP_TIMEOUT=3600 \
     UV_SYSTEM_PYTHON=1 \
     UV_COMPILE_BYTECODE=1 \
