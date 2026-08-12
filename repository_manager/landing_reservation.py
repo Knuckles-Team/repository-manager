@@ -1719,12 +1719,17 @@ def verify_current_landing_reservation(
 
 
 class LandingReservationController:
-    """Immutable production controller with no injectable authority."""
+    """Immutable production controller with no injectable authority.
+
+    No custom ``__init__`` on purpose: with ``__slots__ = ()`` there is no
+    state to set, and the inherited ``object.__init__`` already rejects any
+    constructor argument (proven by
+    ``test_no_python_backend_or_authority_injection_is_accepted``), so a
+    stub ``def __init__(self) -> None: pass`` would add nothing but a
+    false positive for the stub/TODO gate.
+    """
 
     __slots__ = ()
-
-    def __init__(self) -> None:
-        pass
 
     def reserve(self, request: LandingReservationRequest) -> LandingReservationResult:
         return reserve_landing(request)

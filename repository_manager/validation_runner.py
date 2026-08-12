@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import re
 import selectors
+import shutil
 import subprocess  # nosec B404 - all calls below use fixed argv
 import time
 import uuid
@@ -83,6 +84,9 @@ _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_ID = re.compile(r"^[^\x00\r\n]+$")
 _JOB_NAMESPACE = uuid.UUID("b20d5b4e-3c0d-4d07-85e8-1e2358f768aa")
 _MAX_GIT_OUTPUT_BYTES = 1 * 1024 * 1024
+# Resolved once so subprocess calls never hand a partial executable path to
+# the OS (matches stash_guard.py/destructive_guard.py's convention).
+_TRUSTED_GIT = shutil.which("git") or "git"
 
 
 def _opaque(value: object, field_name: str) -> str:
@@ -902,7 +906,7 @@ class ValidationRunner:
 
         try:
             process = subprocess.Popen(  # nosec B603 - argv is constructed locally
-                ["git", *args],
+                [_TRUSTED_GIT, *args],
                 cwd=str(tree),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

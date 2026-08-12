@@ -78,7 +78,8 @@ def test_authorized_target_model_has_no_credential_or_host_fields() -> None:
     """
 
     pytest.importorskip(
-        "tunnel_manager", reason="optional dependency, see remote_execution/README.md"
+        "tunnel_manager.remote_execution",
+        reason="optional dependency, see remote_execution/README.md",
     )
     from tunnel_manager.remote_execution import AuthorizedTarget
 
@@ -111,7 +112,8 @@ def test_authorized_target_model_has_no_credential_or_host_fields() -> None:
 
 def test_remote_command_request_forbids_extra_caller_supplied_fields() -> None:
     pytest.importorskip(
-        "tunnel_manager", reason="optional dependency, see remote_execution/README.md"
+        "tunnel_manager.remote_execution",
+        reason="optional dependency, see remote_execution/README.md",
     )
     from tunnel_manager.remote_execution import RemoteCommandRequest
 
@@ -132,7 +134,8 @@ def test_execution_result_stdout_stderr_never_carry_a_raw_hostname_or_password(
     """
 
     pytest.importorskip(
-        "tunnel_manager", reason="optional dependency, see remote_execution/README.md"
+        "tunnel_manager.remote_execution",
+        reason="optional dependency, see remote_execution/README.md",
     )
     from tunnel_manager.remote_execution import AuthorizedTarget
 

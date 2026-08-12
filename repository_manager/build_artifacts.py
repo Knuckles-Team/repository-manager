@@ -301,7 +301,7 @@ def _bounded_matching_files(
         raise ArtifactStoreError("artifact output root could not be read") from exc
     if not stat.S_ISDIR(root_stat.st_mode):
         raise ArtifactStoreError("artifact output root is not a regular directory")
-    matched = {pattern: [] for pattern in patterns}
+    matched: dict[str, list[Path]] = {pattern: [] for pattern in patterns}
     # A literal prefix keeps a ``dist/**`` publication from walking an
     # unrelated node_modules tree.  Non-recursive patterns also carry a
     # maximum relative depth, so ``*.js`` only scans direct output files.
@@ -1527,7 +1527,7 @@ class BuildArtifactStore:
                 continue
             built_at = manifest.get("built_at")
             try:
-                old = float(built_at) < cutoff
+                old = built_at is None or float(built_at) < cutoff
             except (TypeError, ValueError):
                 old = True
             if not pressure and not old:

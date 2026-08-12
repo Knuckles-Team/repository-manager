@@ -1188,7 +1188,13 @@ def load_yaml_mapping_text(text: str, *, source: str = "<string>") -> dict[str, 
     """Load one YAML string and reject duplicate keys before schema parsing."""
 
     try:
-        value = yaml.load(text, Loader=_UniqueKeyLoader)
+        # _UniqueKeyLoader (above) is yaml.SafeLoader with only its mapping
+        # constructor overridden to reject duplicate keys; every other tag
+        # still resolves through SafeLoader's safe constructors, so this
+        # carries the same guarantees as yaml.safe_load(). Bandit's B506
+        # check only recognizes the loader by name, not by base class, so a
+        # SafeLoader subclass trips the same warning as a genuinely unsafe one.
+        value = yaml.load(text, Loader=_UniqueKeyLoader)  # nosec B506
     except ConfigSchemaError as exc:
         raise ConfigSchemaError(f"{source}: {exc}") from exc
     except yaml.YAMLError as exc:

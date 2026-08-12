@@ -31,6 +31,7 @@ from repository_manager.development.jobs import (
 )
 from repository_manager.development.payloads import (
     BuildExecutionDescriptor,
+    RepositoryCacheKeyComponent,
     operation_payload_from_mapping,
 )
 from repository_manager.resource_profiles import default_resource_profiles
@@ -229,7 +230,10 @@ class BuildService:
 
     def __init__(
         self,
-        job_service: RepositoryJobService,
+        # Structural, not nominal: the isinstance-or-callable check below is
+        # the actual boundary, deliberately kept permissive for test doubles
+        # and the production graph adapter's delayed import.
+        job_service: RepositoryJobService | Any,
         *,
         tenant_id: str | None = None,
         owner_id: str | None = None,
@@ -685,7 +689,15 @@ class BuildService:
                 artifact_contract_digest=_artifact_contract_digest(spec),
                 feature_set=" ".join(spec.command),
                 target_triple=bq._target_triple(spec),  # noqa: SLF001
-                cache_key_components=key.components(),
+                cache_key_components=tuple(
+                    sorted(
+                        (
+                            RepositoryCacheKeyComponent(name=name, value=value)
+                            for name, value in key.components().items()
+                        ),
+                        key=lambda item: item.name,
+                    )
+                ),
                 cache_key_digest=key.digest if cacheable else None,
                 argv=spec.command,
                 workdir=spec.workdir,

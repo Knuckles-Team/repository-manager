@@ -25,6 +25,7 @@ from repository_manager.development import (
     FailureClass,
     JobState,
     ResourceRequest,
+    TargetPolicy,
 )
 from repository_manager.development.jobs import (
     RepositoryJobServiceCode,
@@ -109,7 +110,7 @@ def _config_snapshot(
         source = str(path)
     else:
         process = subprocess.Popen(
-            ["git", "show", f"{base_sha}:{bq.CONFIG_FILENAME}"],
+            [bq._TRUSTED_GIT, "show", f"{base_sha}:{bq.CONFIG_FILENAME}"],  # noqa: SLF001
             cwd=str(scope.main_tree),
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -852,7 +853,9 @@ class BuildWorker:
             admission = self._admit(view, attempt, fence)
             raw_status = getattr(admission, "status", None)
             try:
-                admission_status = AdmissionStatus(raw_status)
+                admission_status = (
+                    None if raw_status is None else AdmissionStatus(raw_status)
+                )
             except (TypeError, ValueError):
                 admission_status = None
             if admission_status is AdmissionStatus.DEFERRED:
@@ -1148,7 +1151,7 @@ class BuildWorker:
             )
         finally:
             if reservation_id and self.scheduler is not None:
-                release_context = {
+                release_context: dict[str, Any] = {
                     "work_item_id": view.work_item_id,
                     "attempt": attempt,
                     "fence": fence,
@@ -1898,8 +1901,12 @@ class BuildWorker:
             disk_mib=view.disk_mib,
             process_slots=view.process_slots,
             host_labels=view.host_labels,
-            preferred_target=view.preferred_target,
-            required_target=view.required_target,
+            preferred_target=TargetPolicy.model_validate(view.preferred_target),
+            required_target=(
+                None
+                if view.required_target is None
+                else TargetPolicy.model_validate(view.required_target)
+            ),
             anti_affinity=view.anti_affinity,
             priority=view.priority,
             fairness_group=view.fairness_group,

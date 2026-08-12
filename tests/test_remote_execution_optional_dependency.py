@@ -42,11 +42,22 @@ def _clean_env() -> dict[str, str]:
 
 
 def test_base_import_succeeds_without_tunnel_manager() -> None:
-    """The package must import cleanly with no tunnel-manager on ``sys.path``.
+    """The package must import cleanly without the RMDD-14 ``remote_execution`` seam.
 
     Run in a fresh subprocess so an already-imported ``tunnel_manager`` (e.g.
     from a sibling test module that opts into the optional dependency) cannot
     mask a regression here.
+
+    Asserts ``tunnel_manager.remote_execution`` specifically, not bare
+    ``tunnel_manager``: some environments have the *published* tunnel-manager
+    package installed (for other packages' needs) without RMDD-14's seam,
+    which predates every release and lives only on its unmerged integration
+    branch (see this module's docstring and ``remote_execution/README.md``).
+    Resolving ``tunnel_manager.connection_security`` during that guarded
+    import legitimately touches the parent ``tunnel_manager`` package before
+    failing on the missing submodule -- that is the honest degradation this
+    test exists to prove, not a regression. The actual contract under test
+    is narrower: the RMDD-14 seam itself was never successfully imported.
     """
 
     completed = subprocess.run(
@@ -54,7 +65,7 @@ def test_base_import_succeeds_without_tunnel_manager() -> None:
             sys.executable,
             "-c",
             "import repository_manager.remote_execution as m; "
-            "assert 'tunnel_manager' not in __import__('sys').modules; "
+            "assert 'tunnel_manager.remote_execution' not in __import__('sys').modules; "
             "print('OK', sorted(m.__all__))",
         ],
         capture_output=True,
@@ -64,7 +75,7 @@ def test_base_import_succeeds_without_tunnel_manager() -> None:
     )
     assert completed.returncode == 0, completed.stderr
     assert "OK" in completed.stdout
-    assert "tunnel_manager" not in completed.stderr
+    assert "tunnel_manager.remote_execution" not in completed.stderr
 
 
 def test_registry_module_imports_without_tunnel_manager() -> None:

@@ -8,6 +8,9 @@
       ],
       "env": {
         "MCP_TOOL_MODE": "intent",
+        "BUILDTOOL": "True",
+        "CONCEPTSTOOL": "True",
+        "DEVELOPMENT_SURFACESTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
         "GITLAB_HOST": "https://gitlab.com",
@@ -15,15 +18,20 @@
         "GITLAB_TOKEN": "your_gitlab_token_here",
         "GITLAB_URL": "https://gitlab.com",
         "GIT_OPERATIONSTOOL": "True",
+        "LANETOOL": "True",
+        "MERGE_QUEUETOOL": "True",
         "MISCTOOL": "True",
+        "PROJECTTOOL": "True",
         "PROJECT_MANAGEMENTTOOL": "True",
+        "REMOTE_WORKERSTOOL": "True",
         "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
         "REPOSITORY_MANAGER_THREADS": "12",
         "RM_GATE_BEFORE_PUSH": "true",
         "RM_JOB_STALE_SECONDS": "1800",
         "RM_MAX_WORKERS": "8",
         "WORKSPACE_MANAGEMENTTOOL": "True",
-        "WORKSPACE_YML": "workspace.yml"
+        "WORKSPACE_YML": "workspace.yml",
+        "WORKTREETOOL": "True"
       }
     }
   }

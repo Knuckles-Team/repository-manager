@@ -11,6 +11,7 @@ import hashlib
 
 import pytest
 
+from repository_manager.development import LogReference
 from repository_manager.remote_execution.artifact_transport import (
     ArtifactStagingReceiver,
     ArtifactTransferError,
@@ -181,6 +182,7 @@ def test_receive_log_bounds_the_tail_and_publishes_content_addressed(tmp_path) -
         tail_bytes_limit=16,
     )
     assert receipt.outcome == ArtifactTransferOutcome.PUBLISHED
+    assert isinstance(receipt.reference, LogReference)
     assert receipt.reference.tail_bytes == 16
     assert receipt.reference.content_address == hashlib.sha256(payload).hexdigest()
 

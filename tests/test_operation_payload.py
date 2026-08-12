@@ -208,12 +208,9 @@ def test_fake_exact_read_is_private_atomic_and_restart_safe() -> None:
     assert submitted.job.operation_payload_kind == "repository.build-execution/v1"
     assert submitted.job.operation_payload_version == "1"
     assert submitted.job.operation_payload_digest == _payload()["payload_digest"]
-    assert (
-        service.get_exact_execution_input(
-            submitted.job.job_id, auth=_auth()
-        ).payload_digest
-        == _payload()["payload_digest"]
-    )
+    exact_input = service.get_exact_execution_input(submitted.job.job_id, auth=_auth())
+    assert exact_input is not None
+    assert exact_input.payload_digest == _payload()["payload_digest"]
 
     restarted = RepositoryJobService(
         FakeRepositoryJobPort.from_snapshot(port.snapshot())

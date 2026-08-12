@@ -24,6 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -1203,7 +1204,7 @@ _SHADOW_TOOLCHAIN = "2" * 64
 _SHADOW_RESOURCE = "3" * 64
 
 
-def _shadow_kwargs(repo: Path) -> dict[str, object]:
+def _shadow_kwargs(repo: Path) -> dict[str, Any]:
     return {
         "config_digest": _SHADOW_CONFIG,
         "toolchain_digest": _SHADOW_TOOLCHAIN,

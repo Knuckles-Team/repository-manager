@@ -18,7 +18,11 @@ from repository_manager.lane_reclamation import (
     LaneReclaimer,
     ReconciliationClass,
 )
-from repository_manager.lane_record import LaneLifecycleState, repository_id_for
+from repository_manager.lane_record import (
+    LaneLifecycleState,
+    LaneRecord,
+    repository_id_for,
+)
 from repository_manager.lane_registry import (
     FakeDurableLaneAuthority,
     LaneAllocationDisabled,
@@ -86,7 +90,7 @@ class CleanupAuthority:
         return {"job_id": self.job_id, "fence": self.job_fence}
 
     def is_current(self, job_id: str, **kwargs: object) -> bool:
-        return (
+        return bool(
             job_id == self.job_id
             and kwargs.get("job_fence") == self.job_fence
             and kwargs.get("lane_fence")
@@ -123,7 +127,7 @@ def _allocate(
     branch: str = "feature/one",
     owner_id: str = "agent:one",
     predicted_disk_bytes: int = 10,
-) -> object:
+) -> LaneRecord:
     return registry.allocate(
         root,
         branch,

@@ -160,14 +160,31 @@ async def test_mcp_and_cli_list_refusal_are_identical(tmp_path, capsys):
 
 
 def test_concept_authority_refusal_names_module_and_preserves_cause(tmp_path):
-    """Refusal proof: authority absent -> named refusal, cause preserved (H-12).
+    """Refusal proof: no injected authority -> named refusal (H-12).
 
-    Verified directly against ``agent_utilities.governance.concept_reservation``
-    absent in this environment (repository-manager AGENTS.md optional
-    dependency guardrail; confirmed absent by this same test run).
+    ``resolve_default_authority`` (``repository_manager/concept_coordination/
+    client.py``) always refuses when nothing is injected, by design, in
+    either of two states of the agent-utilities checkout under test (see
+    that module's "Why this always refuses today" docstring):
+
+    * the RMDD-16 authority module (``agent_utilities.governance.
+      concept_reservation``) is absent -> refusal chains the ``ImportError``
+      as its cause;
+    * the module merged to *some* agent-utilities checkout (it lives on
+      integration branches before landing on ``main``) but RMDD-17
+      deliberately never constructs a live authority itself -> refusal
+      names the module with no exception to chain (nothing was raised).
+
+    Branch on which state actually holds here rather than assuming the
+    first, so this test is correct on either an agent-utilities ``main``
+    checkout or one of the integration branches the docstring names.
     """
+    import importlib.util
 
     from repository_manager.concept_coordination import ConceptCoordinationActions
+    from repository_manager.concept_coordination.client import AUTHORITY_MODULE
+
+    module_present = importlib.util.find_spec(AUTHORITY_MODULE) is not None
 
     actions = ConceptCoordinationActions(
         repo_root=tmp_path, tenant_ref="t", lane_ref="l"
@@ -176,35 +193,38 @@ def test_concept_authority_refusal_names_module_and_preserves_cause(tmp_path):
         actions.get("concept-reservation:t:1")
 
     assert "agent_utilities.governance.concept_reservation" in str(excinfo.value)
-    assert excinfo.value.__cause__ is not None
-    assert isinstance(excinfo.value.__cause__, ImportError)
+    if module_present:
+        assert excinfo.value.__cause__ is None
+        assert "RMDD-17 does not construct a live authority" in str(excinfo.value)
+    else:
+        assert excinfo.value.__cause__ is not None
+        assert isinstance(excinfo.value.__cause__, ImportError)
 
 
 def test_import_mcp_server_without_concept_reservation_authority():
-    """``import repository_manager.mcp_server`` succeeds with the authority absent.
+    """``import repository_manager.mcp_server`` never hard-depends on the authority.
 
-    Run in a fresh subprocess to prove the *base install* imports cleanly —
-    a module-level import of ``agent_utilities.governance.concept_reservation``
-    anywhere in the package would abort collection, exactly the RMDD-19
-    revert class this lane must not repeat.
+    Run in a fresh subprocess to prove the *base install* imports cleanly
+    regardless of whether ``agent_utilities.governance.concept_reservation``
+    happens to be present on the agent-utilities checkout under test (it
+    lives on integration branches before landing on ``main`` -- see
+    ``repository_manager/concept_coordination/client.py``'s "Why this
+    always refuses today" docstring) -- a module-level import of it anywhere
+    in the package would abort collection whenever it's absent, exactly the
+    RMDD-19 revert class this lane must not repeat. This does not assert the
+    module's absence as a precondition (unlike an earlier version of this
+    test): that would make the proof depend on which agent-utilities branch
+    happens to be checked out, which is not this lane's concern.
     """
 
     completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import agent_utilities.governance.concept_reservation as m; "
-            "raise SystemExit('concept_reservation unexpectedly present: ' + m.__file__)",
-        ],
+        [sys.executable, "-c", "import repository_manager.mcp_server; print('ok')"],
         capture_output=True,
         text=True,
         timeout=60,
     )
-    assert completed.returncode != 0, (
-        "expected agent_utilities.governance.concept_reservation to be absent "
-        "in this environment; the RMDD-20 refusal proof requires it"
-    )
-    assert "No module named" in completed.stderr
+    assert completed.returncode == 0, completed.stderr
+    assert "ok" in completed.stdout
 
     completed = subprocess.run(
         [sys.executable, "-c", "import repository_manager.mcp_server; print('ok')"],

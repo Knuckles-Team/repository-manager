@@ -22,7 +22,7 @@ import time
 import pytest
 
 tunnel_manager = pytest.importorskip(
-    "tunnel_manager",
+    "tunnel_manager.remote_execution",
     reason=(
         "optional dependency: RMDD-14's tunnel_manager.remote_execution seam "
         "is not installed in this environment (see remote_execution/README.md)"

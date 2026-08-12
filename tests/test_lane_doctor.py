@@ -650,10 +650,21 @@ def test_doctor_dispatch_uses_the_explicitly_passed_env_not_process_globals(
 def test_doctor_dispatch_without_explicit_env_falls_back_to_process_globals(
     worktree: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Unchanged local-CLI shape: omitting env still reads process os.environ
-    (correct there, since the dispatching process IS the caller)."""
+    """Local-CLI shape: omitting env while asserting ``env_is_lane=True`` (as
+    ``main()`` does -- see its D-CDX-62 comment: "the local CLI IS the lane's
+    process, so its own os.environ is exactly the environment the gate will
+    run under") still reads process os.environ (correct there, since the
+    dispatching process IS the caller).
+
+    Bare ``dispatch("doctor", path=...)`` with NEITHER ``env`` NOR
+    ``env_is_lane`` now safe-defaults the env-derived checks to SKIP
+    (D-CDX-62's fix for the MCP-surface incident where a foreign process's
+    globals manufactured a false blocker) -- that default is proven by
+    ``test_doctor_dispatch_uses_the_explicitly_passed_env_not_process_globals``'s
+    sibling MCP-shaped tests, not this one.
+    """
     monkeypatch.delenv("PRE_COMMIT_HOME", raising=False)
-    report = lane_doctor.dispatch("doctor", path=str(worktree))
+    report = lane_doctor.dispatch("doctor", path=str(worktree), env_is_lane=True)
     assert _named(report, "precommit-home")["status"] == FAIL
 
 

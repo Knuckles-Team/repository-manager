@@ -32,6 +32,7 @@ stash push/pop elsewhere in this shared ``.git`` can never cross with it.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import shlex
 import time
@@ -39,6 +40,8 @@ from typing import Any, Protocol
 
 from repository_manager import prune_guard, stash_guard
 from repository_manager.canonical_guard import guarded_canonical_mutation
+
+logger = logging.getLogger(__name__)
 
 
 class GitLike(Protocol):
@@ -359,7 +362,11 @@ class WorktreeManager:
             except Exception:
                 # The original creation error is the actionable response; the
                 # durable row remains for reconciliation if abort itself fails.
-                pass
+                logger.debug(
+                    "lane abort after failed worktree creation also failed for %s",
+                    record.lane_id,
+                    exc_info=True,
+                )
             return {
                 "ok": False,
                 "stage": "worktree",

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from agent_utilities.core.config import setting
+
 from repository_manager.mcp_tools.context import from_server
 
 
@@ -28,7 +30,18 @@ def register_misc_tools(mcp: Any) -> None:
 
 
 def register_project_management_tools(mcp: Any) -> None:
-    """Register the stable project-management domain in legacy order."""
+    """Register the stable project-management domain in legacy order.
+
+    ``PROJECT_MANAGEMENTTOOL`` (read by ``register_tool_surface`` at the
+    ``MCP_TOOL_REGISTRY`` entry below) remains the group's overall kill
+    switch. Each member registrar ALSO reads its own ``<TAG>TOOL`` toggle
+    here, default ``True``, so disabling one (e.g. ``BUILDTOOL=False``)
+    narrows the group without another env var flipping to a no-op default
+    that ``check_env_var_drift.py`` would otherwise call undocumented dead
+    config -- the fleet convention (see ``systems-manager``,
+    ``container-manager-mcp``) is that every ``register_<tag>_tools``
+    function is independently toggleable, not merely name-shaped like one.
+    """
     from repository_manager.mcp_tools.build import register_build_tools
     from repository_manager.mcp_tools.lane import register_lane_tools
     from repository_manager.mcp_tools.merge_queue import register_merge_queue_tools
@@ -36,20 +49,28 @@ def register_project_management_tools(mcp: Any) -> None:
     from repository_manager.mcp_tools.worktree import register_worktree_tools
 
     context = from_server()
-    register_lane_tools(mcp, context=context)
-    register_worktree_tools(mcp, context=context)
-    register_merge_queue_tools(mcp, context=context)
-    register_build_tools(mcp, context=context)
-    register_project_tools(mcp, context=context)
+    if setting("LANETOOL", True):
+        register_lane_tools(mcp, context=context)
+    if setting("WORKTREETOOL", True):
+        register_worktree_tools(mcp, context=context)
+    if setting("MERGE_QUEUETOOL", True):
+        register_merge_queue_tools(mcp, context=context)
+    if setting("BUILDTOOL", True):
+        register_build_tools(mcp, context=context)
+    if setting("PROJECTTOOL", True):
+        register_project_tools(mcp, context=context)
 
 
-def register_development_surface_tools(mcp: Any) -> None:
+def register_development_surfaces_tools(mcp: Any) -> None:
     """Register RMDD-20's newest exposed development surfaces.
 
     A dedicated registrar (rather than folding into
     ``register_project_management_tools``) so the two lanes RMDD-20 exposes
     (RMDD-15 remote execution, RMDD-17 concept coordination) each land as
-    one deterministic, independently toggleable entry.
+    one deterministic, independently toggleable entry -- realized the same
+    way as ``register_project_management_tools`` above: the group's overall
+    ``DEVELOPMENT_SURFACESTOOL`` kill switch plus each member's own
+    ``<TAG>TOOL``, default ``True``.
     """
     from repository_manager.mcp_tools.concepts import register_concepts_tools
     from repository_manager.mcp_tools.remote_workers import (
@@ -57,8 +78,10 @@ def register_development_surface_tools(mcp: Any) -> None:
     )
 
     context = from_server()
-    register_concepts_tools(mcp, context=context)
-    register_remote_workers_tools(mcp, context=context)
+    if setting("CONCEPTSTOOL", True):
+        register_concepts_tools(mcp, context=context)
+    if setting("REMOTE_WORKERSTOOL", True):
+        register_remote_workers_tools(mcp, context=context)
 
 
 def register_workspace_management_tools(mcp: Any) -> None:
@@ -81,7 +104,7 @@ MCP_TOOL_REGISTRY: tuple[tuple[str, str, Any], ...] = (
     (
         "development_surfaces",
         "DEVELOPMENT_SURFACESTOOL",
-        register_development_surface_tools,
+        register_development_surfaces_tools,
     ),
 )
 

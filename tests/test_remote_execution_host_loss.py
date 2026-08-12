@@ -96,7 +96,9 @@ def test_a_fresh_healthy_host_is_a_no_op() -> None:
         reason="host heartbeat is fresh; no loss detected",
     )
     assert release_port.calls == []
-    assert capacity.get("host:build-1").state == HostState.ACTIVE
+    fresh_host = capacity.get("host:build-1")
+    assert fresh_host is not None
+    assert fresh_host.state == HostState.ACTIVE
 
 
 def test_a_stale_heartbeat_mid_job_quarantines_and_releases() -> None:
@@ -121,7 +123,9 @@ def test_a_stale_heartbeat_mid_job_quarantines_and_releases() -> None:
     assert decision.lost is True
     assert decision.quarantined is True
     assert decision.released is True
-    assert capacity.get("host:build-1").state == HostState.QUARANTINED
+    quarantined_host = capacity.get("host:build-1")
+    assert quarantined_host is not None
+    assert quarantined_host.state == HostState.QUARANTINED
     assert release_port.calls == [
         {
             "reservation_id": "reservation:abc",
@@ -177,7 +181,9 @@ def test_an_already_quarantined_host_is_not_re_quarantined_but_release_is_retrie
     assert decision.lost is True
     assert decision.quarantined is False  # already unavailable; not a new transition
     assert decision.released is True
-    assert capacity.get("host:build-1").state == HostState.QUARANTINED
+    still_quarantined_host = capacity.get("host:build-1")
+    assert still_quarantined_host is not None
+    assert still_quarantined_host.state == HostState.QUARANTINED
 
 
 def test_an_offline_host_is_treated_as_already_unavailable() -> None:

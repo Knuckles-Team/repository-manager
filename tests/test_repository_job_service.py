@@ -29,6 +29,7 @@ from repository_manager.development.jobs import (
     encode_cursor,
 )
 from repository_manager.development.models import DevelopmentRequest
+from repository_manager.development.payloads import BuildExecutionDescriptor
 from repository_manager.resource_profiles import default_resource_profiles
 
 NOW = datetime(2026, 8, 9, 3, 0, tzinfo=UTC)
@@ -718,7 +719,12 @@ def test_production_exact_input_refuses_before_public_row_lookup() -> None:
 
 def test_markerless_port_is_rejected_before_any_exact_or_visible_read() -> None:
     class MarkerlessPort(FakeRepositoryJobPort):
-        execution_input_authority_available = None
+        # Deliberately not a callable marker -- this is the negative case
+        # RepositoryJobService.__init__ must reject (a public object cannot
+        # masquerade as an exact-input authority via a truthy-but-noncallable
+        # attribute).  Typed ``Any`` because the point of the test is that it
+        # violates the base class's ``Callable[[], bool]`` contract.
+        execution_input_authority_available: Any = None
 
     with pytest.raises(TypeError, match="execution_input_authority_available"):
         RepositoryJobService(MarkerlessPort())
@@ -732,7 +738,7 @@ def test_marker_true_exact_read_generic_error_maps_to_authority_unavailable() ->
             *,
             tenant_id: str,
             owner_id: str,
-        ) -> object:
+        ) -> BuildExecutionDescriptor | None:
             del job_id, tenant_id, owner_id
             raise RuntimeError("exact argv=private-command path=/secret")
 
@@ -777,7 +783,9 @@ def test_production_submission_persists_resolved_admission_projection() -> None:
 def test_branch_exclusive_projection_preserves_only_explicit_branch() -> None:
     raw = _request()
     raw["branch"] = "release"
-    raw_resources = dict(raw["resources"])
+    raw_resources_value = raw["resources"]
+    assert isinstance(raw_resources_value, dict)
+    raw_resources = dict(raw_resources_value)
     raw_resources.update(
         {
             "resource_class": "merge-drain",

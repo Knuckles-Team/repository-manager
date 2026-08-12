@@ -14,13 +14,13 @@ into one worker seam without modifying any of them:
 
 ```mermaid
 flowchart LR
-    S[ResourceScheduler.admit<br/>RMDD-08, frozen] -->|host_id + selected_target| REG[RemoteWorkerRegistry<br/>recheck_at_claim]
+    S["ResourceScheduler.admit<br/>RMDD-08, frozen"] -->|host_id + selected_target| REG["RemoteWorkerRegistry<br/>recheck_at_claim"]
     REG -->|AuthorizedTarget| EXE[RemoteWorkerExecutor]
-    C[ExecutionCommand<br/>RMDD-07 C-04] --> EXE
-    EXE -->|to_remote_request| TM[TunnelCommandExecutor.execute<br/>RMDD-14, frozen]
+    C["ExecutionCommand<br/>RMDD-07 C-04"] --> EXE
+    EXE -->|to_remote_request| TM["TunnelCommandExecutor.execute<br/>RMDD-14, frozen"]
     TM -->|RemoteExecutionResult| EXE
-    EXE -->|from_remote_result| R[ExecutionResult<br/>same C-04 shape as LocalExecutor]
-    R --> P[PublicationPort<br/>RMDD-07, frozen fence-aware CAS]
+    EXE -->|from_remote_result| R["ExecutionResult<br/>same C-04 shape as LocalExecutor"]
+    R --> P["PublicationPort<br/>RMDD-07, frozen fence-aware CAS"]
     HL[HostLossReconciler] -->|quarantine + release| S
 ```
 

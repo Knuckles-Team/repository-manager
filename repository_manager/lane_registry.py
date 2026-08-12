@@ -965,7 +965,16 @@ class LaneRegistry:
                 # ``created_at`` lives in the immutable JSON payload; rowid
                 # preserves projection insertion order without pretending the
                 # local table is the durable authority.
-                "SELECT payload FROM lanes" + where + " ORDER BY rowid, lane_id",
+                #
+                # ``where`` is built only from fixed literal clause
+                # fragments ("repository_id = ?", "owner_id = ?", "state IN
+                # (...)") joined by a fixed " AND " -- no caller-controlled
+                # string is ever concatenated into the SQL text.  Every
+                # actual value is bound through ``?`` placeholders via
+                # ``values`` below, so this is parameterized, not
+                # string-interpolated; bandit's B608 check is purely
+                # syntactic and cannot tell the two apart.
+                "SELECT payload FROM lanes" + where + " ORDER BY rowid, lane_id",  # nosec B608
                 values,
             ).fetchall()
         return tuple(LaneRecord.model_validate_json(row["payload"]) for row in rows)
@@ -1056,8 +1065,13 @@ class LaneRegistry:
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def _quota_records(self, connection: sqlite3.Connection) -> tuple[LaneRecord, ...]:
+        # ``_ACTIVE_SQL`` is the fixed "(?,?,...)" placeholder string built
+        # from ``ACTIVE_STATES`` (a fixed enum, never caller input); the
+        # actual state values are bound through it via ``ACTIVE_SQL_STATES``
+        # below, so this is parameterized, not string-interpolated -- the
+        # same false-positive shape as the other B608 finding in this file.
         rows = connection.execute(
-            "SELECT payload FROM lanes WHERE state IN " + _ACTIVE_SQL,
+            "SELECT payload FROM lanes WHERE state IN " + _ACTIVE_SQL,  # nosec B608
             ACTIVE_SQL_STATES,
         ).fetchall()
         return tuple(LaneRecord.model_validate_json(row["payload"]) for row in rows)

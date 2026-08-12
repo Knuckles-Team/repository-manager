@@ -786,8 +786,9 @@ def test_json_store_survives_service_recreation(tmp_path: Path):
     decision = scheduler.admit(_request("wi", "f", reservation_id="persisted"), now=NOW)
     assert decision.admitted
     recreated = JsonReservationStore(path)
-    assert recreated.get("persisted") is not None
-    assert recreated.get("persisted").state.value == "reserved"
+    persisted = recreated.get("persisted")
+    assert persisted is not None
+    assert persisted.state.value == "reserved"
 
 
 def test_scheduler_recreation_rehydrates_capacity_and_releases_through_native_port(
@@ -865,6 +866,7 @@ def test_local_active_projection_never_authorizes_when_native_query_is_missing()
     retry = scheduler.admit(request, now=NOW + timedelta(seconds=1))
     assert retry.status == AdmissionStatus.DEFERRED
     assert retry.reason_code == AdmissionReason.NATIVE_NOT_FOUND
+    assert first.reservation is not None
     assert port.reserved_for("local") == first.reservation.requirement
 
 
@@ -896,7 +898,9 @@ def test_release_tombstone_and_local_projection_retry_are_idempotent():
         )
     assert port.link(admitted.reservation_id) is None
     assert port.reserved_for("local") == ResourceVector()
-    assert scheduler.reservations.get(admitted.reservation_id).active
+    held = scheduler.reservations.get(admitted.reservation_id)
+    assert held is not None
+    assert held.active
 
     assert scheduler.release(
         admitted.reservation_id, work_item_id="wi", attempt=1, fence="f"
@@ -904,15 +908,14 @@ def test_release_tombstone_and_local_projection_retry_are_idempotent():
     released = scheduler.reservations.get(admitted.reservation_id)
     assert released is not None
     assert released.state.value == "released"
-    assert (
-        port.query_reservation(
-            reservation_id=admitted.reservation_id,
-            work_item_id="wi",
-            attempt=1,
-            fence="f",
-        ).state.value
-        == "released"
+    re_queried = port.query_reservation(
+        reservation_id=admitted.reservation_id,
+        work_item_id="wi",
+        attempt=1,
+        fence="f",
     )
+    assert isinstance(re_queried, ReservationRecord)
+    assert re_queried.state.value == "released"
 
 
 def test_terminal_commit_can_release_exact_attempt_and_terminal_retry_is_idempotent():
@@ -938,6 +941,7 @@ def test_terminal_commit_can_release_exact_attempt_and_terminal_retry_is_idempot
         fence="f",
         for_lifecycle=True,
     )
+    assert isinstance(native, ReservationRecord)
     assert native.state.value == "released"
     port.rotate("wi", attempt=2, now=NOW)
     assert not scheduler.release(
@@ -1279,13 +1283,17 @@ def test_capacity_refresh_is_monotonic_and_preserves_held_accounting():
     )
     newer = replace(newer, version=2, state=HostState.DRAINING)
     assert inventory.refresh(newer)
-    assert inventory.get("local").version == 2
+    refreshed = inventory.get("local")
+    assert refreshed is not None
+    assert refreshed.version == 2
     assert inventory.reserved_for("local") == held
 
     stale = replace(newer, version=1, state=HostState.ACTIVE)
     assert not inventory.refresh(stale)
-    assert inventory.get("local").version == 2
-    assert inventory.get("local").state == HostState.DRAINING
+    unchanged = inventory.get("local")
+    assert unchanged is not None
+    assert unchanged.version == 2
+    assert unchanged.state == HostState.DRAINING
 
     port = _port()
     scheduler, _ = _scheduler(
@@ -1294,6 +1302,7 @@ def test_capacity_refresh_is_monotonic_and_preserves_held_accounting():
     port.claim("wi", fence="f", ttl_seconds=10_000, now=NOW)
     decision = scheduler.admit(_request("wi", "f"), now=NOW)
     assert decision.admitted
+    assert decision.reservation is not None
     authoritative = port._authoritative_view("native")  # simulation introspection
     assert authoritative is not None
     refresh = replace(
@@ -1306,7 +1315,9 @@ def test_capacity_refresh_is_monotonic_and_preserves_held_accounting():
     assert port.reserved_for("native") == decision.reservation.requirement
     stale_refresh = replace(refresh, version=1, state=HostState.ACTIVE)
     assert not port.register_capacity_view(stale_refresh)
-    assert port._authoritative_view("native").state == HostState.DRAINING
+    authoritative_after = port._authoritative_view("native")
+    assert authoritative_after is not None
+    assert authoritative_after.state == HostState.DRAINING
 
 
 def test_heartbeat_and_state_replays_are_monotonic_and_preserve_holds():

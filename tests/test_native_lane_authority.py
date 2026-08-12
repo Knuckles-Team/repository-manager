@@ -10,9 +10,10 @@ not asserted, per the RMDD-28 lane brief's required method.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -25,6 +26,7 @@ from repository_manager.lane_registry import (
     StaleLaneFence,
 )
 from repository_manager.native_lane_authority import (
+    DevelopmentLaneTransport,
     NativeLaneAuthority,
     NativeLaneAuthorityUnavailable,
     lane_work_item_id,
@@ -78,7 +80,7 @@ class FakeDevelopmentLaneTransport:
                 return True
         return False
 
-    def reserve(self, request: dict[str, Any]) -> dict[str, Any]:
+    def reserve(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.calls.append("reserve")
         intent = request["intent"]
         lane_id = intent["lane_id"]
@@ -127,7 +129,9 @@ class FakeDevelopmentLaneTransport:
     def _resolve(self, hold_id: str) -> dict[str, Any] | None:
         return self._holds.get(hold_id)
 
-    def _fence_check(self, hold: dict[str, Any], request: dict[str, Any]) -> str | None:
+    def _fence_check(
+        self, hold: dict[str, Any], request: Mapping[str, Any]
+    ) -> str | None:
         if hold["owner_id"] != request["owner_id"]:
             return "wrong_owner"
         if hold["fencing_token"] != request["fencing_token"]:
@@ -138,7 +142,7 @@ class FakeDevelopmentLaneTransport:
             return "terminal"
         return None
 
-    def renew(self, request: dict[str, Any]) -> dict[str, Any]:
+    def renew(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.calls.append("renew")
         hold = self._resolve(request["hold_id"])
         if hold is None:
@@ -152,7 +156,7 @@ class FakeDevelopmentLaneTransport:
         hold["expires_at_ms"] = request["now_ms"] + request["ttl_ms"]
         return {"decision": "accepted", "hold": dict(hold)}
 
-    def observe(self, request: dict[str, Any]) -> dict[str, Any]:
+    def observe(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.calls.append("observe")
         hold = self._resolve(request["hold_id"])
         if hold is None:
@@ -165,7 +169,7 @@ class FakeDevelopmentLaneTransport:
         hold["last_renewed_at_ms"] = request["now_ms"]
         return {"decision": "accepted", "hold": dict(hold)}
 
-    def finish(self, request: dict[str, Any]) -> dict[str, Any]:
+    def finish(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.calls.append("finish")
         hold = self._resolve(request["hold_id"])
         if hold is None:
@@ -180,7 +184,7 @@ class FakeDevelopmentLaneTransport:
         hold["last_renewed_at_ms"] = request["now_ms"]
         return {"decision": "accepted", "hold": dict(hold)}
 
-    def cleanup_complete(self, request: dict[str, Any]) -> dict[str, Any]:
+    def cleanup_complete(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.calls.append("cleanup_complete")
         hold = self._resolve(request["hold_id"])
         if hold is None:
@@ -189,14 +193,14 @@ class FakeDevelopmentLaneTransport:
         hold["hold_revision"] += 1
         return {"decision": "accepted", "hold": dict(hold)}
 
-    def query(self, request: dict[str, Any]) -> dict[str, Any]:
+    def query(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.calls.append("query")
         hold = self._resolve(request["hold_id"])
         if hold is None:
             return {"decision": "not_found", "hold": None}
         return {"decision": "accepted", "hold": dict(hold)}
 
-    def status(self, request: dict[str, Any]) -> dict[str, Any]:
+    def status(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.calls.append("status")
         lane_id = request.get("lane_id")
         holds = [
@@ -206,7 +210,7 @@ class FakeDevelopmentLaneTransport:
         ]
         return {"complete": True, "next_cursor": None, "holds": holds}
 
-    def update_quota(self, request: dict[str, Any]) -> dict[str, Any]:
+    def update_quota(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.calls.append("update_quota")
         return {"decision": "accepted", "policy": request["policy"]}
 
@@ -226,7 +230,7 @@ class FakeWorkItemClaimer:
         owner_id: str,
         session_id: str,
         tenant_ref: str,
-        lane_intent: dict[str, Any],
+        lane_intent: Mapping[str, Any],
         now: datetime,
     ) -> dict[str, Any]:
         self._attempt[lane_id] = self._attempt.get(lane_id, 0) + 1
@@ -374,6 +378,7 @@ def test_finish_transition_reaches_terminal_state_on_both(tmp_path: Path) -> Non
         activated = registry.activate(
             record.lane_id, owner_id=record.owner_id, fence=record.fence
         )
+        assert activated.owner_id is not None
         finished = registry.finish(
             record.lane_id, owner_id=activated.owner_id, fence=activated.fence
         )
@@ -394,7 +399,7 @@ def test_native_lane_authority_refuses_construction_without_full_transport() -> 
     """
 
     class IncompleteTransport:
-        def reserve(self, request: dict[str, Any]) -> dict[str, Any]:
+        def reserve(self, request: Mapping[str, Any]) -> dict[str, Any]:
             raise AssertionError("must never be called")
 
         # renew/observe/finish/cleanup_complete/query/status/update_quota
@@ -402,7 +407,11 @@ def test_native_lane_authority_refuses_construction_without_full_transport() -> 
 
     with pytest.raises(NativeLaneAuthorityUnavailable) as excinfo:
         NativeLaneAuthority(
-            IncompleteTransport(),
+            # IncompleteTransport deliberately does not structurally satisfy
+            # DevelopmentLaneTransport -- that is the point of this test, so
+            # the cast documents an intentional violation rather than hiding
+            # a real one.
+            cast(DevelopmentLaneTransport, IncompleteTransport()),
             FakeWorkItemClaimer(),
             tenant_ref="tenant:one",
             host_ref="host:one",

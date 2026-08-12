@@ -177,6 +177,9 @@ When query strings or parameters are supplied, an LLM-free **Knowledge Graph res
       ],
       "env": {
         "MCP_TOOL_MODE": "intent",
+        "BUILDTOOL": "True",
+        "CONCEPTSTOOL": "True",
+        "DEVELOPMENT_SURFACESTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
         "GITLAB_HOST": "https://gitlab.com",
@@ -184,15 +187,20 @@ When query strings or parameters are supplied, an LLM-free **Knowledge Graph res
         "GITLAB_TOKEN": "your_gitlab_token_here",
         "GITLAB_URL": "https://gitlab.com",
         "GIT_OPERATIONSTOOL": "True",
+        "LANETOOL": "True",
+        "MERGE_QUEUETOOL": "True",
         "MISCTOOL": "True",
+        "PROJECTTOOL": "True",
         "PROJECT_MANAGEMENTTOOL": "True",
+        "REMOTE_WORKERSTOOL": "True",
         "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
         "REPOSITORY_MANAGER_THREADS": "12",
         "RM_GATE_BEFORE_PUSH": "true",
         "RM_JOB_STALE_SECONDS": "1800",
         "RM_MAX_WORKERS": "8",
         "WORKSPACE_MANAGEMENTTOOL": "True",
-        "WORKSPACE_YML": "workspace.yml"
+        "WORKSPACE_YML": "workspace.yml",
+        "WORKTREETOOL": "True"
       }
     }
   }
@@ -224,6 +232,9 @@ own runtime secret boundary.
         "HOST": "127.0.0.1",
         "PORT": "8000",
         "MCP_TOOL_MODE": "intent",
+        "BUILDTOOL": "True",
+        "CONCEPTSTOOL": "True",
+        "DEVELOPMENT_SURFACESTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
         "GITLAB_HOST": "https://gitlab.com",
@@ -231,15 +242,20 @@ own runtime secret boundary.
         "GITLAB_TOKEN": "your_gitlab_token_here",
         "GITLAB_URL": "https://gitlab.com",
         "GIT_OPERATIONSTOOL": "True",
+        "LANETOOL": "True",
+        "MERGE_QUEUETOOL": "True",
         "MISCTOOL": "True",
+        "PROJECTTOOL": "True",
         "PROJECT_MANAGEMENTTOOL": "True",
+        "REMOTE_WORKERSTOOL": "True",
         "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
         "REPOSITORY_MANAGER_THREADS": "12",
         "RM_GATE_BEFORE_PUSH": "true",
         "RM_JOB_STALE_SECONDS": "1800",
         "RM_MAX_WORKERS": "8",
         "WORKSPACE_MANAGEMENTTOOL": "True",
-        "WORKSPACE_YML": "workspace.yml"
+        "WORKSPACE_YML": "workspace.yml",
+        "WORKTREETOOL": "True"
       }
     }
   }
@@ -270,6 +286,9 @@ docker run -i --rm \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
   -e TRANSPORT=stdio \
   -e MCP_TOOL_MODE=intent \
+  -e BUILDTOOL=True \
+  -e CONCEPTSTOOL=True \
+  -e DEVELOPMENT_SURFACESTOOL=True \
   -e GH_TOKEN=your_github_token_here \
   -e GITHUB_TOKEN=your_github_token_here \
   -e GITLAB_HOST=https://gitlab.com \
@@ -277,8 +296,12 @@ docker run -i --rm \
   -e GITLAB_TOKEN=your_gitlab_token_here \
   -e GITLAB_URL=https://gitlab.com \
   -e GIT_OPERATIONSTOOL=True \
+  -e LANETOOL=True \
+  -e MERGE_QUEUETOOL=True \
   -e MISCTOOL=True \
+  -e PROJECTTOOL=True \
   -e PROJECT_MANAGEMENTTOOL=True \
+  -e REMOTE_WORKERSTOOL=True \
   -e REPOSITORY_MANAGER_DEFAULT_BRANCH=main \
   -e REPOSITORY_MANAGER_THREADS=12 \
   -e RM_GATE_BEFORE_PUSH=true \
@@ -286,6 +309,7 @@ docker run -i --rm \
   -e RM_MAX_WORKERS=8 \
   -e WORKSPACE_MANAGEMENTTOOL=True \
   -e WORKSPACE_YML=workspace.yml \
+  -e WORKTREETOOL=True \
   registry.example.invalid/repository-manager@sha256:<digest> repository-manager-mcp
 ```
 
@@ -449,6 +473,14 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `PROJECT_MANAGEMENTTOOL` | `True` |  |
 | `WORKSPACE_MANAGEMENTTOOL` | `True` |  |
 | `MISCTOOL` | `True` |  |
+| `DEVELOPMENT_SURFACESTOOL` | `True` |  |
+| `LANETOOL` | `True` |  |
+| `WORKTREETOOL` | `True` |  |
+| `MERGE_QUEUETOOL` | `True` |  |
+| `BUILDTOOL` | `True` |  |
+| `PROJECTTOOL` | `True` |  |
+| `CONCEPTSTOOL` | `True` |  |
+| `REMOTE_WORKERSTOOL` | `True` |  |
 | `AUTH_TYPE` | `bearer` | authentication type (e.g. bearer, none) |
 | `LLM_API_KEY` | secret-injected |  |
 | `LLM_BASE_URL` | `https://api.openai.com/v1` |  |
@@ -474,7 +506,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | `gpt-4o` | Model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_40 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_48 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 

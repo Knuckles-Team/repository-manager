@@ -92,6 +92,9 @@ from repository_manager.merge_queue import (
 CONFIG_FILENAME = ".buildcache.yaml"
 ARTIFACT_STORE_DIRNAME = "build-cache"
 EXECUTION_CLASS = "build"
+# Resolved once so subprocess calls never hand a partial executable path to
+# the OS (matches stash_guard.py/destructive_guard.py's convention).
+_TRUSTED_GIT = shutil.which("git") or "git"
 _MAX_MANIFEST_BYTES = 1 << 20
 _MAX_CONFIG_BYTES = 1 << 20
 _MAX_LEGACY_ARTIFACTS = 4096
@@ -515,7 +518,7 @@ def stable_repository_id(path: Path | str) -> str:
     identity_root = resolved
     try:
         top = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
+            [_TRUSTED_GIT, "rev-parse", "--show-toplevel"],
             cwd=str(resolved),
             capture_output=True,
             text=True,
@@ -523,7 +526,7 @@ def stable_repository_id(path: Path | str) -> str:
             timeout=10,
         )
         common = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            [_TRUSTED_GIT, "rev-parse", "--path-format=absolute", "--git-common-dir"],
             cwd=str(resolved),
             capture_output=True,
             text=True,
@@ -956,16 +959,21 @@ def request(
     if build_service is not None or job_service is not None:
         from repository_manager.build_service import BuildService
 
-        service = build_service or BuildService(
-            job_service,
-            tenant_id=tenant_id or "repository-manager",
-            owner_id=owner_id
-            or (owner.get("owner_id") if isinstance(owner, dict) else "")
-            or "repository-manager",
-            session_id=session_id
-            or (owner.get("session") if isinstance(owner, dict) else "")
-            or "build-request",
-        )
+        service = build_service
+        if service is None:
+            assert job_service is not None, (
+                "job_service or build_service must be supplied"
+            )
+            service = BuildService(
+                job_service,
+                tenant_id=tenant_id or "repository-manager",
+                owner_id=owner_id
+                or (owner.get("owner_id") if isinstance(owner, dict) else "")
+                or "repository-manager",
+                session_id=session_id
+                or (owner.get("session") if isinstance(owner, dict) else "")
+                or "build-request",
+            )
         return service.submit(
             repo_path=repo_path,
             spec_name=spec_name,

@@ -6,17 +6,17 @@ transport, and public MCP/CLI actions remain in their dedicated lanes.
 
 ```mermaid
 flowchart LR
-    C[ExecutionCommand<br/>fixed argv + canonical workdir] --> V[LocalExecutor<br/>validate roots, limits, fence]
-    V -->|refuse before spawn| R[ExecutionResult<br/>refusal/failure]
-    V --> S[ProcessSupervisor<br/>new process group]
-    S --> O[BoundedLogSink<br/>redacted stdout/stderr]
+    C["ExecutionCommand<br/>fixed argv + canonical workdir"] --> V["LocalExecutor<br/>validate roots, limits, fence"]
+    V -->|refuse before spawn| R["ExecutionResult<br/>refusal/failure"]
+    V --> S["ProcessSupervisor<br/>new process group"]
+    S --> O["BoundedLogSink<br/>redacted stdout/stderr"]
     S --> H[Heartbeat / Cancellation / Fence]
-    H -->|timeout, cancel, stale fence| T[TERM → bounded KILL<br/>reap descendants]
+    H -->|timeout, cancel, stale fence| T["TERM → bounded KILL<br/>reap descendants"]
     T --> R
     S --> R
     R --> P{Fence-aware CAS publisher}
     P -->|accepted| U[Published result]
-    P -->|fenced| Q[Quarantine output<br/>never publish success]
+    P -->|fenced| Q["Quarantine output<br/>never publish success"]
 ```
 
 ## API contract

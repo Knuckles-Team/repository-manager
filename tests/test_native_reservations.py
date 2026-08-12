@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
@@ -294,6 +295,36 @@ class SharedNativeAuthorityClient:
         assert request["fence"] == self.record.fence
         return self._native_result(decision="accepted", changed=False)
 
+    def release(self, request: Mapping[str, object]) -> dict[str, object]:
+        self.requests.append(("release", request))
+        if self.record is not None:
+            self.record = replace(self.record, state=ReservationState.RELEASED)
+            self.held = ResourceVector()
+        return self._native_result(decision="accepted", changed=True)
+
+    def reclaim(self, request: Mapping[str, object]) -> dict[str, object]:
+        self.requests.append(("reclaim", request))
+        if self.record is not None:
+            self.record = replace(self.record, state=ReservationState.EXPIRED)
+            self.held = ResourceVector()
+        return self._native_result(decision="accepted", changed=True)
+
+    def update_host(self, request: Mapping[str, object]) -> dict[str, object]:
+        self.requests.append(("update_host", request))
+        return {
+            "schema_version": "1",
+            "accepted": True,
+            "reason": "accepted",
+            "host_ref": request["host_ref"],
+            "revision": request["revision"],
+            "held_cpu_weight": self.held.cpu_weight,
+            "held_memory_mib": self.held.memory_mib,
+            "held_disk_mib": self.held.disk_mib,
+            "held_process_slots": self.held.process_slots,
+            "draining": request["draining"],
+            "quarantined": request["quarantined"],
+        }
+
     def status(self, request: Mapping[str, object]) -> dict[str, object]:
         self.requests.append(("status", request))
         self.status_calls += 1
@@ -572,7 +603,7 @@ def test_missing_trusted_profile_fails_closed_before_mutation() -> None:
     ],
 )
 def test_direct_port_rejects_underdeclared_trusted_profile(
-    changed: dict[str, object],
+    changed: dict[str, Any],
 ) -> None:
     record = _record()
     client = FakeNativeClient(record)
@@ -631,6 +662,7 @@ def test_actual_generated_sync_wrapper_shape_binds_without_async_bridge() -> Non
     sync_type = getattr(client_module, "SyncEpistemicGraphClient", None)
     if sync_type is None:
         pytest.skip("generated sync client is unavailable")
+    assert sync_type is not None
     record = _record()
     native = FakeNativeClient(record)
     generated = object.__new__(sync_type)

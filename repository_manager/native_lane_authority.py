@@ -251,14 +251,14 @@ class NativeLaneAuthority:
     def __init__(
         self,
         transport: DevelopmentLaneTransport,
-        claimer: WorkItemLifecycleClaimer,
+        claimer: WorkItemLifecycleClaimer | None,
         *,
         tenant_ref: str,
         host_ref: str,
         managed_root: str | Path = "/var/lib/repository-manager/lanes",
         quota_policy_name: str = "default",
         quota_policy_version: str = "1",
-        clock: Callable[[], datetime] | None = None,
+        clock: Callable[[], datetime] | Any | None = None,
     ) -> None:
         missing = [
             name
@@ -301,7 +301,7 @@ class NativeLaneAuthority:
         host_ref: str,
         quota_policy_name: str = "default",
         quota_policy_version: str = "1",
-        clock: Callable[[], datetime] | None = None,
+        clock: Callable[[], datetime] | Any | None = None,
     ) -> NativeLaneAuthority:
         """Construct entirely from an injected native graph client + WorkItem engine.
 
@@ -805,7 +805,7 @@ def create_production_lane_registry(
     store_path: str | None = None,
     quota_policy_name: str = "default",
     quota_policy_version: str = "1",
-    clock: Callable[[], datetime] | None = None,
+    clock: Callable[[], datetime] | Any | None = None,
     **registry_kwargs: Any,
 ) -> Any:
     """Build a :class:`~repository_manager.lane_registry.LaneRegistry` with no fallback.

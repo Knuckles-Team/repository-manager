@@ -25,6 +25,7 @@ success.
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
@@ -72,6 +73,8 @@ except ImportError as _tunnel_manager_import_error:  # pragma: no cover - exerci
     _TmExecutionOutcome = _TmFailureClass = None  # type: ignore[assignment]
     max_output_bytes = max_transfer_bytes = None  # type: ignore[assignment]
     _TUNNEL_MANAGER_IMPORT_ERROR = _tunnel_manager_import_error
+
+logger = logging.getLogger(__name__)
 
 
 class RemoteExecutionUnavailableError(RuntimeError):
@@ -440,7 +443,11 @@ class RemoteWorkerExecutor:
                 self.target, marker_request, self.actor, context=marker_context
             )
         except Exception:  # noqa: BLE001 - best-effort; primary result is authoritative
-            pass
+            logger.debug(
+                "best-effort cancellation marker dispatch failed for %s",
+                context.command_id,
+                exc_info=True,
+            )
 
     @staticmethod
     def _checker_ok(checker: object) -> bool:
@@ -478,7 +485,7 @@ class RemoteWorkerExecutor:
             else:
                 log_sink.close()
         except Exception:  # noqa: BLE001 - sink failures must not mask the result
-            pass
+            logger.debug("log sink emission failed", exc_info=True)
 
     def _refused(
         self,

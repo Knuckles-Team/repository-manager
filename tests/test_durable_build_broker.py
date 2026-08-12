@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -25,6 +27,7 @@ from repository_manager.build_service import (
     dirty_snapshot_digest,
 )
 from repository_manager.build_worker import (
+    BuildAuthority,
     BuildWorker,
     BuildWorkerError,
     GraphBuildAuthority,
@@ -119,7 +122,9 @@ def test_build_service_persists_typed_payload_through_normal_job_service(
     payload = port.execution_inputs[result["job_id"]]
     assert payload.kind == "repository.build-execution/v1"
     assert payload.argv == ("python3", "build_script.py")
-    assert port.rows[result["job_id"]].correlation_id.startswith("build:")
+    correlation_id = port.rows[result["job_id"]].correlation_id
+    assert correlation_id is not None
+    assert correlation_id.startswith("build:")
 
 
 def test_path_scoped_cache_key_is_persisted_without_changing_its_identity(
@@ -423,7 +428,11 @@ def test_two_services_share_one_job_and_fresh_worker_reads_frozen_descriptor(
             del job_id
             return isinstance(claim, dict) and claim.get("fence") == "f1"
 
-    worker = BuildWorker(Authority(), None)
+    # This narrow fake only implements the BuildAuthority surface this test
+    # actually exercises (claim + the execution-plan read below), not the
+    # full protocol -- the cast documents that intentional narrowing rather
+    # than hiding a real mismatch.
+    worker = BuildWorker(cast(BuildAuthority, Authority()), None)
     # Mutating the caller config after submission cannot change the frozen
     # command recovered by a fresh worker instance.
     (repo / "build_script.py").write_text(
@@ -975,7 +984,7 @@ def _worker_fixture(
             return True
 
         def terminal_matches(
-            self, job_id: str, claim: object, *, result_ref: str
+            self, job_id: str, claim: Mapping[str, Any], *, result_ref: str
         ) -> bool:
             return (
                 job_id == self.row.job_id
@@ -1225,11 +1234,29 @@ def test_worker_reports_reconciliation_after_terminal_commit_finalize_failure(
     class FinalizeFailsOnce(BuildArtifactStore):
         failed = False
 
-        def finalize(self, *args: object, **kwargs: object) -> dict[str, object]:
+        def finalize(
+            self,
+            key: str,
+            *,
+            fence: str,
+            fence_check: Callable[[], bool] | None = None,
+            terminal_check: Callable[[], bool] | None = None,
+            job_id: str = "",
+            work_item_id: str = "",
+            attempt: int | None = None,
+        ) -> dict[str, Any]:
             if not self.failed:
                 self.failed = True
                 raise ArtifactFenceLost("injected finalize crash")
-            return super().finalize(*args, **kwargs)
+            return super().finalize(
+                key,
+                fence=fence,
+                fence_check=fence_check,
+                terminal_check=terminal_check,
+                job_id=job_id,
+                work_item_id=work_item_id,
+                attempt=attempt,
+            )
 
     store = FinalizeFailsOnce(tmp_path / "cache")
     repo, authority, scheduler = _worker_fixture(tmp_path, store)
@@ -1778,11 +1805,16 @@ def test_gc_protects_live_pinned_waited_and_running_keys(tmp_path: Path) -> None
         encoding="utf-8",
     )
     for protected_name in ("live_keys", "pinned_keys", "waited_keys", "running_keys"):
+        # A probe returning a bare ``True`` rather than a Mapping proof is
+        # the deliberately-malformed shape this suite uses elsewhere (see
+        # test_gc_requires_exact_authority_proof_before_reclaiming below) to
+        # prove GC never mistakes a truthy return for exact authority proof.
+        extra_kwargs: dict[str, Any] = {protected_name: {key}}
         result = store.garbage_collect(
             keep_recent=0,
             max_age_days=0,
-            authority_probe=lambda _key, _manifest: True,
-            **{protected_name: {key}},
+            authority_probe=lambda _key, _manifest: True,  # type: ignore[arg-type, return-value]
+            **extra_kwargs,
         )
         assert key in result["kept"]
         assert entry.exists()
@@ -1808,7 +1840,7 @@ def test_gc_requires_exact_authority_proof_before_reclaiming(tmp_path: Path) -> 
     wrong = store.garbage_collect(
         keep_recent=0,
         max_age_days=0,
-        authority_probe=lambda _key, _manifest: True,  # type: ignore[return-value]
+        authority_probe=lambda _key, _manifest: True,  # type: ignore[arg-type, return-value]
     )
     assert "v2:gc-exact" in wrong["kept"]
     exact = store.garbage_collect(
