@@ -103,8 +103,8 @@ RUN apt-get update \
 # whose `.pre-commit-config.yaml`/`.mergequeue.yaml` declares a `language:
 # system` node hook) auto-rejects in seconds with `[Errno 2] No such file
 # or directory: 'node'` — reads exactly like a real gate failure, silently
-# stranding the candidate. `rm_gates_toolchain_coverage.py` (run in CI
-# against the built image, see its own header) is what stops this
+# stranding the candidate. `scripts/check_gate_toolchain_coverage.py` (run
+# in CI against the built image, see its own header) is what stops this
 # particular gap from being reintroduced by the next repo that adopts a
 # new toolchain — this block is only what today's fleet needs.
 #
