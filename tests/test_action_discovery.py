@@ -18,6 +18,7 @@ ACTION_SETS = {
     "rm_workspace": mcp_server.RM_WORKSPACE_ACTIONS,
     "rm_worktree": mcp_server.RM_WORKTREE_ACTIONS,
     "rm_projects": mcp_server.RM_PROJECTS_ACTIONS,
+    "rm_gates": mcp_server.RM_GATES_ACTIONS,
 }
 
 

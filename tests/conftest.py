@@ -8,6 +8,32 @@ from agent_utilities.knowledge_graph.core.session import GraphSession, use_sessi
 from agent_utilities.models.company_brain import ActorType
 from agent_utilities.security.brain_context import ActorContext, use_actor
 
+#: Env vars a git hook invocation sets that git honors over a subprocess's
+#: `cwd=` -- this repo's own `pre-commit` runs pytest as a `language: system`
+#: hook of `git commit`, so any test that shells out to `git init`/`git
+#: commit` against its OWN tmp_path fixture while these leak from the
+#: environment silently operates on the OUTER real repo instead, regardless
+#: of `cwd=`. Reproduced live during GOC-60/P0.4 development: it planted two
+#: bogus commits on a real feature branch. Any test creating a real git repo
+#: via subprocess should pass ``env=isolated_git_subprocess_env()``.
+_GIT_ENV_LEAK_PREFIXES = ("GIT_AUTHOR_", "GIT_COMMITTER_")
+_GIT_ENV_LEAK_NAMES = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+)
+
+
+def isolated_git_subprocess_env() -> dict[str, str]:
+    """A copy of the process environment with git-hook-leaked vars stripped."""
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if k not in _GIT_ENV_LEAK_NAMES and not k.startswith(_GIT_ENV_LEAK_PREFIXES)
+    }
+
 
 @pytest.fixture(autouse=True)
 def _isolate_process_state(monkeypatch):

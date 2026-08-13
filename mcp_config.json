@@ -11,6 +11,7 @@
         "BUILDTOOL": "True",
         "CONCEPTSTOOL": "True",
         "DEVELOPMENT_SURFACESTOOL": "True",
+        "GATESTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
         "GITLAB_HOST": "https://gitlab.com",

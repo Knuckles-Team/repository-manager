@@ -59,3 +59,10 @@ RM_PROJECTS_ACTIONS = (
     "validate",
     "validate_status",
 )
+
+RM_GATES_ACTIONS = (
+    "run",
+    "status",
+    "explain",
+    "profile",
+)

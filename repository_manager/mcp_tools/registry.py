@@ -43,6 +43,7 @@ def register_project_management_tools(mcp: Any) -> None:
     function is independently toggleable, not merely name-shaped like one.
     """
     from repository_manager.mcp_tools.build import register_build_tools
+    from repository_manager.mcp_tools.gates import register_gates_tools
     from repository_manager.mcp_tools.lane import register_lane_tools
     from repository_manager.mcp_tools.merge_queue import register_merge_queue_tools
     from repository_manager.mcp_tools.projects import register_project_tools
@@ -59,6 +60,8 @@ def register_project_management_tools(mcp: Any) -> None:
         register_build_tools(mcp, context=context)
     if setting("PROJECTTOOL", True):
         register_project_tools(mcp, context=context)
+    if setting("GATESTOOL", True):
+        register_gates_tools(mcp, context=context)
 
 
 def register_development_surfaces_tools(mcp: Any) -> None:

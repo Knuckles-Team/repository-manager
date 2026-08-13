@@ -24,6 +24,7 @@ EXPECTED_TOOL_NAMES = (
     "rm_merge_queue",
     "rm_build",
     "rm_projects",
+    "rm_gates",
     "rm_workspace",
     "rm_concepts",
     "rm_remote_workers",
@@ -32,13 +33,14 @@ EXPECTED_TOOL_NAMES = (
 # SHA-256 of the ordered, normalized FastMCP catalog.  This covers names,
 # descriptions, tags, parameter schemas, defaults, and required fields
 # without duplicating a fixture here.  Originally the RMDD-04 pre-extraction
-# baseline; RMDD-20 is the first lane to deliberately grow the catalog past
-# it (exposing RMDD-15's remote-worker surface and RMDD-17's concept
-# coordination as ``rm_remote_workers``/``rm_concepts``), so both the tool
-# name list and this digest were recomputed against the live registry as
-# part of that change — not drift.
+# baseline; RMDD-20 grew it past that baseline (exposing RMDD-15's
+# remote-worker surface and RMDD-17's concept coordination as
+# ``rm_remote_workers``/``rm_concepts``); GOC-60/P0.4 grows it again with
+# ``rm_gates`` (the two-tier fast/heavy pre-commit gate driver) registered
+# right after ``rm_projects``. Each growth recomputes the tool name list and
+# this digest against the live registry — not drift.
 BASELINE_CATALOG_SHA256 = (
-    "fd1220cb353267719d7b7f2baf864382c047d66bca0c18131100006ec248ac69"
+    "7c1ee9a0bf40e71bb33278d4e7032a52cf52fe3b2d177974f4daf0ea0a77e4a5"
 )
 
 
