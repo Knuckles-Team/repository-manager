@@ -83,6 +83,36 @@ repos:
     language: system
     pass_filenames: false
     always_run: true
+  - id: check-import-safety
+    name: Cross-platform import safety (native + simulated-Windows fcntl/termios/pwd/resource)
+    # Same tool as agent-utilities' own check-import-safety hook (copied,
+    # not vendored as a dependency, so this hook has no environment-sync
+    # prerequisite beyond what pytest below already needs). Walks every
+    # repository_manager module, with fcntl/termios/pwd/resource poisoned
+    # out of sys.modules first to reproduce a Windows import failure on
+    # this POSIX dev machine -- see scripts/check_import_safety.py's own
+    # docstring for exactly what --simulate-windows does and does not
+    # model (deliberately does not flip sys.platform/os.name).
+    #
+    # CURRENTLY RED, expected: repository_manager/repository_manager.py
+    # (the package's own core module) eagerly imports
+    # repository_manager.canonical_guard, which has an unguarded top-level
+    # `import fcntl` -- so under this shim (and on a real Windows
+    # interpreter) `import repository_manager` fails OUTRIGHT, before
+    # discover_modules can even enumerate the rest of the package. No
+    # --exclude can route around this the way agent-utilities' hook does
+    # for its per-module cases -- the failure is structural, not
+    # per-module. Five more repository_manager files have the identical
+    # unguarded top-level `import fcntl` (fairness.py, task_queue.py,
+    # reservations.py, canonical_guard.py, stash_guard.py) plus 4 more
+    # lazy (function-body) sites in build_artifacts.py invisible to this
+    # static walk. This hook stays red until they are fixed -- that is the
+    # point: repository-manager (the tool that runs the FLEET's gates)
+    # cannot currently be imported on Windows at all.
+    entry: python scripts/check_import_safety.py --package repository_manager --simulate-windows
+    language: system
+    pass_filenames: false
+    always_run: true
   - id: okf-no-legacy-concepts
     name: OKF-CIS — no legacy CONCEPT ids
     entry: python scripts/run_agent_utilities_gate.py --script scripts/check_no_legacy_markers.py -- .
