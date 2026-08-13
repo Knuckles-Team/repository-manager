@@ -10,6 +10,7 @@ def run_pre_commit(
     timeout: int = 600,
     skip_pytest: bool = False,
     files: list[str] | None = None,
+    hook_stage: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Runs a single pass of pre-commit.
 
@@ -17,6 +18,16 @@ def run_pre_commit(
     paths via ``--files`` instead of ``--all-files`` — much faster on large
     repos. ``always_run`` hooks (the guardrail gates) still run regardless, so
     nothing is skipped, only narrowed. Empty/None ``files`` runs ``--all-files``.
+
+    ``hook_stage`` selects which staged hooks run, mirroring
+    ``pre-commit run --hook-stage <stage>``. Left ``None``, pre-commit runs
+    only the ``pre-commit``-stage hooks (its own default) — the lightweight
+    tier. The fleet's two-tier ``.pre-commit-config.yaml`` convention
+    (``default_stages: [pre-commit]``, with the slow/heavy hooks explicitly
+    staged ``[pre-push, manual]``) means a caller that wants the REAL pre-push
+    gate — not a re-run of the commit-time checks — must pass
+    ``hook_stage="pre-push"`` explicitly; omitting it silently skips every
+    pre-push-staged hook. (CONCEPT:RM-PUSH pre-push-gate-stage)
     """
     env = os.environ.copy()
     if "SKIP" in env:
@@ -28,9 +39,10 @@ def run_pre_commit(
         env["SKIP"] += ",pytest"
 
     scope = ["--files", *files] if files else ["--all-files"]
+    stage = ["--hook-stage", hook_stage] if hook_stage else []
 
     return subprocess.run(  # nosec B603 B607
-        ["pre-commit", "run", *scope, "--verbose"],
+        ["pre-commit", "run", *scope, *stage, "--verbose"],
         cwd=repo_path,
         capture_output=True,
         text=True,
