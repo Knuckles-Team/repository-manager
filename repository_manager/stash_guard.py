@@ -66,7 +66,6 @@ reused directly for two structural reasons, not preference:
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import logging
 import os
 import shlex
@@ -246,9 +245,11 @@ def hold_tree_mutation_lease(tree: str | Path, note: str = "") -> Iterator[int]:
         fd = os.open(lease_path, os.O_CREAT | os.O_RDWR, 0o644)
     except OSError as exc:
         raise RuntimeError(f"cannot create worktree mutation lease: {exc}") from exc
+    from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive_nb, unlock
+
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_exclusive_nb(fd)
         except OSError as exc:
             raise BlockedByLease(
                 f"worktree {str(tree)!r} mutation lease is already held"
@@ -261,7 +262,7 @@ def hold_tree_mutation_lease(tree: str | Path, note: str = "") -> Iterator[int]:
         yield fd
     finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            unlock(fd)
         finally:
             os.close(fd)
 

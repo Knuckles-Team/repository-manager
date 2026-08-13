@@ -10,7 +10,6 @@ second job state machine.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import tempfile
@@ -22,6 +21,8 @@ from enum import StrEnum
 from pathlib import Path
 from threading import RLock
 from typing import Protocol
+
+from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
 
 
 class FairnessError(ValueError):
@@ -208,10 +209,10 @@ class JsonFairnessState:
     def _locked(self) -> Iterator[None]:
         fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            lock_exclusive(fd)
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            unlock(fd)
             os.close(fd)
 
 
