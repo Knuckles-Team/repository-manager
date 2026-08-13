@@ -30,6 +30,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from agent_utilities.governance.lanes import lane_scope
+from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
 
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
 MANIFEST_NAME = "manifest.json"
@@ -790,12 +791,10 @@ class BuildArtifactStore:
     ) -> Path | None:
         """Quarantine only after an exact durable stale-owner proof."""
 
-        import fcntl
-
         lock_path = self._lock_path(key)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            lock_exclusive(lock.fileno())
             try:
                 manifest = self.read_manifest(key)
                 if manifest is None:
@@ -808,7 +807,7 @@ class BuildArtifactStore:
                     return None
                 return self.quarantine(key, reason=reason)
             finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                unlock(lock.fileno())
 
     def stage(
         self,
@@ -1120,15 +1119,13 @@ class BuildArtifactStore:
         self._require_fence(fence_check)
         stage_manifest = self.read_stage_manifest(staged)
         self._validate_stage(staged, stage_manifest)
-        # ``fcntl`` is intentionally limited to the artifact key.  It is not
-        # a job/resource authority; WorkItem fence validation remains the
+        # The lock below is intentionally limited to the artifact key.  It is
+        # not a job/resource authority; WorkItem fence validation remains the
         # authorization boundary.
-        import fcntl
-
         lock_path = self._lock_path(staged.key)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            lock_exclusive(lock.fileno())
             cleanup_stage = False
             try:
                 # The key lock may have waited behind another producer.  A
@@ -1231,7 +1228,7 @@ class BuildArtifactStore:
             finally:
                 if cleanup_stage:
                     self.discard_stage(staged)
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                unlock(lock.fileno())
 
     def finalize(
         self,
@@ -1255,12 +1252,10 @@ class BuildArtifactStore:
             raise ArtifactFenceLost(
                 "durable WorkItem attempt is required before finalize"
             )
-        import fcntl
-
         lock_path = self._lock_path(key)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            lock_exclusive(lock.fileno())
             try:
                 # A terminal proof and fence observation made before waiting
                 # for the key lock cannot authorize a later replacement.
@@ -1303,7 +1298,7 @@ class BuildArtifactStore:
                 _atomic_write_json(self.manifest_path(key), manifest)
                 return manifest
             finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                unlock(lock.fileno())
 
     def read_stage_manifest(self, staged: StagedArtifacts) -> dict[str, Any]:
         manifest = self._read_path(staged.stage_dir / MANIFEST_NAME)
@@ -1448,12 +1443,10 @@ class BuildArtifactStore:
         )
         if key in protected:
             return 0
-        import fcntl
-
         lock_path = self._lock_path(key)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            lock_exclusive(lock.fileno())
             try:
                 directory = self._key_dir(key)
                 if directory.is_symlink() or not directory.is_dir():
@@ -1484,7 +1477,7 @@ class BuildArtifactStore:
                     ) from exc
                 return total
             finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                unlock(lock.fileno())
 
     def garbage_collect(
         self,

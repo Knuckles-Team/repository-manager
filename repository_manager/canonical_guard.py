@@ -43,10 +43,11 @@ general LEASE arbitration protocol to adopt or generalize.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import logging
 import os
 from typing import Any, Protocol
+
+from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive_nb, unlock
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def hold_canonical_lease(canonical: str, note: str = ""):
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock_exclusive_nb(fd)
         except OSError as exc:
             raise BlockedByLease(
                 f"canonical checkout {canonical!r} lease is already held"
@@ -101,7 +102,7 @@ def hold_canonical_lease(canonical: str, note: str = ""):
         yield
     finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            unlock(fd)
         except OSError:  # nosec B110 - best-effort unlock during teardown
             pass
         os.close(fd)

@@ -68,8 +68,9 @@ memory", it has silently reintroduced the exact concurrent-writer corruption
 the cargo ``PARTITION`` class exists to prevent. **Do not do that.**
 
 **Co-location is not optional — same rule as everything else in this module:
-refuse rather than assume.** ``fcntl.flock`` (which :func:`hold_lease` uses
-under the hood) arbitrates processes sharing one kernel and one mount; it does
+refuse rather than assume.** The advisory file lock (which :func:`hold_lease`
+uses under the hood, via ``agent_utilities.knowledge_graph.core.file_lock``)
+arbitrates processes sharing one kernel and one mount; it does
 **not** arbitrate across nodes, and two facts here make that concrete rather
 than theoretical: ``repository-manager-mcp`` is pinned to one node via
 ``nodeSelector``+``hostPath`` (so *it* is a valid same-node arbiter for
@@ -99,7 +100,6 @@ to be enforced.
 
 from __future__ import annotations
 
-import fcntl
 import inspect
 import json
 import os
@@ -120,11 +120,13 @@ from agent_utilities.governance.lanes import (
     LaneScope,
     LeaseUnavailable,
     hold_lease,
+    is_pid_alive,
     lane_scope,
     lease_status,
     partitioned_paths,
     workspace_arbitration_dir,
 )
+from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
 
 _LEASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -637,8 +639,12 @@ def _global_lease_dir() -> Path:
 def _global_holder_alive(holder: dict[str, Any]) -> bool:
     """Same liveness rule as ``agent_utilities.governance.lanes._holder_is_live``
     (unexpired, and — for a same-host holder — its process still running);
-    duplicated locally because that check is private to a module whose
-    directory-selection logic this function deliberately bypasses.
+    the expiry/host logic is duplicated locally because that check is
+    private to a module whose directory-selection logic this function
+    deliberately bypasses. The pid-liveness portion is NOT duplicated: it
+    routes through ``lanes.is_pid_alive`` (R-07's chokepoint for this), since
+    a naive same-host ``os.kill(pid, 0)`` would actually call
+    ``TerminateProcess`` on Windows instead of merely probing.
     """
     expires = holder.get("expires_at")
     if expires:
@@ -655,13 +661,7 @@ def _global_holder_alive(holder: dict[str, Any]) -> bool:
     pid = holder.get("pid")
     if not isinstance(pid, int):
         return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+    return is_pid_alive(pid)
 
 
 @contextmanager
@@ -690,7 +690,7 @@ def _hold_global_lease(
         record["owner"] = dict(owner)
     fd = os.open(str(mutex_file), os.O_CREAT | os.O_WRONLY, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        lock_exclusive(fd)
         try:
             if lease_file.exists():
                 holder = json.loads(lease_file.read_text(encoding="utf-8"))
@@ -698,7 +698,7 @@ def _hold_global_lease(
                     raise LeaseUnavailable(name, holder)
             lease_file.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            unlock(fd)
     finally:
         os.close(fd)
     try:
@@ -706,7 +706,7 @@ def _hold_global_lease(
     finally:
         fd = os.open(str(mutex_file), os.O_CREAT | os.O_WRONLY, 0o644)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            lock_exclusive(fd)
             try:
                 if lease_file.exists():
                     current = json.loads(lease_file.read_text(encoding="utf-8"))
@@ -716,7 +716,7 @@ def _hold_global_lease(
                     ):
                         lease_file.unlink()
             finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                unlock(fd)
         finally:
             os.close(fd)
 
@@ -730,7 +730,7 @@ def _global_lease_status(name: str) -> dict[str, Any] | None:
     mutex_file = lease_file.with_suffix(".mutex")
     fd = os.open(str(mutex_file), os.O_CREAT | os.O_WRONLY, 0o644)
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        lock_exclusive(fd)
         try:
             if not lease_file.exists():
                 return None
@@ -740,7 +740,7 @@ def _global_lease_status(name: str) -> dict[str, Any] | None:
             lease_file.unlink()
             return None
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            unlock(fd)
     finally:
         os.close(fd)
 

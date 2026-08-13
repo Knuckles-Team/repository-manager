@@ -10,7 +10,6 @@ changing scheduler policy.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import tempfile
@@ -23,6 +22,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol
 
+from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
 from repository_manager.capacity import CapacityView, HostState, ResourceVector
 from repository_manager.development import (
     ReservationState,
@@ -1215,7 +1215,7 @@ class JsonReservationStore(InMemoryReservationStore):
     def _flush(self) -> None:
         fd = os.open(self._file_lock, os.O_CREAT | os.O_RDWR, 0o600)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            lock_exclusive(fd)
             payload = (
                 json.dumps(
                     [record.to_dict() for record in self.all()],
@@ -1233,7 +1233,7 @@ class JsonReservationStore(InMemoryReservationStore):
                 temp_path = Path(temp.name)
             temp_path.replace(self.path)
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            unlock(fd)
             os.close(fd)
 
 
