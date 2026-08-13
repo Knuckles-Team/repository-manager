@@ -1480,7 +1480,7 @@ class Git:
         return [line.strip() for line in res.data.splitlines() if line.strip()]
 
     def _gate_before_push(self, target_path: str) -> GitResult | None:
-        """Run the repo's pre-commit gates (minus full pytest) before pushing.
+        """Run the repo's HEAVY pre-push gate (minus full pytest) before pushing.
 
         Mirrors the repo's CI gates locally so a push can't ship a commit the CI
         would reject. Returns a failed ``GitResult`` (caller aborts the push) or
@@ -1488,6 +1488,14 @@ class Git:
         ``.pre-commit-config.yaml``, or when there is nothing to push. The
         gate-harness failing (tooling/env) never blocks a push — only a real
         hook failure does. ``pytest`` is skipped for speed (see __init__).
+
+        Runs with ``--hook-stage pre-push`` (CONCEPT:RM-PUSH pre-push-gate-stage):
+        the fleet's two-tier ``.pre-commit-config.yaml`` convention defaults to
+        the lightweight ``pre-commit`` stage and stages the slow/heavy hooks
+        explicitly as ``[pre-push, manual]``. Without ``--hook-stage pre-push``
+        this call would silently re-run only the lightweight tier (already
+        enforced at commit time) and never touch the heavy hooks it exists to
+        gate — the actual pre-push checks would never run.
         """
         if not self.gate_before_push:
             return None
@@ -1504,7 +1512,10 @@ class Git:
         logger.info("Running pre-push gate over %s", scope)
         try:
             result = run_pre_commit(
-                target_path, skip_pytest=True, files=changed or None
+                target_path,
+                skip_pytest=True,
+                files=changed or None,
+                hook_stage="pre-push",
             )
         except Exception as e:  # pragma: no cover - tooling/env failure
             logger.warning("Operation failed: error_type=%s", type(e).__name__)

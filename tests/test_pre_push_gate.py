@@ -71,6 +71,26 @@ def test_gate_scopes_hooks_to_pushed_diff(tmp_path):
         assert rpc.call_args.kwargs.get("skip_pytest") is True
 
 
+def test_gate_runs_the_heavy_pre_push_stage(tmp_path):
+    """The gate must request pre-commit's `pre-push` stage explicitly.
+
+    The fleet's two-tier `.pre-commit-config.yaml` convention defaults to the
+    lightweight `pre-commit` stage; the slow/heavy hooks are staged
+    `[pre-push, manual]`. Omitting `--hook-stage pre-push` would silently
+    re-run only the lightweight tier already enforced at commit time and
+    never touch the hooks this gate exists to run (CONCEPT:RM-PUSH
+    pre-push-gate-stage).
+    """
+    m = _git(tmp_path)
+    m.gate_before_push = True
+    with patch(
+        "repository_manager.scanner.run_pre_commit", return_value=_completed(0)
+    ) as rpc:
+        m._gate_before_push(str(tmp_path))
+        rpc.assert_called_once()
+        assert rpc.call_args.kwargs.get("hook_stage") == "pre-push"
+
+
 def test_gate_failure_aborts_push(tmp_path):
     m = _git(tmp_path)
     m.gate_before_push = True
