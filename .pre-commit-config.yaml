@@ -220,6 +220,49 @@ repos:
     files: ^docker/.*compose.*\.ya?ml$
 - repo: local
   hooks:
+  - id: gate-toolchain-coverage
+    name: Gate toolchain coverage — image can run every fleet-declared gate (D-MQ-8/node-pnpm mirror)
+    # `rm__merge_queue`'s (and `rm_gates`'/`scanner.py`'s) gate subprocesses run
+    # INSIDE this image (docker/Dockerfile) at runtime -- D-MQ-8 documents the
+    # defect class: a target repo's `.pre-commit-config.yaml`/`.mergequeue.yaml`
+    # can declare ANY `language: system` toolchain, and without it on PATH the
+    # gate auto-rejects in seconds reading exactly like a real failure. That
+    # was fixed once by hand for cargo, then drifted again for node/pnpm
+    # (agent-webui) until this hook existed. Rather than re-trusting a
+    # hand-maintained package list to stay current, this DERIVES the required
+    # toolchain set from the fleet's own configs every run and fails loudly on
+    # anything it cannot classify -- see the script's own header for the full
+    # design and its documented scope boundary (only sees literal command text
+    # in these two file types; a transitively-pulled build dependency such as
+    # cmake is out of its reach by construction).
+    #
+    # Static-Dockerfile mode: no Docker daemon required, ~3s warm over the
+    # whole fleet (measured) -- comfortably inside the pre-commit FAST budget.
+    # The authoritative check is `--image <built-tag>` in CI against the real
+    # build; this hook is the cheap, no-daemon local mirror of that.
+    #
+    # `manual`-only, NOT a default-stage blocking hook -- same reasoning as
+    # this fleet's own D-W6PC-3 precedent (agent-webui's `lint` hook): the
+    # fleet-wide scan surfaces real, PRE-EXISTING debt this lane does not own
+    # fixing (today: epistemic-graph's go-client mergequeue gate has no `go`
+    # in this image, and two repos' bare `pytest` entries -- see P0.2 in
+    # PHASE-0-DEV-VELOCITY.md -- are unclassifiable without knowing whether
+    # they resolve via a target repo's own venv). Blocking every future
+    # commit to THIS repo on debt it did not introduce is the exact
+    # "absolute local gate on a red baseline" anti-pattern D-W5GR-4 exists to
+    # avoid. Run on demand: `pre-commit run gate-toolchain-coverage
+    # --hook-stage manual --all-files`. Real enforcement of a NEW gap (a
+    # regression this lane DID introduce) belongs in CI as a differential
+    # check once one exists for this repo's own `.mergequeue.yaml`-style
+    # gating; until then this is the deliberate, checked-in way to see the
+    # current backlog, not to fail every push over it.
+    entry: bash -c 'repo=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)"); if [ -n "$AGENT_UTILITIES_ROOT" ]; then root="$AGENT_UTILITIES_ROOT"; else d="$repo"; root=""; while [ "$d" != "/" ]; do if [ -d "$d/agent-utilities/scripts" ]; then root="$d/agent-utilities"; break; fi; d=$(dirname "$d"); done; fi; if [ ! -d "$root/scripts" ]; then echo "REFUSED - cannot locate agent-utilities/scripts from $repo (set AGENT_UTILITIES_ROOT)" >&2; exit 1; fi; python3 scripts/check_gate_toolchain_coverage.py --fleet-root "$(dirname "$root")" --dockerfile docker/Dockerfile'
+    language: system
+    pass_filenames: false
+    always_run: true
+    stages: [manual]
+- repo: local
+  hooks:
   - id: security-sanitizer
     name: Security and Garbage Sanitizer
     entry: python scripts/security_sanitizer.py
