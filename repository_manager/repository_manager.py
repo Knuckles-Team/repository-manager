@@ -52,6 +52,7 @@ from importlib.resources import files
 from agent_utilities.base_utilities import get_logger
 
 from repository_manager.canonical_guard import guarded_canonical_mutation
+from repository_manager.gates import HOOK_STAGE_BY_GATE_STAGE, run_gate_stage
 from repository_manager.models import (
     GitError,
     GitMetadata,
@@ -62,7 +63,6 @@ from repository_manager.models import (
     WorkspaceConfig,
 )
 from repository_manager.scan_models import RepoScanResult
-from repository_manager.scanner import scan_repository
 from repository_manager.workspace_manifest import (
     WorkspaceManifestError,
     synchronize_workspace_manifest,
@@ -903,13 +903,17 @@ class Git:
         return target
 
     def validate_single_project(self, repo_path: str) -> RepoScanResult:
-        """Validates a single repository by running the scanner logic."""
+        """Validates a single repository by running its FAST-tier gates.
+
+        Delegates to :func:`repository_manager.gates.run_gate_stage` (the same
+        engine ``rm_gates`` uses) with ``stage="fast"`` (``--hook-stage
+        pre-commit``). Under the two-tier gate model a repo's HEAVY hooks
+        (pytest, cargo, ``uv lock --check``, ...) are declared ``stages:
+        [pre-push, manual]`` and are therefore correctly excluded here -- use
+        ``rm_gates action=run stage=heavy`` for those.
+        """
         logger.info("Validating configured project")
-
-        # Optionally perform ecosystem installation before scanning if needed
-        # In this implementation, we focus on pre-commit and pytest via the scanner
-
-        return scan_repository(repo_path)
+        return run_gate_stage(repo_path, "fast")
 
     def validate_and_release(
         self,
@@ -1645,22 +1649,24 @@ class Git:
         return [line.strip() for line in res.data.splitlines() if line.strip()]
 
     def _gate_before_push(self, target_path: str) -> GitResult | None:
-        """Run the repo's HEAVY pre-push gate (minus full pytest) before pushing.
+        """Run the repo's declared HEAVY (pre-push-stage) gates before pushing.
 
         Mirrors the repo's CI gates locally so a push can't ship a commit the CI
         would reject. Returns a failed ``GitResult`` (caller aborts the push) or
         ``None`` to proceed. No-op when disabled, when the repo has no
         ``.pre-commit-config.yaml``, or when there is nothing to push. The
         gate-harness failing (tooling/env) never blocks a push — only a real
-        hook failure does. ``pytest`` is skipped for speed (see __init__).
+        hook failure does.
 
-        Runs with ``--hook-stage pre-push`` (CONCEPT:RM-PUSH pre-push-gate-stage):
-        the fleet's two-tier ``.pre-commit-config.yaml`` convention defaults to
-        the lightweight ``pre-commit`` stage and stages the slow/heavy hooks
-        explicitly as ``[pre-push, manual]``. Without ``--hook-stage pre-push``
-        this call would silently re-run only the lightweight tier (already
-        enforced at commit time) and never touch the heavy hooks it exists to
-        gate — the actual pre-push checks would never run.
+        Runs ``stage="heavy"`` (``--hook-stage pre-push``) via
+        :func:`repository_manager.gates.run_gate_stage` — the fix for the
+        two-tier model's blocking gap (GOC-60): this method's name always
+        promised "pre-push", but until this change it ran pre-commit's default
+        (commit-stage) hooks scoped to the diff, so a repo's HEAVY hooks
+        (pytest, cargo, ``uv lock --check``, ...) were never exercised by any
+        push. FAST-stage hooks are intentionally NOT re-run here — they already
+        ran at commit time; this method's job is exclusively the HEAVY tier
+        that only a push can trigger.
         """
         if not self.gate_before_push:
             return None
@@ -1668,31 +1674,21 @@ class Git:
             return None
         if not self._has_unpushed_commits(target_path):
             return None
-        from .scanner import parse_pre_commit_output, run_pre_commit
 
         # Scope per-file hooks to the diff being pushed; always_run guardrail
         # gates still run fully. Falls back to --all-files if the diff is empty.
         changed = self._unpushed_changed_files(target_path)
         scope = f"{len(changed)} changed file(s)" if changed else "all files"
-        logger.info("Running pre-push gate over %s", scope)
+        logger.info("Running pre-push (HEAVY) gate over %s", scope)
         try:
-            result = run_pre_commit(
-                target_path,
-                skip_pytest=True,
-                files=changed or None,
-                hook_stage="pre-push",
-            )
+            result = run_gate_stage(target_path, "heavy", files=changed or None)
         except Exception as e:  # pragma: no cover - tooling/env failure
             logger.warning("Operation failed: error_type=%s", type(e).__name__)
             return None
-        if result.returncode == 0:
+        if result.success:
             return None
-        failed = [
-            h.hook_id
-            for h in parse_pre_commit_output(result.stdout + "\n" + result.stderr)
-            if not h.passed
-        ]
-        names = ", ".join(failed) or "pre-commit gate"
+        failed = [h.hook_id for h in result.hooks if not h.passed]
+        names = ", ".join(failed) or "pre-push gate"
         logger.error("Pre-push gate failed")
         return GitResult(
             status="error",
@@ -2179,7 +2175,14 @@ class Git:
             staged = self.git_action(command="git add -A", path=target_path)
             if staged.status == "error":
                 return staged
-            hook_command = "pre-commit run --all-files --verbose"
+            # Explicit, not pre-commit's implicit default: this method is the
+            # FAST tier's interactive stage-and-commit helper (CONCEPT
+            # GOC-59/60 two-tier gate model) -- declare the stage it runs
+            # rather than relying on `pre-commit run` defaulting to it.
+            hook_stage = HOOK_STAGE_BY_GATE_STAGE["fast"]
+            hook_command = (
+                f"pre-commit run --hook-stage {hook_stage} --all-files --verbose"
+            )
             result = self.git_action(
                 command=hook_command, path=target_path, env=env, timeout=600
             )

@@ -39,6 +39,7 @@ from repository_manager.mcp_tools import (
 )
 from repository_manager.mcp_tools.contracts import (
     RM_BUILD_ACTIONS,
+    RM_GATES_ACTIONS,
     RM_GIT_ACTIONS,
     RM_MERGE_QUEUE_ACTIONS,
     RM_PROJECTS_ACTIONS,
@@ -61,6 +62,7 @@ logger = get_logger("RepositoryManagerServer")
 
 __all__ = [
     "RM_BUILD_ACTIONS",
+    "RM_GATES_ACTIONS",
     "RM_GIT_ACTIONS",
     "RM_MERGE_QUEUE_ACTIONS",
     "RM_PROJECTS_ACTIONS",

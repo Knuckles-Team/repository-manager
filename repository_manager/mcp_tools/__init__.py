@@ -8,6 +8,7 @@ surfaces can exercise the same implementation without importing a giant module.
 """
 
 from repository_manager.mcp_tools.build import register_build_tools
+from repository_manager.mcp_tools.gates import register_gates_tools
 from repository_manager.mcp_tools.git import register_git_operations_tools
 from repository_manager.mcp_tools.lane import register_lane_tools
 from repository_manager.mcp_tools.merge_queue import register_merge_queue_tools
@@ -25,6 +26,7 @@ __all__ = [
     "MCP_TOOL_REGISTRY",
     "extend_registry",
     "register_build_tools",
+    "register_gates_tools",
     "register_git_operations_tools",
     "register_lane_tools",
     "register_merge_queue_tools",

@@ -68,6 +68,7 @@ This table is auto-generated from the live server — do not edit by hand.
 | `repository_ingest_repositories` | `MISCTOOL` | Natively ingest git repositories into epistemic-graph as typed :GitRepository nodes. |
 | `rm_build` | `PROJECT_MANAGEMENTTOOL` | Content-addressed build broker for ANY repository (CONCEPT:RM-TASK-LEDGER). |
 | `rm_concepts` | `DEVELOPMENT_SURFACESTOOL` | Concept-id claim coordination against RMDD-16's central authority. |
+| `rm_gates` | `PROJECT_MANAGEMENTTOOL` | Run and inspect the two-tier (fast/heavy) pre-commit gate across repos. |
 | `rm_git` | `GIT_OPERATIONSTOOL` | Typed bulk Git operations; arbitrary host commands are prohibited. |
 | `rm_lane` | `PROJECT_MANAGEMENTTOOL` | The lane lifecycle for concurrent agents and humans (CONCEPT:RM-LANE-DOCTOR). |
 | `rm_merge_queue` | `PROJECT_MANAGEMENTTOOL` | Serialized merge queue for ANY git repository (CONCEPT:RM-MERGE-QUEUE). |
@@ -123,12 +124,12 @@ This table is auto-generated from the live server — do not edit by hand.
 | `repository_manager_test_projects` | `GITTOOL` | Execute pytests for the specified projects in parallel. |
 | `repository_manager_update_dependency` | `GITTOOL` | Update a package's pinned version in a deps file (pyproject OR requirements). |
 | `repository_manager_validate_and_release` | `GITTOOL` | Validate projects in parallel, optionally triggering a release if successful. |
-| `repository_manager_validate_single_project` | `GITTOOL` | Validates a single repository by running the scanner logic. |
+| `repository_manager_validate_single_project` | `GITTOOL` | Validates a single repository by running its FAST-tier gates. |
 | `repository_manager_worktree_hygiene` | `GITTOOL` | Audit (and optionally prune) session worktrees as a release-flow step. |
 
 </details>
 
-_10 action-routed tool(s) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
+_11 action-routed tool(s) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
 <!-- MCP-TOOLS-TABLE:END -->
 
 Detailed tool schemas, parameter shapes, and validation constraints are preserved in [docs/usage.md](docs/usage.md).
@@ -180,6 +181,7 @@ When query strings or parameters are supplied, an LLM-free **Knowledge Graph res
         "BUILDTOOL": "True",
         "CONCEPTSTOOL": "True",
         "DEVELOPMENT_SURFACESTOOL": "True",
+        "GATESTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
         "GITLAB_HOST": "https://gitlab.com",
@@ -235,6 +237,7 @@ own runtime secret boundary.
         "BUILDTOOL": "True",
         "CONCEPTSTOOL": "True",
         "DEVELOPMENT_SURFACESTOOL": "True",
+        "GATESTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
         "GITLAB_HOST": "https://gitlab.com",
@@ -289,6 +292,7 @@ docker run -i --rm \
   -e BUILDTOOL=True \
   -e CONCEPTSTOOL=True \
   -e DEVELOPMENT_SURFACESTOOL=True \
+  -e GATESTOOL=True \
   -e GH_TOKEN=your_github_token_here \
   -e GITHUB_TOKEN=your_github_token_here \
   -e GITLAB_HOST=https://gitlab.com \
@@ -479,6 +483,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MERGE_QUEUETOOL` | `True` |  |
 | `BUILDTOOL` | `True` |  |
 | `PROJECTTOOL` | `True` |  |
+| `GATESTOOL` | `True` |  |
 | `CONCEPTSTOOL` | `True` |  |
 | `REMOTE_WORKERSTOOL` | `True` |  |
 | `AUTH_TYPE` | `bearer` | authentication type (e.g. bearer, none) |
@@ -506,7 +511,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | `gpt-4o` | Model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_48 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_49 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 

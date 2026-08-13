@@ -261,6 +261,18 @@ Examples:
         help="Run pre-commit checks and autoupdate hooks.",
     )
     group_maintenance.add_argument(
+        "--gate",
+        choices=["fast", "heavy"],
+        default=None,
+        help=(
+            "Run the two-tier pre-commit gate across targeted projects and print "
+            "a summary: 'fast' -> `pre-commit run --hook-stage pre-commit` "
+            "(formatters/linters); 'heavy' -> `--hook-stage pre-push` (pytest, "
+            "cargo, `uv lock --check`, ...). The CLI counterpart of the MCP "
+            "`rm_gates` tool's 'run' action."
+        ),
+    )
+    group_maintenance.add_argument(
         "--maintain",
         action="store_true",
         help="Execute phased maintenance (Bump -> Pre-commit -> Verify).",
@@ -720,6 +732,40 @@ Examples:
         git._export_report(summary, "build_report.md")
 
     has_errors = False
+
+    if args.gate:
+        import concurrent.futures
+
+        from repository_manager.gates import explain_gate_result, run_gate_stage
+
+        project_dirs = list(git.project_map.values())
+        if not project_dirs:
+            runtime.logger.warning("No projects found for --gate.")
+        else:
+            runtime.logger.info(
+                f"Running the {args.gate} gate across {len(project_dirs)} "
+                "project(s) in parallel..."
+            )
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=git.threads
+            ) as executor:
+                futures = {
+                    executor.submit(run_gate_stage, path, args.gate): path
+                    for path in project_dirs
+                }
+                gate_results = {
+                    futures[future]: future.result()
+                    for future in concurrent.futures.as_completed(futures)
+                }
+            failed = {p: r for p, r in gate_results.items() if not r.success}
+            for result in [r for _p, r in sorted(gate_results.items())]:
+                runtime.logger.info(explain_gate_result(result))
+            if failed:
+                has_errors = True
+                runtime.logger.error(
+                    f"{args.gate} gate failed in {len(failed)}/{len(gate_results)} "
+                    "project(s)."
+                )
 
     if args.validate:
         val_results = git.validate_and_release(

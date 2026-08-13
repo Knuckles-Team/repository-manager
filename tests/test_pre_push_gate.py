@@ -1,4 +1,11 @@
-"""Fast pre-push gate: run repo pre-commit gates (minus full pytest) before push."""
+"""Pre-push gate: run the repo's declared HEAVY (pre-push-stage) hooks before push.
+
+``_gate_before_push`` now runs through ``repository_manager.gates.run_gate_stage``
+with ``stage="heavy"`` -- the fix for GOC-60's blocking gap (this method's name
+always promised "pre-push" but used to run pre-commit's default commit-stage
+hooks). These tests assert the fixed call shape; ``tests/test_gates.py`` proves
+the live ``--hook-stage`` firing behavior end to end against real ``pre-commit``.
+"""
 
 import subprocess
 from unittest.mock import MagicMock, patch
@@ -33,7 +40,10 @@ def _git(tmp_path, ahead="1"):
 
 def _completed(returncode, stdout=""):
     return subprocess.CompletedProcess(
-        args=["pre-commit"], returncode=returncode, stdout=stdout, stderr=""
+        args=["pre-commit", "run", "--hook-stage", "pre-push", "--all-files", "--verbose"],
+        returncode=returncode,
+        stdout=stdout,
+        stderr="",
     )
 
 
@@ -46,7 +56,7 @@ def test_gate_disabled_is_noop(tmp_path):
 def test_gate_skips_when_nothing_to_push(tmp_path):
     m = _git(tmp_path, ahead="0")
     m.gate_before_push = True
-    with patch("repository_manager.scanner.run_pre_commit") as rpc:
+    with patch("repository_manager.gates._run_pre_commit") as rpc:
         assert m._gate_before_push(str(tmp_path)) is None
         rpc.assert_not_called()  # never even runs the gate on a no-op repo
 
@@ -54,21 +64,21 @@ def test_gate_skips_when_nothing_to_push(tmp_path):
 def test_gate_passes_lets_push_proceed(tmp_path):
     m = _git(tmp_path)
     m.gate_before_push = True
-    with patch("repository_manager.scanner.run_pre_commit", return_value=_completed(0)):
+    with patch("repository_manager.gates._run_pre_commit", return_value=_completed(0)):
         assert m._gate_before_push(str(tmp_path)) is None
 
 
-def test_gate_scopes_hooks_to_pushed_diff(tmp_path):
-    """Per-file hooks are scoped to the diff being pushed via files=."""
+def test_gate_scopes_hooks_to_pushed_diff_and_uses_pre_push_stage(tmp_path):
+    """Per-file hooks are scoped to the diff being pushed, AND run at pre-push."""
     m = _git(tmp_path)
     m.gate_before_push = True
     with patch(
-        "repository_manager.scanner.run_pre_commit", return_value=_completed(0)
+        "repository_manager.gates._run_pre_commit", return_value=_completed(0)
     ) as rpc:
         m._gate_before_push(str(tmp_path))
         rpc.assert_called_once()
+        assert rpc.call_args.args[1] == "pre-push"  # the literal fix under test
         assert rpc.call_args.kwargs.get("files") == ["pyproject.toml", "foo.py"]
-        assert rpc.call_args.kwargs.get("skip_pytest") is True
 
 
 def test_gate_runs_the_heavy_pre_push_stage(tmp_path):
@@ -94,9 +104,9 @@ def test_gate_runs_the_heavy_pre_push_stage(tmp_path):
 def test_gate_failure_aborts_push(tmp_path):
     m = _git(tmp_path)
     m.gate_before_push = True
-    out = "ruff....................................................................Failed\n"
+    out = "ruff....................................................................Failed\n- hook id: ruff\n- duration: 0.1s\n"
     with patch(
-        "repository_manager.scanner.run_pre_commit", return_value=_completed(1, out)
+        "repository_manager.gates._run_pre_commit", return_value=_completed(1, out)
     ):
         res = m.push_project(str(tmp_path))
     assert res.status == "error"
