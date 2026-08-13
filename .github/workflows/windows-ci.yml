@@ -1,0 +1,123 @@
+name: Windows coverage
+
+# ─────────────────────────────────────────────────────────────────────────
+# This repo previously had NO test/lint CI at all -- pipeline.yml only
+# builds and publishes to PyPI/Docker via a self-hosted runner (no test
+# step), and docs.yml/pages.yml only build documentation. This is the
+# FIRST workflow in this repo that actually imports and exercises the
+# package.
+#
+# Report-only by design (continue-on-error on every step, like
+# agent-utilities' advisory.yml two-workflow model): repository-manager's
+# publish pipeline is not gated on this, consistent with "do not disable or
+# weaken any existing CI job" -- this only adds signal, it does not touch
+# pipeline.yml.
+#
+# Every FEATURE in this repo is required to work on both platforms -- only
+# its MECHANISM may be platform-specific. So the exclusions below are two
+# different categories, not one "can't run on Windows" bucket:
+#
+# (A) INFRASTRUCTURE-UNAVAILABLE -- cannot exist on a GitHub-hosted Windows
+#     runner: `integration`-marked tests (subprocess/TestClient harness
+#     assumptions), `slow`-marked tests (long-running, excluded on ANY
+#     platform for a per-push job), and anything assuming Docker-in-CI or a
+#     self-hosted build host (none are in the selected subset below).
+#
+# (B) FEATURE-NOT-YET-PORTABLE -- a real, individually-listed defect, NOT
+#     excluded from the work queue just because it is excluded from this
+#     job's pytest invocation:
+#   * The import-safety step below is currently expected to FAIL: this
+#     package's own core module (repository_manager/repository_manager.py)
+#     eagerly imports repository_manager.canonical_guard, which has an
+#     unguarded top-level `import fcntl` -- so `import repository_manager`
+#     fails OUTRIGHT on a real Windows interpreter, before a single test
+#     can even collect. Five more files share the identical unguarded
+#     top-level `import fcntl` (fairness.py, task_queue.py,
+#     reservations.py, canonical_guard.py, stash_guard.py), plus 4 more
+#     lazy (function-body) sites in build_artifacts.py invisible to a
+#     static import walk. See .pre-commit-config.yaml's check-import-safety
+#     hook for the same finding at commit time. Left unexcluded and RED on
+#     purpose -- the tool that runs the FLEET's gates currently cannot be
+#     imported on Windows at all, and a job that went green by skipping
+#     that would be exactly the "gate reporting coverage it does not have"
+#     failure this program exists to catch.
+# ─────────────────────────────────────────────────────────────────────────
+
+on:
+  pull_request:
+    paths:
+      - 'repository_manager/**'
+      - 'scripts/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/windows-ci.yml'
+  push:
+    branches:
+      - 'main'
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows coverage (report only, never blocks)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          version: '0.11.7'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Sync test environment
+        id: sync
+        continue-on-error: true
+        run: |
+          uv sync --frozen --extra test
+          echo "$PWD/.venv/Scripts" >> "$GITHUB_PATH"
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      # See the header comment: this is EXPECTED to fail right now
+      # (repository_manager.canonical_guard's unguarded `import fcntl` is
+      # in the package's own eager import chain).
+      - name: Cross-platform import safety (real Windows interpreter)
+        if: steps.sync.outcome == 'success'
+        continue-on-error: true
+        run: python3 scripts/check_import_safety.py --package repository_manager
+
+      # Same marker filter this repo's own pre-commit pytest hook already
+      # uses at commit time (fast, no integration/slow), so a green run here
+      # is directly comparable to "passes locally".
+      - name: Unit tests (fast subset -- not slow, not integration)
+        if: steps.sync.outcome == 'success'
+        continue-on-error: true
+        run: >-
+          python3 -m pytest tests -q --tb=short -m "not slow and not integration" --timeout=120
+
+      - name: Windows coverage summary
+        if: always()
+        run: |
+          echo "## Windows coverage ran in report-only mode" >> "$GITHUB_STEP_SUMMARY"
+          echo "Both steps above use continue-on-error: true -- a red step" >> "$GITHUB_STEP_SUMMARY"
+          echo "here is a real Windows regression and never blocks the" >> "$GITHUB_STEP_SUMMARY"
+          echo "publish pipeline. The import-safety step is EXPECTED red" >> "$GITHUB_STEP_SUMMARY"
+          echo "right now: repository_manager.canonical_guard's unguarded" >> "$GITHUB_STEP_SUMMARY"
+          echo "top-level 'import fcntl' is in the package's own eager" >> "$GITHUB_STEP_SUMMARY"
+          echo "import chain, so the whole package fails to import on" >> "$GITHUB_STEP_SUMMARY"
+          echo "Windows today. See this file's header comment for the full" >> "$GITHUB_STEP_SUMMARY"
+          echo "list of affected modules and the infra-unavailable vs" >> "$GITHUB_STEP_SUMMARY"
+          echo "feature-not-yet-portable split." >> "$GITHUB_STEP_SUMMARY"
