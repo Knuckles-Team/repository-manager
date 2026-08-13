@@ -30,6 +30,19 @@ def register_workspace_management_tools(
             default=None,
             description="Path to workspace.yml (for 'setup', 'template', 'save').",
         ),
+        install: bool = Field(
+            default=False,
+            description=(
+                "For 'setup': after clone/pull, materialize each project's "
+                ".uv-workspace-siblings/agent-utilities symlink and run `uv "
+                "sync`, dependency-ordered (agent-utilities first, since "
+                "every fleet member depends on it and it is not yet "
+                "published to PyPI at the required floor). Best-effort per "
+                "project; a partial failure is reported (status='error' "
+                "with per-project detail in 'data'), never masked as a "
+                "uniform success. See CONCEPT:RM-BOOTSTRAP."
+            ),
+        ),
         config_dict: dict[str, Any] | None = Field(
             default=None,
             description="Dictionary representation of WorkspaceConfig (for 'save').",
@@ -120,7 +133,7 @@ def register_workspace_management_tools(
                     data="",
                     error=GitError(message="yml_path required for 'setup'", code=1),
                 )
-            return await run_blocking(git.setup_from_yaml, yml_path)
+            return await run_blocking(git.setup_from_yaml, yml_path, install)
 
         if action == "template":
             if not yml_path:
