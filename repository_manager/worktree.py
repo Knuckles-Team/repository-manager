@@ -36,6 +36,7 @@ import logging
 import os
 import shlex
 import time
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from repository_manager import prune_guard, stash_guard
@@ -94,12 +95,35 @@ class WorktreeManager:
     repository-manager.
     """
 
-    def __init__(self, git: GitLike, registry: Any | None = None) -> None:
+    def __init__(
+        self,
+        git: GitLike,
+        registry: Any | None = None,
+        *,
+        registry_factory: Callable[[], Any] | None = None,
+    ) -> None:
         self.git = git
         # The registry is optional so the historical worktree verbs remain
         # usable during rollback and migration.  Managed lifecycle callers use
         # ``allocate`` below, which reserves before invoking ``add``.
         self.registry = registry
+        # RMDD-28 (LANE-4): the production no-fallback constructor
+        # (``repository_manager.native_lane_authority.create_production_lane_registry``)
+        # has exactly one production call site -- ``allocate`` below -- and
+        # nothing ever supplied it, so it was unreachable even though it
+        # existed. This is a zero-arg seam a deployment's composition root can
+        # bind (e.g. via ``functools.partial(create_production_lane_registry,
+        # graph_client, engine, tenant_ref=..., host_ref=...)``) once it has a
+        # live graph client/engine; ``allocate`` calls it only when neither
+        # ``registry`` nor ``self.registry`` was already supplied, and never
+        # catches a factory failure to substitute a local approximation --
+        # that would recreate the exact silent-degrade this lane exists to
+        # close. Deliberately NOT resolved from environment variables here:
+        # this module has no established convention for acquiring a live
+        # engine/graph client (RMDD-27's own ``create_production_resource_
+        # scheduler`` has the identical gap), and inventing one is outside
+        # this lane's scope and outside RMDD-09-owned territory.
+        self._registry_factory = registry_factory
 
     # ── resolution ────────────────────────────────────────────────────────
     def resolve_repo(self, repo: str) -> str | None:
@@ -284,6 +308,22 @@ class WorktreeManager:
         from repository_manager.lane_registry import LaneRegistry
 
         authority = registry or self.registry
+        if authority is None and self._registry_factory is not None:
+            # No local approximation on failure: a configured-but-broken
+            # factory (e.g. the RMDD-28 native transport unavailable, or a
+            # transport missing one of its eight verbs) must refuse here,
+            # not be swallowed into the authority-less ``LaneRegistry()``
+            # below. Only the ABSENCE of a factory falls through to that
+            # historical local-only default.
+            try:
+                authority = self._registry_factory()
+            except Exception as exc:
+                return {
+                    "ok": False,
+                    "stage": "registry",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
         if authority is None:
             authority = LaneRegistry()
         canonical = self.resolve_repo(repo)
