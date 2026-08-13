@@ -15,6 +15,9 @@ import sys
 from repository_manager.cli_commands.build_queue import run_build_queue_cli
 from repository_manager.cli_commands.concepts import run_concepts_cli
 from repository_manager.cli_commands.context import CliRuntime
+from repository_manager.cli_commands.differential_selection import (
+    run_differential_select_cli,
+)
 from repository_manager.cli_commands.lane import run_lane_cli
 from repository_manager.cli_commands.merge_queue import run_merge_queue_cli
 from repository_manager.cli_commands.remote_workers import run_remote_workers_cli
@@ -378,6 +381,49 @@ Examples:
         help="Land but keep the worktrees and branches (skips the guarded prune).",
     )
 
+    # CONCEPT:RM-DIFF-SELECT — the GOC-69 pre-push differential tier's mapping
+    # step (changed files -> pytest targets). A thin standalone way to inspect
+    # a selection; the wired consumer is rm_gates(action=run, stage=heavy).
+    # Reuses --repo-path from the queue group above rather than declaring its own.
+    group_diff = parser.add_argument_group(
+        "Differential Test Selection (GOC-69 pre-push tier)"
+    )
+    group_diff.add_argument(
+        "--differential-select",
+        action="store_true",
+        help=(
+            "Print, as JSON, the pytest targets a differential pre-push run "
+            "would select for the diff between --diff-base and --diff-ref "
+            "(merge-base relative, same computation the merge queue uses). "
+            "Fails OPEN to the full suite whenever narrowing is not provably "
+            "safe -- see repository_manager/differential_selection.py."
+        ),
+    )
+    group_diff.add_argument(
+        "--diff-base", type=str, default="main", help="Base ref (default: main)."
+    )
+    group_diff.add_argument(
+        "--diff-ref", type=str, default="HEAD", help="Candidate ref (default: HEAD)."
+    )
+    group_diff.add_argument(
+        "--diff-src-roots",
+        type=str,
+        default=".",
+        help="Comma-separated import roots (default: '.').",
+    )
+    group_diff.add_argument(
+        "--diff-test-roots",
+        type=str,
+        default="tests",
+        help="Comma-separated test roots (default: 'tests').",
+    )
+    group_diff.add_argument(
+        "--diff-fanin-threshold",
+        type=int,
+        default=25,
+        help="Reverse-import fan-in above which a module is treated as a hub (default: 25).",
+    )
+
     # CONCEPT:RM-TASK-LEDGER — the content-addressed build broker. A sibling of
     # --merge-queue: same "declared per repo, refused when absent" contract,
     # same dispatch()-core-shared-by-every-surface shape, different resource
@@ -525,6 +571,8 @@ Examples:
     # bulk operations above, whose --path/--repositories semantics are different.
     if args.merge_queue:
         sys.exit(run_merge_queue_cli(args))
+    if args.differential_select:
+        sys.exit(run_differential_select_cli(args))
     if args.build_broker:
         sys.exit(run_build_queue_cli(args))
     if args.concepts:
