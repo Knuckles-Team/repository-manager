@@ -51,6 +51,46 @@ repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "prompts/
 
 [tool.uv]
 managed = true
+# Same narrow override agent-utilities/agent-webui declare for themselves
+# (see agent-utilities' pyproject.toml `[tool.uv]` comment for the full
+# "why"): fastmcp-slim ships no non-prerelease under the fastmcp>=4.0.0b1
+# floor agent-utilities[mcp] requires, and uv only allows prereleases for a
+# package when a ROOT project's own requirement names one -- which this
+# repo's requirement (transitively, via agent-utilities[mcp]) now does once
+# the path-dependency fix below lets resolution reach this far at all.
+override-dependencies = [
+    "fastmcp-slim[client,server]>=4.0.0b1",
+]
+
+# B6 (REMAINING-ISSUES-DESIGNS.md): `agent-utilities>=2.0.0` (below) is not
+# yet published to PyPI (only <=1.26.4 is), so a plain version-range
+# dependency is unconditionally unresolvable from this checkout -- BEFORE
+# this fix, `uv lock` failed with "only agent-utilities[mcp]<=1.26.4 is
+# available". Mirrors the agent-webui/geniusbot BUG-074 fix already proven in
+# this fleet: a plain editable PATH dependency instead of a version-range
+# one. `.uv-workspace-siblings/agent-utilities` is a local, untracked symlink
+# to the real sibling checkout (see `.gitignore`'s matching entry);
+# dev/lane-machine-only, materialized once per checkout, never cloned/copied.
+#
+# Separately (not fixed by this table): this checkout also sits inside the
+# /home/apps/workspace uv WORKSPACE root, which lists agent-utilities as a
+# member that is itself its own self-contained uv workspace root
+# (D-75-1/D-CIP-19/D-W3BP-4) -- uv rejects that ("Nested workspaces are not
+# supported") for ANY `uv lock` invocation whose ancestor-directory walk
+# reaches /home/apps/workspace, regardless of this repo's own tables
+# (verified: even agent-webui/geniusbot, which already carry this identical
+# fix, still hit it when run from their canonical, workspace-nested
+# location). That is exactly why this program's standing rule is to do all
+# work from a real `git worktree add` OUTSIDE /home/apps/workspace (e.g.
+# /home/apps/worktrees/<repo>/<branch>) rather than the canonical checkout --
+# from such a worktree, /home/apps/workspace is not an ancestor directory at
+# all, so uv's walk never reaches it and this second failure mode does not
+# arise. `uv lock` from this checkout's OWN canonical path would still hit
+# it; that is a separate, pre-existing structural fact about the ecosystem
+# workspace's layout, not something this table can fix from inside one
+# member's pyproject.toml.
+[tool.uv.sources]
+agent-utilities = { path = ".uv-workspace-siblings/agent-utilities", editable = true }
 
 [project.entry-points."agent_utilities.skill_providers"]
 repository-manager = "repository_manager.skills"

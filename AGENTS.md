@@ -938,13 +938,20 @@ agent-utilities --json concept reserve --ns EG-KG.compute.backend   # or a packa
 Full protocol (ledger, merge=union, reconcile, MCP/REST): <https://knuckles-team.github.io/agent-utilities/concept_coordination/>
 <!-- END concept-coordination (generated) -->
 
-## Version & lockfile drift edict (keep the version mirrors AND the lock in sync)
+## Version & lockfile drift edict (keep the version mirrors AND every generated lock artifact in sync)
 
 The two most common release-breakers in this fleet are **version drift** (the version in
 `pyproject.toml`/`.bumpversion.cfg` advancing while `README.md`, `docker/Dockerfile`, and the
-module `__version__`s lag) and a **stale `uv.lock`** (shipping known-vulnerable transitive deps).
-A version mismatch makes the next `bump-my-version` throw `VersionNotFoundException`; a stale lock
-is what Dependabot flags. Rules:
+module `__version__`s lag) and a **stale generated lock artifact** (shipping known-vulnerable
+transitive deps, or a dependency floor that has quietly become unsatisfiable). A version mismatch
+makes the next `bump-my-version` throw `VersionNotFoundException`; a stale lock is what Dependabot
+flags. "Generated lock artifact" means **every file `uv` derives from `pyproject.toml` and that a
+consumer installs from** — at minimum `uv.lock` AND any `requirements.txt` this repo ships (a
+`uv export`/`uv pip compile` output CI installs from is a second lockfile in every way that
+matters here, even though nothing text-registers it in `.bumpversion.cfg`) — plus any other such
+artifact a repo adds later (e.g. a `constraints.txt`, a per-extra `requirements-*.txt`). Naming
+`uv.lock` only, as this edict once did, is how a stale `requirements.txt` pinning an unpublishable
+`agent-utilities` shipped from two fleet repos with nothing catching it (C2). Rules:
 
 1. **Never hand-edit a version string.** Change the version ONLY via
    `bump-my-version bump {patch|minor|major}` (a.k.a. `bump2version`), which rewrites every file
@@ -953,12 +960,17 @@ is what Dependabot flags. Rules:
 2. **Every version-bearing file must be registered in `.bumpversion.cfg`** — at minimum
    `pyproject.toml` AND `README.md`, plus `docker/Dockerfile` and any module `__version__`. Never
    add a file that embeds the version without a `[bumpversion:file:...]` entry for it.
-3. **Re-lock on every dependency change.** After editing `pyproject.toml` deps/extras, run
-   `uv lock` and commit `uv.lock` in the SAME change. The `uv-lock` pre-commit hook runs with
-   `--locked` and fails on drift — never bypass it. The committed `uv.lock` is the
-   Dependabot/security surface.
+3. **Re-lock on every dependency change, in EVERY generated lock artifact.** After editing
+   `pyproject.toml` deps/extras, run `uv lock` and commit `uv.lock` in the SAME change; if this
+   repo also ships a `requirements.txt`, regenerate it the same way in the same change. A
+   version-mirror gate (`scripts/check_lockfile_version_mirrors.py`, run as part of the
+   `check-bumpversion` pre-commit hook — the same gate, not a parallel one, per B6) fails when
+   `uv.lock`'s own self-package version or `requirements.txt`'s declared ranges disagree with
+   `pyproject.toml` — never bypass it. The committed lock artifacts are the Dependabot/security
+   surface.
 4. **Patch CVEs with a version floor at the source, then re-lock.** `uv` resolves one version
-   graph-wide, so a lower-bound in the extra that pulls a dependency raises it for the whole lock.
+   graph-wide, so a lower-bound in the extra that pulls a dependency raises it for the whole lock
+   — and for every generated lock artifact derived from it.
 
 ## Upstream currency edict — target the newest release; a pin is a hypothesis, not a fact (READ BEFORE capping, deferring, or opt-in-gating an upgrade)
 

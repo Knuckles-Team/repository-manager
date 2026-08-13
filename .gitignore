@@ -117,6 +117,12 @@ ENV/
 env.bak/
 venv.bak/
 
+# B6 (REMAINING-ISSUES-DESIGNS.md): local, untracked symlink to the
+# agent-utilities sibling checkout that `[tool.uv.sources]` in pyproject.toml
+# resolves as a plain editable path dependency (agent-webui BUG-074 pattern).
+# Materialized once per checkout; dev/lane-machine-only, never tracked.
+.uv-workspace-siblings/
+
 # Spyder project settings
 .spyderproject
 .spyproject
