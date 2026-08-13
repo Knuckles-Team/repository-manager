@@ -223,9 +223,8 @@ def test_recheck_refusal_preserves_tunnel_manager_import_error_as_cause():
 
     import importlib.util
 
-    from repository_manager.remote_execution import RemoteWorkerRegistryError
-
     from repository_manager import remote_worker_actions
+    from repository_manager.remote_execution import RemoteWorkerRegistryError
 
     tunnel_manager_present = importlib.util.find_spec("tunnel_manager") is not None
 
