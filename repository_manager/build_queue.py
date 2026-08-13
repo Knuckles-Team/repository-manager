@@ -61,6 +61,7 @@ import os
 import shutil
 import stat
 import subprocess  # nosec B404 - fixed argv, never shell=True
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,6 +72,7 @@ from agent_utilities.governance.lanes import (
     LeaseUnavailable,
     hold_lease,
     lane_scope,
+    partitioned_paths,
 )
 
 from repository_manager import task_queue as tq
@@ -82,12 +84,14 @@ from repository_manager.config_schema import (
     load_yaml_mapping_text,
     parse_build_config,
 )
+from repository_manager.disk_policy import DiskDecision, DiskPolicy, DiskWatermarks
 from repository_manager.merge_queue import (
     _now,  # reuse the same UTC-isoformat timestamp helper merge_queue uses
     _require_git,
     _run_git,
     materialized,
 )
+from repository_manager.test_commands import ensure_no_fail_fast
 
 CONFIG_FILENAME = ".buildcache.yaml"
 ARTIFACT_STORE_DIRNAME = "build-cache"
@@ -1203,6 +1207,18 @@ def _build(
             path=tree,
             colocated=colocated,
         ):
+            disk_reservation_id = cache_digest or f"degraded-{spec.name}"
+            disk_decision = _admit_disk(tree, spec, reservation_id=disk_reservation_id)
+            if not disk_decision.admitted:
+                raise BuildQueueError(
+                    f"build spec {spec.name!r} refused by disk admission after a "
+                    f"bounded gc() self-heal attempt: {disk_decision.reason} "
+                    f"(code={disk_decision.code.value}, "
+                    f"free={disk_decision.observed.free_mib}MiB, "
+                    f"predicted_free={disk_decision.predicted_free_mib}MiB) — "
+                    "reclaim space or raise the repo's declared "
+                    "disk_high_watermark_mib in .buildcache.yaml"
+                )
             if cache_digest is not None:
                 with materialized(tree, "HEAD", scope=lane_scope(tree)) as build_tree:
                     _run_build_command(build_tree, spec)
@@ -1257,15 +1273,136 @@ def _build(
     }
 
 
+# ---------------------------------------------------------------------------
+# Disk admission (P0.6) — wires the EXISTING disk_policy.py hysteresis; never
+# reimplemented here. "check `df -h` before a big build" was pure prose: the
+# broker built into whatever space happened to be free and only failed loudly
+# (mid-build, wasting the compute) when it ran out. `_admit_disk` is the
+# structural replacement -- a refusal BEFORE `_run_build_command` is ever
+# reached, with one bounded, synchronous self-heal attempt (this module's own
+# `gc()`) before it gives up.
+# ---------------------------------------------------------------------------
+#: Fallback watermarks (fraction of total disk used) when a repo's
+#: `.buildcache.yaml` declares no `disk_high_watermark_mib`/
+#: `disk_low_watermark_mib` of its own. `DiskPolicy` already refuses a
+#: request whose predicted usage would exceed observed free space with NO
+#: watermarks declared at all (`INSUFFICIENT_FREE`) -- these give a build a
+#: chance to be refused, and to trigger the GC self-heal, well before that
+#: hard floor, which is the entire value of the high/low hysteresis over a
+#: bare free-space check.
+_DEFAULT_DISK_HIGH_FRACTION = 0.90
+_DEFAULT_DISK_LOW_FRACTION = 0.80
+
+_DISK_POLICY_LOCK = threading.Lock()
+_DISK_POLICY: DiskPolicy | None = None
+
+
+def _disk_policy() -> DiskPolicy:
+    """The one process-local disk-hysteresis state machine every build shares.
+
+    Mirrors :func:`repository_manager.remote_worker_actions.capacity_inventory`'s
+    singleton convention: constructed once, never a second instance, so the
+    high/low hysteresis (open->blocked->open) is coherent across requests
+    instead of resetting on every call.
+    """
+
+    global _DISK_POLICY
+    with _DISK_POLICY_LOCK:
+        if _DISK_POLICY is None:
+            _DISK_POLICY = DiskPolicy()
+        return _DISK_POLICY
+
+
+def _disk_watermarks(*, total_mib: int, policy_key: str) -> DiskWatermarks:
+    """Fraction-of-total watermarks, keyed per build spec.
+
+    ``BuildSpec.resources`` is `config_schema.ResourceRequest` — a plain
+    ``(cpu_weight, memory_mb, disk_mb, process_slots)`` request with no
+    watermark fields of its own (those live on the DIFFERENT, native
+    ``development.models.ResourceRequest`` the not-yet-reachable
+    ``ResourceScheduler`` uses — see GOC-60's "two `ResourceRequest` classes"
+    finding). Rather than growing a second copy of that field here, this
+    always derives the watermark from measured total disk; ``policy_key``
+    (already scoped per spec name by the caller) keeps two specs in the same
+    repo from sharing hysteresis state.
+    """
+
+    return DiskWatermarks(
+        low_mib=int(total_mib * _DEFAULT_DISK_LOW_FRACTION),
+        high_mib=int(total_mib * _DEFAULT_DISK_HIGH_FRACTION),
+        policy_key=policy_key,
+    )
+
+
+def _admit_disk(tree: Path, spec: BuildSpec, *, reservation_id: str) -> DiskDecision:
+    """Refuse (never silently proceed) when disk admission does not permit
+    this build, attempting one bounded GC self-heal first.
+
+    ``requested_mib`` comes from the repo's own declared
+    ``disk_estimate_mb`` (0 when undeclared -- the request still gets the
+    hard free-space floor and the high/low hysteresis, just with no
+    predicted headroom subtracted).
+    """
+
+    root = _artifact_root(tree)
+    usage = shutil.disk_usage(root)
+    total_mib = usage.total // (1024 * 1024)
+    free_mib = usage.free // (1024 * 1024)
+    policy_key = f"build:{spec.name}"
+    watermarks = _disk_watermarks(total_mib=total_mib, policy_key=policy_key)
+    policy = _disk_policy()
+    decision = policy.evaluate(
+        "local",
+        total_mib=total_mib,
+        free_mib=free_mib,
+        requested_mib=max(0, spec.disk_estimate_mb),
+        watermarks=watermarks,
+        reservation_id=reservation_id,
+        request_gc=False,
+        mutate=True,
+        policy_key=policy_key,
+    )
+    if decision.admitted:
+        return decision
+
+    # Self-heal: bounded, safe reclamation (never touches a RUNNING task's
+    # publication) — see `gc()`'s own docstring for the invariants it holds.
+    gc(repo_path=tree, keep_recent=10, max_age_days=14)
+    usage = shutil.disk_usage(root)
+    free_mib = usage.free // (1024 * 1024)
+    return policy.evaluate(
+        "local",
+        total_mib=total_mib,
+        free_mib=free_mib,
+        requested_mib=max(0, spec.disk_estimate_mb),
+        watermarks=watermarks,
+        reservation_id=reservation_id,
+        request_gc=False,
+        mutate=True,
+        policy_key=policy_key,
+    )
+
+
 def _run_build_command(tree: Path, spec: BuildSpec) -> None:
     workdir = tree / spec.workdir
+    # P0.6 invariant: the runner allocates CARGO_TARGET_DIR/TMPDIR itself —
+    # never whatever the calling process happened to inherit — and appends
+    # `--no-fail-fast` to a cargo-test-shaped command a caller's declared
+    # spec omitted it from. Neither is representable in the argv/env that
+    # actually reaches `subprocess.run` below.
+    parts = partitioned_paths(tree)
+    env = dict(os.environ)
+    env["CARGO_TARGET_DIR"] = str(parts.cargo_target_dir)
+    env["TMPDIR"] = str(parts.scratch_dir)
+    argv = ensure_no_fail_fast(list(spec.command))
     proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        list(spec.command),
+        argv,
         cwd=str(workdir),
         capture_output=True,
         text=True,
         check=False,
         timeout=spec.timeout,
+        env=env,
     )
     if proc.returncode != 0:
         raise BuildQueueError(
@@ -1458,21 +1595,93 @@ def gc(
 
 
 # ---------------------------------------------------------------------------
+# Host dispatch (P0.7) — "give rm_build request a host= that actually
+# dispatches". `colocated=True` (the local path above) stays the honest
+# default when no host is selected; this is a SEPARATE, additive path, not a
+# rewrite of `request()`.
+# ---------------------------------------------------------------------------
+def request_on_host(
+    host_id: str,
+    *,
+    repo_path: Path | str | None = None,
+    spec_name: str = "",
+) -> dict[str, Any]:
+    """Dispatch this repo's declared build to a registered, authorized host.
+
+    Resolves the ORIGIN and HEAD sha from the caller's own local checkout
+    (refusing a dirty tree — a build dispatched from uncommitted state would
+    silently build something the caller cannot reproduce) and hands them,
+    with the declared ``.buildcache.yaml`` command, to
+    :func:`repository_manager.remote_worker_actions.dispatch`'s
+    ``dispatch_build`` action — which performs the actual staging, capacity
+    admission, and remote execution over
+    :class:`~repository_manager.remote_execution.ssh_executor.TunnelSSHExecutor`.
+    Never caches (host dispatch is a distinct path from this module's own
+    content-addressed cache) and does not yet retrieve build artifacts back
+    to the caller — see ``dispatch_build``'s own returned ``note``.
+    """
+
+    from repository_manager import remote_worker_actions
+
+    scope = lane_scope(repo_path)
+    config = load_config(scope.tree)
+    spec = config.spec(spec_name)
+    repo_id = stable_repository_id(scope.main_tree)
+
+    status_out = _require_git(["status", "--porcelain"], scope.tree)
+    if status_out.strip():
+        raise BuildQueueError(
+            f"refusing to dispatch {repo_id!r} to host {host_id!r}: the local "
+            "tree has uncommitted changes; commit (or use the local "
+            "'request' path, which builds a dirty tree in place) before "
+            "dispatching to a remote host"
+        )
+    tree_sha = _require_git(["rev-parse", "HEAD"], scope.tree).strip()
+    origin = _require_git(["remote", "get-url", "origin"], scope.tree).strip()
+
+    result = remote_worker_actions.dispatch(
+        "dispatch_build",
+        host_id=host_id,
+        repository_id=repo_id,
+        origin=origin,
+        tree_sha=tree_sha,
+        command=list(spec.command),
+        workdir=spec.workdir,
+        timeout_seconds=spec.timeout,
+        cpu_weight=spec.resources.cpu_weight,
+        memory_mib=spec.resources.memory_mb,
+        disk_mib=max(spec.resources.disk_mb, spec.disk_estimate_mb),
+        process_slots=spec.resources.process_slots,
+    )
+    return {"repo": repo_id, "spec": spec.name, **result}
+
+
+# ---------------------------------------------------------------------------
 # One action-routed entrypoint shared by the CLI, `python -m`, and the MCP tool
 # ---------------------------------------------------------------------------
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     handlers = {
-        "request": lambda: request(
-            repo_path=kwargs.get("path"),
-            spec_name=kwargs.get("spec", "") or "",
-            colocated=bool(kwargs.get("colocated", False)),
-            wait_timeout=int(kwargs.get("wait_timeout") or 60),
-            generation_id=kwargs.get("generation_id"),
-            job_service=kwargs.get("job_service"),
-            build_service=kwargs.get("build_service"),
-            tenant_id=kwargs.get("tenant_id", "") or "",
-            owner_id=kwargs.get("owner_id", "") or "",
-            session_id=kwargs.get("session_id", "") or "",
+        "request": (
+            (
+                lambda: request_on_host(
+                    kwargs["host"],
+                    repo_path=kwargs.get("path"),
+                    spec_name=kwargs.get("spec", "") or "",
+                )
+            )
+            if kwargs.get("host")
+            else lambda: request(
+                repo_path=kwargs.get("path"),
+                spec_name=kwargs.get("spec", "") or "",
+                colocated=bool(kwargs.get("colocated", False)),
+                wait_timeout=int(kwargs.get("wait_timeout") or 60),
+                generation_id=kwargs.get("generation_id"),
+                job_service=kwargs.get("job_service"),
+                build_service=kwargs.get("build_service"),
+                tenant_id=kwargs.get("tenant_id", "") or "",
+                owner_id=kwargs.get("owner_id", "") or "",
+                session_id=kwargs.get("session_id", "") or "",
+            )
         ),
         "status": lambda: status(
             repo_path=kwargs.get("path"),

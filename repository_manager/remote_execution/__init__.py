@@ -48,6 +48,7 @@ from .source_staging import (
     SourceVerificationError,
     StagedSource,
 )
+from .ssh_executor import RemoteSshExecutionUnavailableError, TunnelSSHExecutor
 
 __all__ = [
     "ArtifactStagingReceiver",
@@ -60,6 +61,7 @@ __all__ = [
     "ImmutableSourceStaging",
     "PathTraversalError",
     "RemoteExecutorPort",
+    "RemoteSshExecutionUnavailableError",
     "RemoteWorkerBootstrap",
     "RemoteWorkerBootstrapError",
     "RemoteWorkerExecutor",
@@ -69,6 +71,7 @@ __all__ = [
     "ReservationReleasePort",
     "SourceVerificationError",
     "StagedSource",
+    "TunnelSSHExecutor",
     "build_bootstrap_command",
     "from_remote_result",
     "to_remote_request",

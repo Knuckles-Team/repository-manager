@@ -51,6 +51,7 @@ __all__ = [
     "FAIL",
     "SKIP",
     "diagnose",
+    "heal",
     "lane_exports",
     "start",
     "finish",
@@ -1038,6 +1039,91 @@ def diagnose(
     }
 
 
+def heal(
+    path: Path | str | None = None,
+    *,
+    base: str = "main",
+) -> dict[str, Any]:
+    """Diagnose, then OWN the repair for the findings this module can fix safely.
+
+    `diagnose` is deliberately read-only ("mutates nothing" is its whole
+    value as a triage tool). `heal` is the P0.6 answer to "lane_doctor is the
+    right shape already — it diagnoses; make it own the repair, not just the
+    report": for the ONE finding class this module already knows how to
+    repair safely and provably — `tree_repair`'s `core-bare-drift` /
+    `probable-index-wipe` (the `core.bare` archetype this whole invariants
+    program is named after, plus its sibling index-collapse hazard) — it
+    calls :func:`repository_manager.tree_repair.repair` itself, on BOTH the
+    lane's own tree and (when diagnosis flags it) the canonical checkout the
+    lane belongs to, rather than handing the caller a remedy string to run by
+    hand. `tree_repair.repair` re-diagnoses under its own mutation lease and
+    proves tracked working-tree content was preserved byte-for-byte before
+    reporting success, so this is never a blind "run the fix and hope".
+
+    Every OTHER finding here stays report-only, deliberately: this module has
+    no safe, unattended way to materialize a caller's shell environment
+    (`PRE_COMMIT_HOME`/`CARGO_TARGET_DIR`/`TMPDIR` are the CALLER's process to
+    export, not this module's to mutate) or to decide an unmanaged `.venv`
+    should be deleted without a human choosing that. Owning a repair that
+    cannot be proven safe would be worse than reporting it.
+    """
+    from repository_manager import tree_repair
+
+    #: `core-bare-drift` and `probable-index-wipe` can co-occur (observed
+    #: live: a `core.bare` flip on the shared common config left a linked
+    #: worktree's index simultaneously collapsed), and `tree_repair.diagnose`
+    #: reports only its FIRST finding as the primary one. A single repair
+    #: call therefore is not enough — this loops, re-diagnosing after each
+    #: repair, until clean or a repair stops making progress (bounded so a
+    #: genuinely unrepairable tree cannot spin forever).
+    def _heal_target(
+        target_path: Path, *, max_attempts: int = 4
+    ) -> list[dict[str, Any]]:
+        attempts: list[dict[str, Any]] = []
+        for _ in range(max_attempts):
+            report = tree_repair.diagnose(target_path)
+            if report.get("ok", True):
+                break
+            outcome = tree_repair.repair(target_path, finding=report["finding"])
+            attempts.append(
+                {
+                    "path": str(target_path),
+                    "finding": report.get("finding"),
+                    "result": outcome,
+                }
+            )
+            if not outcome.get("ok"):
+                # A refused/errored repair will not become repairable by
+                # retrying immediately (stale lease, mismatched baseline) —
+                # stop rather than loop uselessly.
+                break
+        return attempts
+
+    tree = _resolve_tree(path)
+    before = diagnose(tree, base=base)
+    repairs: list[dict[str, Any]] = []
+
+    for attempt in _heal_target(tree):
+        repairs.append({"target": "own-tree", **attempt})
+
+    scope = _lane_scope(tree)
+    if scope is not None and not scope.is_canonical:
+        canonical = Path(scope.main_tree)
+        for attempt in _heal_target(canonical):
+            repairs.append({"target": "canonical", **attempt})
+
+    after = diagnose(tree, base=base)
+    return {
+        "ok": after["ok"],
+        "tree": str(tree),
+        "attempted": [r["target"] for r in repairs],
+        "healed": [r["target"] for r in repairs if r["result"].get("ok")],
+        "repairs": repairs,
+        "before": before,
+        "after": after,
+    }
+
+
 # ---------------------------------------------------------------------------
 # start / finish
 # ---------------------------------------------------------------------------
@@ -1324,7 +1410,7 @@ def finish(
     }
 
 
-ACTIONS = ("doctor", "start", "finish", "env")
+ACTIONS = ("doctor", "start", "finish", "env", "heal")
 
 
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
@@ -1362,6 +1448,8 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     if action == "env":
         exports = lane_exports(kwargs.get("path"))
         return {"ok": True, "exports": exports, "shell": _shell_block(exports)}
+    if action == "heal":
+        return heal(kwargs.get("path"), base=kwargs.get("base") or "main")
     if action == "start":
         repo = kwargs.get("repo") or ""
         branch = kwargs.get("branch") or ""

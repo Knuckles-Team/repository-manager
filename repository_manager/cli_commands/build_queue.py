@@ -22,6 +22,7 @@ def run_build_queue_cli(args: Any) -> int:
             wait_timeout=args.build_wait_timeout,
             keep_recent=args.build_keep_recent,
             max_age_days=args.build_max_age_days,
+            host=args.build_host,
         )
     except LaneArbitrationError as exc:
         print(json.dumps({"refused": str(exc)}))

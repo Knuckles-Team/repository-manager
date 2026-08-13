@@ -36,9 +36,16 @@ EXPECTED_TOOL_NAMES = (
 # it (exposing RMDD-15's remote-worker surface and RMDD-17's concept
 # coordination as ``rm_remote_workers``/``rm_concepts``), so both the tool
 # name list and this digest were recomputed against the live registry as
-# part of that change — not drift.
+# part of that change — not drift. Recomputed again for the P0.6/P0.7
+# invariants program: ``rm_build`` gained ``host`` (dispatch a build to a
+# registered remote host) and ``rm_remote_workers`` gained ``path`` (an
+# inventory.yaml override for the new ``seed_from_inventory`` action) and
+# its ``action`` description grew to document ``seed_from_inventory`` —
+# tool NAMES are unchanged (``EXPECTED_TOOL_NAMES`` below), only their
+# parameter schemas, which is exactly what this digest is meant to catch and
+# what a deliberate surface growth is expected to require updating.
 BASELINE_CATALOG_SHA256 = (
-    "fd1220cb353267719d7b7f2baf864382c047d66bca0c18131100006ec248ac69"
+    "8a61edd4f33b25eda41f5e0af9da40dfcd4fcd6fe8514638917e4f839a9f08ac"
 )
 
 

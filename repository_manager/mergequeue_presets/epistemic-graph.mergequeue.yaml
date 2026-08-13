@@ -96,7 +96,16 @@ gates:
   # bypassed. Keeping it declared means this file stays the single description of
   # what guards the repo -- a gate too expensive for the queue is still a fact.
   - name: cargo-test
-    command: [cargo, test, --all-features, --target-dir, target-isolated]
+    # `--no-fail-fast`: without it `cargo test` stops at the FIRST failing
+    # test binary and every later suite's failures are simply never run or
+    # reported -- this silently truncated every reported suite number across
+    # 8 measurement points in a prior session. repository-manager's own gate
+    # runner (`merge_queue._timed_run`) now appends this automatically if a
+    # declared command omits it (CONCEPT:RM-TEST-COMMANDS), but it is written
+    # explicitly here too so this file stays an honest, complete description
+    # of what actually runs if copied and run by hand outside the queue.
+    command:
+      [cargo, test, --all-features, --no-fail-fast, --target-dir, target-isolated]
     tier: slow
     timeout: 5400
     compare: lines

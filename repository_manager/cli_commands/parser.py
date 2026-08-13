@@ -174,12 +174,15 @@ Examples:
     )
     group_lane.add_argument(
         "--lane",
-        choices=["doctor", "start", "finish", "env"],
+        choices=["doctor", "start", "finish", "env", "heal"],
         help=(
             "'doctor' checks this tree's isolation and mutates nothing; 'start' "
             "opens an isolated worktree and proves its partitions; 'env' prints "
             "the shell exports; 'finish' preflights then enqueues the branch for "
-            "landing. Run 'doctor' whenever something behaves impossibly."
+            "landing; 'heal' diagnoses like 'doctor' then REPAIRS the core.bare/"
+            "index-collapse class of finding itself (own tree + canonical), "
+            "rather than only naming a remedy to run by hand. Run 'doctor' "
+            "whenever something behaves impossibly; reach for 'heal' once it has."
         ),
     )
     group_lane.add_argument(
@@ -438,6 +441,17 @@ Examples:
         default=14,
         help="For --build-broker gc: reclaim cache entries older than this (subject to --build-keep-recent).",
     )
+    group_build.add_argument(
+        "--build-host",
+        type=str,
+        default=None,
+        help=(
+            "For --build-broker request: dispatch to this REGISTERED, "
+            "authorized remote host instead of building locally. Requires a "
+            "clean local tree; does not yet retrieve artifacts back. Omit "
+            "to build locally (the default)."
+        ),
+    )
 
     # RMDD-20 — exposing RMDD-17's concept-claim coordination. The CLI and
     # the MCP `rm_concepts` tool call the exact same
@@ -498,6 +512,7 @@ Examples:
         "--remote-workers",
         choices=[
             "register_worker",
+            "seed_from_inventory",
             "profile",
             "recheck",
             "stage_source",

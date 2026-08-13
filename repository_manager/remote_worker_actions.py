@@ -44,6 +44,8 @@ from threading import RLock
 from typing import Any
 
 from repository_manager.capacity import CapacityInventory, HostCapacity, ResourceVector
+from repository_manager.capacity_seed import seed_capacity
+from repository_manager.capacity_store import CapacityStore
 from repository_manager.development import RefusalCode
 from repository_manager.execution.executor import LocalExecutor
 from repository_manager.remote_execution import (
@@ -69,21 +71,42 @@ __all__ = [
 
 REMOTE_WORKER_ACTIONS: tuple[str, ...] = (
     "register_worker",
+    "seed_from_inventory",
     "profile",
     "recheck",
     "stage_source",
     "verify_source",
     "receive_artifact",
     "host_loss_reconcile",
+    "dispatch_build",
 )
 
 # One process-local capacity ledger (RMDD-08 C-03 accounting -- never a
 # WorkItem authority). This is the SAME instance every action in this module
 # composes with; a future lane that wires a live `ResourceScheduler` must
 # consume this exact instance, never construct a second one.
+#
+# P0.7 — this in-memory ledger is now BACKED by `capacity_store.CapacityStore`
+# (the same durable-SQLite-projection shape `lane_registry.LaneRegistry`
+# already uses for lanes). `capacity_inventory()` rehydrates every previously
+# registered host from the store the FIRST time it is called in a process
+# (a fresh restart included), and `register_worker` persists every accepted
+# registration -- so "restart the MCP server and every registered host is
+# forgotten" is no longer true. Reservations remain in-memory only, matching
+# `CapacityInventory`'s own documented scope ("never a WorkItem authority");
+# see `capacity_store.py`'s module docstring for the exact boundary.
 _LOCK = RLock()
 _CAPACITY_INVENTORY: CapacityInventory | None = None
+_CAPACITY_STORE: CapacityStore | None = None
 _REGISTRY: RemoteWorkerRegistry | None = None
+
+
+def _capacity_store() -> CapacityStore:
+    global _CAPACITY_STORE
+    with _LOCK:
+        if _CAPACITY_STORE is None:
+            _CAPACITY_STORE = CapacityStore()
+        return _CAPACITY_STORE
 
 
 class _UnavailableInventoryResolver:
@@ -114,12 +137,20 @@ class _UnavailableInventoryResolver:
 
 
 def capacity_inventory() -> CapacityInventory:
-    """The one process-local RMDD-08 capacity ledger (never a second copy)."""
+    """The one process-local RMDD-08 capacity ledger (never a second copy).
+
+    Rehydrated from :func:`_capacity_store` the first time this process
+    constructs it -- a restarted MCP server sees every previously registered
+    host again, not an empty ledger.
+    """
 
     global _CAPACITY_INVENTORY
     with _LOCK:
         if _CAPACITY_INVENTORY is None:
-            _CAPACITY_INVENTORY = CapacityInventory()
+            inventory = CapacityInventory()
+            for host in _capacity_store().load_all():
+                inventory.register(host)
+            _CAPACITY_INVENTORY = inventory
         return _CAPACITY_INVENTORY
 
 
@@ -201,6 +232,13 @@ def _dispatch_resolved(resolved: str, kwargs: dict[str, Any]) -> dict[str, Any]:
             target_kind="remote",
         )
         registered = capacity_inventory().register(host)
+        if registered:
+            # Persist AFTER the in-memory ledger accepted it, mirroring the
+            # exact ordering `LaneRegistry._project` uses: the durable
+            # projection follows acceptance, it never gates it, so a
+            # projection outage cannot turn one legitimate registration into
+            # a refusal.
+            _capacity_store().save(host)
         profile = RemoteWorkerProfile(
             host_id=kwargs["host_id"],
             inventory_alias=kwargs["inventory_alias"],
@@ -212,6 +250,24 @@ def _dispatch_resolved(resolved: str, kwargs: dict[str, Any]) -> dict[str, Any]:
             "host_id": host.host_id,
             "capacity_registered": registered,
             "profile_registered": True,
+        }
+
+    if resolved == "seed_from_inventory":
+        seed_result = seed_capacity(capacity_inventory(), path=kwargs.get("path"))
+        for host_id in seed_result.seeded:
+            _capacity_store().save(capacity_inventory().require(host_id))
+        return {
+            "seeded": list(seed_result.seeded),
+            "already_registered": list(seed_result.already_registered),
+            "inventory_path": seed_result.inventory_path,
+            "inventory_host_count": seed_result.inventory_host_count,
+            "note": (
+                "seeded hosts carry PLACEHOLDER capacity and a heartbeat "
+                "deliberately dated in the past -- they read as stale until "
+                "a real 'register_worker' (with measured resources) or a "
+                "future heartbeat action confirms them; they will not be "
+                "admitted for real work until then"
+            ),
         }
 
     if resolved == "profile":
@@ -324,6 +380,9 @@ def _dispatch_resolved(resolved: str, kwargs: dict[str, Any]) -> dict[str, Any]:
             "outcome": receipt.outcome.value,
         }
 
+    if resolved == "dispatch_build":
+        return _dispatch_build(kwargs)
+
     if resolved == "host_loss_reconcile":
         raise RemoteExecutionUnavailableError(
             "host-loss reconciliation requires a live WorkItem-authoritative "
@@ -335,3 +394,134 @@ def _dispatch_resolved(resolved: str, kwargs: dict[str, Any]) -> dict[str, Any]:
         )
 
     raise AssertionError(f"unhandled resolved remote-worker action {resolved!r}")
+
+
+def _dispatch_build(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """P0.7 — the executor `stage_source`/`verify_source` only lacked.
+
+    Stages an immutable commit on a registered, authorized remote host and
+    runs one fixed command there, both over
+    :class:`~repository_manager.remote_execution.ssh_executor.TunnelSSHExecutor`
+    (the SSH primitive that actually exists and is proven live against a
+    real host, unlike ``executor.py``'s ``RemoteWorkerExecutor``/RMDD-14
+    seam — see ``ssh_executor.py``'s module docstring for why).
+
+    **Admission performed here, and what is deliberately NOT performed.**
+    This checks the host is a REGISTERED profile with an authorized root for
+    ``repository_id`` (``RemoteWorkerRegistry.authorized_root``, refuses
+    honestly if not) and that the DURABLE capacity ledger currently admits
+    the requested weighted resources (``CapacityInventory.can_fit`` — state,
+    heartbeat freshness, and available CPU/memory/disk/process capacity).
+    It deliberately does NOT call ``RemoteWorkerRegistry.recheck_at_claim``:
+    that performs an ADDITIONAL tunnel-manager inventory-alias entitlement
+    resolve, and the only ``InventoryResolver`` this module ever constructs
+    is ``_UnavailableInventoryResolver`` (see this module's docstring) —
+    which refuses unconditionally today because no real resolver is wired
+    into any entrypoint yet, a SEPARATE, pre-existing gap from the one this
+    function closes. Calling it here would make `dispatch_build` refuse
+    every request regardless of host health, silently re-introducing the
+    exact "host delegation is built but unreachable" defect this function
+    exists to close. This is a real, disclosed narrowing, not a masked one.
+    No WorkItem-fenced reservation is held for the duration of the remote
+    build (the same honest limitation `host_loss_reconcile` already states
+    for this module) -- concurrent dispatches to the same host are not
+    mutually exclusive here.
+    """
+
+    from repository_manager.development import ExecutionCommand
+    from repository_manager.remote_execution.ssh_executor import TunnelSSHExecutor
+
+    host_id = kwargs["host_id"]
+    repository_id = kwargs["repository_id"]
+    origin = kwargs["origin"]
+    tree_sha = kwargs["tree_sha"]
+    command = tuple(kwargs["command"])
+    workdir_rel = kwargs.get("workdir") or "."
+    timeout_seconds = int(kwargs.get("timeout_seconds") or 3600)
+    resources = ResourceVector(
+        cpu_weight=int(kwargs.get("cpu_weight") or 1),
+        memory_mib=int(kwargs.get("memory_mib") or 0),
+        disk_mib=int(kwargs.get("disk_mib") or 0),
+        process_slots=int(kwargs.get("process_slots") or 1),
+    )
+
+    registry = remote_worker_registry()
+    profile = registry.profile(host_id)  # refuses if unregistered
+    authorized_root = registry.authorized_root(host_id, repository_id)
+    fits, reason = capacity_inventory().can_fit(host_id, resources)
+    if not fits:
+        raise RemoteExecutionUnavailableError(
+            f"host {host_id!r} does not currently admit this build: {reason}"
+        )
+
+    executor = TunnelSSHExecutor(profile.inventory_alias)
+    staging = ImmutableSourceStaging()
+    safe_repository_id = "".join(
+        char if char.isalnum() or char in "_.-" else "_" for char in repository_id
+    )
+    worktree_name = f"{safe_repository_id}-{tree_sha[:12]}"
+    clone, fetch, checkout = staging.stage_commands(
+        origin=origin,
+        tree_sha=tree_sha,
+        parent_root=authorized_root,
+        worktree_name=worktree_name,
+        timeout_seconds=timeout_seconds,
+    )
+    stage_results = []
+    for index, staging_command in enumerate((clone, fetch, checkout)):
+        result = executor.run(
+            staging_command,
+            command_id=f"command:dispatch-build:stage:{index}",
+            worker_id=f"worker:{host_id}",
+            fence=f"fence:dispatch-build:{worktree_name}",
+        )
+        stage_results.append(result)
+        if result.outcome.value != "succeeded":
+            raise SourceVerificationError(
+                f"remote staging step {index} on host {host_id!r} did not "
+                f"succeed: {result.outcome.value} — {result.stderr_tail}"
+            )
+    destination = f"{authorized_root.rstrip('/')}/{worktree_name}"
+    staged = staging.verify_staged_sha(
+        executor,
+        destination=destination,
+        expected_sha=tree_sha,
+        repository_id=repository_id,
+    )
+
+    build_command = ExecutionCommand(
+        argv=command,
+        workdir=f"{destination}/{workdir_rel}".rstrip("/"),
+        timeout_seconds=timeout_seconds,
+    )
+    build_result = executor.run(
+        build_command,
+        command_id="command:dispatch-build:build",
+        worker_id=f"worker:{host_id}",
+        fence=f"fence:dispatch-build:{worktree_name}",
+    )
+    return {
+        "host_id": host_id,
+        "inventory_alias": profile.inventory_alias,
+        "staged": {
+            "repository_id": staged.repository_id,
+            "tree_sha": staged.tree_sha,
+            "destination": staged.destination,
+            "verified_at": staged.verified_at.isoformat(),
+        },
+        "build": {
+            "outcome": build_result.outcome.value,
+            "exit_code": build_result.exit_code,
+            "stdout_tail": build_result.stdout_tail,
+            "stderr_tail": build_result.stderr_tail,
+        },
+        "succeeded": build_result.outcome.value == "succeeded",
+        "note": (
+            "artifacts remain on the remote host at "
+            f"{destination}/{workdir_rel} -- retrieval back to the caller's "
+            "content-addressed artifact store is NOT yet wired (would reuse "
+            "'receive_artifact', which streams a caller-supplied base64 "
+            "payload, not a remote-to-local pull); state this precisely "
+            "rather than claiming a full round trip"
+        ),
+    }

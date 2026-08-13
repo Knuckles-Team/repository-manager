@@ -376,6 +376,7 @@ def test_the_cli_flag_routes_to_the_same_dispatch_core(
         build_wait_timeout=60,
         build_keep_recent=10,
         build_max_age_days=14,
+        build_host=None,
     )
     assert _run_build_queue_cli(args) == 0
     payload = json.loads(capsys.readouterr().out)
@@ -402,6 +403,7 @@ def test_the_cli_defaults_to_not_colocated_and_is_refused_for_request(
         build_wait_timeout=60,
         build_keep_recent=10,
         build_max_age_days=14,
+        build_host=None,
     )
     assert _run_build_queue_cli(args) == 1
     payload = json.loads(capsys.readouterr().out)

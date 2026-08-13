@@ -33,6 +33,7 @@ async def _rm_remote_workers_tool():
 # produces.
 _ALL_OPTIONAL_KWARGS: dict = {
     "host_id": None,
+    "path": None,
     "cpu_weight": None,
     "memory_mib": None,
     "disk_mib": None,
