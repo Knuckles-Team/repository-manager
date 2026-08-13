@@ -211,6 +211,50 @@ class WorkspaceSelector(BaseModel):
     exclude: list[str] | None = None
 
 
+class BootstrapEnvVar(BaseModel):
+    """One environment variable in the fresh-machine host-assumption contract.
+
+    Documents a knob that today lives only as prose (worktree root, scratch
+    dir, workspace root override) as data instead, so a new environment can
+    discover the contract from the manifest rather than tribal knowledge.
+    ``default`` is descriptive only -- the code paths that actually read each
+    variable own their real default; this is not itself a config loader.
+    """
+
+    name: str
+    default: str | None = None
+    description: str | None = None
+
+
+class BootstrapHost(BaseModel):
+    """A named build host referenced elsewhere in the fleet (today as prose).
+
+    Declaring a host here does not by itself dispatch anything -- the
+    capacity/reservation machinery that would route a build to a named host
+    is designed but not wired (see GOC-60). This lets the manifest at least
+    name the hosts a human currently coordinates by hand.
+    """
+
+    name: str
+    role: str | None = None
+
+
+class BootstrapConfig(BaseModel):
+    """Fresh-machine bootstrap contract: ordering + host-assumption config.
+
+    Optional and additive -- a manifest without this section behaves exactly
+    as before. ``order`` names repositories (by directory basename) that must
+    be cloned AND have their own dependency siblings materialized before any
+    later-listed repository's install is attempted; repositories not named
+    are unordered relative to each other. See ``rm_workspace(action="setup",
+    install=True)`` / ``Git.install_projects`` for the consumer.
+    """
+
+    order: list[str] = Field(default_factory=list)
+    env: list[BootstrapEnvVar] = Field(default_factory=list)
+    build_hosts: list[BootstrapHost] = Field(default_factory=list)
+
+
 class WorkspaceConfig(BaseModel):
     name: str
     path: str
@@ -221,6 +265,7 @@ class WorkspaceConfig(BaseModel):
     selectors: dict[str, WorkspaceSelector] = Field(default_factory=dict)
     maintenance: MaintenanceConfig | None = None
     graph: GraphConfig | None = None
+    bootstrap: BootstrapConfig | None = None
 
 
 class ProjectResult(BaseModel):

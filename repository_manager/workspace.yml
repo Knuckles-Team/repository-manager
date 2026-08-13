@@ -639,3 +639,63 @@ graph:
   multimodal: true
   incremental: true
   groups: []
+# Fresh-machine bootstrap contract (CONCEPT:RM-BOOTSTRAP). Consumed by
+# `rm_workspace(action="setup", install=True)` / `Git.install_projects()`.
+# This is documentation-as-data, not a second config loader: each `env` entry
+# names a variable a real code path already reads (see the cited file), with
+# its existing default restated here so a new environment can discover the
+# contract from the manifest instead of tribal knowledge.
+bootstrap:
+  # Every other repository depends on agent-utilities, and agent-utilities
+  # >=2.0.0 is not yet published to PyPI (only <=1.26.4 is public) -- so it
+  # must clone + install successfully before any dependent's install is
+  # attempted. See docs/bootstrap.md for the full ordering design and the
+  # PyPI-publish retirement path.
+  order:
+    - agent-utilities
+  env:
+    - name: AGENT_UTILITIES_WORKSPACE_ROOT
+      default: "(unset -> current working directory)"
+      description: >-
+        Workspace root override. Read by repository_manager.py
+        (DEFAULT_REPOSITORY_MANAGER_WORKSPACE), build_queue.py, and
+        worktree.py's WORKTREE_ROOT-adjacent lookups; also resolved into
+        this manifest's own path/url placeholders (${AGENT_UTILITIES_
+        WORKSPACE_ROOT}, ${AGENT_UTILITIES_REPO_ORIGIN}, ${AGENT_UTILITIES_
+        SERVICE_DOMAIN_SUFFIX}).
+    - name: REPOSITORY_MANAGER_WORKSPACE
+      default: "(unset -> AGENT_UTILITIES_WORKSPACE_ROOT, else cwd)"
+      description: Explicit workspace root override, takes precedence over AGENT_UTILITIES_WORKSPACE_ROOT.
+    - name: REPOSITORY_MANAGER_WORKTREE_ROOT
+      default: "${XDG_STATE_HOME}/repository-manager/worktrees"
+      description: Per-session worktree root for concurrent multi-agent development (worktree.py).
+    - name: WORKSPACE_YML
+      default: "(unset -> packaged repository_manager/workspace.yml seed)"
+      description: Path to the manifest itself, when not passed explicitly to rm_workspace(action=...).
+    - name: REPOSITORY_MANAGER_CLONE_FILTER
+      default: "(unset -> full clone)"
+      description: 'Set to "blob:none" or "tree:0" for a fast partial clone on a fresh machine.'
+    - name: EPISTEMIC_GRAPH_WHEELHOUSE
+      default: "/home/apps/worktrees/SHARED-WHEELS"
+      description: >-
+        Prebuilt epistemic-graph wheel directory agent-utilities' own
+        scripts/uv_workspace.py consults so installing agent-utilities never
+        forces a Rust build when a matching wheel is already staged
+        (BUG-063 fast path). Absent -> falls back to a real source build.
+    - name: SCRATCH_DIR
+      default: /var/tmp/l9
+      description: >-
+        Convention (not yet read by any repository-manager code path):
+        bulk/scratch work should not use /tmp (tmpfs, RAM-backed) on this
+        fleet's hosts. Documented here as data pending an actual env-driven
+        consumer.
+  # Named build hosts referenced today only as operator prose (e.g. "run the
+  # eg build on R820"). repository-manager's capacity/reservation machinery
+  # (capacity.py, reservations.py) is designed to route builds to a named
+  # host but has no wired dispatcher yet (GOC-60) -- declaring a host here
+  # does not by itself make `rm_build` honor it.
+  build_hosts:
+    - name: R820
+      role: epistemic-graph (Rust) builds -- heaviest compile/link workload
+    - name: R710
+      role: agent-utilities (Python) builds and gates

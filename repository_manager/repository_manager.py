@@ -423,8 +423,19 @@ class Git:
             return "yarn"
         return "npm"
 
-    def setup_from_yaml(self, yaml_path: str) -> GitResult:
-        """Sets up the workspace structure from a YAML file."""
+    def setup_from_yaml(self, yaml_path: str, install: bool = False) -> GitResult:
+        """Sets up the workspace structure from a YAML file.
+
+        ``install=True`` extends clone/pull with the fresh-machine bootstrap
+        gap this closes (CONCEPT:RM-BOOTSTRAP): after every repository is
+        cloned or pulled, materialize the `.uv-workspace-siblings/` symlinks
+        and run `uv sync` for agent-utilities and every cloned project that
+        declares a path dependency on it, dependency-ordered (agent-utilities
+        first). See :meth:`install_projects` for the mechanism and its
+        documented limits. Install failures are reported, never masked --
+        `setup_from_yaml` returns ``status="error"`` if any project failed to
+        install, even though every repository was still cloned/pulled.
+        """
         abs_yaml_path = os.path.abspath(os.path.expanduser(yaml_path))
         if not os.path.exists(abs_yaml_path):
             return GitResult(
@@ -456,16 +467,71 @@ class Git:
             else:
                 results.append(self.clone_repository(url, project_path))
 
+        failed_clones = [r for r in results if r.status != "success"]
+
+        if not install:
+            return GitResult(
+                status="success" if not failed_clones else "error",
+                data="Workspace setup completed",
+                error=(
+                    GitError(
+                        message=f"{len(failed_clones)} repository(ies) failed to clone/pull",
+                        code=1,
+                    )
+                    if failed_clones
+                    else None
+                ),
+                metadata=GitMetadata(
+                    command="setup_workspace",
+                    workspace=_project_label(self.path),
+                    return_code=0 if not failed_clones else 1,
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                ),
+            )
+
+        install_results = self.install_projects()
+        failed_installs = [r for r in install_results if r.status != "success"]
+        summary = [
+            f"Cloned/pulled {len(results) - len(failed_clones)}/{len(results)} "
+            "repository(ies).",
+            f"Installed {len(install_results) - len(failed_installs)}/"
+            f"{len(install_results)} project(s).",
+        ]
+        for r in install_results:
+            label = r.metadata.workspace if r.metadata else "unknown"
+            summary.append(f"- {label}: {r.status}")
+
+        failures = failed_clones + failed_installs
         return GitResult(
-            status="success",
-            data="Workspace setup completed",
+            status="success" if not failures else "error",
+            data="\n".join(summary),
+            error=(
+                GitError(
+                    message=(
+                        f"{len(failed_clones)} clone/pull failure(s), "
+                        f"{len(failed_installs)} install failure(s)"
+                    ),
+                    code=1,
+                )
+                if failures
+                else None
+            ),
             metadata=GitMetadata(
                 command="setup_workspace",
                 workspace=_project_label(self.path),
-                return_code=0,
+                return_code=0 if not failures else 1,
                 timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
             ),
         )
+
+    _AU_SIBLING_SOURCE_MARKER = ".uv-workspace-siblings/agent-utilities"
+
+    def _find_project_path(self, name: str) -> str | None:
+        """Return the cloned path for project *name* (by directory basename)."""
+        for path in self.project_map.values():
+            if os.path.basename(path) == name:
+                return path
+        return None
 
     def get_project_map(self) -> dict[str, str]:
         """
@@ -581,41 +647,140 @@ class Git:
         import datetime
         import shutil
 
-        # 1. Sync Python Ecosystem natively using uv workspace
-        if shutil.which("uv"):
-            cmd = "uv sync --all-packages"
-            # execute at base_path where it will find the workspace pyproject.toml
-            res = self.git_action(cmd, path=self.path, timeout=300)
-
-            # Generate parity reporting for each Python project
-            for _url, path in self.project_map.items():
-                has_precommit = os.path.exists(
-                    os.path.join(path, ".pre-commit-config.yaml")
-                )
-                has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
-                if not has_precommit and not has_pyproject:
-                    continue
-
-                is_python = os.path.exists(
-                    os.path.join(path, "pyproject.toml")
-                ) or os.path.exists(os.path.join(path, "setup.py"))
-                if not is_python:
-                    continue
-
-                pkg_result = GitResult(
-                    status=res.status,
-                    data=res.data,
-                    error=res.error,
-                    metadata=GitMetadata(
-                        command="install",
-                        workspace=_project_label(path),
-                        return_code=res.metadata.return_code if res.metadata else 0,
-                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                    ),
-                )
-                results.append(pkg_result)
-        else:
+        # 1. Install agent-utilities first, then every other cloned project
+        # that depends on it -- CONCEPT:RM-BOOTSTRAP.
+        #
+        # This replaces a prior `uv sync --all-packages` run at the
+        # workspace root, which cannot succeed structurally: agent-utilities
+        # is its own uv workspace root (a dedicated, security-motivated
+        # boundary -- see its own AGENTS.md), and uv refuses a workspace
+        # member that is itself a workspace root ("Nested workspaces are not
+        # supported"). Verified empirically that even a project using the
+        # correct per-repo `.uv-workspace-siblings` path-source workaround
+        # still gets pulled into ecosystem-root resolution -- with its own
+        # local override silently ignored -- whenever its checkout also
+        # matches an ancestor workspace's `[tool.uv.workspace].members`
+        # glob; running each project's `uv sync` directly IN that project's
+        # own directory (never at `self.path`) avoids both failure modes.
+        # Every fleet member depends on agent-utilities, and it is not yet
+        # published to PyPI at the floor the fleet requires (only <=1.26.4
+        # is public; the fleet requires >=2.0.0), so agent-utilities must
+        # install successfully before any dependent is attempted -- this
+        # fails closed rather than reporting a partial "N/M installed" that
+        # would mask a downstream project never having had a chance.
+        if not shutil.which("uv"):
             logger.warning("uv not found. Native workspace sync requires uv.")
+        else:
+            au_path = self._find_project_path("agent-utilities")
+            if au_path is None or not os.path.isdir(au_path):
+                logger.warning(
+                    "agent-utilities not present in this workspace's project "
+                    "set; every fleet member depends on it, so no project "
+                    "can be installed."
+                )
+            else:
+                launcher = os.path.join(au_path, "scripts", "uv_workspace.py")
+
+                def _extra_flag(extra: str | None) -> str:
+                    if extra == "all":
+                        return " --all-extras"
+                    if extra:
+                        return f" --extra {shlex.quote(extra)}"
+                    return ""
+
+                if not os.path.isfile(launcher):
+                    results.append(
+                        GitResult(
+                            status="error",
+                            data="",
+                            error=GitError(
+                                message=(
+                                    "agent-utilities checkout is missing "
+                                    "scripts/uv_workspace.py"
+                                ),
+                                code=1,
+                            ),
+                            metadata=GitMetadata(
+                                command="install",
+                                workspace=_project_label(au_path),
+                                return_code=1,
+                                timestamp=datetime.datetime.now(
+                                    datetime.UTC
+                                ).isoformat()
+                                + "Z",
+                            ),
+                        )
+                    )
+                else:
+                    au_sync_command = (
+                        f"python3 {shlex.quote(launcher)} sync" + _extra_flag(extra)
+                    )
+                    au_result = self.git_action(au_sync_command, path=au_path, timeout=300)
+                    results.append(au_result)
+
+                    if au_result.status == "success":
+                        for path in list(self.project_map.values()):
+                            if path == au_path or not os.path.isdir(path):
+                                continue
+                            pyproject_path = os.path.join(path, "pyproject.toml")
+                            if not os.path.isfile(pyproject_path):
+                                continue
+                            try:
+                                with open(pyproject_path, encoding="utf-8") as handle:
+                                    declares_au_sibling = (
+                                        self._AU_SIBLING_SOURCE_MARKER in handle.read()
+                                    )
+                            except OSError:
+                                continue
+                            if not declares_au_sibling:
+                                continue
+
+                            sibling_dir = os.path.join(path, ".uv-workspace-siblings")
+                            sibling_link = os.path.join(sibling_dir, "agent-utilities")
+                            os.makedirs(sibling_dir, exist_ok=True)
+                            if os.path.islink(sibling_link):
+                                if os.path.realpath(sibling_link) != os.path.realpath(
+                                    au_path
+                                ):
+                                    os.unlink(sibling_link)
+                                    os.symlink(
+                                        au_path, sibling_link, target_is_directory=True
+                                    )
+                            elif os.path.exists(sibling_link):
+                                results.append(
+                                    GitResult(
+                                        status="error",
+                                        data="",
+                                        error=GitError(
+                                            message=(
+                                                "refusing to replace non-symlink "
+                                                f"path {sibling_link}"
+                                            ),
+                                            code=1,
+                                        ),
+                                        metadata=GitMetadata(
+                                            command="install",
+                                            workspace=_project_label(path),
+                                            return_code=1,
+                                            timestamp=datetime.datetime.now(
+                                                datetime.UTC
+                                            ).isoformat()
+                                            + "Z",
+                                        ),
+                                    )
+                                )
+                                continue
+                            else:
+                                os.symlink(
+                                    au_path, sibling_link, target_is_directory=True
+                                )
+
+                            dep_sync_command = "uv sync" + _extra_flag(extra)
+                            results.append(
+                                self.git_action(
+                                    dep_sync_command, path=path, timeout=300
+                                )
+                            )
 
         # 2. Install Node Ecosystem sequentially
         for _url, path in self.project_map.items():
