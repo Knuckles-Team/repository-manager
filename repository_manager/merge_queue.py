@@ -130,6 +130,7 @@ from repository_manager.config_schema import (
 from repository_manager.development import RepositoryIdentity, TargetPolicy
 from repository_manager.generation_coalescing import seal_generation, select_batches
 from repository_manager.lane_record import repository_id_for
+from repository_manager.test_commands import ensure_no_fail_fast
 
 #: The per-repository gate declaration. Its ABSENCE is a refusal, not a default:
 #: a queue that invents gates for a repository that declared none would be a gate
@@ -1355,6 +1356,16 @@ class GateBaseline:
 
 
 def _timed_run(argv: list[str], cwd: Path, *, timeout: int, env: dict) -> tuple:
+    """Run one gate command. The RUNNER, not the caller, owns the final argv.
+
+    ``ensure_no_fail_fast`` is applied here — the single process-launch
+    chokepoint every gate/baseline run passes through (``run_gate`` and
+    ``compute_gate_baseline`` both call only this) — so a repo's
+    ``.mergequeue.yaml`` cannot omit ``--no-fail-fast`` from a declared
+    ``cargo test``/``cargo nextest run`` gate: this is where it is added if
+    missing, before the process is ever spawned (CONCEPT:RM-TEST-COMMANDS).
+    """
+    argv = ensure_no_fail_fast(argv)
     start = time.monotonic()
     try:
         proc = subprocess.run(  # noqa: S603 - argv from repo-declared config, no shell
@@ -1868,12 +1879,24 @@ def run_fast_gates(
     env = dict(os.environ)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTEST_ADDOPTS"] = ""
+    # CONCEPT:RM-TEST-COMMANDS / P0.6 invariant. `env = dict(os.environ)` above
+    # copies whatever the QUEUE PROCESS'S own environment happens to hold —
+    # including a `CARGO_TARGET_DIR`/`TMPDIR` set by an unrelated shell or a
+    # misconfigured MCP server env. A shared CARGO_TARGET_DIR does not merely
+    # serialize concurrent worktree builds, it CORRUPTS them (see
+    # lane_doctor.py's `_check_cargo_partition`); leaving whatever the process
+    # inherited in place made that a fact about the CALLER'S shell, i.e. prose,
+    # not something this runner enforced. `partitioned_paths` is the same
+    # lane-scoped allocator `lane_doctor.lane_exports()` uses, so every gate
+    # command this queue runs gets an allocation identical in shape to what a
+    # lane doctoring itself would compute — never a value the caller chose.
+    parts = partitioned_paths(scope.tree)
+    env["CARGO_TARGET_DIR"] = str(parts.cargo_target_dir)
+    env["TMPDIR"] = str(parts.scratch_dir)
     # D-ORC-37: even though every tree gated here is a throwaway checkout, give
     # any pre-commit a store of its own so a crash can never orphan or lock
     # against another lane's. One line, both hazards.
-    env["PRE_COMMIT_HOME"] = str(
-        partitioned_paths(scope.tree).scratch_dir / "merge-queue-precommit"
-    )
+    env["PRE_COMMIT_HOME"] = str(parts.scratch_dir / "merge-queue-precommit")
     checks: list[Check] = []
     dropped = _dropped_gates(config, base_config)
     if dropped:

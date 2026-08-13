@@ -35,12 +35,16 @@ EXPECTED_TOOL_NAMES = (
 # without duplicating a fixture here.  Originally the RMDD-04 pre-extraction
 # baseline; RMDD-20 grew it past that baseline (exposing RMDD-15's
 # remote-worker surface and RMDD-17's concept coordination as
-# ``rm_remote_workers``/``rm_concepts``); GOC-60/P0.4 grows it again with
+# ``rm_remote_workers``/``rm_concepts``); the P0.6/P0.7 invariants program
+# grew ``rm_build`` (gained ``host``) and ``rm_remote_workers`` (gained
+# ``path`` + expanded ``action`` docs); GOC-60/P0.4 grows it again with
 # ``rm_gates`` (the two-tier fast/heavy pre-commit gate driver) registered
 # right after ``rm_projects``. Each growth recomputes the tool name list and
-# this digest against the live registry — not drift.
+# this digest against the live registry — not drift. Recomputed here for the
+# merge of both the P0.6/P0.7 invariants program and GOC-60/P0.4 rm_gates
+# landing together.
 BASELINE_CATALOG_SHA256 = (
-    "7c1ee9a0bf40e71bb33278d4e7032a52cf52fe3b2d177974f4daf0ea0a77e4a5"
+    "6a870a73e19107b79656f7c50785c4604141416349482c90d5d9107172539302"
 )
 
 

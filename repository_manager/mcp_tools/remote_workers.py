@@ -23,7 +23,13 @@ def register_remote_workers_tools(
         action: str = Field(
             description=(
                 "Action: 'register_worker' (declare a host's weighted "
-                "capacity + authorized repository roots/toolchains), "
+                "capacity + authorized repository roots/toolchains, "
+                "DURABLY -- survives an MCP server restart), "
+                "'seed_from_inventory' (register a PLACEHOLDER capacity "
+                "record, deliberately already-stale, for every host in "
+                "tunnel-manager's SSH inventory not already registered -- "
+                "never admits real work until a real register_worker/"
+                "heartbeat confirms the host), "
                 "'profile' (read a registered worker's declared capability), "
                 "'recheck' (dispatch-time entitlement recheck before a "
                 "claim -- refuses honestly without the optional "
@@ -40,6 +46,13 @@ def register_remote_workers_tools(
             )
         ),
         host_id: str | None = Field(default=None, description="Target host id."),
+        path: str | None = Field(
+            default=None,
+            description=(
+                "For seed_from_inventory: override the inventory.yaml path "
+                "(default ~/.config/agent-utilities/inventory.yaml)."
+            ),
+        ),
         cpu_weight: int | None = Field(
             default=None, description="For register_worker."
         ),
@@ -155,6 +168,7 @@ def register_remote_workers_tools(
             remote_worker_actions.dispatch,
             action,
             host_id=host_id,
+            path=path,
             cpu_weight=cpu_weight,
             memory_mib=memory_mib,
             disk_mib=disk_mib,

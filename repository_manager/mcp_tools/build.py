@@ -57,6 +57,18 @@ def register_build_tools(
             default=14,
             description="For gc: reclaim cache entries older than this (subject to keep_recent).",
         ),
+        host: str | None = Field(
+            default=None,
+            description=(
+                "For 'request': dispatch to this REGISTERED, authorized "
+                "remote host (its rm_remote_workers 'register_worker' "
+                "host_id) instead of building locally. Requires a clean "
+                "local tree (its HEAD sha + origin are what gets staged and "
+                "built remotely) and does not yet retrieve artifacts back — "
+                "see the returned result's 'note'. Omit to build locally "
+                "(the default, always colocated=True)."
+            ),
+        ),
         ctx: Context | None = Field(
             default=None, description="MCP context for progress reporting"
         ),
@@ -107,6 +119,7 @@ def register_build_tools(
                 wait_timeout=wait_timeout,
                 keep_recent=keep_recent,
                 max_age_days=max_age_days,
+                host=host,
             )
         except LaneArbitrationError as exc:
             return {"ok": False, "refused": str(exc), "error": str(exc)}

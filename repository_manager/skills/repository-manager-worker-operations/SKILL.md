@@ -79,9 +79,9 @@ credential, or a local reservation you invented — report the refusal and escal
 ## Tools & actions
 | Condensed tool | Actions |
 |----------------|---------|
-| `rm_remote_workers` | `register_worker`, `profile`, `recheck`, `stage_source`, `verify_source`, `receive_artifact`, `host_loss_reconcile` |
+| `rm_remote_workers` | `register_worker`, `seed_from_inventory`, `profile`, `recheck`, `stage_source`, `verify_source`, `receive_artifact`, `host_loss_reconcile`, `dispatch_build` |
 
-CLI: `repository-manager --remote-workers {register_worker,profile,recheck,stage_source,verify_source,receive_artifact,host_loss_reconcile} --remote-workers-params-json '<json>'`.
+CLI: `repository-manager --remote-workers {register_worker,seed_from_inventory,profile,recheck,stage_source,verify_source,receive_artifact,host_loss_reconcile,dispatch_build} --remote-workers-params-json '<json>'`.
 Unlike `--concepts`, there is no separate top-level flag family — every field for
 every action goes in the one JSON blob.
 
@@ -89,12 +89,14 @@ every action goes in the one JSON blob.
 | Action | Required | Optional |
 |---|---|---|
 | `register_worker` | `host_id` | `cpu_weight`, `memory_mib`, `disk_mib`, `process_slots` (each defaults to `1` if omitted), `labels`, `inventory_alias`, `repository_roots` (repo id → authorized absolute worktree root), `toolchains` |
+| `seed_from_inventory` | — | `path` (inventory.yaml override; default `~/.config/agent-utilities/inventory.yaml`) — registers a PLACEHOLDER capacity record, deliberately already-stale, for every host not already registered; never admits real work until a real `register_worker`/heartbeat confirms the host |
 | `profile` | `host_id` | — |
 | `recheck` | `host_id`, `repository_id` | `actor` (defaults to `"repository-manager"`), `inventory_alias`, `required_toolchain` |
 | `stage_source` | `origin` (credential-free Git origin), `tree_sha` (full 40-hex commit SHA), `parent_root` (the worker's authorized parent root), `worktree_name` | `repository_id`, `timeout_seconds` (default 1800), `execute_locally` (default `false` — commands only, no execution) |
 | `verify_source` | `destination`, `expected_sha`, `repository_id` | — |
 | `receive_artifact` | `root`, `relative_path`, `content_base64`, `host_id`, `source_description` | `declared_digest`, `media_type`, `kind` (`"artifact"` default or `"log"`) |
 | `host_loss_reconcile` | — (always refuses today, see above) | `reservation_id`, `work_item_id`, `attempt`, `fence`, `reason` |
+| `dispatch_build` | `host_id`, `repository_id`, `origin`, `tree_sha`, `command` (argv list) | `workdir` (default `"."`), `timeout_seconds` (default 3600), `cpu_weight`/`memory_mib`/`disk_mib`/`process_slots` (admission request against the host's durable capacity) — stages the commit and runs `command` on the host over `TunnelSSHExecutor`; reached more conveniently via `rm_build(action="request", host=<host_id>)`, see repository-manager-build-coordination. Does **not** yet retrieve artifacts back to the caller. Does **not** run `recheck`'s tunnel-manager entitlement resolve (no `InventoryResolver` is configured for this entrypoint today — see the fail-closed section) — only registered-profile + authorized-root + durable-capacity admission. |
 
 ## Recipes
 Register a worker's capacity and authorized roots:

@@ -23,8 +23,11 @@ def register_lane_tools(mcp: FastMCP, *, context: McpToolContext | None = None) 
             description=(
                 "Action: 'start' (open an isolated worktree and prove its "
                 "partitions), 'doctor' (check an existing tree's isolation, "
-                "mutates nothing), 'env' (the shell exports alone), 'finish' "
-                "(preflight, then hand the branch to the merge queue)."
+                "mutates nothing), 'heal' (diagnose like 'doctor', then REPAIR "
+                "the core.bare/index-collapse finding class itself — own tree "
+                "and canonical — rather than only naming the fix), 'env' (the "
+                "shell exports alone), 'finish' (preflight, then hand the "
+                "branch to the merge queue)."
             )
         ),
         path: str | None = Field(
