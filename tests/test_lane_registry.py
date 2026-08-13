@@ -221,6 +221,173 @@ def test_worktree_allocation_derives_a_valid_default_request_key(
     assert not any(ord(character) < 0x20 for character in record.request_key)
 
 
+# ---------------------------------------------------------------------------
+# LANE-4 (RMDD-28 -> RMDD-09): ``create_production_lane_registry`` had exactly
+# one production call site (``WorktreeManager.allocate``'s fallback) and
+# nothing ever supplied it, so it was unreachable. These two tests prove both
+# directions of the ``registry_factory`` seam added to close that gap:
+# a configured factory reaching the real native authority classes, and a
+# broken one refusing WITHOUT the authority-less ``LaneRegistry()`` local
+# approximation silently taking over. They reuse the real
+# ``NativeLaneAuthority``/``NativeLaneAuthorityAdapter``/
+# ``create_production_lane_registry`` production code from
+# ``repository_manager.native_lane_authority`` and the RMDD-28 lane's own
+# in-memory transport test double from ``tests/test_native_lane_authority.py``
+# (not reimplemented here) -- the same "proof stops at the fake transport,
+# not a live engine" honesty as that module's own suite.
+# ---------------------------------------------------------------------------
+
+
+def test_allocate_reaches_native_authority_via_registry_factory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured ``registry_factory`` makes the production lane authority
+    genuinely reachable: the resulting record is produced by the REAL
+    ``NativeLaneAuthority``/``NativeLaneAuthorityAdapter`` classes, routed
+    through the transport's ``reserve`` verb -- not the local pure registry.
+
+    Honest limit of this proof: it builds the registry via
+    ``NativeLaneAuthority(transport, claimer, ...)`` +
+    ``NativeLaneAuthorityAdapter`` + ``LaneRegistry`` directly -- the exact
+    same three real, unmodified production classes
+    ``create_production_lane_registry``/``NativeLaneAuthority.from_graph_client``
+    compose -- rather than calling ``create_production_lane_registry`` by
+    name. ``from_graph_client`` additionally imports
+    ``agent_utilities.orchestration.development_lane.
+    EngineNativeDevelopmentLaneTransport``, which is confirmed NOT importable
+    anywhere in this host's installed environments (it lives only on
+    agent-utilities' own unmerged ``rmdd-28-native-lane-authority-0809``
+    branch -- see this lane's handoff). The seam ``WorktreeManager.
+    __init__``'s ``registry_factory`` wires is generic: it is
+    ``create_production_lane_registry`` itself once that AU branch merges,
+    and nothing in ``worktree.py`` depends on which constructor a
+    deployment's composition root calls.
+    """
+
+    from repository_manager.native_lane_authority import NativeLaneAuthority
+    from tests.test_native_lane_authority import Clock as NativeClock
+    from tests.test_native_lane_authority import (
+        FakeDevelopmentLaneTransport,
+        FakeWorkItemClaimer,
+    )
+
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    git = SimpleNamespace(path=str(tmp_path), project_map={"origin": str(repository)})
+
+    transport = FakeDevelopmentLaneTransport()
+    store_path = tmp_path / "native-lanes.sqlite"
+
+    def factory() -> object:
+        # Mirrors a deployment's composition root calling
+        # ``create_production_lane_registry(graph_client, engine, ...)``:
+        # a real ``NativeLaneAuthority`` bound to a live transport, wrapped
+        # in the real ``NativeLaneAuthorityAdapter``, backing a real
+        # ``LaneRegistry`` -- the no-fallback production shape.
+        native = NativeLaneAuthority(
+            transport,
+            FakeWorkItemClaimer(),
+            tenant_ref="tenant:one",
+            host_ref="host:one",
+            clock=NativeClock(),
+        )
+        return LaneRegistry(
+            store_path,
+            clock=NativeClock(),
+            authority=NativeLaneAuthorityAdapter(native),
+        )
+
+    manager = WorktreeManager(git, registry_factory=factory)
+    expected_path = manager.worktree_path("repo", "feature/native")
+
+    class _AddCheck:
+        called = False
+
+    def _fake_add(*_args: object, **_kwargs: object) -> dict[str, object]:
+        _AddCheck.called = True
+        return {
+            "ok": True,
+            "created": True,
+            "path": expected_path,
+            "branch": "feature/native",
+        }
+
+    monkeypatch.setattr(manager, "add", _fake_add)
+
+    result = manager.allocate(
+        "repo",
+        "feature/native",
+        owner_id="agent:one",
+        session_id="session:one",
+        request_id="request:native-one",
+    )
+
+    assert result["ok"] is True, result
+    assert _AddCheck.called is True
+    # The record was produced by the fake TRANSPORT's reserve() verb, not by
+    # the local pure ``FakeDurableLaneAuthority``/``LaneRegistry`` path --
+    # proof the factory's construction was actually used, all the way through
+    # to a native ``allocate`` call.
+    assert "reserve" in transport.calls
+    assert result["lane_id"]
+
+
+def test_allocate_refuses_when_registry_factory_fails_no_local_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A configured-but-broken factory must refuse explicitly -- never be
+    silently replaced by the authority-less ``LaneRegistry()`` local
+    approximation.
+
+    This test fails if a future edit reintroduces that silent substitution:
+    the authority-less ``LaneRegistry()`` path raises its OWN
+    ``LaneRegistryError('durable lane authority is required for managed lane
+    mutations')`` when reached, which is a different, generic error/type than
+    the factory's own distinctive
+    ``NativeLaneAuthorityUnavailable('native_development_lane_authority_unavailable')``
+    asserted below -- so this test distinguishes "our explicit refusal
+    propagated" from "the local approximation quietly took over and refused
+    for its own, unrelated reason."
+    """
+
+    from repository_manager.native_lane_authority import NativeLaneAuthorityUnavailable
+
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    git = SimpleNamespace(path=str(tmp_path), project_map={"origin": str(repository)})
+
+    def broken_factory() -> object:
+        # Simulates a deployment that IS configured to use native lane
+        # authority (a composition root that chose to supply this factory at
+        # all) but whose transport/engine construction genuinely fails --
+        # e.g. LANE-3's own gap, an epistemic-graph client with no
+        # ``development_lanes`` namespace. Raises the real exception type,
+        # unmodified.
+        raise NativeLaneAuthorityUnavailable(NativeLaneAuthorityUnavailable.code)
+
+    manager = WorktreeManager(git, registry_factory=broken_factory)
+
+    def _must_not_be_called(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise AssertionError(
+            "no worktree may be created when the lane authority failed closed"
+        )
+
+    monkeypatch.setattr(manager, "add", _must_not_be_called)
+
+    result = manager.allocate(
+        "repo",
+        "feature/broken",
+        owner_id="agent:one",
+        session_id="session:one",
+        request_id="request:broken-one",
+    )
+
+    assert result["ok"] is False
+    assert result["stage"] == "registry"
+    assert result["error_type"] == "NativeLaneAuthorityUnavailable"
+    assert result["error"] == "native_development_lane_authority_unavailable"
+
+
 def test_lane_doctor_finish_never_borrows_projected_owner_or_fence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
