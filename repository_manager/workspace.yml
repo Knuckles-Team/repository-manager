@@ -523,7 +523,7 @@ maintenance:
     phase: 3
     projects:
     - agent-utilities
-    wait_minutes: 0
+    wait_minutes: 30
   - name: 'Phase 4: Core Tools and UIs'
     phase: 4
     projects:
