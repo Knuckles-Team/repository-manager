@@ -242,31 +242,6 @@ def _expand_required_environment(value: str, *, label: str) -> str:
     return expanded
 
 
-def _bulk_push_excluded(path: str, workspace_root: str) -> bool:
-    """CONCEPT:RM-PUSH bulk-push-scope-guard.
-
-    A ``bulk_push: true`` phase (e.g. the manifest's "Phase 5: Agents")
-    resolves against ``self.project_map`` for EVERY project not already
-    processed by an earlier phase — and ``project_map`` is built from the
-    ENTIRE workspace manifest (``_parse_subdirectories``), which also holds
-    every ``images/`` (55) and ``services/`` (141) repo. Those trees are not
-    part of the phased Python-package publish this push exists for — without
-    this guard a bulk-push phase would silently attempt to ``git push`` ~196
-    unrelated infra/deploy repos it was never meant to touch.
-
-    Reuses :data:`repository_manager.dependency_readiness.NON_PACKAGE_SUBDIRECTORY_KEYS`
-    — the manifest's own structural taxonomy, already used once for the exact
-    same distinction (scoping the dependency-readiness gate's fleet-package
-    name set) — rather than a second hardcoded ``{"images", "services"}``.
-    """
-    try:
-        rel = os.path.relpath(path, workspace_root)
-    except ValueError:
-        return False
-    first_component = rel.split(os.sep)[0]
-    return first_component in dependency_readiness.NON_PACKAGE_SUBDIRECTORY_KEYS
-
-
 def get_packaged_file_path(package: str, file: str) -> str:
     """Robustly find a file in a package using importlib.resources."""
     try:
@@ -3479,8 +3454,6 @@ class Git:
                     name = url.split("/")[-1].replace(".git", "")
                     if name in processed_projects:
                         continue
-                    if _bulk_push_excluded(path, self.path):
-                        continue
                     projects_to_push.append((name, path))
             else:
                 for project_name in projects:
@@ -3898,9 +3871,17 @@ class Git:
             return True
 
         except Exception as e:
+            # Log the message, not just the type. Logging `error_type` alone made a
+            # real failure invisible: a phased push resolved 0 repos and exited 0
+            # ("nothing to push") because this loader had failed with a bare
+            # `ValueError`, and the cause -- an unexpanded `${...}` placeholder in
+            # the manifest -- was discarded here. A summary that says "Total: 0"
+            # reads as success, so the swallowed cause is what makes it dangerous.
             logger.error(
-                "Failed to load projects from YAML: error_type=%s",
+                "Failed to load projects from YAML %s: %s: %s",
+                yaml_path,
                 type(e).__name__,
+                e,
             )
             return False
 

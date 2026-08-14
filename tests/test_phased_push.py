@@ -347,12 +347,17 @@ def test_phased_push_blocks_the_wave_when_the_downstream_gate_keeps_failing(
     )
 
 
-def test_phased_push_bulk_push_excludes_images_and_services(mock_repo_manager):
-    """CONCEPT:RM-PUSH bulk-push-scope-guard: a ``bulk_push: true`` phase
-    resolves against the WHOLE ``project_map`` (built from the entire
-    workspace manifest), which also holds every ``images/``/``services/``
-    infra repo. A bulk-push phase must never sweep those in — only
-    ``agent-packages/**`` (or any other non-infra tree)."""
+def test_phased_push_bulk_push_includes_images_and_services(mock_repo_manager):
+    """CONCEPT:RM-PUSH bulk-push-scope: a ``bulk_push: true`` phase resolves
+    against the WHOLE ``project_map`` (built from the entire workspace
+    manifest) and pushes every repo in it that an earlier phase did not
+    already handle — ``images/`` and ``services/`` INCLUDED.
+
+    This is deliberate: the phased push exists to move the whole workspace,
+    not only the Python packages. An earlier revision carved the infra trees
+    out via a ``_bulk_push_excluded`` guard; that narrowed the push below its
+    designed scope and was removed. Use the declarative ``exclude`` field
+    (see the next test) to carve out a specific repo."""
     root = mock_repo_manager.path
     mock_repo_manager.project_map = {
         "https://gitlab.arpa/agent-packages/agents/repo1.git": os.path.join(
@@ -378,10 +383,10 @@ def test_phased_push_bulk_push_excludes_images_and_services(mock_repo_manager):
         start_phase=1, config=config, auto_start=False
     )
 
-    # Only repo1 (under agent-packages/) pushed -- images/foo and
-    # services/bar were never even attempted.
-    assert len(results) == 1
-    assert mock_repo_manager.git_action.call_count == 2  # 1 status + 1 push
+    # All three pushed: agent-packages/repo1, images/foo AND services/bar.
+    assert len(results) == 3
+    assert all(r.status == "success" for r in results)
+    assert mock_repo_manager.git_action.call_count == 6  # 3 x (status + push)
 
 
 def test_phased_push_honors_declarative_exclude_pattern(mock_repo_manager):
