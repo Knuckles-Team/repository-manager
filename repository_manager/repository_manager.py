@@ -8,7 +8,6 @@ multiple repositories in parallel using Python's multiprocessing capabilities.
 
 import contextlib
 import datetime
-import fnmatch
 import functools
 import inspect
 import os
@@ -52,7 +51,6 @@ from importlib.resources import files
 
 from agent_utilities.base_utilities import get_logger
 
-from repository_manager import dependency_readiness
 from repository_manager.canonical_guard import guarded_canonical_mutation
 from repository_manager.gates import HOOK_STAGE_BY_GATE_STAGE, run_gate_stage
 from repository_manager.models import (
@@ -240,31 +238,6 @@ def _expand_required_environment(value: str, *, label: str) -> str:
     if _UNRESOLVED_ENV_REFERENCE.search(expanded):
         raise ValueError(f"{label} environment reference is unresolved")
     return expanded
-
-
-def _bulk_push_excluded(path: str, workspace_root: str) -> bool:
-    """CONCEPT:RM-PUSH bulk-push-scope-guard.
-
-    A ``bulk_push: true`` phase (e.g. the manifest's "Phase 5: Agents")
-    resolves against ``self.project_map`` for EVERY project not already
-    processed by an earlier phase — and ``project_map`` is built from the
-    ENTIRE workspace manifest (``_parse_subdirectories``), which also holds
-    every ``images/`` (55) and ``services/`` (141) repo. Those trees are not
-    part of the phased Python-package publish this push exists for — without
-    this guard a bulk-push phase would silently attempt to ``git push`` ~196
-    unrelated infra/deploy repos it was never meant to touch.
-
-    Reuses :data:`repository_manager.dependency_readiness.NON_PACKAGE_SUBDIRECTORY_KEYS`
-    — the manifest's own structural taxonomy, already used once for the exact
-    same distinction (scoping the dependency-readiness gate's fleet-package
-    name set) — rather than a second hardcoded ``{"images", "services"}``.
-    """
-    try:
-        rel = os.path.relpath(path, workspace_root)
-    except ValueError:
-        return False
-    first_component = rel.split(os.sep)[0]
-    return first_component in dependency_readiness.NON_PACKAGE_SUBDIRECTORY_KEYS
 
 
 def get_packaged_file_path(package: str, file: str) -> str:
@@ -742,9 +715,7 @@ class Git:
                     au_sync_command = (
                         f"python3 {shlex.quote(launcher)} sync" + _extra_flag(extra)
                     )
-                    au_result = self.git_action(
-                        au_sync_command, path=au_path, timeout=300
-                    )
+                    au_result = self.git_action(au_sync_command, path=au_path, timeout=300)
                     results.append(au_result)
 
                     if au_result.status == "success":
@@ -3407,6 +3378,7 @@ class Git:
         Concept:
             CONCEPT:RM-PUSH
         """
+        import time
 
         if progress is None:
             progress = self.progress
@@ -3477,11 +3449,8 @@ class Git:
             if phase.get("bulk_push") and not project_filter:
                 for url, path in self.project_map.items():
                     name = url.split("/")[-1].replace(".git", "")
-                    if name in processed_projects:
-                        continue
-                    if _bulk_push_excluded(path, self.path):
-                        continue
-                    projects_to_push.append((name, path))
+                    if name not in processed_projects:
+                        projects_to_push.append((name, path))
             else:
                 for project_name in projects:
                     processed_projects.add(project_name)
@@ -3491,29 +3460,6 @@ class Git:
                         ):
                             projects_to_push.append((project_name, p_path))
                             break
-
-            # Wire the (previously unused) declarative `exclude` field: fnmatch
-            # patterns against the project name, checked for every phase (not
-            # only bulk_push) so an operator can carve a specific repo out of
-            # an explicit `projects:` list too.
-            exclude_patterns = phase.get("exclude") or []
-            if exclude_patterns:
-                excluded = [
-                    (n, p)
-                    for (n, p) in projects_to_push
-                    if any(fnmatch.fnmatch(n, pat) for pat in exclude_patterns)
-                ]
-                for n, _p in excluded:
-                    logger.info(
-                        "Phase %s: excluding %s (matches an 'exclude' pattern)",
-                        phase_num,
-                        n,
-                    )
-                projects_to_push = [
-                    (n, p)
-                    for (n, p) in projects_to_push
-                    if not any(fnmatch.fnmatch(n, pat) for pat in exclude_patterns)
-                ]
 
             # Drop declared projects whose local clone is absent (stale registry
             # entry / never-cloned repo) so they don't surface as false push
@@ -3563,7 +3509,7 @@ class Git:
 
         processed_count = 0
 
-        for phase_idx, p_info in enumerate(phase_list):
+        for p_info in phase_list:
             phase_name = p_info["name"]
             phase_num = p_info["phase_num"]
             projects_to_push = p_info["projects_to_push"]
@@ -3638,208 +3584,23 @@ class Git:
             if wait_minutes > 0:
                 if not phase_had_pushes:
                     logger.info(
-                        f"Phase {phase_num} complete. Skipping the {wait_minutes}-minute "
-                        "gate-readiness ceiling because 0 commits were pushed."
+                        f"Phase {phase_num} complete. Skipping {wait_minutes} minutes wait because 0 commits were pushed."
                     )
                 else:
+                    logger.info(
+                        f"Phase {phase_num} complete. Waiting {wait_minutes} minutes before proceeding..."
+                    )
                     if progress is not None:
                         progress["current_phase"] = (
-                            f"Running downstream pre-push gates after {phase_name} "
-                            f"(retry ceiling {wait_minutes} min)"
+                            f"Waiting {wait_minutes} min after {phase_name}"
                         )
-                    outcome = self._await_phase_dependency_readiness(
-                        phase_num=phase_num,
-                        phase_name=phase_name,
-                        projects_to_push=projects_to_push,
-                        later_phases=phase_list[phase_idx + 1 :],
-                        wait_minutes=wait_minutes,
-                    )
-                    if not outcome.ok:
-                        unresolved = "; ".join(
-                            f"{f.repo_name} ({f.detail})" for f in outcome.failures
-                        )
-                        logger.error(
-                            "Phase %s gate-readiness barrier TIMED OUT after %.1fs "
-                            "(%d attempt(s)) with %d downstream repo(s) still failing "
-                            "their pre-push gate -- ABORTING the wave before %s (or "
-                            "any later phase) starts: %s. Set %s=<reason> to override "
-                            "(loud + audit-logged), or re-run once the failing repo(s) "
-                            "pass their own gate.",
-                            phase_num,
-                            outcome.waited_s,
-                            outcome.attempts,
-                            len(outcome.failures),
-                            phase_list[phase_idx + 1]["name"]
-                            if phase_idx + 1 < len(phase_list)
-                            else "the next phase",
-                            unresolved,
-                            dependency_readiness.OVERRIDE_ENV_VAR,
-                        )
-                        if progress is not None:
-                            progress["current_phase"] = (
-                                f"ABORTED — downstream gate(s) unmet after {phase_name}"
-                            )
-                        all_results.append(
-                            GitResult(
-                                status="error",
-                                data="",
-                                error=GitError(
-                                    message=(
-                                        f"phased_push aborted after {phase_name}: "
-                                        f"downstream gate-readiness barrier timed out "
-                                        f"after {outcome.waited_s:.1f}s "
-                                        f"({outcome.attempts} attempt(s)) still "
-                                        f"failing: {unresolved}"
-                                    ),
-                                    code=1,
-                                ),
-                            )
-                        )
-                        return all_results
-                    if outcome.targets_checked:
-                        note = " (override used)" if outcome.overridden else ""
-                        logger.info(
-                            "Phase %s gate-readiness barrier satisfied after %.1fs "
-                            "(%d attempt(s)) for %d downstream repo(s)%s — proceeding "
-                            "immediately (retry ceiling was %s min).",
-                            phase_num,
-                            outcome.waited_s,
-                            outcome.attempts,
-                            len(outcome.targets_checked),
-                            note,
-                            wait_minutes,
-                        )
+                    time.sleep(wait_minutes * 60)
 
         if progress is not None:
             progress["current_phase"] = "Pushes Completed"
             progress["progress"] = 100
 
         return all_results
-
-    def _phase_published_packages(
-        self, projects_to_push: list[tuple[str, str]]
-    ) -> dict[str, str]:
-        """Canonicalized package name -> declaring ``pyproject.toml`` path, for
-        every project actually pushed in one ``phased_push`` phase.
-
-        Reads each pushed project's OWN ``[project].name`` rather than
-        assuming the git repo name equals the published package name — a
-        assumption that would be exactly the kind of hardcoded au/eg-shaped
-        guess this gate is meant to avoid. A project with no
-        ``pyproject.toml`` (or no ``[project].name``) publishes nothing this
-        barrier can reason about and is silently skipped, not an error.
-        """
-        import tomllib
-
-        from packaging.utils import canonicalize_name
-
-        published: dict[str, str] = {}
-        for _proj_name, p_path in projects_to_push:
-            pyproject_path = os.path.join(p_path, "pyproject.toml")
-            if not os.path.isfile(pyproject_path):
-                continue
-            try:
-                with open(pyproject_path, "rb") as handle:
-                    data = tomllib.load(handle)
-            except (OSError, tomllib.TOMLDecodeError):
-                continue
-            name = (data.get("project") or {}).get("name")
-            if name:
-                published[canonicalize_name(name)] = pyproject_path
-        return published
-
-    def _await_phase_dependency_readiness(
-        self,
-        *,
-        phase_num: int,
-        phase_name: str,
-        projects_to_push: list[tuple[str, str]],
-        later_phases: list[dict[str, Any]],
-        wait_minutes: float,
-        poll_interval_s: float = 30.0,
-    ) -> "dependency_readiness.GateReadinessOutcome":
-        """Layer 2 of CONCEPT:RM-DEP-READY — gate-driven phase transitions.
-
-        The owner's refinement over the original blind
-        ``time.sleep(wait_minutes * 60)`` (slow when a publish took 4 minutes,
-        silently wrong when it never landed) and over the poll-the-index
-        barrier that briefly replaced it (a second implementation of exactly
-        what the pre-push gate already checks): **a phase transition is
-        decided by RUNNING the next phase's repos' own pre-push gates.**
-        Those gates already include the ``dependency-readiness`` hook
-        (Layer 1, ``[manual, pre-push]``), which fails closed when a declared
-        intra-fleet constraint is unsatisfiable — that hook IS the oracle, so
-        this method's only job is retry/backoff/deadline orchestration around
-        calling it (:func:`repository_manager.dependency_readiness.await_gate_readiness`,
-        which in turn calls :func:`repository_manager.gates.run_gate_stage` —
-        the SAME function ``Git._gate_before_push`` calls before that repo's
-        own real push). One mechanism decides both "is this phase transition
-        ready" and "will this repo's own push succeed".
-
-        Determines which package(s) THIS phase just published (each pushed
-        project's own declared name, via :meth:`_phase_published_packages`),
-        then narrows to the later-phase repos that actually declare a
-        constraint on one of those packages (never every later-phase repo —
-        a repo with no stake in what was just published has nothing to gate
-        on), and gate-checks exactly those. Returns immediately (``waited_s``
-        near zero) when nothing published or nothing downstream cares — the
-        old blind-sleep code always waited the full budget regardless, even
-        when nothing needed it.
-
-        ``wait_minutes`` is preserved as exactly the retry-ceiling budget it
-        always was (a per-phase ``workspace.yml`` field an operator already
-        tunes in minutes) — now enforced as the deadline for the gate-check
-        retry loop instead of a sleep duration or an index-poll deadline, so
-        existing manifests keep working unmodified with the same meaning an
-        operator would expect ("how long am I willing to wait for the next
-        phase to become pushable").
-        """
-        published = self._phase_published_packages(projects_to_push)
-        if not published:
-            logger.info(
-                "Phase %s: no pushed project declares a [project].name — "
-                "nothing for the gate-readiness barrier to check.",
-                phase_num,
-            )
-            return dependency_readiness.GateReadinessOutcome(ok=True, waited_s=0.0)
-
-        targets: dict[str, tuple[str, str]] = {}
-        for later in later_phases:
-            for proj_name, p_path in later["projects_to_push"]:
-                if p_path in targets:
-                    continue
-                constraints = dependency_readiness.declared_fleet_constraints(
-                    p_path, fleet_packages=set(published)
-                )
-                if constraints:
-                    targets[p_path] = (proj_name, p_path)
-
-        if not targets:
-            logger.info(
-                "Phase %s published %s; no later-phase repo declares a "
-                "constraint on it — proceeding immediately.",
-                phase_num,
-                sorted(published),
-            )
-            return dependency_readiness.GateReadinessOutcome(ok=True, waited_s=0.0)
-
-        logger.info(
-            "Phase %s published %s; running the pre-push gate for %d downstream "
-            "repo(s) (%s), retrying every %.0fs up to a %.0f-minute ceiling, "
-            "abort-and-never-silently-advance if still failing.",
-            phase_num,
-            sorted(published),
-            len(targets),
-            ", ".join(name for name, _ in targets.values()),
-            poll_interval_s,
-            wait_minutes,
-        )
-        return dependency_readiness.await_gate_readiness(
-            list(targets.values()),
-            wait_minutes=wait_minutes,
-            poll_interval_s=poll_interval_s,
-            audit_repo_path=self.path,
-        )
 
     def load_projects_from_yaml(self, yaml_path: str) -> bool:
         """

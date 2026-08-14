@@ -88,7 +88,7 @@ repository-manager --validate --bump patch --maintain --push
 - **`--validate`** runs a full pre-release validation; subsequent steps abort on failure.
 - **`--bump [patch|minor|major]`** bumps semantic versions.
 - **`--maintain`** propagates version changes through the dependency tree.
-- **`--push`** runs a parallelized, phase-gated Git push; phase transitions are decided by running downstream repos' own pre-push gates, with `wait_minutes` as the retry ceiling (CONCEPT:RM-DEP-READY — see `docs/phased_push.md`).
+- **`--push`** runs a parallelized, phase-gated Git push respecting `wait_minutes`.
 
 The phased mechanics are documented in detail in
 [Phased Maintenance](phased_maintenance.md) and [Phased Push](phased_push.md).

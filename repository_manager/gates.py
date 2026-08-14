@@ -171,27 +171,16 @@ def run_gate_stage(
     stage: GateStage,
     *,
     files: list[str] | None = None,
-    hook_ids: list[str] | None = None,
     timeout: int = 600,
 ) -> RepoScanResult:
     """Run one repo's declared hooks at one tier and report the result.
 
     This is the single execution primitive behind the ``rm_gates`` MCP tool,
-    ``rm_projects action=validate`` (via ``Git.validate_single_project``), the
-    pre-push gate ``Git.push_project`` runs automatically before every push
-    (via ``Git._gate_before_push``), and ``Git.phased_push``'s gate-driven
-    phase-transition barrier (via ``dependency_readiness.await_gate_readiness``
-    -- CONCEPT:RM-DEP-READY). ``stage="fast"`` passes ``--hook-stage
-    pre-commit``; ``stage="heavy"`` passes ``--hook-stage pre-push``.
-
-    ``hook_ids`` (non-empty) narrows the run to those specific declared hook
-    ids instead of every hook at ``stage`` -- e.g. the phase-transition
-    barrier scopes to just ``["dependency-readiness"]`` so a retry loop reruns
-    one fast network-bound check, not a repo's entire heavy suite (pytest,
-    mypy, ...) on every poll. A repo whose ``.pre-commit-config.yaml`` does
-    not declare a requested hook id reports as a failure with no parseable
-    hooks (pre-commit's own "No hook with ID" error surfaces via ``error``) --
-    never silently treated as "nothing to check".
+    ``rm_projects action=validate`` (via ``Git.validate_single_project``), and
+    the pre-push gate ``Git.push_project`` runs automatically before every
+    push (via ``Git._gate_before_push``). ``stage="fast"`` passes
+    ``--hook-stage pre-commit``; ``stage="heavy"`` passes ``--hook-stage
+    pre-push``.
 
     Returns a :class:`RepoScanResult` whose ``hooks`` carry per-hook pass/fail
     AND timing (``HookResult.duration_s``), and whose top-level ``duration_s``
@@ -213,9 +202,7 @@ def run_gate_stage(
     hook_stage = HOOK_STAGE_BY_GATE_STAGE[stage]
     started = time.monotonic()
     try:
-        result = _run_pre_commit(
-            repo_path, hook_stage, files=files, hook_ids=hook_ids, timeout=timeout
-        )
+        result = _run_pre_commit(repo_path, hook_stage, files=files, timeout=timeout)
     except subprocess.TimeoutExpired as e:
         return RepoScanResult(
             repo_path=repo_path,

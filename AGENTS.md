@@ -926,23 +926,6 @@ subsequent `git status`/`add`/`commit`/`diff` in that worktree until repaired
   sanity check against a known-good baseline count is the proposed guard
   (tracked as the still-open half of `D-CDX-105`).
 
-**Build/CI hosts should never mount a live git repository over NFS at
-all** — not even with the worktree isolation convention above, which only
-addresses concurrent *local* sessions on one checkout, not a repository
-shared as a mutable mount across *hosts*. 2026-08-13's R820 incident (an
-NFSv4 client livelock — 555,965 stuck delegations pinning a kernel thread
-at ~98% CPU for hours, wedging that host's whole load average) traced
-directly back to build/test I/O against `/home/apps/workspace`/
-`/home/apps/worktrees` over NFS. The fix is `dispatch_build`
-(`repository_manager.remote_worker_actions`, both CLI `--remote-workers
-dispatch_build` and MCP `rm_remote_workers`): stage an immutable commit SHA
-onto the build host's own **local** disk over SSH (`git clone`/`fetch`/
-`checkout`, no NFS, no shared `.git`), run the build there, no different
-in kind from what a human does when they `git clone` a repo onto a new
-machine. See `docs/architecture/nfs-buildhost-migration.md` for the full
-diagnosis, the rsync-vs-git-vs-NFS tradeoff, and the migration steps —
-validated live against R820 during that same incident.
-
 <!-- BEGIN concept-coordination (generated) -->
 ## Concept-ID Coordination (multi-session)
 

@@ -51,7 +51,7 @@ The following flags control phased update and push sequences:
 - `--validate`: Executes a full pre-release validation. If this fails, the next steps are aborted.
 - `--bump [patch/minor/major]`: Executes a version bump.
 - `--maintain`: Executes phased dependency updates across the workspace. Modifies `pyproject.toml` automatically based on dependency tree.
-- `--push`: Executes a parallelized Git Push sequence per-phase. Phase transitions are gate-driven (CONCEPT:RM-DEP-READY) — `wait_minutes` is the retry ceiling for downstream repos' own pre-push gates, not a sleep; see `docs/phased_push.md`.
+- `--push`: Executes a parallelized Git Push sequence per-phase, respecting `wait_minutes` pauses.
 - `--phase [int]`: Starting phase (1-3). Acts as a floor under change-aware start.
 - `--no-auto-start`: Opt out of change-aware start; begin at `--phase` (default 1) instead of the lowest changed phase.
 - `--single-phase`: Execute only the specified starting phase and halt.

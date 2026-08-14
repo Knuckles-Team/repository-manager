@@ -577,7 +577,6 @@ Examples:
             "verify_source",
             "receive_artifact",
             "host_loss_reconcile",
-            "dispatch_build",
         ],
         help="Remote-worker registry/source-staging/artifact-transport action.",
     )
