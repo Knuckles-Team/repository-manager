@@ -64,6 +64,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can't be computed).
 
 ### Fixed
+- **`dispatch_build` (P0.7) was unreachable from either adapter** — the action that stages an
+  immutable commit SHA onto a registered remote host's own local disk over SSH and runs a build
+  command there (`repository_manager.remote_worker_actions.dispatch_build`, built and unit-tested
+  against a fake SSH transport, and previously validated live against R820) predated both the CLI's
+  `--remote-workers` `choices=[...]` list and the `rm_remote_workers` MCP tool's parameter set, so
+  neither had been updated to expose it — it was reachable only via a direct Python import of
+  `remote_worker_actions.dispatch(...)`. Surfaced and re-validated live against R820 while
+  diagnosing that host's NFSv4 delegation-reaper livelock (2026-08-13; see
+  `docs/architecture/nfs-buildhost-migration.md`), where it is exactly the mechanism build/CI hosts
+  should use instead of a shared NFS-mounted repository. Now wired into both: `--remote-workers
+  dispatch_build` is a valid CLI choice, and `rm_remote_workers` gained `command`/`workdir`, with
+  CLI/MCP parity tests (`tests/test_rmdd20_remote_worker_surfaces.py`) proving both adapters reach
+  it identically, including a real `argparse`-level subprocess test (the existing parity tests all
+  bypass `argparse` by constructing the CLI's `Namespace` directly, which is exactly why the gap
+  went unnoticed).
 - **Worktree prune could delete an active lane's branch ref (CONCEPT:RM-PRUNE-GUARD, `D-FE-9`)** —
   `rm_worktree audit --prune-merged` treated a `merged` classification as authorisation to remove a
   worktree and run `git branch -D`. It removed a live lane's `agent-utilities` worktree *and* its

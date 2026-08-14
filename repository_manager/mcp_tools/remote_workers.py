@@ -39,7 +39,14 @@ def register_remote_workers_tools(
                 "'verify_source' (independently re-derive cleanliness/HEAD "
                 "identity of an already-staged worktree), 'receive_artifact' "
                 "(stream a base64 payload into the bounded, checksummed, "
-                "content-addressed artifact/log store), 'host_loss_reconcile' "
+                "content-addressed artifact/log store), 'dispatch_build' "
+                "(stage one immutable commit SHA on a REGISTERED, capacity-"
+                "admitted remote host over SSH -- clone/fetch/checkout onto "
+                "that host's own local disk, never NFS -- then run one fixed "
+                "command in the materialized worktree there; requires "
+                "host_id/repository_id/origin/tree_sha/command, honours "
+                "optional workdir/cpu_weight/memory_mib/disk_mib/"
+                "process_slots/timeout_seconds), 'host_loss_reconcile' "
                 "(quarantine a lost host and release its reservation -- "
                 "refuses honestly: no live WorkItem-authoritative resource "
                 "scheduler is wired into this entrypoint yet)."
@@ -100,10 +107,23 @@ def register_remote_workers_tools(
         worktree_name: str | None = Field(
             default=None, description="For stage_source."
         ),
-        timeout_seconds: int = Field(default=1800, description="For stage_source."),
+        timeout_seconds: int = Field(
+            default=1800, description="For stage_source/dispatch_build."
+        ),
         execute_locally: bool = Field(
             default=False,
             description="For stage_source: also run+verify the commands via a local executor.",
+        ),
+        command: list[str] | None = Field(
+            default=None,
+            description="For dispatch_build: the fixed argv to run on the remote host after staging.",
+        ),
+        workdir: str | None = Field(
+            default=None,
+            description=(
+                "For dispatch_build: path relative to the staged worktree root "
+                "to run 'command' in (default '.', the worktree root itself)."
+            ),
         ),
         destination: str | None = Field(default=None, description="For verify_source."),
         expected_sha: str | None = Field(
@@ -200,4 +220,6 @@ def register_remote_workers_tools(
             attempt=attempt,
             fence=fence,
             reason=reason,
+            command=command,
+            workdir=workdir,
         )
