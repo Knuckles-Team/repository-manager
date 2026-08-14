@@ -60,6 +60,33 @@ HOOK_STAGE_BY_GATE_STAGE: dict[str, str] = {
 _HOOK_LINE = re.compile(r"^(.+?)\.{5,}(Passed|Failed|Skipped)\s*$")
 _DURATION_LINE = re.compile(r"^-\s*duration:\s*([\d.]+)\s*s?\s*$", re.IGNORECASE)
 
+# Per-tier wall-clock ceilings. The FAST tier is diff-scoped lint/format work and
+# genuinely should finish in minutes. The HEAVY tier runs a repo's full pytest /
+# cargo / lockfile suite, which for the larger repos (agent-utilities,
+# epistemic-graph) legitimately exceeds ten minutes -- a 600s ceiling there is not
+# a safety net, it is a guaranteed timeout that reports as a gate FAILURE and so
+# is indistinguishable from the gate actually finding a defect.
+_DEFAULT_TIMEOUT_BY_STAGE = {"fast": 600, "heavy": 5400}
+_TIMEOUT_ENV_VAR = "RM_GATE_TIMEOUT_SECONDS"
+
+
+def default_gate_timeout(stage: str) -> int:
+    """Wall-clock ceiling for ``stage``, overridable via ``RM_GATE_TIMEOUT_SECONDS``.
+
+    An explicit override applies to every tier; otherwise the per-tier default
+    applies. A non-numeric or non-positive override is ignored rather than
+    crashing a push.
+    """
+    raw = os.environ.get(_TIMEOUT_ENV_VAR)
+    if raw:
+        try:
+            override = int(raw)
+        except ValueError:
+            override = 0
+        if override > 0:
+            return override
+    return _DEFAULT_TIMEOUT_BY_STAGE.get(stage, 600)
+
 
 def _run_pre_commit(
     repo_path: str,
@@ -172,7 +199,7 @@ def run_gate_stage(
     *,
     files: list[str] | None = None,
     hook_ids: list[str] | None = None,
-    timeout: int = 600,
+    timeout: int | None = None,
 ) -> RepoScanResult:
     """Run one repo's declared hooks at one tier and report the result.
 
@@ -211,19 +238,26 @@ def run_gate_stage(
         )
 
     hook_stage = HOOK_STAGE_BY_GATE_STAGE[stage]
+    effective_timeout = timeout if timeout is not None else default_gate_timeout(stage)
     started = time.monotonic()
     try:
         result = _run_pre_commit(
-            repo_path, hook_stage, files=files, hook_ids=hook_ids, timeout=timeout
+            repo_path,
+            hook_stage,
+            files=files,
+            hook_ids=hook_ids,
+            timeout=effective_timeout,
         )
-    except subprocess.TimeoutExpired as e:
+    except subprocess.TimeoutExpired:
         return RepoScanResult(
             repo_path=repo_path,
             success=False,
             exit_code=-1,
             error=(
-                f"Timeout expired running the {stage!r} ({hook_stage}) gate: "
-                f"{type(e).__name__}"
+                f"TIMEOUT after {effective_timeout}s running the {stage!r} "
+                f"({hook_stage}) gate -- the gate did NOT finish, so this is "
+                f"not a hook verdict. Raise {_TIMEOUT_ENV_VAR} or speed up the "
+                f"suite; do not read this as the gate finding a defect."
             ),
             stage=stage,
             duration_s=time.monotonic() - started,

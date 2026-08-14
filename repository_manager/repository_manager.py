@@ -1692,8 +1692,27 @@ class Git:
         if result.success:
             return None
         failed = [h.hook_id for h in result.hooks if not h.passed]
+        if not failed and result.error:
+            # No hook reported a verdict -- the gate did not complete (timeout,
+            # tooling error). Reporting that as "Pre-push gate failed (pre-push
+            # gate)" made a 600s HEAVY-tier timeout look identical to a real
+            # hook failure, which is how agent-utilities appeared to be blocked
+            # on merit when it had simply run out of clock. Surface the harness
+            # error verbatim instead of inventing a hook name.
+            logger.error("Pre-push gate did not complete: %s", result.error)
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=(
+                        f"Pre-push gate did not complete; push aborted. "
+                        f"{result.error}"
+                    ),
+                    code=1,
+                ),
+            )
         names = ", ".join(failed) or "pre-push gate"
-        logger.error("Pre-push gate failed")
+        logger.error("Pre-push gate failed: %s", names)
         return GitResult(
             status="error",
             data="",
