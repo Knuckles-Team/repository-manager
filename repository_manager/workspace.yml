@@ -361,6 +361,8 @@ subdirectories:
       description: Model Context Protocol adapter for ERPNext resource management.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/documentdb-mcp.git
       description: Model Context Protocol adapter for DocumentDB collections.
+    - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/kafka-mcp.git
+      description: Model Context Protocol adapter for Apache Kafka.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/container-manager-mcp.git
       description: Model Context Protocol adapter for Docker container execution.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/audio-transcriber-mcp.git
@@ -410,6 +412,8 @@ subdirectories:
       description: BorgBackup secure deduplicating backup runner.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/documentdb.git
       description: DocumentDB scalable NoSQL document database server.
+    - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/kafka.git
+      description: Apache Kafka single-node KRaft broker for event streaming.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/netboot-xyz.git
       description: PXE netboot services for network OS installations.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/romm.git
