@@ -206,3 +206,73 @@ def test_stage_heavy_fires_the_pre_push_only_hook(tmp_path):
     # default_stages: [pre-commit] means the fast-tier hook does NOT re-run
     # at pre-push -- confirms stage scoping is exact, not additive/leaky.
     assert "fast-only" not in ran
+
+
+# ---------------------------------------------------------------------------
+# Live proof: `hook_ids` narrows a run to specific declared hooks -- the exact
+# mechanism `dependency_readiness.await_gate_readiness` (CONCEPT:RM-DEP-READY
+# Layer 2, phased_push's gate-driven phase-transition barrier) relies on to
+# retry ONE fast network-bound hook instead of a repo's entire heavy suite
+# (pytest, mypy, ...) on every poll. No mocking of pre-commit itself.
+# ---------------------------------------------------------------------------
+
+
+def _init_repo_with_two_heavy_hooks(tmp_path):
+    env = isolated_git_subprocess_env()
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True, env=env)  # nosec B603 B607
+    subprocess.run(
+        ["git", "config", "user.email", "a@b.c"], cwd=tmp_path, check=True, env=env
+    )  # nosec B603 B607
+    subprocess.run(
+        ["git", "config", "user.name", "test"], cwd=tmp_path, check=True, env=env
+    )  # nosec B603 B607
+    (tmp_path / ".pre-commit-config.yaml").write_text(
+        "default_stages: [pre-commit]\n"
+        "repos:\n"
+        "- repo: local\n"
+        "  hooks:\n"
+        "  - id: heavy-one\n"
+        "    name: heavy-one\n"
+        "    entry: python3 -c \"print('HEAVY_ONE_RAN')\"\n"
+        "    language: system\n"
+        "    always_run: true\n"
+        "    pass_filenames: false\n"
+        "    stages: [pre-push, manual]\n"
+        "  - id: heavy-two\n"
+        "    name: heavy-two\n"
+        "    entry: python3 -c \"print('HEAVY_TWO_RAN')\"\n"
+        "    language: system\n"
+        "    always_run: true\n"
+        "    pass_filenames: false\n"
+        "    stages: [pre-push, manual]\n"
+    )
+    (tmp_path / "file.txt").write_text("hello\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, env=env)  # nosec B603 B607
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True, env=env
+    )  # nosec B603 B607
+
+
+def test_hook_ids_scopes_to_just_that_hook(tmp_path):
+    _init_repo_with_two_heavy_hooks(tmp_path)
+    result = gates.run_gate_stage(str(tmp_path), "heavy", hook_ids=["heavy-one"])
+    ran = {h.hook_id for h in result.hooks}
+    assert ran == {"heavy-one"}
+    assert "HEAVY_ONE_RAN" in result.raw_output
+    assert "HEAVY_TWO_RAN" not in result.raw_output
+    assert result.success is True
+
+
+def test_hook_ids_reports_a_failure_for_an_undeclared_hook(tmp_path):
+    """A repo that hasn't declared the requested hook id fails closed (never
+    silently 'nothing to check') -- this is exactly the raw behavior
+    `dependency_readiness.hook_declared` exists to detect ahead of time, so
+    ``await_gate_readiness`` can report "not yet adopted" instead of this
+    generic pre-commit error."""
+    _init_repo_with_two_heavy_hooks(tmp_path)
+    result = gates.run_gate_stage(
+        str(tmp_path), "heavy", hook_ids=["dependency-readiness"]
+    )
+    assert result.success is False
+    assert result.hooks == []
+    assert result.error is not None

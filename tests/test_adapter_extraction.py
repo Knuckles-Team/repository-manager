@@ -42,9 +42,14 @@ EXPECTED_TOOL_NAMES = (
 # right after ``rm_projects``. Each growth recomputes the tool name list and
 # this digest against the live registry — not drift. Recomputed here for the
 # merge of both the P0.6/P0.7 invariants program and GOC-60/P0.4 rm_gates
-# landing together.
+# landing together; recomputed again for the NFS-buildhost-git-sync lane,
+# which wires the already-implemented ``dispatch_build`` action (P0.7's
+# ``remote_worker_actions.dispatch_build``, previously reachable only via a
+# direct Python import — never through either adapter) into both
+# ``rm_remote_workers`` (gained ``command`` + ``workdir``) and the CLI's
+# ``--remote-workers`` choices list.
 BASELINE_CATALOG_SHA256 = (
-    "6a870a73e19107b79656f7c50785c4604141416349482c90d5d9107172539302"
+    "b16bcc43e6a5ac7523aa1b9ec578fc4adf4df30814330afa4559db18e2ff118b"
 )
 
 

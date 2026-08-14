@@ -8,6 +8,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Dependency-readiness gate (CONCEPT:RM-DEP-READY)** — `repository_manager/dependency_readiness.py`,
+  a pluggable artifact-availability predicate (`IndexBackend` protocol; `PyPISimpleIndexBackend`
+  default, over the PEP 503/691 Simple Repository API — never a hardcoded `pypi.org`, honors
+  `UV_INDEX_URL`/`PIP_INDEX_URL`/`[tool.uv.index]`) closing the blind-sleep gap in `phased_push`:
+  **Layer 1** — a new `[manual, pre-push]` local hook (`dependency-readiness`) reads a repo's own
+  declared PEP 440 constraints on other fleet packages (scoped via `workspace.yml`, excluding the
+  non-package `images`/`services` subdirectory trees) and fails the push when none of the
+  configured index's published versions satisfy one, naming the package, the declared constraint,
+  and what's actually available — proven live against `agent-utilities`' real, currently-unsatisfiable
+  `epistemic-graph[full]>=2.23.2,<3.0.0` (PyPI holds only `2.23.0`) and `agent-utilities>=2.0.0,<3.0.0`
+  (PyPI holds only `1.26.4`) constraints. **Layer 2 (gate-driven, not polling)** — `Git.phased_push`
+  decides a phase transition by RUNNING each downstream repo's own pre-push gate
+  (`dependency_readiness.await_gate_readiness` → `gates.run_gate_stage(path, "heavy",
+  hook_ids=["dependency-readiness"])` — the SAME call `Git._gate_before_push` makes before that
+  repo's own real push), retrying with bounded exponential backoff up to a `wait_minutes` ceiling
+  and **aborting the wave** (never advancing) if every attempt still fails, naming the specific
+  failing repo and constraint. `wait_minutes` is kept, repurposed from a sleep duration into that
+  retry ceiling, so existing `workspace.yml` manifests need no migration. A downstream repo that
+  hasn't yet adopted the hook (gradual fleet rollout) is treated as unverifiable and blocks, never
+  silently passes. Supersedes an earlier poll-the-package-index-directly design
+  (`dependency_readiness.await_constraints`, removed) that duplicated Layer 1's own check in a
+  second implementation — one mechanism now decides both "is this phase transition ready" and
+  "will this repo's own push succeed", because they're the same call. `gates.run_gate_stage` gained
+  a `hook_ids` parameter so a retry loop can rerun one fast network-bound hook instead of a repo's
+  entire heavy suite (pytest, mypy, ...) on every attempt. `Git.phased_push`'s `bulk_push` phases
+  (e.g. "Phase 5: Agents") also gained a scope guard — they resolve against the WHOLE workspace
+  manifest's project map, which also holds every `images/`/`services/` infra repo, so bulk_push now
+  skips those trees by construction, plus a newly-wired declarative `exclude` (fnmatch-on-name)
+  phase field for explicit exclusions. Distinguishes index-unreachable from version-absent in every
+  Layer-1 message, with a brief retry for the publish-but-not-yet-CDN-visible window, and one
+  loud/audited override (`RM_DEPENDENCY_READINESS_OVERRIDE_REASON`) — never a silent skip. Fleet
+  rollout via `scripts/sweep_dependency_readiness_hook.py` (same indentation-safe injection
+  technique as the two-tier model's own sweep) — **a prerequisite for the gate-driven barrier to
+  ever pass on a real fleet push**, since a downstream repo without the hook is treated as
+  unverifiable, not silently ready.
 - **Universal merge queue (CONCEPT:RM-MERGE-QUEUE)** — `repository_manager/merge_queue.py`, a
   **repo-agnostic** serialized merge queue: per-repo append-only candidate store, differential
   gating against a base ref, regenerate-on-land, guarded prune, the `reconciliation-merge` lease,
@@ -64,6 +99,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   can't be computed).
 
 ### Fixed
+- **`dispatch_build` (P0.7) was unreachable from either adapter** — the action that stages an
+  immutable commit SHA onto a registered remote host's own local disk over SSH and runs a build
+  command there (`repository_manager.remote_worker_actions.dispatch_build`, built and unit-tested
+  against a fake SSH transport, and previously validated live against R820) predated both the CLI's
+  `--remote-workers` `choices=[...]` list and the `rm_remote_workers` MCP tool's parameter set, so
+  neither had been updated to expose it — it was reachable only via a direct Python import of
+  `remote_worker_actions.dispatch(...)`. Surfaced and re-validated live against R820 while
+  diagnosing that host's NFSv4 delegation-reaper livelock (2026-08-13; see
+  `docs/architecture/nfs-buildhost-migration.md`), where it is exactly the mechanism build/CI hosts
+  should use instead of a shared NFS-mounted repository. Now wired into both: `--remote-workers
+  dispatch_build` is a valid CLI choice, and `rm_remote_workers` gained `command`/`workdir`, with
+  CLI/MCP parity tests (`tests/test_rmdd20_remote_worker_surfaces.py`) proving both adapters reach
+  it identically, including a real `argparse`-level subprocess test (the existing parity tests all
+  bypass `argparse` by constructing the CLI's `Namespace` directly, which is exactly why the gap
+  went unnoticed).
 - **Worktree prune could delete an active lane's branch ref (CONCEPT:RM-PRUNE-GUARD, `D-FE-9`)** —
   `rm_worktree audit --prune-merged` treated a `merged` classification as authorisation to remove a
   worktree and run `git branch -D`. It removed a live lane's `agent-utilities` worktree *and* its
