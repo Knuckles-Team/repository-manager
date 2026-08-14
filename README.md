@@ -452,6 +452,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `EUNOMIA_TYPE` | `none` | options: none, embedded, remote |
 | `EUNOMIA_POLICY_FILE` | `mcp_policies.json` |  |
 | `EUNOMIA_REMOTE_URL` | `http://eunomia-server:8000` |  |
+| `AGENT_UTILITIES_CONFIG_DIR` | — | override of ~/.config/agent-utilities for the capacity-seed inventory.yaml lookup |
 | `AGENT_UTILITIES_WORKSPACE_ROOT` | — | runtime-injected root; never persist a machine path |
 | `REPOSITORY_MANAGER_WORKSPACE` | — | optional override of AGENT_UTILITIES_WORKSPACE_ROOT |
 | `WORKSPACE_PATH` | — | compatibility workspace-root override |
@@ -465,6 +466,11 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `RM_GATE_BEFORE_PUSH` | `true` | run the pre-commit gate before pushing (set false to bypass) |
 | `RM_TASK_LEDGER_FLEET` | — | optional: caller identity (claude/codex/human/vllm) recorded against a task_queue reservation |
 | `RM_TASK_LEDGER_SESSION` | — | optional: caller's lane/session id recorded against a task_queue reservation |
+| `RM_DEPENDENCY_READINESS_OVERRIDE_REASON` | — | optional: non-empty human reason bypasses the dependency-readiness gate |
+| `UV_INDEX_URL` | — | optional: package index consulted by the dependency-readiness artifact-availability check |
+| `UV_EXTRA_INDEX_URL` | — | optional: space-separated extra package indexes for the dependency-readiness check |
+| `PIP_INDEX_URL` | — | optional: pip fallback index consulted by the dependency-readiness artifact-availability check |
+| `PIP_EXTRA_INDEX_URL` | — | optional: space-separated pip fallback extra indexes for the dependency-readiness check |
 | `REPOSITORY_MANAGER_CLONE_FILTER` | — | optional git clone filter: blob:none or tree:0 |
 | `CODE_ENHANCER_SCRIPTS_DIR` | — | optional code-enhancer helper scripts directory |
 | `GITLAB_URL` | `https://gitlab.com` | GitLab base URL (alias: GITLAB_HOST) |
@@ -511,7 +517,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | `gpt-4o` | Model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_49 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_55 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 
