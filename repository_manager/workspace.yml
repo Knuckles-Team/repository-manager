@@ -414,6 +414,21 @@ subdirectories:
       description: DocumentDB scalable NoSQL document database server.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/kafka.git
       description: Apache Kafka single-node KRaft broker for event streaming.
+    - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/lakehouse-seaweedfs.git
+      description: SeaweedFS single-process (master+volume+filer+S3) object store
+        backing the Iceberg lakehouse.
+    - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/lakekeeper-db.git
+      description: Dedicated Postgres 17 instance for the Lakekeeper Iceberg REST
+        catalog.
+    - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/lakekeeper.git
+      description: Lakekeeper Apache Iceberg REST catalog control plane, OIDC-secured
+        via Keycloak.
+    - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/trino.git
+      description: Single-node Trino coordinator with the Iceberg REST connector querying
+        the Lakekeeper catalog.
+    - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/spark.git
+      description: Long-lived Spark driver pod (spark-sql job runner) against the
+        Lakekeeper Iceberg REST catalog; no ingress, kubectl-exec only.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/netboot-xyz.git
       description: PXE netboot services for network OS installations.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/romm.git
@@ -638,68 +653,31 @@ services:
     url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/networks.git
     domain: networks.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
     description: Core overlay network infrastructure definitions for the Swarm.
+  - name: lakehouse-seaweedfs
+    url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/lakehouse-seaweedfs.git
+    domain: lakehouse-s3.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    description: SeaweedFS single-process (master+volume+filer+S3) object store backing
+      the Iceberg lakehouse.
+  - name: lakekeeper-db
+    url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/lakekeeper-db.git
+    domain: lakekeeper-db.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    description: Dedicated Postgres 17 instance for the Lakekeeper Iceberg REST catalog.
+  - name: lakekeeper
+    url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/lakekeeper.git
+    domain: lakekeeper.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    description: Lakekeeper Apache Iceberg REST catalog control plane, OIDC-secured
+      via Keycloak.
+  - name: trino
+    url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/trino.git
+    domain: trino.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    description: Single-node Trino coordinator with the Iceberg REST connector querying
+      the Lakekeeper catalog.
+  - name: spark
+    url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/spark.git
+    description: Long-lived Spark driver pod (spark-sql job runner) against the Lakekeeper
+      Iceberg REST catalog; no ingress, kubectl-exec only.
 graph:
   enabled: true
   multimodal: true
   incremental: true
   groups: []
-# Fresh-machine bootstrap contract (CONCEPT:RM-BOOTSTRAP). Consumed by
-# `rm_workspace(action="setup", install=True)` / `Git.install_projects()`.
-# This is documentation-as-data, not a second config loader: each `env` entry
-# names a variable a real code path already reads (see the cited file), with
-# its existing default restated here so a new environment can discover the
-# contract from the manifest instead of tribal knowledge.
-bootstrap:
-  # Every other repository depends on agent-utilities, and agent-utilities
-  # >=2.0.0 is not yet published to PyPI (only <=1.26.4 is public) -- so it
-  # must clone + install successfully before any dependent's install is
-  # attempted. See docs/bootstrap.md for the full ordering design and the
-  # PyPI-publish retirement path.
-  order:
-    - agent-utilities
-  env:
-    - name: AGENT_UTILITIES_WORKSPACE_ROOT
-      default: "(unset -> current working directory)"
-      description: >-
-        Workspace root override. Read by repository_manager.py
-        (DEFAULT_REPOSITORY_MANAGER_WORKSPACE), build_queue.py, and
-        worktree.py's WORKTREE_ROOT-adjacent lookups; also resolved into
-        this manifest's own path/url placeholders (${AGENT_UTILITIES_
-        WORKSPACE_ROOT}, ${AGENT_UTILITIES_REPO_ORIGIN}, ${AGENT_UTILITIES_
-        SERVICE_DOMAIN_SUFFIX}).
-    - name: REPOSITORY_MANAGER_WORKSPACE
-      default: "(unset -> AGENT_UTILITIES_WORKSPACE_ROOT, else cwd)"
-      description: Explicit workspace root override, takes precedence over AGENT_UTILITIES_WORKSPACE_ROOT.
-    - name: REPOSITORY_MANAGER_WORKTREE_ROOT
-      default: "${XDG_STATE_HOME}/repository-manager/worktrees"
-      description: Per-session worktree root for concurrent multi-agent development (worktree.py).
-    - name: WORKSPACE_YML
-      default: "(unset -> packaged repository_manager/workspace.yml seed)"
-      description: Path to the manifest itself, when not passed explicitly to rm_workspace(action=...).
-    - name: REPOSITORY_MANAGER_CLONE_FILTER
-      default: "(unset -> full clone)"
-      description: 'Set to "blob:none" or "tree:0" for a fast partial clone on a fresh machine.'
-    - name: EPISTEMIC_GRAPH_WHEELHOUSE
-      default: "/home/apps/worktrees/SHARED-WHEELS"
-      description: >-
-        Prebuilt epistemic-graph wheel directory agent-utilities' own
-        scripts/uv_workspace.py consults so installing agent-utilities never
-        forces a Rust build when a matching wheel is already staged
-        (BUG-063 fast path). Absent -> falls back to a real source build.
-    - name: SCRATCH_DIR
-      default: /var/tmp/l9
-      description: >-
-        Convention (not yet read by any repository-manager code path):
-        bulk/scratch work should not use /tmp (tmpfs, RAM-backed) on this
-        fleet's hosts. Documented here as data pending an actual env-driven
-        consumer.
-  # Named build hosts referenced today only as operator prose (e.g. "run the
-  # eg build on R820"). repository-manager's capacity/reservation machinery
-  # (capacity.py, reservations.py) is designed to route builds to a named
-  # host but has no wired dispatcher yet (GOC-60) -- declaring a host here
-  # does not by itself make `rm_build` honor it.
-  build_hosts:
-    - name: R820
-      role: epistemic-graph (Rust) builds -- heaviest compile/link workload
-    - name: R710
-      role: agent-utilities (Python) builds and gates
