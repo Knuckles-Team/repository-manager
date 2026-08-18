@@ -634,6 +634,76 @@ class Git:
             return True  # can't verify -> assume present, do not delete
         return f"refs/tags/{tag}" in (res.data or "")
 
+    def _workspace_root(self) -> Path:
+        """Return the approved workspace root after rejecting symlink ancestry."""
+        root = Path(os.path.abspath(os.path.expanduser(self.path)))
+        current = Path(root.anchor)
+        for component in root.parts[1:]:
+            current /= component
+            if current.is_symlink():
+                raise ValueError(f"workspace root contains symlink component {current}")
+            if current != root and current.exists() and not current.is_dir():
+                raise ValueError(
+                    f"workspace root contains non-directory component {current}"
+                )
+        if not root.exists() or not root.is_dir():
+            raise ValueError(f"workspace root is not a directory {root}")
+        return root
+
+    def _validate_workspace_path(
+        self,
+        candidate: str | Path,
+        *,
+        label: str,
+        require_directory: bool = False,
+        allow_leaf_symlink: bool = False,
+    ) -> Path:
+        """Validate one path lexically and by its real location under the root.
+
+        Symlink registrations are allowed only for the final sibling link that
+        this class owns and replaces. Project paths and canonical targets must
+        have no symlink components at all, so a link cannot redirect source
+        discovery or canonical target selection outside the approved root.
+        """
+        root = self._workspace_root()
+        path = Path(os.path.expanduser(os.fspath(candidate)))
+        if not path.is_absolute():
+            path = root / path
+        path = Path(os.path.abspath(path))
+        try:
+            relative = path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"{label} escapes workspace root") from exc
+
+        current = root
+        components = relative.parts
+        for index, component in enumerate(components):
+            current /= component
+            if current.is_symlink() and not (
+                allow_leaf_symlink and index == len(components) - 1
+            ):
+                raise ValueError(f"{label} contains symlink component {current}")
+            if (
+                index < len(components) - 1
+                and current.exists()
+                and not current.is_dir()
+            ):
+                raise ValueError(f"{label} contains non-directory component {current}")
+
+        if require_directory and (not path.exists() or not path.is_dir()):
+            raise ValueError(f"{label} is not a directory {path}")
+
+        # No symlink components were accepted above for project/target paths;
+        # still verify the real path to close lexical-vs-real containment gaps
+        # if the filesystem changed during validation.
+        if not (allow_leaf_symlink and path.is_symlink()):
+            try:
+                real_path = path.resolve(strict=False)
+                real_path.relative_to(root)
+            except (OSError, ValueError) as exc:
+                raise ValueError(f"{label} escapes workspace root") from exc
+        return path
+
     @staticmethod
     def _declared_uv_sibling_names(project_path: str) -> tuple[str, ...]:
         """Return the sibling names declared by a project's uv sources.
@@ -646,6 +716,8 @@ class Git:
         materializer.
         """
         manifest = Path(project_path) / "pyproject.toml"
+        if manifest.is_symlink():
+            raise ValueError(f"refusing symlink uv source manifest {manifest}")
         if not manifest.is_file():
             return ()
         try:
@@ -698,22 +770,15 @@ class Git:
         silently shadow another, and every target must remain under the
         configured workspace root.
         """
-        workspace_root = Path(self.path).expanduser().resolve()
         targets: dict[str, Path] = {}
-        for configured in self.get_project_map().values():
-            candidate = Path(configured).expanduser()
-            if not candidate.is_absolute():
-                candidate = workspace_root / candidate
-            candidate = candidate.resolve(strict=False)
+        for configured in self.project_map.values():
+            candidate = self._validate_workspace_path(
+                configured,
+                label=f"canonical sibling target {configured!r}",
+            )
             name = candidate.name
             if not name:
                 continue
-            try:
-                candidate.relative_to(workspace_root)
-            except ValueError as exc:
-                raise ValueError(
-                    f"canonical sibling target {name!r} escapes workspace root"
-                ) from exc
             previous = targets.get(name)
             if previous is not None and previous != candidate:
                 raise ValueError(f"ambiguous canonical sibling target {name!r}")
@@ -751,7 +816,12 @@ class Git:
         install/launcher flows; this helper only makes their declared paths
         resolve to canonical sibling repositories.
         """
-        names = self._declared_uv_sibling_names(project_path)
+        project = self._validate_workspace_path(
+            project_path,
+            label="project path",
+            require_directory=True,
+        )
+        names = self._declared_uv_sibling_names(str(project))
         if not names:
             return ()
 
@@ -765,7 +835,7 @@ class Git:
                 )
             resolved_targets[name] = target
 
-        sibling_dir = Path(project_path) / _UV_WORKSPACE_SIBLINGS_DIRNAME
+        sibling_dir = project / _UV_WORKSPACE_SIBLINGS_DIRNAME
         if sibling_dir.is_symlink():
             raise ValueError(f"refusing symlink sibling directory {sibling_dir}")
         if sibling_dir.exists() and not sibling_dir.is_dir():
@@ -773,7 +843,13 @@ class Git:
         sibling_dir.mkdir(parents=True, exist_ok=True)
 
         for name in names:
-            self._replace_uv_sibling_link(sibling_dir / name, resolved_targets[name])
+            link = sibling_dir / name
+            self._validate_workspace_path(
+                link,
+                label=f"uv sibling link {name!r}",
+                allow_leaf_symlink=True,
+            )
+            self._replace_uv_sibling_link(link, resolved_targets[name])
         return names
 
     def install_projects(

@@ -80,6 +80,21 @@ def test_corrects_wrong_symlink_target(tmp_path: Path) -> None:
     assert link.resolve() == projects["helper"].resolve()
 
 
+def test_corrects_wrong_symlink_target_outside_workspace(tmp_path: Path) -> None:
+    manager, projects = _manager(tmp_path, "helper")
+    _manifest(projects["consumer"], "helper")
+    outside = tmp_path.parent / f"{tmp_path.name}-wrong-target"
+    outside.mkdir()
+    sibling_dir = projects["consumer"] / ".uv-workspace-siblings"
+    sibling_dir.mkdir()
+    link = sibling_dir / "helper"
+    link.symlink_to(outside, target_is_directory=True)
+
+    manager._materialize_uv_siblings(str(projects["consumer"]))
+
+    assert link.resolve() == projects["helper"].resolve()
+
+
 def test_repeated_materialization_is_idempotent(tmp_path: Path) -> None:
     manager, projects = _manager(tmp_path, "helper")
     _manifest(projects["consumer"], "helper")
@@ -100,4 +115,68 @@ def test_missing_canonical_target_fails_closed(tmp_path: Path) -> None:
     _manifest(projects["consumer"], "missing")
 
     with pytest.raises(ValueError, match="missing from the workspace map"):
+        manager._materialize_uv_siblings(str(projects["consumer"]))
+
+
+def test_refuses_project_path_outside_approved_root(tmp_path: Path) -> None:
+    manager, projects = _manager(tmp_path, "helper")
+    _manifest(projects["consumer"], "helper")
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-consumer"
+    outside.mkdir()
+    (outside / "pyproject.toml").write_text(
+        '[tool.uv.sources]\nhelper = { path = ".uv-workspace-siblings/helper" }\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="project path escapes workspace root"):
+        manager._materialize_uv_siblings(str(outside))
+
+
+def test_refuses_symlinked_project_path(tmp_path: Path) -> None:
+    manager, projects = _manager(tmp_path, "helper")
+    _manifest(projects["consumer"], "helper")
+    alias = tmp_path / "consumer-alias"
+    alias.symlink_to(projects["consumer"], target_is_directory=True)
+
+    with pytest.raises(ValueError, match="project path contains symlink component"):
+        manager._materialize_uv_siblings(str(alias))
+
+
+def test_refuses_symlinked_canonical_target(tmp_path: Path) -> None:
+    manager, projects = _manager(tmp_path)
+    _manifest(projects["consumer"], "helper")
+    outside = tmp_path.parent / f"{tmp_path.name}-helper-real"
+    outside.mkdir()
+    linked_target = tmp_path / "helper"
+    linked_target.symlink_to(outside, target_is_directory=True)
+    manager.project_map["local://helper"] = str(linked_target)
+
+    with pytest.raises(ValueError, match="canonical sibling target.*symlink component"):
+        manager._materialize_uv_siblings(str(projects["consumer"]))
+
+
+def test_refuses_symlinked_canonical_target_ancestor(tmp_path: Path) -> None:
+    manager, projects = _manager(tmp_path)
+    _manifest(projects["consumer"], "helper")
+    real_parent = tmp_path / "canonical-real"
+    real_parent.mkdir()
+    (real_parent / "helper").mkdir()
+    linked_parent = tmp_path / "canonical-link"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    manager.project_map["local://helper"] = str(linked_parent / "helper")
+
+    with pytest.raises(ValueError, match="canonical sibling target.*symlink component"):
+        manager._materialize_uv_siblings(str(projects["consumer"]))
+
+
+def test_refuses_symlinked_sibling_directory(tmp_path: Path) -> None:
+    manager, projects = _manager(tmp_path, "helper")
+    _manifest(projects["consumer"], "helper")
+    outside = tmp_path.parent / f"{tmp_path.name}-sibling-dir"
+    outside.mkdir()
+    (projects["consumer"] / ".uv-workspace-siblings").symlink_to(
+        outside, target_is_directory=True
+    )
+
+    with pytest.raises(ValueError, match="symlink sibling directory"):
         manager._materialize_uv_siblings(str(projects["consumer"]))
