@@ -1,6 +1,7 @@
 """Tests for WorktreeManager (CONCEPT:RM-WORKTREE) against real git repos."""
 
 import os
+import shutil
 import subprocess
 from types import SimpleNamespace
 
@@ -167,6 +168,47 @@ def test_remove_worktree(repo):
     rm = repo.wm.remove("myrepo", "feat-x", force=True)
     assert rm["ok"]
     assert not os.path.isdir(res["path"])
+
+
+def test_remove_preserves_sibling_registration_and_unmerged_refs(repo):
+    """A targeted remove must not globally prune another lane's admin entry."""
+    target = repo.wm.add("myrepo", "feat-target")
+    _commit_in(target["path"], "target.txt", "unmerged-target")
+    target_tip = _ref(repo.path, "refs/heads/feat-target")
+
+    sibling = repo.wm.add("myrepo", "feat-sibling")
+    _commit_in(sibling["path"], "sibling.txt", "unmerged-sibling")
+    sibling_tip = _ref(repo.path, "refs/heads/feat-sibling")
+    # Leave a stale administrative registration behind. A repo-wide `git
+    # worktree prune` would remove this unrelated sibling entry.
+    shutil.rmtree(sibling["path"])
+    before = subprocess.run(
+        "git worktree list --porcelain",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert sibling["path"] in before
+
+    result = repo.wm.remove("myrepo", "feat-target", delete_branch=True)
+
+    assert result["ok"] is True
+    assert result["branch_deleted"] is False
+    assert not os.path.isdir(target["path"])
+    assert _ref(repo.path, "refs/heads/feat-target") == target_tip
+    assert _ref(repo.path, "refs/heads/feat-sibling") == sibling_tip
+    after = subprocess.run(
+        "git worktree list --porcelain",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert sibling["path"] in after
+    assert "branch refs/heads/feat-sibling" in after
 
 
 def test_adopt_moves_wip_onto_branch(repo):

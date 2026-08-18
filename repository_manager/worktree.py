@@ -586,7 +586,7 @@ class WorktreeManager:
         delete_branch: bool = False,
         base: str = "main",
     ) -> dict[str, Any]:
-        """Remove a worktree (and prune); refuses an occupied lane unconditionally.
+        """Remove one worktree without pruning unrelated registrations.
 
         D-CDX-15 — **this used to be the one destructive worktree path that
         never asked the lane protocol whether anyone was still working here.**
@@ -655,7 +655,8 @@ class WorktreeManager:
                     "ok": False,
                     "error": res.error.message if res.error else res.data,
                 }
-            self._run("git worktree prune", canonical, quiet=True)
+            # This operation owns one exact registration only. Broad stale
+            # administrative cleanup belongs to the explicit prune paths.
             deleted = False
             reason = anchor = ""
             if delete_branch:
