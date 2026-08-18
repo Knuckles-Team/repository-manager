@@ -236,3 +236,7 @@ unbuildable in the pod (a config-contract change is the usual culprit).
   [references/conflict-decision-procedure.md](references/conflict-decision-procedure.md)
 - Mechanism: `repository_manager/merge_queue.py`, `docs/merge-queue.md`,
   `repository_manager/mergequeue_presets/`
+
+## See also
+
+`repository-manager-parallel-lane-orchestration` — when many worker agents are landing branches concurrently: the lane briefing contract, land-as-they-arrive discipline, provider-before-consumer ordering, verifying the merged TREE rather than the merge command's exit code, and reconciling to zero branches/worktrees.
