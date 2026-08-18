@@ -1,4 +1,5 @@
 import asyncio
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -10,12 +11,21 @@ pytest.importorskip(
     reason="dev agent_utilities (with knowledge_graph) not installed",
 )
 
+from agent_utilities.knowledge_graph.core.graph_compute import (  # noqa: E402
+    GraphComputeEngine,
+)
 from agent_utilities.knowledge_graph.pipeline.runner import PipelineRunner  # noqa: E402
 from agent_utilities.knowledge_graph.pipeline.types import (  # noqa: E402
     PipelineContext,
     PipelinePhase,
 )
 from agent_utilities.models.knowledge_graph import PipelineConfig  # noqa: E402
+
+
+def _unconnected_graph() -> GraphComputeEngine:
+    """Provide the graph dependency without opening an engine transport."""
+
+    return MagicMock(spec=GraphComputeEngine)
 
 
 def test_pipeline_runner_execution():
@@ -32,10 +42,9 @@ def test_pipeline_runner_execution():
         p2 = PipelinePhase(name="p2", deps=["p1"], execute_fn=phase2_fn)
 
         runner = PipelineRunner([p1, p2])
-        from unittest.mock import patch
-
-        with patch("epistemic_graph.client.SyncEpistemicGraphClient.connect"):
-            ctx = PipelineContext(config=PipelineConfig(workspace_path="."))
+        ctx = PipelineContext(
+            config=PipelineConfig(workspace_path="."), graph=_unconnected_graph()
+        )
 
         results = await runner.run(ctx)
 
@@ -53,10 +62,9 @@ def test_pipeline_runner_failure():
 
         p1 = PipelinePhase(name="fail", deps=[], execute_fn=fail_fn)
         runner = PipelineRunner([p1])
-        from unittest.mock import patch
-
-        with patch("epistemic_graph.client.SyncEpistemicGraphClient.connect"):
-            ctx = PipelineContext(config=PipelineConfig(workspace_path="."))
+        ctx = PipelineContext(
+            config=PipelineConfig(workspace_path="."), graph=_unconnected_graph()
+        )
 
         with pytest.raises(ValueError, match="Intentional failure"):
             await runner.run(ctx)

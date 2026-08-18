@@ -68,7 +68,9 @@ class _FakeTunnel:
 @pytest.fixture(autouse=True)
 def _fake_tunnel(monkeypatch: pytest.MonkeyPatch) -> _FakeTunnel:
     fake = _FakeTunnel()
-    monkeypatch.setattr(ssh_executor_module, "Tunnel", lambda **_kw: fake)
+    # Inject the factory consumed by TunnelSSHExecutor; patching the Tunnel
+    # class itself is too late because _default_tunnel imports paramiko first.
+    monkeypatch.setattr(ssh_executor_module, "_default_tunnel", lambda _alias: fake)
     monkeypatch.setattr(ssh_executor_module, "_TUNNEL_MANAGER_IMPORT_ERROR", None)
     return fake
 
