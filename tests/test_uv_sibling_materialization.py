@@ -180,3 +180,42 @@ def test_refuses_symlinked_sibling_directory(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="symlink sibling directory"):
         manager._materialize_uv_siblings(str(projects["consumer"]))
+
+
+@pytest.mark.parametrize(
+    ("manifest", "message"),
+    [
+        ("tool = 'invalid'\n", r"\[tool\] must be a table"),
+        ("[tool]\nuv = 'invalid'\n", r"\[tool\.uv\] must be a table"),
+        (
+            "[tool.uv]\nsources = 'invalid'\n",
+            r"\[tool\.uv\.sources\] must be a table",
+        ),
+        (
+            "[tool.uv.sources]\nhelper = 'invalid'\n",
+            "must be a table or list of tables",
+        ),
+        (
+            "[tool.uv.sources]\nhelper = ['invalid']\n",
+            "must contain only tables",
+        ),
+    ],
+)
+def test_rejects_malformed_uv_source_config(
+    tmp_path: Path, manifest: str, message: str
+) -> None:
+    manager, projects = _manager(tmp_path, "helper")
+    (projects["consumer"] / "pyproject.toml").write_text(manifest, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
+        manager._materialize_uv_siblings(str(projects["consumer"]))
+
+
+def test_rejects_malformed_uv_source_manifest(tmp_path: Path) -> None:
+    manager, projects = _manager(tmp_path, "helper")
+    (projects["consumer"] / "pyproject.toml").write_text(
+        "[tool.uv.sources\nhelper = {}\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="cannot parse uv source manifest"):
+        manager._materialize_uv_siblings(str(projects["consumer"]))

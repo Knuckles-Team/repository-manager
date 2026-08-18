@@ -727,8 +727,16 @@ class Git:
             raise ValueError(f"cannot parse uv source manifest {manifest}") from exc
 
         tool = document.get("tool")
-        uv = tool.get("uv") if isinstance(tool, dict) else None
-        sources = uv.get("sources") if isinstance(uv, dict) else None
+        if tool is None:
+            return ()
+        if not isinstance(tool, dict):
+            raise ValueError("[tool] must be a table")
+        uv = tool.get("uv")
+        if uv is None:
+            return ()
+        if not isinstance(uv, dict):
+            raise ValueError("[tool.uv] must be a table")
+        sources = uv.get("sources")
         if sources is None:
             return ()
         if not isinstance(sources, dict):
@@ -737,9 +745,20 @@ class Git:
         names: list[str] = []
         prefix = _UV_WORKSPACE_SIBLINGS_DIRNAME
         for source_name, configured in sources.items():
-            entries = configured if isinstance(configured, list) else [configured]
+            if isinstance(configured, list):
+                entries = configured
+            elif isinstance(configured, dict):
+                entries = [configured]
+            else:
+                raise ValueError(
+                    f"uv source {source_name!r} must be a table or list of tables"
+                )
             for entry in entries:
-                if not isinstance(entry, dict) or "path" not in entry:
+                if not isinstance(entry, dict):
+                    raise ValueError(
+                        f"uv source {source_name!r} must contain only tables"
+                    )
+                if "path" not in entry:
                     continue
                 raw_path = entry["path"]
                 if not isinstance(raw_path, str):
@@ -1894,8 +1913,7 @@ class Git:
                 data="",
                 error=GitError(
                     message=(
-                        f"Pre-push gate did not complete; push aborted. "
-                        f"{result.error}"
+                        f"Pre-push gate did not complete; push aborted. {result.error}"
                     ),
                     code=1,
                 ),

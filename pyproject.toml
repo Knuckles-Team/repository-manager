@@ -104,8 +104,6 @@ override-dependencies = [
 # member's pyproject.toml.
 [tool.uv.sources]
 agent-utilities = { path = ".uv-workspace-siblings/agent-utilities", editable = true }
-epistemic-graph = { path = ".uv-workspace-siblings/epistemic-graph", editable = true }
-langfuse-agent = { path = ".uv-workspace-siblings/langfuse-agent", editable = true }
 
 [project.entry-points."agent_utilities.skill_providers"]
 repository-manager = "repository_manager.skills"
