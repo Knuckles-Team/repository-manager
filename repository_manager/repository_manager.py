@@ -17,6 +17,8 @@ import shlex
 import subprocess
 import sys
 import threading
+import tomllib
+import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, TypeVar
@@ -84,6 +86,7 @@ _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", re.DOTALL)
 _SHELL_CONTROL_TOKENS = {"&&", "||", ";", "|", "&", "(", ")"}
 _MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024
 _MutationResult = TypeVar("_MutationResult")
+_UV_WORKSPACE_SIBLINGS_DIRNAME = ".uv-workspace-siblings"
 
 
 class _RepoMutationLock:
@@ -526,8 +529,6 @@ class Git:
             ),
         )
 
-    _AU_SIBLING_SOURCE_MARKER = ".uv-workspace-siblings/agent-utilities"
-
     def _find_project_path(self, name: str) -> str | None:
         """Return the cloned path for project *name* (by directory basename)."""
         for path in self.project_map.values():
@@ -633,6 +634,148 @@ class Git:
             return True  # can't verify -> assume present, do not delete
         return f"refs/tags/{tag}" in (res.data or "")
 
+    @staticmethod
+    def _declared_uv_sibling_names(project_path: str) -> tuple[str, ...]:
+        """Return the sibling names declared by a project's uv sources.
+
+        Local path sources are deliberately constrained to the one stable shape
+        used by the fleet: ``.uv-workspace-siblings/<repository>``.  Parsing
+        this declaration, rather than maintaining a repository allowlist, lets
+        a consumer add another local package without changing repository-manager
+        and prevents a manifest from smuggling a traversal path into the
+        materializer.
+        """
+        manifest = Path(project_path) / "pyproject.toml"
+        if not manifest.is_file():
+            return ()
+        try:
+            with manifest.open("rb") as handle:
+                document = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ValueError(f"cannot parse uv source manifest {manifest}") from exc
+
+        tool = document.get("tool")
+        uv = tool.get("uv") if isinstance(tool, dict) else None
+        sources = uv.get("sources") if isinstance(uv, dict) else None
+        if sources is None:
+            return ()
+        if not isinstance(sources, dict):
+            raise ValueError("[tool.uv.sources] must be a table")
+
+        names: list[str] = []
+        prefix = _UV_WORKSPACE_SIBLINGS_DIRNAME
+        for source_name, configured in sources.items():
+            entries = configured if isinstance(configured, list) else [configured]
+            for entry in entries:
+                if not isinstance(entry, dict) or "path" not in entry:
+                    continue
+                raw_path = entry["path"]
+                if not isinstance(raw_path, str):
+                    raise ValueError(f"uv source {source_name!r} has a non-string path")
+                parts = raw_path.split("/")
+                if (
+                    raw_path.startswith(("/", "\\"))
+                    or "\\" in raw_path
+                    or len(parts) != 2
+                    or parts[0] != prefix
+                    or not parts[1]
+                    or parts[1] in {".", ".."}
+                ):
+                    raise ValueError(
+                        f"uv source {source_name!r} must use a direct "
+                        f"{prefix}/<name> path"
+                    )
+                sibling_name = parts[1]
+                if sibling_name not in names:
+                    names.append(sibling_name)
+        return tuple(names)
+
+    def _canonical_uv_sibling_targets(self) -> dict[str, Path]:
+        """Build a bounded, canonical repository-name-to-path map.
+
+        The map is derived solely from the configured workspace projects.  A
+        duplicate basename is refused instead of letting one registration
+        silently shadow another, and every target must remain under the
+        configured workspace root.
+        """
+        workspace_root = Path(self.path).expanduser().resolve()
+        targets: dict[str, Path] = {}
+        for configured in self.get_project_map().values():
+            candidate = Path(configured).expanduser()
+            if not candidate.is_absolute():
+                candidate = workspace_root / candidate
+            candidate = candidate.resolve(strict=False)
+            name = candidate.name
+            if not name:
+                continue
+            try:
+                candidate.relative_to(workspace_root)
+            except ValueError as exc:
+                raise ValueError(
+                    f"canonical sibling target {name!r} escapes workspace root"
+                ) from exc
+            previous = targets.get(name)
+            if previous is not None and previous != candidate:
+                raise ValueError(f"ambiguous canonical sibling target {name!r}")
+            targets[name] = candidate
+        return targets
+
+    @staticmethod
+    def _replace_uv_sibling_link(link: Path, target: Path) -> None:
+        """Create or correct one sibling symlink without replacing real files."""
+        if link.is_symlink():
+            try:
+                if link.resolve(strict=False) == target:
+                    return
+            except OSError:
+                # A broken link is still safe to replace: it is handled by the
+                # symlink-only branch below and never followed as a directory.
+                pass
+        elif link.exists():
+            raise ValueError(f"refusing to replace non-symlink path {link}")
+
+        staged = link.with_name(
+            f".{link.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            staged.symlink_to(target, target_is_directory=True)
+            os.replace(staged, link)
+        finally:
+            staged.unlink(missing_ok=True)
+
+    def _materialize_uv_siblings(self, project_path: str) -> tuple[str, ...]:
+        """Materialize every declared uv sibling from the canonical map.
+
+        This is intentionally only the source-view step.  Dependency ordering
+        and the epistemic-graph wheel fast path remain owned by their existing
+        install/launcher flows; this helper only makes their declared paths
+        resolve to canonical sibling repositories.
+        """
+        names = self._declared_uv_sibling_names(project_path)
+        if not names:
+            return ()
+
+        targets = self._canonical_uv_sibling_targets()
+        resolved_targets: dict[str, Path] = {}
+        for name in names:
+            target = targets.get(name)
+            if target is None or not target.is_dir():
+                raise ValueError(
+                    f"canonical sibling target {name!r} is missing from the workspace map"
+                )
+            resolved_targets[name] = target
+
+        sibling_dir = Path(project_path) / _UV_WORKSPACE_SIBLINGS_DIRNAME
+        if sibling_dir.is_symlink():
+            raise ValueError(f"refusing symlink sibling directory {sibling_dir}")
+        if sibling_dir.exists() and not sibling_dir.is_dir():
+            raise ValueError(f"sibling path is not a directory {sibling_dir}")
+        sibling_dir.mkdir(parents=True, exist_ok=True)
+
+        for name in names:
+            self._replace_uv_sibling_link(sibling_dir / name, resolved_targets[name])
+        return names
+
     def install_projects(
         self, extra: str = "all", threads: int | None = None, report: bool = True
     ) -> list[GitResult]:
@@ -726,42 +869,14 @@ class Git:
                         for path in list(self.project_map.values()):
                             if path == au_path or not os.path.isdir(path):
                                 continue
-                            pyproject_path = os.path.join(path, "pyproject.toml")
-                            if not os.path.isfile(pyproject_path):
-                                continue
                             try:
-                                with open(pyproject_path, encoding="utf-8") as handle:
-                                    declares_au_sibling = (
-                                        self._AU_SIBLING_SOURCE_MARKER in handle.read()
-                                    )
-                            except OSError:
-                                continue
-                            if not declares_au_sibling:
-                                continue
-
-                            sibling_dir = os.path.join(path, ".uv-workspace-siblings")
-                            sibling_link = os.path.join(sibling_dir, "agent-utilities")
-                            os.makedirs(sibling_dir, exist_ok=True)
-                            if os.path.islink(sibling_link):
-                                if os.path.realpath(sibling_link) != os.path.realpath(
-                                    au_path
-                                ):
-                                    os.unlink(sibling_link)
-                                    os.symlink(
-                                        au_path, sibling_link, target_is_directory=True
-                                    )
-                            elif os.path.exists(sibling_link):
+                                sibling_names = self._materialize_uv_siblings(path)
+                            except (OSError, ValueError) as exc:
                                 results.append(
                                     GitResult(
                                         status="error",
                                         data="",
-                                        error=GitError(
-                                            message=(
-                                                "refusing to replace non-symlink "
-                                                f"path {sibling_link}"
-                                            ),
-                                            code=1,
-                                        ),
+                                        error=GitError(message=str(exc), code=1),
                                         metadata=GitMetadata(
                                             command="install",
                                             workspace=_project_label(path),
@@ -774,10 +889,8 @@ class Git:
                                     )
                                 )
                                 continue
-                            else:
-                                os.symlink(
-                                    au_path, sibling_link, target_is_directory=True
-                                )
+                            if not sibling_names:
+                                continue
 
                             dep_sync_command = "uv sync" + _extra_flag(extra)
                             results.append(
