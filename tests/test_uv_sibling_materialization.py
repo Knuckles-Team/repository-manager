@@ -45,10 +45,24 @@ def test_materializes_every_declared_sibling_without_an_allowlist(
         assert link.resolve() == projects[name].resolve()
 
 
-def test_refuses_traversal_in_declared_sibling_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "declared_path",
+    [
+        ".uv-workspace-siblings/../helper",
+        "../helper",
+        "/tmp/helper",
+        ".uv-workspace-siblings\\helper",
+        ".uv-workspace-siblings/helper/child",
+        ".uv-workspace-siblings/.",
+        ".uv-workspace-siblings/..",
+    ],
+)
+def test_refuses_noncanonical_declared_sibling_path(
+    tmp_path: Path, declared_path: str
+) -> None:
     manager, projects = _manager(tmp_path, "helper")
     (projects["consumer"] / "pyproject.toml").write_text(
-        '[tool.uv.sources]\nhelper = { path = ".uv-workspace-siblings/../helper" }\n',
+        f"[tool.uv.sources]\nhelper = {{ path = '{declared_path}' }}\n",
         encoding="utf-8",
     )
 
@@ -198,6 +212,10 @@ def test_refuses_symlinked_sibling_directory(tmp_path: Path) -> None:
         (
             "[tool.uv.sources]\nhelper = ['invalid']\n",
             "must contain only tables",
+        ),
+        (
+            "[tool.uv.sources]\nhelper = { path = 42 }\n",
+            "has a non-string path",
         ),
     ],
 )
