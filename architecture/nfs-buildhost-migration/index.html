@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://knuckles-team.github.io/repository-manager/workspace-release-plan/">
+        <link rel="canonical" href="https://knuckles-team.github.io/repository-manager/architecture/nfs-buildhost-migration/">
       
       
       
@@ -23,14 +23,14 @@
     
     
       
-        <title>Workspace release-plan checkpoints 1–2 - repository-manager</title>
+        <title>Getting build/CI hosts off shared-NFS git repos - repository-manager</title>
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
-        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -49,7 +49,7 @@
       
     
     
-    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#workspace-release-plan-checkpoints-12" class="md-skip">
+        <a href="#getting-buildci-hosts-off-shared-nfs-git-repos" class="md-skip">
           Skip to content
         </a>
       
@@ -90,7 +90,7 @@
 
 <header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href=".." title="repository-manager" class="md-header__button md-logo" aria-label="repository-manager" data-md-component="logo">
+    <a href="../.." title="repository-manager" class="md-header__button md-logo" aria-label="repository-manager" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19.5 17c-.14 0-.26 0-.39.04L17.5 13.8c.45-.45.75-1.09.75-1.8a2.5 2.5 0 0 0-2.5-2.5c-.14 0-.25 0-.4.04L13.74 6.3c.47-.46.76-1.09.76-1.8a2.5 2.5 0 0 0-5 0c0 .7.29 1.34.76 1.79L8.65 9.54c-.15-.04-.26-.04-.4-.04a2.5 2.5 0 0 0-2.5 2.5c0 .71.29 1.34.75 1.79l-1.61 3.25C4.76 17 4.64 17 4.5 17a2.5 2.5 0 0 0 0 5A2.5 2.5 0 0 0 7 19.5c0-.7-.29-1.34-.76-1.79l1.62-3.25c.14.04.26.04.39.04s.25 0 .38-.04l1.63 3.25c-.47.45-.76 1.09-.76 1.79a2.5 2.5 0 0 0 5 0A2.5 2.5 0 0 0 12 17c-.13 0-.26 0-.39.04L10 13.8c.45-.45.75-1.09.75-1.8 0-.7-.29-1.33-.75-1.79l1.61-3.25c.13.04.26.04.39.04s.26 0 .39-.04L14 10.21a2.5 2.5 0 0 0 1.75 4.29c.13 0 .25 0 .38-.04l1.63 3.25c-.47.45-.76 1.09-.76 1.79a2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0-2.5-2.5m-15 3.5c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1m8.5-1c0 .55-.45 1-1 1s-1-.45-1-1 .45-1 1-1 1 .45 1 1M7.25 12c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1M11 4.5c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1m3.75 7.5c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1m4.75 8.5c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1"/></svg>
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Workspace release-plan checkpoints 1–2
+              Getting build/CI hosts off shared-NFS git repos
             
           </span>
         </div>
@@ -232,7 +232,7 @@
   
   
     <li class="md-tabs__item">
-      <a href=".." class="md-tabs__link">
+      <a href="../.." class="md-tabs__link">
         
   
   
@@ -251,7 +251,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../overview/" class="md-tabs__link">
+      <a href="../../overview/" class="md-tabs__link">
         
   
   
@@ -270,7 +270,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../installation/" class="md-tabs__link">
+      <a href="../../installation/" class="md-tabs__link">
         
   
   
@@ -289,7 +289,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../configuration/" class="md-tabs__link">
+      <a href="../../configuration/" class="md-tabs__link">
         
   
   
@@ -308,7 +308,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../config-schema-migration/" class="md-tabs__link">
+      <a href="../../config-schema-migration/" class="md-tabs__link">
         
   
   
@@ -327,7 +327,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../deployment/" class="md-tabs__link">
+      <a href="../../deployment/" class="md-tabs__link">
         
   
   
@@ -346,7 +346,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../usage/" class="md-tabs__link">
+      <a href="../../usage/" class="md-tabs__link">
         
   
   
@@ -365,7 +365,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../phased_maintenance/" class="md-tabs__link">
+      <a href="../../phased_maintenance/" class="md-tabs__link">
         
   
   
@@ -384,7 +384,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../phased_push/" class="md-tabs__link">
+      <a href="../../phased_push/" class="md-tabs__link">
         
   
   
@@ -403,7 +403,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../merge-queue/" class="md-tabs__link">
+      <a href="../../merge-queue/" class="md-tabs__link">
         
   
   
@@ -422,7 +422,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../adapter-extraction/" class="md-tabs__link">
+      <a href="../../adapter-extraction/" class="md-tabs__link">
         
   
   
@@ -441,7 +441,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../concepts/" class="md-tabs__link">
+      <a href="../../concepts/" class="md-tabs__link">
         
   
   
@@ -482,7 +482,7 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href=".." title="repository-manager" class="md-nav__button md-logo" aria-label="repository-manager" data-md-component="logo">
+    <a href="../.." title="repository-manager" class="md-nav__button md-logo" aria-label="repository-manager" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19.5 17c-.14 0-.26 0-.39.04L17.5 13.8c.45-.45.75-1.09.75-1.8a2.5 2.5 0 0 0-2.5-2.5c-.14 0-.25 0-.4.04L13.74 6.3c.47-.46.76-1.09.76-1.8a2.5 2.5 0 0 0-5 0c0 .7.29 1.34.76 1.79L8.65 9.54c-.15-.04-.26-.04-.4-.04a2.5 2.5 0 0 0-2.5 2.5c0 .71.29 1.34.75 1.79l-1.61 3.25C4.76 17 4.64 17 4.5 17a2.5 2.5 0 0 0 0 5A2.5 2.5 0 0 0 7 19.5c0-.7-.29-1.34-.76-1.79l1.62-3.25c.14.04.26.04.39.04s.25 0 .38-.04l1.63 3.25c-.47.45-.76 1.09-.76 1.79a2.5 2.5 0 0 0 5 0A2.5 2.5 0 0 0 12 17c-.13 0-.26 0-.39.04L10 13.8c.45-.45.75-1.09.75-1.8 0-.7-.29-1.33-.75-1.79l1.61-3.25c.13.04.26.04.39.04s.26 0 .39-.04L14 10.21a2.5 2.5 0 0 0 1.75 4.29c.13 0 .25 0 .38-.04l1.63 3.25c-.47.45-.76 1.09-.76 1.79a2.5 2.5 0 0 0 5 0 2.5 2.5 0 0 0-2.5-2.5m-15 3.5c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1m8.5-1c0 .55-.45 1-1 1s-1-.45-1-1 .45-1 1-1 1 .45 1 1M7.25 12c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1M11 4.5c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1m3.75 7.5c0-.55.45-1 1-1s1 .45 1 1-.45 1-1 1-1-.45-1-1m4.75 8.5c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1"/></svg>
@@ -512,7 +512,7 @@
   
   
     <li class="md-nav__item">
-      <a href=".." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -539,7 +539,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../overview/" class="md-nav__link">
+      <a href="../../overview/" class="md-nav__link">
         
   
   
@@ -566,7 +566,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../installation/" class="md-nav__link">
+      <a href="../../installation/" class="md-nav__link">
         
   
   
@@ -593,7 +593,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../configuration/" class="md-nav__link">
+      <a href="../../configuration/" class="md-nav__link">
         
   
   
@@ -620,7 +620,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../config-schema-migration/" class="md-nav__link">
+      <a href="../../config-schema-migration/" class="md-nav__link">
         
   
   
@@ -647,7 +647,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../deployment/" class="md-nav__link">
+      <a href="../../deployment/" class="md-nav__link">
         
   
   
@@ -674,7 +674,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../usage/" class="md-nav__link">
+      <a href="../../usage/" class="md-nav__link">
         
   
   
@@ -701,7 +701,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../phased_maintenance/" class="md-nav__link">
+      <a href="../../phased_maintenance/" class="md-nav__link">
         
   
   
@@ -728,7 +728,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../phased_push/" class="md-nav__link">
+      <a href="../../phased_push/" class="md-nav__link">
         
   
   
@@ -755,7 +755,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../merge-queue/" class="md-nav__link">
+      <a href="../../merge-queue/" class="md-nav__link">
         
   
   
@@ -782,7 +782,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../adapter-extraction/" class="md-nav__link">
+      <a href="../../adapter-extraction/" class="md-nav__link">
         
   
   
@@ -809,7 +809,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/" class="md-nav__link">
+      <a href="../../concepts/" class="md-nav__link">
         
   
   
@@ -856,10 +856,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#selected-change-closure-and-phase-shadowing-checkpoint-2" class="md-nav__link">
+  <a href="#incident-this-responds-to-2026-08-13" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Selected-change closure and phase shadowing (checkpoint 2)
+        Incident this responds to (2026-08-13)
       
     </span>
   </a>
@@ -867,10 +867,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#version-and-floor-previews-checkpoint-3" class="md-nav__link">
+  <a href="#why-repositories-dont-belong-on-shared-nfs-at-all" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Version and floor previews (checkpoint 3)
+        Why repositories don't belong on shared NFS at all
       
     </span>
   </a>
@@ -878,10 +878,54 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#frozen-release-plan-and-stage-preview-checkpoint-4" class="md-nav__link">
+  <a href="#decision-per-host-local-clones-over-ssh-not-nfs-not-rsync" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Frozen release plan and stage preview (checkpoint 4)
+        Decision: per-host local clones over SSH, not NFS, not rsync
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#honest-assessment-of-rsync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Honest assessment of rsync
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-nfs-should-keep-being-used-for" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What NFS should keep being used for
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#migrating-a-buildci-host" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migrating a build/CI host
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-follow-ups-not-done-in-this-lane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Open follow-ups (not done in this lane)
       
     </span>
   </a>
@@ -908,183 +952,235 @@
   
 
 
-<h1 id="workspace-release-plan-checkpoints-12">Workspace release-plan checkpoints 1–2<a class="headerlink" href="#workspace-release-plan-checkpoints-12" title="Permanent link">&para;</a></h1>
-<p><code>repository_manager.development.workspace_release</code> is the pure C-11 planning
-boundary for the workspace release DAG. It records canonical repository and
-package identities, versions, dependency floors, edge source/confidence, immutable
-parallel groups, and the digestable release-plan shape. A repository identity
-is a workspace-relative path (<code>repo:agent-packages/example</code>), never a URL,
-directory basename, or display name. A package identity includes that full
-repository identity, ecosystem, and normalized package name, so equal package
-basenames in two repositories cannot silently collapse into one owner.</p>
-<p><code>workspace_metadata</code> reads only declarative <code>pyproject.toml</code>, <code>Cargo.toml</code>, and
-<code>package.json</code> files. Before parsing, each file is checked for regular-file
-status, symlinks, and a byte limit. Parsed values are checked for nesting,
-string, collection, package, and dependency bounds. JSON duplicate keys,
-unsupported overlay fields, static-version conflicts, unsupported floor syntax,
-ambiguous package owners (including competing explicit overlay owners), missing
-projects/packages, duplicate edge/rewrite provenance, and cycles
-are refusal diagnostics. No build backend, package manager, subprocess, network
-client, or project code is invoked.</p>
-<p>Frozen plans require every edge and floor rewrite endpoint to be present in the
-frozen package inventory. Their project groups and stage dependencies are
-complete, duplicate-free, and compared with the deterministic dependency-first
-topological order. Same-repository package edges remain in the package graph
-without creating a project-level self-cycle. Node ranges keep package names
-separate from exact/caret/tilde floors; Cargo bare versions use caret semantics.</p>
-<p>Path metadata and overlays are read-only inputs. <code>OverlayInput</code> is an explicit,
-strict in-memory schema for edges and version sources that cannot safely be
-inferred from package metadata. Existing <code>maintenance.phases</code> declarations are
-available through <code>phase_manifest_from_mapping</code> as an immutable compatibility
-view; their historical bare references are retained for later shadow comparison
-and are never used as canonical graph keys.</p>
-<p>Checkpoint 1 intentionally does not rewrite floors, execute validation/build/
-landing/push stages, create WorkItems, edit <code>workspace.yml</code>, or wire MCP/CLI
-surfaces. Those effects belong to later RMDD-18 checkpoints and their owning
-integration lanes.</p>
-<h2 id="selected-change-closure-and-phase-shadowing-checkpoint-2">Selected-change closure and phase shadowing (checkpoint 2)<a class="headerlink" href="#selected-change-closure-and-phase-shadowing-checkpoint-2" title="Permanent link">&para;</a></h2>
-<p><code>repository_manager.development.workspace_selection</code> derives a frozen selected
-subgraph from explicit canonical <code>changed_projects</code> and optional explicit
-<code>selected_projects</code>. <code>InclusionMode.NONE</code>, <code>DIRECT</code>, and <code>TRANSITIVE</code> independently
-control dependency/upstream and dependent/downstream closure. Every known project
-gets a deterministic explanation: changed/explicit roots and traversal witnesses
-for included projects, or an explicit excluded reason. Package edges, including
-same-project package edges, are retained; only cross-project edges participate in
-the project DAG. Groups are dependency-first and deterministic, so independent
-projects remain parallel.</p>
-<p>Unknown roots, duplicate or contradictory policy IDs, malformed graph edges, and
-cycles fail closed before a closure is returned. Policy and closure collections,
-references, explanations, and digests are bounded and immutable. The closure
-freezes the complete known-project cross-project edge evidence and verifies that
-selected membership, directional reasons, and witnesses agree with it; a digest
-alone is not treated as authenticity. The closure digest and explanations are
-independent of input project/edge iteration order.</p>
-<p><code>derive_phase_view</code> and <code>compare_legacy_phases</code> project a <code>LegacyPhaseManifest</code>
-into the same canonical identity space without rewriting it. Canonical references
-resolve directly; historical bare references resolve only for a unique basename
-owner. Same-basename repositories produce an <code>AMBIGUOUS_PROJECT</code> diagnostic. The
-read-only report contains derived/manual phase views, membership/order/bulk-flag
-diagnostics, wait-time diagnostics, exact equality, and a deterministic SHA-256
-report digest. Phase number, membership/order, bulk flags, and <code>wait_minutes</code> are
-semantic; phase <code>name</code> is intentionally a display-only label and is not used to
-claim equivalence. Legacy phase reference order is preserved for comparison,
-while duplicate references are refused by the bounded manifest reader. Trailing
-derived/manual phases are reported individually. Membership diagnostics carry a
-bounded count, full-sequence digest, and prefix; diagnostic accumulation has a
-small deterministic overflow summary. No comparator path executes code, invokes a
-subprocess or network, or mutates a manifest.</p>
-<p>Checkpoint 2 still does not rewrite floors, plan versions, execute stages, create
-WorkItems, restart/resume, edit workspace manifests, or wire MCP/CLI surfaces.</p>
-<h2 id="version-and-floor-previews-checkpoint-3">Version and floor previews (checkpoint 3)<a class="headerlink" href="#version-and-floor-previews-checkpoint-3" title="Permanent link">&para;</a></h2>
-<p><code>repository_manager.development.workspace_versions</code> consumes only the verified
-<code>DependencyGraph</code> and <code>SelectedChangeClosure</code>, plus immutable site descriptors
-from a declarative metadata reader. A site names its relative metadata file,
-selector, representation (<code>python</code>, <code>rust</code>, or <code>node</code>), exact old literal, and
-an explicit version or floor policy. The planner binds each resulting preview
-to the owning project tree SHA, package identity, graph digest, selection
-digest, and one stable plan digest. It never opens the file, invokes a build
-backend, or writes the proposed new text.</p>
-<p>Version transitions are explicit <code>major</code>, <code>minor</code>, <code>patch</code>, or <code>exact</code> policies;
-stable three-component SemVer is required. Floor transitions are explicit
-<code>range</code>, <code>compatible</code>, <code>caret</code>, <code>tilde</code>, or <code>exact</code> policies. The output keeps
-dependency-first package batches, emits one preview per rewrite site, and
-retains already-satisfied floors as explicit no-op evidence.</p>
-<p>Synthetic preview (illustrative only; it is not an instruction to edit a
-workspace file):</p>
-<div class="language-json highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">"project_id"</span><span class="p">:</span><span class="w"> </span><span class="s2">"repo:services/consumer"</span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">"package"</span><span class="p">:</span><span class="w"> </span><span class="s2">"repo:services/consumer::python:consumer"</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">"dependency"</span><span class="p">:</span><span class="w"> </span><span class="s2">"repo:services/library::python:library"</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">"file_path"</span><span class="p">:</span><span class="w"> </span><span class="s2">"pyproject.toml"</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">"source_sha"</span><span class="p">:</span><span class="w"> </span><span class="s2">"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">"old_text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&gt;=1.4.0"</span><span class="p">,</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">  </span><span class="nt">"new_text"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&gt;=1.5.0"</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">  </span><span class="nt">"old_normalized"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&gt;=1.4.0"</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">  </span><span class="nt">"new_normalized"</span><span class="p">:</span><span class="w"> </span><span class="s2">"&gt;=1.5.0"</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">  </span><span class="nt">"reason"</span><span class="p">:</span><span class="w"> </span><span class="s2">"transitive_minimum"</span><span class="p">,</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">  </span><span class="nt">"witness"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">    </span><span class="s2">"edge:repo:services/consumer::python:consumer-&gt;repo:services/library::python:library"</span><span class="p">,</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">    </span><span class="s2">"dependency-next:repo:services/library::python:library=1.5.0"</span><span class="p">,</span>
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="w">    </span><span class="s2">"topological-batch:0"</span>
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="w">  </span><span class="p">],</span>
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">  </span><span class="nt">"graph_digest"</span><span class="p">:</span><span class="w"> </span><span class="s2">"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"</span><span class="p">,</span>
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="w">  </span><span class="nt">"selection_digest"</span><span class="p">:</span><span class="w"> </span><span class="s2">"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"</span><span class="p">,</span>
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">  </span><span class="nt">"plan_digest"</span><span class="p">:</span><span class="w"> </span><span class="s2">"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"</span>
-</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="p">}</span>
+<h1 id="getting-buildci-hosts-off-shared-nfs-git-repos">Getting build/CI hosts off shared-NFS git repos<a class="headerlink" href="#getting-buildci-hosts-off-shared-nfs-git-repos" title="Permanent link">&para;</a></h1>
+<h2 id="incident-this-responds-to-2026-08-13">Incident this responds to (2026-08-13)<a class="headerlink" href="#incident-this-responds-to-2026-08-13" title="Permanent link">&para;</a></h2>
+<p>R820 (a live k8s worker node, 10.0.0.13) had a kernel thread
+(<code>[10.0.0.12-manager]</code>, the NFSv4 client's per-server state-manager kthread)
+pinned at ~98% CPU for 3.5+ hours, spinning in
+<code>nfs_server_reap_expired_delegations</code> / <code>nfs_client_for_each_server</code>. Root
+cause, confirmed against live server state
+(<code>/proc/fs/nfsd/clients/&lt;id&gt;/states</code> on RW710, the NFS server / dev host,
+10.0.0.12):</p>
+<ul>
+<li>R820's NFSv4 client held <strong>555,965 outstanding read delegations</strong> against
+  RW710 — one per file it had opened and not yet had the delegation
+  returned for. R710 (a comparably-loaded host) held 11,582; R510 held
+  158,047. Delegation filenames sampled from the server's client-state dump
+  are exactly what heavy build/test activity produces: <code>.fingerprint</code>
+  (Cargo), <code>site-packages</code>/<code>node_modules</code> (Python/JS deps), <code>objects</code> (git
+  object stores), <code>popen-gw*</code> (pytest-xdist worker temp dirs) — spread
+  across dozens of repos.</li>
+<li>The delegation count was <strong>static</strong> (unchanging over a 20s sample) while
+  the reaper thread burned CPU continuously — a livelock, not active churn:
+  the state-manager thread was spinning over its own delegation list without
+  making net progress, most likely because the list had grown past whatever
+  scale the client's O(n)-per-scan reap logic tolerates.</li>
+<li>This wedged more than the mount it was scanning: plain <code>ls</code>/<code>df</code>/<code>stat</code>/
+  <code>du</code>/<code>lsof</code>/<code>mount.nfs</code> invoked anywhere near the affected server sat in
+  <code>D</code> state, because the reaper appears to serialize other RPCs to that
+  server while it runs. That is the mechanism behind this workspace's other
+  already-logged NFS symptoms: a <code>git merge</code> that timed out mid-checkout
+  leaving files written but HEAD unmoved, a <code>git commit</code> that took 10+
+  minutes, <code>index.lock</code>/partial-index incidents, and epistemic-graph test
+  "deadlocks" root-caused across ~70 attempts to host I/O saturation
+  (<code>fdatasync</code> stuck in <code>D</code> state) rather than an actual lock cycle.</li>
+<li>Remediation taken live against R820 (see the session report for the full
+  transcript): confirmed via <code>fuser</code>/CWD scan that nothing was actively
+  using <code>/home/apps/workspace</code> or <code>/home/apps/worktrees</code> (the two
+  NFS-mounted, dev-only mounts on R820 — distinct from the k8s node's own
+  <code>kubelet</code> NFS volume mounts for the live <code>agent-webui</code> pod, which use
+  independent local mountpoints and were <strong>not</strong> touched), then <code>umount -l</code>
+  (lazy) both and stopped their <code>systemd</code> <code>.automount</code> units to stop them
+  silently re-mounting. This is fully reversible
+  (<code>systemctl start home-apps-workspace.automount home-apps-worktrees.automount</code>).
+  It did <strong>not</strong> stop the CPU spin, because the wedged NFSv4 <strong>client</strong>
+  (one state-manager thread per server, shared across every mount to that
+  server) also serves the pod's own read-only NFS volumes
+  (<code>webui-deps</code>, <code>workspace</code>, <code>au-src</code>, <code>universal-skills-src</code>,
+  <code>agent-webui-src</code>) — the only way to fully clear the spin is to force
+  that client's state to expire (<code>echo expire &gt;
+  /proc/fs/nfsd/clients/&lt;id&gt;/ctl</code> on the server, an admin interface kernel
+  NFSD exposes for exactly this), which resets state the live pod's mounts
+  also depend on. That is a production-affecting action and was
+  <strong>deliberately left for the user to authorize</strong>, not taken unilaterally.</li>
+</ul>
+<h2 id="why-repositories-dont-belong-on-shared-nfs-at-all">Why repositories don't belong on shared NFS at all<a class="headerlink" href="#why-repositories-dont-belong-on-shared-nfs-at-all" title="Permanent link">&para;</a></h2>
+<p>This is bigger than one livelock. Even without it, NFS is a bad substrate
+for git specifically:</p>
+<ul>
+<li>Git is dominated by small-file metadata operations — <code>stat</code>, <code>open</code>,
+  rename-based lockfile updates (<code>index.lock</code>, ref updates) — each of which
+  is a network round trip over NFS instead of a local syscall. Latency that
+  is invisible locally multiplies directly into wall-clock time for
+  <code>status</code>/<code>commit</code>/<code>checkout</code>.</li>
+<li>NFSv4 delegations exist to let a client cache reads/writes without asking
+  the server every time — which is exactly why heavy git/build I/O
+  (thousands of small files touched per test run) generates the delegation
+  volume this incident traced back to. That scaling failure mode is not a
+  one-off misconfiguration; it is what this access pattern does to NFSv4
+  delegation state in general.</li>
+<li><code>index.lock</code>'s rename-based mutual exclusion is not reliably atomic over
+  NFS the way POSIX rename is expected to be locally, which is the likely
+  contributor to this workspace's recurring <code>index.lock</code>/partial-index
+  incidents.</li>
+<li>Sharing one <code>.git</code> across hosts means concurrent writers to the same
+  <code>config</code>, <code>refs/stash</code>, and index — independently identified in this
+  workspace as the root of the <code>core.bare</code> corruption incidents
+  (<code>EnterWorktree</code> writing <code>core.bare=true</code> into a shared
+  <code>$GIT_COMMON_DIR/config</code>) and stash hazards. A shared <code>.git</code> is a shared
+  mutable resource with no coordination protocol; per-host clones remove the
+  hazard structurally instead of policing it.</li>
+</ul>
+<h2 id="decision-per-host-local-clones-over-ssh-not-nfs-not-rsync">Decision: per-host local clones over SSH, not NFS, not rsync<a class="headerlink" href="#decision-per-host-local-clones-over-ssh-not-nfs-not-rsync" title="Permanent link">&para;</a></h2>
+<p><strong>Git is itself a distributed sync tool.</strong> The dev host (RW710) stays the
+canonical checkout for interactive work; a build/CI host pulls an immutable
+commit via <code>git clone</code>/<code>fetch</code>/<code>checkout</code> over SSH onto its own local disk,
+runs its work there, and the result is reported back — no shared
+filesystem, no shared <code>.git</code>, no NFS mount for the repository itself.</p>
+<p><strong>Where this already exists in <code>repository-manager</code>.</strong> RMDD-15
+(<code>repository_manager.remote_execution</code>) already built exactly this, and
+P0.7's <code>dispatch_build</code> (<code>repository_manager.remote_worker_actions</code>) already
+wires it end to end:</p>
+<ol>
+<li><code>register_worker</code> declares a host's weighted capacity plus, critically,
+   its <strong>authorized, non-shared, per-repository local worktree root</strong> —
+   never a shared NFS path.</li>
+<li><code>dispatch_build</code> takes a <code>repository_id</code> + an <strong>immutable 40-hex commit
+   SHA</strong> (never a branch — a moving ref would make "what actually built"
+   ambiguous) and, over <code>TunnelSSHExecutor</code> (tunnel-manager's real SSH
+   primitive, not a hand-rolled <code>ssh</code> invocation):</li>
+<li><code>git clone --no-checkout</code> the origin onto the host's authorized local
+     root,</li>
+<li><code>git fetch --depth 1 origin &lt;sha&gt;</code> (shallow — pulls exactly the one
+     commit's tree, not full history, so the network/disk cost per
+     dispatch stays small even for a large repo),</li>
+<li><code>git checkout --detach &lt;sha&gt;</code>,</li>
+<li>independently re-derives cleanliness and HEAD identity afterward
+     (<code>git status --porcelain</code> / <code>git rev-parse HEAD</code> through the same
+     executor — it never trusts its own claim that staging succeeded),</li>
+<li>then runs the caller's fixed command in that freshly materialized
+     worktree and returns the outcome.</li>
+</ol>
+<p><strong>This was validated live against R820 during this incident</strong> (the exact
+host the pathology was on), entirely bypassing its wedged NFS mount:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>register_worker(host_id="r820", inventory_alias="R820",
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>                 repository_roots={"repository-manager": "/home/apps/build-worktrees"})
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>dispatch_build(host_id="r820", repository_id="repository-manager",
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>                origin="genius@10.0.0.12:/home/apps/workspace/agent-packages/agents/repository-manager",
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>                tree_sha=&lt;HEAD&gt;, command=["git","log","-1","--format=verified-remote-build: %H %s"])
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>=&gt; staged.destination = "/home/apps/build-worktrees/repository-manager-5f49bf5c4081"
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>=&gt; build.stdout_tail  = "verified-remote-build: 5f49bf5c408117fd3062b362ba17427ef1ddc470 Merge branch 'feat/rm-invariants-and-hosts'"
 </span></code></pre></div>
-<p>The preview is evidence for a later mutation owner, not a mutation request.</p>
-<h2 id="frozen-release-plan-and-stage-preview-checkpoint-4">Frozen release plan and stage preview (checkpoint 4)<a class="headerlink" href="#frozen-release-plan-and-stage-preview-checkpoint-4" title="Permanent link">&para;</a></h2>
-<p><code>repository_manager.development.workspace_release_plan</code> is the pure C-11 freeze
-boundary for the later release/mutation lanes. <code>freeze_release_plan</code> consumes
-only the verified <code>DependencyGraph</code>, <code>SelectedChangeClosure</code>, and checkpoint-3
-<code>VersionPlan</code>, plus explicit bounded base/source/generation and profile inputs.
-It copies canonical repository/package identities, selected dependency-first
-groups, every selected project's immutable tree SHA, the version/floor preview
-digests, profile digests, and an exact SHA-256 <code>plan_digest</code>. No checkout is
-opened and no command, package manager, Git operation, WorkItem, or network
-client is available from this module.</p>
-<p>The resulting <code>StagePreview</code> records are a deterministic dependency DAG:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>validate(repo) -&gt; bump(repo) -&gt; local-land(repo) -&gt; build(repo) -&gt; package(repo)
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>                         \-- bump also waits for each selected upstream bump
-</span></code></pre></div>
-<p>Independent projects share a topological group and remain parallel. A stage
-stores its immutable tree/base/generation/graph/selection/version-plan inputs,
-the relevant version/floor preview digests, profile digests, deterministic
-stage ID, deterministic input digest, and sorted upstream IDs. Failure behavior
-is declarative (<code>block_dependents</code>); this checkpoint does not inspect or run a
-stage. The optional push stages are a separate consent-gated extension and are
-created only with a <code>PushConsentReference</code> containing both an opaque reference
-and immutable digest. A boolean flag alone can never create a push stage.</p>
-<p><code>FrozenReleasePlan.validate()</code> recomputes nested evidence and the exact plan
-preimage, while <code>validate_against(graph, selection)</code> additionally revalidates
-the current graph, closure, and checkpoint-3 previews. These paths are intended
-to reject dataclass/Pydantic copy/construct and <code>object.__new__</code> forgeries,
-cleared or stale digests, changed source/tree/base/generation/profile/preview
-fields, reordered dependencies, unknown stage dependencies, cycles, and graph
-or selection drift. Inputs are exact builtin bounded containers and all refusal
-messages are privacy-safe.</p>
-<p>The corrective CP4 contract also freezes a <code>ReleaseDecisionContext</code>: normalized
-target branch plus opaque name/digest references for the release profile,
-candidate, certificate, immutable config/toolchain/preview-command and artifact
-contract. Each stage carries the context digest and its resource profile,
-retry-policy/count, and timeout policy/seconds; changing any one decision field
-therefore changes the plan and stage identities. These are references only and
-do not grant execution authority.</p>
-<p>Source and base SHAs are independently required exact builtin strings; omitted
-or falsey aliases are never substituted. Push flags are descriptive selectors,
-not authorization: explicit <code>False</code> conflicts with consent, contradictory
-aliases refuse before construction, and an accepted plan hashes exactly the
-consent value it returns. A push stage is present only when its immutable
-<code>PushConsentReference</code> is present.</p>
-<p>Graph and closure provenance are snapshotted from exact bounded builtin
-containers before sorting or hashing. <code>validate()</code> re-materializes that source
-evidence and derives the complete required stage composition and dependencies,
-so rehashing a semantically altered DAG does not make it valid. Malformed
-containers and provider-data normalization errors are fixed privacy-safe
-refusals; trusted <code>RuntimeError</code> failures remain visible to callers.</p>
-<p>The snapshot also rebuilds the complete package inventory and dependency
-topology from the immutable project/package records. Duplicate or orphan
-records, unknown endpoints, inconsistent project edges/groups, and changed
-metadata-edge provenance are refused even when a caller recomputes every
-reported digest. Checkpoint-3 version/floor sites, previews, nested policies,
-and omission-valued text are copied into exact immutable records before the
-version planner is re-run against the snapshotted graph and closure. A changed
-site, source SHA, floor/version text, or semantic preview cannot be authorized
-by rehashing the nested and outer plans.</p>
-<p>Target branches use a single local <code>refs/heads/...</code> representation after
-bounded Git-branch validation; ref aliases, traversal, URL/scheme, controls,
-and ambiguous branch syntax are refused without invoking Git. The CP3
-validation boundary normalizes only documented malformed-data exceptions, so a
-trusted planner <code>RuntimeError</code> remains observable to its caller.</p>
-<p>Profile descriptors follow the same closed-boundary rule: a global or
-project-scoped validation/build profile is either an exact builtin name string
-or an exact owned immutable <code>ValidationProfile</code>, <code>BuildProfile</code>, or
-<code>ProfileBinding</code>. Mapping/sequence descriptor lookalikes, subclasses, Pydantic
-objects, and property-bearing duck types are refused before introspection;
-accepted records are deep-reconstructed, so later caller mutation cannot alter
-the frozen request or its digest. Release/config/toolchain/command/artifact/
-resource references and retry/timeout policies use exact owned reference or
-enum/scalar types as well.</p>
+<p><code>/home/apps/build-worktrees</code> is genuinely local (<code>/dev/sda3</code>, ext4) — not
+one of the NFS mounts. <code>findmnt --target /home/apps/build-worktrees</code> on
+R820 confirms it resolves to the local <code>/home</code> filesystem, not
+<code>10.0.0.12:...</code>.</p>
+<p><strong>What this fixed slice found and closed.</strong> <code>dispatch_build</code> was fully
+implemented and unit-tested at the <code>remote_worker_actions.dispatch()</code> layer
+(<code>tests/test_p07_dispatch_build.py</code>, <code>tests/test_p07_build_host_dispatch.py</code>
+— including a prior live validation against R820, per that test module's
+own docstring) but <strong>neither adapter exposed it</strong>: the CLI's
+<code>--remote-workers</code> <code>choices=[...]</code> list and the <code>rm_remote_workers</code> MCP
+tool's parameter set both predated the action and had never been updated —
+so it was reachable only via a direct <code>remote_worker_actions.dispatch(...)</code>
+Python import, not through the CLI or MCP surface a real build pipeline
+would actually call. This lane adds <code>dispatch_build</code> to the CLI's
+<code>choices=[...]</code> and adds the missing <code>command</code>/<code>workdir</code> parameters to
+<code>rm_remote_workers</code>, with CLI/MCP parity tests
+(<code>tests/test_rmdd20_remote_worker_surfaces.py</code>) proving both adapters now
+reach it identically, plus a real subprocess-level test proving <code>argparse</code>
+itself accepts the choice (the earlier register/recheck parity tests all
+bypass <code>argparse</code> by constructing the CLI's <code>Namespace</code> directly, which is
+exactly why this gap went unnoticed).</p>
+<h2 id="honest-assessment-of-rsync">Honest assessment of rsync<a class="headerlink" href="#honest-assessment-of-rsync" title="Permanent link">&para;</a></h2>
+<p>The user explicitly asked about rsync, so: it is a good, cheap tool for
+<strong>one-way distribution of read-mostly artifacts</strong> — build caches, wheels,
+container layers, vendored dependency snapshots, anything where "make
+host B look like host A's copy of this directory" is the whole
+requirement and only one side ever writes. It is meaningfully cheaper than
+NFS for that (one transfer, then done — no ongoing mount, no live protocol
+chatter, no delegation state).</p>
+<p>It is a <strong>poor fit for live git repositories</strong> for one reason: it has no
+merge semantics. <code>rsync -a</code> from the dev host to a build host will
+overwrite whatever is in the build host's checkout — including any
+uncommitted state that originated <em>there</em> — with no three-way merge, no
+conflict detection, and no history. If both hosts can ever legitimately
+have independent state in the same tree (which is exactly the situation
+<code>git worktree</code> isolation and this workspace's whole lane-branch discipline
+exist to support), rsync will silently clobber one side. Git's own
+transport (<code>clone</code>/<code>fetch</code>/<code>push</code>) is the right tool specifically because
+it <em>is</em> a merge-aware distributed sync mechanism, not despite git being
+"more complex than rsync."</p>
+<p>Where rsync <strong>is</strong> the right call in this same workspace: syncing
+read-only build caches/wheel caches to a build host (a real candidate for a
+future addition here — <code>receive_artifact</code>'s own docstring already notes
+artifact retrieval isn't fully wired yet), or the existing use of NFS for
+genuinely shared, read-mostly data (see below) could in some cases be
+replaced with a periodic rsync instead of a live mount, trading staleness
+for eliminating the mount's live-protocol failure modes entirely.</p>
+<h2 id="what-nfs-should-keep-being-used-for">What NFS should keep being used for<a class="headerlink" href="#what-nfs-should-keep-being-used-for" title="Permanent link">&para;</a></h2>
+<p>Not every NFS mount in this workspace is wrong — only "a live git
+repository shared as a mutable mount across hosts" is. Read-mostly,
+genuinely-shared artifact data (package/wheel caches, model weights,
+media libraries) is a legitimate NFS use case and out of scope for this
+migration. The <code>agent-webui</code> pod's own NFS-mounted source volumes on R820
+(<code>webui-deps</code>, <code>workspace</code>, <code>au-src</code>, <code>universal-skills-src</code>,
+<code>agent-webui-src</code> — a live-reload/dev-mount pattern, not a build/CI one)
+are a <strong>separate, more disruptive migration</strong>: they share the same NFS
+client as the mounts this lane addresses, so fully eliminating the
+pathology's root state requires touching them too, and that is exactly the
+production-risk step this incident deliberately stopped short of and left
+for explicit approval. A follow-up should evaluate moving that pod to a
+baked image (matching this workspace's own documented lesson in
+<code>webui-image-build-does-not-deploy-code</code>) or onto this same
+<code>dispatch_build</code>-staged pattern, either of which would let R820's NFS
+mounts to RW710 be removed entirely.</p>
+<h2 id="migrating-a-buildci-host">Migrating a build/CI host<a class="headerlink" href="#migrating-a-buildci-host" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Pick (or create) a directory on the build host's own <strong>local</strong> disk —
+   never under an NFS mount — to be its authorized worktree root, e.g.
+   <code>/home/apps/build-worktrees</code> (what this lane used for R820).</li>
+<li><code>register_worker</code> that host: <code>host_id</code>, <code>inventory_alias</code> (the
+   tunnel-manager/SSH-config alias — e.g. <code>"R820"</code>, which already resolves
+   via <code>~/.ssh/config</code>), <code>repository_roots={"&lt;repo&gt;": "&lt;local root&gt;"}</code> per
+   repository it builds, plus its measured/declared capacity.</li>
+<li>Point CI/build dispatch at <code>dispatch_build(host_id=..., repository_id=...,
+   origin=&lt;dev host's canonical checkout over ssh, e.g.
+   "genius@10.0.0.12:/home/apps/workspace/agent-packages/agents/&lt;repo&gt;"&gt;,
+   tree_sha=&lt;the exact commit to build&gt;, command=[...])</code> instead of
+   assuming the repo is already present via an NFS mount.</li>
+<li>Leave the dev host's own canonical checkouts exactly as they are — this
+   migration only changes how <em>other</em> hosts obtain code, never where the
+   canonical checkout lives or how interactive development on the dev host
+   itself works.</li>
+<li>Do <strong>not</strong> unmount <code>/home/apps/workspace</code>/<code>/home/apps/worktrees</code> on a
+   host that still has something depending on them (verify with <code>fuser -mv</code>
+   and a CWD scan first, as this incident did) — R820's dev-only mounts were
+   safe to unmount because nothing referenced them; a host running active
+   interactive worktree sessions may not be.</li>
+</ol>
+<h2 id="open-follow-ups-not-done-in-this-lane">Open follow-ups (not done in this lane)<a class="headerlink" href="#open-follow-ups-not-done-in-this-lane" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Artifact/result retrieval from <code>dispatch_build</code> back to the caller is not
+  wired (the action's own <code>note</code> field says so plainly) — only forward
+  staging + remote command execution. <code>receive_artifact</code> exists but expects
+  the caller to already have the bytes, not to pull them from the remote
+  host.</li>
+<li><code>RemoteWorkerRegistry</code>'s profile index (<code>host_id</code> → authorized roots /
+  inventory alias) is <strong>not</strong> durably persisted the way
+  <code>CapacityInventory</code>/<code>CapacityStore</code> is — a fresh process (a one-shot CLI
+  invocation, or an MCP server restart) forgets registered profiles even
+  though it remembers raw capacity. A long-lived MCP server process is
+  unaffected (register once, dispatch many times, same process); a
+  register-then-dispatch split across two separate CLI invocations is not.
+  This is a real, disclosed gap surfaced while validating this lane, not
+  something this lane's scope covers fixing.</li>
+<li>Forcing R820's wedged NFSv4 client to fully release its ~556K stuck
+  delegations (<code>echo expire &gt; /proc/fs/nfsd/clients/&lt;id&gt;/ctl</code> on RW710)
+  remains undone, deliberately, because it touches state the live
+  <code>agent-webui</code> pod's own NFS mounts share — see the session report for the
+  full recommendation and required approval.</li>
+</ul>
 
 
 
@@ -1177,10 +1273,10 @@ enum/scalar types as well.</p>
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.instant.progress", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.top", "navigation.tracking", "navigation.instant", "navigation.instant.progress", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "search.share", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.tooltips"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

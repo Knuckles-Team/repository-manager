@@ -2,70 +2,74 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/adapter-extraction/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/concepts/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/config-schema-migration/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/configuration/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/deployment/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/installation/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/merge-queue/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/overview/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/phased_maintenance/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/phased_push/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/resource-scheduler/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/usage/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/workspace-release-plan/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/architecture/candidate-generations/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/architecture/lane-registry/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
+    </url>
+    <url>
+         <loc>https://knuckles-team.github.io/repository-manager/architecture/nfs-buildhost-migration/</loc>
+         <lastmod>2026-08-18</lastmod>
     </url>
     <url>
          <loc>https://knuckles-team.github.io/repository-manager/architecture/repository-job-service/</loc>
-         <lastmod>2026-08-13</lastmod>
+         <lastmod>2026-08-18</lastmod>
     </url>
 </urlset>

@@ -1034,11 +1034,11 @@ bumps and pushes across the ecosystem. It provides:</p>
 </ul>
 </div>
 <h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;repository-manager[mcp]&quot;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"repository-manager[mcp]"</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>repository-manager-mcp<span class="w">            </span><span class="c1"># stdio MCP server (default transport)</span>
 </span></code></pre></div>
 <p>Point it at a workspace of Git repositories:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REPOSITORY_MANAGER_WORKSPACE</span><span class="o">=</span><span class="s2">&quot;</span><span class="si">${</span><span class="nv">WORKSPACE_ROOT</span><span class="si">}</span><span class="s2">&quot;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">REPOSITORY_MANAGER_WORKSPACE</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">WORKSPACE_ROOT</span><span class="si">}</span><span class="s2">"</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>repository-manager-mcp<span class="w"> </span>--transport<span class="w"> </span>streamable-http<span class="w"> </span>--host<span class="w"> </span><span class="m">0</span>.0.0.0<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </span></code></pre></div>
 <p>See <strong><a href="installation/">Installation</a></strong> and <strong><a href="deployment/">Deployment</a></strong> for the
