@@ -188,3 +188,7 @@ change to need a migration before the fleet can start.
 - Landing and conflicts → `repository-manager-merge-and-reconcile`
 - Raw worktree verbs → `repository-manager-worktree-orchestration`
 - Bulk clone/pull/push across repos → `repository-manager-bulk-git-operations`
+
+## See also
+
+`repository-manager-parallel-lane-orchestration` — when many worker agents are landing branches concurrently: the lane briefing contract, land-as-they-arrive discipline, provider-before-consumer ordering, verifying the merged TREE rather than the merge command's exit code, and reconciling to zero branches/worktrees.

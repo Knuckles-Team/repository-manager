@@ -127,6 +127,7 @@ requires-dist = [
     { name = "agent-utilities", extras = ["owl"], marker = "extra == 'stardog'" },
     { name = "agent-webui", marker = "extra == 'ag-ui'", specifier = ">=2.4.0" },
     { name = "aiohttp", marker = "extra == 'documents'", specifier = ">=3.14.1" },
+    { name = "aiohttp", marker = "extra == 'test'", specifier = ">=3.14.1" },
     { name = "aiokafka", marker = "extra == 'kafka'", specifier = ">=0.14.0" },
     { name = "banks", marker = "extra == 'documents'", specifier = ">=2.4.5" },
     { name = "botbuilder-core", marker = "extra == 'messaging-teams'", specifier = ">=4.17.1" },
@@ -185,6 +186,8 @@ requires-dist = [
     { name = "nats-py", marker = "extra == 'nats'", specifier = ">=2.15.0" },
     { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=6.2.0" },
     { name = "neonize", marker = "extra == 'messaging-whatsapp'", specifier = ">=0.4.3.post0" },
+    { name = "nest-asyncio", marker = "extra == 'test'", specifier = ">=1.6.0" },
+    { name = "networkx", marker = "extra == 'test'", specifier = ">=3.6.1" },
     { name = "nltk", marker = "extra == 'documents'", specifier = ">=3.10.0" },
     { name = "numpy", marker = "extra == 'test'", specifier = ">=2.5.1" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.30.0,<2" },
@@ -243,6 +246,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.34.2" },
     { name = "ruff", marker = "extra == 'test'", specifier = "==0.16.0" },
     { name = "safetensors", marker = "extra == 'finance-kronos'", specifier = ">=0.8.0" },
+    { name = "setuptools", marker = "extra == 'test'", specifier = ">=83.0.0" },
     { name = "skill-graphs", marker = "extra == 'agent-headless'", specifier = ">=1.1.0" },
     { name = "skill-graphs", marker = "extra == 'agent-runtime'", specifier = ">=1.1.0" },
     { name = "slack-bolt", marker = "extra == 'messaging-slack'", specifier = ">=1.30.0" },
@@ -263,6 +267,11 @@ requires-dist = [
 provides-extras = ["graphos", "sandbox", "feeds", "kafka", "metrics", "otel", "nats", "pyarrow", "mcp", "agent-runtime", "agent-headless", "agent-google", "agent-groq", "agent-mistral", "agent-anthropic", "agent-huggingface", "dynamic-workflow", "ag-ui", "terminal", "browser", "computer-use", "acp", "documents", "embeddings", "embeddings-openai", "embeddings-huggingface", "embeddings-ollama", "logfire", "langfuse", "graph", "ann", "neo4j", "falkordb", "owl", "rdf", "ontology-guardrails", "stardog", "fuseki", "event-kafka", "ingest-dedup", "vault", "auth", "serving", "finance", "finance-kronos", "hr", "medical", "science", "law", "government", "postgresql", "messaging-discord", "messaging-slack", "messaging-telegram", "messaging-whatsapp", "messaging-teams", "messaging-googlechat", "messaging-googlemeet", "messaging-mattermost", "messaging-matrix", "messaging-irc", "messaging-signal", "messaging-imessage", "messaging-line", "messaging-twitch", "messaging-synology", "messaging-voicecall", "messaging-nextcloud", "messaging", "test", "test-backends", "all"]
 
 [package.metadata.requires-dev]
+build = [
+    { name = "packaging", specifier = ">=26.2.0" },
+    { name = "setuptools", specifier = ">=83.0.0" },
+    { name = "wheel", specifier = ">=0.47.0" },
+]
 guardrails = [
     { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "numpy", specifier = ">=2.5.1" },
@@ -2568,7 +2577,7 @@ wheels = [
 
 [[package]]
 name = "repository-manager"
-version = "3.3.0"
+version = "3.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "agent-utilities", extra = ["mcp"] },
