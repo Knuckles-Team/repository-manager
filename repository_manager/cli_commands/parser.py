@@ -18,6 +18,7 @@ from repository_manager.cli_commands.context import CliRuntime
 from repository_manager.cli_commands.differential_selection import (
     run_differential_select_cli,
 )
+from repository_manager.cli_commands.docs_readiness import run_docs_readiness_cli
 from repository_manager.cli_commands.lane import run_lane_cli
 from repository_manager.cli_commands.merge_queue import run_merge_queue_cli
 from repository_manager.cli_commands.remote_workers import run_remote_workers_cli
@@ -592,6 +593,28 @@ Examples:
         ),
     )
 
+    group_docs_readiness = parser.add_argument_group(
+        "Documentation Readiness Fleet Action"
+    )
+    group_docs_readiness.add_argument(
+        "--docs-readiness",
+        nargs="?",
+        const="preview",
+        choices=["preview", "apply", "verify"],
+        help="Preview (default), apply, or verify canonical agent-readiness artifacts.",
+    )
+    group_docs_readiness.add_argument(
+        "--docs-readiness-repository",
+        type=str,
+        default=None,
+        help="Exact workspace.yml identity; required for apply.",
+    )
+    group_docs_readiness.add_argument(
+        "--docs-readiness-confirm",
+        action="store_true",
+        help="Confirm the exact repository apply requested by --docs-readiness apply.",
+    )
+
     args = parser.parse_args()
 
     # Handled before every other verb and returns immediately: the queue drives a
@@ -607,6 +630,8 @@ Examples:
         sys.exit(run_concepts_cli(args))
     if args.remote_workers:
         sys.exit(run_remote_workers_cli(args))
+    if args.docs_readiness:
+        sys.exit(run_docs_readiness_cli(args))
 
     manifest_option_used = any(
         (

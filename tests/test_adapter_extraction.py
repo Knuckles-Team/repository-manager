@@ -24,6 +24,7 @@ EXPECTED_TOOL_NAMES = (
     "rm_merge_queue",
     "rm_build",
     "rm_projects",
+    "rm_docs_readiness",
     "rm_gates",
     "rm_workspace",
     "rm_concepts",
@@ -39,7 +40,8 @@ EXPECTED_TOOL_NAMES = (
 # grew ``rm_build`` (gained ``host``) and ``rm_remote_workers`` (gained
 # ``path`` + expanded ``action`` docs); GOC-60/P0.4 grows it again with
 # ``rm_gates`` (the two-tier fast/heavy pre-commit gate driver) registered
-# right after ``rm_projects``. Each growth recomputes the tool name list and
+# right after ``rm_projects``. NE137 adds ``rm_docs_readiness`` as the
+# dry-run-first canonical fleet action. Each growth recomputes the tool name list and
 # this digest against the live registry — not drift. Recomputed here for the
 # merge of both the P0.6/P0.7 invariants program and GOC-60/P0.4 rm_gates
 # landing together; recomputed again for the NFS-buildhost-git-sync lane,
@@ -49,7 +51,7 @@ EXPECTED_TOOL_NAMES = (
 # ``rm_remote_workers`` (gained ``command`` + ``workdir``) and the CLI's
 # ``--remote-workers`` choices list.
 BASELINE_CATALOG_SHA256 = (
-    "b16bcc43e6a5ac7523aa1b9ec578fc4adf4df30814330afa4559db18e2ff118b"
+    "a01d85f80fa2cff92a630c6bd424eb75ff5c49642f2e733f2766acea3b9b5a23"
 )
 
 
