@@ -84,7 +84,7 @@ repos:
     pass_filenames: false
     always_run: true
   - id: check-import-safety
-    name: Cross-platform import safety (native + simulated-Windows fcntl/termios/pwd/resource)
+    name: Cross-platform import safety (native + conservative simulated-Windows analysis)
     # Same tool as agent-utilities' own check-import-safety hook (copied,
     # not vendored as a dependency, so this hook has no environment-sync
     # prerequisite beyond what pytest below already needs). Walks every
@@ -94,22 +94,13 @@ repos:
     # docstring for exactly what --simulate-windows does and does not
     # model (deliberately does not flip sys.platform/os.name).
     #
-    # CURRENTLY RED, expected: repository_manager/repository_manager.py
-    # (the package's own core module) eagerly imports
-    # repository_manager.canonical_guard, which has an unguarded top-level
-    # `import fcntl` -- so under this shim (and on a real Windows
-    # interpreter) `import repository_manager` fails OUTRIGHT, before
-    # discover_modules can even enumerate the rest of the package. No
-    # --exclude can route around this the way agent-utilities' hook does
-    # for its per-module cases -- the failure is structural, not
-    # per-module. Five more repository_manager files have the identical
-    # unguarded top-level `import fcntl` (fairness.py, task_queue.py,
-    # reservations.py, canonical_guard.py, stash_guard.py) plus 4 more
-    # lazy (function-body) sites in build_artifacts.py invisible to this
-    # static walk. This hook stays red until they are fixed -- that is the
-    # point: repository-manager (the tool that runs the FLEET's gates)
-    # cannot currently be imported on Windows at all.
-    entry: python scripts/check_import_safety.py --package repository_manager --simulate-windows
+    # The gate makes the checkout-owned package authoritative over any stale
+    # installed distribution. Simulated-Windows mode uses conservative AST
+    # platform-guard analysis plus a native package-root import: changing
+    # sys.platform or poisoning fcntl on Linux would falsely reject AU's
+    # correctly guarded file_lock implementation. Include the directly
+    # executed security contract too: pkgutil cannot walk standalone scripts.
+    entry: python scripts/check_import_safety.py --package repository_manager --script scripts/security_contract.py --simulate-windows
     language: system
     pass_filenames: false
     always_run: true

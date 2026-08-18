@@ -16,12 +16,18 @@ import argparse
 import json
 import os
 import re
-import resource
 import signal
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+
+# ``resource`` is POSIX-only; contract validation remains importable on
+# Windows, while run-hook fails closed before attempting Unix-only limits.
+try:
+    import resource as _resource
+except ImportError:  # pragma: no cover - exercised by the Windows gate
+    _resource = None
 
 MAX_CONTRACT_BYTES = 128 * 1024
 MAX_EVIDENCE_BYTES = 128 * 1024
@@ -371,8 +377,12 @@ def _hook_environment() -> dict[str, str]:
 
 
 def _limit_hook_output() -> None:
-    resource.setrlimit(
-        resource.RLIMIT_FSIZE, (MAX_HOOK_OUTPUT_BYTES, MAX_HOOK_OUTPUT_BYTES)
+    if _resource is None:
+        raise SecurityContractError(
+            "security hook output limits require Unix resource support"
+        )
+    _resource.setrlimit(
+        _resource.RLIMIT_FSIZE, (MAX_HOOK_OUTPUT_BYTES, MAX_HOOK_OUTPUT_BYTES)
     )
 
 
@@ -407,6 +417,10 @@ def run_hook(root: Path, contract: dict[str, Any], kind: str, result_root: str) 
 
     if kind not in HOOK_KINDS:
         raise SecurityContractError("security hook kind is invalid")
+    if _resource is None:
+        raise SecurityContractError(
+            "run-hook requires Unix resource limits and is unavailable on Windows"
+        )
     results = root.joinpath(result_root)
     if Path(result_root).is_absolute() or ".." in Path(result_root).parts:
         raise SecurityContractError("security result root is invalid")
