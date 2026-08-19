@@ -18,6 +18,8 @@ from repository_manager.mcp_tools.docs_readiness import (
     register_docs_readiness_tools,
 )
 
+PRODUCTION_FLEET_COUNT = 75
+
 
 def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -33,6 +35,32 @@ def _init_repo(path: Path) -> None:
     (path / "README.md").write_text("fixture\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(path), "add", "."], check=True)
     subprocess.run(["git", "-C", str(path), "commit", "-qm", "fixture"], check=True)
+
+
+def _commit_generated_artifacts(path: Path) -> None:
+    (path / "llms.txt").write_text("fixture\n", encoding="utf-8")
+    (path / "agent-readiness-manifest.json").write_text("{}\n", encoding="utf-8")
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "add",
+            "llms.txt",
+            "agent-readiness-manifest.json",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "commit", "-qm", "generated artifacts"],
+        check=True,
+    )
+
+
+def _ignore_local_build_dirs(path: Path) -> None:
+    (path / ".git" / "info" / "exclude").write_text(
+        ".venv/\ntarget/\n", encoding="utf-8"
+    )
 
 
 def _manifest(root: Path) -> None:
@@ -58,9 +86,21 @@ def _manifest(root: Path) -> None:
 
 
 def _fake_generator(calls: list[tuple[Path, bool]]):
-    def generate(root: Path, *, check: bool, adopt_existing: bool) -> dict[str, Any]:
-        assert adopt_existing is False
+    def generate(
+        root: Path,
+        *,
+        check: bool,
+        adopt_existing: bool,
+        output_dir: Path | None = None,
+    ) -> dict[str, Any]:
+        assert adopt_existing is (output_dir is not None)
         calls.append((root, check))
+        if not check:
+            destination = output_dir or root
+            (destination / "llms.txt").write_text("fixture\n", encoding="utf-8")
+            (destination / "agent-readiness-manifest.json").write_text(
+                "{}\n", encoding="utf-8"
+            )
         return {
             "schema_version": "agent-readiness/v1",
             "generator_version": "fixture-1",
@@ -130,11 +170,24 @@ def fixture_workspace(tmp_path: Path) -> tuple[Path, Path]:
     return root, repo
 
 
+@pytest.fixture(autouse=True)
+def _one_repository_fleet_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep small fixtures explicit while production remains pinned to 75."""
+
+    monkeypatch.setattr(docs_readiness, "EXPECTED_AGENT_FLEET_COUNT", 1)
+
+
+def _fixture_dispatch(action: str = "preview", **kwargs: Any) -> dict[str, Any]:
+    """Run the one-repository fixture under its explicit selection contract."""
+
+    return docs_readiness.dispatch(action, **kwargs)
+
+
 def test_default_generator_is_the_canonical_universal_skills_builder(
     fixture_workspace: tuple[Path, Path],
 ) -> None:
     root, _ = fixture_workspace
-    result = docs_readiness.dispatch(
+    result = _fixture_dispatch(
         workspace_root=root,
         repository="agent-packages/agents/provider",
     )
@@ -147,6 +200,24 @@ def test_default_generator_is_the_canonical_universal_skills_builder(
     assert not (root / "agent-packages" / "agents" / "provider" / "llms.txt").exists()
 
 
+def test_default_apply_verifies_real_generator_output_dir_contract(
+    fixture_workspace: tuple[Path, Path],
+) -> None:
+    root, repo = fixture_workspace
+
+    result = _fixture_dispatch(
+        "apply",
+        workspace_root=root,
+        repository="agent-packages/agents/provider",
+        confirm=True,
+    )
+
+    assert result["ok"] is True
+    assert result["repositories"][0]["status"] == "applied"
+    assert (repo / "llms.txt").is_file()
+    assert (repo / "agent-readiness-manifest.json").is_file()
+
+
 def test_preview_is_read_only_manifest_scoped_and_excludes_scaffolding(
     fixture_workspace: tuple[Path, Path],
 ) -> None:
@@ -154,17 +225,13 @@ def test_preview_is_read_only_manifest_scoped_and_excludes_scaffolding(
     calls: list[tuple[Path, bool]] = []
     before = sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
 
-    result = docs_readiness.dispatch(
+    result = _fixture_dispatch(
         workspace_root=root,
         _generator=_fake_generator(calls),
     )
 
     assert result["ok"] is True
-    assert [row["status"] for row in result["repositories"]] == [
-        "excluded",
-        "planned",
-        "excluded",
-    ]
+    assert [row["status"] for row in result["repositories"]] == ["planned"]
     assert calls == [(repo, True)]
     assert (
         sorted(path.relative_to(root).as_posix() for path in root.rglob("*")) == before
@@ -179,16 +246,16 @@ def test_apply_requires_exact_identity_and_confirmation(
     calls: list[tuple[Path, bool]] = []
     generator = _fake_generator(calls)
 
-    missing_selection = docs_readiness.dispatch(
+    missing_selection = _fixture_dispatch(
         "apply", workspace_root=root, confirm=True, _generator=generator
     )
-    no_confirmation = docs_readiness.dispatch(
+    no_confirmation = _fixture_dispatch(
         "apply",
         workspace_root=root,
         repository="agent-packages/agents/provider",
         _generator=generator,
     )
-    applied = docs_readiness.dispatch(
+    applied = _fixture_dispatch(
         "apply",
         workspace_root=root,
         repository="agent-packages/agents/provider",
@@ -211,7 +278,7 @@ def test_dirty_repo_is_refused_before_generator(
     (repo / "uncommitted.txt").write_text("wip\n", encoding="utf-8")
     calls: list[tuple[Path, bool]] = []
 
-    result = docs_readiness.dispatch(
+    result = _fixture_dispatch(
         "preview",
         workspace_root=root,
         repository="agent-packages/agents/provider",
@@ -236,7 +303,7 @@ def test_missing_applicability_is_a_privacy_safe_block(
         check=True,
     )
     calls: list[tuple[Path, bool]] = []
-    result = docs_readiness.dispatch(
+    result = _fixture_dispatch(
         workspace_root=root,
         repository="agent-packages/agents/provider",
         _generator=_fake_generator(calls),
@@ -257,7 +324,7 @@ def test_manifest_secret_fields_are_refused_before_selection(
         encoding="utf-8",
     )
 
-    result = docs_readiness.dispatch(
+    result = _fixture_dispatch(
         workspace_root=root,
         _generator=_fake_generator([]),
     )
@@ -275,12 +342,13 @@ def test_exact_identity_rejects_traversal_and_out_of_manifest(
         ("../provider", "repository-identity-invalid"),
         ("agent-packages/./agents/provider", "repository-identity-invalid"),
         ("agent-packages/agents/other", "repository-not-in-manifest"),
+        ("services/shared-scaffold", "repository-not-in-manifest"),
         (
             str(root / "agent-packages" / "agents" / "provider"),
             "repository-identity-invalid",
         ),
     ):
-        result = docs_readiness.dispatch(
+        result = _fixture_dispatch(
             workspace_root=root,
             repository=value,
             _generator=_fake_generator([]),
@@ -296,7 +364,7 @@ def test_symlinked_manifest_target_fails_closed(
     repo.rename(real)
     repo.symlink_to(real, target_is_directory=True)
 
-    result = docs_readiness.dispatch(
+    result = _fixture_dispatch(
         workspace_root=root,
         _generator=_fake_generator([]),
     )
@@ -315,7 +383,7 @@ def test_ambiguous_canonical_authority_is_refused(
         raise docs_readiness.DocsReadinessError("generator-authority-ambiguous")
 
     monkeypatch.setattr(docs_readiness, "_canonical_generator", ambiguous)
-    result = docs_readiness.dispatch(
+    result = _fixture_dispatch(
         workspace_root=root,
         repository="agent-packages/agents/provider",
     )
@@ -336,7 +404,7 @@ def test_generator_exception_cannot_publish_paths_or_exception_text(
         del check, adopt_existing
         raise ValueError(f"{root}/credential-value")
 
-    result = docs_readiness.dispatch(
+    result = _fixture_dispatch(
         workspace_root=root,
         repository="agent-packages/agents/provider",
         _generator=fail,
@@ -351,10 +419,23 @@ def test_generator_exception_cannot_publish_paths_or_exception_text(
 def test_verify_requires_current_idempotent_generator_plan(
     fixture_workspace: tuple[Path, Path],
 ) -> None:
-    root, _ = fixture_workspace
+    root, repo = fixture_workspace
+    _commit_generated_artifacts(repo)
 
-    def current(root: Path, *, check: bool, adopt_existing: bool) -> dict[str, Any]:
-        assert check is False and adopt_existing is False
+    def current(
+        generator_root: Path,
+        *,
+        check: bool,
+        adopt_existing: bool,
+        output_dir: Path | None = None,
+    ) -> dict[str, Any]:
+        assert check is False
+        assert adopt_existing is (output_dir is not None)
+        destination = output_dir or generator_root
+        (destination / "llms.txt").write_text("fixture\n", encoding="utf-8")
+        (destination / "agent-readiness-manifest.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
         return {
             "schema_version": "agent-readiness/v1",
             "generator_version": "fixture-1",
@@ -364,7 +445,7 @@ def test_verify_requires_current_idempotent_generator_plan(
             "provenance": {"generator_version": "fixture-1"},
         }
 
-    result = docs_readiness.dispatch(
+    result = _fixture_dispatch(
         "verify",
         workspace_root=root,
         repository="agent-packages/agents/provider",
@@ -373,6 +454,44 @@ def test_verify_requires_current_idempotent_generator_plan(
     assert result["ok"] is True
     assert result["repositories"][0]["status"] == "verified"
     assert result["repositories"][0]["generator_version"] == "fixture-1"
+
+
+def test_apply_failure_rolls_back_only_owned_artifacts(
+    fixture_workspace: tuple[Path, Path],
+) -> None:
+    root, repo = fixture_workspace
+    _commit_generated_artifacts(repo)
+    before_llms = (repo / "llms.txt").read_bytes()
+    before_manifest = (repo / "agent-readiness-manifest.json").read_bytes()
+
+    def fail(
+        generator_root: Path, *, check: bool, adopt_existing: bool
+    ) -> dict[str, Any]:
+        del check, adopt_existing
+        (generator_root / "llms.txt").write_bytes(b"partial publication\n")
+        (generator_root / "agent-readiness-manifest.json").write_bytes(
+            b"partial publication\n"
+        )
+        raise ValueError("publication failed")
+
+    result = _fixture_dispatch(
+        "apply",
+        workspace_root=root,
+        repository="agent-packages/agents/provider",
+        confirm=True,
+        _generator=fail,
+    )
+
+    assert result["ok"] is False
+    assert result["repositories"][0]["reason"] == "generator-failed"
+    assert (repo / "llms.txt").read_bytes() == before_llms
+    assert (repo / "agent-readiness-manifest.json").read_bytes() == before_manifest
+    assert subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout == ""
 
 
 def test_generator_output_escape_is_rejected_without_durable_path(
@@ -389,7 +508,7 @@ def test_generator_output_escape_is_rejected_without_durable_path(
             "provenance": {},
         }
 
-    result = docs_readiness.dispatch(
+    result = _fixture_dispatch(
         workspace_root=root,
         repository="agent-packages/agents/provider",
         _generator=escape,
@@ -397,6 +516,246 @@ def test_generator_output_escape_is_rejected_without_durable_path(
     assert result["ok"] is False
     assert result["repositories"][0]["reason"] == "generator-outputs-invalid"
     assert str(root) not in json.dumps(result)
+
+
+def test_default_fleet_is_exact_manifest_agent_packages_scope() -> None:
+    root = Path(__file__).resolve().parents[1]
+    identities = docs_readiness._manifest_repositories(
+        root / "repository_manager" / "workspace.yml", root
+    )
+    selected = docs_readiness._select_repositories(
+        identities, None, expected_count=PRODUCTION_FLEET_COUNT
+    )
+    selected_ids = {item.identifier for item in selected}
+
+    assert len(selected) == 75
+    assert selected_ids == {
+        item.identifier
+        for item in identities
+        if item.identifier.startswith("agent-packages/")
+        and item.identifier != "agent-packages/agents/tests"
+    }
+    assert "agent-packages/skills/universal-skills" in selected_ids
+    assert "agent-packages/skills/skill-graphs" in selected_ids
+    assert "agent-packages/agents/tests" not in selected_ids
+
+
+def test_manifest_selection_drift_fails_closed_before_generator(
+    fixture_workspace: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, _ = fixture_workspace
+    calls: list[tuple[Path, bool]] = []
+    monkeypatch.setattr(
+        docs_readiness, "EXPECTED_AGENT_FLEET_COUNT", PRODUCTION_FLEET_COUNT
+    )
+
+    result = _fixture_dispatch(
+        workspace_root=root,
+        _generator=_fake_generator(calls),
+    )
+
+    assert result == {
+        "ok": False,
+        "action": "preview",
+        "error_code": "fleet-selection-drift",
+    }
+    assert calls == []
+
+
+def test_manifest_checkout_drift_fails_closed_before_generator(
+    fixture_workspace: tuple[Path, Path],
+) -> None:
+    root, repo = fixture_workspace
+    repo.rename(repo.with_name("provider-parked"))
+    calls: list[tuple[Path, bool]] = []
+
+    result = _fixture_dispatch(
+        workspace_root=root,
+        _generator=_fake_generator(calls),
+    )
+
+    assert result == {
+        "ok": False,
+        "action": "preview",
+        "error_code": "fleet-selection-drift",
+    }
+    assert calls == []
+
+
+def test_default_fleet_does_not_discover_unlisted_sibling(tmp_path: Path) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    (root / "agent-packages" / "agents" / "ghost").mkdir(parents=True)
+    repo = root / "agent-packages" / "agents" / "provider"
+    repo.mkdir(parents=True)
+    manifest = root / "workspace.yml"
+    manifest.write_text(
+        "name: Fixture\npath: .\nrepositories: []\nsubdirectories:\n"
+        "  agent-packages:\n    subdirectories:\n      agents:\n"
+        "        repositories:\n          - url: https://example.invalid/provider.git\n",
+        encoding="utf-8",
+    )
+
+    identities = docs_readiness._manifest_repositories(manifest, root)
+    selected = docs_readiness._select_repositories(identities, None)
+
+    assert [item.identifier for item in selected] == ["agent-packages/agents/provider"]
+
+
+def test_verify_uses_bounded_staging_and_does_not_copy_or_mutate_source(
+    fixture_workspace: tuple[Path, Path],
+) -> None:
+    root, repo = fixture_workspace
+    _ignore_local_build_dirs(repo)
+    (repo / ".venv").mkdir()
+    (repo / ".venv" / "ignored.bin").write_bytes(b"ignored")
+    (repo / "target").mkdir()
+    (repo / "target" / "ignored.bin").write_bytes(b"ignored")
+    _commit_generated_artifacts(repo)
+    calls: list[tuple[Path, Path]] = []
+
+    def generate(
+        generator_root: Path,
+        *,
+        output_dir: Path,
+        check: bool,
+        adopt_existing: bool,
+    ) -> dict[str, Any]:
+        assert generator_root == repo
+        assert output_dir != generator_root
+        assert check is False and adopt_existing is True
+        calls.append((generator_root, output_dir))
+        (output_dir / "llms.txt").write_text("fixture\n", encoding="utf-8")
+        (output_dir / "agent-readiness-manifest.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+        return {
+            "schema_version": "agent-readiness/v1",
+            "generator_version": "fixture-1",
+            "generated": ["llms.txt"],
+            "planned": [],
+            "pruned": [],
+            "provenance": {"generator_version": "fixture-1"},
+        }
+
+    result = docs_readiness._verify_current(generate, repo)
+
+    assert result["ok"] is True
+    assert len(calls) == 1
+    assert not any(path.name == "repository" for path in calls[0][1].parents)
+    assert (repo / ".venv" / "ignored.bin").read_bytes() == b"ignored"
+
+
+def test_verify_refuses_generator_source_tree_mutation(
+    fixture_workspace: tuple[Path, Path],
+) -> None:
+    _, repo = fixture_workspace
+    _commit_generated_artifacts(repo)
+
+    def mutate(
+        generator_root: Path,
+        *,
+        output_dir: Path,
+        check: bool,
+        adopt_existing: bool,
+    ) -> dict[str, Any]:
+        del check, adopt_existing
+        (generator_root / "README.md").write_text("unexpected\n", encoding="utf-8")
+        (output_dir / "llms.txt").write_text("fixture\n", encoding="utf-8")
+        (output_dir / "agent-readiness-manifest.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+        return {
+            "generated": ["llms.txt"],
+            "planned": [],
+            "pruned": [],
+            "provenance": {},
+        }
+
+    result = docs_readiness._verify_current(mutate, repo)
+
+    assert result == {"ok": False, "error_code": "verification-mutated-target"}
+
+
+def test_verify_rejects_undeclared_staging_output(
+    fixture_workspace: tuple[Path, Path],
+) -> None:
+    _, repo = fixture_workspace
+
+    def generate(
+        generator_root: Path,
+        *,
+        output_dir: Path,
+        check: bool,
+        adopt_existing: bool,
+    ) -> dict[str, Any]:
+        del generator_root, check, adopt_existing
+        (output_dir / "secret.txt").write_text("not an artifact\n", encoding="utf-8")
+        return {
+            "generated": ["llms.txt"],
+            "planned": [],
+            "pruned": [],
+            "provenance": {},
+        }
+
+    result = docs_readiness._verify_current(generate, repo)
+
+    assert result == {"ok": False, "error_code": "output-outside-contract"}
+
+
+@pytest.mark.parametrize(
+    "written",
+    ({"agent-readiness-manifest.json"}, {"llms.txt"}),
+    ids=("missing-declared-output", "missing-provenance-manifest"),
+)
+def test_verify_requires_exact_declared_staging_outputs(
+    fixture_workspace: tuple[Path, Path], written: set[str]
+) -> None:
+    _, repo = fixture_workspace
+
+    def generate(
+        generator_root: Path,
+        *,
+        output_dir: Path,
+        check: bool,
+        adopt_existing: bool,
+    ) -> dict[str, Any]:
+        del generator_root, check, adopt_existing
+        for relative in written:
+            (output_dir / relative).write_text("fixture\n", encoding="utf-8")
+        return {
+            "generated": ["llms.txt"],
+            "planned": [],
+            "pruned": [],
+            "provenance": {},
+        }
+
+    result = docs_readiness._verify_current(generate, repo)
+
+    assert result == {"ok": False, "error_code": "output-contract-incomplete"}
+
+
+def test_artifact_snapshot_has_file_and_byte_budgets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "output"
+    sections = output / "llms-sections" / "section"
+    sections.mkdir(parents=True)
+    for index in range(docs_readiness.MAX_OUTPUTS + 1):
+        (sections / f"{index}.txt").write_bytes(b"x")
+
+    with pytest.raises(
+        docs_readiness.DocsReadinessError, match="output-count-exceeded"
+    ):
+        docs_readiness._artifact_files(output)
+
+    small = tmp_path / "small"
+    small.mkdir()
+    (small / "llms.txt").write_bytes(b"four")
+    monkeypatch.setattr(docs_readiness, "MAX_OUTPUT_BYTES", 3)
+    with pytest.raises(docs_readiness.DocsReadinessError, match="output-oversize"):
+        docs_readiness._artifact_files(small)
 
 
 def test_mcp_and_cli_register_one_shared_action_surface(

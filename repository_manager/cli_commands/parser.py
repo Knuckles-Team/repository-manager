@@ -601,13 +601,16 @@ Examples:
         nargs="?",
         const="preview",
         choices=["preview", "apply", "verify"],
-        help="Preview (default), apply, or verify canonical agent-readiness artifacts.",
+        help=(
+            "Preview (default), apply, or verify canonical agent-readiness artifacts; "
+            "readiness config must already be generated/adopted per repository."
+        ),
     )
     group_docs_readiness.add_argument(
         "--docs-readiness-repository",
         type=str,
         default=None,
-        help="Exact workspace.yml identity; required for apply.",
+        help="Exact agent-packages workspace.yml identity; required for apply.",
     )
     group_docs_readiness.add_argument(
         "--docs-readiness-confirm",

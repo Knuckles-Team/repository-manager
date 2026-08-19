@@ -3,7 +3,9 @@
 The action consumes only repository identities declared by the canonical
 ``workspace.yml``.  It deliberately delegates generation to the installed
 ``universal-skills`` agent-readiness builder; Repository Manager owns only
-selection, git safety, action policy, and privacy-safe result shaping.
+selection, git safety, action policy, bounded output verification, and
+privacy-safe result shaping.  Readiness configuration is an explicit
+per-repository prerequisite; this action does not synthesize rollout readiness.
 """
 
 from __future__ import annotations
@@ -36,6 +38,9 @@ ACTIONS = ("preview", "apply", "verify")
 MAX_REPOSITORIES = 512
 MAX_OUTPUTS = 256
 MAX_OUTPUT_BYTES = 8_000_000
+MAX_GIT_STATUS_BYTES = 1_000_000
+EXPECTED_AGENT_FLEET_COUNT = 75
+_AGENT_PACKAGES_PREFIX = "agent-packages/"
 _ERROR_PREFIXES = frozenset(
     {
         "applicability",
@@ -44,6 +49,7 @@ _ERROR_PREFIXES = frozenset(
         "capability",
         "content",
         "full",
+        "fleet",
         "generator",
         "maturity",
         "mkdocs",
@@ -58,22 +64,14 @@ _ERROR_PREFIXES = frozenset(
     }
 )
 
-# These are explicit workspace identities, not a filesystem scan.  They are
-# shared scaffolding or deployment inputs and therefore cannot be agent-doc
-# publication targets.  Keeping the policy here makes an accidental broad
-# ``workspace.yml`` fan-out visible and testable.
-NON_PUBLISHABLE_PREFIXES = (
-    "images",
-    "services",
-)
+# These are explicit workspace identities, not a filesystem scan.  The default
+# action is deliberately scoped to the agent-packages fleet; within that fleet
+# only the test fixture identity is non-publishable.  Shared skills are real
+# publishable package identities and must not be silently dropped.
+NON_PUBLISHABLE_PREFIXES: tuple[str, ...] = ()
 NON_PUBLISHABLE_IDENTITIES = frozenset(
     {
-        "pipelines",
-        "gitlab-pipelines",
-        "agents/tests",
         "agent-packages/agents/tests",
-        "agent-packages/skills/universal-skills",
-        "agent-packages/skills/skill-graphs",
     }
 )
 _OUTPUT_ROOTS = frozenset(
@@ -85,6 +83,7 @@ _OUTPUT_ROOTS = frozenset(
         "agent-readiness-manifest.json",
     }
 )
+_GIT_EXECUTABLE = shutil.which("git")
 
 
 class DocsReadinessError(ValueError):
@@ -232,6 +231,13 @@ def _manifest_repositories(
         entries = _repository_entries(data)
     except (OSError, WorkspaceManifestError, yaml.YAMLError) as exc:
         raise DocsReadinessError("workspace-manifest-invalid") from exc
+    # Fleet selection is identity-driven: only repositories declared beneath
+    # the exact agent-packages manifest subtree are in scope.  Do not discover
+    # siblings from the filesystem and do not validate unrelated services or
+    # deployment inputs while constructing this selection.
+    entries = [
+        entry for entry in entries if entry.identifier.startswith(_AGENT_PACKAGES_PREFIX)
+    ]
     if len(entries) > MAX_REPOSITORIES:
         raise DocsReadinessError("workspace-manifest-too-large")
 
@@ -258,59 +264,154 @@ def _manifest_repositories(
 
 
 def _is_non_publishable(identifier: str) -> bool:
-    if identifier in NON_PUBLISHABLE_IDENTITIES:
-        return True
-    first = identifier.split("/", 1)[0]
-    return first in NON_PUBLISHABLE_PREFIXES
+    return identifier in NON_PUBLISHABLE_IDENTITIES
+
+
+def _validate_fleet_selection(
+    identities: tuple[RepositoryIdentity, ...],
+    *,
+    expected_count: int | None,
+    validate_paths: bool,
+) -> tuple[RepositoryIdentity, ...]:
+    """Return the manifest-owned publishable fleet or refuse selection drift.
+
+    The manifest is the sole selection authority.  The count is intentionally
+    pinned for the production fleet so an added, removed, or accidentally
+    reclassified manifest entry cannot cause a partial rollout.  A missing
+    checkout is the same class of drift: it is reported before any generator
+    invocation rather than silently processing a subset.  Unlisted filesystem
+    siblings are never consulted.
+    """
+
+    agent_fleet = tuple(
+        item
+        for item in identities
+        if item.identifier.startswith(_AGENT_PACKAGES_PREFIX)
+    )
+    selected = tuple(
+        item for item in agent_fleet if not _is_non_publishable(item.identifier)
+    )
+    if expected_count is not None:
+        if (
+            type(expected_count) is not int
+            or expected_count < 0
+            or expected_count > MAX_REPOSITORIES
+            or len(selected) != expected_count
+        ):
+            raise DocsReadinessError("fleet-selection-drift")
+    if validate_paths and any(
+        not item.path.is_dir() or item.path.is_symlink() for item in selected
+    ):
+        raise DocsReadinessError("fleet-selection-drift")
+    return selected
 
 
 def _select_repositories(
-    identities: tuple[RepositoryIdentity, ...], repository: object
+    identities: tuple[RepositoryIdentity, ...],
+    repository: object,
+    *,
+    expected_count: int | None = None,
+    validate_paths: bool = False,
 ) -> tuple[RepositoryIdentity, ...]:
+    agent_fleet = _validate_fleet_selection(
+        identities,
+        expected_count=expected_count,
+        validate_paths=validate_paths,
+    )
     if repository is None:
-        return identities
+        return agent_fleet
     identifier = _safe_identifier(repository)
-    selected = tuple(item for item in identities if item.identifier == identifier)
+    selected = tuple(
+        item
+        for item in identities
+        if item.identifier.startswith(_AGENT_PACKAGES_PREFIX)
+        and item.identifier == identifier
+    )
+    if selected and _is_non_publishable(identifier):
+        raise DocsReadinessError("repository-not-publishable")
     if not selected:
         raise DocsReadinessError("repository-not-in-manifest")
     return selected
 
 
-def _git_status(path: Path) -> tuple[bool, str]:
-    """Return clean state and a bounded refusal reason without exposing output."""
+def _git_snapshot(
+    path: Path,
+) -> tuple[bool, str, frozenset[str] | None]:
+    """Return clean state plus bounded relative dirty paths for mutation checks."""
 
+    if _GIT_EXECUTABLE is None:
+        return False, "repository-git-unavailable", None
     try:
         probe = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            [_GIT_EXECUTABLE, "-C", str(path), "rev-parse", "--show-toplevel"],
             capture_output=True,
             check=False,
             text=True,
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
-        return False, "repository-not-git"
+        return False, "repository-not-git", None
     if probe.returncode != 0:
-        return False, "repository-not-git"
+        return False, "repository-not-git", None
     try:
         top = Path(probe.stdout.strip()).resolve(strict=True)
         top.relative_to(path)
     except (OSError, RuntimeError, ValueError):
-        return False, "repository-root-mismatch"
+        return False, "repository-root-mismatch", None
     if top != path:
-        return False, "repository-root-mismatch"
+        return False, "repository-root-mismatch", None
     try:
         status = subprocess.run(
-            ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=all"],
+            [
+                _GIT_EXECUTABLE,
+                "-C",
+                str(path),
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+            ],
             capture_output=True,
             check=False,
             text=True,
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
-        return False, "repository-status-unavailable"
+        return False, "repository-status-unavailable", None
     if status.returncode != 0:
-        return False, "repository-status-unavailable"
-    return not bool(status.stdout), "repository-dirty" if status.stdout else ""
+        return False, "repository-status-unavailable", None
+    if len(status.stdout) > MAX_GIT_STATUS_BYTES:
+        return False, "repository-status-too-large", None
+    if not status.stdout:
+        return True, "", frozenset()
+
+    dirty: set[str] = set()
+    for line in status.stdout.splitlines():
+        if len(line) < 4:
+            return False, "repository-status-unavailable", None
+        raw_paths = line[3:]
+        candidates = raw_paths.split(" -> ")
+        for raw_path in candidates:
+            try:
+                relative = PurePosixPath(raw_path)
+            except (TypeError, ValueError):
+                return False, "repository-status-unavailable", None
+            if (
+                relative.is_absolute()
+                or not relative.parts
+                or any(part in {"", ".", ".."} for part in relative.parts)
+            ):
+                return False, "repository-status-unavailable", None
+            dirty.add(relative.as_posix())
+            if len(dirty) > MAX_OUTPUTS:
+                return False, "repository-status-too-large", None
+    return False, "repository-dirty", frozenset(dirty)
+
+
+def _git_status(path: Path) -> tuple[bool, str]:
+    """Return clean state and a bounded refusal reason without exposing output."""
+
+    clean, reason, _ = _git_snapshot(path)
+    return clean, reason
 
 
 def _load_generator_authority() -> _GeneratorAuthority:
@@ -443,37 +544,47 @@ def _generator_result(
     }
 
 
-def _artifact_files(root: Path) -> dict[str, bytes]:
-    """Read only the generator-owned output namespace from one tree."""
+def _artifact_files(
+    root: Path, *, strict: bool = False, allowed: set[str] | None = None
+) -> dict[str, bytes]:
+    """Read the bounded generator-owned output namespace from one tree.
+
+    ``strict`` is used for the temporary output directory: every top-level
+    entry and every file below ``llms-sections`` must be one of the generator's
+    declared outputs (plus its mandatory provenance manifest).  The repository
+    target is intentionally read in non-strict mode because its source tree
+    contains ordinary project files outside the generated namespace.
+    """
 
     files: dict[str, bytes] = {}
     total_bytes = 0
-    for relative_root in sorted(_OUTPUT_ROOTS):
-        candidate = root / relative_root
-        if not candidate.exists():
-            continue
-        if candidate.is_symlink():
-            raise DocsReadinessError("output-symlink")
-        if candidate.is_file():
-            try:
-                metadata = candidate.lstat()
-            except OSError as exc:
-                raise DocsReadinessError("output-unavailable") from exc
-            if metadata.st_nlink != 1:
-                raise DocsReadinessError("output-not-regular")
-            payload = candidate.read_bytes()
-            total_bytes += len(payload)
-            if total_bytes > MAX_OUTPUT_BYTES:
-                raise DocsReadinessError("output-oversize")
-            files[relative_root] = payload
-            continue
-        if not candidate.is_dir():
-            raise DocsReadinessError("output-not-regular")
-        for child in sorted(candidate.rglob("*")):
-            if child.is_symlink() or not child.is_file():
-                if child.is_symlink():
-                    raise DocsReadinessError("output-symlink")
+
+    if strict:
+        if allowed is None:
+            raise DocsReadinessError("output-contract-invalid")
+        try:
+            top_level = sorted(root.iterdir(), key=lambda child: child.name)
+        except OSError as exc:
+            raise DocsReadinessError("output-unavailable") from exc
+        if any(child.name not in _OUTPUT_ROOTS for child in top_level):
+            raise DocsReadinessError("output-outside-contract")
+
+    def visit(directory: Path) -> None:
+        nonlocal total_bytes
+        try:
+            children = sorted(directory.iterdir(), key=lambda child: child.name)
+        except OSError as exc:
+            raise DocsReadinessError("output-unavailable") from exc
+        if len(children) > MAX_OUTPUTS:
+            raise DocsReadinessError("output-count-exceeded")
+        for child in children:
+            if child.is_symlink():
+                raise DocsReadinessError("output-symlink")
+            if child.is_dir():
+                visit(child)
                 continue
+            if not child.is_file():
+                raise DocsReadinessError("output-not-regular")
             try:
                 metadata = child.lstat()
             except OSError as exc:
@@ -482,41 +593,183 @@ def _artifact_files(root: Path) -> dict[str, bytes]:
                 raise DocsReadinessError("output-not-regular")
             if len(files) >= MAX_OUTPUTS:
                 raise DocsReadinessError("output-count-exceeded")
-            payload = child.read_bytes()
+            if total_bytes + metadata.st_size > MAX_OUTPUT_BYTES:
+                raise DocsReadinessError("output-oversize")
+            try:
+                payload = child.read_bytes()
+            except OSError as exc:
+                raise DocsReadinessError("output-unavailable") from exc
             total_bytes += len(payload)
             if total_bytes > MAX_OUTPUT_BYTES:
                 raise DocsReadinessError("output-oversize")
             files[child.relative_to(root).as_posix()] = payload
+
+    for relative_root in sorted(_OUTPUT_ROOTS):
+        candidate = root / relative_root
+        if candidate.is_symlink():
+            raise DocsReadinessError("output-symlink")
+        if not candidate.exists():
+            continue
+        if candidate.is_file():
+            try:
+                metadata = candidate.lstat()
+            except OSError as exc:
+                raise DocsReadinessError("output-unavailable") from exc
+            if metadata.st_nlink != 1:
+                raise DocsReadinessError("output-not-regular")
+            if len(files) >= MAX_OUTPUTS:
+                raise DocsReadinessError("output-count-exceeded")
+            if total_bytes + metadata.st_size > MAX_OUTPUT_BYTES:
+                raise DocsReadinessError("output-oversize")
+            try:
+                payload = candidate.read_bytes()
+            except OSError as exc:
+                raise DocsReadinessError("output-unavailable") from exc
+            total_bytes += len(payload)
+            if total_bytes > MAX_OUTPUT_BYTES:
+                raise DocsReadinessError("output-oversize")
+            files[relative_root] = payload
+            continue
+        if not candidate.is_dir():
+            raise DocsReadinessError("output-not-regular")
+        visit(candidate)
+    if strict:
+        assert allowed is not None
+        observed = set(files)
+        if observed - allowed:
+            raise DocsReadinessError("output-outside-contract")
+        if allowed - observed:
+            raise DocsReadinessError("output-contract-incomplete")
     return files
 
 
-def _verify_current(generator: Generator, root: Path) -> dict[str, Any]:
-    """Re-run the canonical writer in a temporary copy and compare bytes.
+def _remove_artifact_path(path: Path, counters: list[int]) -> None:
+    """Remove one generator-owned path during bounded rollback.
 
-    The upstream ``check=True`` API returns a plan even when every planned byte
-    already matches.  Comparing a generated temporary tree is therefore the
-    only honest way for RM to expose a current/idempotent verification result
-    without writing the caller's repository.
+    This helper is deliberately limited to the known output namespace.  It
+    refuses to follow symlinks and caps the number of filesystem entries it
+    will inspect, so a malformed generator cannot turn rollback into an
+    unbounded recursive delete.
+    """
+
+    if not path.exists() and not path.is_symlink():
+        return
+    counters[0] += 1
+    if counters[0] > MAX_OUTPUTS:
+        raise DocsReadinessError("rollback-output-count-exceeded")
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+        return
+    if not path.is_dir():
+        raise DocsReadinessError("rollback-output-not-regular")
+    children = sorted(path.iterdir(), key=lambda child: child.name)
+    if len(children) > MAX_OUTPUTS:
+        raise DocsReadinessError("rollback-output-count-exceeded")
+    for child in children:
+        _remove_artifact_path(child, counters)
+    path.rmdir()
+
+
+def _restore_artifacts(root: Path, snapshot: Mapping[str, bytes]) -> bool:
+    """Restore only generator-owned artifacts after a failed apply.
+
+    The source tree is never copied.  Rollback clears the bounded governed
+    output roots and rewrites the byte snapshot captured immediately before
+    apply.  Any malformed path or filesystem failure returns ``False`` so the
+    caller can fail closed instead of claiming a successful rollback.
     """
 
     try:
+        counters = [0]
+        for relative_root in sorted(_OUTPUT_ROOTS):
+            _remove_artifact_path(root / relative_root, counters)
+        safe_snapshot = _safe_outputs(sorted(snapshot), "rollback")
+        if set(safe_snapshot) != set(snapshot):
+            raise DocsReadinessError("rollback-output-contract-invalid")
+        for relative in safe_snapshot:
+            path = root / relative
+            _reject_symlink_components(root, path, "rollback-output")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.parent.is_symlink() or not path.parent.is_dir():
+                raise DocsReadinessError("rollback-output-parent-invalid")
+            path.write_bytes(snapshot[relative])
+        return True
+    except (DocsReadinessError, OSError, RuntimeError):
+        return False
+
+
+def _verify_current(
+    generator: Generator,
+    root: Path,
+    *,
+    allowed_dirty_paths: set[str] | None = None,
+) -> dict[str, Any]:
+    """Re-run the canonical writer into a bounded output staging directory.
+
+    The upstream ``check=True`` API returns a plan even when every planned byte
+    already matches.  The generator's explicit ``output_dir`` seam lets RM
+    compare canonical output bytes without copying or mutating the repository's
+    source tree (including ignored environments, build trees, and caches).
+    Git status is snapshotted before and after the call so tracked or untracked
+    target mutations fail closed; apply may carry only its already-published
+    generated artifact paths as an explicit dirty-set allowance.
+    """
+
+    try:
+        clean_before, status_reason, dirty_before = _git_snapshot(root)
+        if dirty_before is None:
+            return {
+                "ok": False,
+                "error_code": _safe_reason(status_reason, "verification-target-status"),
+            }
+        allowed_dirty = frozenset(allowed_dirty_paths or ())
+        if not clean_before and not dirty_before <= allowed_dirty:
+            return {"ok": False, "error_code": "verification-target-dirty"}
+        if clean_before and allowed_dirty:
+            # The caller may declare expected artifact paths, but an actually
+            # clean target is still valid; the generator must not create source
+            # mutations during the verification call.
+            dirty_before = frozenset()
         with tempfile.TemporaryDirectory(prefix="rm-docs-readiness-") as tmp:
-            copy = Path(tmp) / "repository"
-            shutil.copytree(
+            staging = Path(tmp) / "artifacts"
+            staging.mkdir()
+            actual_before = _artifact_files(root)
+            raw = generator(
                 root,
-                copy,
-                symlinks=True,
-                ignore=shutil.ignore_patterns(".git"),
+                output_dir=staging,
+                check=False,
+                adopt_existing=True,
             )
-            raw = generator(copy, check=False, adopt_existing=False)
             if not isinstance(raw, Mapping):
                 return {"ok": False, "error_code": "generator-result-invalid"}
             generated = _safe_outputs(raw.get("generated"), "outputs")
             _safe_outputs(raw.get("planned", []), "planned")
             _safe_outputs(raw.get("pruned", []), "pruned")
-            expected = _artifact_files(copy)
-            actual = _artifact_files(root)
-            if expected != actual:
+            expected = _artifact_files(
+                staging,
+                strict=True,
+                allowed=set(generated) | {"agent-readiness-manifest.json"},
+            )
+            _, status_after_reason, dirty_after = _git_snapshot(root)
+            if dirty_after is None:
+                return {
+                    "ok": False,
+                    "error_code": _safe_reason(
+                        status_after_reason, "verification-target-status"
+                    ),
+                }
+            if dirty_after != dirty_before:
+                return {
+                    "ok": False,
+                    "error_code": "verification-mutated-target",
+                }
+            actual_after = _artifact_files(root)
+            if actual_after != actual_before:
+                return {
+                    "ok": False,
+                    "error_code": "verification-mutated-target",
+                }
+            if expected != actual_after:
                 return {
                     "ok": False,
                     "error_code": "artifacts-not-current",
@@ -532,6 +785,11 @@ def _verify_current(generator: Generator, root: Path) -> dict[str, Any]:
                     or (raw.get("provenance") or {}).get("generator_version")
                 ),
             }
+    except DocsReadinessError as exc:
+        return {
+            "ok": False,
+            "error_code": _safe_reason(str(exc), "verification-failed"),
+        }
     except Exception as exc:  # noqa: BLE001 - filesystem/generator boundary
         del exc
         return {"ok": False, "error_code": "verification-failed"}
@@ -549,7 +807,7 @@ def _dispatch_one(
     generator: Generator,
 ) -> dict[str, Any]:
     if _is_non_publishable(identity.identifier):
-        return _empty_result(identity, "excluded", "non-publishable-scaffolding")
+        return _empty_result(identity, "excluded", "non-publishable-agent-tests")
     clean, reason = _git_status(identity.path)
     if not clean:
         return _empty_result(identity, "blocked", reason)
@@ -557,12 +815,21 @@ def _dispatch_one(
         _input_preflight(identity.path)
     except DocsReadinessError as exc:
         return _empty_result(identity, "blocked", _safe_reason(str(exc)))
+    before_artifacts: dict[str, bytes] | None = None
+    if action == "apply":
+        try:
+            before_artifacts = _artifact_files(identity.path)
+        except DocsReadinessError as exc:
+            return _empty_result(identity, "blocked", _safe_reason(str(exc)))
     result = (
         _verify_current(generator, identity.path)
         if action == "verify"
         else _generator_result(generator, action, identity.path)
     )
     if not result.get("ok"):
+        if action == "apply" and before_artifacts is not None:
+            if not _restore_artifacts(identity.path, before_artifacts):
+                return _empty_result(identity, "blocked", "apply-rollback-failed")
         return {
             "repository": identity.identifier,
             "status": "blocked",
@@ -574,8 +841,18 @@ def _dispatch_one(
             },
         }
     if action == "apply":
-        current = _verify_current(generator, identity.path)
+        current = _verify_current(
+            generator,
+            identity.path,
+            allowed_dirty_paths=set(result.get("generated", []))
+            | set(result.get("pruned", []))
+            | {"agent-readiness-manifest.json"},
+        )
         if not current.get("ok"):
+            if before_artifacts is not None and not _restore_artifacts(
+                identity.path, before_artifacts
+            ):
+                return _empty_result(identity, "blocked", "apply-rollback-failed")
             return {
                 "repository": identity.identifier,
                 "status": "blocked",
@@ -609,18 +886,6 @@ def dispatch(action: str = "preview", **kwargs: Any) -> dict[str, Any]:
 
     if action not in ACTIONS:
         return {"ok": False, "error_code": "unknown-action", "actions": list(ACTIONS)}
-    try:
-        root = _safe_root(kwargs.get("workspace_root", Path.cwd()))
-        manifest_value = kwargs.get("manifest_path")
-        manifest = _contained_path(
-            root,
-            manifest_value if manifest_value is not None else root / "workspace.yml",
-            "workspace-manifest",
-        )
-        identities = _manifest_repositories(manifest, root)
-        selected = _select_repositories(identities, kwargs.get("repository"))
-    except DocsReadinessError as exc:
-        return {"ok": False, "action": action, "error_code": _safe_reason(str(exc))}
     if action == "apply":
         if kwargs.get("repository") is None:
             return {
@@ -634,6 +899,23 @@ def dispatch(action: str = "preview", **kwargs: Any) -> dict[str, Any]:
                 "action": action,
                 "error_code": "apply-confirmation-required",
             }
+    try:
+        root = _safe_root(kwargs.get("workspace_root", Path.cwd()))
+        manifest_value = kwargs.get("manifest_path")
+        manifest = _contained_path(
+            root,
+            manifest_value if manifest_value is not None else root / "workspace.yml",
+            "workspace-manifest",
+        )
+        identities = _manifest_repositories(manifest, root)
+        selected = _select_repositories(
+            identities,
+            kwargs.get("repository"),
+            expected_count=EXPECTED_AGENT_FLEET_COUNT,
+            validate_paths=True,
+        )
+    except DocsReadinessError as exc:
+        return {"ok": False, "action": action, "error_code": _safe_reason(str(exc))}
     generator = kwargs.get("_generator")
     if generator is None:
         try:
@@ -655,6 +937,7 @@ def dispatch(action: str = "preview", **kwargs: Any) -> dict[str, Any]:
 
 __all__ = [
     "ACTIONS",
+    "EXPECTED_AGENT_FLEET_COUNT",
     "NON_PUBLISHABLE_IDENTITIES",
     "NON_PUBLISHABLE_PREFIXES",
     "dispatch",

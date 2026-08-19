@@ -23,14 +23,18 @@ def register_docs_readiness_tools(
     async def rm_docs_readiness(
         action: str = Field(
             default="preview",
-            description="Action: 'preview' (default), 'apply', or 'verify'.",
+            description=(
+                "Action: 'preview' (default), 'apply', or 'verify'; per-repository "
+                "readiness config must already exist."
+            ),
         ),
         repository: str | None = Field(
             default=None,
             description=(
                 "Exact workspace.yml repository identity (for example "
                 "agent-packages/agents/repository-manager); basenames and paths "
-                "outside the manifest are refused."
+                "outside the manifest are refused. Readiness config must already "
+                "be generated/adopted; this action does not make a repo rollout-ready."
             ),
         ),
         workspace: str | None = Field(
@@ -49,7 +53,7 @@ def register_docs_readiness_tools(
             default=None, description="MCP context for compatibility."
         ),
     ) -> dict[str, Any]:
-        """Preview, apply, or verify canonical agent-readiness artifacts."""
+        """Preview/apply/verify artifacts after per-repository readiness setup."""
 
         del ctx
         return await run_blocking(
