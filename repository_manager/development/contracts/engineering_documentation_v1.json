@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-utilities.invalid/schemas/engineering-documentation-v1.json",
+  "contract_name": "engineering-documentation",
+  "contract_version": "1",
+  "owner": "repository-manager",
+  "concept_authority": {
+    "owner": "agent-utilities",
+    "rule_id": "RMDD-16",
+    "module": "agent_utilities.governance.concept_reservation",
+    "mode": "reference-only",
+    "allocates_ids": false
+  },
+  "boundaries": [
+    {
+      "kind": "authored",
+      "rule_id": "DOC-BOUND-001",
+      "version": "1",
+      "owner": "repository-manager",
+      "edit_mode": "direct",
+      "current_claims": "allowed"
+    },
+    {
+      "kind": "generated",
+      "rule_id": "DOC-BOUND-002",
+      "version": "1",
+      "owner": "repository-manager",
+      "edit_mode": "regenerate-from-source",
+      "current_claims": "derived-only"
+    },
+    {
+      "kind": "deprecated",
+      "rule_id": "DOC-BOUND-003",
+      "version": "1",
+      "owner": "repository-manager",
+      "edit_mode": "preserve-with-label",
+      "current_claims": "forbidden"
+    }
+  ],
+  "materiality": {
+    "levels": ["low", "medium", "high"],
+    "high_path_patterns": [
+      "AGENTS.md",
+      "**/AGENTS.md",
+      "CLAUDE.md",
+      "**/CLAUDE.md",
+      "docs/standards/**",
+      "repository_manager/development/contracts/**",
+      ".github/workflows/**"
+    ],
+    "medium_path_patterns": [
+      "README.md",
+      "**/README.md",
+      "docs/**",
+      "skills/**",
+      "**/skills/**",
+      "universal_skills/**"
+    ],
+    "high_explicit_signals": [
+      "public_surface",
+      "security_or_governance",
+      "runtime_contract"
+    ],
+    "impact_decisions": ["docs", "agents"],
+    "impact_decisions_required_when": "high"
+  },
+  "finding_lifecycle": {
+    "states": ["open", "accepted", "resolved", "superseded"],
+    "identity_fields": [
+      "rule_id",
+      "rule_version",
+      "owner",
+      "path",
+      "subject"
+    ],
+    "deduplication": "sha256(canonical identity fields); one row per finding_id"
+  },
+  "rules": [
+    {
+      "id": "DOC-BOUND-001",
+      "version": "1",
+      "owner": "repository-manager",
+      "statement": "Authored documentation is edited at its declared source and carries current claims only when its owner can support them."
+    },
+    {
+      "id": "DOC-BOUND-002",
+      "version": "1",
+      "owner": "repository-manager",
+      "statement": "Generated documentation is a projection; a manual edit is rejected and must be regenerated from its declared source."
+    },
+    {
+      "id": "DOC-BOUND-003",
+      "version": "1",
+      "owner": "repository-manager",
+      "statement": "Deprecated documentation remains explicitly labelled and cannot be cited as a current claim."
+    },
+    {
+      "id": "DOC-MAT-001",
+      "version": "1",
+      "owner": "repository-manager",
+      "statement": "Docs and AGENTS impact decisions are required only for high-materiality changes; low and medium changes do not manufacture those decisions."
+    },
+    {
+      "id": "DOC-LIFE-001",
+      "version": "1",
+      "owner": "repository-manager",
+      "statement": "A finding keeps one stable identity across re-review; lifecycle state and occurrence evidence are updated rather than duplicated."
+    },
+    {
+      "id": "DOC-CONCEPT-001",
+      "version": "1",
+      "owner": "repository-manager",
+      "statement": "Concept IDs are referenced for traceability only; allocation and uniqueness remain owned by agent-utilities RMDD-16."
+    }
+  ]
+}
