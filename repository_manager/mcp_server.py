@@ -32,6 +32,7 @@ from agent_utilities.mcp.verbose_tools import register_tool_surface
 
 from repository_manager.mcp_tools import (
     MCP_TOOL_REGISTRY,
+    register_docs_readiness_tools,
     register_git_operations_tools,
     register_misc_tools,
     register_project_management_tools,
@@ -39,6 +40,7 @@ from repository_manager.mcp_tools import (
 )
 from repository_manager.mcp_tools.contracts import (
     RM_BUILD_ACTIONS,
+    RM_DOCS_READINESS_ACTIONS,
     RM_GATES_ACTIONS,
     RM_GIT_ACTIONS,
     RM_MERGE_QUEUE_ACTIONS,
@@ -62,6 +64,7 @@ logger = get_logger("RepositoryManagerServer")
 
 __all__ = [
     "RM_BUILD_ACTIONS",
+    "RM_DOCS_READINESS_ACTIONS",
     "RM_GATES_ACTIONS",
     "RM_GIT_ACTIONS",
     "RM_MERGE_QUEUE_ACTIONS",
@@ -69,6 +72,7 @@ __all__ = [
     "RM_WORKSPACE_ACTIONS",
     "RM_WORKTREE_ACTIONS",
     "register_git_operations_tools",
+    "register_docs_readiness_tools",
     "register_misc_tools",
     "register_project_management_tools",
     "register_workspace_management_tools",

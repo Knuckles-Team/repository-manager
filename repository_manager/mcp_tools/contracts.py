@@ -66,3 +66,9 @@ RM_GATES_ACTIONS = (
     "explain",
     "profile",
 )
+
+RM_DOCS_READINESS_ACTIONS = (
+    "preview",
+    "apply",
+    "verify",
+)
