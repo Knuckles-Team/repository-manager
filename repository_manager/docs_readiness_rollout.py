@@ -14,12 +14,17 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 from typing import Any, Protocol
+
+yaml: ModuleType | None
+_YAML_IMPORT_ERROR: ImportError | None
 
 try:
     import yaml
@@ -28,6 +33,9 @@ except ImportError as exc:  # pragma: no cover - dependency is declared by RM
     _YAML_IMPORT_ERROR = exc
 else:
     _YAML_IMPORT_ERROR = None
+
+
+_GIT_EXECUTABLE = shutil.which("git")
 
 
 SCHEMA_VERSION = "docs-readiness-rollout/v1"
@@ -246,7 +254,9 @@ def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
     """Load and validate the exact 75-project manifest."""
 
     source = path or default_manifest_path()
-    raw = _read_bounded(source, maximum=MAX_MANIFEST_BYTES, error="manifest-unavailable")
+    raw = _read_bounded(
+        source, maximum=MAX_MANIFEST_BYTES, error="manifest-unavailable"
+    )
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -298,9 +308,17 @@ def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
         raise RolloutError("manifest-waves-invalid")
     waves: list[WaveSpec] = []
     for row in waves_raw:
-        if not isinstance(row, dict) or set(row) != {"number", "name", "expected_count"}:
+        if not isinstance(row, dict) or set(row) != {
+            "number",
+            "name",
+            "expected_count",
+        }:
             raise RolloutError("manifest-waves-invalid")
-        number, name, count = row.get("number"), row.get("name"), row.get("expected_count")
+        number, name, count = (
+            row.get("number"),
+            row.get("name"),
+            row.get("expected_count"),
+        )
         if (
             type(number) is not int
             or number < 1
@@ -339,10 +357,10 @@ def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
         raise RolloutError("manifest-wave-cardinality-invalid")
 
     findings_raw = data.get("source_findings")
-    if (
-        not isinstance(findings_raw, dict)
-        or set(findings_raw) != {"missing_pages_workflows", "missing_site_urls"}
-    ):
+    if not isinstance(findings_raw, dict) or set(findings_raw) != {
+        "missing_pages_workflows",
+        "missing_site_urls",
+    }:
         raise RolloutError("manifest-findings-invalid")
 
     def finding_list(key: str, expected_count: int) -> tuple[str, ...]:
@@ -417,8 +435,13 @@ def plan_waves(
         if selected is None and len(projects) != wave.expected_count:
             raise RolloutError("wave-selection-drift")
         if projects:
-            plans.append(WavePlan(number=wave.number, name=wave.name, projects=projects))
-    if selected is None and sum(plan.count for plan in plans) != manifest.expected_publishable_count:
+            plans.append(
+                WavePlan(number=wave.number, name=wave.name, projects=projects)
+            )
+    if (
+        selected is None
+        and sum(plan.count for plan in plans) != manifest.expected_publishable_count
+    ):
         raise RolloutError("fleet-selection-drift")
     return tuple(plans)
 
@@ -457,9 +480,11 @@ def _safe_repository_root(workspace_root: Path, identity: str) -> Path:
 
 
 def _git(repository_root: Path, *args: str) -> str:
+    if _GIT_EXECUTABLE is None:
+        raise RolloutError("git-executable-unavailable")
     try:
         result = subprocess.run(
-            ["git", "-C", str(repository_root), *args],
+            [_GIT_EXECUTABLE, "-C", str(repository_root), *args],
             capture_output=True,
             text=True,
             timeout=15,
@@ -489,7 +514,9 @@ def _source_digest(repository_root: Path, head: str) -> str:
     if len(existing) > MAX_SOURCE_FILES:
         raise RolloutError("source-input-count-exceeded")
     for path in existing:
-        payload = _read_bounded(path, maximum=MAX_SOURCE_FILE_BYTES, error="source-input-invalid")
+        payload = _read_bounded(
+            path, maximum=MAX_SOURCE_FILE_BYTES, error="source-input-invalid"
+        )
         relative = path.relative_to(repository_root).as_posix()
         files.append((relative, _sha256(payload)))
     return _sha256(_canonical_json({"head": head, "files": files}))
@@ -511,7 +538,9 @@ def collect_repository_evidence(
     branch = _git(repository_root, "branch", "--show-current")
     status = _git(repository_root, "status", "--porcelain=v1", "--untracked-files=all")
     worktrees = _git(repository_root, "worktree", "list", "--porcelain")
-    worktree_count = sum(1 for line in worktrees.splitlines() if line.startswith("worktree "))
+    worktree_count = sum(
+        1 for line in worktrees.splitlines() if line.startswith("worktree ")
+    )
     if worktree_count < 1:
         raise RolloutError("repository-worktree-invalid")
     return RepositoryEvidence(
@@ -637,23 +666,36 @@ def _safe_record(value: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("operation_key", "manifest_digest", "source_digest"):
         if not isinstance(record.get(key), str) or not _DIGEST.fullmatch(record[key]):
             raise RolloutError("journal-record-invalid")
-    if not isinstance(record.get("transaction_id"), str) or not _TRANSACTION_ID.fullmatch(
-        record["transaction_id"]
-    ):
+    if not isinstance(
+        record.get("transaction_id"), str
+    ) or not _TRANSACTION_ID.fullmatch(record["transaction_id"]):
         raise RolloutError("journal-record-invalid")
     if record.get("mode") not in {"apply", "rollback"}:
         raise RolloutError("journal-record-invalid")
-    if record.get("state") not in {"prepared", "applied", "rolled_back", "rollback_failed"}:
+    if record.get("state") not in {
+        "prepared",
+        "applied",
+        "rolled_back",
+        "rollback_failed",
+    }:
         raise RolloutError("journal-record-invalid")
-    if not isinstance(record.get("identity"), str) or not _IDENTITY.fullmatch(record["identity"]):
+    if not isinstance(record.get("identity"), str) or not _IDENTITY.fullmatch(
+        record["identity"]
+    ):
         raise RolloutError("journal-record-invalid")
-    if not isinstance(record.get("source_revision"), str) or not _REVISION.fullmatch(record["source_revision"]):
+    if not isinstance(record.get("source_revision"), str) or not _REVISION.fullmatch(
+        record["source_revision"]
+    ):
         raise RolloutError("journal-record-invalid")
-    if not isinstance(record.get("generator_revision"), str) or not _REVISION.fullmatch(record["generator_revision"]):
+    if not isinstance(record.get("generator_revision"), str) or not _REVISION.fullmatch(
+        record["generator_revision"]
+    ):
         raise RolloutError("journal-record-invalid")
     if record.get("generator_schema") != "agent-readiness/v1":
         raise RolloutError("journal-record-invalid")
-    if not isinstance(record.get("tck_revision"), str) or not _REVISION.fullmatch(record["tck_revision"]):
+    if not isinstance(record.get("tck_revision"), str) or not _REVISION.fullmatch(
+        record["tck_revision"]
+    ):
         raise RolloutError("journal-record-invalid")
     if record.get("tck_schema") != "pages-readiness-tck/v1":
         raise RolloutError("journal-record-invalid")
@@ -663,13 +705,17 @@ def _safe_record(value: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise RolloutError("journal-record-invalid")
     if "artifact_digest" in record and (
-        not isinstance(record["artifact_digest"], str) or not _DIGEST.fullmatch(record["artifact_digest"])
+        not isinstance(record["artifact_digest"], str)
+        or not _DIGEST.fullmatch(record["artifact_digest"])
     ):
         raise RolloutError("journal-record-invalid")
     if "generated_outputs" in record:
-        record["generated_outputs"] = list(_safe_output_names(record["generated_outputs"]))
+        record["generated_outputs"] = list(
+            _safe_output_names(record["generated_outputs"])
+        )
     if "error_code" in record and (
-        not isinstance(record["error_code"], str) or not _SAFE_ERROR.fullmatch(record["error_code"])
+        not isinstance(record["error_code"], str)
+        or not _SAFE_ERROR.fullmatch(record["error_code"])
     ):
         raise RolloutError("journal-record-invalid")
     return record
@@ -684,7 +730,9 @@ class TransactionJournal:
     def records(self) -> tuple[dict[str, Any], ...]:
         if not self.path.exists():
             return ()
-        raw = _read_bounded(self.path, maximum=MAX_JOURNAL_BYTES, error="journal-unavailable")
+        raw = _read_bounded(
+            self.path, maximum=MAX_JOURNAL_BYTES, error="journal-unavailable"
+        )
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -744,7 +792,9 @@ def _operation_key(
 def _matching_records(
     records: Sequence[Mapping[str, Any]], operation_key: str
 ) -> tuple[Mapping[str, Any], ...]:
-    return tuple(record for record in records if record.get("operation_key") == operation_key)
+    return tuple(
+        record for record in records if record.get("operation_key") == operation_key
+    )
 
 
 def _active_identity_conflict(
@@ -752,7 +802,10 @@ def _active_identity_conflict(
 ) -> bool:
     terminal = {"applied", "rolled_back"}
     for record in records:
-        if record.get("identity") == identity and record.get("operation_key") != operation_key:
+        if (
+            record.get("identity") == identity
+            and record.get("operation_key") != operation_key
+        ):
             if record.get("state") not in terminal:
                 return True
     return False
@@ -788,7 +841,9 @@ def _base_record(
     return record
 
 
-def _adapter_revision_guard(adapter: RolloutAdapter, dependencies: RolloutDependencies) -> None:
+def _adapter_revision_guard(
+    adapter: RolloutAdapter, dependencies: RolloutDependencies
+) -> None:
     dependencies.validate()
     if getattr(adapter, "generator_revision", None) != dependencies.generator_revision:
         raise RolloutError("generator-revision-mismatch")
@@ -798,9 +853,9 @@ def _adapter_revision_guard(adapter: RolloutAdapter, dependencies: RolloutDepend
         raise RolloutError("tck-revision-mismatch")
     if getattr(adapter, "tck_schema", None) != dependencies.tck_schema:
         raise RolloutError("tck-schema-mismatch")
-    if not isinstance(getattr(adapter, "generator_version", None), str) or not _VERSION.fullmatch(
-        adapter.generator_version
-    ):
+    if not isinstance(
+        getattr(adapter, "generator_version", None), str
+    ) or not _VERSION.fullmatch(adapter.generator_version):
         raise RolloutError("generator-version-invalid")
 
 
@@ -821,7 +876,9 @@ def preview_project(
     try:
         result = _normalize_adapter_result(
             adapter,
-            adapter.preview(_safe_repository_root(workspace_root, project.identity), project),
+            adapter.preview(
+                _safe_repository_root(workspace_root, project.identity), project
+            ),
         )
     except RolloutError:
         raise
@@ -900,8 +957,12 @@ def apply_project(
     )
     repository_root = _safe_repository_root(workspace_root, project.identity)
     try:
-        applied = _normalize_adapter_result(adapter, adapter.apply(repository_root, project))
-        verified = _normalize_adapter_result(adapter, adapter.verify(repository_root, project))
+        applied = _normalize_adapter_result(
+            adapter, adapter.apply(repository_root, project)
+        )
+        verified = _normalize_adapter_result(
+            adapter, adapter.verify(repository_root, project)
+        )
         if applied["schema_version"] != verified["schema_version"]:
             raise RolloutError("generator-schema-mismatch")
         if applied["provenance_digest"] != verified["provenance_digest"]:
@@ -1023,8 +1084,16 @@ def rollback_project(
         raise RolloutError("rollback-target-not-found")
     latest = candidates[-1]
     if latest.get("state") == "rolled_back":
-        return {"ok": True, "status": "rolled_back", "identity": project.identity, "replayed": True}
-    if latest.get("source_revision") != evidence.head_revision or latest.get("source_digest") != evidence.source_digest:
+        return {
+            "ok": True,
+            "status": "rolled_back",
+            "identity": project.identity,
+            "replayed": True,
+        }
+    if (
+        latest.get("source_revision") != evidence.head_revision
+        or latest.get("source_digest") != evidence.source_digest
+    ):
         raise RolloutError("rollback-source-changed")
     repository_root = _safe_repository_root(workspace_root, project.identity)
     try:
@@ -1033,7 +1102,13 @@ def rollback_project(
         )
     except Exception as exc:  # noqa: BLE001 - persist the failed terminal attempt
         failed = dict(latest)
-        failed.update({"mode": "rollback", "state": "rollback_failed", "error_code": "rollback-failed"})
+        failed.update(
+            {
+                "mode": "rollback",
+                "state": "rollback_failed",
+                "error_code": "rollback-failed",
+            }
+        )
         journal.append(failed)
         if isinstance(exc, RolloutError):
             raise
@@ -1063,15 +1138,21 @@ def _has_pages_workflow(repository_root: Path) -> bool:
     if not workflow_dir.is_dir() or workflow_dir.is_symlink():
         return False
     for workflow in sorted(workflow_dir.glob("*.y*ml")):
-        payload = _read_bounded(workflow, maximum=MAX_SOURCE_FILE_BYTES, error="workflow-invalid")
+        payload = _read_bounded(
+            workflow, maximum=MAX_SOURCE_FILE_BYTES, error="workflow-invalid"
+        )
         try:
             text = payload.decode("utf-8", errors="strict")
         except UnicodeDecodeError as exc:
             raise RolloutError("workflow-invalid") from exc
-        active_lines = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+        active_lines = [
+            line for line in text.splitlines() if not line.lstrip().startswith("#")
+        ]
         if any(re.search(r"^\s+pages:\s*$", line) for line in active_lines):
             return True
-        if any("pages_pipeline.yml@" in line and "uses:" in line for line in active_lines):
+        if any(
+            "pages_pipeline.yml@" in line and "uses:" in line for line in active_lines
+        ):
             return True
     return False
 
@@ -1087,7 +1168,11 @@ def _has_site_url(repository_root: Path) -> bool:
         value = yaml.safe_load(payload.decode("utf-8"))
     except (UnicodeDecodeError, yaml.YAMLError) as exc:
         raise RolloutError("mkdocs-invalid") from exc
-    return isinstance(value, Mapping) and isinstance(value.get("site_url"), str) and bool(value["site_url"].strip())
+    return (
+        isinstance(value, Mapping)
+        and isinstance(value.get("site_url"), str)
+        and bool(value["site_url"].strip())
+    )
 
 
 def audit_source_findings(

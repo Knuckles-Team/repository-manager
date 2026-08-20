@@ -7,6 +7,7 @@ never clone, branch, generate, push, or touch a fleet checkout.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -63,19 +64,25 @@ class _Adapter:
             "generated_outputs": ["agent-readiness-manifest.json", "llms.txt"],
         }
 
-    def preview(self, repository_root: Path, project: rollout.ProjectSpec) -> dict[str, Any]:
+    def preview(
+        self, repository_root: Path, project: rollout.ProjectSpec
+    ) -> dict[str, Any]:
         del repository_root, project
         self.preview_calls += 1
         return self._result()
 
-    def apply(self, repository_root: Path, project: rollout.ProjectSpec) -> dict[str, Any]:
+    def apply(
+        self, repository_root: Path, project: rollout.ProjectSpec
+    ) -> dict[str, Any]:
         del repository_root, project
         self.apply_calls += 1
         if self.fail_apply:
             raise RuntimeError("fixture failure is not durable evidence")
         return self._result()
 
-    def verify(self, repository_root: Path, project: rollout.ProjectSpec) -> dict[str, Any]:
+    def verify(
+        self, repository_root: Path, project: rollout.ProjectSpec
+    ) -> dict[str, Any]:
         del repository_root, project
         self.verify_calls += 1
         return self._result()
@@ -84,14 +91,16 @@ class _Adapter:
         self,
         repository_root: Path,
         project: rollout.ProjectSpec,
-        evidence: dict[str, Any],
+        evidence: Mapping[str, Any],
     ) -> dict[str, Any]:
         del repository_root, project, evidence
         self.rollback_calls += 1
         return self._result()
 
 
-def _evidence(project: rollout.ProjectSpec, *, clean: bool = True) -> rollout.RepositoryEvidence:
+def _evidence(
+    project: rollout.ProjectSpec, *, clean: bool = True
+) -> rollout.RepositoryEvidence:
     return rollout.RepositoryEvidence(
         identity=project.identity,
         head_revision="d" * 40,
@@ -164,7 +173,9 @@ def test_apply_replay_is_idempotent_without_a_second_generator_call(
     project = _project()
     manifest = _manifest(project)
     adapter = _Adapter()
-    monkeypatch.setattr(rollout, "collect_repository_evidence", lambda *_: _evidence(project))
+    monkeypatch.setattr(
+        rollout, "collect_repository_evidence", lambda *_: _evidence(project)
+    )
     monkeypatch.setattr(rollout, "_safe_repository_root", lambda *_: tmp_path)
     journal = rollout.TransactionJournal(tmp_path / "journal.json")
 
@@ -196,7 +207,9 @@ def test_apply_failure_rolls_back_and_records_bounded_error(
     project = _project()
     manifest = _manifest(project)
     adapter = _Adapter(fail_apply=True)
-    monkeypatch.setattr(rollout, "collect_repository_evidence", lambda *_: _evidence(project))
+    monkeypatch.setattr(
+        rollout, "collect_repository_evidence", lambda *_: _evidence(project)
+    )
     monkeypatch.setattr(rollout, "_safe_repository_root", lambda *_: tmp_path)
     journal = rollout.TransactionJournal(tmp_path / "journal.json")
 
@@ -247,7 +260,11 @@ def test_dirty_target_is_refused_before_preview_generator(
     project = _project()
     manifest = _manifest(project)
     adapter = _Adapter()
-    monkeypatch.setattr(rollout, "collect_repository_evidence", lambda *_: _evidence(project, clean=False))
+    monkeypatch.setattr(
+        rollout,
+        "collect_repository_evidence",
+        lambda *_: _evidence(project, clean=False),
+    )
 
     with pytest.raises(rollout.RolloutError, match="repository-dirty"):
         rollout.preview_project(tmp_path, manifest, project, _dependencies(), adapter)
