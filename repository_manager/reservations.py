@@ -23,6 +23,7 @@ from threading import RLock
 from typing import Any, Protocol
 
 from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
+
 from repository_manager.capacity import CapacityView, HostState, ResourceVector
 from repository_manager.development import (
     ReservationState,

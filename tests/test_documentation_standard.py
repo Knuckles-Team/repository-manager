@@ -31,7 +31,9 @@ def test_owned_standard_is_versioned_and_keeps_concept_authority_external() -> N
         "mode": "reference-only",
         "allocates_ids": False,
     }
-    assert {rule["id"] for rule in contract["rules"]} == {
+    rules = contract["rules"]
+    assert isinstance(rules, list)
+    assert {rule["id"] for rule in rules} == {
         "DOC-BOUND-001",
         "DOC-BOUND-002",
         "DOC-BOUND-003",
@@ -64,11 +66,12 @@ def test_only_high_materiality_requires_docs_and_agents_impact_decisions() -> No
     assert all(finding.rule.rule_version == "1" for finding in high.findings)
     assert all(finding.rule.owner == "repository-manager" for finding in high.findings)
 
-    decisions = dict(
+    accepted = review_change(
+        ["AGENTS.md"],
+        review_revision="r2",
         docs_impact=ImpactDecision(ImpactOutcome.NO_CHANGE, "docs remain accurate"),
         agents_impact=ImpactDecision(ImpactOutcome.UPDATE, "AGENTS gains the new rule"),
     )
-    accepted = review_change(["AGENTS.md"], review_revision="r2", **decisions)
     assert accepted.passed
     assert accepted.findings == ()
 

@@ -133,6 +133,38 @@ def _run_pre_commit(
     )
 
 
+#: A hook whose EXECUTABLE is absent did not find a defect -- it never ran.
+#: pre-commit surfaces that as an ordinary ``Failed``, so without this the two
+#: are indistinguishable to every caller.
+#:
+#: Measured 2026-08-21: the repository-manager MCP pod ships git and python but
+#: no Rust toolchain, so all SIX of epistemic-graph's cargo/maturin pre-push
+#: hooks "failed" in 46 seconds and the push was refused with
+#: "Pre-push gate failed (<six hook names>); push aborted. Fix the gate." That
+#: reads exactly like a quality verdict. It cost two full investigation cycles
+#: before anyone checked whether `cargo` existed in that container -- and the
+#: gate could never have passed there regardless of the code.
+_UNRUNNABLE_MARKERS = (
+    "executable not found",
+    "not found in $path",
+    "command not found",
+    # The Python-level shape (`FileNotFoundError: [Errno 2] No such file or
+    # directory: 'node'`) -- deliberately keeping the trailing `: '` so a hook
+    # that merely could not open a DATA file ("cat: foo.json: No such file or
+    # directory") is not miscredited to a missing toolchain.
+    "no such file or directory: '",
+    "is not installed",
+)
+
+
+def _is_unrunnable(body: str) -> bool:
+    """Did this hook fail because its TOOL is missing, not because the code is?"""
+    lowered = body.lower()
+    if "executable `" in lowered and "` not found" in lowered:
+        return True
+    return any(marker in lowered for marker in _UNRUNNABLE_MARKERS)
+
+
 def parse_gate_output(output: str) -> list[HookResult]:
     """Parse ``pre-commit run --verbose`` output into timed :class:`HookResult`s.
 
@@ -159,16 +191,14 @@ def parse_gate_output(output: str) -> list[HookResult]:
     def _save() -> None:
         if not current_hook_name:
             return
+        body = "\n".join(current_output).strip() if current_status == "Failed" else ""
         hooks.append(
             HookResult(
                 hook_id=current_hook_name.strip(),
                 passed=current_status in ("Passed", "Skipped"),
-                output=(
-                    "\n".join(current_output).strip()
-                    if current_status == "Failed"
-                    else ""
-                ),
+                output=body,
                 duration_s=current_duration,
+                unrunnable=bool(body) and _is_unrunnable(body),
             )
         )
 

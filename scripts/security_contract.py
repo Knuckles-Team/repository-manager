@@ -27,7 +27,7 @@ from typing import Any
 try:
     import resource as _resource
 except ImportError:  # pragma: no cover - exercised by the Windows gate
-    _resource = None
+    _resource = None  # type: ignore[assignment]  # optional POSIX-only module
 
 MAX_CONTRACT_BYTES = 128 * 1024
 MAX_EVIDENCE_BYTES = 128 * 1024

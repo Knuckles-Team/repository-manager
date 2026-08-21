@@ -81,8 +81,21 @@ _OUTPUT_ROOTS = frozenset(
         "llms-sections",
         "markdown-mirror-manifest.json",
         "agent-readiness-manifest.json",
+        # universal-skills 1.3.0's generator also emits the standard
+        # agent-skills discovery document. The allowlist here was written
+        # against an older generator output set, so every preview/apply
+        # refused with `generator-outputs-outside-contract` once the newer
+        # generator was installed -- the whole feature was unreachable.
+        # Admitted under the SAME containment rules as `llms-sections`: a
+        # fixed root with one fixed leaf name (see `_WELL_KNOWN_LEAF`), never
+        # an open directory.
+        ".well-known",
     }
 )
+
+#: The only file `.well-known/` may contain. Keeping the leaf pinned means
+#: widening the root above did not widen what a generator can actually write.
+_WELL_KNOWN_LEAF = "agent-skills.json"
 _GIT_EXECUTABLE = shutil.which("git")
 
 
@@ -236,7 +249,9 @@ def _manifest_repositories(
     # siblings from the filesystem and do not validate unrelated services or
     # deployment inputs while constructing this selection.
     entries = [
-        entry for entry in entries if entry.identifier.startswith(_AGENT_PACKAGES_PREFIX)
+        entry
+        for entry in entries
+        if entry.identifier.startswith(_AGENT_PACKAGES_PREFIX)
     ]
     if len(entries) > MAX_REPOSITORIES:
         raise DocsReadinessError("workspace-manifest-too-large")
@@ -480,11 +495,13 @@ def _safe_outputs(value: object, field: str) -> list[str]:
         first = relative.parts[0]
         if first not in _OUTPUT_ROOTS:
             raise DocsReadinessError(f"generator-{field}-outside-contract")
-        if first != "llms-sections" and len(relative.parts) != 1:
+        if first not in {"llms-sections", ".well-known"} and len(relative.parts) != 1:
             raise DocsReadinessError(f"generator-{field}-invalid")
         if first == "llms-sections" and (
             len(relative.parts) < 2 or relative.parts[-1] != "llms.txt"
         ):
+            raise DocsReadinessError(f"generator-{field}-invalid")
+        if first == ".well-known" and relative.parts[1:] != (_WELL_KNOWN_LEAF,):
             raise DocsReadinessError(f"generator-{field}-invalid")
         outputs.append(relative.as_posix())
     if len(set(outputs)) != len(outputs):

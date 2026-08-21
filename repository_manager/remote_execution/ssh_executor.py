@@ -39,6 +39,7 @@ This executor does not invent a stronger guarantee for a simpler mechanism.
 
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 from datetime import UTC, datetime
@@ -58,6 +59,8 @@ except ImportError as _tunnel_manager_import_error:  # pragma: no cover - exerci
     # by test_optional_dependency-style tests without the extra installed.
     Tunnel = None  # type: ignore[assignment,misc]
     _TUNNEL_MANAGER_IMPORT_ERROR = _tunnel_manager_import_error
+
+logger = logging.getLogger("RepositoryManager")
 
 
 def _default_tunnel(alias: str) -> Any:
@@ -336,7 +339,18 @@ class TunnelSSHExecutor:
                 else:
                     log_sink.close()
             except Exception:  # noqa: BLE001 - sink failures must not mask the result
-                pass
+                # Swallowing the RESULT here is correct -- a broken log sink
+                # must not turn a successful execution into a failure.
+                # Swallowing the CAUSE is not: a silently dead sink stays
+                # invisible until someone goes looking for logs that were
+                # never written. Report it, then still return the real result.
+                logger.warning(
+                    "remote-execution log sink failed for command %s (worker "
+                    "%s); the execution result is unaffected",
+                    command_id,
+                    worker_id,
+                    exc_info=True,
+                )
         return result
 
 

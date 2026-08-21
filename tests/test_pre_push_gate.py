@@ -176,3 +176,102 @@ def test_diverged_push_never_rebases_or_force_pushes(tmp_path):
         call.kwargs.get("command", "") for call in manager.git_action.call_args_list
     ]
     assert not any("rebase" in command or "--force" in command for command in commands)
+
+
+def test_missing_toolchain_is_reported_as_unrunnable_not_as_a_defect(tmp_path):
+    """A hook whose executable is absent never ran; saying "fix the gate" lies.
+
+    This is the exact shape the repository-manager MCP pod produced on
+    2026-08-21: no Rust toolchain in the container, so every one of
+    epistemic-graph's cargo hooks "Failed" in seconds and the push was refused
+    with a message that read as a quality verdict. Two investigation cycles
+    went into looking for a defect that did not exist.
+    """
+    m = _git(tmp_path)
+    m.gate_before_push = True
+    out = (
+        "cargo fmt...............................................................Failed\n"
+        "- hook id: cargo-fmt\n"
+        "- duration: 0.01s\n"
+        "\n"
+        "Executable `cargo` not found\n"
+        "clippy..................................................................Failed\n"
+        "- hook id: clippy\n"
+        "- duration: 0.01s\n"
+        "\n"
+        "cargo: command not found\n"
+    )
+    with patch(
+        "repository_manager.gates._run_pre_commit", return_value=_completed(1, out)
+    ):
+        res = m.push_project(str(tmp_path))
+
+    assert res.status == "error"
+    assert "CANNOT RUN" in res.error.message
+    # ``hook_id`` here is pre-commit's display NAME (what the parser keys on),
+    # not the ``- hook id:`` slug -- that is what the operator sees in the output.
+    assert "cargo fmt" in res.error.message and "clippy" in res.error.message
+    # It must still refuse the push -- an ungated push is worse than a confusing
+    # message. Only the REASON changes.
+    assert not any(
+        "git push" in (c.kwargs.get("command", "") or (c.args[0] if c.args else ""))
+        for c in m.git_action.call_args_list
+    )
+
+
+def test_one_real_failure_alongside_a_missing_toolchain_still_says_gate_failed(
+    tmp_path,
+):
+    """The honest-reporting path is for a TOTAL environment gap, not a partial one.
+
+    If even one hook actually ran and found something, there is a real verdict
+    to report and it must not be softened into "this environment cannot gate".
+    """
+    m = _git(tmp_path)
+    m.gate_before_push = True
+    out = (
+        "cargo fmt...............................................................Failed\n"
+        "- hook id: cargo-fmt\n"
+        "- duration: 0.01s\n"
+        "\n"
+        "Executable `cargo` not found\n"
+        "ruff....................................................................Failed\n"
+        "- hook id: ruff\n"
+        "- duration: 0.2s\n"
+        "\n"
+        "foo.py:1:1: F401 `os` imported but unused\n"
+    )
+    with patch(
+        "repository_manager.gates._run_pre_commit", return_value=_completed(1, out)
+    ):
+        res = m.push_project(str(tmp_path))
+
+    assert res.status == "error"
+    assert "Pre-push gate failed" in res.error.message
+    assert "CANNOT RUN" not in res.error.message
+
+
+def test_a_missing_data_file_is_not_miscredited_to_a_missing_toolchain(tmp_path):
+    """`No such file or directory` is only a toolchain signal in its errno form.
+
+    A gate that ran fine and failed because an input file was absent is a real
+    verdict; reporting it as "install the toolchain" would send the reader to
+    the wrong place.
+    """
+    m = _git(tmp_path)
+    m.gate_before_push = True
+    out = (
+        "schema check............................................................Failed\n"
+        "- hook id: schema-check\n"
+        "- duration: 0.3s\n"
+        "\n"
+        "cat: config/schema.json: No such file or directory\n"
+    )
+    with patch(
+        "repository_manager.gates._run_pre_commit", return_value=_completed(1, out)
+    ):
+        res = m.push_project(str(tmp_path))
+
+    assert res.status == "error"
+    assert "Pre-push gate failed" in res.error.message
+    assert "CANNOT RUN" not in res.error.message

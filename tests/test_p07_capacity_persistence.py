@@ -102,7 +102,7 @@ def test_the_worker_profile_still_resolves_after_restart_via_a_fresh_registratio
         rwa.remote_worker_registry().profile("r820")
 
     # Capacity survived, so re-registering the PROFILE (not capacity) is a
-    # forward path an operator can take without re-declaring resource sizes.
+    # forward path an operator can take without redeclaring resource sizes.
     second = _register()
     assert second["ok"] is True
     assert rwa.remote_worker_registry().profile("r820").host_id == "r820"

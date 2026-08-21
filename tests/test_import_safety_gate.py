@@ -146,7 +146,9 @@ def test_security_contract_fails_closed_without_unix_resource_limits() -> None:
         raise AssertionError("could not load security contract")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module._resource = None
+    # `module` is a runtime-loaded ModuleType, so mypy cannot know its
+    # attributes; setattr says "poke this dynamically-loaded module" directly.
+    setattr(module, "_resource", None)
 
     with pytest.raises(module.SecurityContractError, match="Unix resource support"):
         module._limit_hook_output()

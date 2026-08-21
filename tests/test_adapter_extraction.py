@@ -51,7 +51,7 @@ EXPECTED_TOOL_NAMES = (
 # ``rm_remote_workers`` (gained ``command`` + ``workdir``) and the CLI's
 # ``--remote-workers`` choices list.
 BASELINE_CATALOG_SHA256 = (
-    "a01d85f80fa2cff92a630c6bd424eb75ff5c49642f2e733f2766acea3b9b5a23"
+    "f21211a2e6ba5144bb3c260cee8179da0af1a048d577ca15c3964067228f9af9"
 )
 
 

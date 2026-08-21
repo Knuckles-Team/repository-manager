@@ -2291,6 +2291,32 @@ class Git:
                     code=1,
                 ),
             )
+        # A gate that could not RUN is not a gate that found a defect.
+        #
+        # If every failing hook failed because its executable is absent, this
+        # environment cannot gate this repository at all, and saying "fix the
+        # gate" sends the reader hunting for a defect that does not exist. The
+        # push is still refused -- an ungated push is worse -- but the reason is
+        # reported truthfully so it can be acted on.
+        unrunnable = [h.hook_id for h in result.hooks if not h.passed and h.unrunnable]
+        if unrunnable and len(unrunnable) == len(failed):
+            missing = ", ".join(unrunnable)
+            logger.error("Pre-push gate cannot run in this environment: %s", missing)
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=(
+                        f"Pre-push gate CANNOT RUN here; push aborted. Every failing "
+                        f"hook ({missing}) failed because its executable is missing "
+                        f"from this environment, not because it found a defect. This "
+                        f"is an environment gap, not a code verdict -- install the "
+                        f"toolchain these hooks need, or run the gate and the push "
+                        f"from a host that has it."
+                    ),
+                    code=1,
+                ),
+            )
         names = ", ".join(failed) or "pre-push gate"
         logger.error("Pre-push gate failed: %s", names)
         return GitResult(

@@ -68,6 +68,7 @@ This table is auto-generated from the live server — do not edit by hand.
 | `repository_ingest_repositories` | `MISCTOOL` | Natively ingest git repositories into epistemic-graph as typed :GitRepository nodes. |
 | `rm_build` | `PROJECT_MANAGEMENTTOOL` | Content-addressed build broker for ANY repository (CONCEPT:RM-TASK-LEDGER). |
 | `rm_concepts` | `DEVELOPMENT_SURFACESTOOL` | Concept-id claim coordination against RMDD-16's central authority. |
+| `rm_docs_readiness` | `PROJECT_MANAGEMENTTOOL` | Preview/apply/verify artifacts after per-repository readiness setup. |
 | `rm_gates` | `PROJECT_MANAGEMENTTOOL` | Run and inspect the two-tier (fast/heavy) pre-commit gate across repos. |
 | `rm_git` | `GIT_OPERATIONSTOOL` | Typed bulk Git operations; arbitrary host commands are prohibited. |
 | `rm_lane` | `PROJECT_MANAGEMENTTOOL` | The lane lifecycle for concurrent agents and humans (CONCEPT:RM-LANE-DOCTOR). |
@@ -129,7 +130,7 @@ This table is auto-generated from the live server — do not edit by hand.
 
 </details>
 
-_11 action-routed tool(s) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
+_12 action-routed tool(s) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
 <!-- MCP-TOOLS-TABLE:END -->
 
 Detailed tool schemas, parameter shapes, and validation constraints are preserved in [docs/usage.md](docs/usage.md).
@@ -181,6 +182,7 @@ When query strings or parameters are supplied, an LLM-free **Knowledge Graph res
         "BUILDTOOL": "True",
         "CONCEPTSTOOL": "True",
         "DEVELOPMENT_SURFACESTOOL": "True",
+        "DOCS_READINESSTOOL": "True",
         "GATESTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
@@ -198,6 +200,7 @@ When query strings or parameters are supplied, an LLM-free **Knowledge Graph res
         "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
         "REPOSITORY_MANAGER_THREADS": "12",
         "RM_GATE_BEFORE_PUSH": "true",
+        "RM_GATE_TIMEOUT_SECONDS": "1800",
         "RM_JOB_STALE_SECONDS": "1800",
         "RM_MAX_WORKERS": "8",
         "WORKSPACE_MANAGEMENTTOOL": "True",
@@ -237,6 +240,7 @@ own runtime secret boundary.
         "BUILDTOOL": "True",
         "CONCEPTSTOOL": "True",
         "DEVELOPMENT_SURFACESTOOL": "True",
+        "DOCS_READINESSTOOL": "True",
         "GATESTOOL": "True",
         "GH_TOKEN": "your_github_token_here",
         "GITHUB_TOKEN": "your_github_token_here",
@@ -254,6 +258,7 @@ own runtime secret boundary.
         "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
         "REPOSITORY_MANAGER_THREADS": "12",
         "RM_GATE_BEFORE_PUSH": "true",
+        "RM_GATE_TIMEOUT_SECONDS": "1800",
         "RM_JOB_STALE_SECONDS": "1800",
         "RM_MAX_WORKERS": "8",
         "WORKSPACE_MANAGEMENTTOOL": "True",
@@ -292,6 +297,7 @@ docker run -i --rm \
   -e BUILDTOOL=True \
   -e CONCEPTSTOOL=True \
   -e DEVELOPMENT_SURFACESTOOL=True \
+  -e DOCS_READINESSTOOL=True \
   -e GATESTOOL=True \
   -e GH_TOKEN=your_github_token_here \
   -e GITHUB_TOKEN=your_github_token_here \
@@ -309,6 +315,7 @@ docker run -i --rm \
   -e REPOSITORY_MANAGER_DEFAULT_BRANCH=main \
   -e REPOSITORY_MANAGER_THREADS=12 \
   -e RM_GATE_BEFORE_PUSH=true \
+  -e RM_GATE_TIMEOUT_SECONDS=1800 \
   -e RM_JOB_STALE_SECONDS=1800 \
   -e RM_MAX_WORKERS=8 \
   -e WORKSPACE_MANAGEMENTTOOL=True \
@@ -496,6 +503,14 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `LLM_API_KEY` | secret-injected |  |
 | `LLM_BASE_URL` | `https://api.openai.com/v1` |  |
 | `MCP_URL` | `http://localhost:8000` |  |
+| `DOCS_READINESSTOOL` | `True` |  |
+| `RM_GATE_TIMEOUT_SECONDS` | `1800` | Wall-clock ceiling, in seconds, for one pre-commit gate stage (repository_manager/gates.py). Unset uses the per-stage built-in default. |
+| `GITHUB_TLS_PROFILE` | `default` | Named TLS profile, or a secret reference to one, used for outbound calls to each forge. Unset resolves the AgentConfig default profile; these never take a boolean "verify" switch. |
+| `GITHUB_TLS_PROFILE_REF` | — |  |
+| `GITLAB_TLS_PROFILE` | `default` |  |
+| `GITLAB_TLS_PROFILE_REF` | — |  |
+| `REPOSITORY_MANAGER_MCP_IMAGE` | — | Both compose files require these; set each to an image@sha256:<digest>. |
+| `REPOSITORY_MANAGER_AGENT_IMAGE` | — |  |
 
 #### Inherited agent-utilities variables (apply to every connector)
 
@@ -517,7 +532,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | `gpt-4o` | Model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_55 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_63 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 

@@ -168,7 +168,12 @@ def _constant_string(node: ast.AST) -> str | None:
 def _constant_strings(node: ast.AST) -> set[str] | None:
     if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
         values = [_constant_string(element) for element in node.elts]
-        return set(values) if all(value is not None for value in values) else None
+        # An `all(... is not None)` guard does not narrow the element type, so
+        # build the narrowed set in the comprehension and gate on membership.
+        # (Counting instead would be wrong: a duplicated literal collapses in
+        # the set and used to be accepted.)
+        strings = {value for value in values if value is not None}
+        return None if None in values else strings
     value = _constant_string(node)
     return {value} if value is not None else None
 

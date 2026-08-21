@@ -94,6 +94,34 @@ RUN apt-get update \
     && chmod -R a+rwX "$RUSTUP_HOME" "$CARGO_HOME" \
     && rm -rf /var/lib/apt/lists/*
 
+# maturin -- epistemic-graph's `wheel-privacy-audit` gate (its
+# `.pre-commit-config.yaml`, pre-push/manual tier) runs
+# `scripts/wheel_privacy_gate.sh`, which invokes `maturin build` BARE, twice:
+# once for the facade `bindings = "bin"` wheel and once for
+# `crates/eg-numeric --features python`. Without a maturin on PATH that gate
+# dies with `maturin: command not found` -- the SAME reads-like-a-real-failure
+# defect class as D-MQ-8's cargo above and the node/pnpm mirror below.
+#
+# Why this one is not in `check_gate_toolchain_coverage.py`'s MISSING list:
+# that scanner only reads literal command text out of `.pre-commit-config.yaml`
+# / `.mergequeue.yaml`, and this hook's literal entry ends at `bash
+# scripts/wheel_privacy_gate.sh` -- `maturin` appears only INSIDE that script.
+# This is precisely the scope boundary the scanner's own header documents
+# (the same reason transitively-required `cmake` is out of its reach), so this
+# entry comes from reading the gate script, not from the scanner. The scanner
+# stays the guard for the toolchains it CAN see; it is not, and does not claim
+# to be, exhaustive.
+#
+# Installed with `uv pip install --system` into the image's own
+# /usr/local/{lib,bin}: HOME-independent like CARGO_HOME/NODE_HOME/GOROOT
+# above, and bound to the same interpreter the gate's own `python3` resolves
+# to -- maturin builds the wheel FOR that interpreter, so a separate
+# tool-isolated install would be the wrong Python. Pinned to 1.14.1, the
+# newest release satisfying epistemic-graph's own `[build-system] requires =
+# ["maturin>=1.0,<2.0"]`; keep this in sync with that declaration the same way
+# the rust/node/go pins above track theirs.
+RUN uv pip install --system --break-system-packages maturin==1.14.1
+
 # node + pnpm — the SAME defect class as D-MQ-8 above, never mirrored from
 # cargo to node until now. `agent-webui/.pre-commit-config.yaml` declares
 # three `language: system` hooks that shell out to `node`/`pnpm` directly
@@ -145,6 +173,43 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL \
     # deployed runtime HOME on first use, not under $NODE_HOME — nothing
     # here needs a runtime write.
     && chmod -R a+rX "$NODE_HOME"
+
+# bun — the mermaid-validate hook (`.pre-commit-config.yaml`, `language: node`,
+# `@zabaca/mermaid-validate@1.0.1`) is declared across this fleet's repos to
+# lint the mermaid diagrams their AGENTS.md/README files are full of.
+# pre-commit installs the npm package itself, so this looks like a
+# self-contained node hook — but that package's bin (`dist/main.js`) opens with
+# `#!/usr/bin/env bun`, so pre-commit resolves the shebang and fails with
+# ``Executable `bun` not found``. It is a TRANSITIVE runtime of an npm
+# dependency, invisible in the hook text, which is why
+# `check_gate_toolchain_coverage.py` cannot see it either — the same structural
+# blind spot as `cmake` (documented in that script's header) and as `maturin`
+# above.
+#
+# The `-baseline` build is REQUIRED here, not a conservative preference. Bun's
+# default `bun-linux-x64` is compiled for AVX2; this fleet's k8s nodes are Dell
+# PowerEdge R510/R710/R820/RW710, whose Westmere/Sandy-Bridge CPUs have none
+# (verified against /proc/cpuinfo on rw710, where this pod is scheduled today).
+# The default build would install cleanly, pass every build-time check, and
+# then SIGILL the first time a gate actually invoked it — reading as yet
+# another mysterious gate failure. `bun-linux-x64-baseline` is the same binary
+# built to the SSE4.2 floor and runs on every node. `bun --version` below is
+# the build-time proof it actually executes here, not just that it downloaded.
+#
+# Extracted with python3's own `zipfile` module (already in this base image)
+# rather than adding an `unzip` package for a single extraction. sha256 pinned
+# from oven-sh/bun's published SHASUMS256.txt for this release, matching the
+# node/go tarball discipline above; fixed HOME-independent path for the same
+# reason as CARGO_HOME/NODE_HOME/GOROOT.
+RUN curl --proto '=https' --tlsv1.2 -sSfL \
+        https://github.com/oven-sh/bun/releases/download/bun-v1.4.0/bun-linux-x64-baseline.zip \
+        -o /tmp/bun.zip \
+    && echo "184fb4595f0d401a217cf7c78c1bc430ba83314dab7a8b94805babbf7fa7097f  /tmp/bun.zip" \
+        | sha256sum -c - \
+    && python3 -m zipfile -e /tmp/bun.zip /tmp/bun-extract \
+    && install -m 0755 /tmp/bun-extract/bun-linux-x64-baseline/bun /usr/local/bin/bun \
+    && rm -rf /tmp/bun.zip /tmp/bun-extract \
+    && bun --version
 
 # go — same defect class again, this time epistemic-graph's own `go-client`
 # mergequeue gate (`clients/go`: `go build ./... && go test ./...`), found

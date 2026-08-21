@@ -8,6 +8,11 @@ class HookResult(BaseModel):
     #: Wall-clock seconds pre-commit reported for this hook (parsed from its own
     #: ``--verbose`` ``- duration: <n>s`` line). ``None`` when not measured/parsed.
     duration_s: float | None = None
+    #: True when this hook did not FAIL, it could not RUN: its executable is
+    #: absent from this environment (``Executable ... not found`` /
+    #: ``command not found``). "The toolchain is missing here" and "your code is
+    #: bad" are different answers and must never be reported as the same one.
+    unrunnable: bool = False
 
 
 class RepoScanResult(BaseModel):

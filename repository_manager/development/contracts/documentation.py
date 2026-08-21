@@ -12,12 +12,12 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from importlib.resources import files
 from pathlib import PurePosixPath
-from typing import Final, Iterable, Mapping
-
+from typing import Final
 
 CONTRACT_NAME: Final[str] = "engineering-documentation"
 CONTRACT_VERSION: Final[str] = "1"
@@ -27,9 +27,7 @@ DOCUMENTATION_CONTRACT_VERSION: Final[str] = CONTRACT_VERSION
 DOCUMENTATION_CONTRACT_OWNER: Final[str] = CONTRACT_OWNER
 CONCEPT_AUTHORITY_OWNER: Final[str] = "agent-utilities"
 CONCEPT_AUTHORITY_RULE: Final[str] = "RMDD-16"
-CONCEPT_AUTHORITY_MODULE: Final[str] = (
-    "agent_utilities.governance.concept_reservation"
-)
+CONCEPT_AUTHORITY_MODULE: Final[str] = "agent_utilities.governance.concept_reservation"
 _CONTRACT_RESOURCE = "engineering_documentation_v1.json"
 
 
@@ -210,8 +208,7 @@ class DocumentationReview:
             "materiality": self.assessment.level.value,
             "paths": list(self.assessment.paths),
             "boundaries": {
-                path: boundary.value
-                for path, boundary in self.assessment.boundaries
+                path: boundary.value for path, boundary in self.assessment.boundaries
             },
             "triggers": list(self.assessment.triggers),
             "requires_impact_decisions": self.assessment.requires_impact_decisions,
@@ -243,8 +240,11 @@ def rule_reference(rule_id: str) -> RuleReference:
 
     if not isinstance(rule_id, str) or not rule_id.strip():
         raise DocumentationContractError("rule id must be non-blank")
-    contract = documentation_standard()
-    for raw_rule in contract["rules"]:
+    contract = documentation_standard_contract()
+    rules = contract["rules"]
+    if not isinstance(rules, list):
+        raise DocumentationContractError("standard contract carries no rule list")
+    for raw_rule in rules:
         if isinstance(raw_rule, dict) and raw_rule.get("id") == rule_id:
             return RuleReference(
                 rule_id=rule_id,
@@ -370,19 +370,17 @@ def reconcile_findings(
     for finding in previous:
         _validate_finding(finding)
         existing = prior_by_id.get(finding.finding_id)
-        if existing is None or _finding_sort_key(finding) < _finding_sort_key(
-            existing
-        ):
+        if existing is None or _finding_sort_key(finding) < _finding_sort_key(existing):
             prior_by_id[finding.finding_id] = finding
     current_by_id: dict[str, FindingCandidate] = {}
-    for candidate in current:
-        _validate_candidate(candidate)
-        finding_id = _finding_id(candidate)
-        existing = current_by_id.get(finding_id)
-        if existing is None or _candidate_sort_key(candidate) < _candidate_sort_key(
-            existing
-        ):
-            current_by_id[finding_id] = candidate
+    for incoming in current:
+        _validate_candidate(incoming)
+        finding_id = _finding_id(incoming)
+        existing_candidate = current_by_id.get(finding_id)
+        if existing_candidate is None or _candidate_sort_key(
+            incoming
+        ) < _candidate_sort_key(existing_candidate):
+            current_by_id[finding_id] = incoming
 
     reconciled: list[DocumentationFinding] = []
     for finding_id in sorted(set(prior_by_id) | set(current_by_id)):
@@ -392,7 +390,9 @@ def reconcile_findings(
             lifecycle = (
                 FindingLifecycle.OPEN
                 if prior is not None and prior.lifecycle is FindingLifecycle.RESOLVED
-                else prior.lifecycle if prior is not None else FindingLifecycle.OPEN
+                else prior.lifecycle
+                if prior is not None
+                else FindingLifecycle.OPEN
             )
             reconciled.append(
                 DocumentationFinding(
@@ -446,8 +446,12 @@ def review_change(
         boundary_overrides=boundary_overrides,
     )
     candidates = list(findings)
-    normalized_manual = {_normalize_path(path) for path in manually_edited_generated_paths}
-    normalized_current = {_normalize_path(path) for path in current_claims_in_deprecated_paths}
+    normalized_manual = {
+        _normalize_path(path) for path in manually_edited_generated_paths
+    }
+    normalized_current = {
+        _normalize_path(path) for path in current_claims_in_deprecated_paths
+    }
     changed_paths = set(assessment.paths)
     if not normalized_manual <= changed_paths:
         raise DocumentationContractError(
@@ -535,8 +539,12 @@ def _normalize_path(path: str) -> str:
         raise DocumentationContractError("documentation path must be non-blank")
     value = path.replace("\\", "/")
     relative = PurePosixPath(value)
-    if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
-        raise DocumentationContractError(f"documentation path is not repository-relative: {path}")
+    if relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise DocumentationContractError(
+            f"documentation path is not repository-relative: {path}"
+        )
     return relative.as_posix()
 
 
@@ -569,7 +577,12 @@ def _finding_id(candidate: FindingCandidate) -> str:
 
 
 def _candidate_sort_key(candidate: FindingCandidate) -> tuple[str, str, str, str]:
-    return (candidate.rule.rule_id, candidate.path, candidate.subject, candidate.message)
+    return (
+        candidate.rule.rule_id,
+        candidate.path,
+        candidate.subject,
+        candidate.message,
+    )
 
 
 def _finding_sort_key(
@@ -609,14 +622,17 @@ def _validate_finding(finding: DocumentationFinding) -> None:
             message=finding.message,
         )
     )
-    if _finding_id(
-        FindingCandidate(
-            rule=finding.rule,
-            path=finding.path,
-            subject=finding.subject,
-            message=finding.message,
+    if (
+        _finding_id(
+            FindingCandidate(
+                rule=finding.rule,
+                path=finding.path,
+                subject=finding.subject,
+                message=finding.message,
+            )
         )
-    ) != finding.finding_id:
+        != finding.finding_id
+    ):
         raise DocumentationContractError("finding id does not match its identity")
 
 
