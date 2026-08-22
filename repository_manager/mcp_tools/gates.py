@@ -14,25 +14,32 @@ action=validate`` uses, not a second pool. ``status``/``explain``/``profile``
 all read back from that same job store, scoped to this tool's own
 ``action="gate"`` jobs so a gate roll-up is never diluted by install/build/
 validate jobs sharing the same background-job store.
+
+``retest`` narrows a re-run to whatever :mod:`repository_manager.gate_ledger`
+recorded as still-failing for a repo/stage instead of re-running the whole
+wave -- see :mod:`repository_manager.gate_runner`'s module docstring for the
+full contract (baseline missing/clean/failing, staleness degradation,
+escalation-on-pass).
+
+This module is now a THIN adapter: every action body lives in
+:mod:`repository_manager.gate_runner` (``gate_runner.dispatch``), the one
+place MCP and the ``--gate``/``--gate-retest`` CLI both call, so the two
+front ends can never quietly diverge on what any of these actions do.
 """
 
 from __future__ import annotations
 
-import os
 from typing import Any, Literal
 
 from agent_utilities.mcp.action_dispatch import resolve_action
 from fastmcp import Context, FastMCP
 from pydantic import Field
 
-from repository_manager.gates import (
-    explain_gate_result,
-    profile_gate_result,
-    run_gate_stage,
-)
+from repository_manager import gate_runner
+from repository_manager.gate_ledger import default_gate_ledger
+from repository_manager.gates import run_gate_stage
 from repository_manager.mcp_tools.context import McpToolContext, from_server
 from repository_manager.mcp_tools.contracts import RM_GATES_ACTIONS
-from repository_manager.scan_models import RepoScanResult
 
 _GATE_JOB_ACTION = "gate"
 
@@ -41,67 +48,101 @@ def _target_repos(
     adapter_context: McpToolContext, threads: int | None, repos: str | None
 ) -> list[tuple[str, str]]:
     """Resolve ``repos`` (comma-separated names/paths, or None = whole workspace)
-    to ``[(repo_name, repo_path), ...]``, skipping repos with no pre-commit config."""
-    git = adapter_context.get_git_instance(threads=threads)
-    wanted = (
-        {r.strip() for r in repos.replace(" ", "").split(",") if r.strip()}
-        if repos
-        else None
-    )
-    targets: list[tuple[str, str]] = []
-    for _url, path in git.project_map.items():
-        repo_name = os.path.basename(path)
-        if wanted and repo_name not in wanted:
-            continue
-        if not os.path.exists(os.path.join(path, ".pre-commit-config.yaml")):
-            continue
-        targets.append((repo_name, path))
-    return targets
+    to ``[(repo_name, repo_path), ...]``, skipping repos with no pre-commit config.
 
-
-def _latest_gate_jobs(adapter_context: McpToolContext) -> dict[str, dict[str, Any]]:
-    """The latest ``action="gate"`` job per repo, keyed by job_id."""
-    latest_by_repo: dict[str, tuple[str, dict[str, Any]]] = {}
-    with adapter_context.jobs_lock:
-        for jid, job in adapter_context.jobs.items():
-            if job.get("action") != _GATE_JOB_ACTION:
-                continue
-            repo_name = job.get("repo_name")
-            if not repo_name:
-                continue
-            cur = latest_by_repo.get(repo_name)
-            if cur is None or (job.get("started_at") or "") >= (
-                cur[1].get("started_at") or ""
-            ):
-                latest_by_repo[repo_name] = (jid, job)
-    return {jid: job for jid, job in latest_by_repo.values()}
-
-
-def _resolve_target_result(
-    adapter_context: McpToolContext, *, job_id: str | None, repo: str | None
-) -> tuple[str | None, dict[str, Any] | None, str | None]:
-    """Resolve an explicit ``job_id`` or ``repo`` name to its gate job record.
-
-    Returns ``(job_id, job, error_message)``.
+    Target resolution is inherently MCP-specific (it needs a live ``Git``
+    instance from ``adapter_context.get_git_instance``), so it stays here and
+    is handed into ``gate_runner.dispatch`` as the ``resolve_targets``
+    callable -- the actual eligibility filter it applies is the ONE shared
+    ``gate_runner.targets_from_project_map``, not a second copy of it.
     """
-    if job_id:
-        with adapter_context.jobs_lock:
-            job = adapter_context.jobs.get(job_id)
-        if job is None:
-            return None, None, f"Job '{job_id}' not found."
-        return job_id, job, None
-    if repo:
-        for jid, job in _latest_gate_jobs(adapter_context).items():
-            if job.get("repo_name") == repo:
-                return jid, job, None
-        return None, None, f"No gate job found for repo '{repo}'."
-    return None, None, "Provide 'job_id' or 'repo'."
+    git = adapter_context.get_git_instance(threads=threads)
+    return gate_runner.targets_from_project_map(git.project_map, repos)
+
+
+def _make_submit_one(adapter_context: McpToolContext, *, stage: str, timeout: int):
+    """Build this tool's ``submit_one(repo_name, path, **kwargs)`` callable.
+
+    Shared shape with the CLI's own closure in ``cli_commands/parser.py``:
+    a plain gate submission runs ``run_gate_stage`` directly; a retest
+    submission asked to escalate-on-pass runs
+    ``gate_runner.escalating_run_gate_stage`` instead, which submits the
+    full-wave follow-up job (via this SAME ``submit_one``, called again from
+    inside that job's own background thread) the instant the narrowed run
+    passes.
+
+    ``colocated=True`` is always passed to ``run_gate_stage``: this IS the
+    pinned repository-manager-mcp process, so it is unconditionally the
+    same-node arbiter ``task_queue.acquire``'s own docstring describes --
+    unlike the CLI, which only has proof of that when the operator passes
+    ``--same-node`` (see ``cli_commands/parser.py``'s equivalent closure).
+    """
+
+    def submit_one(
+        repo_name: str,
+        path: str,
+        *,
+        hook_ids: list[str] | None = None,
+        trigger: str = "run",
+        scope: str = "full_wave",
+        _escalate_on_pass: bool = False,
+        _same_node: bool = False,
+    ) -> dict[str, Any]:
+        del _same_node  # the MCP server process is always the colocated arbiter
+        extra_job_data = {
+            "repo_name": repo_name,
+            "stage": stage,
+            "trigger": trigger,
+            "scope": scope,
+            "hook_ids_requested": list(hook_ids or []),
+            "colocated": True,
+        }
+        if _escalate_on_pass:
+            return adapter_context.submit_job(
+                _GATE_JOB_ACTION,
+                gate_runner.escalating_run_gate_stage,
+                path,
+                stage,
+                hook_ids,
+                timeout=timeout,
+                escalate_on_pass=True,
+                repo_name=repo_name,
+                submit_one=submit_one,
+                trigger=trigger,
+                scope=scope,
+                colocated=True,
+                record=True,
+                _extra_job_data=extra_job_data,
+            )
+        return adapter_context.submit_job(
+            _GATE_JOB_ACTION,
+            run_gate_stage,
+            path,
+            stage,
+            timeout=timeout,
+            hook_ids=hook_ids,
+            trigger=trigger,
+            scope=scope,
+            colocated=True,
+            record=True,
+            _extra_job_data=extra_job_data,
+        )
+
+    return submit_one
 
 
 def register_gates_tools(
     mcp: FastMCP, *, context: McpToolContext | None = None
 ) -> None:
-    """Register the ``rm_gates`` two-tier gate-execution adapter."""
+    """Register the ``rm_gates`` two-tier gate-execution adapter.
+
+    No ``ToolAnnotations(read_only_hint=True)`` is set here even though
+    ``status``/``explain``/``profile`` ARE read-only: ``rm_gates`` is one
+    tool multiplexing five actions, two of which (``run``, ``retest``)
+    submit background jobs -- annotations apply to the whole tool, and
+    marking the entire tool read-only would misdescribe those two. Skipping
+    the annotation is the honest choice here, not an oversight.
+    """
 
     adapter_context = context or from_server()
 
@@ -116,23 +157,45 @@ def register_gates_tools(
         # narrower gain, no discovery conflict.
         action: str = Field(
             description="Action: 'run' (submit fast/heavy gate jobs), "
-            "'status' (roll-up + per-repo detail), 'explain' (condensed "
-            "failure detail for one job/repo), 'profile' (measured per-hook "
-            "timings)."
+            "'retest' (narrow a re-run to the ledger's last-failing hooks "
+            "per repo, escalating to a full wave on an all-pass), 'status' "
+            "(roll-up + per-repo detail), 'explain' (condensed failure "
+            "detail for one job/repo), 'profile' (measured per-hook "
+            "timings), 'audit_fail_fast' (static scan for hook entries that "
+            "would stop at the first failure -- DETECTION only, it cannot "
+            "rewrite a repo's own opaque entry text), 'xdist_plan' (which "
+            "repos could run pytest in parallel and why the rest cannot), "
+            "'xdist_apply' (perform that rollout; dry-run unless dry_run=False)."
+        ),
+        fleet: bool = Field(
+            default=False,
+            description=(
+                "For 'audit_fail_fast': scan every repository in the workspace "
+                "rather than the ones named by 'repos'."
+            ),
+        ),
+        dry_run: bool = Field(
+            default=True,
+            description=(
+                "For 'xdist_apply': report what would change without writing. "
+                "Defaults to True on purpose -- rewriting ~40 repositories' "
+                "pre-commit configs must be an explicit choice, never the "
+                "consequence of omitting an argument."
+            ),
         ),
         stage: Literal["fast", "heavy"] = Field(
             default="fast",
             description=(
                 "'fast' -> `pre-commit run --hook-stage pre-commit` (formatters/"
                 "linters, no network/tests). 'heavy' -> `--hook-stage pre-push` "
-                "(pytest, cargo, `uv lock --check`, ...). For 'run'."
+                "(pytest, cargo, `uv lock --check`, ...). For 'run'/'retest'."
             ),
         ),
         repos: str | None = Field(
             default=None,
             description=(
                 "Comma-separated repo names or absolute paths to target. "
-                "Omit for 'run' to target the whole workspace."
+                "Omit for 'run'/'retest' to target the whole workspace."
             ),
         ),
         threads: int | None = Field(default=None, description="Parallel workers."),
@@ -158,6 +221,15 @@ def register_gates_tools(
             default=15,
             description="'profile' with no job_id/repo: how many slowest hooks to report fleet-wide.",
         ),
+        escalate: bool = Field(
+            default=True,
+            description=(
+                "'retest' only: when a repo's narrowed retest passes every "
+                "requested hook, also submit a SECOND job for that repo's "
+                "full wave (a narrowed pass alone is never sufficient "
+                "evidence of shippability -- see gate_ledger.is_shippable)."
+            ),
+        ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
         ),
@@ -177,164 +249,40 @@ def register_gates_tools(
             return resolved
         action = resolved  # type: ignore[assignment]
 
-        if action == "run":
-            targets = _target_repos(adapter_context, threads, repos)
-            if not targets:
-                return {
-                    "status": "clean",
-                    "message": "No repositories with a .pre-commit-config.yaml matched.",
-                    "queued_count": 0,
-                }
-            job_ids: dict[str, str] = {}
-            for repo_name, path in targets:
-                submitted = adapter_context.submit_job(
-                    _GATE_JOB_ACTION,
-                    run_gate_stage,
-                    path,
-                    stage,
-                    timeout=timeout,
-                    _extra_job_data={"repo_name": repo_name, "stage": stage},
-                )
-                job_ids[repo_name] = submitted["job_id"]
-            return {
-                "status": "submitted",
-                "stage": stage,
-                "queued_count": len(job_ids),
-                "jobs": job_ids,
-                "message": (
-                    f"{len(job_ids)} {stage} gate job(s) submitted in parallel "
-                    "(one job per repo). Poll action='status'."
-                ),
-            }
+        def resolve_targets(
+            threads_: int | None, repos_: str | None
+        ) -> list[tuple[str, str]]:
+            return _target_repos(adapter_context, threads_, repos_)
 
-        if action == "status":
-            if job_id:
-                with adapter_context.jobs_lock:
-                    job = adapter_context.jobs.get(job_id)
-                if job is None:
-                    return {"status": "error", "message": f"Job '{job_id}' not found."}
-                return adapter_context.get_job_status(job_id, summary=summary)
+        submit_one = _make_submit_one(adapter_context, stage=stage, timeout=timeout)
 
-            gate_jobs = _latest_gate_jobs(adapter_context)
-            if not gate_jobs:
-                return {"status": "empty", "message": "No gate jobs found."}
-            counts = {"completed": 0, "running": 0, "failed": 0, "passed": 0}
-            failed_repos: list[str] = []
-            running_repos: list[str] = []
-            details: dict[str, Any] = {}
-            for jid, job in gate_jobs.items():
-                st = job["status"]
-                job_repo_name = job.get("repo_name")
-                if st in ("running", "queued", "pending"):
-                    counts["running"] += 1
-                    if job_repo_name:
-                        running_repos.append(job_repo_name)
-                    continue
-                result = job.get("result")
-                passed = isinstance(result, RepoScanResult) and result.success
-                if st == "completed":
-                    counts["completed"] += 1
-                    counts["passed" if passed else "failed"] += 1
-                elif st == "failed":
-                    counts["failed"] += 1
-                if not passed and job_repo_name:
-                    failed_repos.append(job_repo_name)
-                    detail: dict[str, Any] = {"job_id": jid, "status": st}
-                    if isinstance(result, RepoScanResult):
-                        detail["failures"] = [
-                            f"Hook '{h.hook_id}' failed"
-                            for h in result.hooks
-                            if not h.passed
-                        ]
-                        detail["explain"] = explain_gate_result(result)
-                    elif job.get("error"):
-                        detail["error"] = job["error"]
-                    if not summary:
-                        details[job_repo_name] = detail
-                    elif summary:
-                        details[job_repo_name] = {"job_id": jid}
-            return {
-                "summary": {**counts, "total": len(gate_jobs)},
-                "failed_projects": sorted(failed_repos),
-                "running_projects": sorted(running_repos),
-                "failed_details": details,
-            }
-
-        if action == "explain":
-            resolved_job_id, job, error = _resolve_target_result(
-                adapter_context, job_id=job_id, repo=repo
+        if action in ("run", "retest"):
+            return gate_runner.dispatch(
+                action,
+                resolve_targets=resolve_targets,
+                submit_one=submit_one,
+                stage=stage,
+                repos=repos,
+                threads=threads,
+                gate_ledger=default_gate_ledger(),
+                escalate=escalate,
             )
-            if error:
-                return {"status": "error", "message": error}
-            assert job is not None
-            if job["status"] in ("running", "queued", "pending"):
-                return {
-                    "status": job["status"],
-                    "job_id": resolved_job_id,
-                    "message": "Still running.",
-                }
-            result = job.get("result")
-            if not isinstance(result, RepoScanResult):
-                return {
-                    "status": job["status"],
-                    "job_id": resolved_job_id,
-                    "message": job.get("error") or "No gate result available.",
-                }
-            return {
-                "job_id": resolved_job_id,
-                "repo": job.get("repo_name"),
-                "stage": job.get("stage"),
-                "passed": result.success,
-                "explain": explain_gate_result(result),
-            }
 
-        if action == "profile":
-            if job_id or repo:
-                resolved_job_id, job, error = _resolve_target_result(
-                    adapter_context, job_id=job_id, repo=repo
-                )
-                if error:
-                    return {"status": "error", "message": error}
-                assert job is not None
-                result = job.get("result")
-                if not isinstance(result, RepoScanResult):
-                    return {
-                        "status": job["status"],
-                        "job_id": resolved_job_id,
-                        "message": "No completed gate result to profile yet.",
-                    }
-                return {
-                    "job_id": resolved_job_id,
-                    "repo": job.get("repo_name"),
-                    "stage": job.get("stage"),
-                    "duration_s": result.duration_s,
-                    "hooks": profile_gate_result(result),
-                }
+        if action in ("audit_fail_fast", "xdist_plan", "xdist_apply"):
+            return gate_runner.dispatch(
+                action,
+                repos=repos,
+                fleet=fleet,
+                dry_run=dry_run,
+            )
 
-            # Fleet-wide: the slowest hooks across every completed gate job,
-            # and every repo's total gate duration -- what to trim, at scale.
-            all_hooks: list[dict[str, Any]] = []
-            per_repo: list[dict[str, Any]] = []
-            for job in _latest_gate_jobs(adapter_context).values():
-                result = job.get("result")
-                if not isinstance(result, RepoScanResult):
-                    continue
-                job_repo_name = job.get("repo_name")
-                per_repo.append(
-                    {
-                        "repo": job_repo_name,
-                        "stage": job.get("stage"),
-                        "duration_s": result.duration_s,
-                    }
-                )
-                for h in profile_gate_result(result):
-                    all_hooks.append({"repo": job_repo_name, **h})
-            all_hooks.sort(key=lambda h: h.get("duration_s") or 0.0, reverse=True)
-            per_repo.sort(key=lambda r: r.get("duration_s") or 0.0, reverse=True)
-            return {
-                "measured_gate_jobs": len(per_repo),
-                "slowest_hooks": all_hooks[:top_n],
-                "slowest_repos": per_repo[:top_n],
-            }
-
-        return {"status": "error", "message": f"Unhandled action '{action}'."}
+        return gate_runner.dispatch(
+            action,
+            jobs=adapter_context.jobs,
+            jobs_lock=adapter_context.jobs_lock,
+            get_job_status=adapter_context.get_job_status,
+            job_id=job_id,
+            repo=repo,
+            summary=summary,
+            top_n=top_n,
+        )

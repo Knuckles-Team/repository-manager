@@ -23,6 +23,7 @@ this catalog only points to them — skill discovery itself walks the package fo
 - [repository-manager-build-coordination](../../repository-manager-build-coordination/SKILL.md): Content-addressed build/cache coordination for any repository — dedup-or-build requests, cache-key status, published artifacts, why a key missed cache, and bounded cache reclamation.
 
 ## Validation and release
+- [repository-manager-gate-execution](../../repository-manager-gate-execution/SKILL.md): Run and inspect the two-tier (fast/heavy) pre-commit gate via `rm_gates` — `run` to populate the durable gate ledger, `retest` to narrow a re-run to only what the ledger last recorded failing (auto-escalating to a full wave on an all-pass), `profile` to find the slow hooks. Use this instead of re-running a whole heavy wave to validate one fix.
 - [repository-manager-workspace-validation](../../repository-manager-workspace-validation/WORKFLOW.md): Install, build, validate, and version-maintain the managed projects of a workspace — pre-commit + pytest validation per project, install/build ecosystems, phased version bumps and maintenance.
 - [repository-manager-workspace-release](../../repository-manager-workspace-release/SKILL.md): Preview the topologically-phased version-bump plan, drive validation with an explicitly consented chain into version bump and phased push, and manage the `workspace.yml` manifest.
 

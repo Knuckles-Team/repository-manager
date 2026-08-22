@@ -56,11 +56,57 @@ a failing check but never silently: the override is printed in a loud banner
 and appended to an audit log (:func:`_record_override`) every time it fires, so
 pushing a fix to a repo whose own dependency is temporarily unpublished is never
 permanently blocked, and the bypass is never invisible.
+
+Three further gaps, all closed in Layer 2 (:func:`await_gate_readiness`), the
+owner reports as still causing later phases to fail because they install an
+earlier phase's package before it is actually on PyPI:
+
+* **Targets cross-check** (:func:`cross_check_targets`). The barrier only
+  gate-checks the ``targets`` its caller computed — normally a narrowed slice
+  (e.g. ``phased_push``'s ``later_phases``). If that narrowing misses a repo
+  that genuinely names the just-published package, the phase "succeeds"
+  because *nothing the barrier was told about* declared a constraint — not
+  because nothing actually depends on it. :func:`cross_check_targets`
+  independently rescans a caller-supplied ``candidate_repos`` universe (never
+  reusing the caller's own narrowed list) for every repo whose OWN
+  ``pyproject.toml`` names one of the published packages, and reports any
+  that ``targets`` omitted. A hit there is a hard abort with a distinct
+  ``TARGETS_INCOMPLETE`` reason — "something did depend on it and the barrier
+  didn't know" is the real failure "nothing declared a constraint" was hiding.
+* **Partial-publish detection** (:class:`AvailableVersions`'s
+  ``partial_versions``, :data:`CheckStatus`'s ``"partial_publish"``). A
+  publish workflow uploads a wheel and an sdist as two separate requests; a
+  version whose Simple-API listing shows only one of the two is mid-publish,
+  not absent and not genuinely unsatisfiable — reporting it as plain
+  ``"unsatisfied"`` (today's behavior before this addition) is indistinguishable
+  from "will never be satisfiable", which is exactly the confusion the
+  2026-08-12 incident above turned on. ``"partial_publish"`` is reported as
+  its own :data:`CheckStatus` (still a *failure* for gating purposes — a
+  half-published release is not installable yet either) so the retry loop's
+  own logging can tell an operator "this is still uploading" apart from "this
+  was never going to work".
+* **CI-run barrier** (:mod:`repository_manager.forge_status`). Before
+  retrying a downstream repo's gate at all, :func:`await_gate_readiness` can
+  ask the publishing repo's own forge (GitHub Actions / GitLab CI, via
+  :func:`repository_manager.forge_status.backend_for_remote`) whether the
+  release run for the published tag already concluded. A run that concluded
+  with a non-success ``conclusion`` aborts immediately, with the run's own
+  URL, instead of burning the full ``wait_minutes`` retry ceiling polling an
+  index for an artifact a failed CI run already proved is never coming. An
+  ``"unknown"`` forge status (no client installed, forge unreachable, ref
+  never ran) degrades to today's behavior — proceed straight to index-polling
+  — never blocks on a signal this module could not actually obtain.
+
+Also: when yanked versions were excluded from a match that WOULD otherwise
+have satisfied the specifier, :func:`check_constraint` reports them in
+``yanked_but_would_match`` and folds them into the ``"unsatisfied"`` detail
+line, so that verdict is explicable rather than a bare "nothing available".
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import time
@@ -84,6 +130,13 @@ from packaging.utils import (
 )
 from packaging.version import InvalidVersion, Version
 
+# repository_manager.forge_status is a sibling module in this same package --
+# not a second optional-import guard here (it has no hard external deps of
+# its own; ITS optional forge clients are guarded inside it).
+from repository_manager import forge_status
+
+logger = logging.getLogger(__name__)
+
 __all__ = [
     "OVERRIDE_ENV_VAR",
     "DEFAULT_INDEX_URL",
@@ -105,6 +158,7 @@ __all__ = [
     "hook_declared",
     "check_constraint",
     "check_tree",
+    "cross_check_targets",
     "await_gate_readiness",
     "dispatch",
     "main",
@@ -160,12 +214,36 @@ class PackageUnknownError(IndexQueryError):
 
 @dataclass
 class AvailableVersions:
-    """What one index says is installable for one package, right now."""
+    """What one index says is installable for one package, right now.
+
+    ``versions``/``latest`` are FULLY published releases only — both a wheel
+    AND an sdist present, non-yanked (see :func:`_version_file_summary`). Two
+    further buckets distinguish the reasons a version is NOT in ``versions``,
+    each needing a different remediation:
+
+    * ``partial_versions`` — at least one non-yanked file exists, but not
+      both a wheel and an sdist. A real publish workflow uploads the two as
+      separate requests; a version caught mid-upload looks, to a naive
+      "does the version string appear at all" check, identical to a fully
+      published one — reported as ``"satisfied"`` when it may still be
+      seconds away from having its other half land, or identical to
+      "unsatisfied" when actually a live in-flight publish, not a failure.
+      Neither is correct; :func:`check_constraint` reports this bucket as
+      its own ``"partial_publish"`` :data:`CheckStatus`.
+    * ``yanked_versions`` — every file for the version is yanked (PEP 592).
+      Correctly excluded from ``versions``, but worth surfacing by name when
+      the version would otherwise have satisfied a constraint (see
+      :func:`check_constraint`'s ``yanked_but_would_match``), so an
+      ``"unsatisfied"`` verdict is explicable rather than a bare "nothing
+      available".
+    """
 
     package: str
     index_url: str
     versions: list[str] = field(default_factory=list)  # sorted ascending
     latest: str | None = None
+    partial_versions: list[str] = field(default_factory=list)  # sorted ascending
+    yanked_versions: list[str] = field(default_factory=list)  # sorted ascending
 
 
 class IndexBackend(Protocol):
@@ -191,13 +269,13 @@ class IndexBackend(Protocol):
 
 
 def _version_from_filename(filename: str) -> tuple[str, bool] | None:
-    """``(version, installable)`` parsed from one Simple-API filename, or
+    """``(version, is_wheel)`` parsed from one Simple-API filename, or
     ``None`` when the filename is not a wheel/sdist this parser recognizes
     (e.g. a legacy ``.egg``) — such files are skipped, never mis-attributed.
     """
     try:
         _, version = parse_sdist_filename(filename)
-        return str(version), True
+        return str(version), False
     except InvalidSdistFilename:
         pass
     try:
@@ -207,40 +285,68 @@ def _version_from_filename(filename: str) -> tuple[str, bool] | None:
         return None
 
 
-def _installable_versions(data: dict[str, Any]) -> list[Version]:
-    """Versions with at least one non-yanked installable file.
+@dataclass
+class _VersionFiles:
+    """Per-version file-kind/yanked summary — see :func:`_version_file_summary`."""
 
-    Prefers per-file ``yanked`` status (PEP 592) parsed from the Simple-API
-    ``files`` list; a release entirely composed of yanked files is excluded,
-    matching what a real resolver would accept. Falls back to the top-level
-    ``versions`` field (always present under PEP 691) when ``files`` parses to
-    nothing usable — e.g. a minimal index response — so a working index is
-    never reported as empty just because this parser couldn't read filenames.
+    has_wheel: bool = False
+    has_sdist: bool = False
+    saw_file: bool = False
+    saw_non_yanked: bool = False
+
+    @property
+    def fully_installable(self) -> bool:
+        return self.has_wheel and self.has_sdist and self.saw_non_yanked
+
+    @property
+    def partial(self) -> bool:
+        """At least one non-yanked file, but not both a wheel and an sdist —
+        an in-flight (or permanently incomplete) publish, distinct from both
+        "fully installable" and "nothing here"."""
+        return self.saw_non_yanked and not self.fully_installable
+
+    @property
+    def all_yanked(self) -> bool:
+        return self.saw_file and not self.saw_non_yanked
+
+
+def _version_file_summary(data: dict[str, Any]) -> dict[str, _VersionFiles]:
+    """Per-version wheel/sdist/yanked summary parsed from one Simple-API
+    ``files`` list — extends the file-kind-blind, yanked-only version this
+    replaced (the previous ``_installable_versions``, which asked only "does
+    ANY non-yanked file exist for this version") with wheel-vs-sdist tracking
+    in the SAME single pass over ``files``, so a caller can additionally tell
+    "one file type published, the other still uploading" (:attr:`_VersionFiles
+    .partial` — a live, in-flight publish) apart from "fully published"
+    (:attr:`_VersionFiles.fully_installable`) and "nothing published, or
+    every file yanked" (:attr:`_VersionFiles.all_yanked`).
+
+    Per-file ``yanked`` status (PEP 592) still wins over anything else: a
+    yanked wheel/sdist never counts toward either bucket. Returns an empty
+    dict when ``files`` parses to nothing usable (e.g. a minimal PEP 691
+    response with no ``files`` key) — :func:`PyPISimpleIndexBackend
+    .available_versions` falls back to the top-level ``versions`` field in
+    that case, exactly as the function this replaced did, so a working index
+    is never reported as empty just because this parser couldn't read
+    filenames.
     """
-    per_version_installable: dict[str, bool] = {}
+    per_version: dict[str, _VersionFiles] = {}
     for entry in data.get("files", []) or []:
         filename = entry.get("filename", "")
         parsed = _version_from_filename(filename)
         if parsed is None:
             continue
-        version, _ = parsed
-        yanked = bool(entry.get("yanked"))
-        per_version_installable[version] = per_version_installable.get(
-            version, False
-        ) or (not yanked)
-
-    if not per_version_installable:
-        per_version_installable = {v: True for v in (data.get("versions") or [])}
-
-    out: list[Version] = []
-    for raw, installable in per_version_installable.items():
-        if not installable:
+        version, is_wheel = parsed
+        bucket = per_version.setdefault(version, _VersionFiles())
+        bucket.saw_file = True
+        if bool(entry.get("yanked")):
             continue
-        try:
-            out.append(Version(raw))
-        except InvalidVersion:
-            continue
-    return sorted(out)
+        bucket.saw_non_yanked = True
+        if is_wheel:
+            bucket.has_wheel = True
+        else:
+            bucket.has_sdist = True
+    return per_version
 
 
 class PyPISimpleIndexBackend:
@@ -292,12 +398,52 @@ class PyPISimpleIndexBackend:
                 f"for {package!r}: {exc}"
             ) from exc
 
-        versions = _installable_versions(data)
+        summary = _version_file_summary(data)
+        if not summary:
+            # No `files` to parse (e.g. a minimal PEP 691 response) -- fall
+            # back to the top-level `versions` field, same as the function
+            # this replaced always did. Wheel/sdist completeness cannot be
+            # determined from this field alone, so every listed version is
+            # treated as fully installable rather than silently reported as
+            # empty -- a working index must never look like a dead one.
+            fallback: list[Version] = []
+            for raw in data.get("versions") or []:
+                try:
+                    fallback.append(Version(raw))
+                except InvalidVersion:
+                    continue
+            fallback.sort()
+            return AvailableVersions(
+                package=package,
+                index_url=index_url,
+                versions=[str(v) for v in fallback],
+                latest=str(fallback[-1]) if fallback else None,
+            )
+
+        full: list[Version] = []
+        partial: list[Version] = []
+        yanked: list[Version] = []
+        for raw, info in summary.items():
+            try:
+                parsed_version = Version(raw)
+            except InvalidVersion:
+                continue
+            if info.fully_installable:
+                full.append(parsed_version)
+            elif info.partial:
+                partial.append(parsed_version)
+            elif info.all_yanked:
+                yanked.append(parsed_version)
+        full.sort()
+        partial.sort()
+        yanked.sort()
         return AvailableVersions(
             package=package,
             index_url=index_url,
-            versions=[str(v) for v in versions],
-            latest=str(versions[-1]) if versions else None,
+            versions=[str(v) for v in full],
+            latest=str(full[-1]) if full else None,
+            partial_versions=[str(v) for v in partial],
+            yanked_versions=[str(v) for v in yanked],
         )
 
 
@@ -579,13 +725,32 @@ def _find_workspace_manifest(
 # --------------------------------------------------------------------------- #
 
 CheckStatus = Literal[
-    "satisfied", "unsatisfied", "index_unreachable", "package_unknown"
+    "satisfied",
+    "unsatisfied",
+    "partial_publish",
+    "index_unreachable",
+    "package_unknown",
 ]
 
 
 @dataclass
 class ConstraintCheck:
-    """The verdict for one declared constraint against the configured index/es."""
+    """The verdict for one declared constraint against the configured index/es.
+
+    ``status="partial_publish"`` is a distinct FAILURE state (see
+    :attr:`satisfied`) from ``"unsatisfied"`` — a version exists that would
+    satisfy the specifier, but only a wheel or an sdist has been uploaded so
+    far, never both (:attr:`_VersionFiles.partial`). It still blocks a push
+    (the version is not genuinely installable yet), but names a different
+    remediation: wait for the other half of the publish to land, not "this
+    constraint may never be satisfiable".
+
+    ``yanked_but_would_match`` lists any version that WOULD have satisfied
+    the specifier but was excluded because every one of its files is yanked
+    (PEP 592) — folded into the ``"unsatisfied"`` ``detail`` line so that
+    verdict is explicable rather than a bare "nothing available" when a
+    matching-looking version was in fact seen and deliberately excluded.
+    """
 
     package: str
     raw_requirement: str
@@ -595,6 +760,8 @@ class ConstraintCheck:
     index_urls_checked: list[str] = field(default_factory=list)
     matching_version: str | None = None
     latest_available: str | None = None
+    partial_publish_version: str | None = None
+    yanked_but_would_match: list[str] = field(default_factory=list)
     detail: str = ""
 
     @property
@@ -639,6 +806,8 @@ def check_constraint(
     best_latest: str | None = None
     saw_reachable_index = False
     unreachable_errors: list[str] = []
+    best_partial: tuple[str, str] | None = None  # (version, index_url)
+    yanked_but_would_match: list[str] = []
 
     for index_url in index_urls:
         checked.append(index_url)
@@ -694,6 +863,26 @@ def check_constraint(
                 ),
             )
 
+        if best_partial is None:
+            partial_matches = [
+                v
+                for v in available.partial_versions
+                if specifier.contains(v, prereleases=False)
+            ]
+            if partial_matches:
+                best_partial = (
+                    str(max(Version(v) for v in partial_matches)),
+                    index_url,
+                )
+
+        yanked_matches = [
+            v
+            for v in available.yanked_versions
+            if specifier.contains(v, prereleases=False)
+            and v not in yanked_but_would_match
+        ]
+        yanked_but_would_match.extend(yanked_matches)
+
     if not saw_reachable_index:
         return ConstraintCheck(
             package=constraint.package,
@@ -708,6 +897,35 @@ def check_constraint(
             ),
         )
 
+    if best_partial is not None:
+        partial_version, partial_index_url = best_partial
+        return ConstraintCheck(
+            package=constraint.package,
+            raw_requirement=constraint.raw_requirement,
+            specifier=constraint.specifier,
+            declared_by=constraint.declared_by,
+            status="partial_publish",
+            index_urls_checked=checked,
+            latest_available=best_latest,
+            partial_publish_version=partial_version,
+            yanked_but_would_match=sorted(yanked_but_would_match, key=Version),
+            detail=(
+                f"{constraint.package} {constraint.specifier or '(any)'}: "
+                f"{partial_version} would satisfy it, but only a wheel OR an "
+                f"sdist has been uploaded to {partial_index_url} so far (not "
+                "both) — this is a publish still in flight, not an "
+                "unsatisfiable constraint; retry rather than treating it as "
+                "a hard failure."
+            ),
+        )
+
+    yanked_note = (
+        f" (note: {', '.join(sorted(yanked_but_would_match, key=Version))} would "
+        "satisfy this constraint but every file for that release has been "
+        "yanked)"
+        if yanked_but_would_match
+        else ""
+    )
     return ConstraintCheck(
         package=constraint.package,
         raw_requirement=constraint.raw_requirement,
@@ -716,11 +934,13 @@ def check_constraint(
         status="unsatisfied",
         index_urls_checked=checked,
         latest_available=best_latest,
+        yanked_but_would_match=sorted(yanked_but_would_match, key=Version),
         detail=(
             f"{constraint.package} declares {constraint.specifier or '(any)'} "
             f"(from {constraint.declared_by}) but the configured index "
             f"({', '.join(checked)}) currently offers at most "
             f"{best_latest or 'no published version'} — unsatisfiable right now."
+            f"{yanked_note}"
         ),
     )
 
@@ -857,6 +1077,13 @@ def check_tree(
 # --------------------------------------------------------------------------- #
 
 
+#: Structured failure reasons a :class:`GateCheckFailure` can carry, beyond
+#: "the hook ran and failed" (``reason=""``, the original/default shape).
+#: Each is also embedded as a ``REASON:`` prefix in ``detail`` so a plain
+#: log line stays self-explanatory without needing this field.
+GateFailureReason = Literal["", "TARGETS_INCOMPLETE", "CI_RUN_FAILED"]
+
+
 @dataclass
 class GateCheckFailure:
     """One downstream repo whose pre-push gate did not confirm readiness this
@@ -865,11 +1092,16 @@ class GateCheckFailure:
     :func:`await_gate_readiness`), or the repo has not adopted the hook yet so
     its readiness cannot be gate-verified at all. Either way this phase
     transition cannot honestly call the repo ready, so it counts as a block.
+
+    ``reason`` distinguishes the two hard-abort-before-any-retry conditions
+    :func:`await_gate_readiness` can now report (:data:`GateFailureReason`)
+    from the default gate-failed-this-attempt shape (``reason=""``).
     """
 
     repo_name: str
     repo_path: str
     detail: str
+    reason: GateFailureReason = ""
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -941,6 +1173,51 @@ def _gate_failure_detail(repo_name: str, result: Any) -> str | None:
     )
 
 
+def cross_check_targets(
+    targets: Sequence[tuple[str, str]],
+    *,
+    published_packages: set[str],
+    candidate_repos: Sequence[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Independently recompute — from ``candidate_repos``, NEVER by reusing
+    whatever narrowing the caller already applied to produce ``targets`` —
+    every repo whose own ``pyproject.toml`` NAMES one of ``published_packages``
+    (regardless of whether the declared specifier is satisfiable; that is
+    :func:`check_constraint`'s job, not this one's), and return the
+    ``(repo_name, repo_path)`` pairs present in that independently-computed
+    set but ABSENT from ``targets``.
+
+    Closes "the phase succeeded because nothing downstream declared a
+    constraint": :func:`await_gate_readiness` only ever gate-checks the
+    ``targets`` its caller computed (normally a narrowed slice, e.g.
+    ``phased_push``'s ``later_phases``). If that narrowing missed a repo that
+    genuinely depends on what was just published — outside the slice scanned,
+    added to the fleet after the slice was built, whatever the reason — the
+    barrier would report "ready" having never looked at it. A repo returned
+    here is a hard-abort condition (CONCEPT:RM-DEP-READY targets-cross-check):
+    the real failure was never "nothing declared a constraint", it was
+    "something did depend on it and the barrier didn't know".
+
+    Matched by normalized ``repo_path`` (never by name alone — two different
+    checkouts of the same repo name is exactly the kind of ambiguity a
+    path-based comparison avoids).
+    """
+    target_paths = {str(Path(path)) for _, path in targets}
+    missing: list[tuple[str, str]] = []
+    seen_paths: set[str] = set()
+    for name, path in candidate_repos:
+        norm_path = str(Path(path))
+        if norm_path in target_paths or norm_path in seen_paths:
+            continue
+        constraints = declared_fleet_constraints(
+            path, fleet_packages=set(published_packages)
+        )
+        if constraints:
+            missing.append((name, path))
+            seen_paths.add(norm_path)
+    return missing
+
+
 def await_gate_readiness(
     targets: Sequence[tuple[str, str]],
     *,
@@ -951,6 +1228,12 @@ def await_gate_readiness(
     sleep: Any = time.sleep,
     now: Any = time.monotonic,
     audit_repo_path: str | Path = ".",
+    published_packages: set[str] | None = None,
+    candidate_repos: Sequence[tuple[str, str]] | None = None,
+    forge_backend: forge_status.ForgeBackend | None = None,
+    forge_owner: str | None = None,
+    forge_repo: str | None = None,
+    forge_ref: str | None = None,
 ) -> GateReadinessOutcome:
     """Decide a ``phased_push`` phase transition by RUNNING each ``targets``
     repo's own pre-push gate — never a second, parallel index-polling
@@ -980,7 +1263,60 @@ def await_gate_readiness(
     ``run_gate``/``sleep``/``now`` are injectable so tests exercise a
     30-minute ceiling and repeated retries without a real wait or a real
     pre-commit invocation.
+
+    Two further, optional preconditions, both backward compatible (every
+    parameter below defaults to skipping the check entirely, so an existing
+    caller that does not pass them observes no behavior change):
+
+    * Pass BOTH ``published_packages`` and ``candidate_repos`` to run
+      :func:`cross_check_targets` before anything else — a repo it finds that
+      ``targets`` omitted is an immediate hard abort (``ok=False``,
+      ``attempts=0``, ``waited_s=0.0``) with a ``reason="TARGETS_INCOMPLETE"``
+      failure, never entering the retry loop at all.
+    * Pass ``forge_backend`` (e.g. built via
+      :func:`repository_manager.forge_status.backend_for_remote`) with
+      ``forge_owner``/``forge_repo``/``forge_ref`` to wait for the published
+      tag's CI run to reach a conclusion BEFORE polling any target's gate. A
+      run that concludes with anything other than success aborts immediately
+      with a ``reason="CI_RUN_FAILED"`` failure naming the run's own URL,
+      instead of burning the retry ceiling on an index that will never see
+      the artifact. This wait shares the SAME ``deadline``/``sleep``/``now``
+      as the main retry loop below (never a second, separate budget) — an
+      ``"unknown"`` forge status (no client, forge unreachable, ref never
+      ran) breaks out of the wait immediately and falls through to today's
+      index-polling behavior.
     """
+    targets_checked = [name for name, _ in targets]
+
+    if published_packages and candidate_repos is not None:
+        missing = cross_check_targets(
+            targets,
+            published_packages=published_packages,
+            candidate_repos=candidate_repos,
+        )
+        if missing:
+            return GateReadinessOutcome(
+                ok=False,
+                waited_s=0.0,
+                attempts=0,
+                targets_checked=targets_checked,
+                failures=[
+                    GateCheckFailure(
+                        repo_name=name,
+                        repo_path=path,
+                        reason="TARGETS_INCOMPLETE",
+                        detail=(
+                            f"TARGETS_INCOMPLETE: {name} ({path}) declares a "
+                            f"constraint on {sorted(published_packages)} but was "
+                            "excluded from the computed downstream target set -- "
+                            "aborting rather than silently advancing past a repo "
+                            "that actually depends on what was just published."
+                        ),
+                    )
+                    for name, path in missing
+                ],
+            )
+
     if not targets:
         return GateReadinessOutcome(ok=True, waited_s=0.0, attempts=0)
 
@@ -989,7 +1325,50 @@ def await_gate_readiness(
     started = now()
     attempt = 0
     failures: list[GateCheckFailure] = []
-    targets_checked = [name for name, _ in targets]
+
+    if forge_backend is not None and forge_owner and forge_repo and forge_ref:
+        ci_attempt = 0
+        while True:
+            ci_attempt += 1
+            run_status = forge_backend.latest_run_for_ref(
+                forge_owner, forge_repo, forge_ref
+            )
+            if run_status.state == "unknown":
+                break  # forge status unavailable -- degrade to index-polling
+            if run_status.state == "completed":
+                if run_status.conclusion not in (None, "success"):
+                    ci_failure_detail = (
+                        f"CI_RUN_FAILED: the publish run for "
+                        f"{forge_owner}/{forge_repo}@{forge_ref} concluded "
+                        f"{run_status.conclusion!r}"
+                        + (f" ({run_status.url})" if run_status.url else "")
+                        + " -- aborting immediately instead of burning the "
+                        "retry ceiling polling an index for an artifact that "
+                        "is never coming."
+                    )
+                    return GateReadinessOutcome(
+                        ok=False,
+                        waited_s=now() - started,
+                        attempts=0,
+                        targets_checked=targets_checked,
+                        failures=[
+                            GateCheckFailure(
+                                repo_name=forge_repo,
+                                repo_path=f"{forge_owner}/{forge_repo}",
+                                reason="CI_RUN_FAILED",
+                                detail=ci_failure_detail,
+                            )
+                        ],
+                    )
+                break  # concluded success -- fall through to index-polling
+            remaining = deadline - now()
+            if remaining <= 0:
+                break  # out of budget waiting on CI; the main loop below will
+                # also see remaining<=0 and report a normal timeout
+            backoff = min(
+                poll_interval_s * (2 ** (ci_attempt - 1)), max_interval_s, remaining
+            )
+            sleep(backoff)
 
     while True:
         attempt += 1

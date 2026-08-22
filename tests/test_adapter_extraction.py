@@ -49,9 +49,16 @@ EXPECTED_TOOL_NAMES = (
 # ``remote_worker_actions.dispatch_build``, previously reachable only via a
 # direct Python import — never through either adapter) into both
 # ``rm_remote_workers`` (gained ``command`` + ``workdir``) and the CLI's
-# ``--remote-workers`` choices list.
+# ``--remote-workers`` choices list. Recomputed again for the gate-runner
+# lane, which adds ``"retest"`` to ``RM_GATES_ACTIONS`` — the ledger-backed
+# narrowed-retest action documented in ``gate_runner.py`` — expanding
+# ``rm_gates``'s ``action`` parameter schema/docs. Recomputed once more in the
+# same lane for the three gate-CONFIGURATION actions (``audit_fail_fast``,
+# ``xdist_plan``, ``xdist_apply``), which route to
+# ``fail_fast_audit``/``xdist_rollout`` and add the ``fleet``/``dry_run``
+# parameters to the tool signature.
 BASELINE_CATALOG_SHA256 = (
-    "f21211a2e6ba5144bb3c260cee8179da0af1a048d577ca15c3964067228f9af9"
+    "713c91f82e4c52e802ef838a73b79eceeae42855a26806084259ae6782d09183"
 )
 
 

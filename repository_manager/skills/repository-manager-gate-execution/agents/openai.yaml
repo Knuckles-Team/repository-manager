@@ -1,0 +1,4 @@
+interface:
+  display_name: "Repository Manager Gate Execution"
+  short_description: "Run the two-tier gate, retest only what failed, and profile the slow hooks"
+  default_prompt: "Use $repository-manager-gate-execution to run a repo's fast/heavy pre-commit gate via rm_gates, retest only the hooks the gate ledger last recorded failing instead of re-running the whole wave, and profile which hooks are slow."

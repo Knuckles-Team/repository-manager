@@ -65,6 +65,13 @@ RM_GATES_ACTIONS = (
     "status",
     "explain",
     "profile",
+    "retest",
+    # Configuration actions: they answer questions ABOUT the gates rather than
+    # executing them, but a reader asking "why is this gate slow" or "can it
+    # stop early" should not have to discover they live on a different tool.
+    "audit_fail_fast",
+    "xdist_plan",
+    "xdist_apply",
 )
 
 RM_DOCS_READINESS_ACTIONS = (

@@ -35,17 +35,39 @@ pre-commit's own default), so the tier it runs is declared, not implied.
 against a baseline run on the base ref (a *differential landing decision*, not
 "does this repo's own hook suite pass right now"). Genuinely different
 semantics — see ``merge_queue.py``'s module docstring.
+
+**Two more things this module now does, both in service of the same fast
+release loop (see :mod:`repository_manager.gate_ledger`'s module docstring
+for the incident that forced them).** First, :func:`run_gate_stage` records
+every run it makes into the durable :class:`repository_manager.gate_ledger
+.GateLedger` (unless a caller opts out with ``record=False``) -- a job store
+that dies with the process cannot answer "what failed last time?", and that
+question is what turned one repository's push into six hours of re-running a
+90-minute wave for a handful of steps that had actually failed. Second, a
+HEAVY-tier run against a Cargo-based repo takes a ``"build"`` reservation
+from :mod:`repository_manager.task_queue` before shelling out to
+``pre-commit`` -- ``cargo``'s shared ``CARGO_TARGET_DIR`` corrupts concurrent
+writers (phantom ``E0599``), the exact incident that class exists to
+prevent, and two heavy gates racing on the same repo's Cargo build is exactly
+that shape. A refused reservation is reported back as ``deferred=True``, not
+as a failure: the gate never ran, so there is nothing to have found.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import socket
 import subprocess  # nosec B404 - fixed argv only, never shell=True
 import time
+from pathlib import Path
 from typing import Any, Literal
 
+from repository_manager import build_queue, gate_ledger, merge_queue, task_queue
 from repository_manager.scan_models import HookResult, RepoScanResult
+
+logger = logging.getLogger(__name__)
 
 GateStage = Literal["fast", "heavy"]
 
@@ -223,6 +245,183 @@ def parse_gate_output(output: str) -> list[HookResult]:
     return hooks
 
 
+#: The one file whose presence at a repo's root means "a HEAVY-tier run here
+#: might invoke `cargo`" -- the same signal
+#: :data:`repository_manager.task_queue.EXECUTION_CLASSES`'s ``"build"``
+#: class exists to arbitrate (a shared ``CARGO_TARGET_DIR`` corrupts
+#: concurrent writers with phantom ``E0599``).
+_CARGO_MANIFEST = "Cargo.toml"
+
+
+def _failing_test_ids(hook: HookResult) -> list[str]:
+    """Test ids *hook*'s own captured output reports failed/errored.
+
+    Reuses :func:`repository_manager.merge_queue._pytest_ids` -- the parser
+    already proven against pytest's stable ``-rfE`` short-summary contract --
+    rather than writing a second one that could quietly drift from it. A hook
+    that isn't pytest at all simply yields no ids, which is correct: nothing
+    here claims pytest's output contract holds for a hook that never
+    promised it.
+    """
+    return sorted(merge_queue._pytest_ids(hook.output))
+
+
+def _gate_ledger_metadata(repo_path: str) -> dict[str, Any]:
+    """Best-effort environment facts folded into a gate-ledger row.
+
+    Every fact gathered here can fail for a reason that has nothing to do
+    with the gate that just ran (no git repo, no ``.mergequeue.yaml``, no
+    discoverable ``.venv``, ...), and a ledger row missing one field is still
+    a useful row -- so each is independently best-effort and degrades to its
+    safe default rather than aborting the whole record. This function never
+    raises.
+    """
+    repo_id = ""
+    try:
+        repo_id = build_queue.stable_repository_id(repo_path)
+    except Exception:  # noqa: BLE001 - metadata gathering must never break a gate verdict
+        logger.warning(
+            "gate-ledger metadata: could not resolve a stable repo id for %r; "
+            "recording the row without one rather than failing the gate",
+            repo_path,
+            exc_info=True,
+        )
+
+    git_sha = ""
+    try:
+        sha_proc = subprocess.run(  # nosec B603 B607
+            ["git", "-C", repo_path, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if sha_proc.returncode == 0:
+            git_sha = sha_proc.stdout.strip()
+    except Exception:  # noqa: BLE001 - metadata gathering must never break a gate verdict
+        logger.warning(
+            "gate-ledger metadata: could not resolve git HEAD for %r; "
+            "recording the row without a git_sha rather than failing the gate",
+            repo_path,
+            exc_info=True,
+        )
+
+    tree_dirty = False
+    try:
+        status_proc = subprocess.run(  # nosec B603 B607
+            ["git", "-C", repo_path, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if status_proc.returncode == 0:
+            tree_dirty = bool(status_proc.stdout.strip())
+    except Exception:  # noqa: BLE001 - metadata gathering must never break a gate verdict
+        logger.warning(
+            "gate-ledger metadata: could not resolve git tree-dirty status for "
+            "%r; recording the row with tree_dirty=False rather than failing "
+            "the gate",
+            repo_path,
+            exc_info=True,
+        )
+
+    toolchain_fingerprint = ""
+    try:
+        config = merge_queue.load_config(repo_path)
+        toolchain_fingerprint = merge_queue._environment_signature(
+            Path(repo_path), config
+        )
+    except Exception:  # noqa: BLE001 - no .mergequeue.yaml degrades, never raises
+        logger.warning(
+            "gate-ledger metadata: could not compute a toolchain fingerprint "
+            "for %r (no .mergequeue.yaml or similar); recording the row "
+            "without one rather than failing the gate",
+            repo_path,
+            exc_info=True,
+        )
+
+    return {
+        "repo_id": repo_id,
+        "git_sha": git_sha,
+        "tree_dirty": tree_dirty,
+        "toolchain_fingerprint": toolchain_fingerprint,
+        "hostname": socket.gethostname(),
+        "pid": os.getpid(),
+    }
+
+
+def _record_gate_run(
+    hooks: list[HookResult],
+    *,
+    repo_path: str,
+    stage: str,
+    scope: str,
+    trigger: str,
+    hook_ids_requested: list[str] | None,
+    success: bool,
+    exit_code: int,
+    duration_s: float,
+    error: str | None,
+) -> str:
+    """Map one gate invocation into :meth:`GateLedger.record_run` and write it.
+
+    ``outcome`` is ``"passed"`` when the hook passed, else ``"failed"`` --
+    the only two verdicts a pre-commit run itself produces here; ``unrunnable``
+    carries through verbatim so a missing toolchain never masquerades as a
+    real failure inside the ledger either. Every FAILING hook gets a
+    ``failing_tests`` entry even when no test ids were extracted from it
+    (an empty list, not a missing key) -- that is what drives the ledger's
+    clear-on-improve behaviour for hooks that are not pytest at all, or that
+    failed before pytest printed a single ``FAILED``/``ERROR`` line.
+
+    Metadata gathering (:func:`_gate_ledger_metadata`) is already fully
+    best-effort. What is NOT swallowed here is a ``ValueError`` from
+    :meth:`GateLedger.record_run` itself -- that means THIS function handed
+    it a malformed observation (a contract bug in the mapping above, not a
+    storage outage), and hiding it would make record_run's own validation
+    guard decorative. Every other exception -- a ledger that cannot even be
+    constructed, a write that cannot land -- is a lost observation, and
+    turning that into a failed gate would be worse than having no ledger.
+    """
+    metadata = _gate_ledger_metadata(repo_path)
+    hooks_payload = [
+        {
+            "hook_id": h.hook_id,
+            "outcome": "passed" if h.passed else "failed",
+            "unrunnable": h.unrunnable,
+            "duration_s": h.duration_s,
+            "output_tail": h.output,
+        }
+        for h in hooks
+    ]
+    failing_tests = {h.hook_id: _failing_test_ids(h) for h in hooks if not h.passed}
+    try:
+        return gate_ledger.default_gate_ledger().record_run(
+            repo_id=metadata["repo_id"],
+            repo_path=repo_path,
+            stage=stage,
+            scope=scope,
+            trigger=trigger,
+            success=success,
+            exit_code=exit_code,
+            duration_s=duration_s,
+            hooks=hooks_payload,
+            failing_tests=failing_tests,
+            hook_ids_requested=hook_ids_requested,
+            git_sha=metadata["git_sha"],
+            tree_dirty=metadata["tree_dirty"],
+            toolchain_fingerprint=metadata["toolchain_fingerprint"],
+            hostname=metadata["hostname"],
+            pid=metadata["pid"],
+            error=error or "",
+        )
+    except ValueError:
+        raise
+    except Exception:  # noqa: BLE001 - a ledger outage is not a gate verdict
+        return ""
+
+
 def run_gate_stage(
     repo_path: str,
     stage: GateStage,
@@ -230,6 +429,10 @@ def run_gate_stage(
     files: list[str] | None = None,
     hook_ids: list[str] | None = None,
     timeout: int | None = None,
+    trigger: str = "run",
+    scope: str = "full_wave",
+    colocated: bool | None = None,
+    record: bool = True,
 ) -> RepoScanResult:
     """Run one repo's declared hooks at one tier and report the result.
 
@@ -253,6 +456,41 @@ def run_gate_stage(
     Returns a :class:`RepoScanResult` whose ``hooks`` carry per-hook pass/fail
     AND timing (``HookResult.duration_s``), and whose top-level ``duration_s``
     is the measured wall-clock time of the whole invocation.
+
+    ``trigger``/``scope`` are recorded facts, not behaviour switches -- they
+    answer "why did this run happen" (``"run"``/``"validate"``/``"pre-push"``,
+    ...) and "how much of the suite did it cover" (``"full_wave"`` the
+    default, or a caller-defined narrower scope such as a retest) for the
+    gate ledger (see below); they do not change what pre-commit is asked to
+    do. ``colocated`` and ``record`` gate two independent pieces of new
+    behaviour:
+
+    * **Build reservation.** When ``stage="heavy"`` and the repo has a
+      ``Cargo.toml`` at its root, this function is about to invoke
+      ``pre-commit``'s pre-push hooks, which may run ``cargo build`` --
+      contending for the same shared ``CARGO_TARGET_DIR`` corruption hazard
+      :data:`repository_manager.task_queue.EXECUTION_CLASSES`'s ``"build"``
+      class exists to arbitrate. ``colocated=True`` takes that reservation
+      (via :func:`repository_manager.task_queue.acquire`) before running the
+      gate and releases it after; a refused reservation is reported back as
+      ``RepoScanResult(success=False, deferred=True, ...)`` -- the gate did
+      NOT run, so this is a deferral to retry, never a verdict about the
+      code. ``colocated`` left at its default (``None``/not ``True``) skips
+      the reservation entirely rather than erroring, exactly like
+      :func:`task_queue.acquire`'s own PARTITION-policy exemption -- a repo
+      with no Rust toolchain has nothing to contend over, and a caller with
+      no proof of same-node execution should not be forced to reason about a
+      resource it cannot safely arbitrate.
+    * **Ledger recording.** With ``record=True`` (the default), the finished
+      run -- every hook's outcome, any pytest ids it reported failing, and
+      the toolchain/commit metadata the run happened under -- is written to
+      :func:`repository_manager.gate_ledger.default_gate_ledger` so a later
+      caller can ask "what failed last time?" without re-running the whole
+      wave (see that module's docstring for the incident this closes). The
+      returned :class:`RepoScanResult`'s ``run_id`` carries the ledger's
+      identifier for that write, or ``""`` when ``record=False`` or the
+      write could not complete. Recording is best-effort end to end: a
+      ledger outage never changes ``success``/``exit_code``/``hooks`` below.
     """
     if stage not in HOOK_STAGE_BY_GATE_STAGE:
         raise ValueError(f"unknown gate stage {stage!r}; expected 'fast' or 'heavy'")
@@ -269,14 +507,54 @@ def run_gate_stage(
 
     hook_stage = HOOK_STAGE_BY_GATE_STAGE[stage]
     effective_timeout = timeout if timeout is not None else default_gate_timeout(stage)
+
+    needs_build_reservation = (
+        stage == "heavy"
+        and colocated is True
+        and os.path.exists(os.path.join(repo_path, _CARGO_MANIFEST))
+    )
+
     started = time.monotonic()
     try:
-        result = _run_pre_commit(
-            repo_path,
-            hook_stage,
-            files=files,
-            hook_ids=hook_ids,
-            timeout=effective_timeout,
+        if needs_build_reservation:
+            with task_queue.acquire(
+                "build", operation=f"gate:{stage}", path=repo_path, colocated=True
+            ):
+                result = _run_pre_commit(
+                    repo_path,
+                    hook_stage,
+                    files=files,
+                    hook_ids=hook_ids,
+                    timeout=effective_timeout,
+                )
+        else:
+            result = _run_pre_commit(
+                repo_path,
+                hook_stage,
+                files=files,
+                hook_ids=hook_ids,
+                timeout=effective_timeout,
+            )
+    except task_queue.TaskQueueError as exc:
+        # The build reservation was refused (every POOL slot busy, or -- were
+        # this call ever made without colocated=True -- ColocationRequired).
+        # This is a DEFERRAL, not a verdict: the gate never ran, so there is
+        # nothing here to have found a defect. Reporting it as an ordinary
+        # failure is how transient build contention turns into a false
+        # regression on whatever code happened to be checked out at the time.
+        return RepoScanResult(
+            repo_path=repo_path,
+            success=False,
+            exit_code=-1,
+            deferred=True,
+            error=(
+                f"DEFERRED, not a verdict: the HEAVY gate for {repo_path} needs a "
+                f"'build' reservation (a Cargo.toml is present) and none was free: "
+                f"{exc}. The gate did not run against this code; retry once a build "
+                f"slot frees rather than treating this as a hook failure."
+            ),
+            stage=stage,
+            duration_s=time.monotonic() - started,
         )
     except subprocess.TimeoutExpired:
         return RepoScanResult(
@@ -322,6 +600,21 @@ def run_gate_stage(
             else f"pre-commit --hook-stage {hook_stage} exited {result.returncode} with no output."
         )
 
+    run_id = ""
+    if record:
+        run_id = _record_gate_run(
+            hooks,
+            repo_path=repo_path,
+            stage=stage,
+            scope=scope,
+            trigger=trigger,
+            hook_ids_requested=hook_ids,
+            success=success,
+            exit_code=result.returncode,
+            duration_s=duration_s,
+            error=error,
+        )
+
     return RepoScanResult(
         repo_path=repo_path,
         success=success,
@@ -331,6 +624,7 @@ def run_gate_stage(
         error=error,
         stage=stage,
         duration_s=duration_s,
+        run_id=run_id,
     )
 
 

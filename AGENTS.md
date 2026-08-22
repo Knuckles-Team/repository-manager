@@ -696,7 +696,203 @@ When adding new utility modules to the agent_utilities package:
 - Consider if heavy dependencies should be lazy-loaded
 - Follow semantic versioning for dependencies when possible
 
+## Gate Execution — the ledger, `retest`, and the fast development loop
+
+**Stop validating a fix by re-running the whole wave.** On 2026-08-21 a single
+`epistemic-graph` push cost roughly **six hours** because every one of six
+failing pre-commit hooks was re-proven, on every fix, by re-running the
+repo's entire 90-minute heavy wave — there was no way to ask "just the hooks
+that were failing." The same push's integration suite was independently
+reporting ~500 timeout errors that turned out to be **one** cold `cargo
+build` blowing a 60-second per-test fixture timeout, which hid **17 real
+failures** underneath the noise. Both gaps are now closed, and the loop an
+agent should actually run is:
+
+```
+rm_gates(action="run", stage=<fast|heavy>)        # populate the ledger
+# ... fix what failed ...
+rm_gates(action="retest", stage=<fast|heavy>)      # only what failed, re-run
+# all requested hooks pass -> automatic full-wave escalation, submitted
+# from inside the retest job itself, the instant it returns
+rm_gates(action="profile")                         # find the slow hooks fleet-wide
+```
+
+CLI equivalents: `repository-manager --gate fast|heavy` /
+`--gate-retest fast|heavy [--same-node]`. Both the MCP tool and the CLI call
+the exact same `repository_manager.gate_runner.dispatch(action, **kwargs)` —
+one chokepoint, so the two front ends can never quietly diverge on what "run
+the gate" or "retest" means (`run`/`status`/`explain`/`profile`/`retest`).
+
+### `gate_ledger` — durable memory of what a gate actually found
+
+`repository_manager.gate_ledger.GateLedger` is a local SQLite projection at
+`${XDG_STATE_HOME}/repository-manager/gate_ledger.sqlite3` (same shape as
+`LaneRegistry`/`CapacityStore`: WAL, `synchronous=FULL`, monotonic
+`version`). It replaces the old process-local `dict` job store, which died
+with the process and could never answer "what failed last time" across a
+restart. Semantics that are easy to get wrong, because getting them wrong is
+silent:
+
+- **It is a FAILURE ledger, not a pass matrix.** `pytest -q` prints no line
+  per passing test, so `test_results` only records what *failed*. "Not
+  present" means "not observed failing" — it is never the same claim as
+  "observed passing." Every consumer has to be written against that
+  distinction.
+- **Clear-on-improve.** When a hook re-runs, any `test_latest` row for that
+  `(repo, stage, hook)` whose test id is absent from the new failing set is
+  deleted. Upsert-only would leave a fixed test marked failed forever.
+- **`unrunnable` hooks are never retest candidates.** A hook whose executable
+  was missing found nothing about the code; re-running it in the same broken
+  environment will find nothing again. Treating a missing toolchain as "still
+  failing, retry it" is exactly how a missing tool masquerades as a code
+  defect — `LedgerHook.failed` deliberately excludes it.
+- **`is_shippable()` requires a `full_wave` row at the CURRENT sha.** A
+  narrowed `retest` pass alone never certifies a repo shippable — by
+  construction it cannot observe an interaction that only appears when the
+  whole suite runs together. Only a `scope="full_wave"` run recorded at the
+  exact commit sha on disk counts; anything at a different sha is reported
+  **stale**, and staleness is a status returned to the caller, never a
+  silent reuse.
+- **It is a local, best-effort projection — never an authority.** A ledger
+  outage must never look like a gate failure (every write is swallowed on a
+  storage error), and nothing may treat a ledger row as permission to skip
+  work it would otherwise do.
+
+### `rm_gates action=retest` — narrow the re-run to what actually failed
+
+Reads the ledger for the target repo/stage and decides what to run:
+
+- **No prior run recorded** → nothing to narrow against, so it degrades to a
+  **full wave** and says so plainly (`"baseline": "missing"`). Treating
+  "never ran" as "ran clean" would fabricate evidence.
+- **Prior run, nothing failing** → no job submitted.
+- **Prior run, hooks failing** → only those hook ids are requested.
+- **Baseline stale** (ledger rows recorded against a different sha than HEAD
+  right now) → never trusted; degrades to the full wave exactly like
+  "missing," and the response says which case it was.
+
+On an all-pass narrowed retest (`escalate=True`, the default), a **second**
+job — the full wave, `trigger="retest-escalate"`, `scope="full_wave"` — is
+submitted automatically, from inside the first job's own background thread
+the instant its subprocess returns. A narrowed pass by itself is never
+sufficient evidence of shippability; see `GateLedger.is_shippable`'s
+docstring for the deadlock that survived 95 clean isolated runs before this
+existed.
+
+### `ensure_no_fail_fast` now strips as well as adds
+
+`repository_manager.test_commands.ensure_no_fail_fast` is applied by the
+runner at the process-launch chokepoint, immediately before
+`subprocess.run`, so a declared command cannot reach the shell without the
+never-stop-early guarantee. It now goes **both directions**, because cargo's
+and pytest's/go's truncation defaults are opposite:
+
+- **cargo** (`cargo test` / `cargo nextest run`) truncates by **omission** —
+  the missing `--no-fail-fast` flag IS the truncation — so the fix is to
+  **append** it if absent (idempotent).
+- **pytest**/**go test** truncate by **opt-in** — `-x` / `--exitfirst` /
+  `--maxfail=N` (nonzero; `--maxfail=0` means "no limit" and is left alone) /
+  bundled shorts like `-xvs`, and go's `-failfast` — so the fix is to
+  **strip** those tokens if present.
+
+Everything else (`cargo check`, `cargo clippy`, a build, an unrecognized
+program) is returned byte-for-byte unchanged.
+
+### `fail_fast_audit` — detection only, say so honestly
+
+`repository_manager.fail_fast_audit` statically scans a repo's
+`.pre-commit-config.yaml` hook `entry:` strings for the same fail-fast flags
+`ensure_no_fail_fast` knows how to fix in argv this package constructs
+itself. **It cannot fix what it finds.** `gates.py` never builds a
+pre-commit hook's argv — it shells to `pre-commit run --hook-stage <stage>`
+and pre-commit parses each repo's own `entry:` as opaque shell text this
+package never touches. A fail-fast flag hand-authored into a repo's own
+config is the same defect as an unguarded argv, wearing a different hat, and
+nothing upstream of a human reading that YAML currently notices it — this
+module is that reading, done mechanically and across the fleet. It is not
+currently wired into `rm_gates` or a CLI flag; call
+`repository_manager.fail_fast_audit.dispatch("check"|"check_fleet", ...)`
+directly (or import `check_repo`/`check_fleet`) until it is.
+
+### `forge_status` — CI-run status, abstracted over GitHub and GitLab
+
+`repository_manager.forge_status` answers "is the tag's release run still
+running, or did it already conclude?" over `github-agent` (GitHub Actions)
+or `gitlab-api` (GitLab CI), selected by remote host. It is the earliest,
+cheapest signal that a publish is never coming — cheaper than burning a full
+`wait_minutes` retry ceiling polling the package index for an artifact a
+already-failed CI run will never produce. Missing client, unreachable forge,
+a ref that never ran, or any response it cannot positively interpret all
+degrade to `state="unknown"` with a logged `FORGE_STATUS_UNAVAILABLE` line —
+**never a silent skip**, and never claimed as a conclusion this module did
+not actually obtain. Fail-closed on a *confirmed* failure, fail-open
+(degrade to today's index-polling behavior) on an *unknown* one — those are
+different problems and must never be conflated into one bit.
+
+### `dependency_readiness` — three new gaps closed in the Layer-2 wave barrier
+
+`await_gate_readiness` (Layer 2 of the `phased_push` dependency-readiness
+gate) gained:
+
+- **Targets cross-check** (`cross_check_targets`). The barrier only
+  gate-checks the `targets` slice its caller computed. If that narrowing
+  misses a repo that genuinely names the just-published package, the phase
+  "succeeds" for the wrong reason — because nothing the barrier was told
+  about declared the constraint, not because nothing actually depends on it.
+  `cross_check_targets` independently rescans a full `candidate_repos`
+  universe (never the caller's own narrowed list) and reports any omission
+  as a **hard abort** with a distinct `TARGETS_INCOMPLETE` reason.
+- **Partial-publish detection.** A publish uploads a wheel and an sdist as
+  two separate requests; a version whose Simple-API listing shows only one
+  of the two is mid-publish, not absent and not unsatisfiable. Reporting it
+  as plain `"unsatisfied"` is indistinguishable from "will never work" —
+  exactly the confusion behind the 2026-08-12 incident this module already
+  guards against. It is now its own `CheckStatus`, `"partial_publish"` —
+  still a failure for gating purposes, but with its own remediation ("wait
+  for the other half," not "give up").
+- **CI-run barrier.** Before retrying a downstream repo's gate at all,
+  `await_gate_readiness` can ask the publishing repo's own forge (via
+  `forge_status.backend_for_remote`) whether the release run already
+  concluded, and abort immediately with the run's own URL on a non-success
+  conclusion instead of burning the retry ceiling.
+
+### `xdist_rollout` — plan/apply, dry-run by default, never a blind rewrite
+
+`repository_manager.xdist_rollout` gives repos that already declare
+`pytest-xdist` (but never pass `-n` at collection) the same
+`-n auto --dist loadfile -p no:randomly -rfE` switch `agent-utilities` itself
+proved out (17,974 tests in one process is why its own pre-push gate used to
+exceed 90 minutes). Three gates, ALL required, before it will touch a repo:
+the dependency must be declared, the repo's pytest hook `entry:` must be
+**byte-identical** to the fleet boilerplate (a customized entry is reported
+`skipped: non-boilerplate entry, no blind patch`, never force-patched), and
+there must be no `.rm-gates-no-xdist` opt-out marker. `apply` defaults to
+`dry_run=True` — a rollout across dozens of repos' gate configs is not a
+read, and the default must never write one as a side effect of an
+exploratory call. Like `fail_fast_audit`, it is not yet wired into `rm_gates`
+or a CLI flag — call `repository_manager.xdist_rollout.dispatch("plan"|
+"apply", ...)` directly.
+
+### Three environment traps that produce FALSE verdicts — agents keep rediscovering these
+
+- **`systemd-run --user` gives a minimal `PATH`.** A hook fails with
+  "executable not found" for a tool that IS installed — the process just
+  can't see it. Don't conclude the tool is missing from the box; check the
+  unit's actual `PATH` first.
+- **`pip install` silently no-ops when a stale same-version package already
+  sits in `~/.local`.** A July 2026 build once produced 16 fabricated
+  failures this way — the "installed" package was never actually updated,
+  so every test ran against old code and failed for reasons that didn't
+  exist in the fix. Force-reinstall or check the installed version, don't
+  trust exit code 0 alone.
+- **Bare `python3`/`uv run pytest` can pick the wrong interpreter.** Use
+  `python scripts/run_agent_utilities_gate.py --module pytest -- ...` (or
+  the workspace's equivalent per-repo gate runner) rather than a bare
+  interpreter invocation, and print `sys.executable` when a result looks
+  suspicious.
+
 ## Recent Changes
+- **Gate ledger + `rm_gates action=retest`**: `repository_manager.gate_ledger` durably records what a gate wave found (SQLite, `${XDG_STATE_HOME}/repository-manager/gate_ledger.sqlite3`), and `retest` narrows a re-run to whatever it last recorded failing instead of re-running the whole wave, escalating to a full wave on an all-pass. Closes the measured 2026-08-21 incident (~6h push validated by full 90-minute waves per fix). See "Gate Execution" above for the full contract, plus the sibling additions landed alongside it: `test_commands.ensure_no_fail_fast` now strips pytest/go fail-fast flags as well as adding cargo's; `fail_fast_audit` statically detects (never fixes) fail-fast flags hiding in `.pre-commit-config.yaml` `entry:` text; `forge_status` abstracts CI-run status over GitHub/GitLab; `dependency_readiness` gained a targets cross-check, partial-publish detection, and a CI-run barrier; `xdist_rollout` is dry-run-by-default plan/apply for the fleet's `pytest-xdist` rollout.
 - **Consistent nested-path resolution for git sub-actions**: `rm_git` pull/push/add/commit now resolve a bare repo name through the workspace `project_map` (`_resolve_repo_dir`) instead of flat-joining `git.path + name`. Fixes `[Errno 2] No such file or directory` failures on nested repos (e.g. `push projects=agent-utilities` looked for `<ws>/agent-utilities` while the repo lives at `<ws>/agent-packages/agent-utilities`), making the git actions agree with `validate`. Absolute paths and existing flat repos are unchanged; unknown names keep the prior fallback.
 - **Cascade-deadlock root causes eliminated** (`633ffd4`): `_latest_jobs()` collapses repo-scoped jobs to the most-recent per repo so a fixed+re-validated repo drops out of `failed_projects`; `_reap_stale_jobs()` (env `RM_JOB_STALE_SECONDS`, default 1800) self-heals wedged `running` jobs. Note: a long-lived RM-MCP process must be **restarted** to pick these up — they are loaded at import time.
 - **Consolidated Architecture**: Centralized core repo logic into the `Git` class (`repository_manager.py`), refactoring `mcp_server.py` into a thin client.

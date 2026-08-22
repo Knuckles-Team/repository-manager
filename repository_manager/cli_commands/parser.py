@@ -277,6 +277,30 @@ Examples:
         ),
     )
     group_maintenance.add_argument(
+        "--gate-retest",
+        choices=["fast", "heavy"],
+        default=None,
+        help=(
+            "Like --gate, but narrows the re-run to whatever "
+            "repository_manager.gate_ledger last recorded as FAILING for each "
+            "targeted repo/stage instead of re-running the whole wave -- the "
+            "CLI counterpart of the MCP `rm_gates` tool's 'retest' action "
+            "(measured incident 2026-08-21: re-running a full 90-minute heavy "
+            "wave to validate each of six failing hooks cost one push ~6 hours). "
+            "A repo with no prior recorded run still gets the FULL wave (never "
+            "silently treated as clean); a stale baseline (recorded against a "
+            "different commit than HEAD) is never trusted either and also "
+            "degrades to the full wave. On an all-pass narrowed retest, a "
+            "second full-wave job is submitted automatically -- a narrowed "
+            "pass alone is never sufficient evidence of shippability (see "
+            "gate_ledger.GateLedger.is_shippable). Pass --same-node to assert "
+            "this invocation is colocated with whatever produced the ledger's "
+            "last recorded run; it is carried onto each submitted job for a "
+            "future record_run writer to honor -- this command's own ledger "
+            "reads are already local and do not depend on it."
+        ),
+    )
+    group_maintenance.add_argument(
         "--maintain",
         action="store_true",
         help="Execute phased maintenance (Bump -> Pre-commit -> Verify).",
@@ -777,38 +801,165 @@ Examples:
 
     has_errors = False
 
-    if args.gate:
-        import concurrent.futures
-
+    if args.gate or args.gate_retest:
+        from repository_manager import gate_runner
+        from repository_manager.gate_ledger import default_gate_ledger
         from repository_manager.gates import explain_gate_result, run_gate_stage
+        from repository_manager.scan_models import RepoScanResult
 
-        project_dirs = list(git.project_map.values())
-        if not project_dirs:
-            runtime.logger.warning("No projects found for --gate.")
-        else:
-            runtime.logger.info(
-                f"Running the {args.gate} gate across {len(project_dirs)} "
-                "project(s) in parallel..."
-            )
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=git.threads
-            ) as executor:
-                futures = {
-                    executor.submit(run_gate_stage, path, args.gate): path
-                    for path in project_dirs
+        # One LocalJobStore per invocation: gate_runner.dispatch's `run`/
+        # `retest` need SOMETHING that satisfies the submit_job/jobs/jobs_lock
+        # contract the MCP job store provides, and the CLI has no background
+        # server to reuse. LocalJobStore runs each job synchronously inline
+        # (see its docstring); _fan_out's own bounded pool is what makes
+        # this still run repos in parallel -- the exact ThreadPoolExecutor
+        # that used to be duplicated here directly, now shared with the MCP
+        # adapter via gate_runner._fan_out.
+        job_store = gate_runner.LocalJobStore()
+
+        def _resolve_targets(
+            threads_: int | None, repos_: str | None
+        ) -> list[tuple[str, str]]:
+            return gate_runner.targets_from_project_map(git.project_map, repos_)
+
+        def _make_submit_one(stage: str):
+            def submit_one(
+                repo_name: str,
+                path: str,
+                *,
+                hook_ids: list[str] | None = None,
+                trigger: str = "run",
+                scope: str = "full_wave",
+                _escalate_on_pass: bool = False,
+                _same_node: bool = False,
+            ) -> dict[str, str]:
+                # `_same_node` maps onto `run_gate_stage`'s `colocated`: the
+                # CLI, unlike the pinned MCP server process, is only proven
+                # colocated with whatever holds the `task_queue` "build"
+                # lease when the operator passes --same-node. See
+                # gate_runner.dispatch's retest docstring for the full
+                # reasoning (this gates a HEAVY-tier Cargo build reservation,
+                # not any decision this command's own ledger reads make).
+                colocated = _same_node
+                extra_job_data = {
+                    "repo_name": repo_name,
+                    "stage": stage,
+                    "trigger": trigger,
+                    "scope": scope,
+                    "hook_ids_requested": list(hook_ids or []),
+                    "colocated": colocated,
                 }
-                gate_results = {
-                    futures[future]: future.result()
-                    for future in concurrent.futures.as_completed(futures)
-                }
-            failed = {p: r for p, r in gate_results.items() if not r.success}
-            for result in [r for _p, r in sorted(gate_results.items())]:
+                if _escalate_on_pass:
+                    return job_store.submit_job(
+                        "gate",
+                        gate_runner.escalating_run_gate_stage,
+                        path,
+                        stage,
+                        hook_ids,
+                        timeout=600,
+                        escalate_on_pass=True,
+                        repo_name=repo_name,
+                        submit_one=submit_one,
+                        same_node=_same_node,
+                        trigger=trigger,
+                        scope=scope,
+                        colocated=colocated,
+                        record=True,
+                        _extra_job_data=extra_job_data,
+                    )
+                return job_store.submit_job(
+                    "gate",
+                    run_gate_stage,
+                    path,
+                    stage,
+                    timeout=600,
+                    hook_ids=hook_ids,
+                    trigger=trigger,
+                    scope=scope,
+                    colocated=colocated,
+                    record=True,
+                    _extra_job_data=extra_job_data,
+                )
+
+            return submit_one
+
+        def _log_result(repo_name: str, job_id: str | None) -> bool:
+            """Print one repo's completed gate result; True if it failed."""
+            if not job_id:
+                return False
+            with job_store.jobs_lock:
+                job = job_store.jobs.get(job_id)
+            if job is None:
+                return False
+            result = job.get("result")
+            if isinstance(result, RepoScanResult):
                 runtime.logger.info(explain_gate_result(result))
-            if failed:
+                return not result.success
+            if job.get("error"):
+                runtime.logger.error(f"{repo_name}: {job['error']}")
+                return True
+            return False
+
+        if args.gate:
+            run_result = gate_runner.dispatch(
+                "run",
+                resolve_targets=_resolve_targets,
+                submit_one=_make_submit_one(args.gate),
+                stage=args.gate,
+                threads=args.threads,
+                max_workers=args.threads,
+            )
+            if run_result.get("status") == "clean":
+                runtime.logger.warning("No projects found for --gate.")
+            else:
+                runtime.logger.info(
+                    f"Running the {args.gate} gate across "
+                    f"{run_result['queued_count']} project(s) in parallel..."
+                )
+                failed_count = sum(
+                    1
+                    for repo_name, jid in run_result["jobs"].items()
+                    if _log_result(repo_name, jid)
+                )
+                if failed_count:
+                    has_errors = True
+                    runtime.logger.error(
+                        f"{args.gate} gate failed in {failed_count}/"
+                        f"{len(run_result['jobs'])} project(s)."
+                    )
+
+        if args.gate_retest:
+            retest_result = gate_runner.dispatch(
+                "retest",
+                resolve_targets=_resolve_targets,
+                submit_one=_make_submit_one(args.gate_retest),
+                stage=args.gate_retest,
+                threads=args.threads,
+                max_workers=args.threads,
+                gate_ledger=default_gate_ledger(),
+                escalate=True,
+                same_node=args.same_node,
+            )
+            runtime.logger.info(retest_result["message"])
+            failed_count = 0
+            for repo_name, entry in sorted(retest_result["targets"].items()):
+                job_id = entry.get("retest_job_id")
+                if not job_id:
+                    runtime.logger.info(
+                        f"{repo_name}: baseline={entry['baseline']}, nothing to retest."
+                    )
+                    continue
+                runtime.logger.info(
+                    f"{repo_name}: baseline={entry['baseline']}, "
+                    f"hook_ids={entry['retest_hook_ids']}, stale={entry['stale']}"
+                )
+                if _log_result(repo_name, job_id):
+                    failed_count += 1
+            if failed_count:
                 has_errors = True
                 runtime.logger.error(
-                    f"{args.gate} gate failed in {len(failed)}/{len(gate_results)} "
-                    "project(s)."
+                    f"--gate-retest found {failed_count}/"
+                    f"{len(retest_result['targets'])} project(s) still failing."
                 )
 
     if args.validate:

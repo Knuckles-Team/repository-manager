@@ -1498,7 +1498,7 @@ class Git:
         ``rm_gates action=run stage=heavy`` for those.
         """
         logger.info("Validating configured project")
-        return run_gate_stage(repo_path, "fast")
+        return run_gate_stage(repo_path, "fast", trigger="validate", colocated=True)
 
     def validate_and_release(
         self,
@@ -2266,7 +2266,13 @@ class Git:
         scope = f"{len(changed)} changed file(s)" if changed else "all files"
         logger.info("Running pre-push (HEAVY) gate over %s", scope)
         try:
-            result = run_gate_stage(target_path, "heavy", files=changed or None)
+            result = run_gate_stage(
+                target_path,
+                "heavy",
+                files=changed or None,
+                trigger="pre-push",
+                colocated=True,
+            )
         except Exception as e:  # pragma: no cover - tooling/env failure
             logger.warning("Operation failed: error_type=%s", type(e).__name__)
             return None

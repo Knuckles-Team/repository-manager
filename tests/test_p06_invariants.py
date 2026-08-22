@@ -15,7 +15,12 @@ import pytest
 from agent_utilities.governance.lanes import LaneScope, partitioned_paths
 
 from repository_manager import merge_queue as mq
-from repository_manager.test_commands import ensure_no_fail_fast, is_test_suite_command
+from repository_manager.test_commands import (
+    ensure_no_fail_fast,
+    is_go_test_command,
+    is_pytest_command,
+    is_test_suite_command,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -42,14 +47,85 @@ class TestEnsureNoFailFast:
         argv = ["cargo", "test", "--no-fail-fast", "--all-features"]
         assert ensure_no_fail_fast(argv) == argv
 
-    def test_leaves_non_test_commands_untouched(self) -> None:
+    def test_leaves_unrecognised_commands_untouched(self) -> None:
         for argv in (
             ["cargo", "check", "--all-features"],
             ["cargo", "clippy"],
-            ["pytest", "-q"],
+            ["go", "build", "./..."],
+            ["pnpm", "build"],
             ["./gate.sh"],
         ):
             assert ensure_no_fail_fast(argv) == argv
+
+    def test_pytest_without_fail_fast_flags_is_untouched(self) -> None:
+        """Recognising pytest must not mean rewriting an already-correct argv."""
+        argv = ["pytest", "tests", "-q", "--tb=short"]
+        assert ensure_no_fail_fast(argv) == argv
+
+    def test_strips_pytest_early_exit_flags(self) -> None:
+        """pytest truncates by OPT-IN, so correctness here means removing.
+
+        cargo stops early when a flag is ABSENT; pytest stops early when one is
+        PRESENT. Same invariant — the run reports every failure it found — so
+        the same chokepoint has to strip as well as append.
+        """
+        assert ensure_no_fail_fast(["pytest", "tests", "-x", "-q"]) == [
+            "pytest",
+            "tests",
+            "-q",
+        ]
+        assert ensure_no_fail_fast(["pytest", "tests", "--exitfirst"]) == [
+            "pytest",
+            "tests",
+        ]
+        assert ensure_no_fail_fast(["pytest", "tests", "--maxfail=1"]) == [
+            "pytest",
+            "tests",
+        ]
+        assert ensure_no_fail_fast(["pytest", "tests", "--maxfail", "3"]) == [
+            "pytest",
+            "tests",
+        ]
+
+    def test_maxfail_zero_is_left_alone(self) -> None:
+        """pytest reads ``--maxfail=0`` as "no limit" — it is not a truncation."""
+        argv = ["pytest", "tests", "--maxfail=0"]
+        assert ensure_no_fail_fast(argv) == argv
+
+    def test_strips_x_from_a_bundled_short_option(self) -> None:
+        """``-xvs`` hides a fail-fast; the bundle must lose only the ``x``."""
+        assert ensure_no_fail_fast(["pytest", "tests", "-xvs"]) == [
+            "pytest",
+            "tests",
+            "-vs",
+        ]
+        assert ensure_no_fail_fast(["pytest", "tests", "-x"]) == ["pytest", "tests"]
+
+    def test_recognises_pytest_behind_its_launchers(self) -> None:
+        """This fleet almost never invokes pytest directly."""
+        assert ensure_no_fail_fast(
+            ["uv", "run", "--all-extras", "pytest", "tests", "-x"]
+        ) == ["uv", "run", "--all-extras", "pytest", "tests"]
+        assert ensure_no_fail_fast(["python3", "-m", "pytest", "tests", "-x"]) == [
+            "python3",
+            "-m",
+            "pytest",
+            "tests",
+        ]
+
+    def test_strips_go_test_failfast(self) -> None:
+        assert ensure_no_fail_fast(["go", "test", "./...", "-failfast"]) == [
+            "go",
+            "test",
+            "./...",
+        ]
+
+    def test_recogniser_classification(self) -> None:
+        assert is_pytest_command(["uv", "run", "pytest"])
+        assert is_pytest_command(["python", "-m", "pytest", "tests"])
+        assert not is_pytest_command(["pnpm", "build"])
+        assert is_go_test_command(["go", "test", "./..."])
+        assert not is_go_test_command(["go", "build", "./..."])
 
     def test_is_test_suite_command_classification(self) -> None:
         assert is_test_suite_command(["cargo", "test"])
