@@ -41,6 +41,8 @@ subdirectories:
           description: Software AG ARIS REST API, MCP Server, and A2A Server.
         - url: https://github.com/Knuckles-Team/jena-mcp.git
           description: Apache Jena MCP Server for Agentic AI!
+        - url: https://github.com/Knuckles-Team/lakekeeper-mcp.git
+          description: Lakekeeper Iceberg REST catalog MCP server for Agentic AI.
         - url: https://github.com/Knuckles-Team/kafka-mcp.git
           description: Apache Kafka MCP Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/archivebox-api.git
