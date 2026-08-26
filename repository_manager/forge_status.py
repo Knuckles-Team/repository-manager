@@ -149,6 +149,67 @@ class ForgeBackend(Protocol):
 _GITHUB_RUN_STATES = frozenset({"queued", "in_progress", "completed"})
 
 
+class _Deferred:
+    """Sentinel: this backend's real forge client has not been built yet.
+
+    Distinct from ``None`` (the optional client package is not importable at
+    all -- every call degrades to ``"unknown"``, permanently). ``_DEFERRED``
+    means "buildable, just not built yet" -- :func:`_resolve_client`
+    materialises it lazily, on the first real ``latest_run_for_ref`` call.
+    """
+
+    __slots__ = ()
+
+
+_DEFERRED = _Deferred()
+
+
+def _resolve_client(backend: Any) -> Any:
+    """Build ``backend``'s deferred forge client on first real use.
+
+    Both real backends' underlying clients (``github_agent``'s ``Api`` /
+    ``gitlab_api``'s ``GitLabApiPipelines``) do live work in ``__init__`` --
+    ``github_agent.api.api_client_base.BaseApiClient.__init__`` makes an
+    actual ``GET .../user`` request against the configured host and raises
+    ``AuthError``/``UnauthorizedError`` on a 401/403 -- so constructing one
+    eagerly turns :func:`backend_for_remote`, whose only job is picking
+    *which* backend class a remote host maps to, into a live network call
+    with its own auth/rate-limit failure modes. That made backend
+    SELECTION only as reliable as an unauthenticated request to a public
+    API happening to succeed at that moment: an isolated test run stays
+    under GitHub's unauthenticated rate ceiling and the call quietly
+    succeeds (or the test never triggers it), while the same construction
+    inside the full suite -- run alongside every *other* test that also
+    builds a real, unauthenticated client against the same host -- can
+    trip the ceiling or hit a transient auth failure and raise straight out
+    of ``GitHubActionsBackend.__init__`` (there was no ``try/except`` around
+    it), failing ``backend_for_remote()`` itself rather than degrading
+    through the module's own unknown-state contract. Deferring construction
+    to first real use keeps selection pure (CONCEPT:RM-DEP-READY
+    ci-run-barrier's "never a stub" still holds -- the real client is still
+    built, just not as a side effect of choosing it) and keeps this
+    module's existing fail-soft ``try/except`` in
+    :meth:`GitHubActionsBackend.latest_run_for_ref` /
+    :meth:`GitLabPipelineBackend.latest_run_for_ref` as the ONE place a
+    construction failure is caught and degraded, exactly like every other
+    forge-outage mode this module already handles.
+    """
+    client = backend._client
+    if client is not _DEFERRED:
+        return client
+    try:
+        backend._client = backend._client_factory()
+    except Exception as exc:  # noqa: BLE001 - a forge outage must never raise
+        logger.warning(
+            "FORGE_STATUS_UNAVAILABLE: could not construct the forge client "
+            "(%s: %s) -- degrading to state='unknown'",
+            type(exc).__name__,
+            exc,
+        )
+        backend._client = None
+    return backend._client
+
+
 class GitHubActionsBackend:
     """:class:`ForgeBackend` over ``github_agent.api.api_client_workflows.Api``.
 
@@ -179,10 +240,16 @@ class GitHubActionsBackend:
             )
             self._client = None
             return
-        self._client = _GitHubWorkflowsApi(url=url, token=token)
+        # Deferred, not eager -- see :func:`_resolve_client`. The real
+        # ``github_agent`` client authenticates a live request in its own
+        # ``__init__``, so building it here would make mere backend
+        # SELECTION (``backend_for_remote``) a network call.
+        self._client_factory = lambda: _GitHubWorkflowsApi(url=url, token=token)
+        self._client = _DEFERRED
 
     def latest_run_for_ref(self, owner: str, repo: str, ref: str) -> RunStatus:
-        if self._client is None:
+        client = _resolve_client(self)
+        if client is None:
             logger.warning(
                 "FORGE_STATUS_UNAVAILABLE: no github_agent client available "
                 "for %s/%s@%s -- degrading to state='unknown'",
@@ -192,9 +259,7 @@ class GitHubActionsBackend:
             )
             return _UNKNOWN
         try:
-            response = self._client.get_workflow_runs(
-                owner=owner, repo=repo, branch=ref
-            )
+            response = client.get_workflow_runs(owner=owner, repo=repo, branch=ref)
             runs = response.data or []
         except Exception as exc:  # noqa: BLE001 - a forge outage must never raise
             logger.warning(
@@ -281,10 +346,19 @@ class GitLabPipelineBackend:
             )
             self._client = None
             return
-        self._client = _GitLabPipelinesApi(url=url, token=token)
+        # Deferred, not eager -- see :func:`_resolve_client`. The real
+        # ``gitlab_api`` client makes a live authenticated request in its own
+        # ``__init__`` (and raises ``MissingParameterError`` outright with no
+        # token/credentials at all), so building it here would make mere
+        # backend SELECTION (``backend_for_remote``) a network call -- and,
+        # with no token configured (the common case for a pure host-based
+        # selection call), an unconditional raise.
+        self._client_factory = lambda: _GitLabPipelinesApi(url=url, token=token)
+        self._client = _DEFERRED
 
     def latest_run_for_ref(self, owner: str, repo: str, ref: str) -> RunStatus:
-        if self._client is None:
+        client = _resolve_client(self)
+        if client is None:
             logger.warning(
                 "FORGE_STATUS_UNAVAILABLE: no gitlab_api client available "
                 "for %s/%s@%s -- degrading to state='unknown'",
@@ -295,7 +369,7 @@ class GitLabPipelineBackend:
             return _UNKNOWN
         project_id = quote(f"{owner}/{repo}", safe="")
         try:
-            response = self._client.get_pipelines(project_id=project_id, ref=ref)
+            response = client.get_pipelines(project_id=project_id, ref=ref)
             pipelines = response.data or []
         except Exception as exc:  # noqa: BLE001 - a forge outage must never raise
             logger.warning(

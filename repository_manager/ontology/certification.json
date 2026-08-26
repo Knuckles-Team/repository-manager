@@ -1,7 +1,7 @@
 {
   "api_version": "graphos.io/v1",
   "artifacts": {
-    "connector_manifest.yml": "4dff85ae6e02f389a333d4912cf29d38286f5473133d4c98b5a32fd242001099",
+    "connector_manifest.yml": "15c6a8a2897cf49de3fbbba531233b33993cbc95652559e2e985c43cc20bed06",
     "repository_manager/connectors/mcp_source_presets.json": "da1ba1e17e58fc486d4b0b08a9385a5a35771821dc0096c8d9f5daf023354efe",
     "repository_manager/connectors/tool_schema_fingerprints.json": "1a4709641d625748405ea29199e0e5dea77202096b38af53755ce60ebccc976a",
     "repository_manager/ontology/fixtures/records.json": "c891a92ceaa2a68e43cb5a20469acb663dc692cca1ea4b39d9644f0f28792961",
@@ -18,9 +18,9 @@
     "synthetic_fixture_contract": "passed"
   },
   "compatibility": {
-    "agent_utilities": ">=2.4.0,<3",
+    "agent_utilities": ">=2.5.0,<3",
     "bundle_schema": "2",
-    "epistemic_graph": ">=2.26.0,<3"
+    "epistemic_graph": ">=2.27.0,<3"
   },
   "connector": "repository-manager",
   "kind": "ConnectorSourceAttestation",
@@ -32,5 +32,5 @@
   "signer": "UNSIGNED-PREVIEW",
   "signing_public_key": "",
   "status": "source-validated",
-  "validated_at": "2026-08-21T04:30:39Z"
+  "validated_at": "2026-08-26T20:29:54Z"
 }
