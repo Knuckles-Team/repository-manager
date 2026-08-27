@@ -3711,47 +3711,11 @@ def freeze_release_plan(
                 allow_push=request.allow_push,
                 decision_context=request.decision_context,
             )
-        if selection is None or version_plan is None:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT,
-                "graph, selection, and version plan are required",
-            )
-        if (
-            type(graph) is not DependencyGraph
-            or type(selection) is not SelectedChangeClosure
-        ):
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT,
-                "graph and selection must be frozen C-11 models",
-            )
-        if type(version_plan) is not VersionPlan:
-            raise _fail(
-                ReleasePlanCode.VERSION_PLAN_DRIFT,
-                "version plan must be a frozen C-11 model",
-            )
-        graph = _snapshot_graph(graph)
-        selection = _snapshot_selection(selection)
-        version_plan = _revalidate_version_plan(version_plan)
-        if (
-            graph.digest != selection.source_graph.digest
-            or graph.canonical_payload() != selection.source_graph.canonical_payload()
-        ):
-            raise _fail(
-                ReleasePlanCode.GRAPH_DRIFT,
-                "graph does not match frozen selection source",
-            )
-        version_plan.validate_against(graph, selection)
-        workspace = _strict_opaque(
-            workspace_id, "workspace ID", max_length=MAX_STRING_LENGTH
+        graph, selection, version_plan = _freeze_validate_graph_selection_version(
+            graph, selection, version_plan
         )
-        if source_sha is None:
-            raise _fail(ReleasePlanCode.SOURCE_SHA, "source SHA is required")
-        if base_sha is None:
-            raise _fail(ReleasePlanCode.BASE_SHA, "base SHA is required")
-        source = _strict_sha(source_sha, "source SHA", code=ReleasePlanCode.SOURCE_SHA)
-        base = _strict_sha(base_sha, "base SHA", code=ReleasePlanCode.BASE_SHA)
-        generation = _strict_opaque(
-            generation_id, "generation ID", max_length=MAX_GENERATION_LENGTH
+        workspace, source, base, generation = _freeze_scalar_ids(
+            workspace_id, source_sha, base_sha, generation_id
         )
         decisions = _normalize_decision_context(
             decision_context,
@@ -3769,192 +3733,59 @@ def freeze_release_plan(
             timeout_policy=timeout_policy,
             timeout_seconds=timeout_seconds,
         )
-        selected = tuple(selection.selected_project_ids)
-        projects = tuple(selection.projects)
-        project_map = _project_map(projects)
-        if (
-            tuple(sorted(project_map)) != selected
-            or tuple(project_map[item] for item in selected) != projects
-        ):
-            raise _fail(
-                ReleasePlanCode.IDENTITY, "selection projects are not canonical"
-            )
-        edges = tuple(sorted(selection.edges, key=lambda edge: edge.value))
-        packages = _package_map(projects)
-        for edge in edges:
-            if (
-                edge.dependent.value not in packages
-                or edge.dependency.value not in packages
-            ):
-                raise _fail(
-                    ReleasePlanCode.MISSING, "selection edge names an unknown package"
-                )
-        project_edges = _project_edges(edges)
-        groups, _ = _topological_groups(selected, project_edges)
-        if groups != tuple(selection.parallel_groups):
-            raise _fail(
-                ReleasePlanCode.SELECTION_DRIFT,
-                "selection groups do not match frozen dependency order",
-            )
-        if validation_profile is not None and validation_profile_digest is not None:
-            raise _fail(
-                ReleasePlanCode.CONFLICT,
-                "validation profile declarations conflict",
-            )
-        if build_profile is not None and build_profile_digest is not None:
-            raise _fail(
-                ReleasePlanCode.CONFLICT,
-                "build profile declarations conflict",
-            )
-        validation_profile = (
-            validation_profile
-            if validation_profile is not None
-            else validation_profile_digest
-        )
-        build_profile = (
-            build_profile if build_profile is not None else build_profile_digest
-        )
-        validation = _normalize_profiles(
-            validation_profiles,
+        (
             selected,
-            ProfileKind.VALIDATION,
-            global_value=validation_profile,
+            projects,
+            project_map,
+            edges,
+            project_edges,
+            groups,
+        ) = _freeze_selected_projects_and_groups(selection)
+        validation, build, validation_map, build_map = _freeze_resolve_profiles(
+            validation_profiles,
+            build_profiles,
+            validation_profile,
+            build_profile,
+            validation_profile_digest,
+            build_profile_digest,
+            selected,
         )
-        build = _normalize_profiles(
-            build_profiles, selected, ProfileKind.BUILD, global_value=build_profile
-        )
-        validation_map = _profile_map(validation, ProfileKind.VALIDATION)
-        build_map = _profile_map(build, ProfileKind.BUILD)
-        consent_aliases = (push_consent, consent_reference, consent_ref)
-        consent_candidates = tuple(item for item in consent_aliases if item is not None)
-        if any(type(item) is not PushConsentReference for item in consent_candidates):
-            raise _fail(
-                ReleasePlanCode.CONSENT, "push consent must be immutable evidence"
-            )
-        # Rebuild every exact-type consent before comparing aliases.  A forged
-        # dataclass shell may carry hostile scalar fields whose hash/equality
-        # methods must never run during alias conflict detection.
-        consent_candidates = tuple(
-            cast(PushConsentReference, _revalidate_consent(item))
-            for item in consent_candidates
-        )
-        if len(set(consent_candidates)) > 1:
-            raise _fail(ReleasePlanCode.CONFLICT, "push consent references conflict")
-        consent = consent_candidates[0] if consent_candidates else None
-        if include_push is not None and type(include_push) is not bool:
-            raise _fail(
-                ReleasePlanCode.PUSH_CONSENT, "push inclusion flag must be boolean"
-            )
-        if allow_push is not None and type(allow_push) is not bool:
-            raise _fail(
-                ReleasePlanCode.PUSH_CONSENT, "push authorization flag must be boolean"
-            )
-        if (
-            include_push is not None
-            and allow_push is not None
-            and include_push != allow_push
-        ):
-            raise _fail(ReleasePlanCode.CONFLICT, "push flags conflict")
-        if (include_push is False or allow_push is False) and consent is not None:
-            raise _fail(
-                ReleasePlanCode.CONFLICT,
-                "explicit push exclusion conflicts with immutable consent",
-            )
-        if include_push is not None:
-            requested_push = include_push
-        elif allow_push is not None:
-            requested_push = allow_push
-        else:
-            requested_push = consent is not None
-        if requested_push and consent is None:
-            raise _fail(
-                ReleasePlanCode.PUSH_CONSENT,
-                "push requires an immutable consent reference",
-            )
-        accepted_consent = consent if requested_push else None
-        version_digests = tuple(
-            sorted(
-                _preview_digest(preview) for preview in version_plan.version_previews
-            )
-        )
-        floor_digests = tuple(
-            sorted(_preview_digest(preview) for preview in version_plan.floor_previews)
-        )
-        stages = _derive_stage_sequence(
+        consent = _freeze_resolve_consent(push_consent, consent_reference, consent_ref)
+        accepted_consent = _freeze_resolve_push(include_push, allow_push, consent)
+        stages, version_digests, floor_digests = _freeze_build_stages(
+            version_plan,
             selected=selected,
             project_map=project_map,
             project_edges=project_edges,
             groups=groups,
-            base_sha=base,
-            generation_id=generation,
-            graph_digest=graph.digest,
-            selection_digest=selection.digest,
-            version_plan_digest=version_plan.plan_digest,
-            version_preview_digests=version_digests,
-            floor_preview_digests=floor_digests,
-            validation=validation_map,
-            build=build_map,
-            decision_context=decisions,
-            consent=accepted_consent,
-        )
-        # Constructing the plan itself requires a digest.  Compute from an
-        # equivalent object with a temporary impossible digest is avoided by
-        # calculating a self-contained preimage payload here.
-        preimage = {
-            "contract_version": C11_FROZEN_PLAN_VERSION,
-            "workspace_id": workspace,
-            "source_sha": source,
-            "base_sha": base,
-            "generation_id": generation,
-            "graph_digest": graph.digest,
-            "selection_digest": selection.digest,
-            "version_plan_digest": version_plan.plan_digest,
-            "selected_projects": selected,
-            "projects": tuple(_project_payload(project) for project in projects),
-            "edges": tuple(_edge_payload(edge) for edge in edges),
-            "parallel_groups": groups,
-            "version_preview_digests": version_digests,
-            "floor_preview_digests": floor_digests,
-            "version_plan": version_plan.canonical_payload(include_digest=True),
-            "source_graph": {
-                **graph.canonical_payload(),
-                "digest": graph.digest,
-            },
-            "selection": selection.canonical_payload(include_digest=True),
-            "validation_profiles": tuple(
-                binding.canonical_payload() for binding in validation
-            ),
-            "build_profiles": tuple(binding.canonical_payload() for binding in build),
-            "decision_context": decisions.canonical_payload(),
-            "stages": tuple(
-                stage.canonical_payload(include_digests=True) for stage in stages
-            ),
-            "push_consent": accepted_consent.canonical_payload()
-            if accepted_consent
-            else None,
-        }
-        digest = _digest_payload(preimage)
-        return FrozenReleasePlan(
-            workspace_id=workspace,
-            source_sha=source,
-            base_sha=base,
-            generation_id=generation,
-            graph_digest=graph.digest,
-            selection_digest=selection.digest,
-            version_plan_digest=version_plan.plan_digest,
-            selected_projects=selected,
-            projects=projects,
-            edges=edges,
-            parallel_groups=groups,
-            version_plan=version_plan,
-            validation_profiles=validation,
-            build_profiles=build,
-            stages=stages,
+            base=base,
+            generation=generation,
             graph=graph,
             selection=selection,
-            decision_context=decisions,
-            push_consent=accepted_consent,
-            plan_digest=digest,
+            validation_map=validation_map,
+            build_map=build_map,
+            decisions=decisions,
+            accepted_consent=accepted_consent,
+        )
+        return _freeze_build_plan(
+            workspace=workspace,
+            source=source,
+            base=base,
+            generation=generation,
+            graph=graph,
+            selection=selection,
+            version_plan=version_plan,
+            selected=selected,
+            projects=projects,
+            edges=edges,
+            groups=groups,
+            version_digests=version_digests,
+            floor_digests=floor_digests,
+            validation=validation,
+            build=build,
+            decisions=decisions,
+            stages=stages,
+            accepted_consent=accepted_consent,
         )
     except ReleasePlanError:
         raise
@@ -3969,6 +3800,336 @@ def freeze_release_plan(
             "release plan inputs could not be materialized",
         ) from None
 
+
+def _freeze_validate_graph_selection_version(
+    graph: object, selection: object, version_plan: object
+) -> tuple[DependencyGraph, SelectedChangeClosure, VersionPlan]:
+    if selection is None or version_plan is None:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT,
+            "graph, selection, and version plan are required",
+        )
+    if type(graph) is not DependencyGraph or type(selection) is not SelectedChangeClosure:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT,
+            "graph and selection must be frozen C-11 models",
+        )
+    if type(version_plan) is not VersionPlan:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT,
+            "version plan must be a frozen C-11 model",
+        )
+    graph = _snapshot_graph(cast(DependencyGraph, graph))
+    selection = _snapshot_selection(cast(SelectedChangeClosure, selection))
+    version_plan = _revalidate_version_plan(cast(VersionPlan, version_plan))
+    if (
+        graph.digest != selection.source_graph.digest
+        or graph.canonical_payload() != selection.source_graph.canonical_payload()
+    ):
+        raise _fail(
+            ReleasePlanCode.GRAPH_DRIFT,
+            "graph does not match frozen selection source",
+        )
+    version_plan.validate_against(graph, selection)
+    return graph, selection, version_plan
+
+
+def _freeze_scalar_ids(
+    workspace_id: str, source_sha: str | None, base_sha: str | None, generation_id: str
+) -> tuple[str, str, str, str]:
+    workspace = _strict_opaque(
+        workspace_id, "workspace ID", max_length=MAX_STRING_LENGTH
+    )
+    if source_sha is None:
+        raise _fail(ReleasePlanCode.SOURCE_SHA, "source SHA is required")
+    if base_sha is None:
+        raise _fail(ReleasePlanCode.BASE_SHA, "base SHA is required")
+    source = _strict_sha(source_sha, "source SHA", code=ReleasePlanCode.SOURCE_SHA)
+    base = _strict_sha(base_sha, "base SHA", code=ReleasePlanCode.BASE_SHA)
+    generation = _strict_opaque(
+        generation_id, "generation ID", max_length=MAX_GENERATION_LENGTH
+    )
+    return workspace, source, base, generation
+
+
+def _freeze_selected_projects_and_groups(
+    selection: SelectedChangeClosure,
+) -> tuple[
+    tuple[str, ...],
+    tuple[ProjectRecord, ...],
+    dict[str, ProjectRecord],
+    tuple[DependencyEdge, ...],
+    tuple[tuple[str, str], ...],
+    tuple[tuple[str, ...], ...],
+]:
+    selected = tuple(selection.selected_project_ids)
+    projects = tuple(selection.projects)
+    project_map = _project_map(projects)
+    if (
+        tuple(sorted(project_map)) != selected
+        or tuple(project_map[item] for item in selected) != projects
+    ):
+        raise _fail(ReleasePlanCode.IDENTITY, "selection projects are not canonical")
+    edges = tuple(sorted(selection.edges, key=lambda edge: edge.value))
+    packages = _package_map(projects)
+    for edge in edges:
+        if edge.dependent.value not in packages or edge.dependency.value not in packages:
+            raise _fail(
+                ReleasePlanCode.MISSING, "selection edge names an unknown package"
+            )
+    project_edges = _project_edges(edges)
+    groups, _ = _topological_groups(selected, project_edges)
+    if groups != tuple(selection.parallel_groups):
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT,
+            "selection groups do not match frozen dependency order",
+        )
+    return selected, projects, project_map, edges, project_edges, groups
+
+
+def _freeze_resolve_profiles(
+    validation_profiles: object,
+    build_profiles: object,
+    validation_profile: object,
+    build_profile: object,
+    validation_profile_digest: object,
+    build_profile_digest: object,
+    selected: tuple[str, ...],
+) -> tuple[
+    tuple[ProfileBinding, ...],
+    tuple[ProfileBinding, ...],
+    dict[str, ProfileBinding],
+    dict[str, ProfileBinding],
+]:
+    if validation_profile is not None and validation_profile_digest is not None:
+        raise _fail(
+            ReleasePlanCode.CONFLICT,
+            "validation profile declarations conflict",
+        )
+    if build_profile is not None and build_profile_digest is not None:
+        raise _fail(
+            ReleasePlanCode.CONFLICT,
+            "build profile declarations conflict",
+        )
+    validation_profile = (
+        validation_profile
+        if validation_profile is not None
+        else validation_profile_digest
+    )
+    build_profile = (
+        build_profile if build_profile is not None else build_profile_digest
+    )
+    validation = _normalize_profiles(
+        validation_profiles,
+        selected,
+        ProfileKind.VALIDATION,
+        global_value=validation_profile,
+    )
+    build = _normalize_profiles(
+        build_profiles, selected, ProfileKind.BUILD, global_value=build_profile
+    )
+    validation_map = _profile_map(validation, ProfileKind.VALIDATION)
+    build_map = _profile_map(build, ProfileKind.BUILD)
+    return validation, build, validation_map, build_map
+
+
+def _freeze_resolve_consent(
+    push_consent: PushConsentReference | None,
+    consent_reference: PushConsentReference | None,
+    consent_ref: PushConsentReference | None,
+) -> PushConsentReference | None:
+    consent_aliases = (push_consent, consent_reference, consent_ref)
+    consent_candidates = tuple(item for item in consent_aliases if item is not None)
+    if any(type(item) is not PushConsentReference for item in consent_candidates):
+        raise _fail(
+            ReleasePlanCode.CONSENT, "push consent must be immutable evidence"
+        )
+    # Rebuild every exact-type consent before comparing aliases.  A forged
+    # dataclass shell may carry hostile scalar fields whose hash/equality
+    # methods must never run during alias conflict detection.
+    consent_candidates = tuple(
+        cast(PushConsentReference, _revalidate_consent(item))
+        for item in consent_candidates
+    )
+    if len(set(consent_candidates)) > 1:
+        raise _fail(ReleasePlanCode.CONFLICT, "push consent references conflict")
+    return consent_candidates[0] if consent_candidates else None
+
+
+def _freeze_resolve_push(
+    include_push: bool | None,
+    allow_push: bool | None,
+    consent: PushConsentReference | None,
+) -> PushConsentReference | None:
+    _freeze_validate_push_flags(include_push, allow_push, consent)
+    if include_push is not None:
+        requested_push = include_push
+    elif allow_push is not None:
+        requested_push = allow_push
+    else:
+        requested_push = consent is not None
+    if requested_push and consent is None:
+        raise _fail(
+            ReleasePlanCode.PUSH_CONSENT,
+            "push requires an immutable consent reference",
+        )
+    return consent if requested_push else None
+
+
+def _freeze_validate_push_flags(
+    include_push: bool | None,
+    allow_push: bool | None,
+    consent: PushConsentReference | None,
+) -> None:
+    _freeze_validate_push_flag_types_and_agreement(include_push, allow_push)
+    if (include_push is False or allow_push is False) and consent is not None:
+        raise _fail(
+            ReleasePlanCode.CONFLICT,
+            "explicit push exclusion conflicts with immutable consent",
+        )
+
+
+def _freeze_validate_push_flag_types_and_agreement(
+    include_push: bool | None, allow_push: bool | None
+) -> None:
+    if include_push is not None and type(include_push) is not bool:
+        raise _fail(
+            ReleasePlanCode.PUSH_CONSENT, "push inclusion flag must be boolean"
+        )
+    if allow_push is not None and type(allow_push) is not bool:
+        raise _fail(
+            ReleasePlanCode.PUSH_CONSENT, "push authorization flag must be boolean"
+        )
+    if (
+        include_push is not None
+        and allow_push is not None
+        and include_push != allow_push
+    ):
+        raise _fail(ReleasePlanCode.CONFLICT, "push flags conflict")
+
+
+def _freeze_build_stages(
+    version_plan: VersionPlan,
+    *,
+    selected: tuple[str, ...],
+    project_map: dict[str, ProjectRecord],
+    project_edges: tuple[tuple[str, str], ...],
+    groups: tuple[tuple[str, ...], ...],
+    base: str,
+    generation: str,
+    graph: DependencyGraph,
+    selection: SelectedChangeClosure,
+    validation_map: dict[str, ProfileBinding],
+    build_map: dict[str, ProfileBinding],
+    decisions: ReleaseDecisionContext,
+    accepted_consent: PushConsentReference | None,
+) -> tuple[tuple[StagePreview, ...], tuple[str, ...], tuple[str, ...]]:
+    version_digests = tuple(
+        sorted(_preview_digest(preview) for preview in version_plan.version_previews)
+    )
+    floor_digests = tuple(
+        sorted(_preview_digest(preview) for preview in version_plan.floor_previews)
+    )
+    stages = _derive_stage_sequence(
+        selected=selected,
+        project_map=project_map,
+        project_edges=project_edges,
+        groups=groups,
+        base_sha=base,
+        generation_id=generation,
+        graph_digest=graph.digest,
+        selection_digest=selection.digest,
+        version_plan_digest=version_plan.plan_digest,
+        version_preview_digests=version_digests,
+        floor_preview_digests=floor_digests,
+        validation=validation_map,
+        build=build_map,
+        decision_context=decisions,
+        consent=accepted_consent,
+    )
+    return stages, version_digests, floor_digests
+
+
+def _freeze_build_plan(
+    *,
+    workspace: str,
+    source: str,
+    base: str,
+    generation: str,
+    graph: DependencyGraph,
+    selection: SelectedChangeClosure,
+    version_plan: VersionPlan,
+    selected: tuple[str, ...],
+    projects: tuple[ProjectRecord, ...],
+    edges: tuple[DependencyEdge, ...],
+    groups: tuple[tuple[str, ...], ...],
+    version_digests: tuple[str, ...],
+    floor_digests: tuple[str, ...],
+    validation: tuple[ProfileBinding, ...],
+    build: tuple[ProfileBinding, ...],
+    decisions: ReleaseDecisionContext,
+    stages: tuple[StagePreview, ...],
+    accepted_consent: PushConsentReference | None,
+) -> FrozenReleasePlan:
+    # Constructing the plan itself requires a digest.  Compute from an
+    # equivalent object with a temporary impossible digest is avoided by
+    # calculating a self-contained preimage payload here.
+    preimage = {
+        "contract_version": C11_FROZEN_PLAN_VERSION,
+        "workspace_id": workspace,
+        "source_sha": source,
+        "base_sha": base,
+        "generation_id": generation,
+        "graph_digest": graph.digest,
+        "selection_digest": selection.digest,
+        "version_plan_digest": version_plan.plan_digest,
+        "selected_projects": selected,
+        "projects": tuple(_project_payload(project) for project in projects),
+        "edges": tuple(_edge_payload(edge) for edge in edges),
+        "parallel_groups": groups,
+        "version_preview_digests": version_digests,
+        "floor_preview_digests": floor_digests,
+        "version_plan": version_plan.canonical_payload(include_digest=True),
+        "source_graph": {
+            **graph.canonical_payload(),
+            "digest": graph.digest,
+        },
+        "selection": selection.canonical_payload(include_digest=True),
+        "validation_profiles": tuple(
+            binding.canonical_payload() for binding in validation
+        ),
+        "build_profiles": tuple(binding.canonical_payload() for binding in build),
+        "decision_context": decisions.canonical_payload(),
+        "stages": tuple(
+            stage.canonical_payload(include_digests=True) for stage in stages
+        ),
+        "push_consent": accepted_consent.canonical_payload()
+        if accepted_consent
+        else None,
+    }
+    digest = _digest_payload(preimage)
+    return FrozenReleasePlan(
+        workspace_id=workspace,
+        source_sha=source,
+        base_sha=base,
+        generation_id=generation,
+        graph_digest=graph.digest,
+        selection_digest=selection.digest,
+        version_plan_digest=version_plan.plan_digest,
+        selected_projects=selected,
+        projects=projects,
+        edges=edges,
+        parallel_groups=groups,
+        version_plan=version_plan,
+        validation_profiles=validation,
+        build_profiles=build,
+        stages=stages,
+        graph=graph,
+        selection=selection,
+        decision_context=decisions,
+        push_consent=accepted_consent,
+        plan_digest=digest,
+    )
 
 def build_frozen_release_plan(*args: object, **kwargs: object) -> FrozenReleasePlan:
     """Compatibility factory alias for :func:`freeze_release_plan`."""
