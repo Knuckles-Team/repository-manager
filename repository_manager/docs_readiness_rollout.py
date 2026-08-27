@@ -250,8 +250,10 @@ def default_manifest_path() -> Path:
     return Path(__file__).with_name(MANIFEST_FILENAME)
 
 
-def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
-    """Load and validate the exact 75-project manifest."""
+def _load_manifest_data(path: Path | None) -> Any:
+    """Verbatim relocation of ``load_fleet_manifest``'s source-resolution,
+    bounded-read, and JSON-parse steps; no side effect, order, or condition
+    changed."""
 
     source = path or default_manifest_path()
     raw = _read_bounded(
@@ -261,6 +263,13 @@ def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise RolloutError("manifest-json-invalid") from exc
+    return data
+
+
+def _validate_manifest_schema_shape(data: Any) -> None:
+    """Verbatim relocation of ``load_fleet_manifest``'s schema-version and
+    top-level-key-set checks; no side effect, order, or condition changed."""
+
     if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:
         raise RolloutError("manifest-schema-invalid")
     if set(data) != {
@@ -275,10 +284,23 @@ def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
         "projects",
     }:
         raise RolloutError("manifest-schema-invalid")
+
+
+def _validate_manifest_name_and_authority(data: dict[str, Any]) -> None:
+    """Verbatim relocation of ``load_fleet_manifest``'s manifest_name/
+    source_authority checks; no side effect, order, or condition changed."""
+
     if not isinstance(data.get("manifest_name"), str) or not data["manifest_name"]:
         raise RolloutError("manifest-name-invalid")
     if data.get("source_authority") != MANIFEST_SOURCE_AUTHORITY:
         raise RolloutError("manifest-source-authority-invalid")
+
+
+def _validate_manifest_policy_and_count(data: dict[str, Any]) -> int:
+    """Verbatim relocation of ``load_fleet_manifest``'s surface_policy/
+    expected_publishable_count checks; no side effect, order, or condition
+    changed. Returns ``expected_publishable_count``."""
+
     policy = data.get("surface_policy")
     if (
         not isinstance(policy, dict)
@@ -289,6 +311,22 @@ def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
     expected = data.get("expected_publishable_count")
     if type(expected) is not int or expected != EXPECTED_PUBLISHABLE_COUNT:
         raise RolloutError("manifest-cardinality-invalid")
+    return expected
+
+
+def _validate_manifest_metadata(data: dict[str, Any]) -> int:
+    """Thin orchestrator over the manifest_name/source_authority checks and
+    the surface_policy/expected_publishable_count checks, called in the same
+    order as the original inline statements. Returns
+    ``expected_publishable_count``."""
+
+    _validate_manifest_name_and_authority(data)
+    return _validate_manifest_policy_and_count(data)
+
+
+def _validate_manifest_excluded(data: dict[str, Any]) -> tuple[str, ...]:
+    """Verbatim relocation of ``load_fleet_manifest``'s exclusions checks; no
+    side effect, order, or condition changed."""
 
     excluded_raw = data.get("excluded")
     if not isinstance(excluded_raw, list) or len(excluded_raw) != 1:
@@ -301,36 +339,93 @@ def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
         or excluded.get("reason") != "test-fixture-not-publishable"
     ):
         raise RolloutError("manifest-exclusions-invalid")
-    excluded_identities = ("agent-packages/agents/tests",)
+    return ("agent-packages/agents/tests",)
+
+
+def _validate_wave_row(row: Any) -> WaveSpec:
+    """Verbatim relocation of ``load_fleet_manifest``'s per-row wave-shape
+    checks from its waves loop body; no side effect, order, or condition
+    changed."""
+
+    if not isinstance(row, dict) or set(row) != {
+        "number",
+        "name",
+        "expected_count",
+    }:
+        raise RolloutError("manifest-waves-invalid")
+    number, name, count = (
+        row.get("number"),
+        row.get("name"),
+        row.get("expected_count"),
+    )
+    if (
+        type(number) is not int
+        or number < 1
+        or not isinstance(name, str)
+        or not re.fullmatch(r"[a-z0-9-]{1,48}", name)
+        or type(count) is not int
+        or count < 1
+    ):
+        raise RolloutError("manifest-waves-invalid")
+    return WaveSpec(number=number, name=name, expected_count=count)
+
+
+def _validate_manifest_waves(data: dict[str, Any]) -> list[WaveSpec]:
+    """Verbatim relocation of ``load_fleet_manifest``'s waves-list checks;
+    the per-row loop body is now ``_validate_wave_row`` (same per-row
+    checks, same left-to-right evaluation/short-circuit order via a list
+    comprehension in place of an explicit ``for``+``append`` loop); no side
+    effect, order, or condition changed."""
 
     waves_raw = data.get("waves")
     if not isinstance(waves_raw, list) or not waves_raw:
         raise RolloutError("manifest-waves-invalid")
-    waves: list[WaveSpec] = []
-    for row in waves_raw:
-        if not isinstance(row, dict) or set(row) != {
-            "number",
-            "name",
-            "expected_count",
-        }:
-            raise RolloutError("manifest-waves-invalid")
-        number, name, count = (
-            row.get("number"),
-            row.get("name"),
-            row.get("expected_count"),
-        )
-        if (
-            type(number) is not int
-            or number < 1
-            or not isinstance(name, str)
-            or not re.fullmatch(r"[a-z0-9-]{1,48}", name)
-            or type(count) is not int
-            or count < 1
-        ):
-            raise RolloutError("manifest-waves-invalid")
-        waves.append(WaveSpec(number=number, name=name, expected_count=count))
+    waves = [_validate_wave_row(row) for row in waves_raw]
     if tuple(wave.number for wave in waves) != tuple(range(1, len(waves) + 1)):
         raise RolloutError("manifest-wave-order-invalid")
+    return waves
+
+
+def _validate_project_row(
+    row: Any, waves: list[WaveSpec], seen: set[str]
+) -> ProjectSpec:
+    """Verbatim relocation of ``load_fleet_manifest``'s per-row project
+    checks from its projects loop body, including the ``seen`` mutation; no
+    side effect, order, or condition changed."""
+
+    if not isinstance(row, dict) or set(row) != {"identity", "wave"}:
+        raise RolloutError("manifest-project-invalid")
+    identity = _validate_identity(row.get("identity"))
+    wave = row.get("wave")
+    if type(wave) is not int or wave < 1 or wave > len(waves):
+        raise RolloutError("manifest-project-invalid")
+    if identity in seen:
+        raise RolloutError("manifest-duplicate-project")
+    seen.add(identity)
+    return ProjectSpec(identity=identity, wave=wave)
+
+
+def _validate_wave_cardinality(
+    waves: list[WaveSpec], projects: list[ProjectSpec]
+) -> None:
+    """Verbatim relocation of ``load_fleet_manifest``'s wave-cardinality
+    count check; no side effect, order, or condition changed."""
+
+    counts = {number: 0 for number in range(1, len(waves) + 1)}
+    for project in projects:
+        counts[project.wave] += 1
+    if any(wave.expected_count != counts[wave.number] for wave in waves):
+        raise RolloutError("manifest-wave-cardinality-invalid")
+
+
+def _validate_manifest_projects(
+    data: dict[str, Any], expected: int, waves: list[WaveSpec]
+) -> tuple[list[ProjectSpec], set[str]]:
+    """Verbatim relocation of ``load_fleet_manifest``'s projects-list checks
+    (per-row body now ``_validate_project_row``, called in the same
+    ``for row in projects_raw`` order) plus the project-order and
+    wave-cardinality checks that follow it; no side effect, order, or
+    condition changed."""
 
     projects_raw = data.get("projects")
     if not isinstance(projects_raw, list) or len(projects_raw) != expected:
@@ -338,23 +433,41 @@ def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
     projects: list[ProjectSpec] = []
     seen: set[str] = set()
     for row in projects_raw:
-        if not isinstance(row, dict) or set(row) != {"identity", "wave"}:
-            raise RolloutError("manifest-project-invalid")
-        identity = _validate_identity(row.get("identity"))
-        wave = row.get("wave")
-        if type(wave) is not int or wave < 1 or wave > len(waves):
-            raise RolloutError("manifest-project-invalid")
-        if identity in seen:
-            raise RolloutError("manifest-duplicate-project")
-        seen.add(identity)
-        projects.append(ProjectSpec(identity=identity, wave=wave))
+        projects.append(_validate_project_row(row, waves, seen))
     if tuple(project.identity for project in projects) != tuple(sorted(seen)):
         raise RolloutError("manifest-project-order-invalid")
-    counts = {number: 0 for number in range(1, len(waves) + 1)}
-    for project in projects:
-        counts[project.wave] += 1
-    if any(wave.expected_count != counts[wave.number] for wave in waves):
-        raise RolloutError("manifest-wave-cardinality-invalid")
+    _validate_wave_cardinality(waves, projects)
+    return projects, seen
+
+
+def _validate_manifest_finding_list(
+    findings_raw: dict[str, Any], seen: set[str], key: str, expected_count: int
+) -> tuple[str, ...]:
+    """Verbatim relocation of ``load_fleet_manifest``'s nested
+    ``finding_list`` closure, with ``findings_raw``/``seen`` now explicit
+    parameters instead of closed-over locals; no side effect, order, or
+    condition changed."""
+
+    values = findings_raw.get(key)
+    if not isinstance(values, list) or len(values) != expected_count:
+        raise RolloutError("manifest-findings-invalid")
+    normalized = tuple(_validate_identity(value) for value in values)
+    if (
+        len(set(normalized)) != expected_count
+        or normalized != tuple(sorted(normalized))
+        or not set(normalized) <= seen
+    ):
+        raise RolloutError("manifest-findings-invalid")
+    return normalized
+
+
+def _validate_manifest_findings(
+    data: dict[str, Any], seen: set[str]
+) -> SourceFindings:
+    """Verbatim relocation of ``load_fleet_manifest``'s source_findings
+    shape check and the two ``finding_list`` calls (same left-to-right
+    keyword-argument evaluation order as the original); no side effect,
+    order, or condition changed."""
 
     findings_raw = data.get("source_findings")
     if not isinstance(findings_raw, dict) or set(findings_raw) != {
@@ -362,24 +475,26 @@ def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
         "missing_site_urls",
     }:
         raise RolloutError("manifest-findings-invalid")
-
-    def finding_list(key: str, expected_count: int) -> tuple[str, ...]:
-        values = findings_raw.get(key)
-        if not isinstance(values, list) or len(values) != expected_count:
-            raise RolloutError("manifest-findings-invalid")
-        normalized = tuple(_validate_identity(value) for value in values)
-        if (
-            len(set(normalized)) != expected_count
-            or normalized != tuple(sorted(normalized))
-            or not set(normalized) <= seen
-        ):
-            raise RolloutError("manifest-findings-invalid")
-        return normalized
-
-    findings = SourceFindings(
-        missing_pages_workflows=finding_list("missing_pages_workflows", 2),
-        missing_site_urls=finding_list("missing_site_urls", 4),
+    return SourceFindings(
+        missing_pages_workflows=_validate_manifest_finding_list(
+            findings_raw, seen, "missing_pages_workflows", 2
+        ),
+        missing_site_urls=_validate_manifest_finding_list(
+            findings_raw, seen, "missing_site_urls", 4
+        ),
     )
+
+
+def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
+    """Load and validate the exact 75-project manifest."""
+
+    data = _load_manifest_data(path)
+    _validate_manifest_schema_shape(data)
+    expected = _validate_manifest_metadata(data)
+    excluded_identities = _validate_manifest_excluded(data)
+    waves = _validate_manifest_waves(data)
+    projects, seen = _validate_manifest_projects(data, expected, waves)
+    findings = _validate_manifest_findings(data, seen)
     provisional = FleetManifest(
         schema_version=SCHEMA_VERSION,
         manifest_name=data["manifest_name"],
