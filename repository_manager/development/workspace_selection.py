@@ -20,7 +20,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from .workspace_release import (
     MAX_EDGES,
@@ -623,6 +623,448 @@ def _closure_digest(closure: SelectedChangeClosure) -> str:
     ).hexdigest()
 
 
+
+def _verify_closure_policy_and_source(
+    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+) -> None:
+    """Stage 1: policy/source-graph type checks, known/selected
+    canonicalization, and the policy-uses-known-ids check. Extracted
+    verbatim from ``SelectedChangeClosure.__post_init__`` — same order, same
+    raised messages.
+    """
+    if not isinstance(closure.policy, SelectionPolicy):
+        raise SelectionError("closure policy must be a SelectionPolicy")
+    if not isinstance(closure.source_graph, DependencyGraph):
+        raise SelectionError("closure requires a frozen source DependencyGraph")
+    (
+        source_known,
+        source_project_map,
+        _source_package_map,
+        source_edges,
+        source_project_edges,
+    ) = _graph_inventory(closure.source_graph)
+    known = _canonical_ids(
+        closure.known_project_ids,
+        "known project IDs",
+        allow_empty=False,
+    )
+    selected = _canonical_ids(
+        closure.selected_project_ids,
+        "selected project IDs",
+        allow_empty=False,
+    )
+    if not set(selected).issubset(known):
+        raise SelectionError("selected project IDs must be known project IDs")
+    if known != source_known:
+        raise SelectionError(
+            "closure known projects must match the frozen source graph"
+        )
+    if not (
+        set(closure.policy.changed_projects) | set(closure.policy.selected_projects)
+    ).issubset(set(known)):
+        raise SelectionError("closure policy must use known project IDs")
+    ctx["known"] = known
+    ctx["selected"] = selected
+    ctx["source_project_map"] = source_project_map
+    ctx["source_edges"] = source_edges
+    ctx["source_project_edges"] = source_project_edges
+
+
+def _verify_closure_projects(
+    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+) -> None:
+    """Stage 2: closure.projects must exactly match the selected set AND the
+    frozen source graph. Extracted verbatim from
+    ``SelectedChangeClosure.__post_init__``.
+    """
+    selected = ctx["selected"]
+    source_project_map = ctx["source_project_map"]
+    project_values = _typed_sequence(
+        closure.projects,
+        "closure projects",
+        ProjectRecord,
+        max_items=MAX_PROJECTS,
+    )
+    project_map = {project.project_id: project for project in project_values}
+    if (
+        len(project_map) != len(project_values)
+        or tuple(sorted(project_map)) != selected
+    ):
+        raise SelectionError(
+            "closure projects must exactly match selected project IDs"
+        )
+    expected_projects = tuple(
+        source_project_map[project_id] for project_id in selected
+    )
+    if (
+        tuple(project_map[project_id] for project_id in selected)
+        != expected_projects
+    ):
+        raise SelectionError(
+            "closure projects must exactly match the frozen source graph"
+        )
+    ctx["project_values"] = project_values
+    ctx["project_map"] = project_map
+
+
+def _build_closure_package_map(
+    project_values: tuple["ProjectRecord", ...],
+) -> dict[str, "PackageRecord"]:
+    """Build the package-identity map for closure.edges validation, raising
+    on any duplicate package identity across the closure's projects.
+    Extracted verbatim from ``SelectedChangeClosure.__post_init__``'s edge
+    validation (the package_map nested loop).
+    """
+    package_map: dict[str, PackageRecord] = {}
+    for project in project_values:
+        for package in project.packages:
+            package_id = package.key.value
+            if package_id in package_map:
+                raise SelectionError(
+                    "closure projects must not duplicate package identities"
+                )
+            package_map[package_id] = package
+    return package_map
+
+
+def _validate_closure_edge_membership(
+    edges: tuple["DependencyEdge", ...],
+    package_ids: set[str],
+    selected: tuple[str, ...],
+) -> None:
+    """Validate each closure edge is dedup'd, uses frozen package
+    identities, and stays within the selected project set. Extracted
+    verbatim from ``SelectedChangeClosure.__post_init__``'s edge validation
+    loop.
+    """
+    edge_keys: set[tuple[str, str]] = set()
+    for edge in edges:
+        key = (edge.dependent.value, edge.dependency.value)
+        if key in edge_keys:
+            raise SelectionError("closure edges must not duplicate endpoints")
+        edge_keys.add(key)
+        if (
+            edge.dependent.value not in package_ids
+            or edge.dependency.value not in package_ids
+        ):
+            raise SelectionError("closure edges must use frozen package identities")
+        if {
+            edge.dependent_project_id,
+            edge.dependency_project_id,
+        } - set(selected):
+            raise SelectionError("closure edges must use selected projects")
+
+
+def _verify_closure_edges(
+    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+) -> None:
+    """Stage 3: closure.edges must be package-identity-consistent, dedup'd,
+    scoped to selected projects, and exactly match the source graph's
+    selected-subset edges. Extracted verbatim from
+    ``SelectedChangeClosure.__post_init__``.
+    """
+    selected = ctx["selected"]
+    project_values = ctx["project_values"]
+    source_edges = ctx["source_edges"]
+    edges = _typed_sequence(
+        closure.edges,
+        "closure edges",
+        DependencyEdge,
+        max_items=MAX_EDGES,
+    )
+    package_map = _build_closure_package_map(project_values)
+    package_ids = set(package_map)
+    _validate_closure_edge_membership(edges, package_ids, selected)
+    ordered_edges = tuple(sorted(edges, key=_edge_sort_key))
+    expected_selected_edges = tuple(
+        edge
+        for edge in source_edges
+        if edge.dependent_project_id in selected
+        and edge.dependency_project_id in selected
+    )
+    if ordered_edges != expected_selected_edges:
+        raise SelectionError(
+            "closure edges must exactly match the frozen source graph"
+        )
+    ctx["ordered_edges"] = ordered_edges
+
+
+def _canonicalize_closure_project_edge(
+    item: Any, project_edge_set: set[tuple[str, str]], selected: tuple[str, ...]
+) -> tuple[str, str]:
+    """Validate and canonicalize one raw project-edge pair, checking it is a
+    well-formed string pair, not a duplicate, not a self-edge, and scoped to
+    the selected projects. Extracted verbatim from
+    ``SelectedChangeClosure.__post_init__``'s project-edge validation loop
+    body.
+    """
+    if not isinstance(item, (tuple, list)) or len(item) != 2:
+        raise SelectionError("closure project edges must contain pairs")
+    dependent, dependency = item
+    if not isinstance(dependent, str) or not isinstance(dependency, str):
+        raise SelectionError("closure project edge endpoints must be strings")
+    pair = (
+        canonical_repository_id(dependent),
+        canonical_repository_id(dependency),
+    )
+    if pair in project_edge_set:
+        raise SelectionError("closure project edges must not duplicate")
+    if pair[0] == pair[1]:
+        raise SelectionError("closure project edges must not contain self edges")
+    if set(pair) - set(selected):
+        raise SelectionError("closure project edges must use selected projects")
+    return pair
+
+
+def _verify_closure_project_edges(
+    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+) -> None:
+    """Stage 4: closure.project_edges must be well-formed pairs, dedup'd,
+    non-self, scoped to selected projects, and exactly match the
+    package-edge projection. Extracted verbatim from
+    ``SelectedChangeClosure.__post_init__``.
+    """
+    selected = ctx["selected"]
+    ordered_edges = ctx["ordered_edges"]
+    project_edge_values = _bounded_sequence(
+        closure.project_edges,
+        "closure project edges",
+        max_items=MAX_EDGES,
+    )
+    project_edge_set: set[tuple[str, str]] = set()
+    for item in project_edge_values:
+        pair = _canonicalize_closure_project_edge(item, project_edge_set, selected)
+        project_edge_set.add(pair)
+    expected_project_edges = {
+        (edge.dependent_project_id, edge.dependency_project_id)
+        for edge in ordered_edges
+        if edge.dependent_project_id != edge.dependency_project_id
+    }
+    if project_edge_set != expected_project_edges:
+        raise SelectionError(
+            "closure project edges must match selected package edges"
+        )
+    ctx["project_edge_set"] = project_edge_set
+    ctx["ordered_project_edges"] = tuple(sorted(project_edge_set))
+
+
+def _verify_closure_source_edges_and_evidence(
+    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+) -> None:
+    """Stage 5: project_edges must match the source graph's selected-subset
+    project edges, and the selected set must match the policy's own closure
+    evidence. Extracted verbatim from
+    ``SelectedChangeClosure.__post_init__``.
+    """
+    known = ctx["known"]
+    selected = ctx["selected"]
+    project_edge_set = ctx["project_edge_set"]
+    source_project_edges = ctx["source_project_edges"]
+    ordered_source_edges = source_project_edges
+    expected_selected_source_edges = {
+        pair for pair in ordered_source_edges if set(pair).issubset(set(selected))
+    }
+    if expected_selected_source_edges != project_edge_set:
+        raise SelectionError(
+            "closure project edges must match selected source graph edges"
+        )
+    expected_included, expected_reasons, expected_via = _selection_evidence(
+        closure.policy, known, ordered_source_edges
+    )
+    if selected != tuple(sorted(expected_included)):
+        raise SelectionError(
+            "selected project IDs must exactly match policy closure evidence"
+        )
+    ctx["expected_included"] = expected_included
+    ctx["expected_reasons"] = expected_reasons
+    ctx["expected_via"] = expected_via
+
+
+def _verify_closure_parallel_groups(
+    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+) -> None:
+    """Stage 6: parallel_groups must be well-formed, canonical, cover every
+    selected project exactly once, and match the deterministic topological
+    order. Extracted verbatim from
+    ``SelectedChangeClosure.__post_init__``.
+    """
+    selected = ctx["selected"]
+    ordered_project_edges = ctx["ordered_project_edges"]
+    group_values = _bounded_sequence(
+        closure.parallel_groups,
+        "closure parallel groups",
+        max_items=MAX_PROJECTS,
+    )
+    normalized_groups: list[tuple[str, ...]] = []
+    grouped: list[str] = []
+    for group in group_values:
+        members = _canonical_refs(
+            group,
+            "closure parallel group",
+        )
+        if not members:
+            raise SelectionError("closure parallel groups must not contain empties")
+        if len(members) != len(set(members)):
+            raise SelectionError("closure parallel group members must be unique")
+        if members != tuple(sorted(members)):
+            raise SelectionError(
+                "closure parallel group members must be canonical and ordered"
+            )
+        normalized_groups.append(members)
+        grouped.extend(members)
+    if set(grouped) != set(selected) or len(grouped) != len(set(grouped)):
+        raise SelectionError(
+            "closure parallel groups must contain every selected project once"
+        )
+    expected_groups, cycle_diagnostics = _topological_groups(
+        selected, ordered_project_edges
+    )
+    if cycle_diagnostics:
+        raise GraphValidationError(cycle_diagnostics)
+    if tuple(normalized_groups) != expected_groups:
+        raise SelectionError(
+            "closure parallel groups must match deterministic dependency order"
+        )
+    ctx["normalized_groups"] = normalized_groups
+
+
+def _verify_closure_explanation_matches_evidence(
+    project_id: str,
+    explanation_map: dict[str, "SelectionExplanation"],
+    expected_included: Any,
+    expected_reasons: Any,
+    expected_via: Any,
+) -> None:
+    """Validate one project's explanation matches the policy's derived
+    closure evidence exactly (included/reasons/via_projects). Extracted
+    verbatim from ``SelectedChangeClosure.__post_init__``'s per-project
+    explanation-matching loop body.
+    """
+    explanation = explanation_map[project_id]
+    expected_included_value = project_id in expected_included
+    expected_reasons_value = (
+        tuple(
+            sorted(
+                expected_reasons[project_id],
+                key=lambda item: item.value,
+            )
+        )
+        if expected_included_value
+        else (SelectionReason.EXCLUDED,)
+    )
+    expected_via_value = (
+        tuple(sorted(expected_via[project_id])) if expected_included_value else ()
+    )
+    if (
+        explanation.included != expected_included_value
+        or explanation.reasons != expected_reasons_value
+        or explanation.via_projects != expected_via_value
+    ):
+        raise SelectionError(
+            "closure explanations do not match policy and source graph evidence"
+        )
+
+
+def _verify_closure_explanations(
+    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+) -> None:
+    """Stage 7: explanations must cover every known project exactly once,
+    with witnesses restricted to known projects, and must match the policy's
+    closure evidence exactly. Extracted verbatim from
+    ``SelectedChangeClosure.__post_init__``.
+    """
+    known = ctx["known"]
+    expected_included = ctx["expected_included"]
+    expected_reasons = ctx["expected_reasons"]
+    expected_via = ctx["expected_via"]
+    explanation_values = _typed_sequence(
+        closure.explanations,
+        "closure explanations",
+        SelectionExplanation,
+        max_items=MAX_PROJECTS,
+    )
+    explanation_map = {item.project_id: item for item in explanation_values}
+    if (
+        len(explanation_map) != len(explanation_values)
+        or tuple(sorted(explanation_map)) != known
+    ):
+        raise SelectionError(
+            "closure explanations must cover every known project exactly once"
+        )
+    if any(
+        set(explanation.via_projects) - set(known)
+        for explanation in explanation_values
+    ):
+        raise SelectionError("closure explanation witnesses must be known projects")
+    for project_id in known:
+        _verify_closure_explanation_matches_evidence(
+            project_id, explanation_map, expected_included, expected_reasons, expected_via
+        )
+    ctx["explanation_map"] = explanation_map
+
+
+def _finalize_closure_state(
+    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+) -> None:
+    """Final stage: freeze the canonicalized field values onto ``closure``
+    via ``object.__setattr__``, then validate/derive the content digest.
+    Extracted verbatim from ``SelectedChangeClosure.__post_init__`` — same
+    order (digest handling reads the just-mutated attributes via
+    ``canonical_payload()``, so it must run AFTER the ``__setattr__`` calls).
+    """
+    known = ctx["known"]
+    selected = ctx["selected"]
+    project_map = ctx["project_map"]
+    ordered_edges = ctx["ordered_edges"]
+    ordered_project_edges = ctx["ordered_project_edges"]
+    normalized_groups = ctx["normalized_groups"]
+    explanation_map = ctx["explanation_map"]
+
+    object.__setattr__(closure, "known_project_ids", known)
+    object.__setattr__(closure, "selected_project_ids", selected)
+    object.__setattr__(
+        closure, "projects", tuple(project_map[item] for item in selected)
+    )
+    object.__setattr__(closure, "edges", ordered_edges)
+    object.__setattr__(closure, "project_edges", ordered_project_edges)
+    object.__setattr__(closure, "parallel_groups", tuple(normalized_groups))
+    object.__setattr__(
+        closure, "explanations", tuple(explanation_map[item] for item in known)
+    )
+    if not isinstance(closure.digest, str):
+        raise SelectionError("closure digest must be a string")
+    if closure.digest:
+        digest = _bounded_text(closure.digest, "closure digest", max_length=64)
+        if len(digest) != 64 or any(
+            char not in "0123456789abcdefABCDEF" for char in digest
+        ):
+            raise SelectionError("closure digest must be a SHA-256 digest")
+        object.__setattr__(closure, "digest", digest.lower())
+        if closure.digest != _closure_digest(closure):
+            raise SelectionError("closure digest does not match frozen contents")
+    else:
+        object.__setattr__(closure, "digest", _closure_digest(closure))
+
+
+# Sequential validation order matters: SelectedChangeClosure is a FROZEN
+# dataclass whose __post_init__ both validates AND canonicalizes (via
+# object.__setattr__) its own fields, so each stage's raised SelectionError
+# must fire in the same relative order as the original monolithic function,
+# and _finalize_closure_state (which performs the __setattr__ calls and the
+# digest derivation that reads them back) must run LAST.
+_CLOSURE_VALIDATION_STAGES: tuple[
+    "Callable[[SelectedChangeClosure, dict[str, Any]], None]", ...
+] = (
+    _verify_closure_policy_and_source,
+    _verify_closure_projects,
+    _verify_closure_edges,
+    _verify_closure_project_edges,
+    _verify_closure_source_edges_and_evidence,
+    _verify_closure_parallel_groups,
+    _verify_closure_explanations,
+)
+
+
 @dataclass(frozen=True, slots=True)
 class SelectedChangeClosure:
     """Frozen selected subgraph, explanations, and exact parallel groups."""
@@ -639,263 +1081,10 @@ class SelectedChangeClosure:
     digest: str = ""
 
     def __post_init__(self) -> None:
-        if not isinstance(self.policy, SelectionPolicy):
-            raise SelectionError("closure policy must be a SelectionPolicy")
-        if not isinstance(self.source_graph, DependencyGraph):
-            raise SelectionError("closure requires a frozen source DependencyGraph")
-        (
-            source_known,
-            source_project_map,
-            _source_package_map,
-            source_edges,
-            source_project_edges,
-        ) = _graph_inventory(self.source_graph)
-        known = _canonical_ids(
-            self.known_project_ids,
-            "known project IDs",
-            allow_empty=False,
-        )
-        selected = _canonical_ids(
-            self.selected_project_ids,
-            "selected project IDs",
-            allow_empty=False,
-        )
-        if not set(selected).issubset(known):
-            raise SelectionError("selected project IDs must be known project IDs")
-        if known != source_known:
-            raise SelectionError(
-                "closure known projects must match the frozen source graph"
-            )
-        if not (
-            set(self.policy.changed_projects) | set(self.policy.selected_projects)
-        ).issubset(set(known)):
-            raise SelectionError("closure policy must use known project IDs")
-        project_values = _typed_sequence(
-            self.projects,
-            "closure projects",
-            ProjectRecord,
-            max_items=MAX_PROJECTS,
-        )
-        project_map = {project.project_id: project for project in project_values}
-        if (
-            len(project_map) != len(project_values)
-            or tuple(sorted(project_map)) != selected
-        ):
-            raise SelectionError(
-                "closure projects must exactly match selected project IDs"
-            )
-        expected_projects = tuple(
-            source_project_map[project_id] for project_id in selected
-        )
-        if (
-            tuple(project_map[project_id] for project_id in selected)
-            != expected_projects
-        ):
-            raise SelectionError(
-                "closure projects must exactly match the frozen source graph"
-            )
-        edges = _typed_sequence(
-            self.edges,
-            "closure edges",
-            DependencyEdge,
-            max_items=MAX_EDGES,
-        )
-        package_map: dict[str, PackageRecord] = {}
-        for project in project_values:
-            for package in project.packages:
-                package_id = package.key.value
-                if package_id in package_map:
-                    raise SelectionError(
-                        "closure projects must not duplicate package identities"
-                    )
-                package_map[package_id] = package
-        package_ids = set(package_map)
-        edge_keys: set[tuple[str, str]] = set()
-        for edge in edges:
-            key = (edge.dependent.value, edge.dependency.value)
-            if key in edge_keys:
-                raise SelectionError("closure edges must not duplicate endpoints")
-            edge_keys.add(key)
-            if (
-                edge.dependent.value not in package_ids
-                or edge.dependency.value not in package_ids
-            ):
-                raise SelectionError("closure edges must use frozen package identities")
-            if {
-                edge.dependent_project_id,
-                edge.dependency_project_id,
-            } - set(selected):
-                raise SelectionError("closure edges must use selected projects")
-        ordered_edges = tuple(sorted(edges, key=_edge_sort_key))
-        expected_selected_edges = tuple(
-            edge
-            for edge in source_edges
-            if edge.dependent_project_id in selected
-            and edge.dependency_project_id in selected
-        )
-        if ordered_edges != expected_selected_edges:
-            raise SelectionError(
-                "closure edges must exactly match the frozen source graph"
-            )
-
-        project_edge_values = _bounded_sequence(
-            self.project_edges,
-            "closure project edges",
-            max_items=MAX_EDGES,
-        )
-        project_edge_set: set[tuple[str, str]] = set()
-        for item in project_edge_values:
-            if not isinstance(item, (tuple, list)) or len(item) != 2:
-                raise SelectionError("closure project edges must contain pairs")
-            dependent, dependency = item
-            if not isinstance(dependent, str) or not isinstance(dependency, str):
-                raise SelectionError("closure project edge endpoints must be strings")
-            pair = (
-                canonical_repository_id(dependent),
-                canonical_repository_id(dependency),
-            )
-            if pair in project_edge_set:
-                raise SelectionError("closure project edges must not duplicate")
-            if pair[0] == pair[1]:
-                raise SelectionError(
-                    "closure project edges must not contain self edges"
-                )
-            if set(pair) - set(selected):
-                raise SelectionError("closure project edges must use selected projects")
-            project_edge_set.add(pair)
-        expected_project_edges = {
-            (edge.dependent_project_id, edge.dependency_project_id)
-            for edge in ordered_edges
-            if edge.dependent_project_id != edge.dependency_project_id
-        }
-        if project_edge_set != expected_project_edges:
-            raise SelectionError(
-                "closure project edges must match selected package edges"
-            )
-        ordered_project_edges = tuple(sorted(project_edge_set))
-
-        ordered_source_edges = source_project_edges
-        expected_selected_source_edges = {
-            pair for pair in ordered_source_edges if set(pair).issubset(set(selected))
-        }
-        if expected_selected_source_edges != project_edge_set:
-            raise SelectionError(
-                "closure project edges must match selected source graph edges"
-            )
-        expected_included, expected_reasons, expected_via = _selection_evidence(
-            self.policy, known, ordered_source_edges
-        )
-        if selected != tuple(sorted(expected_included)):
-            raise SelectionError(
-                "selected project IDs must exactly match policy closure evidence"
-            )
-
-        group_values = _bounded_sequence(
-            self.parallel_groups,
-            "closure parallel groups",
-            max_items=MAX_PROJECTS,
-        )
-        normalized_groups: list[tuple[str, ...]] = []
-        grouped: list[str] = []
-        for group in group_values:
-            members = _canonical_refs(
-                group,
-                "closure parallel group",
-            )
-            if not members:
-                raise SelectionError("closure parallel groups must not contain empties")
-            if len(members) != len(set(members)):
-                raise SelectionError("closure parallel group members must be unique")
-            if members != tuple(sorted(members)):
-                raise SelectionError(
-                    "closure parallel group members must be canonical and ordered"
-                )
-            normalized_groups.append(members)
-            grouped.extend(members)
-        if set(grouped) != set(selected) or len(grouped) != len(set(grouped)):
-            raise SelectionError(
-                "closure parallel groups must contain every selected project once"
-            )
-        expected_groups, cycle_diagnostics = _topological_groups(
-            selected, ordered_project_edges
-        )
-        if cycle_diagnostics:
-            raise GraphValidationError(cycle_diagnostics)
-        if tuple(normalized_groups) != expected_groups:
-            raise SelectionError(
-                "closure parallel groups must match deterministic dependency order"
-            )
-
-        explanation_values = _typed_sequence(
-            self.explanations,
-            "closure explanations",
-            SelectionExplanation,
-            max_items=MAX_PROJECTS,
-        )
-        explanation_map = {item.project_id: item for item in explanation_values}
-        if (
-            len(explanation_map) != len(explanation_values)
-            or tuple(sorted(explanation_map)) != known
-        ):
-            raise SelectionError(
-                "closure explanations must cover every known project exactly once"
-            )
-        if any(
-            set(explanation.via_projects) - set(known)
-            for explanation in explanation_values
-        ):
-            raise SelectionError("closure explanation witnesses must be known projects")
-        for project_id in known:
-            explanation = explanation_map[project_id]
-            expected_included_value = project_id in expected_included
-            expected_reasons_value = (
-                tuple(
-                    sorted(
-                        expected_reasons[project_id],
-                        key=lambda item: item.value,
-                    )
-                )
-                if expected_included_value
-                else (SelectionReason.EXCLUDED,)
-            )
-            expected_via_value = (
-                tuple(sorted(expected_via[project_id]))
-                if expected_included_value
-                else ()
-            )
-            if (
-                explanation.included != expected_included_value
-                or explanation.reasons != expected_reasons_value
-                or explanation.via_projects != expected_via_value
-            ):
-                raise SelectionError(
-                    "closure explanations do not match policy and source graph evidence"
-                )
-        object.__setattr__(self, "known_project_ids", known)
-        object.__setattr__(self, "selected_project_ids", selected)
-        object.__setattr__(
-            self, "projects", tuple(project_map[item] for item in selected)
-        )
-        object.__setattr__(self, "edges", ordered_edges)
-        object.__setattr__(self, "project_edges", ordered_project_edges)
-        object.__setattr__(self, "parallel_groups", tuple(normalized_groups))
-        object.__setattr__(
-            self, "explanations", tuple(explanation_map[item] for item in known)
-        )
-        if not isinstance(self.digest, str):
-            raise SelectionError("closure digest must be a string")
-        if self.digest:
-            digest = _bounded_text(self.digest, "closure digest", max_length=64)
-            if len(digest) != 64 or any(
-                char not in "0123456789abcdefABCDEF" for char in digest
-            ):
-                raise SelectionError("closure digest must be a SHA-256 digest")
-            object.__setattr__(self, "digest", digest.lower())
-            if self.digest != _closure_digest(self):
-                raise SelectionError("closure digest does not match frozen contents")
-        else:
-            object.__setattr__(self, "digest", _closure_digest(self))
-
+        ctx: dict[str, Any] = {}
+        for stage in _CLOSURE_VALIDATION_STAGES:
+            stage(self, ctx)
+        _finalize_closure_state(self, ctx)
     @property
     def included_project_ids(self) -> tuple[str, ...]:
         """Alias for the selected canonical project set."""
