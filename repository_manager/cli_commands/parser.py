@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sys
+from typing import Any
 
 from repository_manager.cli_commands.build_queue import run_build_queue_cli
 from repository_manager.cli_commands.concepts import run_concepts_cli
@@ -647,6 +648,47 @@ Examples:
     # Handled before every other verb and returns immediately: the queue drives a
     # SINGLE named repository and must not be combined with the workspace-wide
     # bulk operations above, whose --path/--repositories semantics are different.
+    _dispatch_immediate_verb(args)
+
+    if _dispatch_manifest_ops(runtime, parser, args):
+        return
+
+    # CONCEPT:RM-LANE-DOCTOR — handled before the bulk verbs and returning
+    # immediately: the lane verbs drive ONE tree and must not be combined with
+    # the workspace-wide operations below, whose --path/--repositories semantics
+    # are different.
+    if args.lane:
+        sys.exit(run_lane_cli(args))
+
+    git = runtime.git_factory(
+        path=args.workspace if args.workspace != runtime.default_workspace else None,
+        threads=args.threads,
+        report_path=args.report,
+    )
+    _apply_runtime_flags(git, args)
+    _load_workspace_file(runtime, parser, git, args)
+    _apply_repository_filter(git, args)
+    _maybe_setup_from_file(runtime, git, args)
+    _run_clone_pull(git, args)
+
+    _run_basic_bulk_verbs(runtime, git, args)
+
+    has_errors = _run_gate_dispatch(runtime, git, args)
+    has_errors = _dispatch_validate(runtime, git, args, has_errors)
+    has_errors = _dispatch_bump(runtime, git, args, has_errors)
+    has_errors = _dispatch_maintain(runtime, git, args, has_errors)
+    _dispatch_push(runtime, git, args, has_errors)
+
+
+def _dispatch_immediate_verb(args: argparse.Namespace) -> None:
+    """Verbs handled before every other option; each exits the process.
+
+    Extracted verbatim (same order, same conditions) from the head of
+    ``run``'s dispatch logic, immediately after ``parser.parse_args()``.
+    ``sys.exit`` raises ``SystemExit``, which propagates out of this call
+    exactly as it did when inlined directly in ``run``.
+    """
+
     if args.merge_queue:
         sys.exit(run_merge_queue_cli(args))
     if args.differential_select:
@@ -659,6 +701,17 @@ Examples:
         sys.exit(run_remote_workers_cli(args))
     if args.docs_readiness:
         sys.exit(run_docs_readiness_cli(args))
+
+
+def _dispatch_manifest_ops(
+    runtime: CliRuntime, parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> bool:
+    """Validate manifest flags and run the manifest gate.
+
+    Extracted verbatim from ``run``. Returns ``True`` only where the
+    original inline code executed a bare ``return`` -- ``run`` must return
+    immediately in that case, exactly as before.
+    """
 
     manifest_option_used = any(
         (
@@ -679,46 +732,47 @@ Examples:
         parser.error("--manifest-dry-run requires --manifest-sync")
 
     if args.manifest_check or args.manifest_sync:
-        if not args.manifest_source:
-            parser.error("--manifest-source is required for the manifest gate")
-        try:
-            report = runtime.synchronize_workspace_manifest(
-                args.manifest_source,
-                runtime_destination=args.manifest_runtime_destination,
-                seed_destination=args.manifest_seed_destination,
-                check=args.manifest_check,
-                dry_run=args.manifest_dry_run,
-                profile=args.manifest_profile,
-                selectors=args.manifest_selector,
-            )
-        except runtime.manifest_error as exc:
-            parser.error(str(exc))
-        print(json.dumps(report.as_dict(), sort_keys=True))
-        if args.manifest_check and not report.synchronized:
-            raise SystemExit(1)
-        return
+        return _run_manifest_sync(runtime, parser, args)
+    return False
 
-    # CONCEPT:RM-LANE-DOCTOR — handled before the bulk verbs and returning
-    # immediately: the lane verbs drive ONE tree and must not be combined with
-    # the workspace-wide operations below, whose --path/--repositories semantics
-    # are different.
-    if args.lane:
-        sys.exit(run_lane_cli(args))
 
-    git = runtime.git_factory(
-        path=args.workspace if args.workspace != runtime.default_workspace else None,
-        threads=args.threads,
-        report_path=args.report,
-    )
-    clone_flag = args.clone
-    pull_flag = args.pull
+def _run_manifest_sync(
+    runtime: CliRuntime, parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> bool:
+    if not args.manifest_source:
+        parser.error("--manifest-source is required for the manifest gate")
+    try:
+        report = runtime.synchronize_workspace_manifest(
+            args.manifest_source,
+            runtime_destination=args.manifest_runtime_destination,
+            seed_destination=args.manifest_seed_destination,
+            check=args.manifest_check,
+            dry_run=args.manifest_dry_run,
+            profile=args.manifest_profile,
+            selectors=args.manifest_selector,
+        )
+    except runtime.manifest_error as exc:
+        parser.error(str(exc))
+    print(json.dumps(report.as_dict(), sort_keys=True))
+    if args.manifest_check and not report.synchronized:
+        raise SystemExit(1)
+    return True
 
+
+def _apply_runtime_flags(git: object, args: argparse.Namespace) -> None:
     if args.default_branch:
         git.set_to_default_branch = True
 
     if args.threads:
         git.set_threads(threads=args.threads)
 
+
+def _load_workspace_file(
+    runtime: CliRuntime,
+    parser: argparse.ArgumentParser,
+    git: object,
+    args: argparse.Namespace,
+) -> None:
     if args.file:
         if os.path.exists(args.file):
             if not git.load_projects_from_yaml(args.file):
@@ -731,6 +785,8 @@ Examples:
     if not git.project_map and os.path.exists(runtime.default_workspace_yml):
         git.load_projects_from_yaml(runtime.default_workspace_yml)
 
+
+def _apply_repository_filter(git: object, args: argparse.Namespace) -> None:
     if args.repositories:
         repositories = args.repositories.replace(" ", "").split(",")
         names_to_keep = set(repositories)
@@ -751,16 +807,26 @@ Examples:
                         os.path.join(git.path, r)
                     )
 
+
+def _maybe_setup_from_file(
+    runtime: CliRuntime, git: object, args: argparse.Namespace
+) -> None:
     if args.file and os.path.exists(args.file):
         if args.setup:
             runtime.logger.info("Setting up workspace from configured manifest")
             git.load_projects_from_yaml(args.file)
 
-    if clone_flag:
+
+def _run_clone_pull(git: object, args: argparse.Namespace) -> None:
+    if args.clone:
         git.clone_projects()
-    if pull_flag:
+    if args.pull:
         git.pull_projects()
 
+
+def _run_basic_bulk_verbs(
+    runtime: CliRuntime, git: object, args: argparse.Namespace
+) -> None:
     if args.add:
         results = git.add_projects()
         summary = git.generate_markdown_summary("Bulk Git Add", results)
@@ -798,6 +864,14 @@ Examples:
         summary = git.generate_markdown_summary("Build", results)
         runtime.logger.info(summary)
         git._export_report(summary, "build_report.md")
+
+
+def _run_gate_dispatch(runtime: CliRuntime, git: object, args: argparse.Namespace) -> bool:
+    """Run --gate / --gate-retest. Extracted verbatim from ``run``, including
+    its three nested closures (unchanged) -- only the surrounding statements
+    moved; lizard measures nested ``def``s as their own units, so moving them
+    does not change what was already being measured separately from ``run``.
+    """
 
     has_errors = False
 
@@ -901,167 +975,231 @@ Examples:
             return False
 
         if args.gate:
-            run_result = gate_runner.dispatch(
-                "run",
-                resolve_targets=_resolve_targets,
-                submit_one=_make_submit_one(args.gate),
-                stage=args.gate,
-                threads=args.threads,
-                max_workers=args.threads,
-            )
-            if run_result.get("status") == "clean":
-                runtime.logger.warning("No projects found for --gate.")
-            else:
-                runtime.logger.info(
-                    f"Running the {args.gate} gate across "
-                    f"{run_result['queued_count']} project(s) in parallel..."
-                )
-                failed_count = sum(
-                    1
-                    for repo_name, jid in run_result["jobs"].items()
-                    if _log_result(repo_name, jid)
-                )
-                if failed_count:
-                    has_errors = True
-                    runtime.logger.error(
-                        f"{args.gate} gate failed in {failed_count}/"
-                        f"{len(run_result['jobs'])} project(s)."
-                    )
+            if _run_gate(
+                runtime, args, gate_runner, _resolve_targets, _make_submit_one, _log_result
+            ):
+                has_errors = True
 
         if args.gate_retest:
-            retest_result = gate_runner.dispatch(
-                "retest",
-                resolve_targets=_resolve_targets,
-                submit_one=_make_submit_one(args.gate_retest),
-                stage=args.gate_retest,
-                threads=args.threads,
-                max_workers=args.threads,
-                gate_ledger=default_gate_ledger(),
-                escalate=True,
-                same_node=args.same_node,
-            )
-            runtime.logger.info(retest_result["message"])
-            failed_count = 0
-            for repo_name, entry in sorted(retest_result["targets"].items()):
-                job_id = entry.get("retest_job_id")
-                if not job_id:
-                    runtime.logger.info(
-                        f"{repo_name}: baseline={entry['baseline']}, nothing to retest."
-                    )
-                    continue
-                runtime.logger.info(
-                    f"{repo_name}: baseline={entry['baseline']}, "
-                    f"hook_ids={entry['retest_hook_ids']}, stale={entry['stale']}"
-                )
-                if _log_result(repo_name, job_id):
-                    failed_count += 1
-            if failed_count:
+            if _run_gate_retest(
+                runtime,
+                args,
+                gate_runner,
+                default_gate_ledger,
+                _resolve_targets,
+                _make_submit_one,
+                _log_result,
+            ):
                 has_errors = True
-                runtime.logger.error(
-                    f"--gate-retest found {failed_count}/"
-                    f"{len(retest_result['targets'])} project(s) still failing."
-                )
 
-    if args.validate:
-        val_results = git.validate_and_release(
-            threads=args.threads,
-            auto_bump=bool(args.bump) if not args.maintain else False,
-            auto_push=args.push,
-            bump_part=args.bump if args.bump else "minor",
+    return has_errors
+
+
+def _run_gate(
+    runtime: CliRuntime,
+    args: argparse.Namespace,
+    gate_runner: Any,
+    resolve_targets: Any,
+    make_submit_one: Any,
+    log_result: Any,
+) -> bool:
+    has_errors = False
+    run_result = gate_runner.dispatch(
+        "run",
+        resolve_targets=resolve_targets,
+        submit_one=make_submit_one(args.gate),
+        stage=args.gate,
+        threads=args.threads,
+        max_workers=args.threads,
+    )
+    if run_result.get("status") == "clean":
+        runtime.logger.warning("No projects found for --gate.")
+    else:
+        runtime.logger.info(
+            f"Running the {args.gate} gate across "
+            f"{run_result['queued_count']} project(s) in parallel..."
         )
-        if not val_results.get("passed"):
+        failed_count = sum(
+            1
+            for repo_name, jid in run_result["jobs"].items()
+            if log_result(repo_name, jid)
+        )
+        if failed_count:
             has_errors = True
-            runtime.logger.error("Validation failed with errors.")
-        else:
+            runtime.logger.error(
+                f"{args.gate} gate failed in {failed_count}/"
+                f"{len(run_result['jobs'])} project(s)."
+            )
+    return has_errors
+
+
+def _run_gate_retest(
+    runtime: CliRuntime,
+    args: argparse.Namespace,
+    gate_runner: Any,
+    default_gate_ledger: Any,
+    resolve_targets: Any,
+    make_submit_one: Any,
+    log_result: Any,
+) -> bool:
+    has_errors = False
+    retest_result = gate_runner.dispatch(
+        "retest",
+        resolve_targets=resolve_targets,
+        submit_one=make_submit_one(args.gate_retest),
+        stage=args.gate_retest,
+        threads=args.threads,
+        max_workers=args.threads,
+        gate_ledger=default_gate_ledger(),
+        escalate=True,
+        same_node=args.same_node,
+    )
+    runtime.logger.info(retest_result["message"])
+    failed_count = 0
+    for repo_name, entry in sorted(retest_result["targets"].items()):
+        job_id = entry.get("retest_job_id")
+        if not job_id:
             runtime.logger.info(
-                "Validation and subsequent operations completed successfully."
+                f"{repo_name}: baseline={entry['baseline']}, nothing to retest."
             )
+            continue
+        runtime.logger.info(
+            f"{repo_name}: baseline={entry['baseline']}, "
+            f"hook_ids={entry['retest_hook_ids']}, stale={entry['stale']}"
+        )
+        if log_result(repo_name, job_id):
+            failed_count += 1
+    if failed_count:
+        has_errors = True
+        runtime.logger.error(
+            f"--gate-retest found {failed_count}/"
+            f"{len(retest_result['targets'])} project(s) still failing."
+        )
+    return has_errors
 
-        # Prevent these from executing again below
-        args.bump = None
-        args.push = False
 
-    if args.bump and not args.maintain:
-        if has_errors and (args.push or args.bump):
-            runtime.logger.error("Skipping bump due to preceding validation errors.")
-            has_errors = True
-        else:
-            runtime.logger.info(f"Bumping version ({args.bump}) for all projects...")
-            project_dirs = list(git.project_map.values())
-            results = []
-            for d in project_dirs:
-                res = git.bump_version(
-                    args.bump, allow_dirty=True, path=d, dry_run=args.dry_run
+def _dispatch_validate(
+    runtime: CliRuntime, git: object, args: argparse.Namespace, has_errors: bool
+) -> bool:
+    if not args.validate:
+        return has_errors
+    val_results = git.validate_and_release(
+        threads=args.threads,
+        auto_bump=bool(args.bump) if not args.maintain else False,
+        auto_push=args.push,
+        bump_part=args.bump if args.bump else "minor",
+    )
+    if not val_results.get("passed"):
+        has_errors = True
+        runtime.logger.error("Validation failed with errors.")
+    else:
+        runtime.logger.info(
+            "Validation and subsequent operations completed successfully."
+        )
+
+    # Prevent these from executing again below
+    args.bump = None
+    args.push = False
+    return has_errors
+
+
+def _dispatch_bump(
+    runtime: CliRuntime, git: object, args: argparse.Namespace, has_errors: bool
+) -> bool:
+    if not (args.bump and not args.maintain):
+        return has_errors
+    if has_errors and (args.push or args.bump):
+        runtime.logger.error("Skipping bump due to preceding validation errors.")
+        has_errors = True
+    else:
+        runtime.logger.info(f"Bumping version ({args.bump}) for all projects...")
+        project_dirs = list(git.project_map.values())
+        results = []
+        for d in project_dirs:
+            res = git.bump_version(
+                args.bump, allow_dirty=True, path=d, dry_run=args.dry_run
+            )
+            results.append(res)
+            if res.status == "error":
+                has_errors = True
+
+        summary = git.generate_markdown_summary("Bulk Version Bump", results)
+        runtime.logger.info(summary)
+        git._export_report(summary, "version_bump_report.md")
+    return has_errors
+
+
+def _dispatch_maintain(
+    runtime: CliRuntime, git: object, args: argparse.Namespace, has_errors: bool
+) -> bool:
+    if not args.maintain:
+        return has_errors
+    if has_errors and (args.push or args.maintain):
+        runtime.logger.error(
+            "Skipping maintenance bump due to preceding validation errors."
+        )
+        has_errors = True
+    else:
+        config = None
+        if args.config:
+            try:
+                with open(args.config) as f:
+                    config = json.load(f)
+            except Exception as e:
+                runtime.logger.error(
+                    "Operation failed: error_type=%s", type(e).__name__
                 )
-                results.append(res)
-                if res.status == "error":
-                    has_errors = True
+                sys.exit(1)
 
-            summary = git.generate_markdown_summary("Bulk Version Bump", results)
-            runtime.logger.info(summary)
-            git._export_report(summary, "version_bump_report.md")
+        results = git.phased_bumpversion(
+            part=args.bump if args.bump else "patch",
+            start_phase=args.phase,
+            dry_run=args.dry_run,
+            allow_pre_commit=args.allow_pre_commit,
+            config=config,
+            single_phase=args.single_phase,
+            project_filter=args.project,
+            auto_start=args.auto_start,
+        )
 
-    if args.maintain:
-        if has_errors and (args.push or args.maintain):
-            runtime.logger.error(
-                "Skipping maintenance bump due to preceding validation errors."
-            )
-            has_errors = True
-        else:
-            config = None
-            if args.config:
-                try:
-                    with open(args.config) as f:
-                        config = json.load(f)
-                except Exception as e:
-                    runtime.logger.error(
-                        "Operation failed: error_type=%s", type(e).__name__
-                    )
-                    sys.exit(1)
+        for res in results:
+            if res.status == "error":
+                has_errors = True
 
-            results = git.phased_bumpversion(
-                part=args.bump if args.bump else "patch",
-                start_phase=args.phase,
-                dry_run=args.dry_run,
-                allow_pre_commit=args.allow_pre_commit,
-                config=config,
-                single_phase=args.single_phase,
-                project_filter=args.project,
-                auto_start=args.auto_start,
-            )
+        summary = git.generate_markdown_summary("Phased Maintenance Bump", results)
 
-            for res in results:
-                if res.status == "error":
-                    has_errors = True
+        runtime.logger.info(summary)
+        git._export_report(summary, "maintenance_report.md")
+    return has_errors
 
-            summary = git.generate_markdown_summary("Phased Maintenance Bump", results)
 
-            runtime.logger.info(summary)
-            git._export_report(summary, "maintenance_report.md")
-
-    if args.push:
-        if has_errors:
-            runtime.logger.error(
-                "Skipping push due to preceding validation or bump errors."
-            )
-        else:
-            config = None
-            if args.config:
-                try:
-                    with open(args.config) as f:
-                        config = json.load(f)
-                except Exception as e:
-                    runtime.logger.error(
-                        "Operation failed: error_type=%s", type(e).__name__
-                    )
-                    sys.exit(1)
-            push_results = git.phased_push(
-                start_phase=args.phase,
-                config=config,
-                single_phase=args.single_phase,
-                project_filter=args.project,
-                auto_start=args.auto_start,
-            )
-            summary = git.generate_markdown_summary("Phased Push", push_results)
-            runtime.logger.info(summary)
-            git._export_report(summary, "push_report.md")
+def _dispatch_push(
+    runtime: CliRuntime, git: object, args: argparse.Namespace, has_errors: bool
+) -> None:
+    if not args.push:
+        return
+    if has_errors:
+        runtime.logger.error(
+            "Skipping push due to preceding validation or bump errors."
+        )
+    else:
+        config = None
+        if args.config:
+            try:
+                with open(args.config) as f:
+                    config = json.load(f)
+            except Exception as e:
+                runtime.logger.error(
+                    "Operation failed: error_type=%s", type(e).__name__
+                )
+                sys.exit(1)
+        push_results = git.phased_push(
+            start_phase=args.phase,
+            config=config,
+            single_phase=args.single_phase,
+            project_filter=args.project,
+            auto_start=args.auto_start,
+        )
+        summary = git.generate_markdown_summary("Phased Push", push_results)
+        runtime.logger.info(summary)
+        git._export_report(summary, "push_report.md")
