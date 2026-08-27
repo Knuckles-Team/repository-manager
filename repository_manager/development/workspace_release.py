@@ -718,7 +718,11 @@ class WorkspaceReleasePlan:
     plan_digest: str = ""
     contract_version: int = C11_CONTRACT_VERSION
 
-    def __post_init__(self) -> None:
+    def _normalize_identity_fields(self) -> None:
+        """Verbatim relocation of ``__post_init__``'s workspace_id/
+        source_sha/contract_version normalization and checks; no side
+        effect, order, or condition changed."""
+
         object.__setattr__(
             self, "workspace_id", _bounded_text(self.workspace_id, "workspace ID")
         )
@@ -734,6 +738,15 @@ class WorkspaceReleasePlan:
             or self.contract_version != C11_CONTRACT_VERSION
         ):
             raise WorkspaceReleaseError("unsupported C-11 contract version")
+
+    def _normalize_selected_and_projects(
+        self,
+    ) -> tuple[tuple[str, ...], dict[str, ProjectRecord]]:
+        """Verbatim relocation of ``__post_init__``'s selected_projects/
+        projects/allow_push normalization, the duplicate-project check, and
+        the selected-vs-frozen-records match check; no side effect, order,
+        or condition changed. Returns ``(selected, project_map)``."""
+
         selected_values = _typed_sequence(
             self.selected_projects,
             "selected projects",
@@ -773,6 +786,14 @@ class WorkspaceReleasePlan:
         object.__setattr__(
             self, "projects", tuple(project_map[key] for key in selected)
         )
+        return selected, project_map
+
+    def _normalize_and_validate_packages(self) -> dict[str, PackageKey]:
+        """Verbatim relocation of ``__post_init__``'s package_map build and
+        duplicate-package detection (reads ``self.projects`` as already
+        normalized by ``_normalize_selected_and_projects``); no side effect,
+        order, or condition changed. Returns ``package_map``."""
+
         package_map: dict[str, PackageKey] = {}
         duplicate_packages: list[Diagnostic] = []
         for project in self.projects:
@@ -790,6 +811,14 @@ class WorkspaceReleasePlan:
                     package_map[package_id] = package.key
         if duplicate_packages:
             raise GraphValidationError(duplicate_packages)
+        return package_map
+
+    def _normalize_and_validate_edges(
+        self, package_map: dict[str, PackageKey], selected: tuple[str, ...]
+    ) -> None:
+        """Verbatim relocation of ``__post_init__``'s edges normalization
+        and per-edge checks; no side effect, order, or condition changed."""
+
         edge_values = _typed_sequence(
             self.edges,
             "release plan edges",
@@ -813,6 +842,14 @@ class WorkspaceReleasePlan:
                 raise WorkspaceReleaseError(
                     "release plan edge names an unselected project"
                 )
+
+    def _normalize_and_validate_rewrites(
+        self, package_map: dict[str, PackageKey], selected: tuple[str, ...]
+    ) -> None:
+        """Verbatim relocation of ``__post_init__``'s floor_rewrites
+        normalization and per-rewrite checks; no side effect, order, or
+        condition changed."""
+
         rewrite_values = _typed_sequence(
             self.floor_rewrites,
             "release plan floor rewrites",
@@ -840,6 +877,13 @@ class WorkspaceReleasePlan:
                 raise WorkspaceReleaseError(
                     "release plan floor rewrite names an unselected project"
                 )
+
+    def _normalize_and_validate_stages(self, selected: tuple[str, ...]) -> None:
+        """Verbatim relocation of ``__post_init__``'s stages normalization,
+        cardinality/uniqueness checks, per-stage checks, and the
+        ``_validate_stage_dag`` call; no side effect, order, or condition
+        changed."""
+
         stage_values = _typed_sequence(
             self.stages,
             "release plan stages",
@@ -873,6 +917,14 @@ class WorkspaceReleasePlan:
                     "release plan stage depends on an unknown stage"
                 )
         _validate_stage_dag(self.stages)
+
+    def _normalize_and_validate_parallel_groups(
+        self, selected: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], ...]:
+        """Verbatim relocation of ``__post_init__``'s parallel_groups
+        normalization and per-group checks; no side effect, order, or
+        condition changed. Returns ``normalized_parallel_groups``."""
+
         group_values = _bounded_sequence(
             self.parallel_groups,
             "release plan parallel groups",
@@ -906,6 +958,18 @@ class WorkspaceReleasePlan:
             normalized_groups.append(normalized)
         normalized_parallel_groups = tuple(normalized_groups)
         object.__setattr__(self, "parallel_groups", normalized_parallel_groups)
+        return normalized_parallel_groups
+
+    def _validate_parallel_groups_against_dependencies(
+        self,
+        selected: tuple[str, ...],
+        normalized_parallel_groups: tuple[tuple[str, ...], ...],
+    ) -> None:
+        """Verbatim relocation of ``__post_init__``'s grouped-projects
+        checks and the deterministic-dependency-order match against
+        ``_topological_groups``; no side effect, order, or condition
+        changed."""
+
         grouped_projects = [
             project for group in self.parallel_groups for project in group
         ]
@@ -931,6 +995,12 @@ class WorkspaceReleasePlan:
             raise WorkspaceReleaseError(
                 "release plan parallel groups must match deterministic dependency order"
             )
+
+    def _normalize_and_validate_digest(self) -> None:
+        """Verbatim relocation of ``__post_init__``'s plan_digest type
+        check and the digest-verify-or-compute branch; no side effect,
+        order, or condition changed."""
+
         if not isinstance(self.plan_digest, str):
             raise WorkspaceReleaseError("plan digest must be a string")
         if self.plan_digest:
@@ -945,6 +1015,21 @@ class WorkspaceReleasePlan:
                 )
         else:
             object.__setattr__(self, "plan_digest", plan_digest(self))
+
+    def __post_init__(self) -> None:
+        self._normalize_identity_fields()
+        selected, _project_map = self._normalize_selected_and_projects()
+        package_map = self._normalize_and_validate_packages()
+        self._normalize_and_validate_edges(package_map, selected)
+        self._normalize_and_validate_rewrites(package_map, selected)
+        self._normalize_and_validate_stages(selected)
+        normalized_parallel_groups = self._normalize_and_validate_parallel_groups(
+            selected
+        )
+        self._validate_parallel_groups_against_dependencies(
+            selected, normalized_parallel_groups
+        )
+        self._normalize_and_validate_digest()
 
     def canonical_payload(self, *, include_digest: bool = False) -> dict[str, object]:
         payload: dict[str, object] = {

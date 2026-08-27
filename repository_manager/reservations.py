@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
 
@@ -784,6 +784,283 @@ class InMemoryWorkItemReservationPort:
                 return FenceDecision.INPUT_CONFLICT
             return record
 
+    def _reserve_check_identity(
+        self,
+        *,
+        work_item_id: str,
+        attempt: int,
+        fence: str,
+        reservation: ReservationRecord,
+    ) -> FenceDecision | None:
+        """Must be called with ``self._lock`` held.  Verbatim relocation of
+        the leading fence/identity/claim checks from ``atomic_reserve``; no
+        side effect, order, or condition changed."""
+
+        if not self.is_current(work_item_id, attempt, fence):
+            return FenceDecision.STALE
+        if (
+            reservation.work_item_id,
+            reservation.attempt,
+            reservation.fence,
+        ) != (work_item_id, attempt, fence):
+            return FenceDecision.CONFLICT
+        claim = self._claims.get(work_item_id)
+        if claim is None or not claim.matches_reservation(reservation):
+            return FenceDecision.INPUT_CONFLICT
+        return None
+
+    def _reserve_check_link_idempotency(
+        self,
+        *,
+        work_item_id: str,
+        attempt: int,
+        fence: str,
+        reservation: ReservationRecord,
+        attempt_key: tuple[str, int],
+    ) -> FenceDecision | None:
+        """Must be called with ``self._lock`` held.  Verbatim relocation of
+        the attempt-link/historical-tombstone/reservation-link idempotency
+        checks from ``atomic_reserve``; no side effect, order, or condition
+        changed."""
+
+        attempt_reservation_id = self._attempt_links.get(attempt_key)
+        if attempt_reservation_id is not None:
+            existing = self._records.get(attempt_reservation_id)
+            if (
+                attempt_reservation_id == reservation.reservation_id
+                and existing is not None
+                and existing.same_immutable_input(reservation)
+            ):
+                return FenceDecision.IDEMPOTENT
+            return FenceDecision.CONFLICT
+        historical = self._records.get(reservation.reservation_id)
+        if historical is not None:
+            # Retained release/reclaim tombstones make a same-attempt
+            # lifecycle terminal.  A caller cannot resurrect it with a
+            # new local projection or a different reservation ID.
+            return FenceDecision.CONFLICT
+        linked = self._links.get(reservation.reservation_id)
+        if linked is not None:
+            existing = self._records.get(reservation.reservation_id)
+            if (
+                linked == (work_item_id, attempt, fence)
+                and existing is not None
+                and existing.same_immutable_input(reservation)
+            ):
+                return FenceDecision.IDEMPOTENT
+            return FenceDecision.CONFLICT
+        return None
+
+    def _reserve_host_precheck(
+        self, reservation: ReservationRecord
+    ) -> tuple[FenceDecision | None, CapacityView | None]:
+        """Must be called with ``self._lock`` held.  Verbatim relocation of
+        the authoritative-view/state/heartbeat/labels checks from
+        ``atomic_reserve``; no side effect, order, or condition changed."""
+
+        # The caller's expected_capacity is an optimistic diagnostic only.
+        # This fixture re-reads the complete registered native view and
+        # recomputes availability with native-held reservations, modeling
+        # the graph transaction required in production.
+        authoritative = self._authoritative_view(reservation.host_id)
+        if authoritative is None:
+            return FenceDecision.POLICY, None
+        if authoritative.state in {HostState.DRAINING, HostState.DRAINED}:
+            return FenceDecision.DRAINED, None
+        if authoritative.state in {HostState.QUARANTINED, HostState.OFFLINE}:
+            return FenceDecision.QUARANTINED, None
+        if not authoritative.heartbeat_fresh:
+            return FenceDecision.STALE_HOST, None
+        if not set(reservation.required_labels).issubset(authoritative.labels):
+            return FenceDecision.LABELS, None
+        return None, authoritative
+
+    def _reserve_concurrency_and_anti_affinity_precheck(
+        self, reservation: ReservationRecord, active: tuple[ReservationRecord, ...]
+    ) -> FenceDecision | None:
+        """Must be called with ``self._lock`` held.  Verbatim relocation of
+        the pre-capacity-reservation concurrency and anti-affinity checks
+        from ``atomic_reserve``; no side effect, order, or condition
+        changed."""
+
+        if reservation.concurrency_limit is not None:
+            count = sum(
+                record.concurrency_key == reservation.concurrency_key
+                for record in active
+            )
+            if count >= reservation.concurrency_limit:
+                return FenceDecision.CONCURRENCY
+        for record in active:
+            if record.host_id == reservation.host_id and set(
+                record.anti_affinity
+            ).intersection(reservation.anti_affinity):
+                return FenceDecision.ANTI_AFFINITY
+        return None
+
+    def _reserve_disk_watermark_policy(
+        self, reservation: ReservationRecord
+    ) -> tuple[tuple[str, str], int | None, int | None]:
+        """Must be called with ``self._lock`` held.  Verbatim relocation of
+        the disk-watermark-policy-caching half of the native disk-hysteresis
+        block from ``atomic_reserve``, including its
+        ``self._disk_watermarks`` mutation; no side effect, order, or
+        condition changed."""
+
+        disk_key = (reservation.host_id, reservation.disk_policy_key)
+        configured = self._disk_watermarks.get(disk_key)
+        if configured is None or (
+            configured == (None, None)
+            and (
+                reservation.disk_low_watermark_mib is not None
+                or reservation.disk_high_watermark_mib is not None
+            )
+        ):
+            configured_high = reservation.disk_high_watermark_mib
+            configured_low = reservation.disk_low_watermark_mib
+            if configured_high is not None and configured_low is None:
+                configured_low = configured_high
+            configured = (
+                configured_low,
+                configured_high,
+            )
+            self._disk_watermarks[disk_key] = configured
+        low, high = configured
+        return disk_key, low, high
+
+    def _reserve_disk_hysteresis_decision(
+        self,
+        reservation: ReservationRecord,
+        authoritative: CapacityView,
+        disk_key: tuple[str, str],
+        low: int | None,
+        high: int | None,
+    ) -> FenceDecision | None:
+        """Must be called with ``self._lock`` held.  Verbatim relocation of
+        the hysteresis-evaluation half of the native disk-hysteresis block
+        from ``atomic_reserve``, including its ``self._disk_blocked``
+        mutations; no side effect, order, or condition changed."""
+
+        blocked = self._disk_blocked.get(disk_key, False)
+        if high is not None or blocked:
+            predicted_used = (
+                authoritative.total.disk_mib
+                - authoritative.available.disk_mib
+                + reservation.requirement.disk_mib
+            )
+            if blocked:
+                if low is None or predicted_used > low:
+                    return FenceDecision.DISK
+                self._disk_blocked[disk_key] = False
+            elif high is not None and predicted_used >= high:
+                self._disk_blocked[disk_key] = True
+                return FenceDecision.DISK
+        return None
+
+    def _reserve_disk_watermark_check(
+        self, reservation: ReservationRecord, authoritative: CapacityView
+    ) -> FenceDecision | None:
+        """Must be called with ``self._lock`` held.  Verbatim relocation of
+        the native disk-hysteresis block from ``atomic_reserve``; split
+        further into ``_reserve_disk_watermark_policy`` (caching) and
+        ``_reserve_disk_hysteresis_decision`` (evaluation), called here in
+        the same order as the original inline statements."""
+
+        disk_key, low, high = self._reserve_disk_watermark_policy(reservation)
+        return self._reserve_disk_hysteresis_decision(
+            reservation, authoritative, disk_key, low, high
+        )
+
+    def _record_conflicts_anti_affinity(
+        self, reservation: ReservationRecord, record: ReservationRecord
+    ) -> bool:
+        """Verbatim relocation of the anti-affinity conflict condition used
+        by both the pre-capacity-reservation precheck and the
+        post-reservation recheck in ``atomic_reserve``; no condition
+        changed."""
+
+        return bool(
+            record.host_id == reservation.host_id
+            and set(record.anti_affinity).intersection(reservation.anti_affinity)
+        )
+
+    def _record_conflicts_repository_exclusivity(
+        self, reservation: ReservationRecord, record: ReservationRecord
+    ) -> bool:
+        """Verbatim relocation of the repository-exclusivity conflict
+        condition from ``atomic_reserve``'s post-reservation recheck loop;
+        no condition changed."""
+
+        return bool(
+            (reservation.repository_exclusive or record.repository_exclusive)
+            and reservation.repository_id
+            and record.repository_id == reservation.repository_id
+        )
+
+    def _record_conflicts_branch_exclusivity(
+        self, reservation: ReservationRecord, record: ReservationRecord
+    ) -> bool:
+        """Verbatim relocation of the branch-exclusivity conflict condition
+        from ``atomic_reserve``'s post-reservation recheck loop; no
+        condition changed."""
+
+        return bool(
+            (reservation.branch_exclusive or record.branch_exclusive)
+            and reservation.repository_id
+            and reservation.branch
+            and (record.repository_id, record.branch)
+            == (reservation.repository_id, reservation.branch)
+        )
+
+    def _reserve_active_conflict_recheck(
+        self, reservation: ReservationRecord, active: tuple[ReservationRecord, ...]
+    ) -> FenceDecision | None:
+        """Must be called with ``self._lock`` held, after
+        ``self._reserved_capacity`` has already been provisionally set for
+        this reservation.  Verbatim relocation of the post-reservation
+        anti-affinity/exclusivity recheck loop from ``atomic_reserve``,
+        including its rollback-on-conflict ``pop()`` calls; the three
+        conditions are now named-helper calls (same conditions, same order)
+        instead of inline expressions, but no side effect, order, or
+        condition changed."""
+
+        for record in active:
+            # Anti-affinity is deliberately host-local.  Repository and
+            # branch exclusivity are global keys across every host.
+            if self._record_conflicts_anti_affinity(reservation, record):
+                self._reserved_capacity[reservation.host_id].pop(
+                    reservation.reservation_id, None
+                )
+                return FenceDecision.ANTI_AFFINITY
+            if self._record_conflicts_repository_exclusivity(reservation, record):
+                self._reserved_capacity[reservation.host_id].pop(
+                    reservation.reservation_id, None
+                )
+                return FenceDecision.EXCLUSIVITY
+            if self._record_conflicts_branch_exclusivity(reservation, record):
+                self._reserved_capacity[reservation.host_id].pop(
+                    reservation.reservation_id, None
+                )
+                return FenceDecision.EXCLUSIVITY
+        return None
+
+    def _reserve_record_fairness_debt(self, reservation: ReservationRecord) -> None:
+        """Must be called with ``self._lock`` held, after
+        ``self._reserved_capacity`` has already been provisionally set for
+        this reservation.  Verbatim relocation of the fairness-debt
+        try/except/rollback/raise from ``atomic_reserve``; no side effect,
+        order, or condition changed."""
+
+        if self._fairness_state is not None:
+            try:
+                self._fairness_state.record(
+                    reservation.fairness_group, reservation.fairness_cost
+                )
+            except Exception:
+                self._reserved_capacity[reservation.host_id].pop(
+                    reservation.reservation_id, None
+                )
+                raise
+
     def atomic_reserve(
         self,
         *,
@@ -794,150 +1071,46 @@ class InMemoryWorkItemReservationPort:
         expected_capacity: CapacityView | None = None,
     ) -> FenceDecision:
         with self._lock:
-            if not self.is_current(work_item_id, attempt, fence):
-                return FenceDecision.STALE
-            if (
-                reservation.work_item_id,
-                reservation.attempt,
-                reservation.fence,
-            ) != (work_item_id, attempt, fence):
-                return FenceDecision.CONFLICT
-            claim = self._claims.get(work_item_id)
-            if claim is None or not claim.matches_reservation(reservation):
-                return FenceDecision.INPUT_CONFLICT
+            decision = self._reserve_check_identity(
+                work_item_id=work_item_id,
+                attempt=attempt,
+                fence=fence,
+                reservation=reservation,
+            )
+            if decision is not None:
+                return decision
             attempt_key = (work_item_id, attempt)
-            attempt_reservation_id = self._attempt_links.get(attempt_key)
-            if attempt_reservation_id is not None:
-                existing = self._records.get(attempt_reservation_id)
-                if (
-                    attempt_reservation_id == reservation.reservation_id
-                    and existing is not None
-                    and existing.same_immutable_input(reservation)
-                ):
-                    return FenceDecision.IDEMPOTENT
-                return FenceDecision.CONFLICT
-            historical = self._records.get(reservation.reservation_id)
-            if historical is not None:
-                # Retained release/reclaim tombstones make a same-attempt
-                # lifecycle terminal.  A caller cannot resurrect it with a
-                # new local projection or a different reservation ID.
-                return FenceDecision.CONFLICT
-            linked = self._links.get(reservation.reservation_id)
-            if linked is not None:
-                existing = self._records.get(reservation.reservation_id)
-                if (
-                    linked == (work_item_id, attempt, fence)
-                    and existing is not None
-                    and existing.same_immutable_input(reservation)
-                ):
-                    return FenceDecision.IDEMPOTENT
-                return FenceDecision.CONFLICT
-            # The caller's expected_capacity is an optimistic diagnostic only.
-            # This fixture re-reads the complete registered native view and
-            # recomputes availability with native-held reservations, modeling
-            # the graph transaction required in production.
-            authoritative = self._authoritative_view(reservation.host_id)
-            if authoritative is None:
-                return FenceDecision.POLICY
-            if authoritative.state in {HostState.DRAINING, HostState.DRAINED}:
-                return FenceDecision.DRAINED
-            if authoritative.state in {HostState.QUARANTINED, HostState.OFFLINE}:
-                return FenceDecision.QUARANTINED
-            if not authoritative.heartbeat_fresh:
-                return FenceDecision.STALE_HOST
-            if not set(reservation.required_labels).issubset(authoritative.labels):
-                return FenceDecision.LABELS
+            decision = self._reserve_check_link_idempotency(
+                work_item_id=work_item_id,
+                attempt=attempt,
+                fence=fence,
+                reservation=reservation,
+                attempt_key=attempt_key,
+            )
+            if decision is not None:
+                return decision
+            decision, authoritative = self._reserve_host_precheck(reservation)
+            if decision is not None:
+                return decision
+            authoritative = cast(CapacityView, authoritative)
             active = tuple(record for record in self._records.values() if record.active)
-            if reservation.concurrency_limit is not None:
-                count = sum(
-                    record.concurrency_key == reservation.concurrency_key
-                    for record in active
-                )
-                if count >= reservation.concurrency_limit:
-                    return FenceDecision.CONCURRENCY
-            for record in active:
-                if record.host_id == reservation.host_id and set(
-                    record.anti_affinity
-                ).intersection(reservation.anti_affinity):
-                    return FenceDecision.ANTI_AFFINITY
-            disk_key = (reservation.host_id, reservation.disk_policy_key)
-            configured = self._disk_watermarks.get(disk_key)
-            if configured is None or (
-                configured == (None, None)
-                and (
-                    reservation.disk_low_watermark_mib is not None
-                    or reservation.disk_high_watermark_mib is not None
-                )
-            ):
-                configured_high = reservation.disk_high_watermark_mib
-                configured_low = reservation.disk_low_watermark_mib
-                if configured_high is not None and configured_low is None:
-                    configured_low = configured_high
-                configured = (
-                    configured_low,
-                    configured_high,
-                )
-                self._disk_watermarks[disk_key] = configured
-            low, high = configured
-            blocked = self._disk_blocked.get(disk_key, False)
-            if high is not None or blocked:
-                predicted_used = (
-                    authoritative.total.disk_mib
-                    - authoritative.available.disk_mib
-                    + reservation.requirement.disk_mib
-                )
-                if blocked:
-                    if low is None or predicted_used > low:
-                        return FenceDecision.DISK
-                    self._disk_blocked[disk_key] = False
-                elif high is not None and predicted_used >= high:
-                    self._disk_blocked[disk_key] = True
-                    return FenceDecision.DISK
+            decision = self._reserve_concurrency_and_anti_affinity_precheck(
+                reservation, active
+            )
+            if decision is not None:
+                return decision
+            decision = self._reserve_disk_watermark_check(reservation, authoritative)
+            if decision is not None:
+                return decision
             if not authoritative.available.fits(reservation.requirement):
                 return FenceDecision.CAPACITY
             self._reserved_capacity[reservation.host_id][reservation.reservation_id] = (
                 reservation.requirement
             )
-            for record in active:
-                # Anti-affinity is deliberately host-local.  Repository and
-                # branch exclusivity are global keys across every host.
-                if record.host_id == reservation.host_id and set(
-                    record.anti_affinity
-                ).intersection(reservation.anti_affinity):
-                    self._reserved_capacity[reservation.host_id].pop(
-                        reservation.reservation_id, None
-                    )
-                    return FenceDecision.ANTI_AFFINITY
-                if (
-                    (reservation.repository_exclusive or record.repository_exclusive)
-                    and reservation.repository_id
-                    and record.repository_id == reservation.repository_id
-                ):
-                    self._reserved_capacity[reservation.host_id].pop(
-                        reservation.reservation_id, None
-                    )
-                    return FenceDecision.EXCLUSIVITY
-                if (
-                    (reservation.branch_exclusive or record.branch_exclusive)
-                    and reservation.repository_id
-                    and reservation.branch
-                    and (record.repository_id, record.branch)
-                    == (reservation.repository_id, reservation.branch)
-                ):
-                    self._reserved_capacity[reservation.host_id].pop(
-                        reservation.reservation_id, None
-                    )
-                    return FenceDecision.EXCLUSIVITY
-            if self._fairness_state is not None:
-                try:
-                    self._fairness_state.record(
-                        reservation.fairness_group, reservation.fairness_cost
-                    )
-                except Exception:
-                    self._reserved_capacity[reservation.host_id].pop(
-                        reservation.reservation_id, None
-                    )
-                    raise
+            decision = self._reserve_active_conflict_recheck(reservation, active)
+            if decision is not None:
+                return decision
+            self._reserve_record_fairness_debt(reservation)
             self._records[reservation.reservation_id] = reservation
             self._links[reservation.reservation_id] = (work_item_id, attempt, fence)
             self._attempt_links[attempt_key] = reservation.reservation_id
