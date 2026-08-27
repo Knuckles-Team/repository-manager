@@ -1338,19 +1338,18 @@ class BuildWorker:
             "reservation_id": reservation_id,
         }
 
-    def _execution_plan(
+    def _execution_plan_preflight(
         self,
         view: DurableJobView,
         *,
         repo_path: Path | str,
-        spec_name: str,
-        claim: Mapping[str, Any] | None = None,
-    ) -> tuple[
-        Any,
-        bq.BuildSpec,
-        bq.CacheKey | None,
-        BuildExecutionDescriptor,
-    ]:
+        claim: Mapping[str, Any] | None,
+    ) -> tuple[Any, Any]:
+        """Verbatim relocation of ``_execution_plan``'s leading
+        authority/scope/identity/claim checks and ``get_exact`` acquisition;
+        no side effect, order, or condition changed. Returns
+        ``(scope, get_exact)``."""
+
         if not _execution_input_authority_available(self.authority):
             raise BuildWorkerError(
                 _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
@@ -1379,12 +1378,19 @@ class BuildWorker:
                 _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
                 refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
             )
+        return scope, get_exact
+
+    def _execution_plan_read_payload(self, get_exact: Any, job_id: str) -> Any:
+        """Verbatim relocation of ``_execution_plan``'s sole executable-input
+        authority read, including its exact exception-code mapping; no side
+        effect, order, or condition changed. Returns ``raw_payload``."""
+
         try:
             # This is the sole executable-input authority operation.  The
             # production adapter must perform authentication, currentness,
             # and private-row/body access atomically in native code.  Python
             # intentionally has no separate issue/verify/read capability API.
-            raw_payload = get_exact(view.job_id)
+            raw_payload = get_exact(job_id)
         except RepositoryJobServiceError as exc:
             code = exc.code
             if code == "typed_execution_payload_required":
@@ -1411,6 +1417,13 @@ class BuildWorker:
                 _EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
                 refusal_code=_EXECUTION_INPUT_AUTHORITY_UNAVAILABLE,
             ) from exc
+        return raw_payload
+
+    def _execution_plan_parse_payload(self, raw_payload: Any) -> Any:
+        """Verbatim relocation of ``_execution_plan``'s raw-payload
+        None-check and typed-payload parse; no side effect, order, or
+        condition changed. Returns ``payload``."""
+
         if raw_payload is None:
             raise BuildWorkerError(
                 "typed_execution_payload_required: resubmit build",
@@ -1422,6 +1435,18 @@ class BuildWorker:
             raise BuildWorkerError(
                 "durable build operation payload is invalid"
             ) from exc
+        return payload
+
+    def _execution_plan_validate_workitem_identity(
+        self,
+        view: DurableJobView,
+        claim: Mapping[str, Any] | None,
+        payload: Any,
+    ) -> None:
+        """Verbatim relocation of ``_execution_plan``'s post-read fence
+        recheck plus repository/base_sha/profile/policy/target identity
+        checks; no side effect, order, or condition changed."""
+
         # A native atomic read authenticates the private payload.  This second
         # check is only the post-read mutation-fence proof; it is never used to
         # authorize the preceding private read.
@@ -1449,6 +1474,14 @@ class BuildWorker:
             raise BuildWorkerError(
                 "build WorkItem target is not the submitted local target"
             )
+
+    def _execution_plan_validate_generation_and_spec(
+        self, view: DurableJobView, payload: Any, spec_name: str
+    ) -> tuple[str, bool]:
+        """Verbatim relocation of ``_execution_plan``'s generation/config
+        digest/spec-name/dirty checks; no side effect, order, or condition
+        changed. Returns ``(persisted_spec, dirty)``."""
+
         descriptor_generation = payload.generation_id
         view_generation = view.generation_id or None
         if descriptor_generation != view_generation:
@@ -1473,6 +1506,16 @@ class BuildWorker:
                 "dirty durable builds require an immutable typed snapshot; "
                 "durable snapshot authority is not installed"
             )
+        return persisted_spec, dirty
+
+    def _execution_plan_snapshot_spec(
+        self, scope: Any, payload: Any, persisted_spec: str, dirty: bool
+    ) -> tuple[Any, Any]:
+        """Verbatim relocation of ``_execution_plan``'s config-snapshot
+        computation, config-digest check, and persisted-spec lookup with its
+        spec-digest check; no side effect, order, or condition changed.
+        Returns ``(config, snapshot_spec)``."""
+
         config, config_digest = _config_snapshot(
             scope,
             base_sha=payload.base_sha,
@@ -1492,6 +1535,16 @@ class BuildWorker:
             raise BuildWorkerError(
                 "build payload spec digest does not match the submitted snapshot"
             )
+        return config, snapshot_spec
+
+    def _execution_plan_validate_execution_fields(
+        self, payload: Any, snapshot_spec: Any
+    ) -> None:
+        """Verbatim relocation of ``_execution_plan``'s
+        argv/workdir/artifact-pattern/timeout/feature-set/target-triple/
+        artifact-contract/profile-ref comparison against the submitted
+        snapshot; no side effect, order, or condition changed."""
+
         if (
             payload.argv != snapshot_spec.command
             or payload.workdir != snapshot_spec.workdir
@@ -1508,77 +1561,113 @@ class BuildWorker:
             raise BuildWorkerError(
                 "build payload execution fields disagree with the submitted snapshot"
             )
-        spec = snapshot_spec
-        cacheable = payload.cacheable is True
-        key: bq.CacheKey | None = None
-        if cacheable:
-            components = {
-                item.name: item.value for item in payload.cache_key_components
-            }
-            key = _key_from_components(components)
-            expected_components = {
-                "repo": view.repository_id,
-                "spec": snapshot_spec.name,
-                "tree_sha": payload.tree_sha,
-                "feature_set": " ".join(snapshot_spec.command),
-                "target_triple": bq._target_triple(snapshot_spec),  # noqa: SLF001
-            }
-            for component, expected in expected_components.items():
-                if getattr(key, component) != expected:
-                    raise BuildWorkerError(
-                        "persisted build key "
-                        f"{component} component disagrees with the submitted snapshot"
-                    )
-            if payload.cache_key_digest != key.digest:
+
+    def _execution_plan_cacheable_key_components(
+        self, view: DurableJobView, payload: Any, snapshot_spec: Any
+    ) -> Any:
+        """Verbatim relocation of the cacheable branch's key-construction and
+        expected-components-match loop from ``_execution_plan``; no side
+        effect, order, or condition changed. Returns ``key``."""
+
+        components = {item.name: item.value for item in payload.cache_key_components}
+        key = _key_from_components(components)
+        expected_components = {
+            "repo": view.repository_id,
+            "spec": snapshot_spec.name,
+            "tree_sha": payload.tree_sha,
+            "feature_set": " ".join(snapshot_spec.command),
+            "target_triple": bq._target_triple(snapshot_spec),  # noqa: SLF001
+        }
+        for component, expected in expected_components.items():
+            if getattr(key, component) != expected:
                 raise BuildWorkerError(
-                    "build payload cache key does not match its components"
+                    "persisted build key "
+                    f"{component} component disagrees with the submitted snapshot"
                 )
-            if payload.config_digest != key.config_digest:
-                raise BuildWorkerError(
-                    "build payload config digest does not match its key"
-                )
-            if payload.spec_digest != key.spec_digest:
-                raise BuildWorkerError(
-                    "build payload spec digest does not match its key"
-                )
-            if (payload.generation_id or "") != key.generation_id:
-                raise BuildWorkerError(
-                    "build payload generation does not match its key"
-                )
-            try:
-                submitted_tree_sha = _paths_tree_sha_at(
-                    scope.main_tree,
-                    payload.base_sha,
-                    snapshot_spec.cache_key_paths,
-                )
-            except (bq.BuildQueueError, OSError) as exc:
-                raise BuildWorkerError(
-                    "submitted build SHA tree could not be verified"
-                ) from exc
-            if (
-                key.tree_sha != submitted_tree_sha
-                or payload.tree_sha != submitted_tree_sha
-            ):
-                raise BuildWorkerError(
-                    "build payload tree digest disagrees with submitted SHA"
-                )
-        else:
-            try:
-                submitted_tree_sha = bq._require_git(  # noqa: SLF001
-                    ["rev-parse", f"{payload.base_sha}^{{tree}}"], scope.main_tree
-                )
-            except (bq.BuildQueueError, OSError) as exc:
-                raise BuildWorkerError(
-                    "submitted build SHA tree could not be verified"
-                ) from exc
-            if payload.tree_sha != submitted_tree_sha:
-                raise BuildWorkerError(
-                    "uncacheable build payload tree digest disagrees with submitted SHA"
-                )
-        if not cacheable and payload.cache_key_digest is not None:
+        return key
+
+    def _execution_plan_cacheable_key_digests(self, payload: Any, key: Any) -> None:
+        """Verbatim relocation of the cacheable branch's
+        cache-key/config/spec/generation digest-match checks from
+        ``_execution_plan``; no side effect, order, or condition changed."""
+
+        if payload.cache_key_digest != key.digest:
             raise BuildWorkerError(
-                "uncacheable build payload unexpectedly carries a cache key"
+                "build payload cache key does not match its components"
             )
+        if payload.config_digest != key.config_digest:
+            raise BuildWorkerError(
+                "build payload config digest does not match its key"
+            )
+        if payload.spec_digest != key.spec_digest:
+            raise BuildWorkerError(
+                "build payload spec digest does not match its key"
+            )
+        if (payload.generation_id or "") != key.generation_id:
+            raise BuildWorkerError(
+                "build payload generation does not match its key"
+            )
+
+    def _execution_plan_cacheable_tree_sha(
+        self, scope: Any, payload: Any, snapshot_spec: Any, key: Any
+    ) -> None:
+        """Verbatim relocation of the cacheable branch's submitted-tree-SHA
+        verification from ``_execution_plan``; no side effect, order, or
+        condition changed."""
+
+        try:
+            submitted_tree_sha = _paths_tree_sha_at(
+                scope.main_tree,
+                payload.base_sha,
+                snapshot_spec.cache_key_paths,
+            )
+        except (bq.BuildQueueError, OSError) as exc:
+            raise BuildWorkerError(
+                "submitted build SHA tree could not be verified"
+            ) from exc
+        if (
+            key.tree_sha != submitted_tree_sha
+            or payload.tree_sha != submitted_tree_sha
+        ):
+            raise BuildWorkerError(
+                "build payload tree digest disagrees with submitted SHA"
+            )
+
+    def _execution_plan_cacheable_key(
+        self, view: DurableJobView, payload: Any, snapshot_spec: Any, scope: Any
+    ) -> Any:
+        """Thin orchestrator over the cacheable branch's 3 sub-steps
+        (key/components, digests, tree SHA), called in the same order as the
+        original inline statements. Returns ``key``."""
+
+        key = self._execution_plan_cacheable_key_components(view, payload, snapshot_spec)
+        self._execution_plan_cacheable_key_digests(payload, key)
+        self._execution_plan_cacheable_tree_sha(scope, payload, snapshot_spec, key)
+        return key
+
+    def _execution_plan_uncacheable_verify(self, payload: Any, scope: Any) -> None:
+        """Verbatim relocation of the uncacheable branch's submitted-tree-SHA
+        verification from ``_execution_plan``; no side effect, order, or
+        condition changed."""
+
+        try:
+            submitted_tree_sha = bq._require_git(  # noqa: SLF001
+                ["rev-parse", f"{payload.base_sha}^{{tree}}"], scope.main_tree
+            )
+        except (bq.BuildQueueError, OSError) as exc:
+            raise BuildWorkerError(
+                "submitted build SHA tree could not be verified"
+            ) from exc
+        if payload.tree_sha != submitted_tree_sha:
+            raise BuildWorkerError(
+                "uncacheable build payload tree digest disagrees with submitted SHA"
+            )
+
+    def _execution_plan_verify_toolchain(self, payload: Any, cacheable: bool) -> None:
+        """Verbatim relocation of ``_execution_plan``'s final
+        uncacheable-cache-key-digest and toolchain-digest checks; no side
+        effect, order, or condition changed."""
+
         components = {item.name: item.value for item in payload.cache_key_components}
         expected_toolchain = (
             components["toolchain_fingerprint"] if cacheable else "unavailable"
@@ -1589,6 +1678,45 @@ class BuildWorker:
             raise BuildWorkerError(
                 "build payload toolchain digest disagrees with its key"
             )
+
+    def _execution_plan(
+        self,
+        view: DurableJobView,
+        *,
+        repo_path: Path | str,
+        spec_name: str,
+        claim: Mapping[str, Any] | None = None,
+    ) -> tuple[
+        Any,
+        bq.BuildSpec,
+        bq.CacheKey | None,
+        BuildExecutionDescriptor,
+    ]:
+        scope, get_exact = self._execution_plan_preflight(
+            view, repo_path=repo_path, claim=claim
+        )
+        raw_payload = self._execution_plan_read_payload(get_exact, view.job_id)
+        payload = self._execution_plan_parse_payload(raw_payload)
+        self._execution_plan_validate_workitem_identity(view, claim, payload)
+        persisted_spec, dirty = self._execution_plan_validate_generation_and_spec(
+            view, payload, spec_name
+        )
+        config, snapshot_spec = self._execution_plan_snapshot_spec(
+            scope, payload, persisted_spec, dirty
+        )
+        self._execution_plan_validate_execution_fields(payload, snapshot_spec)
+        spec = snapshot_spec
+        cacheable = payload.cacheable is True
+        key: bq.CacheKey | None = None
+        if cacheable:
+            key = self._execution_plan_cacheable_key(view, payload, snapshot_spec, scope)
+        else:
+            self._execution_plan_uncacheable_verify(payload, scope)
+        if not cacheable and payload.cache_key_digest is not None:
+            raise BuildWorkerError(
+                "uncacheable build payload unexpectedly carries a cache key"
+            )
+        self._execution_plan_verify_toolchain(payload, cacheable)
         return scope, spec, key, payload
 
     def cancel(self, job_id: str, *, reason: str = "cancelled by owner") -> bool:
