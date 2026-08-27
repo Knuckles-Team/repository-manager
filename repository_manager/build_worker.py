@@ -9,7 +9,7 @@ import stat
 import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from repository_manager import build_queue as bq
 from repository_manager.build_artifacts import (
@@ -1440,7 +1440,7 @@ class BuildWorker:
     def _execution_plan_validate_workitem_identity(
         self,
         view: DurableJobView,
-        claim: Mapping[str, Any] | None,
+        claim: Mapping[str, Any],
         payload: Any,
     ) -> None:
         """Verbatim relocation of ``_execution_plan``'s post-read fence
@@ -1697,7 +1697,9 @@ class BuildWorker:
         )
         raw_payload = self._execution_plan_read_payload(get_exact, view.job_id)
         payload = self._execution_plan_parse_payload(raw_payload)
-        self._execution_plan_validate_workitem_identity(view, claim, payload)
+        self._execution_plan_validate_workitem_identity(
+            view, cast(Mapping[str, Any], claim), payload
+        )
         persisted_spec, dirty = self._execution_plan_validate_generation_and_spec(
             view, payload, spec_name
         )
