@@ -139,6 +139,8 @@ subdirectories:
             policies, and system log.
         - url: https://github.com/Knuckles-Team/openbao-mcp.git
           description: OpenBao Secrets Engine MCP Server for Agentic AI!
+        - url: https://github.com/Knuckles-Team/opensearch-mcp.git
+          description: OpenSearch API + MCP Server + A2A Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/owncast-agent.git
           description: Agent for interacting with Owncast API
         - url: https://github.com/Knuckles-Team/plane-agent.git
@@ -170,6 +172,8 @@ subdirectories:
           description: Python ServiceNow API Wrapper
         - url: https://github.com/Knuckles-Team/onetrust-api.git
           description: OneTrust API Wrapper + MCP Server + A2A Agent (100% API coverage)
+        - url: https://github.com/Knuckles-Team/spark-mcp.git
+          description: Spark Connect (gRPC) API + MCP Server + A2A Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/sql-mcp.git
           description: Generic SQL MCP Server for Agentic AI! Postgres, MySQL/MariaDB,
             MSSQL, Oracle, and SQLite.
@@ -669,6 +673,11 @@ services:
     domain: lakekeeper.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
     description: Lakekeeper Apache Iceberg REST catalog control plane, OIDC-secured
       via Keycloak.
+  - name: opensearch
+    url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/opensearch.git
+    domain: opensearch.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    description: OpenSearch 2.19.6 search tier (CA-50/DEC-CA-09), security-plugin-enabled
+      with Keycloak OIDC + internal-user auth and document-level security.
   - name: trino
     url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/trino.git
     domain: trino.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
