@@ -19,7 +19,7 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, StrEnum
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from pydantic import BaseModel
 from pydantic_core import PydanticSerializationError
@@ -1261,16 +1261,14 @@ def _refuse(code: LandingRefusalCode, detail: str) -> LandingVerificationResult:
     )
 
 
-def verify_landing(request: LandingVerificationRequest) -> LandingVerificationResult:
-    """Verify one certified, fenced landing without performing any effect.
+def _verify_landing_authority(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 1: request type + presence of the immutable authority fields.
 
-    Checks run in a deterministic order so a retry receives the same stable
-    refusal for the same snapshot.  The order starts with immutable authority
-    (generation/certificate), then identity/base/fence, then the local safety
-    observations.  No result from this function authorizes a caller to skip a
-    fresh target CAS or canonical lease check.
+    Extracted verbatim from ``verify_landing``'s opening checks — same order,
+    same refusal codes.
     """
-
     if type(request) is not LandingVerificationRequest:
         return _refuse(
             LandingRefusalCode.REQUEST_INVALID,
@@ -1297,7 +1295,18 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.CERTIFICATE_REQUIRED,
             "a certification certificate is required",
         )
+    ctx["request_generation"] = request_generation
+    ctx["request_certificate"] = request_certificate
+    return None
 
+
+def _verify_landing_identity_fields(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 2: rebuild the requested repository/target/base/fence identity.
+
+    Extracted verbatim from ``verify_landing``.
+    """
     try:
         repository = _rebuild_repository(request.repository)
         target = _rebuild_target(request.target)
@@ -1317,21 +1326,56 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.REQUEST_INVALID,
             "landing request identity or observation is invalid",
         )
+    ctx["repository"] = repository
+    ctx["target"] = target
+    ctx["target_branch"] = target_branch
+    ctx["expected_base_sha"] = expected_base_sha
+    ctx["observed_target_sha"] = observed_target_sha
+    ctx["expected_fence"] = expected_fence
+    ctx["observed_fence"] = observed_fence
+    return None
 
+
+def _verify_landing_generation_rebuild(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 3: rebuild the generation authority. Extracted verbatim from
+    ``verify_landing``.
+    """
     try:
-        generation = _rebuild_generation(request_generation)
+        generation = _rebuild_generation(ctx["request_generation"])
     except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.GENERATION_INVALID,
             "generation authority could not be rebuilt",
         )
+    ctx["generation"] = generation
+    return None
+
+
+def _verify_landing_certificate_rebuild(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 4: rebuild the certificate authority. Extracted verbatim from
+    ``verify_landing``.
+    """
     try:
-        certificate = _rebuild_certificate(request_certificate)
+        certificate = _rebuild_certificate(ctx["request_certificate"])
     except _MALFORMED_INPUT_ERRORS:
         return _refuse(
             LandingRefusalCode.CERTIFICATE_INVALID,
             "certificate authority could not be rebuilt",
         )
+    ctx["certificate"] = certificate
+    return None
+
+
+def _verify_landing_evidence_rebuild(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 5: rebuild the validation evidence tuple. Extracted verbatim
+    from ``verify_landing``.
+    """
     rebuilt_evidence: list[GateEvidence] = []
     try:
         if type(request.evidence) is not tuple:
@@ -1345,7 +1389,18 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.EVIDENCE_INVALID,
             "validation evidence could not be rebuilt",
         )
+    ctx["evidence"] = evidence
+    return None
 
+
+def _verify_landing_generation_identity(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 6: derived generation id + durable generation anchor checks.
+
+    Extracted verbatim from ``verify_landing``.
+    """
+    generation = ctx["generation"]
     try:
         expected_generation_id = Generation.derive_id(
             repository_id=generation.repository.repository_id,
@@ -1384,7 +1439,16 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.GENERATION_ANCHOR_MISMATCH,
             "generation identity anchor does not match durable authority",
         )
+    return None
 
+
+def _verify_landing_generation_state(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 7: certified state, synthetic commit anchor, and landing fence
+    presence. Extracted verbatim from ``verify_landing``.
+    """
+    generation = ctx["generation"]
     if generation.state is not GenerationState.CERTIFIED:
         return _refuse(
             LandingRefusalCode.GENERATION_NOT_CERTIFIED,
@@ -1420,6 +1484,17 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.FENCE_REQUIRED,
             "certified generation is missing its landing fence",
         )
+    return None
+
+
+def _verify_landing_certificate_linkage(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 8: certificate <-> generation linkage. Extracted verbatim from
+    ``verify_landing``.
+    """
+    generation = ctx["generation"]
+    certificate = ctx["certificate"]
     if certificate.generation_id != generation.generation_id:
         return _refuse(
             LandingRefusalCode.CERTIFICATE_GENERATION_MISMATCH,
@@ -1438,6 +1513,17 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.CERTIFICATE_INPUT_MISMATCH,
             "certificate inputs differ from generation authority",
         )
+    return None
+
+
+def _verify_landing_evidence_linkage(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 9: generation <-> rebuilt-evidence identity linkage. Extracted
+    verbatim from ``verify_landing``.
+    """
+    generation = ctx["generation"]
+    evidence = ctx["evidence"]
     supplied_evidence_ids = tuple(item.evidence_id for item in evidence)
     expected_evidence_ids = tuple(generation.validation_evidence_ids)
     if (
@@ -1448,6 +1534,18 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.CERTIFICATE_INPUT_MISMATCH,
             "generation evidence identities differ from rebuilt evidence",
         )
+    return None
+
+
+def _verify_landing_certificate_validity(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 10: evidence digest match + certificate cryptographic validity.
+
+    Extracted verbatim from ``verify_landing``.
+    """
+    certificate = ctx["certificate"]
+    evidence = ctx["evidence"]
     try:
         evidence_digests = tuple(sorted(item.digest for item in evidence))
     except ValueError:
@@ -1475,6 +1573,17 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.CERTIFICATE_INVALID,
             "certificate evidence is not valid for landing",
         )
+    ctx["certificate_digest"] = certificate_digest
+    return None
+
+
+def _verify_landing_certificate_anchor(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 11: durable certificate content anchor. Extracted verbatim from
+    ``verify_landing``.
+    """
+    certificate_digest = ctx["certificate_digest"]
     if request.expected_certificate_digest is None:
         return _refuse(
             LandingRefusalCode.CERTIFICATE_ANCHOR_REQUIRED,
@@ -1494,6 +1603,22 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.CERTIFICATE_ANCHOR_MISMATCH,
             "certificate content anchor does not match durable authority",
         )
+    return None
+
+
+def _verify_landing_target_state(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 12: requested repository/target/base match the generation.
+
+    Extracted verbatim from ``verify_landing``.
+    """
+    generation = ctx["generation"]
+    repository = ctx["repository"]
+    target = ctx["target"]
+    target_branch = ctx["target_branch"]
+    expected_base_sha = ctx["expected_base_sha"]
+    observed_target_sha = ctx["observed_target_sha"]
     if generation.repository != repository:
         return _refuse(
             LandingRefusalCode.REPOSITORY_MISMATCH,
@@ -1517,6 +1642,18 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.TARGET_MOVED,
             "target branch moved after the expected base was captured",
         )
+    return None
+
+
+def _verify_landing_fence_state(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 13: expected/observed fence presence and freshness. Extracted
+    verbatim from ``verify_landing``.
+    """
+    generation = ctx["generation"]
+    expected_fence = ctx["expected_fence"]
+    observed_fence = ctx["observed_fence"]
     if expected_fence is None or observed_fence is None:
         return _refuse(
             LandingRefusalCode.FENCE_REQUIRED,
@@ -1527,6 +1664,16 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.STALE_FENCE,
             "the observed landing fence is not the current expected fence",
         )
+    return None
+
+
+def _verify_landing_local_safety(
+    request: LandingVerificationRequest, ctx: dict[str, Any]
+) -> LandingVerificationResult | None:
+    """Stage 14: canonical checkout cleanliness/lease + target occupancy.
+
+    Extracted verbatim from ``verify_landing``.
+    """
     try:
         if type(request.canonical) is not CanonicalCheckoutState:
             raise LandingPolicyError("canonical observation is invalid")
@@ -1559,6 +1706,16 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.TARGET_OCCUPIED,
             "target branch is occupied by another worktree",
         )
+    return None
+
+
+def _build_landing_result(ctx: dict[str, Any]) -> LandingVerificationResult:
+    """Final stage: construct the accepted result. Extracted verbatim from
+    ``verify_landing``.
+    """
+    generation = ctx["generation"]
+    certificate_digest = ctx["certificate_digest"]
+    expected_fence = ctx["expected_fence"]
     try:
         return LandingVerificationResult(
             accepted=True,
@@ -1573,6 +1730,50 @@ def verify_landing(request: LandingVerificationRequest) -> LandingVerificationRe
             LandingRefusalCode.REQUEST_INVALID,
             "landing result could not be constructed",
         )
+
+
+# Deterministic check order (a retry sees the same stable refusal for the
+# same snapshot): immutable authority (generation/certificate) first, then
+# identity/base/fence, then the local safety observations. Each stage reads
+# and writes ``ctx`` explicitly rather than closing over locals, but the
+# tuple order below IS the original function's top-to-bottom statement
+# order -- reordering this tuple would change verify_landing's behavior.
+_LANDING_VERIFICATION_STAGES: tuple[
+    "Callable[[LandingVerificationRequest, dict[str, Any]], LandingVerificationResult | None]",
+    ...,
+] = (
+    _verify_landing_authority,
+    _verify_landing_identity_fields,
+    _verify_landing_generation_rebuild,
+    _verify_landing_certificate_rebuild,
+    _verify_landing_evidence_rebuild,
+    _verify_landing_generation_identity,
+    _verify_landing_generation_state,
+    _verify_landing_certificate_linkage,
+    _verify_landing_evidence_linkage,
+    _verify_landing_certificate_validity,
+    _verify_landing_certificate_anchor,
+    _verify_landing_target_state,
+    _verify_landing_fence_state,
+    _verify_landing_local_safety,
+)
+
+
+def verify_landing(request: LandingVerificationRequest) -> LandingVerificationResult:
+    """Verify one certified, fenced landing without performing any effect.
+
+    Checks run in a deterministic order so a retry receives the same stable
+    refusal for the same snapshot.  The order starts with immutable authority
+    (generation/certificate), then identity/base/fence, then the local safety
+    observations.  No result from this function authorizes a caller to skip a
+    fresh target CAS or canonical lease check.
+    """
+    ctx: dict[str, Any] = {}
+    for stage in _LANDING_VERIFICATION_STAGES:
+        refusal = stage(request, ctx)
+        if refusal is not None:
+            return refusal
+    return _build_landing_result(ctx)
 
 
 def verify_landability(

@@ -983,6 +983,168 @@ def _build_summary_md(
     return summary_md
 
 
+def _is_ecosystem_installation_result(r: "GitResult") -> bool:
+    return bool(r.metadata and r.metadata.command and "pip install" in r.metadata.command)
+
+
+def _is_version_metadata_sync_result(r: "GitResult") -> bool:
+    return bool(
+        r.metadata and r.metadata.command and "bump2version" in r.metadata.command
+    )
+
+
+def _is_agent_standards_compliance_result(r: "GitResult") -> bool:
+    return bool(
+        r.metadata and r.metadata.command and "static_check" in r.metadata.command
+    )
+
+
+def _is_mcp_help_check_result(r: "GitResult") -> bool:
+    return bool(
+        r.metadata
+        and r.metadata.command
+        and "mcp_server" in r.metadata.command
+        and "--help" in r.metadata.command
+    )
+
+
+def _is_agent_help_check_result(r: "GitResult") -> bool:
+    return bool(
+        r.metadata
+        and r.metadata.command
+        and ("agent_server" in r.metadata.command or "server" in r.metadata.command)
+        and "--help" in r.metadata.command
+        and "mcp_server" not in r.metadata.command
+    )
+
+
+def _is_agent_runtime_web_ui_result(r: "GitResult") -> bool:
+    return bool(
+        r.metadata
+        and r.metadata.command
+        and (
+            "runtime_check" in r.metadata.command or "--web" in r.metadata.command
+        )
+    )
+
+
+def _is_pre_commit_standard_compliance_result(r: "GitResult") -> bool:
+    return bool(
+        r.metadata and r.metadata.command and "pre-commit run" in r.metadata.command
+    )
+
+
+def _is_pytest_suite_result(r: "GitResult") -> bool:
+    return bool(r.metadata and r.metadata.command and "pytest" in r.metadata.command)
+
+
+# Declaration order matters: it is the category order in the final report
+# (before the 'Additional Operational Checks' catch-all, which is always
+# appended last, not interleaved here).
+_RESULT_CATEGORY_PREDICATES: tuple[
+    tuple[str, "Callable[[GitResult], bool]"], ...
+] = (
+    ("Ecosystem Installation", _is_ecosystem_installation_result),
+    ("Version Metadata Sync (Dry Run)", _is_version_metadata_sync_result),
+    ("Agent Standards Compliance", _is_agent_standards_compliance_result),
+    ("MCP Help Check", _is_mcp_help_check_result),
+    ("Agent Help Check", _is_agent_help_check_result),
+    ("Agent Runtime & Web UI", _is_agent_runtime_web_ui_result),
+    ("Pre-commit Standard Compliance", _is_pre_commit_standard_compliance_result),
+    ("Pytest Suite", _is_pytest_suite_result),
+)
+
+
+def _categorize_results_by_command(
+    results: list["GitResult"],
+) -> dict[str, list["GitResult"]]:
+    """Bucket ``results`` into the fixed set of report categories by
+    ``metadata.command`` substring, plus an 'Additional Operational Checks'
+    catch-all (appended LAST, after every declared category) for anything
+    that matched none of them.
+
+    Extracted verbatim from ``ValidationReport.from_results`` — same filter
+    predicates (now named, one per category), same declaration order, same
+    id()-based dedup to find the uncategorized set.
+    """
+    categories_map: dict[str, list[GitResult]] = {
+        cat_name: [r for r in results if predicate(r)]
+        for cat_name, predicate in _RESULT_CATEGORY_PREDICATES
+    }
+
+    known_ids = set()
+    for cat_list in categories_map.values():
+        for r in cat_list:
+            if r.metadata:
+                known_ids.add(id(r))
+
+    uncategorized = [r for r in results if id(r) not in known_ids]
+    if uncategorized:
+        categories_map["Additional Operational Checks"] = uncategorized
+
+    return categories_map
+
+
+def _build_error_project_result(
+    pkg: str, cmd: str | None, r: "GitResult"
+) -> "ProjectResult":
+    """Build the ``ProjectResult`` for one 'error'-status result.
+
+    Extracted verbatim from ``ValidationReport.from_results``'s inner loop's
+    'error' branch — same error-message fallback, same pre-commit output
+    filtering.
+    """
+    error_msg = r.error.message if r.error else (r.data or "Unknown error")
+    output = r.data if r.data and r.data != error_msg else None
+    if output and cmd and ("pre_commit" in cmd or "pre-commit" in cmd):
+        output = _filter_pre_commit_output(output)
+    return ProjectResult(project=pkg, message=error_msg, output=output, command=cmd)
+
+
+def _append_result_to_category(cat: "ValidationCategory", r: "GitResult") -> None:
+    """Classify one result into ``cat``'s successes/failures/skipped list.
+
+    Extracted verbatim from ``ValidationReport.from_results``'s inner
+    per-result loop — same project-label fallback, same status dispatch.
+    """
+    pkg = r.metadata.workspace.split("/")[-1] if r.metadata else "unknown"
+    cmd = r.metadata.command if r.metadata else None
+
+    if r.status == "success":
+        cat.successes.append(
+            ProjectResult(project=pkg, message="Success", output=r.data, command=cmd)
+        )
+    elif r.status == "error":
+        cat.failures.append(_build_error_project_result(pkg, cmd, r))
+    elif r.status == "skipped":
+        cat.skipped.append(
+            ProjectResult(project=pkg, message=r.data or "Skipped", command=cmd)
+        )
+
+
+def _build_validation_category(
+    cat_name: str, cat_results: list["GitResult"]
+) -> "ValidationCategory":
+    """Build one populated ``ValidationCategory`` from its matched results.
+
+    Extracted verbatim from ``ValidationReport.from_results`` — same counts,
+    same per-result classification order (iterates ``cat_results`` in the
+    original list order).
+    """
+    cat = ValidationCategory(
+        name=cat_name,
+        total=len(cat_results),
+        success_count=len([r for r in cat_results if r.status == "success"]),
+        failure_count=len([r for r in cat_results if r.status == "error"]),
+        skipped_count=len([r for r in cat_results if r.status == "skipped"]),
+    )
+
+    for r in cat_results:
+        _append_result_to_category(cat, r)
+
+    return cat
+
+
 class ValidationReport(BaseModel):
     timestamp: str
     total: int = 0
@@ -1005,124 +1167,12 @@ class ValidationReport(BaseModel):
             skipped_count=len(skipped),
         )
 
-        categories_map = {
-            "Ecosystem Installation": [
-                r
-                for r in results
-                if r.metadata
-                and r.metadata.command
-                and "pip install" in r.metadata.command
-            ],
-            "Version Metadata Sync (Dry Run)": [
-                r
-                for r in results
-                if r.metadata
-                and r.metadata.command
-                and "bump2version" in r.metadata.command
-            ],
-            "Agent Standards Compliance": [
-                r
-                for r in results
-                if r.metadata
-                and r.metadata.command
-                and "static_check" in r.metadata.command
-            ],
-            "MCP Help Check": [
-                r
-                for r in results
-                if r.metadata
-                and r.metadata.command
-                and "mcp_server" in r.metadata.command
-                and "--help" in r.metadata.command
-            ],
-            "Agent Help Check": [
-                r
-                for r in results
-                if r.metadata
-                and r.metadata.command
-                and (
-                    "agent_server" in r.metadata.command
-                    or "server" in r.metadata.command
-                )
-                and "--help" in r.metadata.command
-                and "mcp_server" not in r.metadata.command
-            ],
-            "Agent Runtime & Web UI": [
-                r
-                for r in results
-                if r.metadata
-                and r.metadata.command
-                and (
-                    "runtime_check" in r.metadata.command
-                    or "--web" in r.metadata.command
-                )
-            ],
-            "Pre-commit Standard Compliance": [
-                r
-                for r in results
-                if r.metadata
-                and r.metadata.command
-                and "pre-commit run" in r.metadata.command
-            ],
-            "Pytest Suite": [
-                r
-                for r in results
-                if r.metadata and r.metadata.command and "pytest" in r.metadata.command
-            ],
-        }
-
-        known_ids = set()
-        for cat_list in categories_map.values():
-            for r in cat_list:
-                if r.metadata:
-                    known_ids.add(id(r))
-
-        uncategorized = [r for r in results if id(r) not in known_ids]
-        if uncategorized:
-            categories_map["Additional Operational Checks"] = uncategorized
+        categories_map = _categorize_results_by_command(results)
 
         for cat_name, cat_results in categories_map.items():
             if not cat_results:
                 continue
-
-            cat = ValidationCategory(
-                name=cat_name,
-                total=len(cat_results),
-                success_count=len([r for r in cat_results if r.status == "success"]),
-                failure_count=len([r for r in cat_results if r.status == "error"]),
-                skipped_count=len([r for r in cat_results if r.status == "skipped"]),
-            )
-
-            for r in cat_results:
-                pkg = r.metadata.workspace.split("/")[-1] if r.metadata else "unknown"
-                cmd = r.metadata.command if r.metadata else None
-
-                if r.status == "success":
-                    cat.successes.append(
-                        ProjectResult(
-                            project=pkg, message="Success", output=r.data, command=cmd
-                        )
-                    )
-                elif r.status == "error":
-                    error_msg = (
-                        r.error.message if r.error else (r.data or "Unknown error")
-                    )
-                    output = r.data if r.data and r.data != error_msg else None
-                    if output and cmd and ("pre_commit" in cmd or "pre-commit" in cmd):
-                        output = _filter_pre_commit_output(output)
-                    cat.failures.append(
-                        ProjectResult(
-                            project=pkg, message=error_msg, output=output, command=cmd
-                        )
-                    )
-                elif r.status == "skipped":
-                    cat.skipped.append(
-                        ProjectResult(
-                            project=pkg, message=r.data or "Skipped", command=cmd
-                        )
-                    )
-
-            report.categories.append(cat)
+            report.categories.append(_build_validation_category(cat_name, cat_results))
 
         return report
 
