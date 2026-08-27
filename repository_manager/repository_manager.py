@@ -278,6 +278,48 @@ def _project_label(path: object) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", clean).strip("-") or "configured-workspace"
 
 
+def _uv_extra_flag(extra: str | None) -> str:
+    """Render an ``extra`` selection (from `install_projects`) as a `uv
+    sync`/`uv_workspace.py sync` CLI flag suffix."""
+    if extra == "all":
+        return " --all-extras"
+    if extra:
+        return f" --extra {shlex.quote(extra)}"
+    return ""
+
+
+def _build_install_report_markdown(
+    results: list[GitResult],
+    successes: list[GitResult],
+    failures: list[GitResult],
+) -> str:
+    """Render `install_projects`'s human-readable summary report."""
+    report_md = "# INSTALLATION SUMMARY\n"
+    report_md += (
+        f"**Time:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
+    )
+    report_md += f"**Total:** {len(results)} | **Success:** {len(successes)} ✅ | **Failure:** {len(failures)} ❌\n\n"
+
+    if successes:
+        report_md += "## Successes ✅\n"
+        for r in successes:
+            pkg = "unknown"
+            if r.metadata:
+                pkg = r.metadata.workspace.split("/")[-1]
+            report_md += f"- **{pkg}**: Installation success\n"
+
+    if failures:
+        report_md += "\n## Failures ❌\n"
+        for r in failures:
+            pkg = "unknown"
+            if r.metadata:
+                pkg = r.metadata.workspace.split("/")[-1]
+            error_msg = r.error.message if r.error else r.data
+            report_md += f"- **{pkg}**: {error_msg}\n"
+
+    return report_md
+
+
 def _expand_required_environment(value: str, *, label: str) -> str:
     """Expand a portable config value and fail before leaking an unresolved token."""
 
@@ -377,6 +419,124 @@ def _run_post_hydration_mount_checks(workspace_root: str) -> None:
             logger.critical(
                 f"{label} FAILED after this hydration -- {result.stdout.strip()[-2000:]}"
             )
+
+
+#: Patterns removed anywhere under a `cleanup_artifacts` target dir.
+_CLEANUP_FILE_PATTERNS = [
+    "knowledge_graph.db*",
+    "*.db-wal",
+    "*.db-shm",
+    "*.wal",
+    "*.log",
+    "session<MagicMock*",
+    "coverage.xml",
+    ".coverage",
+    "*.orig",
+    "*.rej",
+    "*.patch",
+    "failed_tests.txt",
+    "pytest_errors.txt",
+    "pytest_output.txt",
+    "mypy_errors.txt",
+    "mypy_output.txt",
+    "pre-commit-out.txt",
+    "cargo_check.log",
+    "check.log",
+    "check_out.txt",
+    "test_out.txt",
+    "trace.txt",
+]
+
+#: Directory names removed (whole subtree) anywhere under a `cleanup_artifacts`
+#: target dir.
+_CLEANUP_DIR_PATTERNS = {
+    ".pytest_cache",
+    "htmlcov",
+    "agent_data",
+}
+
+#: Directories `cleanup_artifacts` never descends into.
+_CLEANUP_IGNORED_DIRS = {".venv", "node_modules", ".git"}
+
+#: Transient script filename patterns `cleanup_artifacts` removes, but ONLY
+#: at the target dir's own root (never in subdirectories).
+_CLEANUP_ROOT_SCRIPT_PATTERNS = [
+    "test_*.py",
+    "fix_*.py",
+    "debug_*.py",
+    "scratch_*.py",
+    "temp_*.py",
+]
+
+
+def _cleanup_matched_dirs(dirpath: str, dirnames: list[str]) -> None:
+    """Remove (and un-descend into) any directory in *dirnames* that matches
+    `_CLEANUP_DIR_PATTERNS`."""
+    for d in list(dirnames):
+        if d in _CLEANUP_DIR_PATTERNS:
+            full_path = os.path.join(dirpath, d)
+            try:
+                shutil.rmtree(full_path)
+                logger.debug("Cleaned up managed directory")
+            except Exception as e:
+                logger.debug("Operation failed: error_type=%s", type(e).__name__)
+            dirnames.remove(d)
+
+
+def _cleanup_root_transient_script(file_path: Path) -> bool:
+    """Remove *file_path* if it matches a root-level transient script pattern.
+
+    Returns True if it matched (and cleanup was attempted), so the caller
+    can skip the non-standard-``.txt`` check for the same file.
+    """
+    for pat in _CLEANUP_ROOT_SCRIPT_PATTERNS:
+        if file_path.match(pat):
+            try:
+                file_path.unlink()
+                logger.info(f"Cleaned up root transient script: {file_path}")
+            except Exception as e:
+                logger.debug(
+                    "Root-script cleanup failed: error_type=%s", type(e).__name__
+                )
+            return True
+    return False
+
+
+def _cleanup_root_nonstandard_txt(file_path: Path) -> None:
+    """Remove *file_path* if it's a root-level ``.txt`` file other than the
+    two standard requirements files."""
+    if file_path.suffix == ".txt" and file_path.name not in (
+        "requirements.txt",
+        "requirements-dev.txt",
+    ):
+        try:
+            file_path.unlink()
+            logger.info(f"Cleaned up root non-standard text file: {file_path}")
+        except Exception as e:
+            logger.debug("Root-text cleanup failed: error_type=%s", type(e).__name__)
+
+
+def _cleanup_root_level_files(dirpath: str, filenames: list[str]) -> None:
+    """Root-only cleanup pass: transient scripts, then non-standard ``.txt``."""
+    for f in filenames:
+        file_path = Path(os.path.join(dirpath, f))
+        if _cleanup_root_transient_script(file_path):
+            continue
+        _cleanup_root_nonstandard_txt(file_path)
+
+
+def _cleanup_matched_files(dirpath: str, filenames: list[str]) -> None:
+    """Remove any file in *filenames* matching `_CLEANUP_FILE_PATTERNS`."""
+    for f in filenames:
+        file_path = Path(os.path.join(dirpath, f))
+        for pat in _CLEANUP_FILE_PATTERNS:
+            if file_path.match(pat):
+                try:
+                    file_path.unlink()
+                    logger.debug("Cleaned up managed file")
+                except Exception as e:
+                    logger.debug("Operation failed: error_type=%s", type(e).__name__)
+                break
 
 
 class Git:
@@ -1255,198 +1415,172 @@ class Git:
             return []
 
         logger.info("Installing ecosystem using native uv workspace sync...")
-        results = []
+        results: list[GitResult] = []
+        results.extend(self._install_agent_utilities_first(extra))
+        results.extend(self._install_remaining_ecosystem_projects())
+        self._maybe_export_install_report(results, report)
+        return results
 
-        import datetime
-        import shutil
+    def _install_agent_utilities_first(self, extra: str) -> list[GitResult]:
+        """Step 1: install agent-utilities first, then every other cloned
+        project that depends on it -- CONCEPT:RM-BOOTSTRAP.
 
-        # 1. Install agent-utilities first, then every other cloned project
-        # that depends on it -- CONCEPT:RM-BOOTSTRAP.
-        #
-        # This replaces a prior `uv sync --all-packages` run at the
-        # workspace root, which cannot succeed structurally: agent-utilities
-        # is its own uv workspace root (a dedicated, security-motivated
-        # boundary -- see its own AGENTS.md), and uv refuses a workspace
-        # member that is itself a workspace root ("Nested workspaces are not
-        # supported"). Verified empirically that even a project using the
-        # correct per-repo `.uv-workspace-siblings` path-source workaround
-        # still gets pulled into ecosystem-root resolution -- with its own
-        # local override silently ignored -- whenever its checkout also
-        # matches an ancestor workspace's `[tool.uv.workspace].members`
-        # glob; running each project's `uv sync` directly IN that project's
-        # own directory (never at `self.path`) avoids both failure modes.
-        # Every fleet member depends on agent-utilities, and it is not yet
-        # published to PyPI at the floor the fleet requires (only <=1.26.4
-        # is public; the fleet requires >=2.0.0), so agent-utilities must
-        # install successfully before any dependent is attempted -- this
-        # fails closed rather than reporting a partial "N/M installed" that
-        # would mask a downstream project never having had a chance.
+        This replaces a prior `uv sync --all-packages` run at the
+        workspace root, which cannot succeed structurally: agent-utilities
+        is its own uv workspace root (a dedicated, security-motivated
+        boundary -- see its own AGENTS.md), and uv refuses a workspace
+        member that is itself a workspace root ("Nested workspaces are not
+        supported"). Verified empirically that even a project using the
+        correct per-repo `.uv-workspace-siblings` path-source workaround
+        still gets pulled into ecosystem-root resolution -- with its own
+        local override silently ignored -- whenever its checkout also
+        matches an ancestor workspace's `[tool.uv.workspace].members`
+        glob; running each project's `uv sync` directly IN that project's
+        own directory (never at `self.path`) avoids both failure modes.
+        Every fleet member depends on agent-utilities, and it is not yet
+        published to PyPI at the floor the fleet requires (only <=1.26.4
+        is public; the fleet requires >=2.0.0), so agent-utilities must
+        install successfully before any dependent is attempted -- this
+        fails closed rather than reporting a partial "N/M installed" that
+        would mask a downstream project never having had a chance.
+        """
         if not shutil.which("uv"):
             logger.warning("uv not found. Native workspace sync requires uv.")
-        else:
-            au_path = self._find_project_path("agent-utilities")
-            if au_path is None or not os.path.isdir(au_path):
-                logger.warning(
-                    "agent-utilities not present in this workspace's project "
-                    "set; every fleet member depends on it, so no project "
-                    "can be installed."
-                )
-            else:
-                launcher = os.path.join(au_path, "scripts", "uv_workspace.py")
+            return []
 
-                def _extra_flag(extra: str | None) -> str:
-                    if extra == "all":
-                        return " --all-extras"
-                    if extra:
-                        return f" --extra {shlex.quote(extra)}"
-                    return ""
-
-                if not os.path.isfile(launcher):
-                    results.append(
-                        GitResult(
-                            status="error",
-                            data="",
-                            error=GitError(
-                                message=(
-                                    "agent-utilities checkout is missing "
-                                    "scripts/uv_workspace.py"
-                                ),
-                                code=1,
-                            ),
-                            metadata=GitMetadata(
-                                command="install",
-                                workspace=_project_label(au_path),
-                                return_code=1,
-                                timestamp=datetime.datetime.now(
-                                    datetime.UTC
-                                ).isoformat()
-                                + "Z",
-                            ),
-                        )
-                    )
-                else:
-                    au_sync_command = (
-                        f"python3 {shlex.quote(launcher)} sync" + _extra_flag(extra)
-                    )
-                    au_result = self.git_action(
-                        au_sync_command, path=au_path, timeout=300
-                    )
-                    results.append(au_result)
-
-                    if au_result.status == "success":
-                        for path in list(self.project_map.values()):
-                            if path == au_path or not os.path.isdir(path):
-                                continue
-                            try:
-                                sibling_names = self._materialize_uv_siblings(path)
-                            except (OSError, ValueError) as exc:
-                                results.append(
-                                    GitResult(
-                                        status="error",
-                                        data="",
-                                        error=GitError(message=str(exc), code=1),
-                                        metadata=GitMetadata(
-                                            command="install",
-                                            workspace=_project_label(path),
-                                            return_code=1,
-                                            timestamp=datetime.datetime.now(
-                                                datetime.UTC
-                                            ).isoformat()
-                                            + "Z",
-                                        ),
-                                    )
-                                )
-                                continue
-                            if not sibling_names:
-                                continue
-
-                            dep_sync_command = "uv sync" + _extra_flag(extra)
-                            results.append(
-                                self.git_action(
-                                    dep_sync_command, path=path, timeout=300
-                                )
-                            )
-
-        # 2. Install Node Ecosystem sequentially
-        for _url, path in self.project_map.items():
-            has_precommit = os.path.exists(
-                os.path.join(path, ".pre-commit-config.yaml")
+        au_path = self._find_project_path("agent-utilities")
+        if au_path is None or not os.path.isdir(au_path):
+            logger.warning(
+                "agent-utilities not present in this workspace's project "
+                "set; every fleet member depends on it, so no project "
+                "can be installed."
             )
-            has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
+            return []
 
-            if not has_precommit and not has_pyproject:
+        launcher = os.path.join(au_path, "scripts", "uv_workspace.py")
+        if not os.path.isfile(launcher):
+            return [
+                GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(
+                        message=(
+                            "agent-utilities checkout is missing "
+                            "scripts/uv_workspace.py"
+                        ),
+                        code=1,
+                    ),
+                    metadata=GitMetadata(
+                        command="install",
+                        workspace=_project_label(au_path),
+                        return_code=1,
+                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                    ),
+                )
+            ]
+
+        au_sync_command = f"python3 {shlex.quote(launcher)} sync" + _uv_extra_flag(
+            extra
+        )
+        au_result = self.git_action(au_sync_command, path=au_path, timeout=300)
+        results = [au_result]
+        if au_result.status == "success":
+            results.extend(self._sync_uv_siblings(au_path, extra))
+        return results
+
+    def _sync_uv_siblings(self, au_path: str, extra: str) -> list[GitResult]:
+        """Materialize + `uv sync` every declared uv sibling once
+        agent-utilities itself has installed successfully."""
+        results: list[GitResult] = []
+        for path in list(self.project_map.values()):
+            if path == au_path or not os.path.isdir(path):
+                continue
+            try:
+                sibling_names = self._materialize_uv_siblings(path)
+            except (OSError, ValueError) as exc:
                 results.append(
                     GitResult(
-                        status="skipped",
-                        data="Skipped (No .pre-commit-config.yaml and no pyproject.toml)",
+                        status="error",
+                        data="",
+                        error=GitError(message=str(exc), code=1),
                         metadata=GitMetadata(
                             command="install",
                             workspace=_project_label(path),
-                            return_code=0,
+                            return_code=1,
                             timestamp=datetime.datetime.now(datetime.UTC).isoformat()
                             + "Z",
                         ),
                     )
                 )
                 continue
+            if not sibling_names:
+                continue
 
-            is_node = os.path.exists(os.path.join(path, "package.json"))
-            if is_node:
-                pm = self._get_package_manager(path)
-                res = self.git_action(f"{pm} install", path=path)
-                if pm == "pnpm" and "Ignored build scripts:" in res.data:
-                    res.status = "error"
-                    res.data = f"pnpm install succeeded but ignored build scripts:\n{res.data}\nPlease add allowed dependencies to package.json."
-                results.append(res)
+            dep_sync_command = "uv sync" + _uv_extra_flag(extra)
+            results.append(self.git_action(dep_sync_command, path=path, timeout=300))
+        return results
 
-            is_python = os.path.exists(
-                os.path.join(path, "pyproject.toml")
-            ) or os.path.exists(os.path.join(path, "setup.py"))
-            if not is_python and not is_node:
-                results.append(
-                    GitResult(
-                        status="skipped",
-                        data="Skipped (Not a Python or Node project)",
-                        metadata=GitMetadata(
-                            command="install",
-                            workspace=_project_label(path),
-                            return_code=0,
-                            timestamp=datetime.datetime.now(datetime.UTC).isoformat()
-                            + "Z",
-                        ),
-                    )
+    def _install_remaining_ecosystem_projects(self) -> list[GitResult]:
+        """Step 2: install Node/Python projects sequentially."""
+        results: list[GitResult] = []
+        for _url, path in self.project_map.items():
+            results.extend(self._install_one_ecosystem_project(path))
+        return results
+
+    def _install_one_ecosystem_project(self, path: str) -> list[GitResult]:
+        has_precommit = os.path.exists(os.path.join(path, ".pre-commit-config.yaml"))
+        has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
+
+        if not has_precommit and not has_pyproject:
+            return [
+                GitResult(
+                    status="skipped",
+                    data="Skipped (No .pre-commit-config.yaml and no pyproject.toml)",
+                    metadata=GitMetadata(
+                        command="install",
+                        workspace=_project_label(path),
+                        return_code=0,
+                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                    ),
                 )
+            ]
 
+        results: list[GitResult] = []
+        is_node = os.path.exists(os.path.join(path, "package.json"))
+        if is_node:
+            pm = self._get_package_manager(path)
+            res = self.git_action(f"{pm} install", path=path)
+            if pm == "pnpm" and "Ignored build scripts:" in res.data:
+                res.status = "error"
+                res.data = f"pnpm install succeeded but ignored build scripts:\n{res.data}\nPlease add allowed dependencies to package.json."
+            results.append(res)
+
+        is_python = os.path.exists(
+            os.path.join(path, "pyproject.toml")
+        ) or os.path.exists(os.path.join(path, "setup.py"))
+        if not is_python and not is_node:
+            results.append(
+                GitResult(
+                    status="skipped",
+                    data="Skipped (Not a Python or Node project)",
+                    metadata=GitMetadata(
+                        command="install",
+                        workspace=_project_label(path),
+                        return_code=0,
+                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                    ),
+                )
+            )
+        return results
+
+    def _maybe_export_install_report(
+        self, results: list[GitResult], report: bool
+    ) -> None:
         successes = [r for r in results if r.status == "success"]
         failures = [r for r in results if r.status == "error"]
-
-        report_md = "# INSTALLATION SUMMARY\n"
-        report_md += (
-            f"**Time:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  \n"
-        )
-        report_md += f"**Total:** {len(results)} | **Success:** {len(successes)} ✅ | **Failure:** {len(failures)} ❌\n\n"
-
-        if successes:
-            report_md += "## Successes ✅\n"
-            for r in successes:
-                pkg = "unknown"
-                if r.metadata:
-                    pkg = r.metadata.workspace.split("/")[-1]
-                report_md += f"- **{pkg}**: Installation success\n"
-
-        if failures:
-            report_md += "\n## Failures ❌\n"
-            for r in failures:
-                pkg = "unknown"
-                if r.metadata:
-                    pkg = r.metadata.workspace.split("/")[-1]
-                error_msg = r.error.message if r.error else r.data
-                report_md += f"- **{pkg}**: {error_msg}\n"
-
+        report_md = _build_install_report_markdown(results, successes, failures)
         if self.report_path and report:
             self._export_report(report_md, "install_report.md")
-
-        return results
 
     def build_projects(self, threads: int | None = None) -> list[GitResult]:
         """Build projects serially so compilation cannot exhaust the workstation."""
@@ -1837,122 +1971,21 @@ class Git:
 
     def cleanup_artifacts(self, target_dir: str) -> None:
         """Removes test artifacts and temporary files from the specified directory."""
-        import shutil
-        from pathlib import Path
-
         dir_path = Path(target_dir)
         if not dir_path.exists():
             return
 
-        patterns_to_remove = [
-            "knowledge_graph.db*",
-            "*.db-wal",
-            "*.db-shm",
-            "*.wal",
-            "*.log",
-            "session<MagicMock*",
-            "coverage.xml",
-            ".coverage",
-            "*.orig",
-            "*.rej",
-            "*.patch",
-            "failed_tests.txt",
-            "pytest_errors.txt",
-            "pytest_output.txt",
-            "mypy_errors.txt",
-            "mypy_output.txt",
-            "pre-commit-out.txt",
-            "cargo_check.log",
-            "check.log",
-            "check_out.txt",
-            "test_out.txt",
-            "trace.txt",
-        ]
-
-        dir_patterns_to_remove = {
-            ".pytest_cache",
-            "htmlcov",
-            "agent_data",
-        }
-
-        ignored_dirs = {".venv", "node_modules", ".git"}
-
         # Use os.walk with top-down pruning to avoid iterating massive directories
         for dirpath, dirnames, filenames in os.walk(target_dir, topdown=True):
             # Prune ignored directories in-place (prevents os.walk from descending)
-            dirnames[:] = [d for d in dirnames if d not in ignored_dirs]
+            dirnames[:] = [d for d in dirnames if d not in _CLEANUP_IGNORED_DIRS]
 
-            # Check for directory-level cleanup targets
-            for d in list(dirnames):
-                if d in dir_patterns_to_remove:
-                    full_path = os.path.join(dirpath, d)
-                    try:
-                        shutil.rmtree(full_path)
-                        logger.debug("Cleaned up managed directory")
-                    except Exception as e:
-                        logger.debug(
-                            "Operation failed: error_type=%s", type(e).__name__
-                        )
-                    dirnames.remove(d)
+            _cleanup_matched_dirs(dirpath, dirnames)
 
-            # Check for root-level transient scripts and non-standard text files (only at target_dir root)
             if dirpath == target_dir:
-                root_patterns = [
-                    "test_*.py",
-                    "fix_*.py",
-                    "debug_*.py",
-                    "scratch_*.py",
-                    "temp_*.py",
-                ]
-                for f in filenames:
-                    file_path = Path(os.path.join(dirpath, f))
-                    # 1. Clean up root-level python transient scripts
-                    matched_script = False
-                    for pat in root_patterns:
-                        if file_path.match(pat):
-                            try:
-                                file_path.unlink()
-                                logger.info(
-                                    f"Cleaned up root transient script: {file_path}"
-                                )
-                            except Exception as e:
-                                logger.debug(
-                                    "Root-script cleanup failed: error_type=%s",
-                                    type(e).__name__,
-                                )
-                            matched_script = True
-                            break
-                    if matched_script:
-                        continue
-                    # 2. Clean up root-level non-standard *.txt files (exclude requirements.txt and requirements-dev.txt)
-                    if file_path.suffix == ".txt" and file_path.name not in (
-                        "requirements.txt",
-                        "requirements-dev.txt",
-                    ):
-                        try:
-                            file_path.unlink()
-                            logger.info(
-                                f"Cleaned up root non-standard text file: {file_path}"
-                            )
-                        except Exception as e:
-                            logger.debug(
-                                "Root-text cleanup failed: error_type=%s",
-                                type(e).__name__,
-                            )
+                _cleanup_root_level_files(dirpath, filenames)
 
-            # Check for file-level cleanup targets
-            for f in filenames:
-                file_path = Path(os.path.join(dirpath, f))
-                for pat in patterns_to_remove:
-                    if file_path.match(pat):
-                        try:
-                            file_path.unlink()
-                            logger.debug("Cleaned up managed file")
-                        except Exception as e:
-                            logger.debug(
-                                "Operation failed: error_type=%s", type(e).__name__
-                            )
-                        break
+            _cleanup_matched_files(dirpath, filenames)
 
     def clone_projects(self, projects: list[str] | None = None) -> list[GitResult]:
         """
@@ -3311,6 +3344,30 @@ class Git:
         """
         target_dir = self._resolve_path(path)
 
+        validation_error = self._bump_version_validate_target(target_dir, part)
+        if validation_error is not None:
+            return validation_error
+
+        if not self._project_has_bumpversion_config(target_dir):
+            return self._bump_version_fallback(target_dir, dry_run)
+
+        command = self._build_bump2version_command(part, allow_dirty, dry_run, verbose)
+
+        if not dry_run:
+            preflight_result = self._bump_version_preflight_tag_check(
+                target_dir, part, allow_dirty, force
+            )
+            if preflight_result is not None:
+                return preflight_result
+            command += " --list"
+
+        return self._run_bump2version(command, target_dir, part, dry_run)
+
+    def _bump_version_validate_target(
+        self, target_dir: str, part: str
+    ) -> GitResult | None:
+        """Guard clauses for `bump_version`: missing directory / invalid
+        ``part``. Returns a GitResult to short-circuit, or None to continue."""
         if not os.path.exists(target_dir):
             return GitResult(
                 status="error",
@@ -3343,8 +3400,12 @@ class Git:
                     timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
+        return None
 
-        # Check if the project has a bump2version configuration file.
+    def _project_has_bumpversion_config(self, target_dir: str) -> bool:
+        """Whether *target_dir* declares a bump2version configuration
+        (``.bumpversion.cfg``, or a ``[bumpversion]`` section in
+        ``setup.cfg``)."""
         has_cfg = os.path.exists(os.path.join(target_dir, ".bumpversion.cfg"))
         if not has_cfg and os.path.exists(os.path.join(target_dir, "setup.cfg")):
             try:
@@ -3353,59 +3414,35 @@ class Git:
                         has_cfg = True
             except Exception as e:
                 logger.debug("Operation failed: error_type=%s", type(e).__name__)
+        return has_cfg
 
-        if not has_cfg:
-            # Fallback behavior: stage all changes and commit them as "phased bump"
-            status_check = self.git_action(
-                command="git status --porcelain", path=target_dir, quiet=True
+    def _bump_version_fallback(self, target_dir: str, dry_run: bool) -> GitResult:
+        """Fallback behavior for a project with no bump2version config: stage
+        all changes and commit them as "phased bump"."""
+        status_check = self.git_action(
+            command="git status --porcelain", path=target_dir, quiet=True
+        )
+        if status_check.status != "success":
+            return status_check
+
+        changed_files = status_check.data.strip()
+        if not changed_files:
+            logger.info("No changes to stage or commit; skipping configured project")
+            return GitResult(
+                status="skipped",
+                data="No changes to stage or commit (fallback mode)",
+                metadata=GitMetadata(
+                    command="bump_version",
+                    workspace=_project_label(target_dir),
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                ),
             )
-            if status_check.status != "success":
-                return status_check
 
-            changed_files = status_check.data.strip()
-            if not changed_files:
-                logger.info(
-                    "No changes to stage or commit; skipping configured project"
-                )
-                return GitResult(
-                    status="skipped",
-                    data="No changes to stage or commit (fallback mode)",
-                    metadata=GitMetadata(
-                        command="bump_version",
-                        workspace=_project_label(target_dir),
-                        return_code=0,
-                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                    ),
-                )
-
-            if dry_run:
-                logger.info(
-                    f"[DRY RUN] Would fallback to git add -A && git commit -m 'phased bump' in {target_dir}"
-                )
-                return GitResult(
-                    status="success",
-                    data="current_version=unknown\nnew_version=unknown\n",
-                    metadata=GitMetadata(
-                        command="bump_version",
-                        workspace=_project_label(target_dir),
-                        return_code=0,
-                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                    ),
-                )
-
-            add_res = self.git_action(command="git add -u", path=target_dir)
-            if add_res.status != "success":
-                logger.error("Failed to add changes for configured project")
-                return add_res
-
-            commit_res = self.git_action(
-                command='git commit -m "phased bump"', path=target_dir
+        if dry_run:
+            logger.info(
+                f"[DRY RUN] Would fallback to git add -A && git commit -m 'phased bump' in {target_dir}"
             )
-            if commit_res.status != "success":
-                logger.error("Failed to commit fallback changes")
-                return commit_res
-
-            logger.info("Successfully committed fallback changes with phased bump")
             return GitResult(
                 status="success",
                 data="current_version=unknown\nnew_version=unknown\n",
@@ -3417,6 +3454,33 @@ class Git:
                 ),
             )
 
+        add_res = self.git_action(command="git add -u", path=target_dir)
+        if add_res.status != "success":
+            logger.error("Failed to add changes for configured project")
+            return add_res
+
+        commit_res = self.git_action(
+            command='git commit -m "phased bump"', path=target_dir
+        )
+        if commit_res.status != "success":
+            logger.error("Failed to commit fallback changes")
+            return commit_res
+
+        logger.info("Successfully committed fallback changes with phased bump")
+        return GitResult(
+            status="success",
+            data="current_version=unknown\nnew_version=unknown\n",
+            metadata=GitMetadata(
+                command="bump_version",
+                workspace=_project_label(target_dir),
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    def _build_bump2version_command(
+        self, part: str, allow_dirty: bool, dry_run: bool, verbose: bool
+    ) -> str:
         command = (
             f"SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build bump2version {part}"
         )
@@ -3426,66 +3490,73 @@ class Git:
             command += " --dry-run"
         if verbose:
             command += " --verbose"
+        return command
 
-        # Pre-flight check for existing tags
-        if not dry_run:
-            pre_cmd = f"bump2version {part} --dry-run --list"
-            if allow_dirty:
-                pre_cmd += " --allow-dirty"
-            pre_result = self.git_action(command=pre_cmd, path=target_dir, quiet=True)
-            if pre_result.status == "success":
-                match = re.search(r"new_version=(.*)", pre_result.data)
-                if match:
-                    new_version = match.group(1).strip()
-                    tag_check = self.git_action(
-                        command=f"git tag -l v{new_version}",
-                        path=target_dir,
-                        quiet=True,
-                    )
-                    if (
-                        tag_check.status == "success"
-                        and f"v{new_version}" in tag_check.data
-                    ):
-                        if force and not self._tag_on_remote(
-                            f"v{new_version}", target_dir
-                        ):
-                            # Orphan local tag from a prior partial bump (version
-                            # file never updated). Delete it locally and re-bump so
-                            # the version actually advances. Never touch a remote
-                            # tag this way.
-                            logger.warning(
-                                "Tag v%s exists locally in %s but force=True and it "
-                                "is not on the remote — deleting orphan tag and "
-                                "re-bumping.",
-                                new_version,
-                                target_dir,
-                            )
-                            self.git_action(
-                                command=f"git tag -d v{new_version}",
-                                path=target_dir,
-                                quiet=True,
-                            )
-                        else:
-                            logger.warning(
-                                f"Tag v{new_version} already exists in {target_dir}. "
-                                "Skipping bump."
-                                + ("" if force else " (use force=True to override)")
-                            )
-                            return GitResult(
-                                status="skipped",
-                                data=f"current_version={new_version}\nnew_version={new_version}\ntag_exists=true\n",
-                                metadata=GitMetadata(
-                                    command="bump_version",
-                                    workspace=_project_label(target_dir),
-                                    return_code=0,
-                                    timestamp=datetime.datetime.now(
-                                        datetime.UTC
-                                    ).isoformat()
-                                    + "Z",
-                                ),
-                            )
-            command += " --list"
+    def _bump_version_preflight_tag_check(
+        self, target_dir: str, part: str, allow_dirty: bool, force: bool
+    ) -> GitResult | None:
+        """Pre-flight check for an existing tag on the version bump2version
+        would produce. Returns a GitResult to short-circuit `bump_version`
+        (tag exists and is not force-deletable), or None to proceed with the
+        real bump2version invocation (including after deleting an orphan
+        local tag under ``force``)."""
+        pre_cmd = f"bump2version {part} --dry-run --list"
+        if allow_dirty:
+            pre_cmd += " --allow-dirty"
+        pre_result = self.git_action(command=pre_cmd, path=target_dir, quiet=True)
+        if pre_result.status != "success":
+            return None
 
+        match = re.search(r"new_version=(.*)", pre_result.data)
+        if not match:
+            return None
+
+        new_version = match.group(1).strip()
+        tag_check = self.git_action(
+            command=f"git tag -l v{new_version}",
+            path=target_dir,
+            quiet=True,
+        )
+        if not (tag_check.status == "success" and f"v{new_version}" in tag_check.data):
+            return None
+
+        if force and not self._tag_on_remote(f"v{new_version}", target_dir):
+            # Orphan local tag from a prior partial bump (version
+            # file never updated). Delete it locally and re-bump so
+            # the version actually advances. Never touch a remote
+            # tag this way.
+            logger.warning(
+                "Tag v%s exists locally in %s but force=True and it "
+                "is not on the remote — deleting orphan tag and "
+                "re-bumping.",
+                new_version,
+                target_dir,
+            )
+            self.git_action(
+                command=f"git tag -d v{new_version}",
+                path=target_dir,
+                quiet=True,
+            )
+            return None
+
+        logger.warning(
+            f"Tag v{new_version} already exists in {target_dir}. "
+            "Skipping bump." + ("" if force else " (use force=True to override)")
+        )
+        return GitResult(
+            status="skipped",
+            data=f"current_version={new_version}\nnew_version={new_version}\ntag_exists=true\n",
+            metadata=GitMetadata(
+                command="bump_version",
+                workspace=_project_label(target_dir),
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    def _run_bump2version(
+        self, command: str, target_dir: str, part: str, dry_run: bool
+    ) -> GitResult:
         try:
             result = self.git_action(command=command, path=target_dir)
 
@@ -3493,35 +3564,7 @@ class Git:
                 logger.info("Bumped configured project version: part=%s", part)
 
                 if not dry_run:
-                    # Synchronize uv.lock after pyproject.toml version bump
-                    uv_lock_path = os.path.join(target_dir, "uv.lock")
-                    if os.path.exists(uv_lock_path):
-                        self.git_action(command="uv lock", path=target_dir, quiet=True)
-
-                    # Stage all changes (staged and uncommitted/unstaged changes) in the workspace
-                    self.git_action(command="git add -u", path=target_dir, quiet=True)
-                    status_check = self.git_action(
-                        command="git status --porcelain",
-                        path=target_dir,
-                        quiet=True,
-                    )
-                    if status_check.data.strip():
-                        # Commit all staged changes (including version bump, uv.lock, and other files) into the bump commit
-                        self.git_action(
-                            command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit",
-                            path=target_dir,
-                            quiet=True,
-                        )
-
-                        # Move the tag to point to the newly amended commit
-                        match = re.search(r"new_version=(.*)", result.data)
-                        if match:
-                            new_version = match.group(1).strip()
-                            self.git_action(
-                                command=f"git tag -f v{new_version}",
-                                path=target_dir,
-                                quiet=True,
-                            )
+                    self._finalize_successful_bump(target_dir, result)
             else:
                 logger.error("Failed to bump configured project version")
 
@@ -3539,6 +3582,44 @@ class Git:
                     timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
+
+    def _finalize_successful_bump(self, target_dir: str, result: GitResult) -> None:
+        """Post-success sequence for a real bump2version run: sync uv.lock,
+        stage everything, and -- IF there is anything staged -- fold it into
+        the bump commit (``commit --amend``) and re-point the tag. Step order
+        here is exactly the release-path stage/commit/tag sequence and must
+        never be reordered (CX WC1-REPOSITORY-01: this fleet has a documented
+        failure where bump2version stages everything and then fails to
+        commit, leaving a half-applied bump with no tag)."""
+        # Synchronize uv.lock after pyproject.toml version bump
+        uv_lock_path = os.path.join(target_dir, "uv.lock")
+        if os.path.exists(uv_lock_path):
+            self.git_action(command="uv lock", path=target_dir, quiet=True)
+
+        # Stage all changes (staged and uncommitted/unstaged changes) in the workspace
+        self.git_action(command="git add -u", path=target_dir, quiet=True)
+        status_check = self.git_action(
+            command="git status --porcelain",
+            path=target_dir,
+            quiet=True,
+        )
+        if status_check.data.strip():
+            # Commit all staged changes (including version bump, uv.lock, and other files) into the bump commit
+            self.git_action(
+                command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit",
+                path=target_dir,
+                quiet=True,
+            )
+
+            # Move the tag to point to the newly amended commit
+            match = re.search(r"new_version=(.*)", result.data)
+            if match:
+                new_version = match.group(1).strip()
+                self.git_action(
+                    command=f"git tag -f v{new_version}",
+                    path=target_dir,
+                    quiet=True,
+                )
 
     def bulk_bump(
         self,
