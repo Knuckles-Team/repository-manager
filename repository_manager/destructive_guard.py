@@ -228,7 +228,22 @@ def classify(argv: Sequence[str]) -> dict[str, Any]:
         return _unsupported(parse_error or "malformed git argv")
     args = values[sub_index + 1 :]
 
-    if subcommand == "reset" and "--hard" in args:
+    classifier = _SUBCOMMAND_CLASSIFIERS.get(subcommand)
+    if classifier is not None:
+        result = classifier(args)
+        if result is not None:
+            return result
+
+    return _safe()
+
+
+def _classify_reset(args: list[str]) -> dict[str, Any] | None:
+    # NOTE: this first special case and the general reset handling directly
+    # below it always produce the identical dict when "--hard" is present
+    # (both use pattern "git reset --hard" / alternative_code "mixed-reset")
+    # -- preserved verbatim, redundant-but-harmless, from the original
+    # unrefactored function; not a behavior change to fix here.
+    if "--hard" in args:
         return {
             "dangerous": True,
             **_rule(
@@ -238,181 +253,219 @@ def classify(argv: Sequence[str]) -> dict[str, Any]:
             ),
         }
 
-    if subcommand == "checkout":
-        force = any(
-            token == _FORCE_OPTION
-            or token == _FORCE_BRANCH_OPTION
-            or (
-                token.startswith("-")
-                and not token.startswith("--")
-                and "f" in token[1:]
-            )
-            for token in args
-        )
-        pathspecs = [token for token in args if not token.startswith("-")]
-        if (
-            force
-            or "." in pathspecs
-            or ("--" in args and "." in args[args.index("--") + 1 :])
-        ):
-            return {
-                "dangerous": True,
-                **_rule(
-                    "git checkout -f / git checkout . / git checkout -- .",
-                    "inspect the diff and use a reviewed, path-specific operation",
-                    "reviewed-path-operation",
-                ),
-            }
+    pattern = "git reset --hard" if "--hard" in args else "git reset (index mutation)"
+    alternative = (
+        "use `git reset --mixed <target>` and inspect the resulting status"
+        if "--hard" in args
+        else "inspect the index and use a reviewed path-specific operation"
+    )
+    return {
+        "dangerous": True,
+        **_rule(pattern, alternative, "mixed-reset"),
+    }
+
+
+def _checkout_is_forced_or_targets_everything(args: list[str]) -> bool:
+    pathspecs = [token for token in args if not token.startswith("-")]
+    return (
+        _checkout_is_forced(args)
+        or "." in pathspecs
+        or ("--" in args and "." in args[args.index("--") + 1 :])
+    )
+
+
+def _checkout_is_forced(args: list[str]) -> bool:
+    return any(
+        token == _FORCE_OPTION
+        or token == _FORCE_BRANCH_OPTION
+        or (token.startswith("-") and not token.startswith("--") and "f" in token[1:])
+        for token in args
+    )
+
+
+def _classify_checkout(args: list[str]) -> dict[str, Any] | None:
+    if _checkout_is_forced_or_targets_everything(args):
         return {
             "dangerous": True,
             **_rule(
-                "git checkout (working-tree mutation)",
+                "git checkout -f / git checkout . / git checkout -- .",
                 "inspect the diff and use a reviewed, path-specific operation",
                 "reviewed-path-operation",
             ),
         }
+    return {
+        "dangerous": True,
+        **_rule(
+            "git checkout (working-tree mutation)",
+            "inspect the diff and use a reviewed, path-specific operation",
+            "reviewed-path-operation",
+        ),
+    }
 
-    if subcommand == "restore":
+
+def _classify_restore(args: list[str]) -> dict[str, Any] | None:
+    return {
+        "dangerous": True,
+        **_rule(
+            "git restore (working-tree/index mutation)",
+            "inspect the diff and use a reviewed, path-specific operation",
+            "reviewed-path-operation",
+        ),
+    }
+
+
+def _clean_targets_ignored_scope(args: list[str]) -> bool:
+    return any(
+        token.startswith("-")
+        and not token.startswith("--")
+        and ("x" in token or "X" in token)
+        for token in args
+    )
+
+
+def _clean_is_forced(args: list[str]) -> bool:
+    return any(
+        token == _FORCE_OPTION
+        or (token.startswith("-") and not token.startswith("--") and "f" in token)
+        for token in args
+    )
+
+
+def _classify_clean(args: list[str]) -> dict[str, Any] | None:
+    ignored_scope = _clean_targets_ignored_scope(args)
+    if _clean_is_forced(args) or ignored_scope:
         return {
             "dangerous": True,
             **_rule(
-                "git restore (working-tree/index mutation)",
-                "inspect the diff and use a reviewed, path-specific operation",
-                "reviewed-path-operation",
-            ),
-        }
-
-    if subcommand == "reset":
-        pattern = (
-            "git reset --hard" if "--hard" in args else "git reset (index mutation)"
-        )
-        alternative = (
-            "use `git reset --mixed <target>` and inspect the resulting status"
-            if "--hard" in args
-            else "inspect the index and use a reviewed path-specific operation"
-        )
-        return {
-            "dangerous": True,
-            **_rule(pattern, alternative, "mixed-reset"),
-        }
-
-    if subcommand == "clean":
-        ignored_scope = any(
-            token.startswith("-")
-            and not token.startswith("--")
-            and ("x" in token or "X" in token)
-            for token in args
-        )
-        forced = any(
-            token == _FORCE_OPTION
-            or (token.startswith("-") and not token.startswith("--") and "f" in token)
-            for token in args
-        )
-        if forced or ignored_scope:
-            return {
-                "dangerous": True,
-                **_rule(
-                    "git clean -f*",
-                    "review untracked paths first; preserve them with `park`/`unpark`",
-                    "park-unpark",
-                ),
-                "ignored_scope": ignored_scope,
-            }
-
-    if subcommand == "stash":
-        action = next((token for token in args if not token.startswith("-")), "")
-        private_ref = any(
-            token.startswith(("refs/lane/", "refs/lane-backup/")) for token in args
-        )
-        # Only inspection of an explicitly named private commit is safe.
-        # Applying it directly would mutate the worktree outside the
-        # park/unpark protocol and outside the guard's mutation lease; callers
-        # must route restoration through ``stash_guard.unpark`` instead.  A
-        # private-looking token on ``push`` must not make Git write refs/stash.
-        if private_ref and action == "show":
-            return _safe()
-        return {
-            "dangerous": True,
-            **_rule(
-                "git stash (shared refs/stash)",
-                "use `stash_guard.park` and `stash_guard.unpark` with a private ref",
+                "git clean -f*",
+                "review untracked paths first; preserve them with `park`/`unpark`",
                 "park-unpark",
             ),
-            "stash_action": action or "stash",
+            "ignored_scope": ignored_scope,
         }
+    return None
 
-    if subcommand == "branch":
-        has_delete = False
-        has_force = False
-        for token in args:
-            if token == _DELETE_OPTION or token.startswith(_DELETE_OPTION + "="):
-                has_delete = True
-            elif token == _FORCE_OPTION:
-                has_force = True
-            elif token.startswith("-") and not token.startswith("--"):
-                short = token[1:]
-                has_delete = has_delete or "d" in short or "D" in short
-                has_force = has_force or "f" in short or "D" in short or "M" in short
-        forced_delete = has_delete and has_force
-        if forced_delete:
-            return {
-                "dangerous": True,
-                **_rule(
-                    "git branch -D",
-                    "use the guarded prune path and git's `branch -d` reachability check",
-                    "guarded-prune",
-                ),
-            }
-        if has_force:
-            return {
-                "dangerous": True,
-                **_rule(
-                    "git branch --force",
-                    "review the target ref before a non-force branch update",
-                    "guarded-prune",
-                ),
-            }
 
-    if subcommand == "push":
-        remote_delete = any(
-            token == _DELETE_OPTION
-            or token == _DELETE_SHORT_OPTION
-            or token in {_PRUNE_OPTION, _PRUNE_TAGS_OPTION}
-            or token.startswith(_PRUNE_OPTION + "=")
-            or token.startswith(_PRUNE_TAGS_OPTION + "=")
-            or (token.startswith(":") and len(token) > 1)
-            or (
-                token.startswith("-")
-                and not token.startswith("--")
-                and "d" in token[1:]
-            )
-            for token in args
-        )
-        forced = any(
-            token in {"-f", _FORCE_OPTION, _FORCE_WITH_LEASE_OPTION}
-            or token == _MIRROR_OPTION
-            or token.startswith("--force=")
-            or token.startswith(_FORCE_WITH_LEASE_OPTION + "=")
-            or (
-                token.startswith("-")
-                and not token.startswith("--")
-                and "f" in token[1:]
-            )
-            or (token.startswith("+") and len(token) > 1)
-            for token in args
-        )
-        if forced or remote_delete:
-            return {
-                "dangerous": True,
-                **_rule(
-                    "git push --force",
-                    "use a regular fast-forward push after a reviewed reconciliation",
-                    "reviewed-fast-forward",
-                ),
-            }
+def _classify_stash(args: list[str]) -> dict[str, Any] | None:
+    action = next((token for token in args if not token.startswith("-")), "")
+    private_ref = any(
+        token.startswith(("refs/lane/", "refs/lane-backup/")) for token in args
+    )
+    # Only inspection of an explicitly named private commit is safe.
+    # Applying it directly would mutate the worktree outside the
+    # park/unpark protocol and outside the guard's mutation lease; callers
+    # must route restoration through ``stash_guard.unpark`` instead.  A
+    # private-looking token on ``push`` must not make Git write refs/stash.
+    if private_ref and action == "show":
+        return _safe()
+    return {
+        "dangerous": True,
+        **_rule(
+            "git stash (shared refs/stash)",
+            "use `stash_guard.park` and `stash_guard.unpark` with a private ref",
+            "park-unpark",
+        ),
+        "stash_action": action or "stash",
+    }
 
-    return _safe()
 
+def _classify_branch(args: list[str]) -> dict[str, Any] | None:
+    has_delete, has_force = _branch_delete_and_force_flags(args)
+    forced_delete = has_delete and has_force
+    if forced_delete:
+        return {
+            "dangerous": True,
+            **_rule(
+                "git branch -D",
+                "use the guarded prune path and git's `branch -d` reachability check",
+                "guarded-prune",
+            ),
+        }
+    if has_force:
+        return {
+            "dangerous": True,
+            **_rule(
+                "git branch --force",
+                "review the target ref before a non-force branch update",
+                "guarded-prune",
+            ),
+        }
+    return None
+
+
+def _branch_delete_and_force_flags(args: list[str]) -> tuple[bool, bool]:
+    has_delete = False
+    has_force = False
+    for token in args:
+        if token == _DELETE_OPTION or token.startswith(_DELETE_OPTION + "="):
+            has_delete = True
+        elif token == _FORCE_OPTION:
+            has_force = True
+        elif token.startswith("-") and not token.startswith("--"):
+            delete_bit, force_bit = _branch_short_option_flags(token)
+            has_delete = has_delete or delete_bit
+            has_force = has_force or force_bit
+    return has_delete, has_force
+
+
+def _branch_short_option_flags(token: str) -> tuple[bool, bool]:
+    short = token[1:]
+    return (
+        "d" in short or "D" in short,
+        "f" in short or "D" in short or "M" in short,
+    )
+
+
+def _classify_push(args: list[str]) -> dict[str, Any] | None:
+    if _push_is_forced(args) or _push_requests_remote_delete(args):
+        return {
+            "dangerous": True,
+            **_rule(
+                "git push --force",
+                "use a regular fast-forward push after a reviewed reconciliation",
+                "reviewed-fast-forward",
+            ),
+        }
+    return None
+
+
+def _push_requests_remote_delete(args: list[str]) -> bool:
+    return any(_push_token_requests_remote_delete(token) for token in args)
+
+
+def _push_token_requests_remote_delete(token: str) -> bool:
+    return (
+        token == _DELETE_OPTION
+        or token == _DELETE_SHORT_OPTION
+        or token in {_PRUNE_OPTION, _PRUNE_TAGS_OPTION}
+        or token.startswith(_PRUNE_OPTION + "=")
+        or token.startswith(_PRUNE_TAGS_OPTION + "=")
+        or (token.startswith(":") and len(token) > 1)
+        or (token.startswith("-") and not token.startswith("--") and "d" in token[1:])
+    )
+
+
+def _push_is_forced(args: list[str]) -> bool:
+    return any(
+        token in {"-f", _FORCE_OPTION, _FORCE_WITH_LEASE_OPTION}
+        or token == _MIRROR_OPTION
+        or token.startswith("--force=")
+        or token.startswith(_FORCE_WITH_LEASE_OPTION + "=")
+        or (token.startswith("-") and not token.startswith("--") and "f" in token[1:])
+        or (token.startswith("+") and len(token) > 1)
+        for token in args
+    )
+
+
+_SUBCOMMAND_CLASSIFIERS: dict[str, Callable[[list[str]], dict[str, Any] | None]] = {
+    "reset": _classify_reset,
+    "checkout": _classify_checkout,
+    "restore": _classify_restore,
+    "clean": _classify_clean,
+    "stash": _classify_stash,
+    "branch": _classify_branch,
+    "push": _classify_push,
+}
 
 def issue_override_token(
     *,
