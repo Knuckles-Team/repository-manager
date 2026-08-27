@@ -2835,324 +2835,608 @@ def _validate_frozen_plan_fields(
     """Validate a plan without trusting or rewriting any field."""
 
     try:
-        if type(plan) is not FrozenReleasePlan:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "frozen plan type is unsupported"
-            )
-        workspace_id = _strict_opaque(
-            plan.workspace_id, "workspace ID", max_length=MAX_STRING_LENGTH
-        )
-        source_sha = _strict_sha(
-            plan.source_sha, "source SHA", code=ReleasePlanCode.SOURCE_SHA
-        )
-        base_sha = _strict_sha(plan.base_sha, "base SHA", code=ReleasePlanCode.BASE_SHA)
-        generation_id = _strict_opaque(
-            plan.generation_id, "generation ID", max_length=MAX_GENERATION_LENGTH
-        )
-        graph_digest = _strict_digest(plan.graph_digest, "graph digest")
-        selection_digest = _strict_digest(plan.selection_digest, "selection digest")
-        version_plan_digest = _strict_digest(
-            plan.version_plan_digest, "version plan digest"
-        )
-        if (
-            type(plan.contract_version) is not int
-            or plan.contract_version != C11_FROZEN_PLAN_VERSION
-        ):
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "unsupported frozen plan contract"
-            )
-        if type(plan.decision_context) is not ReleaseDecisionContext:
-            raise _fail(ReleasePlanCode.PROFILE, "decision context is not frozen")
-        decision_context = _revalidate_decision_context(plan.decision_context)
-        source_graph = _snapshot_graph(plan.graph)
-        source_selection = _snapshot_selection(plan.selection)
-        if source_graph.digest != graph_digest:
-            raise _fail(
-                ReleasePlanCode.GRAPH_DRIFT, "frozen graph evidence is not bound"
-            )
-        if source_selection.digest != selection_digest:
-            raise _fail(
-                ReleasePlanCode.SELECTION_DRIFT,
-                "frozen selection evidence is not bound",
-            )
-        if (
-            source_selection.source_graph.canonical_payload()
-            != source_graph.canonical_payload()
-        ):
-            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "frozen selection source drifted")
-        selected = _canonical_project_ids(plan.selected_projects, "selected projects")
-        projects = _bounded_tuple(
-            plan.projects, "plan projects", max_items=MAX_PROJECTS
-        )
-        if any(type(project) is not ProjectRecord for project in projects):
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "plan projects must be C-11 records"
-            )
-        project_values = tuple(
-            _revalidate_project(project)
-            for project in cast(tuple[ProjectRecord, ...], projects)
-        )
-        project_map = _project_map(project_values)
-        if tuple(sorted(project_map)) != selected:
-            raise _fail(
-                ReleasePlanCode.IDENTITY,
-                "selected projects do not match frozen records",
-            )
-        if tuple(project_map[project_id] for project_id in selected) != project_values:
-            raise _fail(ReleasePlanCode.IDENTITY, "frozen projects are not canonical")
-        if (
-            selected != source_selection.selected_project_ids
-            or project_values != source_selection.projects
-        ):
-            raise _fail(
-                ReleasePlanCode.SELECTION_DRIFT,
-                "frozen projects do not match selection evidence",
-            )
-        packages = _package_map(project_values)
-        edge_values = _bounded_tuple(plan.edges, "plan edges", max_items=MAX_EDGES)
-        if any(type(edge) is not DependencyEdge for edge in edge_values):
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "plan edges must be C-11 records"
-            )
-        edge_tuple = tuple(
-            _revalidate_edge(edge)
-            for edge in cast(tuple[DependencyEdge, ...], edge_values)
-        )
-        if tuple(sorted(edge_tuple, key=lambda edge: edge.value)) != edge_tuple:
-            raise _fail(ReleasePlanCode.DIGEST, "frozen edges are not canonical")
-        if len({edge.value for edge in edge_tuple}) != len(edge_tuple):
-            raise _fail(ReleasePlanCode.DUPLICATE, "frozen edge identity is duplicated")
-        for edge in edge_tuple:
-            if (
-                edge.dependent.value not in packages
-                or edge.dependency.value not in packages
-            ):
-                raise _fail(
-                    ReleasePlanCode.MISSING, "frozen edge names an unknown package"
-                )
-            if {edge.dependent_project_id, edge.dependency_project_id} - set(selected):
-                raise _fail(
-                    ReleasePlanCode.IDENTITY, "frozen edge names an unselected project"
-                )
-        project_edges = _project_edges(edge_tuple)
-        if edge_tuple != source_selection.edges:
-            raise _fail(
-                ReleasePlanCode.SELECTION_DRIFT,
-                "frozen edges do not match selection evidence",
-            )
-        raw_groups = _bounded_tuple(
-            plan.parallel_groups, "parallel groups", max_items=MAX_PROJECTS
-        )
-        groups: list[tuple[str, ...]] = []
-        grouped: list[str] = []
-        for raw_group in raw_groups:
-            group = _canonical_project_ids(raw_group, "parallel group")
-            groups.append(group)
-            grouped.extend(group)
-        expected_groups, _ = _topological_groups(selected, project_edges)
-        if (
-            tuple(groups) != expected_groups
-            or set(grouped) != set(selected)
-            or len(grouped) != len(set(grouped))
-        ):
-            raise _fail(
-                ReleasePlanCode.DIGEST,
-                "parallel groups do not match frozen dependency order",
-            )
-        if tuple(groups) != source_selection.parallel_groups:
-            raise _fail(
-                ReleasePlanCode.SELECTION_DRIFT,
-                "frozen groups do not match selection evidence",
-            )
-        if (
-            type(plan.version_plan) is not VersionPlan
-            or plan.version_plan.plan_digest != version_plan_digest
-        ):
-            raise _fail(
-                ReleasePlanCode.VERSION_PLAN_DRIFT, "version plan digest is not bound"
-            )
-        version_plan = _revalidate_version_plan(plan.version_plan)
-        if (
-            version_plan.graph_digest != graph_digest
-            or version_plan.selection_digest != selection_digest
-        ):
-            raise _fail(
-                ReleasePlanCode.VERSION_PLAN_DRIFT,
-                "version plan graph or selection is not bound",
-            )
-        version_plan.validate_against(source_graph, source_selection)
-        version_digests = tuple(
-            sorted(
-                _preview_digest(preview) for preview in version_plan.version_previews
-            )
-        )
-        floor_digests = tuple(
-            sorted(_preview_digest(preview) for preview in version_plan.floor_previews)
-        )
-        if (
-            plan.version_preview_digests != version_digests
-            or plan.floor_preview_digests != floor_digests
-        ):
-            raise _fail(
-                ReleasePlanCode.DIGEST,
-                "preview digests do not match frozen version plan",
-            )
-        validation_values = _bounded_tuple(
-            plan.validation_profiles,
-            "validation profiles",
-            max_items=MAX_PROFILE_BINDINGS,
-        )
-        build_values = _bounded_tuple(
-            plan.build_profiles, "build profiles", max_items=MAX_PROFILE_BINDINGS
-        )
-        if any(
-            type(item) is not ProfileBinding
-            for item in validation_values + build_values
-        ):
-            raise _fail(ReleasePlanCode.PROFILE, "profile bindings are unsupported")
-        validation = tuple(
-            _revalidate_profile(item)
-            for item in cast(tuple[ProfileBinding, ...], validation_values)
-        )
-        build = tuple(
-            _revalidate_profile(item)
-            for item in cast(tuple[ProfileBinding, ...], build_values)
-        )
-        if any(item.kind is not ProfileKind.VALIDATION for item in validation) or any(
-            item.kind is not ProfileKind.BUILD for item in build
-        ):
-            raise _fail(ReleasePlanCode.PROFILE, "profile binding kind is inconsistent")
-        if (
-            tuple(item.project_id for item in validation) != selected
-            or tuple(item.project_id for item in build) != selected
-        ):
-            raise _fail(
-                ReleasePlanCode.PROFILE,
-                "profiles must cover selected projects canonically",
-            )
-        consent = _revalidate_consent(plan.push_consent)
-        stage_values = _bounded_tuple(
-            plan.stages, "plan stages", max_items=MAX_PLAN_STAGES
-        )
-        if any(type(item) is not StagePreview for item in stage_values):
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "plan stages must be stage previews"
-            )
-        stages = tuple(
-            _revalidate_stage(stage)
-            for stage in cast(tuple[StagePreview, ...], stage_values)
-        )
-        _validate_stage_dag(stages)
-        if any(
-            stage.graph_digest != graph_digest
-            or stage.selection_digest != selection_digest
-            or stage.version_plan_digest != version_plan_digest
-            for stage in stages
-        ):
-            raise _fail(
-                ReleasePlanCode.DIGEST, "stage evidence is not bound to the frozen plan"
-            )
-        if any(
-            stage.decision_digest != decision_context.digest
-            or stage.resource_profile != decision_context.resource_profile
-            or stage.retry_policy is not decision_context.retry_policy
-            or stage.retry_count != decision_context.retry_count
-            or stage.timeout_policy is not decision_context.timeout_policy
-            or stage.timeout_seconds != decision_context.timeout_seconds
-            for stage in stages
-        ):
-            raise _fail(
-                ReleasePlanCode.DIGEST,
-                "stage decision evidence is not bound to the frozen plan",
-            )
-        if any(stage.project_id not in selected for stage in stages):
-            raise _fail(ReleasePlanCode.IDENTITY, "stage names an unselected project")
-        if any(
-            stage.kind is StageKind.PUSH and stage.consent_reference != consent
-            for stage in stages
-        ):
-            raise _fail(
-                ReleasePlanCode.PUSH_CONSENT,
-                "push stage consent is not bound to the plan",
-            )
-        if consent is None and any(stage.kind is StageKind.PUSH for stage in stages):
-            raise _fail(
-                ReleasePlanCode.PUSH_CONSENT, "push stage requires immutable consent"
-            )
-        if not stages:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "frozen plan must contain stages"
-            )
-        expected_stages = _derive_stage_sequence(
-            selected=selected,
-            project_map=project_map,
-            project_edges=project_edges,
-            groups=tuple(groups),
-            base_sha=base_sha,
-            generation_id=generation_id,
-            graph_digest=graph_digest,
-            selection_digest=selection_digest,
-            version_plan_digest=version_plan_digest,
-            version_preview_digests=version_digests,
-            floor_preview_digests=floor_digests,
-            validation=_profile_map(validation, ProfileKind.VALIDATION),
-            build=_profile_map(build, ProfileKind.BUILD),
-            decision_context=decision_context,
-            consent=consent,
-        )
-        if stages != expected_stages:
-            raise _fail(
-                ReleasePlanCode.STAGE_DEPENDENCY,
-                "stage composition does not match frozen source evidence",
-            )
-        # Build the digest preimage only from the exact, reconstructed evidence
-        # above.  Never canonicalize the caller's stage objects here: an exact
-        # dataclass shell may still carry hostile scalar/container values, and
-        # a self-consistent rehash must not become an authenticity shortcut.
-        trusted_plan = object.__new__(FrozenReleasePlan)
-        trusted_fields: dict[str, object] = {
-            "workspace_id": workspace_id,
-            "source_sha": source_sha,
-            "base_sha": base_sha,
-            "generation_id": generation_id,
-            "graph_digest": graph_digest,
-            "selection_digest": selection_digest,
-            "version_plan_digest": version_plan_digest,
-            "selected_projects": selected,
-            "projects": project_values,
-            "edges": edge_tuple,
-            "parallel_groups": tuple(groups),
-            "version_plan": version_plan,
-            "validation_profiles": validation,
-            "build_profiles": build,
-            "stages": stages,
-            "graph": source_graph,
-            "selection": source_selection,
-            "decision_context": decision_context,
-            "push_consent": consent,
-            "plan_digest": "",
-            "contract_version": C11_FROZEN_PLAN_VERSION,
-        }
-        for field_name, value in trusted_fields.items():
-            object.__setattr__(trusted_plan, field_name, value)
-        expected_digest = _digest_payload(
-            _plan_payload(trusted_plan, include_digest=False)
-        )
-        if require_digest:
-            supplied = _strict_digest(plan.plan_digest, "plan digest")
-            if supplied != expected_digest:
-                raise _fail(
-                    ReleasePlanCode.DIGEST, "plan digest does not match frozen contents"
-                )
-        # The local variables above intentionally force every normalized scalar
-        # through validation; no object.__setattr__ is used during verification.
-        _ = (workspace_id, source_sha, base_sha, generation_id)
+        _validate_frozen_plan_fields_inner(plan, require_digest=require_digest)
     except ReleasePlanError:
         raise
     except _UNTRUSTED_DATA_ERRORS:
         raise _fail(
             ReleasePlanCode.DIGEST, "frozen plan evidence could not be validated"
         ) from None
+
+
+def _validate_frozen_plan_fields_inner(
+    plan: FrozenReleasePlan, *, require_digest: bool
+) -> None:
+    """The exact body of ``_validate_frozen_plan_fields``, pure code motion.
+
+    Every step below still runs in the same order as the original single
+    function; any exception raised anywhere in this call chain (including
+    inside the helpers it calls) propagates out through
+    ``_validate_frozen_plan_fields``'s try/except exactly as it did when
+    all of this was inlined in one ``try:`` block.
+    """
+
+    if type(plan) is not FrozenReleasePlan:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "frozen plan type is unsupported")
+    (
+        workspace_id,
+        source_sha,
+        base_sha,
+        generation_id,
+        graph_digest,
+        selection_digest,
+        version_plan_digest,
+    ) = _validate_frozen_plan_scalars(plan)
+    decision_context = _validate_frozen_plan_contract_and_decision_context(plan)
+    source_graph, source_selection = _validate_frozen_plan_graph_and_selection(
+        plan, graph_digest=graph_digest, selection_digest=selection_digest
+    )
+    selected, project_values, project_map = _validate_frozen_plan_projects(
+        plan, source_graph=source_graph, source_selection=source_selection
+    )
+    packages, edge_tuple, project_edges = _validate_frozen_plan_edges(
+        plan,
+        selected=selected,
+        project_values=project_values,
+        source_selection=source_selection,
+    )
+    groups = _validate_frozen_plan_groups(
+        plan,
+        selected=selected,
+        project_edges=project_edges,
+        source_selection=source_selection,
+    )
+    version_plan, version_digests, floor_digests = _validate_frozen_plan_version(
+        plan,
+        graph_digest=graph_digest,
+        selection_digest=selection_digest,
+        version_plan_digest=version_plan_digest,
+        source_graph=source_graph,
+        source_selection=source_selection,
+    )
+    validation, build = _validate_frozen_plan_profiles(plan, selected=selected)
+    consent, stages = _validate_frozen_plan_consent_and_stages(
+        plan,
+        selected=selected,
+        graph_digest=graph_digest,
+        selection_digest=selection_digest,
+        version_plan_digest=version_plan_digest,
+        decision_context=decision_context,
+    )
+    _validate_frozen_plan_expected_stage_sequence(
+        stages,
+        selected=selected,
+        project_map=project_map,
+        project_edges=project_edges,
+        groups=groups,
+        base_sha=base_sha,
+        generation_id=generation_id,
+        graph_digest=graph_digest,
+        selection_digest=selection_digest,
+        version_plan_digest=version_plan_digest,
+        version_digests=version_digests,
+        floor_digests=floor_digests,
+        validation=validation,
+        build=build,
+        decision_context=decision_context,
+        consent=consent,
+    )
+    _validate_frozen_plan_digest(
+        plan,
+        require_digest=require_digest,
+        workspace_id=workspace_id,
+        source_sha=source_sha,
+        base_sha=base_sha,
+        generation_id=generation_id,
+        graph_digest=graph_digest,
+        selection_digest=selection_digest,
+        version_plan_digest=version_plan_digest,
+        selected=selected,
+        project_values=project_values,
+        edge_tuple=edge_tuple,
+        groups=groups,
+        version_plan=version_plan,
+        validation=validation,
+        build=build,
+        stages=stages,
+        source_graph=source_graph,
+        source_selection=source_selection,
+        decision_context=decision_context,
+        consent=consent,
+    )
+
+
+def _validate_frozen_plan_scalars(
+    plan: FrozenReleasePlan,
+) -> tuple[str, str, str, str, str, str, str]:
+    workspace_id = _strict_opaque(
+        plan.workspace_id, "workspace ID", max_length=MAX_STRING_LENGTH
+    )
+    source_sha = _strict_sha(
+        plan.source_sha, "source SHA", code=ReleasePlanCode.SOURCE_SHA
+    )
+    base_sha = _strict_sha(plan.base_sha, "base SHA", code=ReleasePlanCode.BASE_SHA)
+    generation_id = _strict_opaque(
+        plan.generation_id, "generation ID", max_length=MAX_GENERATION_LENGTH
+    )
+    graph_digest = _strict_digest(plan.graph_digest, "graph digest")
+    selection_digest = _strict_digest(plan.selection_digest, "selection digest")
+    version_plan_digest = _strict_digest(
+        plan.version_plan_digest, "version plan digest"
+    )
+    return (
+        workspace_id,
+        source_sha,
+        base_sha,
+        generation_id,
+        graph_digest,
+        selection_digest,
+        version_plan_digest,
+    )
+
+
+def _validate_frozen_plan_contract_and_decision_context(
+    plan: FrozenReleasePlan,
+) -> ReleaseDecisionContext:
+    if (
+        type(plan.contract_version) is not int
+        or plan.contract_version != C11_FROZEN_PLAN_VERSION
+    ):
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "unsupported frozen plan contract")
+    if type(plan.decision_context) is not ReleaseDecisionContext:
+        raise _fail(ReleasePlanCode.PROFILE, "decision context is not frozen")
+    return _revalidate_decision_context(plan.decision_context)
+
+
+def _validate_frozen_plan_graph_and_selection(
+    plan: FrozenReleasePlan, *, graph_digest: str, selection_digest: str
+) -> tuple[DependencyGraph, SelectedChangeClosure]:
+    source_graph = _snapshot_graph(plan.graph)
+    source_selection = _snapshot_selection(plan.selection)
+    if source_graph.digest != graph_digest:
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "frozen graph evidence is not bound")
+    if source_selection.digest != selection_digest:
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT,
+            "frozen selection evidence is not bound",
+        )
+    if (
+        source_selection.source_graph.canonical_payload()
+        != source_graph.canonical_payload()
+    ):
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "frozen selection source drifted")
+    return source_graph, source_selection
+
+
+def _validate_frozen_plan_projects(
+    plan: FrozenReleasePlan,
+    *,
+    source_graph: DependencyGraph,
+    source_selection: SelectedChangeClosure,
+) -> tuple[tuple[str, ...], tuple[ProjectRecord, ...], dict[str, ProjectRecord]]:
+    selected = _canonical_project_ids(plan.selected_projects, "selected projects")
+    projects = _bounded_tuple(plan.projects, "plan projects", max_items=MAX_PROJECTS)
+    if any(type(project) is not ProjectRecord for project in projects):
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "plan projects must be C-11 records")
+    project_values = tuple(
+        _revalidate_project(project)
+        for project in cast(tuple[ProjectRecord, ...], projects)
+    )
+    project_map = _project_map(project_values)
+    if tuple(sorted(project_map)) != selected:
+        raise _fail(
+            ReleasePlanCode.IDENTITY,
+            "selected projects do not match frozen records",
+        )
+    if tuple(project_map[project_id] for project_id in selected) != project_values:
+        raise _fail(ReleasePlanCode.IDENTITY, "frozen projects are not canonical")
+    if (
+        selected != source_selection.selected_project_ids
+        or project_values != source_selection.projects
+    ):
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT,
+            "frozen projects do not match selection evidence",
+        )
+    return selected, project_values, project_map
+
+
+def _validate_frozen_plan_edges(
+    plan: FrozenReleasePlan,
+    *,
+    selected: tuple[str, ...],
+    project_values: tuple[ProjectRecord, ...],
+    source_selection: SelectedChangeClosure,
+) -> tuple[dict[str, PackageKey], tuple[DependencyEdge, ...], tuple[tuple[str, str], ...]]:
+    packages = _package_map(project_values)
+    edge_values = _bounded_tuple(plan.edges, "plan edges", max_items=MAX_EDGES)
+    if any(type(edge) is not DependencyEdge for edge in edge_values):
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "plan edges must be C-11 records")
+    edge_tuple = tuple(
+        _revalidate_edge(edge) for edge in cast(tuple[DependencyEdge, ...], edge_values)
+    )
+    if tuple(sorted(edge_tuple, key=lambda edge: edge.value)) != edge_tuple:
+        raise _fail(ReleasePlanCode.DIGEST, "frozen edges are not canonical")
+    if len({edge.value for edge in edge_tuple}) != len(edge_tuple):
+        raise _fail(ReleasePlanCode.DUPLICATE, "frozen edge identity is duplicated")
+    _validate_frozen_plan_edges_reference_known_selected_packages(
+        edge_tuple, packages=packages, selected=selected
+    )
+    project_edges = _project_edges(edge_tuple)
+    if edge_tuple != source_selection.edges:
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT,
+            "frozen edges do not match selection evidence",
+        )
+    return packages, edge_tuple, project_edges
+
+
+def _validate_frozen_plan_edges_reference_known_selected_packages(
+    edge_tuple: tuple[DependencyEdge, ...],
+    *,
+    packages: dict[str, PackageKey],
+    selected: tuple[str, ...],
+) -> None:
+    for edge in edge_tuple:
+        if edge.dependent.value not in packages or edge.dependency.value not in packages:
+            raise _fail(ReleasePlanCode.MISSING, "frozen edge names an unknown package")
+        if {edge.dependent_project_id, edge.dependency_project_id} - set(selected):
+            raise _fail(
+                ReleasePlanCode.IDENTITY, "frozen edge names an unselected project"
+            )
+
+
+def _validate_frozen_plan_groups(
+    plan: FrozenReleasePlan,
+    *,
+    selected: tuple[str, ...],
+    project_edges: tuple[tuple[str, str], ...],
+    source_selection: SelectedChangeClosure,
+) -> tuple[tuple[str, ...], ...]:
+    raw_groups = _bounded_tuple(
+        plan.parallel_groups, "parallel groups", max_items=MAX_PROJECTS
+    )
+    groups: list[tuple[str, ...]] = []
+    grouped: list[str] = []
+    for raw_group in raw_groups:
+        group = _canonical_project_ids(raw_group, "parallel group")
+        groups.append(group)
+        grouped.extend(group)
+    expected_groups, _ = _topological_groups(selected, project_edges)
+    if (
+        tuple(groups) != expected_groups
+        or set(grouped) != set(selected)
+        or len(grouped) != len(set(grouped))
+    ):
+        raise _fail(
+            ReleasePlanCode.DIGEST,
+            "parallel groups do not match frozen dependency order",
+        )
+    if tuple(groups) != source_selection.parallel_groups:
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT,
+            "frozen groups do not match selection evidence",
+        )
+    return tuple(groups)
+
+
+def _validate_frozen_plan_version(
+    plan: FrozenReleasePlan,
+    *,
+    graph_digest: str,
+    selection_digest: str,
+    version_plan_digest: str,
+    source_graph: DependencyGraph,
+    source_selection: SelectedChangeClosure,
+) -> tuple[VersionPlan, tuple[str, ...], tuple[str, ...]]:
+    if (
+        type(plan.version_plan) is not VersionPlan
+        or plan.version_plan.plan_digest != version_plan_digest
+    ):
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "version plan digest is not bound"
+        )
+    version_plan = _revalidate_version_plan(plan.version_plan)
+    if (
+        version_plan.graph_digest != graph_digest
+        or version_plan.selection_digest != selection_digest
+    ):
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT,
+            "version plan graph or selection is not bound",
+        )
+    version_plan.validate_against(source_graph, source_selection)
+    version_digests = tuple(
+        sorted(_preview_digest(preview) for preview in version_plan.version_previews)
+    )
+    floor_digests = tuple(
+        sorted(_preview_digest(preview) for preview in version_plan.floor_previews)
+    )
+    if (
+        plan.version_preview_digests != version_digests
+        or plan.floor_preview_digests != floor_digests
+    ):
+        raise _fail(
+            ReleasePlanCode.DIGEST,
+            "preview digests do not match frozen version plan",
+        )
+    return version_plan, version_digests, floor_digests
+
+
+def _validate_frozen_plan_profiles(
+    plan: FrozenReleasePlan, *, selected: tuple[str, ...]
+) -> tuple[tuple[ProfileBinding, ...], tuple[ProfileBinding, ...]]:
+    validation_values = _bounded_tuple(
+        plan.validation_profiles,
+        "validation profiles",
+        max_items=MAX_PROFILE_BINDINGS,
+    )
+    build_values = _bounded_tuple(
+        plan.build_profiles, "build profiles", max_items=MAX_PROFILE_BINDINGS
+    )
+    if any(
+        type(item) is not ProfileBinding for item in validation_values + build_values
+    ):
+        raise _fail(ReleasePlanCode.PROFILE, "profile bindings are unsupported")
+    validation = tuple(
+        _revalidate_profile(item)
+        for item in cast(tuple[ProfileBinding, ...], validation_values)
+    )
+    build = tuple(
+        _revalidate_profile(item)
+        for item in cast(tuple[ProfileBinding, ...], build_values)
+    )
+    _validate_frozen_plan_profile_kinds_and_coverage(
+        validation, build, selected=selected
+    )
+    return validation, build
+
+
+def _validate_frozen_plan_profile_kinds_and_coverage(
+    validation: tuple[ProfileBinding, ...],
+    build: tuple[ProfileBinding, ...],
+    *,
+    selected: tuple[str, ...],
+) -> None:
+    if any(item.kind is not ProfileKind.VALIDATION for item in validation) or any(
+        item.kind is not ProfileKind.BUILD for item in build
+    ):
+        raise _fail(ReleasePlanCode.PROFILE, "profile binding kind is inconsistent")
+    if (
+        tuple(item.project_id for item in validation) != selected
+        or tuple(item.project_id for item in build) != selected
+    ):
+        raise _fail(
+            ReleasePlanCode.PROFILE,
+            "profiles must cover selected projects canonically",
+        )
+
+
+def _validate_frozen_plan_consent_and_stages(
+    plan: FrozenReleasePlan,
+    *,
+    selected: tuple[str, ...],
+    graph_digest: str,
+    selection_digest: str,
+    version_plan_digest: str,
+    decision_context: ReleaseDecisionContext,
+) -> tuple[PushConsentReference | None, tuple[StagePreview, ...]]:
+    consent = _revalidate_consent(plan.push_consent)
+    stage_values = _bounded_tuple(plan.stages, "plan stages", max_items=MAX_PLAN_STAGES)
+    if any(type(item) is not StagePreview for item in stage_values):
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "plan stages must be stage previews")
+    stages = tuple(
+        _revalidate_stage(stage)
+        for stage in cast(tuple[StagePreview, ...], stage_values)
+    )
+    _validate_stage_dag(stages)
+    _validate_frozen_plan_stage_evidence_binding(
+        stages,
+        selected=selected,
+        graph_digest=graph_digest,
+        selection_digest=selection_digest,
+        version_plan_digest=version_plan_digest,
+        decision_context=decision_context,
+        consent=consent,
+    )
+    if not stages:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "frozen plan must contain stages")
+    return consent, stages
+
+
+def _validate_frozen_plan_stage_evidence_binding(
+    stages: tuple[StagePreview, ...],
+    *,
+    selected: tuple[str, ...],
+    graph_digest: str,
+    selection_digest: str,
+    version_plan_digest: str,
+    decision_context: ReleaseDecisionContext,
+    consent: PushConsentReference | None,
+) -> None:
+    _validate_frozen_plan_stage_digest_binding(
+        stages,
+        graph_digest=graph_digest,
+        selection_digest=selection_digest,
+        version_plan_digest=version_plan_digest,
+        decision_context=decision_context,
+    )
+    _validate_frozen_plan_stage_push_consent_binding(
+        stages, selected=selected, consent=consent
+    )
+
+
+def _validate_frozen_plan_stage_digest_binding(
+    stages: tuple[StagePreview, ...],
+    *,
+    graph_digest: str,
+    selection_digest: str,
+    version_plan_digest: str,
+    decision_context: ReleaseDecisionContext,
+) -> None:
+    if any(
+        stage.graph_digest != graph_digest
+        or stage.selection_digest != selection_digest
+        or stage.version_plan_digest != version_plan_digest
+        for stage in stages
+    ):
+        raise _fail(
+            ReleasePlanCode.DIGEST, "stage evidence is not bound to the frozen plan"
+        )
+    _validate_frozen_plan_stage_decision_binding(
+        stages, decision_context=decision_context
+    )
+
+
+def _validate_frozen_plan_stage_decision_binding(
+    stages: tuple[StagePreview, ...],
+    *,
+    decision_context: ReleaseDecisionContext,
+) -> None:
+    if any(
+        stage.decision_digest != decision_context.digest
+        or stage.resource_profile != decision_context.resource_profile
+        or stage.retry_policy is not decision_context.retry_policy
+        or stage.retry_count != decision_context.retry_count
+        or stage.timeout_policy is not decision_context.timeout_policy
+        or stage.timeout_seconds != decision_context.timeout_seconds
+        for stage in stages
+    ):
+        raise _fail(
+            ReleasePlanCode.DIGEST,
+            "stage decision evidence is not bound to the frozen plan",
+        )
+
+
+def _validate_frozen_plan_stage_push_consent_binding(
+    stages: tuple[StagePreview, ...],
+    *,
+    selected: tuple[str, ...],
+    consent: PushConsentReference | None,
+) -> None:
+    if any(stage.project_id not in selected for stage in stages):
+        raise _fail(ReleasePlanCode.IDENTITY, "stage names an unselected project")
+    if any(
+        stage.kind is StageKind.PUSH and stage.consent_reference != consent
+        for stage in stages
+    ):
+        raise _fail(
+            ReleasePlanCode.PUSH_CONSENT,
+            "push stage consent is not bound to the plan",
+        )
+    if consent is None and any(stage.kind is StageKind.PUSH for stage in stages):
+        raise _fail(
+            ReleasePlanCode.PUSH_CONSENT, "push stage requires immutable consent"
+        )
+
+
+def _validate_frozen_plan_expected_stage_sequence(
+    stages: tuple[StagePreview, ...],
+    *,
+    selected: tuple[str, ...],
+    project_map: dict[str, ProjectRecord],
+    project_edges: tuple[tuple[str, str], ...],
+    groups: tuple[tuple[str, ...], ...],
+    base_sha: str,
+    generation_id: str,
+    graph_digest: str,
+    selection_digest: str,
+    version_plan_digest: str,
+    version_digests: tuple[str, ...],
+    floor_digests: tuple[str, ...],
+    validation: tuple[ProfileBinding, ...],
+    build: tuple[ProfileBinding, ...],
+    decision_context: ReleaseDecisionContext,
+    consent: PushConsentReference | None,
+) -> None:
+    expected_stages = _derive_stage_sequence(
+        selected=selected,
+        project_map=project_map,
+        project_edges=project_edges,
+        groups=groups,
+        base_sha=base_sha,
+        generation_id=generation_id,
+        graph_digest=graph_digest,
+        selection_digest=selection_digest,
+        version_plan_digest=version_plan_digest,
+        version_preview_digests=version_digests,
+        floor_preview_digests=floor_digests,
+        validation=_profile_map(validation, ProfileKind.VALIDATION),
+        build=_profile_map(build, ProfileKind.BUILD),
+        decision_context=decision_context,
+        consent=consent,
+    )
+    if stages != expected_stages:
+        raise _fail(
+            ReleasePlanCode.STAGE_DEPENDENCY,
+            "stage composition does not match frozen source evidence",
+        )
+
+
+def _validate_frozen_plan_digest(
+    plan: FrozenReleasePlan,
+    *,
+    require_digest: bool,
+    workspace_id: str,
+    source_sha: str,
+    base_sha: str,
+    generation_id: str,
+    graph_digest: str,
+    selection_digest: str,
+    version_plan_digest: str,
+    selected: tuple[str, ...],
+    project_values: tuple[ProjectRecord, ...],
+    edge_tuple: tuple[DependencyEdge, ...],
+    groups: tuple[tuple[str, ...], ...],
+    version_plan: VersionPlan,
+    validation: tuple[ProfileBinding, ...],
+    build: tuple[ProfileBinding, ...],
+    stages: tuple[StagePreview, ...],
+    source_graph: DependencyGraph,
+    source_selection: SelectedChangeClosure,
+    decision_context: ReleaseDecisionContext,
+    consent: PushConsentReference | None,
+) -> None:
+    # Build the digest preimage only from the exact, reconstructed evidence
+    # above.  Never canonicalize the caller's stage objects here: an exact
+    # dataclass shell may still carry hostile scalar/container values, and
+    # a self-consistent rehash must not become an authenticity shortcut.
+    trusted_plan = object.__new__(FrozenReleasePlan)
+    trusted_fields: dict[str, object] = {
+        "workspace_id": workspace_id,
+        "source_sha": source_sha,
+        "base_sha": base_sha,
+        "generation_id": generation_id,
+        "graph_digest": graph_digest,
+        "selection_digest": selection_digest,
+        "version_plan_digest": version_plan_digest,
+        "selected_projects": selected,
+        "projects": project_values,
+        "edges": edge_tuple,
+        "parallel_groups": tuple(groups),
+        "version_plan": version_plan,
+        "validation_profiles": validation,
+        "build_profiles": build,
+        "stages": stages,
+        "graph": source_graph,
+        "selection": source_selection,
+        "decision_context": decision_context,
+        "push_consent": consent,
+        "plan_digest": "",
+        "contract_version": C11_FROZEN_PLAN_VERSION,
+    }
+    for field_name, value in trusted_fields.items():
+        object.__setattr__(trusted_plan, field_name, value)
+    expected_digest = _digest_payload(_plan_payload(trusted_plan, include_digest=False))
+    if require_digest:
+        supplied = _strict_digest(plan.plan_digest, "plan digest")
+        if supplied != expected_digest:
+            raise _fail(
+                ReleasePlanCode.DIGEST, "plan digest does not match frozen contents"
+            )
+    # The local variables above intentionally force every normalized scalar
+    # through validation; no object.__setattr__ is used during verification.
+    _ = (workspace_id, source_sha, base_sha, generation_id)
 
 
 def _stage_preview(
