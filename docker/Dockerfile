@@ -122,6 +122,36 @@ RUN apt-get update \
 # the rust/node/go pins above track theirs.
 RUN uv pip install --system --break-system-packages maturin==1.14.1
 
+# cccc -- the complexity gate's measurement backend. `check_complexity.py` in
+# agent-utilities (and its ported copies) shells out to `cccc` and exits 2
+# "CANNOT RUN" when it is absent, so without this binary EVERY complexity gate
+# in every repo fails closed inside this container -- the same
+# reads-like-a-real-failure defect class as D-MQ-8's cargo and maturin above.
+#
+# ⚠ INSTALLED FROM GIT AT A PINNED REV, NOT FROM crates.io, AND THAT IS NOT
+#   FUSSINESS: the name `cccc` on crates.io is a DIFFERENT, UNRELATED PROJECT
+#   ("Collaborative multi-agent control plane and CLI", 0.4.33). `cargo install
+#   cccc` silently installs that instead, and the resulting binary would not
+#   understand a single flag this gate passes. The per-language `cccc-es-cli` /
+#   `cccc-rs-cli` crates ARE from this author but are older (0.4.0) and split
+#   per language; the gate needs the unified multi-language binary.
+#
+# Pinned to rev 5b735b1 (= cccc 1.6.0). Bump this rev and the version comment
+# together, the same way the rust/node/go pins above track theirs -- and re-run
+# the ladder afterwards, because cccc and lizard disagree on attribution and a
+# threshold means nothing across a change of instrument.
+#
+# Built with the toolchain installed above and copied to /usr/local/bin so it is
+# HOME-independent like CARGO_HOME/NODE_HOME/GOROOT -- the runtime user is a
+# fixed non-root uid and does not own a cargo bin dir.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    "$CARGO_HOME/bin/cargo" install \
+        --git https://github.com/moznion/cccc.git \
+        --rev 5b735b15596b87dcf2de64459378906bcd16897f \
+        --locked --root /usr/local cccc-cli \
+    && /usr/local/bin/cccc --version \
+    && chmod a+rx /usr/local/bin/cccc
+
 # node + pnpm — the SAME defect class as D-MQ-8 above, never mirrored from
 # cargo to node until now. `agent-webui/.pre-commit-config.yaml` declares
 # three `language: system` hooks that shell out to `node`/`pnpm` directly
