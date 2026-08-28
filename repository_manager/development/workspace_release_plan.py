@@ -2025,6 +2025,70 @@ class FrozenReleasePlan:
 
         _validate_frozen_plan_fields(self, require_digest=True)
 
+    def _validate_against_unchecked(
+        self,
+        graph: DependencyGraph,
+        selection: SelectedChangeClosure,
+        version_plan: VersionPlan | None,
+    ) -> None:
+        """Recompute the plan from current evidence and compare it to the frozen one."""
+
+        # Validate and deep-reconstruct every frozen stage before any
+        # comparison or canonicalization can touch caller-controlled data.
+        _validate_frozen_plan_fields(self, require_digest=True)
+        graph = _snapshot_graph(graph)
+        selection = _snapshot_selection(selection)
+        if graph.digest != self.graph_digest:
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT,
+                "current graph does not match frozen plan",
+            )
+        if selection.digest != self.selection_digest:
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT,
+                "current selection does not match frozen plan",
+            )
+        if graph.canonical_payload() != selection.source_graph.canonical_payload():
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT,
+                "current graph evidence does not match frozen selection",
+            )
+        current_version_plan = (
+            self.version_plan if version_plan is None else version_plan
+        )
+        if type(current_version_plan) is not VersionPlan:
+            raise _fail(
+                ReleasePlanCode.VERSION_PLAN_DRIFT,
+                "current version plan is unsupported",
+            )
+        current_version_plan = _revalidate_version_plan(current_version_plan)
+        if current_version_plan.plan_digest != self.version_plan_digest:
+            raise _fail(
+                ReleasePlanCode.VERSION_PLAN_DRIFT,
+                "current version plan does not match frozen plan",
+            )
+        current_version_plan.validate_against(graph, selection)
+        expected = freeze_release_plan(
+            graph,
+            selection,
+            current_version_plan,
+            workspace_id=self.workspace_id,
+            source_sha=self.source_sha,
+            base_sha=self.base_sha,
+            generation_id=self.generation_id,
+            validation_profiles=self.validation_profiles,
+            build_profiles=self.build_profiles,
+            push_consent=self.push_consent,
+            decision_context=self.decision_context,
+        )
+        if expected.canonical_payload(include_digest=True) != self.canonical_payload(
+            include_digest=True
+        ):
+            raise _fail(
+                ReleasePlanCode.DIGEST,
+                "frozen release plan evidence does not match recomputed contents",
+            )
+
     def validate_against(
         self,
         graph: DependencyGraph,
@@ -2035,61 +2099,7 @@ class FrozenReleasePlan:
         """Refuse reuse when graph, closure, tree, preview, or profile evidence drifts."""
 
         try:
-            # Validate and deep-reconstruct every frozen stage before any
-            # comparison or canonicalization can touch caller-controlled data.
-            _validate_frozen_plan_fields(self, require_digest=True)
-            graph = _snapshot_graph(graph)
-            selection = _snapshot_selection(selection)
-            if graph.digest != self.graph_digest:
-                raise _fail(
-                    ReleasePlanCode.GRAPH_DRIFT,
-                    "current graph does not match frozen plan",
-                )
-            if selection.digest != self.selection_digest:
-                raise _fail(
-                    ReleasePlanCode.SELECTION_DRIFT,
-                    "current selection does not match frozen plan",
-                )
-            if graph.canonical_payload() != selection.source_graph.canonical_payload():
-                raise _fail(
-                    ReleasePlanCode.GRAPH_DRIFT,
-                    "current graph evidence does not match frozen selection",
-                )
-            current_version_plan = (
-                self.version_plan if version_plan is None else version_plan
-            )
-            if type(current_version_plan) is not VersionPlan:
-                raise _fail(
-                    ReleasePlanCode.VERSION_PLAN_DRIFT,
-                    "current version plan is unsupported",
-                )
-            current_version_plan = _revalidate_version_plan(current_version_plan)
-            if current_version_plan.plan_digest != self.version_plan_digest:
-                raise _fail(
-                    ReleasePlanCode.VERSION_PLAN_DRIFT,
-                    "current version plan does not match frozen plan",
-                )
-            current_version_plan.validate_against(graph, selection)
-            expected = freeze_release_plan(
-                graph,
-                selection,
-                current_version_plan,
-                workspace_id=self.workspace_id,
-                source_sha=self.source_sha,
-                base_sha=self.base_sha,
-                generation_id=self.generation_id,
-                validation_profiles=self.validation_profiles,
-                build_profiles=self.build_profiles,
-                push_consent=self.push_consent,
-                decision_context=self.decision_context,
-            )
-            if expected.canonical_payload(
-                include_digest=True
-            ) != self.canonical_payload(include_digest=True):
-                raise _fail(
-                    ReleasePlanCode.DIGEST,
-                    "frozen release plan evidence does not match recomputed contents",
-                )
+            self._validate_against_unchecked(graph, selection, version_plan)
         except ReleasePlanError:
             raise
         except VersionPlanningError:
@@ -3816,7 +3826,9 @@ class FrozenReleasePlanInput:
     allow_push: bool | None = None
     decision_context: ReleaseDecisionContext | None = None
 
-    def __post_init__(self) -> None:
+    def _snapshot_input_models(self) -> VersionPlan:
+        """Re-materialize the three C-11 evidence models and bind graph to selection."""
+
         if type(self.graph) is not DependencyGraph:
             raise _fail(
                 ReleasePlanCode.GRAPH_DRIFT,
@@ -3844,6 +3856,11 @@ class FrozenReleasePlanInput:
             )
         object.__setattr__(self, "graph", graph)
         object.__setattr__(self, "selection", selection)
+        return frozen_version_plan
+
+    def _normalize_input_identity(self) -> None:
+        """Normalize the workspace, source/base SHA and generation identities."""
+
         workspace = _strict_opaque(
             self.workspace_id, "workspace ID", max_length=MAX_STRING_LENGTH
         )
@@ -3864,6 +3881,10 @@ class FrozenReleasePlanInput:
             max_length=MAX_GENERATION_LENGTH,
         )
         object.__setattr__(self, "generation_id", generation)
+
+    def _normalize_input_push_and_decisions(self) -> None:
+        """Normalize the push flags, the consent reference and the decisions."""
+
         if self.include_push is not None:
             _strict_bool(self.include_push, "push inclusion flag")
         if self.allow_push is not None:
@@ -3876,10 +3897,14 @@ class FrozenReleasePlanInput:
             else _revalidate_decision_context(self.decision_context)
         )
         object.__setattr__(self, "decision_context", decisions)
-        object.__setattr__(self, "version_plan", frozen_version_plan)
-        # Materialize the two profile collections now, rather than retaining a
-        # caller-owned dict/list.  This also makes missing profiles explicit via
-        # deterministic defaults.
+
+    def _materialize_input_profiles(self) -> None:
+        """Materialize the two profile collections now.
+
+        This keeps no caller-owned dict/list, and makes missing profiles
+        explicit via deterministic defaults.
+        """
+
         selected = _canonical_project_ids(
             self.selection.selected_project_ids, "selected project IDs"
         )
@@ -3895,6 +3920,13 @@ class FrozenReleasePlanInput:
         )
         object.__setattr__(self, "validation_profiles", validation)
         object.__setattr__(self, "build_profiles", build)
+
+    def __post_init__(self) -> None:
+        frozen_version_plan = self._snapshot_input_models()
+        self._normalize_input_identity()
+        self._normalize_input_push_and_decisions()
+        object.__setattr__(self, "version_plan", frozen_version_plan)
+        self._materialize_input_profiles()
 
     def canonical_payload(self) -> dict[str, object]:
         return {
