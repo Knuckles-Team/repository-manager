@@ -98,42 +98,9 @@ class OverlayInput:
     versions: tuple[tuple[PackageKey, VersionSource], ...] = ()
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.schema_version, bool)
-            or not isinstance(self.schema_version, int)
-            or self.schema_version != 1
-        ):
-            raise MetadataError("overlay schema_version must be 1")
-        if isinstance(self.edges, (str, bytes, bytearray)) or not isinstance(
-            self.edges, Sequence
-        ):
-            raise MetadataError("overlay edges must be a sequence")
-        edges = tuple(self.edges)
-        if len(edges) > DEFAULT_MAX_METADATA_ITEMS:
-            raise MetadataError("overlay edge count exceeds the bound")
-        if any(not isinstance(edge, DependencyEdge) for edge in edges):
-            raise MetadataError("overlay edges must contain DependencyEdge values")
-        if isinstance(self.versions, (str, bytes, bytearray)) or not isinstance(
-            self.versions, Sequence
-        ):
-            raise MetadataError("overlay versions must be a sequence")
-        versions = tuple(self.versions)
-        if len(versions) > DEFAULT_MAX_METADATA_ITEMS:
-            raise MetadataError("overlay version count exceeds the bound")
-        normalized_versions: list[tuple[PackageKey, VersionSource]] = []
-        for item in versions:
-            if not isinstance(item, (tuple, list)) or len(item) != 2:
-                raise MetadataError(
-                    "overlay versions must contain package/source pairs"
-                )
-            package, source = item
-            if not isinstance(package, PackageKey) or not isinstance(
-                source, VersionSource
-            ):
-                raise MetadataError(
-                    "overlay versions must contain PackageKey/VersionSource pairs"
-                )
-            normalized_versions.append((package, source))
+        self._validate_schema_version()
+        edges = self._validate_edges()
+        normalized_versions = self._validate_versions()
         object.__setattr__(
             self,
             "edges",
@@ -162,6 +129,50 @@ class OverlayInput:
                 )
             ),
         )
+
+    def _validate_schema_version(self) -> None:
+        if (
+            isinstance(self.schema_version, bool)
+            or not isinstance(self.schema_version, int)
+            or self.schema_version != 1
+        ):
+            raise MetadataError("overlay schema_version must be 1")
+
+    def _validate_edges(self) -> tuple[DependencyEdge, ...]:
+        if isinstance(self.edges, (str, bytes, bytearray)) or not isinstance(
+            self.edges, Sequence
+        ):
+            raise MetadataError("overlay edges must be a sequence")
+        edges = tuple(self.edges)
+        if len(edges) > DEFAULT_MAX_METADATA_ITEMS:
+            raise MetadataError("overlay edge count exceeds the bound")
+        if any(not isinstance(edge, DependencyEdge) for edge in edges):
+            raise MetadataError("overlay edges must contain DependencyEdge values")
+        return edges
+
+    def _validate_versions(self) -> list[tuple[PackageKey, VersionSource]]:
+        if isinstance(self.versions, (str, bytes, bytearray)) or not isinstance(
+            self.versions, Sequence
+        ):
+            raise MetadataError("overlay versions must be a sequence")
+        versions = tuple(self.versions)
+        if len(versions) > DEFAULT_MAX_METADATA_ITEMS:
+            raise MetadataError("overlay version count exceeds the bound")
+        normalized_versions: list[tuple[PackageKey, VersionSource]] = []
+        for item in versions:
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                raise MetadataError(
+                    "overlay versions must contain package/source pairs"
+                )
+            package, source = item
+            if not isinstance(package, PackageKey) or not isinstance(
+                source, VersionSource
+            ):
+                raise MetadataError(
+                    "overlay versions must contain PackageKey/VersionSource pairs"
+                )
+            normalized_versions.append((package, source))
+        return normalized_versions
 
     @classmethod
     def from_mapping(
@@ -234,23 +245,38 @@ def _string(value: object, label: str, limits: MetadataLimits) -> str:
     return value
 
 
+def _bound_mapping_value(
+    value: Mapping[object, object], limits: MetadataLimits, *, depth: int
+) -> None:
+    if len(value) > limits.max_items:
+        raise MetadataError("metadata mapping exceeds the item bound")
+    for key, child in value.items():
+        _string(key, "metadata field", limits)
+        _bound_value(child, limits, depth=depth + 1)
+
+
+def _bound_sequence_value(
+    value: Sequence[object] | set[object] | frozenset[object],
+    limits: MetadataLimits,
+    *,
+    depth: int,
+) -> None:
+    if len(value) > limits.max_items:
+        raise MetadataError("metadata sequence exceeds the item bound")
+    for child in value:
+        _bound_value(child, limits, depth=depth + 1)
+
+
 def _bound_value(value: object, limits: MetadataLimits, *, depth: int = 0) -> None:
     """Reject deeply nested, oversized, or non-string-key metadata structures."""
 
     if depth > limits.max_depth:
         raise MetadataError("metadata nesting exceeds the bound")
     if isinstance(value, Mapping):
-        if len(value) > limits.max_items:
-            raise MetadataError("metadata mapping exceeds the item bound")
-        for key, child in value.items():
-            _string(key, "metadata field", limits)
-            _bound_value(child, limits, depth=depth + 1)
+        _bound_mapping_value(value, limits, depth=depth)
         return
     if isinstance(value, (list, tuple, set, frozenset)):
-        if len(value) > limits.max_items:
-            raise MetadataError("metadata sequence exceeds the item bound")
-        for child in value:
-            _bound_value(child, limits, depth=depth + 1)
+        _bound_sequence_value(value, limits, depth=depth)
         return
     if isinstance(value, str):
         _string(value, "metadata value", limits)
@@ -522,6 +548,23 @@ def _parse_requirement(
         raise MetadataError(str(exc)) from exc
 
 
+def _split_node_package_and_range(requirement: str, text: str) -> tuple[str, str]:
+    if requirement.startswith("@"):
+        slash = requirement.find("/")
+        if slash <= 1:
+            raise MetadataError(f"unsupported dependency declaration: {text!r}")
+        separator = requirement.find("@", slash + 1)
+    else:
+        separator = requirement.find("@")
+    if separator > 0:
+        package_name = requirement[:separator]
+        range_value = requirement[separator + 1 :]
+        if not range_value:
+            raise MetadataError(f"unsupported dependency declaration: {text!r}")
+        return package_name, range_value
+    return requirement, ""
+
+
 def _parse_node_requirement(
     value: object,
     source: str,
@@ -534,21 +577,7 @@ def _parse_node_requirement(
     text = _require_string(value, source, limits)
     requirement = text.split(";", 1)[0].strip()
     if package_name is None:
-        if requirement.startswith("@"):
-            slash = requirement.find("/")
-            if slash <= 1:
-                raise MetadataError(f"unsupported dependency declaration: {text!r}")
-            separator = requirement.find("@", slash + 1)
-        else:
-            separator = requirement.find("@")
-        if separator > 0:
-            package_name = requirement[:separator]
-            range_value = requirement[separator + 1 :]
-            if not range_value:
-                raise MetadataError(f"unsupported dependency declaration: {text!r}")
-        else:
-            package_name = requirement
-            range_value = ""
+        package_name, range_value = _split_node_package_and_range(requirement, text)
     else:
         range_value = requirement
     if not _NODE_NAME.fullmatch(package_name):
@@ -574,6 +603,78 @@ def _parse_node_requirement(
         raise MetadataError(str(exc)) from exc
 
 
+def _dependency_items(
+    value: object, source: str
+) -> tuple[tuple[tuple[object, object], ...], bool]:
+    if isinstance(value, Mapping):
+        return tuple(value.items()), True
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple((str(index), item) for index, item in enumerate(value)), False
+    raise MetadataError(f"{source} dependencies must be a mapping or sequence")
+
+
+def _rust_mapping_dependency_spec(
+    key: str,
+    raw_map: Mapping[str, object],
+    ecosystem: Ecosystem,
+    source: str,
+    limits: MetadataLimits,
+) -> DependencySpec:
+    dep_name = raw_map.get("package", key)
+    dep_version = raw_map.get("version")
+    if dep_version is None and any(
+        marker in raw_map for marker in ("path", "git", "workspace")
+    ):
+        # Owner resolution remains possible by package name; the
+        # missing floor must be supplied by an explicit overlay if
+        # release policy requires one.
+        return DependencySpec(
+            target=_metadata_package_reference(
+                ecosystem,
+                _require_string(dep_name, f"{source}.{key}.package", limits),
+            ),
+            source=f"{source}.{key}",
+        )
+    if dep_version is None:
+        raise MetadataError(f"{source}.{key} has no supported version")
+    raw_requirement = _require_string(dep_version, f"{source}.{key}.version", limits)
+    if raw_requirement and raw_requirement[0] not in "^~<>=":
+        raw_requirement = f"^{raw_requirement}"
+    return DependencySpec(
+        target=_metadata_package_reference(
+            ecosystem,
+            _require_string(dep_name, f"{source}.{key}.package", limits),
+        ),
+        floor=_parse_floor(
+            raw_requirement, f"{source}.{key}.version", limits, ecosystem
+        ),
+        source=f"{source}.{key}",
+    )
+
+
+def _mapping_dependency_spec(
+    key: object,
+    raw: object,
+    ecosystem: Ecosystem,
+    source: str,
+    limits: MetadataLimits,
+) -> DependencySpec:
+    if not isinstance(key, str):
+        raise MetadataError(f"{source} dependency name must be a string")
+    if ecosystem == Ecosystem.RUST and isinstance(raw, Mapping):
+        raw_map = _mapping(raw, f"{source}.{key}")
+        return _rust_mapping_dependency_spec(key, raw_map, ecosystem, source, limits)
+    if ecosystem == Ecosystem.NODE:
+        return _parse_node_requirement(raw, f"{source}.{key}", limits, package_name=key)
+    if ecosystem == Ecosystem.PYTHON:
+        if not isinstance(raw, str):
+            raise MetadataError(f"{source}.{key} Python dependency must be a string")
+        raw = f"{key}{raw}"
+    else:
+        raw = f"{key} {raw}" if isinstance(raw, str) else raw
+    return _parse_requirement(raw, ecosystem, f"{source}.{key}", limits)
+
+
 def _dependency_specs(
     value: object,
     ecosystem: Ecosystem,
@@ -582,85 +683,13 @@ def _dependency_specs(
 ) -> tuple[DependencySpec, ...]:
     if value is None:
         return ()
-    if isinstance(value, Mapping):
-        items = tuple(value.items())
-    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-        items = tuple((str(index), item) for index, item in enumerate(value))
-    else:
-        raise MetadataError(f"{source} dependencies must be a mapping or sequence")
+    items, is_mapping = _dependency_items(value, source)
     if len(items) > limits.max_dependencies:
         raise MetadataError(f"{source} dependency count exceeds the bound")
     specs: list[DependencySpec] = []
     for key, raw in items:
-        if isinstance(value, Mapping):
-            if not isinstance(key, str):
-                raise MetadataError(f"{source} dependency name must be a string")
-            if ecosystem == Ecosystem.RUST and isinstance(raw, Mapping):
-                raw_map = _mapping(raw, f"{source}.{key}")
-                dep_name = raw_map.get("package", key)
-                dep_version = raw_map.get("version")
-                if dep_version is None and any(
-                    marker in raw_map for marker in ("path", "git", "workspace")
-                ):
-                    # Owner resolution remains possible by package name; the
-                    # missing floor must be supplied by an explicit overlay if
-                    # release policy requires one.
-                    specs.append(
-                        DependencySpec(
-                            target=_metadata_package_reference(
-                                ecosystem,
-                                _require_string(
-                                    dep_name, f"{source}.{key}.package", limits
-                                ),
-                            ),
-                            source=f"{source}.{key}",
-                        )
-                    )
-                    continue
-                if dep_version is None:
-                    raise MetadataError(f"{source}.{key} has no supported version")
-                raw_requirement = _require_string(
-                    dep_version, f"{source}.{key}.version", limits
-                )
-                if raw_requirement and raw_requirement[0] not in "^~<>=":
-                    raw_requirement = f"^{raw_requirement}"
-                specs.append(
-                    DependencySpec(
-                        target=_metadata_package_reference(
-                            ecosystem,
-                            _require_string(
-                                dep_name, f"{source}.{key}.package", limits
-                            ),
-                        ),
-                        floor=_parse_floor(
-                            raw_requirement,
-                            f"{source}.{key}.version",
-                            limits,
-                            ecosystem,
-                        ),
-                        source=f"{source}.{key}",
-                    )
-                )
-                continue
-            if ecosystem == Ecosystem.NODE:
-                specs.append(
-                    _parse_node_requirement(
-                        raw,
-                        f"{source}.{key}",
-                        limits,
-                        package_name=key,
-                    )
-                )
-                continue
-            if ecosystem == Ecosystem.PYTHON:
-                if not isinstance(raw, str):
-                    raise MetadataError(
-                        f"{source}.{key} Python dependency must be a string"
-                    )
-                raw = f"{key}{raw}"
-            else:
-                raw = f"{key} {raw}" if isinstance(raw, str) else raw
-            specs.append(_parse_requirement(raw, ecosystem, f"{source}.{key}", limits))
+        if is_mapping:
+            specs.append(_mapping_dependency_spec(key, raw, ecosystem, source, limits))
         else:
             specs.append(_parse_requirement(raw, ecosystem, f"{source}[{key}]", limits))
     return tuple(specs)
@@ -896,49 +925,59 @@ def read_workspace_metadata(
     )
 
 
-def _apply_overlay_versions(
-    projects: Sequence[ProjectRecord], overlay: OverlayInput
-) -> tuple[ProjectRecord, ...]:
+def _group_overlay_versions(overlay: OverlayInput) -> dict[str, list[VersionSource]]:
     versions: dict[str, list[VersionSource]] = {}
     for package_key, source in overlay.versions:
         versions.setdefault(package_key.value, []).append(source)
-    if not versions:
-        return tuple(projects)
-    updated: list[ProjectRecord] = []
-    diagnostics: list[Diagnostic] = []
-    for project in projects:
-        packages: list[PackageRecord] = []
-        for record in project.packages:
-            sources = versions.get(record.key.value)
-            if not sources:
-                packages.append(record)
-                continue
-            try:
-                version, resolved = resolve_version_sources(
-                    record.key, (*record.version_sources, *sources)
-                )
-            except GraphValidationError as exc:
-                diagnostics.extend(exc.diagnostics)
-                continue
-            packages.append(
-                PackageRecord(
-                    key=record.key,
-                    version=version,
-                    version_sources=resolved,
-                    dependencies=record.dependencies,
-                    metadata_files=record.metadata_files,
-                )
-            )
-        updated.append(
-            ProjectRecord(
-                repository_id=project.repository_id,
-                tree_sha=project.tree_sha,
-                packages=tuple(packages),
-                metadata_files=project.metadata_files,
-            )
+    return versions
+
+
+def _resolve_overlay_package(
+    record: PackageRecord,
+    versions: Mapping[str, list[VersionSource]],
+    diagnostics: list[Diagnostic],
+) -> PackageRecord | None:
+    sources = versions.get(record.key.value)
+    if not sources:
+        return record
+    try:
+        version, resolved = resolve_version_sources(
+            record.key, (*record.version_sources, *sources)
         )
-    if diagnostics:
-        raise GraphValidationError(diagnostics)
+    except GraphValidationError as exc:
+        diagnostics.extend(exc.diagnostics)
+        return None
+    return PackageRecord(
+        key=record.key,
+        version=version,
+        version_sources=resolved,
+        dependencies=record.dependencies,
+        metadata_files=record.metadata_files,
+    )
+
+
+def _apply_overlay_to_project(
+    project: ProjectRecord,
+    versions: Mapping[str, list[VersionSource]],
+    diagnostics: list[Diagnostic],
+) -> ProjectRecord:
+    packages = [
+        resolved
+        for record in project.packages
+        if (resolved := _resolve_overlay_package(record, versions, diagnostics))
+        is not None
+    ]
+    return ProjectRecord(
+        repository_id=project.repository_id,
+        tree_sha=project.tree_sha,
+        packages=tuple(packages),
+        metadata_files=project.metadata_files,
+    )
+
+
+def _check_missing_overlay_packages(
+    projects: Sequence[ProjectRecord], versions: Mapping[str, list[VersionSource]]
+) -> None:
     missing = sorted(
         package_id
         for package_id in versions
@@ -952,7 +991,23 @@ def _apply_overlay_versions(
         raise GraphValidationError(
             tuple(_missing_overlay_package(package_id) for package_id in missing)
         )
-    return tuple(updated)
+
+
+def _apply_overlay_versions(
+    projects: Sequence[ProjectRecord], overlay: OverlayInput
+) -> tuple[ProjectRecord, ...]:
+    versions = _group_overlay_versions(overlay)
+    if not versions:
+        return tuple(projects)
+    diagnostics: list[Diagnostic] = []
+    updated = tuple(
+        _apply_overlay_to_project(project, versions, diagnostics)
+        for project in projects
+    )
+    if diagnostics:
+        raise GraphValidationError(diagnostics)
+    _check_missing_overlay_packages(projects, versions)
+    return updated
 
 
 def _missing_overlay_package(package_id: str) -> Diagnostic:
