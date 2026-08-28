@@ -581,6 +581,62 @@ def _queue_domain_record(record: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _append_candidate_snapshot(
+    record: CandidateSnapshot,
+    raw: dict[str, Any],
+    existing_raw: tuple[dict[str, Any], ...],
+) -> bool:
+    """Return whether this candidate snapshot must still be appended."""
+
+    decoded = [CandidateSnapshot.from_record(item) for item in existing_raw]
+    for previous_snapshot in decoded:
+        if previous_snapshot.immutable_digest() != record.immutable_digest():
+            raise MergeQueueError(
+                f"candidate snapshot {raw['record_id']} changed immutable inputs"
+            )
+    if decoded:
+        return False
+    try:
+        fold_candidate_records((*existing_raw, raw))
+    except CandidateGenerationError as exc:
+        raise MergeQueueError(str(exc)) from exc
+    return True
+
+
+def _append_generation_record(
+    record: GenerationRecord,
+    raw: dict[str, Any],
+    existing_raw: tuple[dict[str, Any], ...],
+) -> bool:
+    """Return whether this generation record must still be appended."""
+
+    if not isinstance(record, GenerationRecord):
+        raise MergeQueueError("generation record kind has the wrong type")
+    decoded_generations = [GenerationRecord.from_record(item) for item in existing_raw]
+    for previous_generation in decoded_generations:
+        if previous_generation.immutable_digest() != record.immutable_digest():
+            raise MergeQueueError(
+                f"generation {raw['record_id']} changed immutable inputs"
+            )
+    if decoded_generations:
+        latest = fold_generation_records(existing_raw)[0]
+        if latest.result == record.result and latest.generation == record.generation:
+            return False
+        try:
+            latest.with_update(
+                record.generation,
+                result=record.result,
+                recorded_at=record.recorded_at,
+            )
+        except CandidateGenerationError as exc:
+            raise MergeQueueError(str(exc)) from exc
+    try:
+        fold_generation_records((*existing_raw, raw))
+    except CandidateGenerationError as exc:
+        raise MergeQueueError(str(exc)) from exc
+    return True
+
+
 def _append_domain_record(
     record: CandidateSnapshot | GenerationRecord,
     *,
@@ -604,50 +660,13 @@ def _append_domain_record(
     )
     try:
         if kind == CANDIDATE_SNAPSHOT_KIND:
-            decoded = [CandidateSnapshot.from_record(item) for item in existing_raw]
-            for previous_snapshot in decoded:
-                if previous_snapshot.immutable_digest() != record.immutable_digest():
-                    raise MergeQueueError(
-                        f"candidate snapshot {raw['record_id']} changed immutable inputs"
-                    )
-            if decoded:
-                return False
-            try:
-                fold_candidate_records((*existing_raw, raw))
-            except CandidateGenerationError as exc:
-                raise MergeQueueError(str(exc)) from exc
+            should_append = _append_candidate_snapshot(record, raw, existing_raw)
         else:
-            if not isinstance(record, GenerationRecord):
-                raise MergeQueueError("generation record kind has the wrong type")
-            decoded_generations = [
-                GenerationRecord.from_record(item) for item in existing_raw
-            ]
-            for previous_generation in decoded_generations:
-                if previous_generation.immutable_digest() != record.immutable_digest():
-                    raise MergeQueueError(
-                        f"generation {raw['record_id']} changed immutable inputs"
-                    )
-            if decoded_generations:
-                latest = fold_generation_records(existing_raw)[0]
-                if (
-                    latest.result == record.result
-                    and latest.generation == record.generation
-                ):
-                    return False
-                try:
-                    latest.with_update(
-                        record.generation,
-                        result=record.result,
-                        recorded_at=record.recorded_at,
-                    )
-                except CandidateGenerationError as exc:
-                    raise MergeQueueError(str(exc)) from exc
-            try:
-                fold_generation_records((*existing_raw, raw))
-            except CandidateGenerationError as exc:
-                raise MergeQueueError(str(exc)) from exc
+            should_append = _append_generation_record(record, raw, existing_raw)
     except CandidateGenerationError as exc:
         raise MergeQueueError(str(exc)) from exc
+    if not should_append:
+        return False
     queue_store(path).append(raw, lane=lane)
     return True
 
@@ -838,6 +857,15 @@ class TrialMerge:
     detail: str = ""
 
 
+def _parse_trial_merge_conflicts(lines: list[str]) -> tuple[str, list[str]]:
+    tree = lines[0].strip() if lines else ""
+    conflicts = [ln.strip() for ln in lines[1:] if ln.strip()]
+    blank = next((i for i, ln in enumerate(lines[1:], 1) if not ln.strip()), None)
+    if blank is not None:
+        conflicts = [ln.strip() for ln in lines[1:blank] if ln.strip()]
+    return tree, conflicts
+
+
 def trial_merge(repo: Path, base_ref: str, branch: str) -> TrialMerge:
     """Merge *branch* into *base_ref* as objects only; report conflicts, move no ref.
 
@@ -856,12 +884,7 @@ def trial_merge(repo: Path, base_ref: str, branch: str) -> TrialMerge:
         raise MergeQueueError(
             f"git merge-tree failed against {base_ref}..{branch}: {res.err or res.out}"
         )
-    lines = res.out.splitlines()
-    tree = lines[0].strip() if lines else ""
-    conflicts = [ln.strip() for ln in lines[1:] if ln.strip()]
-    blank = next((i for i, ln in enumerate(lines[1:], 1) if not ln.strip()), None)
-    if blank is not None:
-        conflicts = [ln.strip() for ln in lines[1:blank] if ln.strip()]
+    tree, conflicts = _parse_trial_merge_conflicts(res.out.splitlines())
     return TrialMerge(ok=False, tree=tree, conflicts=conflicts, detail=res.out)
 
 
@@ -927,6 +950,176 @@ def _commit_shadow_trial(
     return _require_git([*args, "-m", message], repo, env=env)
 
 
+def _stale_base_shadow_result(
+    generation: Any, target_ref: str, target_before: str, target_after: str
+) -> dict[str, Any]:
+    return {
+        "mode": "shadow",
+        "objects_only": True,
+        "execution": "not-run",
+        "landing": "not-run",
+        "certifiable": False,
+        "status": "stale-base",
+        "stale_base": True,
+        "target_ref": target_ref,
+        "target_ref_before": target_before,
+        "target_ref_after": target_after,
+        "target_ref_stable": target_before == target_after,
+        "base_sha": generation.base_sha,
+        "synthetic_commit_sha": "",
+        "tree_sha": "",
+        "accepted": [],
+        "conflicts": [],
+        "accepted_candidate_ids": [],
+        "conflicted_candidate_ids": [],
+        "differential_paths": [],
+        "differential_path_count": 0,
+        "differential_paths_truncated": False,
+    }
+
+
+class _ShadowMergeState:
+    """Mutable accumulator threaded through ``_shadow_trial_merge``'s member loop."""
+
+    __slots__ = ("head", "tree", "differential", "accepted", "conflicts")
+
+    def __init__(self, head: str, tree: str) -> None:
+        self.head = head
+        self.tree = tree
+        self.differential: set[str] = set()
+        self.accepted: list[dict[str, Any]] = []
+        self.conflicts: list[dict[str, Any]] = []
+
+
+def _record_shadow_conflict(
+    state: _ShadowMergeState,
+    base_sha: str,
+    member_identity: dict[str, Any],
+    member_changed: list[str],
+    trial: TrialMerge,
+) -> None:
+    conflict_paths = _bounded_shadow_paths(trial.conflicts)
+    member_paths = _bounded_shadow_paths(member_changed)
+    detail = _bounded_shadow_detail(trial.detail)
+    against = [
+        {
+            "candidate_id": item["candidate_id"],
+            "version": item["version"],
+        }
+        for item in state.accepted
+    ]
+    state.conflicts.append(
+        {
+            **member_identity,
+            "conflicts": conflict_paths["paths"],
+            "conflict_count": conflict_paths["count"],
+            "conflicts_truncated": conflict_paths["truncated"],
+            **detail,
+            "differential_paths": member_paths["paths"],
+            "differential_path_count": member_paths["count"],
+            "differential_paths_truncated": member_paths["truncated"],
+            "conflict_against": {
+                "kind": "rolling-synthetic-head",
+                "members": against,
+                "base_sha": base_sha,
+            },
+        }
+    )
+
+
+def _record_shadow_acceptance(
+    repo: Path,
+    state: _ShadowMergeState,
+    member: Any,
+    member_identity: dict[str, Any],
+    trial: TrialMerge,
+    sealed_at: datetime,
+) -> None:
+    already_contained = (
+        member.candidate_sha == state.head
+        or _run_git(
+            ["merge-base", "--is-ancestor", member.candidate_sha, state.head], repo
+        ).ok
+    )
+    if already_contained:
+        state.tree = trial.tree or state.tree
+        state.accepted.append({**member_identity, "already_contained": True})
+        return
+    state.head = _commit_shadow_trial(
+        repo,
+        trial.tree,
+        [state.head, member.candidate_sha],
+        f"shadow merge({member.lane_id}): {member.branch}",
+        sealed_at=sealed_at,
+    )
+    state.tree = trial.tree
+    state.accepted.append({**member_identity, "already_contained": False})
+
+
+def _process_shadow_member(
+    repo: Path,
+    generation: Any,
+    state: _ShadowMergeState,
+    member: Any,
+    sealed_at: datetime,
+) -> None:
+    member_changed = changed_paths(repo, generation.base_sha, member.candidate_sha)
+    state.differential.update(member_changed)
+    trial = trial_merge(repo, state.head, member.candidate_sha)
+    member_identity = {
+        "candidate_id": member.candidate_id,
+        "version": member.version,
+        "branch": member.branch,
+        "candidate_sha": member.candidate_sha,
+    }
+    if not trial.ok:
+        _record_shadow_conflict(
+            state, generation.base_sha, member_identity, member_changed, trial
+        )
+        return
+    _record_shadow_acceptance(repo, state, member, member_identity, trial, sealed_at)
+
+
+def _shadow_trial_result(
+    generation: Any,
+    target_ref: str,
+    target_before: str,
+    target_after: str,
+    state: _ShadowMergeState,
+) -> dict[str, Any]:
+    differential_paths = _bounded_shadow_paths(state.differential)
+    target_stable = target_before == target_after
+    return {
+        "mode": "shadow",
+        "objects_only": True,
+        "execution": "not-run",
+        "landing": "not-run",
+        "certifiable": False,
+        "target_ref": target_ref,
+        "target_ref_before": target_before,
+        "target_ref_after": target_after,
+        "target_ref_stable": target_stable,
+        "base_sha": generation.base_sha,
+        "synthetic_commit_sha": state.head,
+        "tree_sha": state.tree,
+        "accepted": state.accepted,
+        "conflicts": state.conflicts,
+        "accepted_candidate_ids": [item["candidate_id"] for item in state.accepted],
+        "conflicted_candidate_ids": [item["candidate_id"] for item in state.conflicts],
+        "differential_paths": differential_paths["paths"],
+        "differential_path_count": differential_paths["count"],
+        "differential_paths_truncated": differential_paths["truncated"],
+        "status": (
+            "stale-base"
+            if not target_stable
+            else "conflicted"
+            if state.conflicts
+            else "trial-merged"
+        ),
+        "stale_base": not target_stable,
+    }
+
+
 def _shadow_trial_merge(repo: Path, record: GenerationRecord) -> dict[str, Any]:
     """Classify one sealed generation with object-only Git operations.
 
@@ -950,129 +1143,197 @@ def _shadow_trial_merge(repo: Path, record: GenerationRecord) -> dict[str, Any]:
         target_after = _require_git(
             ["rev-parse", "--verify", f"{target_ref}^{{commit}}"], repo
         )
-        return {
-            "mode": "shadow",
-            "objects_only": True,
-            "execution": "not-run",
-            "landing": "not-run",
-            "certifiable": False,
-            "status": "stale-base",
-            "stale_base": True,
-            "target_ref": target_ref,
-            "target_ref_before": target_before,
-            "target_ref_after": target_after,
-            "target_ref_stable": target_before == target_after,
-            "base_sha": generation.base_sha,
-            "synthetic_commit_sha": "",
-            "tree_sha": "",
-            "accepted": [],
-            "conflicts": [],
-            "accepted_candidate_ids": [],
-            "conflicted_candidate_ids": [],
-            "differential_paths": [],
-            "differential_path_count": 0,
-            "differential_paths_truncated": False,
-        }
+        return _stale_base_shadow_result(
+            generation, target_ref, target_before, target_after
+        )
     head = generation.base_sha
     tree = _require_git(["rev-parse", f"{head}^{{tree}}"], repo)
-    differential: set[str] = set()
-    accepted: list[dict[str, Any]] = []
-    conflicts: list[dict[str, Any]] = []
+    state = _ShadowMergeState(head, tree)
 
     for member in record.members:
-        member_changed = changed_paths(repo, generation.base_sha, member.candidate_sha)
-        differential.update(member_changed)
-        trial = trial_merge(repo, head, member.candidate_sha)
-        member_identity = {
-            "candidate_id": member.candidate_id,
-            "version": member.version,
-            "branch": member.branch,
-            "candidate_sha": member.candidate_sha,
-        }
-        if not trial.ok:
-            conflict_paths = _bounded_shadow_paths(trial.conflicts)
-            member_paths = _bounded_shadow_paths(member_changed)
-            detail = _bounded_shadow_detail(trial.detail)
-            against = [
-                {
-                    "candidate_id": item["candidate_id"],
-                    "version": item["version"],
-                }
-                for item in accepted
-            ]
-            conflicts.append(
-                {
-                    **member_identity,
-                    "conflicts": conflict_paths["paths"],
-                    "conflict_count": conflict_paths["count"],
-                    "conflicts_truncated": conflict_paths["truncated"],
-                    **detail,
-                    "differential_paths": member_paths["paths"],
-                    "differential_path_count": member_paths["count"],
-                    "differential_paths_truncated": member_paths["truncated"],
-                    "conflict_against": {
-                        "kind": "rolling-synthetic-head",
-                        "members": against,
-                        "base_sha": generation.base_sha,
-                    },
-                }
-            )
-            continue
-
-        already_contained = (
-            member.candidate_sha == head
-            or _run_git(
-                ["merge-base", "--is-ancestor", member.candidate_sha, head], repo
-            ).ok
-        )
-        if already_contained:
-            tree = trial.tree or tree
-            accepted.append({**member_identity, "already_contained": True})
-            continue
-        head = _commit_shadow_trial(
-            repo,
-            trial.tree,
-            [head, member.candidate_sha],
-            f"shadow merge({member.lane_id}): {member.branch}",
-            sealed_at=sealed_at,
-        )
-        tree = trial.tree
-        accepted.append({**member_identity, "already_contained": False})
+        _process_shadow_member(repo, generation, state, member, sealed_at)
 
     target_after = _require_git(
         ["rev-parse", "--verify", f"{target_ref}^{{commit}}"], repo
     )
-    differential_paths = _bounded_shadow_paths(differential)
-    target_stable = target_before == target_after
-    return {
-        "mode": "shadow",
-        "objects_only": True,
-        "execution": "not-run",
-        "landing": "not-run",
-        "certifiable": False,
-        "target_ref": target_ref,
-        "target_ref_before": target_before,
-        "target_ref_after": target_after,
-        "target_ref_stable": target_stable,
-        "base_sha": generation.base_sha,
-        "synthetic_commit_sha": head,
-        "tree_sha": tree,
-        "accepted": accepted,
-        "conflicts": conflicts,
-        "accepted_candidate_ids": [item["candidate_id"] for item in accepted],
-        "conflicted_candidate_ids": [item["candidate_id"] for item in conflicts],
-        "differential_paths": differential_paths["paths"],
-        "differential_path_count": differential_paths["count"],
-        "differential_paths_truncated": differential_paths["truncated"],
-        "status": (
-            "stale-base"
-            if not target_stable
-            else "conflicted"
-            if conflicts
-            else "trial-merged"
-        ),
-        "stale_base": not target_stable,
+    return _shadow_trial_result(
+        generation, target_ref, target_before, target_after, state
+    )
+
+
+def _previous_snapshot_by_candidate(
+    folded_snapshots: Iterable[CandidateSnapshot],
+) -> dict[str, CandidateSnapshot]:
+    previous_by_candidate: dict[str, CandidateSnapshot] = {}
+    for snapshot in folded_snapshots:
+        previous = previous_by_candidate.get(snapshot.candidate_id)
+        if previous is None or snapshot.version > previous.version:
+            previous_by_candidate[snapshot.candidate_id] = snapshot
+    return previous_by_candidate
+
+
+@dataclass(frozen=True)
+class _ShadowSnapshotContext:
+    """Bundles the immutable inputs ``snapshot_branch_candidate`` needs.
+
+    Introduced purely to keep the extracted snapshot-loop helpers under the
+    7-parameter cap without threading nine near-constant values through each
+    signature by hand.
+    """
+
+    repository: RepositoryIdentity
+    target_branch: str
+    config_digest: str
+    toolchain_digest: str
+    resource_digest: str
+    build_target: str
+    concept_claims: Iterable[object]
+    incompatibility_labels: Iterable[object]
+    target: TargetPolicy | None
+
+
+def _snapshot_one_pending_candidate(
+    repo: Path,
+    ctx: _ShadowSnapshotContext,
+    candidate: Candidate,
+    previous_by_candidate: dict[str, CandidateSnapshot],
+) -> CandidateSnapshot:
+    def resolve_ref(ref: str) -> str:
+        return _require_git(["rev-parse", "--verify", f"{ref}^{{commit}}"], repo)
+
+    logical_id = candidate_identity(
+        ctx.repository.repository_id, candidate.branch, candidate.lane
+    )
+    try:
+        return snapshot_branch_candidate(
+            _SnapshotQueueCandidate(
+                branch=candidate.branch,
+                lane=candidate.lane,
+                base=candidate.base,
+                enqueued_at=candidate.enqueued_at,
+            ),
+            repository=ctx.repository,
+            resolve_ref=resolve_ref,
+            target_branch=ctx.target_branch,
+            config_digest=ctx.config_digest,
+            toolchain_digest=ctx.toolchain_digest,
+            resource_digest=ctx.resource_digest,
+            build_target=ctx.build_target,
+            concept_claims=ctx.concept_claims,
+            incompatibility_labels=ctx.incompatibility_labels,
+            target=ctx.target,
+            previous=previous_by_candidate.get(logical_id),
+        )
+    except (CandidateGenerationError, TypeError, ValueError) as exc:
+        raise MergeQueueError(
+            f"could not snapshot queued candidate {candidate.branch!r}: {exc}"
+        ) from exc
+
+
+def _snapshot_pending_candidates(
+    repo: Path,
+    scope: LaneScope,
+    ctx: _ShadowSnapshotContext,
+    target_branch: str,
+    previous_by_candidate: dict[str, CandidateSnapshot],
+) -> tuple[list[CandidateSnapshot], int]:
+    pending = [
+        candidate for candidate in queued(repo) if candidate.base == target_branch
+    ]
+    snapshots: list[CandidateSnapshot] = []
+    snapshot_appends = 0
+    for candidate in pending:
+        snapshot = _snapshot_one_pending_candidate(
+            repo, ctx, candidate, previous_by_candidate
+        )
+        snapshots.append(snapshot)
+        if _append_domain_record(snapshot, path=repo, lane=scope.lane):
+            snapshot_appends += 1
+    return snapshots, snapshot_appends
+
+
+def _canonicalize_snapshots(
+    repo: Path, snapshots: list[CandidateSnapshot]
+) -> list[CandidateSnapshot]:
+    """Replace each snapshot with the canonical stored record of the same ID.
+
+    A replay may construct the same immutable snapshot with a fresh
+    observation timestamp.  Continue with the canonical stored member so the
+    nested member record in a sealed generation is byte-stable as well.
+    """
+
+    try:
+        canonical_snapshots = {
+            item.record_id: item
+            for item in fold_candidate_records(_queue_raw_records(repo))
+        }
+    except CandidateGenerationError as exc:
+        raise MergeQueueError(str(exc)) from exc
+    return [canonical_snapshots[item.record_id] for item in snapshots]
+
+
+def _load_folded_records(
+    repo: Path,
+) -> tuple[list[CandidateSnapshot], list[GenerationRecord]]:
+    try:
+        return (
+            fold_candidate_records(_queue_raw_records(repo)),
+            fold_generation_records(_queue_raw_records(repo)),
+        )
+    except CandidateGenerationError as exc:
+        raise MergeQueueError(str(exc)) from exc
+
+
+def _select_shadow_batches(
+    snapshots: list[CandidateSnapshot],
+    current: datetime,
+    debounce: float | int | timedelta,
+    maximum_age: float | int | timedelta,
+    limit: int,
+) -> Any:
+    try:
+        return select_batches(
+            snapshots,
+            now=current,
+            debounce=debounce,
+            maximum_age=maximum_age,
+            batch_size=limit,
+            sealed_at=current,
+        )
+    except (CandidateGenerationError, TypeError, ValueError) as exc:
+        raise MergeQueueError(f"could not select a shadow generation: {exc}") from exc
+
+
+def _process_shadow_generation_batch(
+    repo: Path,
+    scope: LaneScope,
+    target: TargetPolicy | None,
+    selection_sealed_at: datetime,
+    batch: Any,
+    existing_generations: dict[str, GenerationRecord],
+) -> tuple[dict[str, Any], int]:
+    sealed = seal_generation(batch, sealed_at=selection_sealed_at, target=target)
+    generation = existing_generations.get(sealed.record_id, sealed)
+    appends = 0
+    if generation is sealed:
+        if _append_domain_record(generation, path=repo, lane=scope.lane):
+            appends += 1
+    result = _shadow_trial_merge(repo, generation)
+    result_time = selection_sealed_at + timedelta(microseconds=1)
+    updated = generation.with_update(
+        generation.generation,
+        result=result,
+        recorded_at=result_time,
+    )
+    if _append_domain_record(updated, path=repo, lane=scope.lane):
+        appends += 1
+    generation_result = {
+        "generation_id": generation.record_id,
+        "candidate_ids": [member.candidate_id for member in generation.members],
+        "versioned_members": [member.record_id for member in generation.members],
+        "result": result,
     }
+    return generation_result, appends
 
 
 def _shadow_generation_unlocked(
@@ -1110,110 +1371,35 @@ def _shadow_generation_unlocked(
         repository_id=repository_id_for(repo),
         canonical_path=str(repo.resolve()),
     )
-    try:
-        folded_snapshots = fold_candidate_records(_queue_raw_records(repo))
-        folded_generations = fold_generation_records(_queue_raw_records(repo))
-    except CandidateGenerationError as exc:
-        raise MergeQueueError(str(exc)) from exc
-    previous_by_candidate: dict[str, CandidateSnapshot] = {}
-    for snapshot in folded_snapshots:
-        previous = previous_by_candidate.get(snapshot.candidate_id)
-        if previous is None or snapshot.version > previous.version:
-            previous_by_candidate[snapshot.candidate_id] = snapshot
+    folded_snapshots, folded_generations = _load_folded_records(repo)
+    previous_by_candidate = _previous_snapshot_by_candidate(folded_snapshots)
     existing_generations = {item.record_id: item for item in folded_generations}
 
-    pending = [
-        candidate for candidate in queued(repo) if candidate.base == target_branch
-    ]
-    snapshots: list[CandidateSnapshot] = []
-    snapshot_appends = 0
-
-    def resolve_ref(ref: str) -> str:
-        return _require_git(["rev-parse", "--verify", f"{ref}^{{commit}}"], repo)
-
-    for candidate in pending:
-        logical_id = candidate_identity(
-            repository.repository_id, candidate.branch, candidate.lane
-        )
-        try:
-            snapshot = snapshot_branch_candidate(
-                _SnapshotQueueCandidate(
-                    branch=candidate.branch,
-                    lane=candidate.lane,
-                    base=candidate.base,
-                    enqueued_at=candidate.enqueued_at,
-                ),
-                repository=repository,
-                resolve_ref=resolve_ref,
-                target_branch=target_branch,
-                config_digest=config_digest,
-                toolchain_digest=toolchain_digest,
-                resource_digest=resource_digest,
-                build_target=build_target,
-                concept_claims=concept_claims,
-                incompatibility_labels=incompatibility_labels,
-                target=target,
-                previous=previous_by_candidate.get(logical_id),
-            )
-        except (CandidateGenerationError, TypeError, ValueError) as exc:
-            raise MergeQueueError(
-                f"could not snapshot queued candidate {candidate.branch!r}: {exc}"
-            ) from exc
-        snapshots.append(snapshot)
-        if _append_domain_record(snapshot, path=repo, lane=scope.lane):
-            snapshot_appends += 1
-
-    # A replay may construct the same immutable snapshot with a fresh
-    # observation timestamp.  Continue with the canonical stored member so the
-    # nested member record in a sealed generation is byte-stable as well.
-    try:
-        canonical_snapshots = {
-            item.record_id: item
-            for item in fold_candidate_records(_queue_raw_records(repo))
-        }
-    except CandidateGenerationError as exc:
-        raise MergeQueueError(str(exc)) from exc
-    snapshots = [canonical_snapshots[item.record_id] for item in snapshots]
-
-    try:
-        selection = select_batches(
-            snapshots,
-            now=current,
-            debounce=debounce,
-            maximum_age=maximum_age,
-            batch_size=limit,
-            sealed_at=current,
-        )
-    except (CandidateGenerationError, TypeError, ValueError) as exc:
-        raise MergeQueueError(f"could not select a shadow generation: {exc}") from exc
+    snapshot_ctx = _ShadowSnapshotContext(
+        repository=repository,
+        target_branch=target_branch,
+        config_digest=config_digest,
+        toolchain_digest=toolchain_digest,
+        resource_digest=resource_digest,
+        build_target=build_target,
+        concept_claims=concept_claims,
+        incompatibility_labels=incompatibility_labels,
+        target=target,
+    )
+    snapshots, snapshot_appends = _snapshot_pending_candidates(
+        repo, scope, snapshot_ctx, target_branch, previous_by_candidate
+    )
+    snapshots = _canonicalize_snapshots(repo, snapshots)
+    selection = _select_shadow_batches(snapshots, current, debounce, maximum_age, limit)
 
     generation_results: list[dict[str, Any]] = []
     generation_appends = 0
     for batch in selection.batches:
-        sealed = seal_generation(batch, sealed_at=selection.sealed_at, target=target)
-        generation = existing_generations.get(sealed.record_id, sealed)
-        if generation is sealed:
-            if _append_domain_record(generation, path=repo, lane=scope.lane):
-                generation_appends += 1
-        result = _shadow_trial_merge(repo, generation)
-        result_time = selection.sealed_at + timedelta(microseconds=1)
-        updated = generation.with_update(
-            generation.generation,
-            result=result,
-            recorded_at=result_time,
+        generation_result, appends = _process_shadow_generation_batch(
+            repo, scope, target, selection.sealed_at, batch, existing_generations
         )
-        if _append_domain_record(updated, path=repo, lane=scope.lane):
-            generation_appends += 1
-        generation_results.append(
-            {
-                "generation_id": generation.record_id,
-                "candidate_ids": [member.candidate_id for member in generation.members],
-                "versioned_members": [
-                    member.record_id for member in generation.members
-                ],
-                "result": result,
-            }
-        )
+        generation_appends += appends
+        generation_results.append(generation_result)
 
     return {
         "repo": repo.name,
@@ -1384,6 +1570,16 @@ def _timed_run(argv: list[str], cwd: Path, *, timeout: int, env: dict) -> tuple:
     return proc, time.monotonic() - start
 
 
+def _filter_kept_lines(lines: list[str], patterns: tuple[str, ...]) -> list[str]:
+    keep = [re.compile(p) for p in patterns]
+    return [ln for ln in lines if any(p.search(ln) for p in keep)]
+
+
+def _filter_dropped_lines(lines: list[str], patterns: tuple[str, ...]) -> list[str]:
+    drop = [re.compile(p) for p in patterns]
+    return [ln for ln in lines if not any(p.search(ln) for p in drop)]
+
+
 def _normalized_lines(text: str, tree: Path, gate: GateSpec) -> frozenset[str]:
     """Comparable output lines from a gate run.
 
@@ -1397,11 +1593,9 @@ def _normalized_lines(text: str, tree: Path, gate: GateSpec) -> frozenset[str]:
     body = _ANSI.sub("", text).replace(str(tree), "<tree>")
     lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
     if gate.keep_lines:
-        keep = [re.compile(p) for p in gate.keep_lines]
-        lines = [ln for ln in lines if any(p.search(ln) for p in keep)]
+        lines = _filter_kept_lines(lines, gate.keep_lines)
     if gate.ignore_lines:
-        drop = [re.compile(p) for p in gate.ignore_lines]
-        lines = [ln for ln in lines if not any(p.search(ln) for p in drop)]
+        lines = _filter_dropped_lines(lines, gate.ignore_lines)
     return frozenset(lines)
 
 
@@ -1663,6 +1857,132 @@ def refuse_precommit_on_dirty_tree(tree: Path, gate: GateSpec) -> str:
     return ""
 
 
+def _fmt(label: str, items: list[str], limit: int = 25) -> str:
+    shown = "\n  ".join(items[:limit])
+    more = f"\n  (+{len(items) - limit} more)" if len(items) > limit else ""
+    return f"{len(items)} {label}:\n  {shown}{more}"
+
+
+def _compare_exit_gate(
+    gate: GateSpec, proc: Any, baseline: GateBaseline, seconds: float, base_label: str
+) -> Check:
+    if baseline.ok:
+        return Check(
+            gate.name,
+            ok=False,
+            seconds=seconds,
+            detail=(
+                f"NEW failure not present on {base_label} (exit {proc.returncode}; "
+                f"compare=exit gives no itemized signal to diff):\n"
+                + (proc.stderr or proc.stdout).strip()[:1500]
+            ),
+        )
+    return Check(
+        gate.name,
+        ok=True,
+        seconds=seconds,
+        detail=(
+            f"non-clean on {base_label} too (exit {proc.returncode}); compare=exit "
+            "allows it at script granularity — pre-existing, reported, NOT silent"
+        ),
+    )
+
+
+def _new_signal_check(
+    gate: GateSpec,
+    proc: Any,
+    seconds: float,
+    merged: frozenset[str],
+    baseline: GateBaseline,
+    base_label: str,
+) -> Check | None:
+    if not merged and proc.returncode != 0 and baseline.ok:
+        # Non-zero exit with nothing itemized to compare, and the base was clean:
+        # unambiguously new. Falling through to "no new signals -> pass" here
+        # would let a gate fail silently whenever its output shape changed.
+        return Check(
+            gate.name,
+            ok=False,
+            seconds=seconds,
+            detail=(
+                f"exited {proc.returncode} on the merged tree with no comparable "
+                f"output, and was clean on {base_label} — refused as a NEW failure. "
+                f"(If this gate reports failure without itemized output, declare "
+                f"compare: exit.)\n" + (proc.stderr or proc.stdout).strip()[:1500]
+            ),
+        )
+    return None
+
+
+def _new_signals_result(
+    gate: GateSpec,
+    seconds: float,
+    new: list[str],
+    pre_existing: list[str],
+    fixed: list[str],
+    base_label: str,
+) -> Check:
+    detail = _fmt(f"NEW signal(s) not present on {base_label}", new)
+    if pre_existing:
+        detail += "\n" + _fmt(
+            f"pre-existing on {base_label} (not blocking)", pre_existing
+        )
+    if fixed:
+        detail += "\n" + _fmt(f"FIXED relative to {base_label}", fixed)
+    return Check(gate.name, ok=False, seconds=seconds, detail=detail)
+
+
+def _clean_signals_result(
+    gate: GateSpec,
+    proc: Any,
+    seconds: float,
+    pre_existing: list[str],
+    fixed: list[str],
+    base_label: str,
+) -> Check:
+    parts: list[str] = []
+    if pre_existing:
+        # Allowed, but reported explicitly with counts, so a pass over a red base
+        # can never read as a silent success. This is not a masking mechanism.
+        parts.append(
+            _fmt(
+                f"pre-existing on {base_label} (allowed — not caused here)",
+                pre_existing,
+            )
+        )
+    if fixed:
+        parts.append(_fmt(f"FIXED relative to {base_label}", fixed))
+    return Check(
+        gate.name,
+        ok=True,
+        seconds=seconds,
+        detail="\n".join(parts) or f"clean (exit {proc.returncode})",
+    )
+
+
+def _compare_signal_gate(
+    gate: GateSpec,
+    proc: Any,
+    tree: Path,
+    baseline: GateBaseline,
+    seconds: float,
+    base_label: str,
+) -> Check:
+    merged = _signals(proc, tree, gate)
+    new = sorted(merged - baseline.signals)
+    pre_existing = sorted(merged & baseline.signals)
+    fixed = sorted(baseline.signals - merged)
+
+    early = _new_signal_check(gate, proc, seconds, merged, baseline, base_label)
+    if early is not None:
+        return early
+
+    if new:
+        return _new_signals_result(gate, seconds, new, pre_existing, fixed, base_label)
+
+    return _clean_signals_result(gate, proc, seconds, pre_existing, fixed, base_label)
+
+
 def _compare_gate(
     gate: GateSpec, proc: Any, tree: Path, baseline: GateBaseline, seconds: float
 ) -> Check:
@@ -1696,95 +2016,11 @@ def _compare_gate(
     base_label = f"base ({baseline.base_sha[:12]})"
 
     if gate.compare == "exit":
-        if baseline.ok:
-            return Check(
-                gate.name,
-                ok=False,
-                seconds=seconds,
-                detail=(
-                    f"NEW failure not present on {base_label} (exit {proc.returncode}; "
-                    f"compare=exit gives no itemized signal to diff):\n"
-                    + (proc.stderr or proc.stdout).strip()[:1500]
-                ),
-            )
-        return Check(
-            gate.name,
-            ok=True,
-            seconds=seconds,
-            detail=(
-                f"non-clean on {base_label} too (exit {proc.returncode}); compare=exit "
-                "allows it at script granularity — pre-existing, reported, NOT silent"
-            ),
-        )
-
-    merged = _signals(proc, tree, gate)
-    new = sorted(merged - baseline.signals)
-    pre_existing = sorted(merged & baseline.signals)
-    fixed = sorted(baseline.signals - merged)
-
-    if not merged and proc.returncode != 0 and baseline.ok:
-        # Non-zero exit with nothing itemized to compare, and the base was clean:
-        # unambiguously new. Falling through to "no new signals -> pass" here
-        # would let a gate fail silently whenever its output shape changed.
-        return Check(
-            gate.name,
-            ok=False,
-            seconds=seconds,
-            detail=(
-                f"exited {proc.returncode} on the merged tree with no comparable "
-                f"output, and was clean on {base_label} — refused as a NEW failure. "
-                f"(If this gate reports failure without itemized output, declare "
-                f"compare: exit.)\n" + (proc.stderr or proc.stdout).strip()[:1500]
-            ),
-        )
-
-    def _fmt(label: str, items: list[str], limit: int = 25) -> str:
-        shown = "\n  ".join(items[:limit])
-        more = f"\n  (+{len(items) - limit} more)" if len(items) > limit else ""
-        return f"{len(items)} {label}:\n  {shown}{more}"
-
-    if new:
-        detail = _fmt(f"NEW signal(s) not present on {base_label}", new)
-        if pre_existing:
-            detail += "\n" + _fmt(
-                f"pre-existing on {base_label} (not blocking)", pre_existing
-            )
-        if fixed:
-            detail += "\n" + _fmt(f"FIXED relative to {base_label}", fixed)
-        return Check(gate.name, ok=False, seconds=seconds, detail=detail)
-
-    parts: list[str] = []
-    if pre_existing:
-        # Allowed, but reported explicitly with counts, so a pass over a red base
-        # can never read as a silent success. This is not a masking mechanism.
-        parts.append(
-            _fmt(
-                f"pre-existing on {base_label} (allowed — not caused here)",
-                pre_existing,
-            )
-        )
-    if fixed:
-        parts.append(_fmt(f"FIXED relative to {base_label}", fixed))
-    return Check(
-        gate.name,
-        ok=True,
-        seconds=seconds,
-        detail="\n".join(parts) or f"clean (exit {proc.returncode})",
-    )
+        return _compare_exit_gate(gate, proc, baseline, seconds, base_label)
+    return _compare_signal_gate(gate, proc, tree, baseline, seconds, base_label)
 
 
-def run_gate(
-    gate: GateSpec,
-    tree: Path,
-    *,
-    repo: Path,
-    base_ref: str,
-    scope: LaneScope,
-    config: QueueConfig,
-    changed: list[str],
-    env: dict[str, str],
-) -> Check:
-    """Run one declared gate against the MERGED tree and judge it against the base."""
+def _when_changed_skip(gate: GateSpec, changed: list[str]) -> Check | None:
     if gate.when_changed and not any(
         fnmatch.fnmatch(p, pattern) for p in changed for pattern in gate.when_changed
     ):
@@ -1794,11 +2030,10 @@ def run_gate(
             seconds=0.0,
             detail=f"no changed path matches when_changed={list(gate.when_changed)}",
         )
-    refusal = refuse_precommit_on_dirty_tree(tree, gate)
-    if refusal:
-        return Check(gate.name, ok=False, seconds=0.0, detail=refusal)
+    return None
 
-    proc, seconds = _timed_run(list(gate.command), tree, timeout=gate.timeout, env=env)
+
+def _execution_failure_check(gate: GateSpec, proc: Any, seconds: float) -> Check | None:
     if proc is None:
         deferred = gate.on_timeout == "defer"
         return Check(
@@ -1826,6 +2061,10 @@ def run_gate(
                 "cannot run is refused, never assumed clean"
             ),
         )
+    return None
+
+
+def _unreadable_pytest_check(gate: GateSpec, proc: Any, seconds: float) -> Check | None:
     if (
         gate.compare == "pytest-ids"
         and proc.returncode not in _PYTEST_READABLE_EXIT_CODES
@@ -1843,6 +2082,35 @@ def run_gate(
                 "base\n" + proc.stdout[-2000:] + "\n" + proc.stderr[-1000:]
             ),
         )
+    return None
+
+
+def run_gate(
+    gate: GateSpec,
+    tree: Path,
+    *,
+    repo: Path,
+    base_ref: str,
+    scope: LaneScope,
+    config: QueueConfig,
+    changed: list[str],
+    env: dict[str, str],
+) -> Check:
+    """Run one declared gate against the MERGED tree and judge it against the base."""
+    skip = _when_changed_skip(gate, changed)
+    if skip is not None:
+        return skip
+    refusal = refuse_precommit_on_dirty_tree(tree, gate)
+    if refusal:
+        return Check(gate.name, ok=False, seconds=0.0, detail=refusal)
+
+    proc, seconds = _timed_run(list(gate.command), tree, timeout=gate.timeout, env=env)
+    early = _execution_failure_check(gate, proc, seconds)
+    if early is not None:
+        return early
+    early = _unreadable_pytest_check(gate, proc, seconds)
+    if early is not None:
+        return early
     if proc.returncode == 0 and gate.compare != "lines":
         return Check(gate.name, ok=True, seconds=seconds, detail="clean")
 
@@ -2109,6 +2377,119 @@ def _worktrees_holding(repo: Path, base: str) -> list[str]:
     return holders
 
 
+@dataclass(frozen=True)
+class _LandContext:
+    """Bundles the values ``land``'s phases all need.
+
+    Introduced purely to keep the extracted phases under the 7-parameter cap
+    without threading canonical/repo/ref/base/commit/current/
+    canonical_on_base/git through each signature by hand.
+    """
+
+    canonical: Path
+    repo: Path
+    ref: str
+    base: str
+    commit: str
+    current: str
+    canonical_on_base: bool
+    git: Any
+
+
+def _land_already_current_result(ctx: _LandContext) -> dict[str, Any]:
+    push = _push_landed_base(
+        ctx.canonical,
+        base=ctx.base,
+        canonical_on_base=ctx.canonical_on_base,
+        git=ctx.git,
+    )
+    return {
+        "base": ctx.base,
+        "ref": ctx.ref,
+        "from": ctx.current,
+        "to": ctx.commit,
+        "method": "already-current",
+        **push,
+    }
+
+
+def _verify_fast_forward_possible(ctx: _LandContext) -> None:
+    if not _run_git(
+        ["merge-base", "--is-ancestor", ctx.current, ctx.commit], ctx.repo
+    ).ok:
+        raise MergeQueueError(
+            f"refusing to land: {ctx.commit[:12]} is not a descendant of {ctx.ref} "
+            f"({ctx.current[:12]}), so advancing it would not be a fast-forward — "
+            f"{ctx.base} moved after the batch was built; the candidates stay "
+            "queued and the next run rebuilds against it"
+        )
+
+
+def _write_land_ref(ctx: _LandContext, holders: list[str]) -> str:
+    """Move the base ref to ``ctx.commit``; return the method used.
+
+    Raises :class:`MergeQueueError` if the write is refused. Must be called
+    from inside the same guarded-tree-mutation scope ``land`` already holds.
+    """
+
+    if ctx.canonical_on_base:
+        method = "merge --ff-only (canonical is on the base)"
+        if ctx.git is not None:
+            with guarded_canonical_mutation(
+                ctx.git,
+                str(ctx.canonical),
+                ctx.canonical.name,
+                f"fast-forward {ctx.base}",
+            ) as blocked:
+                if blocked is not None:
+                    raise MergeQueueError(
+                        f"canonical checkout refused the fast-forward: "
+                        f"{blocked.get('error')} — the candidates stay queued"
+                    )
+                res = _run_git(["merge", "--ff-only", ctx.commit], ctx.canonical)
+        else:
+            res = _run_git(["merge", "--ff-only", ctx.commit], ctx.canonical)
+    elif holders:
+        # Someone else's tree is ON this branch. Moving the ref out from
+        # under it would desync their index and working tree — the same
+        # class of harm as resetting a canonical checkout mid-work.
+        raise MergeQueueError(
+            f"refusing to land on {ctx.base}: it is checked out in "
+            f"{', '.join(holders)}, and advancing the ref would leave that "
+            "working tree inconsistent with its own HEAD. The candidates stay "
+            "queued; free the branch or land from that tree."
+        )
+    else:
+        # Compare-and-swap: the expected-old argument makes this atomic
+        # against a concurrent writer — if anything moved the ref since it
+        # was read, git refuses rather than clobbering.
+        method = "update-ref CAS (canonical is not on the base)"
+        res = _run_git(["update-ref", ctx.ref, ctx.commit, ctx.current], ctx.repo)
+    if not res.ok:
+        raise MergeQueueError(
+            f"advancing {ctx.ref} to {ctx.commit[:12]} refused by git: "
+            f"{res.err or res.out} — {ctx.base} moved after the batch was built; "
+            "the candidates stay queued and the next run rebuilds against it"
+        )
+    return method
+
+
+def _verify_land_postcondition(ctx: _LandContext) -> None:
+    # ★ THE POST-CONDITION (D-RMD-1's durable half). Re-read the ref and
+    # prove it holds the object we computed, BEFORE anyone reports `landed`
+    # and before the guarded prune deletes a branch on the strength of it.
+    after = _run_git(["rev-parse", "--verify", "--quiet", ctx.ref], ctx.repo)
+    if not after.ok or after.out != ctx.commit:
+        raise MergeQueueError(
+            f"POST-CONDITION FAILED: {ctx.ref} is {after.out[:12] or '<unreadable>'} "
+            f"after the write, not the computed {ctx.commit[:12]} (it was "
+            f"{ctx.current[:12]} before). NOTHING is reported as landed and no "
+            "branch is pruned — a queue that says `landed` without proving the "
+            "ref moved manufactures confidence and then deletes the evidence "
+            "(D-RMD-1). The candidates stay queued."
+        )
+
+
 def land(
     repo: Path, commit: str, *, base: str, scope: LaneScope, git: Any = None
 ) -> dict[str, Any]:
@@ -2183,81 +2564,27 @@ def land(
     current = before.out
     head = _run_git(["symbolic-ref", "--quiet", "HEAD"], canonical)
     canonical_on_base = head.ok and head.out.strip() == ref
+    ctx = _LandContext(
+        canonical=canonical,
+        repo=repo,
+        ref=ref,
+        base=base,
+        commit=commit,
+        current=current,
+        canonical_on_base=canonical_on_base,
+        git=git,
+    )
     if current == commit:
-        push = _push_landed_base(
-            canonical, base=base, canonical_on_base=canonical_on_base, git=git
-        )
-        return {
-            "base": base,
-            "ref": ref,
-            "from": current,
-            "to": commit,
-            "method": "already-current",
-            **push,
-        }
-    if not _run_git(["merge-base", "--is-ancestor", current, commit], repo).ok:
-        raise MergeQueueError(
-            f"refusing to land: {commit[:12]} is not a descendant of {ref} "
-            f"({current[:12]}), so advancing it would not be a fast-forward — "
-            f"{base} moved after the batch was built; the candidates stay queued "
-            "and the next run rebuilds against it"
-        )
+        return _land_already_current_result(ctx)
+    _verify_fast_forward_possible(ctx)
 
     holders = [h for h in _worktrees_holding(repo, base) if Path(h) != canonical]
 
     with guarded_tree_mutation(
         canonical, operation=f"land merge-queue batch onto {base}", owner=scope.lane
     ):
-        if canonical_on_base:
-            method = "merge --ff-only (canonical is on the base)"
-            if git is not None:
-                with guarded_canonical_mutation(
-                    git, str(canonical), canonical.name, f"fast-forward {base}"
-                ) as blocked:
-                    if blocked is not None:
-                        raise MergeQueueError(
-                            f"canonical checkout refused the fast-forward: "
-                            f"{blocked.get('error')} — the candidates stay queued"
-                        )
-                    res = _run_git(["merge", "--ff-only", commit], canonical)
-            else:
-                res = _run_git(["merge", "--ff-only", commit], canonical)
-        elif holders:
-            # Someone else's tree is ON this branch. Moving the ref out from
-            # under it would desync their index and working tree — the same
-            # class of harm as resetting a canonical checkout mid-work.
-            raise MergeQueueError(
-                f"refusing to land on {base}: it is checked out in "
-                f"{', '.join(holders)}, and advancing the ref would leave that "
-                "working tree inconsistent with its own HEAD. The candidates stay "
-                "queued; free the branch or land from that tree."
-            )
-        else:
-            # Compare-and-swap: the expected-old argument makes this atomic
-            # against a concurrent writer — if anything moved the ref since it
-            # was read, git refuses rather than clobbering.
-            method = "update-ref CAS (canonical is not on the base)"
-            res = _run_git(["update-ref", ref, commit, current], repo)
-        if not res.ok:
-            raise MergeQueueError(
-                f"advancing {ref} to {commit[:12]} refused by git: "
-                f"{res.err or res.out} — {base} moved after the batch was built; the "
-                "candidates stay queued and the next run rebuilds against it"
-            )
-
-        # ★ THE POST-CONDITION (D-RMD-1's durable half). Re-read the ref and
-        # prove it holds the object we computed, BEFORE anyone reports `landed`
-        # and before the guarded prune deletes a branch on the strength of it.
-        after = _run_git(["rev-parse", "--verify", "--quiet", ref], repo)
-        if not after.ok or after.out != commit:
-            raise MergeQueueError(
-                f"POST-CONDITION FAILED: {ref} is {after.out[:12] or '<unreadable>'} "
-                f"after the write, not the computed {commit[:12]} (it was "
-                f"{current[:12]} before). NOTHING is reported as landed and no "
-                "branch is pruned — a queue that says `landed` without proving the "
-                "ref moved manufactures confidence and then deletes the evidence "
-                "(D-RMD-1). The candidates stay queued."
-            )
+        method = _write_land_ref(ctx, holders)
+        _verify_land_postcondition(ctx)
     # Push AFTER the guarded block has released its lease — push_project takes
     # its own (in-process, re-entrant-safe but unnecessary to nest) mutation
     # lock, and pushing a ref is not a tree mutation the canonical-checkout
@@ -2394,6 +2721,103 @@ def _build_chain(
     return head, accepted, conflicted
 
 
+def _conflict_outcomes(
+    base: str, conflicted: list[tuple[Candidate, TrialMerge]]
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "branch": c.branch,
+            "landed": False,
+            "reason": (
+                f"conflicts with the current {base} in: "
+                f"{', '.join(t.conflicts) or 'unreported paths'} — sync {base} down "
+                f"into {c.branch}, resolve there, then re-enqueue"
+            ),
+            "conflicts": t.conflicts,
+        }
+        for c, t in conflicted
+    ]
+
+
+def _run_batch_gate(
+    repo: Path,
+    head: str,
+    base: str,
+    scope: LaneScope,
+    config: QueueConfig,
+    accepted: list[Candidate],
+) -> Any:
+    changed = sorted({p for c in accepted for p in changed_paths(repo, base, c.branch)})
+    base_config = config_at_ref(repo, base)
+    with materialized(repo, head, scope=scope) as tree:
+        merged_config = load_config(tree)
+        return run_fast_gates(
+            tree,
+            repo=repo,
+            base_ref=base,
+            scope=scope,
+            config=merged_config,
+            base_config=base_config,
+            changed=changed,
+        )
+
+
+def _landed_outcomes(
+    accepted: list[Candidate], gate: Any, landing: dict[str, Any]
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "branch": c.branch,
+            "landed": True,
+            "batch_size": len(accepted),
+            "gate": gate.as_dict(),
+            **landing,
+        }
+        for c in accepted
+    ]
+
+
+def _single_failure_outcome(candidate: Candidate, gate: Any) -> dict[str, Any]:
+    return {
+        "branch": candidate.branch,
+        "landed": False,
+        "reason": "; ".join(
+            f"{c.name}: {c.detail.splitlines()[0] if c.detail else 'failed'}"
+            for c in gate.failures()
+        ),
+        "gate": gate.as_dict(),
+    }
+
+
+def _bisect_outcomes(
+    accepted: list[Candidate],
+    *,
+    base: str,
+    scope: LaneScope,
+    config: QueueConfig,
+    git: Any,
+    depth: int,
+) -> list[dict[str, Any]]:
+    middle = len(accepted) // 2
+    outcomes = integrate_batch(
+        accepted[:middle],
+        base=base,
+        scope=scope,
+        config=config,
+        git=git,
+        depth=depth + 1,
+    )
+    outcomes += integrate_batch(
+        accepted[middle:],
+        base=base,
+        scope=scope,
+        config=config,
+        git=git,
+        depth=depth + 1,
+    )
+    return outcomes
+
+
 def integrate_batch(
     candidates: list[Candidate],
     *,
@@ -2421,81 +2845,124 @@ def integrate_batch(
     head, accepted, conflicted = _build_chain(
         repo, base, candidates, scope=scope, config=config
     )
-    outcomes: list[dict[str, Any]] = [
-        {
-            "branch": c.branch,
-            "landed": False,
-            "reason": (
-                f"conflicts with the current {base} in: "
-                f"{', '.join(t.conflicts) or 'unreported paths'} — sync {base} down "
-                f"into {c.branch}, resolve there, then re-enqueue"
-            ),
-            "conflicts": t.conflicts,
-        }
-        for c, t in conflicted
-    ]
+    outcomes: list[dict[str, Any]] = _conflict_outcomes(base, conflicted)
     if not accepted:
         return outcomes
 
-    changed = sorted({p for c in accepted for p in changed_paths(repo, base, c.branch)})
-    base_config = config_at_ref(repo, base)
-    with materialized(repo, head, scope=scope) as tree:
-        merged_config = load_config(tree)
-        gate = run_fast_gates(
-            tree,
-            repo=repo,
-            base_ref=base,
-            scope=scope,
-            config=merged_config,
-            base_config=base_config,
-            changed=changed,
-        )
+    gate = _run_batch_gate(repo, head, base, scope, config, accepted)
 
     if gate.ok:
         landing = land(repo, head, base=base, scope=scope, git=git)
-        return outcomes + [
-            {
-                "branch": c.branch,
-                "landed": True,
-                "batch_size": len(accepted),
-                "gate": gate.as_dict(),
-                **landing,
-            }
-            for c in accepted
-        ]
+        return outcomes + _landed_outcomes(accepted, gate, landing)
 
     if len(accepted) == 1:
-        outcomes.append(
-            {
-                "branch": accepted[0].branch,
-                "landed": False,
-                "reason": "; ".join(
-                    f"{c.name}: {c.detail.splitlines()[0] if c.detail else 'failed'}"
-                    for c in gate.failures()
-                ),
-                "gate": gate.as_dict(),
-            }
-        )
+        outcomes.append(_single_failure_outcome(accepted[0], gate))
         return outcomes
 
-    middle = len(accepted) // 2
-    outcomes += integrate_batch(
-        accepted[:middle],
-        base=base,
-        scope=scope,
-        config=config,
-        git=git,
-        depth=depth + 1,
-    )
-    outcomes += integrate_batch(
-        accepted[middle:],
-        base=base,
-        scope=scope,
-        config=config,
-        git=git,
-        depth=depth + 1,
+    outcomes += _bisect_outcomes(
+        accepted, base=base, scope=scope, config=config, git=git, depth=depth
     )
     return outcomes
+
+
+def _verify_base_exists(repo: Path, base: str, config: QueueConfig) -> None:
+    # Refuse a non-existent base ONCE, here, with the reason — rather than
+    # letting it surface as a raw `git rev-parse ... ambiguous argument` from
+    # deep inside the chain builder. Both refuse (there is no fallback to HEAD;
+    # that fallback IS D-RMD-1), but only one of them tells the caller what to do.
+    probe = _run_git(["rev-parse", "--verify", "--quiet", _base_ref(base)], repo)
+    if not probe.ok or not probe.out:
+        raise MergeQueueError(
+            f"refusing to drain the {repo.name} queue: the declared base ref "
+            f"{_base_ref(base)!r} does not exist. Check `base:` in "
+            f"{config.source} (or --queue-base). The queue never falls back to "
+            "whatever HEAD happens to be — that fallback reported `landed` while "
+            "the base never moved (D-RMD-1)."
+        )
+
+
+def _resolve_git_client(git: Any, repo: Path) -> Any:
+    if git is not None:
+        return git
+    from repository_manager.repository_manager import Git
+
+    return Git(path=str(repo.parent))
+
+
+def _record_batch_outcome(
+    outcome: dict[str, Any],
+    by_branch: dict[str, Candidate],
+    scope: LaneScope,
+    repo: Path,
+    base: str,
+    git: Any,
+    prune: bool,
+) -> None:
+    candidate = by_branch.get(outcome["branch"])
+    if candidate is None:
+        return
+    if outcome["landed"]:
+        # `landed` and `pushed` are deliberately distinct, honest fields
+        # (D-W3WPS-3) -- record push status in `reason` too so it stays
+        # visible durably via `status`/`queue_report`'s "recent" list,
+        # not only in this one-time `run` response.
+        landed_reason = (
+            "pushed"
+            if outcome.get("pushed")
+            else f"landed, NOT pushed: {outcome.get('push_error', 'unknown')}"
+        )
+        _record_state(candidate, LANDED, landed_reason, scope.tree)
+        if prune:
+            outcome["prune"] = prune_landed(candidate, repo=repo, base=base, git=git)
+    else:
+        _record_state(candidate, REJECTED, outcome["reason"], scope.tree)
+
+
+def _drain_batch_under_lease(
+    scope: LaneScope,
+    repo: Path,
+    base: str,
+    batch_size: int,
+    config: QueueConfig,
+    git: Any,
+    prune: bool,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    with hold_lease(
+        MERGE_LEASE, operation=f"drain the {repo.name} merge queue", path=scope.tree
+    ):
+        batch = queued(scope.tree)[:batch_size]
+        if not batch:
+            return None, {
+                "repo": repo.name,
+                "drained": 0,
+                "outcomes": [],
+                "seconds": 0.0,
+            }
+        by_branch = {c.branch: c for c in batch}
+        outcomes = integrate_batch(
+            batch, base=base, scope=scope, config=config, git=git
+        )
+        for outcome in outcomes:
+            _record_batch_outcome(outcome, by_branch, scope, repo, base, git, prune)
+    return outcomes, None
+
+
+def _run_queue_summary(
+    repo: Path, config: QueueConfig, outcomes: list[dict[str, Any]], started: float
+) -> dict[str, Any]:
+    return {
+        "repo": repo.name,
+        "config": config.source,
+        "drained": len(outcomes),
+        "landed": sum(1 for o in outcomes if o["landed"]),
+        "rejected": sum(1 for o in outcomes if not o["landed"]),
+        "pushed": sum(1 for o in outcomes if o.get("pushed")),
+        "landed_unpushed": sum(
+            1 for o in outcomes if o["landed"] and not o.get("pushed")
+        ),
+        "outcomes": outcomes,
+        "seconds": round(time.monotonic() - started, 2),
+    }
 
 
 def run_queue(
@@ -2519,69 +2986,15 @@ def run_queue(
     config = _repo_config(scope)
     base = base or config.base
     batch_size = batch_size or config.batch_size
-    if git is None:
-        from repository_manager.repository_manager import Git
-
-        git = Git(path=str(repo.parent))
-
-    # Refuse a non-existent base ONCE, here, with the reason — rather than
-    # letting it surface as a raw `git rev-parse ... ambiguous argument` from
-    # deep inside the chain builder. Both refuse (there is no fallback to HEAD;
-    # that fallback IS D-RMD-1), but only one of them tells the caller what to do.
-    probe = _run_git(["rev-parse", "--verify", "--quiet", _base_ref(base)], repo)
-    if not probe.ok or not probe.out:
-        raise MergeQueueError(
-            f"refusing to drain the {repo.name} queue: the declared base ref "
-            f"{_base_ref(base)!r} does not exist. Check `base:` in "
-            f"{config.source} (or --queue-base). The queue never falls back to "
-            "whatever HEAD happens to be — that fallback reported `landed` while "
-            "the base never moved (D-RMD-1)."
-        )
+    git = _resolve_git_client(git, repo)
+    _verify_base_exists(repo, base, config)
     started = time.monotonic()
-    with hold_lease(
-        MERGE_LEASE, operation=f"drain the {repo.name} merge queue", path=scope.tree
-    ):
-        batch = queued(scope.tree)[:batch_size]
-        if not batch:
-            return {"repo": repo.name, "drained": 0, "outcomes": [], "seconds": 0.0}
-        by_branch = {c.branch: c for c in batch}
-        outcomes = integrate_batch(
-            batch, base=base, scope=scope, config=config, git=git
-        )
-        for outcome in outcomes:
-            candidate = by_branch.get(outcome["branch"])
-            if candidate is None:
-                continue
-            if outcome["landed"]:
-                # `landed` and `pushed` are deliberately distinct, honest fields
-                # (D-W3WPS-3) -- record push status in `reason` too so it stays
-                # visible durably via `status`/`queue_report`'s "recent" list,
-                # not only in this one-time `run` response.
-                landed_reason = (
-                    "pushed"
-                    if outcome.get("pushed")
-                    else f"landed, NOT pushed: {outcome.get('push_error', 'unknown')}"
-                )
-                _record_state(candidate, LANDED, landed_reason, scope.tree)
-                if prune:
-                    outcome["prune"] = prune_landed(
-                        candidate, repo=repo, base=base, git=git
-                    )
-            else:
-                _record_state(candidate, REJECTED, outcome["reason"], scope.tree)
-    return {
-        "repo": repo.name,
-        "config": config.source,
-        "drained": len(outcomes),
-        "landed": sum(1 for o in outcomes if o["landed"]),
-        "rejected": sum(1 for o in outcomes if not o["landed"]),
-        "pushed": sum(1 for o in outcomes if o.get("pushed")),
-        "landed_unpushed": sum(
-            1 for o in outcomes if o["landed"] and not o.get("pushed")
-        ),
-        "outcomes": outcomes,
-        "seconds": round(time.monotonic() - started, 2),
-    }
+    outcomes, early = _drain_batch_under_lease(
+        scope, repo, base, batch_size, config, git, prune
+    )
+    if early is not None:
+        return early
+    return _run_queue_summary(repo, config, outcomes, started)
 
 
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:

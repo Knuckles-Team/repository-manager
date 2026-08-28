@@ -117,6 +117,105 @@ def _utc(value: datetime, field_name: str) -> datetime:
     return value.astimezone(UTC)
 
 
+def _spawn_git_process(args: Sequence[str], tree: Path) -> subprocess.Popen | None:
+    try:
+        process = subprocess.Popen(  # nosec B603 - argv is constructed locally
+            [_TRUSTED_GIT, *args],
+            cwd=str(tree),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError:
+        return None
+    if process.stdout is None or process.stderr is None:
+        process.kill()
+        process.wait()
+        return None
+    return process
+
+
+def _drain_selector_events(
+    events: list[tuple[selectors.SelectorKey, int]],
+    buffers: dict[str, bytearray],
+    max_bytes: int,
+    selector: selectors.BaseSelector,
+    process: subprocess.Popen,
+) -> bool:
+    """Read every ready stream; return True if the byte budget overflowed."""
+
+    for key, _ in events:
+        chunk = os.read(key.fd, 64 * 1024)
+        if not chunk:
+            selector.unregister(key.fileobj)
+            continue
+        stream = str(key.data)
+        if len(buffers[stream]) + len(chunk) > max_bytes:
+            process.kill()
+            return True
+        buffers[stream].extend(chunk)
+    return False
+
+
+def _pump_bounded_output(
+    process: subprocess.Popen,
+    selector: selectors.BaseSelector,
+    buffers: dict[str, bytearray],
+    deadline: float,
+    max_bytes: int,
+) -> str:
+    """Drain stdout/stderr until EOF, deadline, or overflow.
+
+    Returns ``"ok"`` on clean completion, ``"timeout_killed"`` if the
+    deadline was hit (process already killed and reaped), or
+    ``"overflow_killed"`` if the byte budget overflowed (process killed but
+    not yet reaped -- the caller reaps it after closing the selector, exactly
+    where the original inline loop did).
+    """
+
+    while selector.get_map():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            process.kill()
+            process.wait()
+            return "timeout_killed"
+        events = selector.select(timeout=min(remaining, 0.25))
+        if not events:
+            continue
+        if _drain_selector_events(events, buffers, max_bytes, selector, process):
+            return "overflow_killed"
+    return "ok"
+
+
+def _normalize_changed_path(raw_path: bytes) -> str | None:
+    path = raw_path.decode("utf-8", "surrogateescape")
+    candidate = Path(path)
+    if not path or candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    return path
+
+
+def _parse_name_status_fields(fields: list[bytes]) -> list[str] | None:
+    paths: list[str] = []
+    index = 0
+    try:
+        while index < len(fields):
+            status = fields[index].decode("ascii")
+            index += 1
+            required = 2 if status.startswith(("R", "C")) else 1
+            if index + required > len(fields):
+                return None
+            for raw_path in fields[index : index + required]:
+                normalized = _normalize_changed_path(raw_path)
+                if normalized is None:
+                    return None
+                paths.append(normalized)
+            index += required
+    except (UnicodeError, ValueError):
+        return None
+    return paths
+
+
 @dataclass(frozen=True, slots=True)
 class ValidationRequest:
     """Immutable input for one staged validation workflow."""
@@ -140,15 +239,29 @@ class ValidationRequest:
     lane_id: str | None = None
 
     def __post_init__(self) -> None:
+        self._normalize_identity_fields()
+        self._normalize_tree_path()
+        self._validate_stage_order()
+        self._normalize_digest_fields()
+        self._normalize_optional_generation_and_base()
+        self._normalize_changed_paths()
+        self._normalize_resource_digest()
+        self._normalize_optional_ownership_fields()
+
+    def _normalize_identity_fields(self) -> None:
         object.__setattr__(self, "request_id", _opaque(self.request_id, "request_id"))
         object.__setattr__(
             self, "repository_id", _opaque(self.repository_id, "repository_id")
         )
+
+    def _normalize_tree_path(self) -> None:
         object.__setattr__(self, "tree_sha", _sha(self.tree_sha, "tree_sha"))
         path = Path(self.tree_path)
         if not path.is_absolute() or ".." in path.parts:
             raise ValidationRunnerError("tree_path must be absolute and traversal-free")
         object.__setattr__(self, "tree_path", str(path))
+
+    def _validate_stage_order(self) -> None:
         if not self.stages:
             raise ValidationRunnerError(
                 "validation request must include at least one stage"
@@ -160,6 +273,8 @@ class ValidationRequest:
             raise ValidationRunnerError(
                 "validation request stages must be ordered and unique"
             )
+
+    def _normalize_digest_fields(self) -> None:
         object.__setattr__(
             self, "config_digest", _digest(self.config_digest, "config_digest")
         )
@@ -169,23 +284,30 @@ class ValidationRequest:
         object.__setattr__(
             self, "target_host", _opaque(self.target_host, "target_host")
         )
+
+    def _normalize_optional_generation_and_base(self) -> None:
         if self.generation_id is not None:
             object.__setattr__(
                 self, "generation_id", _opaque(self.generation_id, "generation_id")
             )
         if self.base_sha is not None:
             object.__setattr__(self, "base_sha", _sha(self.base_sha, "base_sha"))
-        if self.changed_paths is not None:
-            paths = []
-            for item in self.changed_paths:
-                item = _opaque(item, "changed path")
-                path_item = Path(item)
-                if path_item.is_absolute() or ".." in path_item.parts:
-                    raise ValidationRunnerError(
-                        "changed paths must remain inside the worktree"
-                    )
-                paths.append(item)
-            object.__setattr__(self, "changed_paths", tuple(sorted(set(paths))))
+
+    def _normalize_changed_paths(self) -> None:
+        if self.changed_paths is None:
+            return
+        paths = []
+        for item in self.changed_paths:
+            item = _opaque(item, "changed path")
+            path_item = Path(item)
+            if path_item.is_absolute() or ".." in path_item.parts:
+                raise ValidationRunnerError(
+                    "changed paths must remain inside the worktree"
+                )
+            paths.append(item)
+        object.__setattr__(self, "changed_paths", tuple(sorted(set(paths))))
+
+    def _normalize_resource_digest(self) -> None:
         if self.resource_digest:
             object.__setattr__(
                 self,
@@ -205,6 +327,8 @@ class ValidationRequest:
                     }
                 ),
             )
+
+    def _normalize_optional_ownership_fields(self) -> None:
         if self.owner_id:
             object.__setattr__(self, "owner_id", _opaque(self.owner_id, "owner_id"))
         if self.tenant_id:
@@ -526,6 +650,21 @@ class UnreadableBaselineProvider:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _GateContext:
+    """Bundles the job/gate/started-at/tree that flow through gate execution.
+
+    Introduced purely to keep the ``_execute_gate`` decomposition's helper
+    methods under the 7-parameter cap without threading the same four values
+    through every signature by hand.
+    """
+
+    job: ValidationJob
+    gate: ValidationGate
+    started: datetime
+    tree: Path
+
+
 class ValidationRunner:
     """Plan, submit, and execute staged validation through injected authorities."""
 
@@ -548,90 +687,105 @@ class ValidationRunner:
         self.safe_commit_fn = safe_commit_fn
         self.worker_id = _opaque(worker_id, "worker_id")
 
-    def plan(self, request: ValidationRequest) -> ValidationPlan:
-        """Resolve changed paths and seal a dependency-linked gate DAG."""
-
-        try:
-            selected = list(
-                request.profile.gates_for(request.changed_paths, stages=request.stages)
+    @staticmethod
+    def _queue_gate_dependencies(
+        gate: ValidationGate,
+        profile_gates: tuple[ValidationGate, ...],
+        by_name: dict[str, ValidationGate],
+        pending: list[ValidationGate],
+    ) -> None:
+        for dependency in gate.artifact_dependencies:
+            source = next(
+                (
+                    candidate
+                    for candidate in profile_gates
+                    if candidate.name == dependency
+                ),
+                None,
             )
-        except (KeyError, ValueError, ValidationPolicyError) as exc:
-            raise ValidationRunnerError(str(exc)) from exc
+            if source is None:
+                raise ValidationRunnerError(
+                    f"gate {gate.name!r} dependency {dependency!r} is not declared"
+                )
+            if source.name not in by_name:
+                by_name[source.name] = source
+                pending.append(source)
+
+    @classmethod
+    def _select_gates_with_dependencies(
+        cls,
+        selected: list[ValidationGate],
+        profile_gates: tuple[ValidationGate, ...],
+    ) -> dict[str, ValidationGate]:
+        """Close ``selected`` over its declared artifact dependencies."""
+
         by_name = {gate.name: gate for gate in selected}
         # Artifact dependencies are part of the contract even when a path
         # selector would otherwise omit the producer.
         pending = list(selected)
         while pending:
-            gate = pending.pop()
-            for dependency in gate.artifact_dependencies:
-                source = next(
-                    (
-                        candidate
-                        for candidate in request.profile.gates
-                        if candidate.name == dependency
-                    ),
-                    None,
-                )
-                if source is None:
-                    raise ValidationRunnerError(
-                        f"gate {gate.name!r} dependency {dependency!r} is not declared"
-                    )
-                if source.name not in by_name:
-                    by_name[source.name] = source
-                    pending.append(source)
-        gates = tuple(gate for gate in request.profile.gates if gate.name in by_name)
-        jobs: list[ValidationJob] = []
-        by_gate: dict[str, ValidationJob] = {}
-        stage_order = {stage: index for index, stage in enumerate(ValidationStage)}
-        for gate in gates:
-            digest_material = {
-                "request_id": request.request_id,
-                "repository_id": request.repository_id,
-                "tree_sha": request.tree_sha,
-                "gate": gate.canonical_payload(),
-                "config_digest": request.config_digest,
-                "profile_digest": request.profile.digest,
-                "toolchain_digest": request.toolchain_digest,
-                "target_host": request.target_host,
-                "generation_id": request.generation_id,
-            }
-            job_uuid = uuid.uuid5(_JOB_NAMESPACE, canonical_digest(digest_material))
-            job_id = f"rmjob:{job_uuid}"
-            dependencies = set(gate.artifact_dependencies)
-            dependencies.update(
-                previous.name
-                for previous in gates
-                if stage_order[previous.stage] < stage_order[gate.stage]
-            )
-            dependency_ids = tuple(
-                sorted(by_gate[name].job_id for name in dependencies if name in by_gate)
-            )
-            job = ValidationJob(
-                job_id=job_id,
-                request_id=request.request_id,
-                repository_id=request.repository_id,
-                gate_name=gate.name,
-                stage=gate.stage,
-                tree_sha=request.tree_sha,
-                worktree_path=request.tree_path,
-                command=gate.command,
-                dependencies=dependency_ids,
-                gate_config_digest=request.config_digest,
-                profile_digest=request.profile.digest,
-                command_digest=canonical_digest(gate.command),
-                toolchain_digest=request.toolchain_digest,
-                resource_digest=gate.resource_digest,
-                resource_policy_digest=request.resource_digest,
-                target_host=request.target_host,
-                base_sha=request.base_sha,
-                generation_id=request.generation_id,
-                baseline_mode=gate.baseline_mode,
-                timeout_seconds=gate.timeout_seconds,
-                resource_request=gate.resources,
-            )
-            jobs.append(job)
-            by_gate[gate.name] = job
-        plan_digest = canonical_digest(
+            cls._queue_gate_dependencies(pending.pop(), profile_gates, by_name, pending)
+        return by_name
+
+    @staticmethod
+    def _build_job(
+        gate: ValidationGate,
+        request: ValidationRequest,
+        gates: tuple[ValidationGate, ...],
+        stage_order: dict[ValidationStage, int],
+        by_gate: dict[str, ValidationJob],
+    ) -> ValidationJob:
+        digest_material = {
+            "request_id": request.request_id,
+            "repository_id": request.repository_id,
+            "tree_sha": request.tree_sha,
+            "gate": gate.canonical_payload(),
+            "config_digest": request.config_digest,
+            "profile_digest": request.profile.digest,
+            "toolchain_digest": request.toolchain_digest,
+            "target_host": request.target_host,
+            "generation_id": request.generation_id,
+        }
+        job_uuid = uuid.uuid5(_JOB_NAMESPACE, canonical_digest(digest_material))
+        job_id = f"rmjob:{job_uuid}"
+        dependencies = set(gate.artifact_dependencies)
+        dependencies.update(
+            previous.name
+            for previous in gates
+            if stage_order[previous.stage] < stage_order[gate.stage]
+        )
+        dependency_ids = tuple(
+            sorted(by_gate[name].job_id for name in dependencies if name in by_gate)
+        )
+        return ValidationJob(
+            job_id=job_id,
+            request_id=request.request_id,
+            repository_id=request.repository_id,
+            gate_name=gate.name,
+            stage=gate.stage,
+            tree_sha=request.tree_sha,
+            worktree_path=request.tree_path,
+            command=gate.command,
+            dependencies=dependency_ids,
+            gate_config_digest=request.config_digest,
+            profile_digest=request.profile.digest,
+            command_digest=canonical_digest(gate.command),
+            toolchain_digest=request.toolchain_digest,
+            resource_digest=gate.resource_digest,
+            resource_policy_digest=request.resource_digest,
+            target_host=request.target_host,
+            base_sha=request.base_sha,
+            generation_id=request.generation_id,
+            baseline_mode=gate.baseline_mode,
+            timeout_seconds=gate.timeout_seconds,
+            resource_request=gate.resources,
+        )
+
+    @staticmethod
+    def _compute_plan_digest(
+        request: ValidationRequest, jobs: list[ValidationJob]
+    ) -> str:
+        return canonical_digest(
             {
                 "request": {
                     "request_id": request.request_id,
@@ -650,9 +804,81 @@ class ValidationRunner:
                 "jobs": tuple(job.canonical_payload() for job in jobs),
             }
         )
+
+    def plan(self, request: ValidationRequest) -> ValidationPlan:
+        """Resolve changed paths and seal a dependency-linked gate DAG."""
+
+        try:
+            selected = list(
+                request.profile.gates_for(request.changed_paths, stages=request.stages)
+            )
+        except (KeyError, ValueError, ValidationPolicyError) as exc:
+            raise ValidationRunnerError(str(exc)) from exc
+        by_name = self._select_gates_with_dependencies(selected, request.profile.gates)
+        gates = tuple(gate for gate in request.profile.gates if gate.name in by_name)
+        jobs: list[ValidationJob] = []
+        by_gate: dict[str, ValidationJob] = {}
+        stage_order = {stage: index for index, stage in enumerate(ValidationStage)}
+        for gate in gates:
+            job = self._build_job(gate, request, gates, stage_order, by_gate)
+            jobs.append(job)
+            by_gate[gate.name] = job
+        plan_digest = self._compute_plan_digest(request, jobs)
         return ValidationPlan(
             request=request, gates=gates, jobs=tuple(jobs), plan_digest=plan_digest
         )
+
+    def _submit_one(self, job: ValidationJob) -> SubmittedValidationJob:
+        result = self.job_authority.submit(job)
+        if result.job_id != job.job_id:
+            raise ValidationRunnerError(
+                f"durable authority changed immutable job ID for {job.gate_name}"
+            )
+        if result.input_digest != job.input_digest:
+            raise ValidationRunnerError(
+                f"durable authority changed immutable input for {job.gate_name}"
+            )
+        return result
+
+    def _cancel_submission_prefix(
+        self,
+        submitted: list[SubmittedValidationJob],
+        current_job: ValidationJob | None,
+        exc: Exception,
+    ) -> None:
+        """Best-effort cancel of everything submitted so far, then re-raise.
+
+        The requested job ID is deterministic and safe to cancel even when
+        the authority persisted it before losing its response.  A mismatched
+        returned ID is authority-controlled input; never use it to cancel an
+        unrelated WorkItem.
+        """
+
+        cancellation_ids = [previous.job_id for previous in submitted]
+        if current_job is not None:
+            cancellation_ids.append(current_job.job_id)
+        cancellation_ids = list(dict.fromkeys(cancellation_ids))
+        cancellation_failures: list[str] = []
+        for job_id in cancellation_ids:
+            try:
+                if not self.job_authority.cancel(
+                    job_id,
+                    reason="validation submission failed; canceling prefix",
+                ):
+                    cancellation_failures.append(job_id)
+            except Exception as cancel_exc:
+                cancellation_failures.append(f"{job_id} ({type(cancel_exc).__name__})")
+        detail = (
+            f"validation job submission failed after {len(submitted)} acknowledged job(s): "
+            f"{type(exc).__name__}: {exc}"
+        )
+        if cancellation_failures:
+            detail += "; submission reconciliation failed for job(s): " + ", ".join(
+                cancellation_failures
+            )
+        elif cancellation_ids:
+            detail += "; submitted prefix/current job was cooperatively canceled"
+        raise ValidationRunnerError(detail) from exc
 
     def submit(self, plan: ValidationPlan) -> tuple[SubmittedValidationJob, ...]:
         """Submit every sealed job to the one durable WorkItem authority."""
@@ -666,50 +892,42 @@ class ValidationRunner:
         try:
             for job in plan.jobs:
                 current_job = job
-                result = self.job_authority.submit(job)
-                if result.job_id != job.job_id:
-                    raise ValidationRunnerError(
-                        f"durable authority changed immutable job ID for {job.gate_name}"
-                    )
-                if result.input_digest != job.input_digest:
-                    raise ValidationRunnerError(
-                        f"durable authority changed immutable input for {job.gate_name}"
-                    )
-                submitted.append(result)
+                submitted.append(self._submit_one(job))
                 current_job = None
         except Exception as exc:
-            # The requested job ID is deterministic and safe to cancel even
-            # when the authority persisted it before losing its response.  A
-            # mismatched returned ID is authority-controlled input; never use
-            # it to cancel an unrelated WorkItem.
-            cancellation_ids = [previous.job_id for previous in submitted]
-            if current_job is not None:
-                cancellation_ids.append(current_job.job_id)
-            cancellation_ids = list(dict.fromkeys(cancellation_ids))
-            cancellation_failures: list[str] = []
-            for job_id in cancellation_ids:
-                try:
-                    if not self.job_authority.cancel(
-                        job_id,
-                        reason="validation submission failed; canceling prefix",
-                    ):
-                        cancellation_failures.append(job_id)
-                except Exception as cancel_exc:
-                    cancellation_failures.append(
-                        f"{job_id} ({type(cancel_exc).__name__})"
-                    )
-            detail = (
-                f"validation job submission failed after {len(submitted)} acknowledged job(s): "
-                f"{type(exc).__name__}: {exc}"
-            )
-            if cancellation_failures:
-                detail += "; submission reconciliation failed for job(s): " + ", ".join(
-                    cancellation_failures
-                )
-            elif cancellation_ids:
-                detail += "; submitted prefix/current job was cooperatively canceled"
-            raise ValidationRunnerError(detail) from exc
+            self._cancel_submission_prefix(submitted, current_job, exc)
         return tuple(submitted)
+
+    def _run_one_job(
+        self,
+        job: ValidationJob,
+        by_name: dict[str, ValidationGate],
+        failed_jobs: set[str],
+        preparation: PreparedValidation,
+        cancellation: CancellationToken,
+    ) -> GateEvidence:
+        gate = by_name[job.gate_name]
+        if any(dep in failed_jobs for dep in job.dependencies):
+            item = self._blocked_evidence(job, gate)
+            if preparation.snapshot_gate_deferred:
+                item = replace(item, snapshot_gate_deferred=True)
+            failed_jobs.add(job.job_id)
+            return item
+        item = self._execute_gate(job, gate, cancellation)
+        if preparation.snapshot_gate_deferred:
+            item = replace(
+                item,
+                snapshot_gate_deferred=True,
+                snapshot_gate_replayed=(
+                    gate.runs_precommit and item.outcome is EvidenceOutcome.PASSED
+                ),
+            )
+        if (
+            item.outcome is not EvidenceOutcome.PASSED
+            and gate.mode is GateMode.BLOCKING
+        ):
+            failed_jobs.add(job.job_id)
+        return item
 
     def run(
         self,
@@ -759,29 +977,9 @@ class ValidationRunner:
         failed_jobs: set[str] = set()
         by_name = {gate.name: gate for gate in plan.gates}
         for job in plan.jobs:
-            gate = by_name[job.gate_name]
-            if any(dep in failed_jobs for dep in job.dependencies):
-                item = self._blocked_evidence(job, gate)
-                if preparation.snapshot_gate_deferred:
-                    item = replace(item, snapshot_gate_deferred=True)
-                evidence.append(item)
-                failed_jobs.add(job.job_id)
-                continue
-            item = self._execute_gate(job, gate, token)
-            if preparation.snapshot_gate_deferred:
-                item = replace(
-                    item,
-                    snapshot_gate_deferred=True,
-                    snapshot_gate_replayed=(
-                        gate.runs_precommit and item.outcome is EvidenceOutcome.PASSED
-                    ),
-                )
-            evidence.append(item)
-            if (
-                item.outcome is not EvidenceOutcome.PASSED
-                and gate.mode is GateMode.BLOCKING
-            ):
-                failed_jobs.add(job.job_id)
+            evidence.append(
+                self._run_one_job(job, by_name, failed_jobs, preparation, token)
+            )
         certificate = self._certificate_if_ready(prepared, plan, evidence)
         return ValidationRunResult(
             request=prepared,
@@ -792,16 +990,19 @@ class ValidationRunner:
             snapshot_gate_deferred=preparation.snapshot_gate_deferred,
         )
 
-    def _prepare_request(self, request: ValidationRequest) -> PreparedValidation:
+    @staticmethod
+    def _validate_tree_root(request: ValidationRequest) -> Path:
         tree = Path(request.tree_path)
         if not tree.exists() or not tree.is_dir():
             raise ValidationPreparationError(f"validation tree does not exist: {tree}")
-        snapshot_gate_deferred = False
         resolved = tree.resolve(strict=True)
         if resolved != tree:
             raise ValidationPreparationError(
                 "validation tree path resolves through a symlink; refusing ambiguous worktree"
             )
+        return tree
+
+    def _verify_head_matches(self, request: ValidationRequest, tree: Path) -> None:
         current = self._git_output(["rev-parse", "--show-toplevel"], tree)
         if current != str(tree):
             raise ValidationPreparationError(
@@ -812,56 +1013,72 @@ class ValidationRunner:
             raise ValidationPreparationError(
                 f"tree SHA moved before validation: expected {request.tree_sha}, found {head}"
             )
-        status = self._git_output(["status", "--porcelain"], tree, allow_error=True)
-        if status is None:
-            raise ValidationPreparationError("could not inspect worktree status")
-        if status and any(
-            stage in request.stages
-            for stage in (ValidationStage.FEEDBACK, ValidationStage.INTEGRATION)
+
+    def _take_snapshot(
+        self, request: ValidationRequest, tree: Path, has_config: bool
+    ) -> tuple[str, bool]:
+        if has_config:
+            result = self.safe_commit_fn(
+                tree,
+                f"RMDD-11 validation snapshot {request.request_id}",
+                defer_gate=True,
+            )
+            snapshot_gate_deferred = True
+        else:
+            result = self.safe_commit_fn(
+                tree, f"RMDD-11 validation snapshot {request.request_id}"
+            )
+            snapshot_gate_deferred = False
+        if not result.get("ok"):
+            raise ValidationPreparationError(
+                str(
+                    result.get("error") or "safe_commit refused the validation snapshot"
+                )
+            )
+        if has_config and result.get("gate_deferred") is not True:
+            raise ValidationPreparationError(
+                "configured snapshot must explicitly defer its gate"
+            )
+        snapshot_sha = str(result.get("commit_sha") or "")
+        if not _SHA.fullmatch(snapshot_sha):
+            raise ValidationPreparationError(
+                "safe_commit did not return an immutable commit SHA"
+            )
+        return snapshot_sha, snapshot_gate_deferred
+
+    def _snapshot_dirty_tree_if_needed(
+        self, request: ValidationRequest, tree: Path, status: str
+    ) -> tuple[ValidationRequest, bool]:
+        if not (
+            status
+            and any(
+                stage in request.stages
+                for stage in (ValidationStage.FEEDBACK, ValidationStage.INTEGRATION)
+            )
         ):
-            if not request.snapshot_dirty_lane_tree:
-                raise ValidationPreparationError(
-                    "stage-0/1 validation refuses a dirty tree without safe_commit"
-                )
-            installed_hook = self._installed_precommit_hook(tree)
-            if installed_hook is None:
-                raise ValidationPreparationError(
-                    "could not inspect Git pre-commit hook path before snapshot"
-                )
-            has_config = (tree / ".pre-commit-config.yaml").is_file()
-            if installed_hook and not has_config:
-                raise ValidationPreparationError(
-                    "installed Git pre-commit hook has no admitted profile gate"
-                )
-            if has_config:
-                result = self.safe_commit_fn(
-                    tree,
-                    f"RMDD-11 validation snapshot {request.request_id}",
-                    defer_gate=True,
-                )
-                snapshot_gate_deferred = True
-            else:
-                result = self.safe_commit_fn(
-                    tree,
-                    f"RMDD-11 validation snapshot {request.request_id}",
-                )
-            if not result.get("ok"):
-                raise ValidationPreparationError(
-                    str(
-                        result.get("error")
-                        or "safe_commit refused the validation snapshot"
-                    )
-                )
-            if has_config and result.get("gate_deferred") is not True:
-                raise ValidationPreparationError(
-                    "configured snapshot must explicitly defer its gate"
-                )
-            snapshot_sha = str(result.get("commit_sha") or "")
-            if not _SHA.fullmatch(snapshot_sha):
-                raise ValidationPreparationError(
-                    "safe_commit did not return an immutable commit SHA"
-                )
-            request = replace(request, tree_sha=snapshot_sha)
+            return request, False
+        if not request.snapshot_dirty_lane_tree:
+            raise ValidationPreparationError(
+                "stage-0/1 validation refuses a dirty tree without safe_commit"
+            )
+        installed_hook = self._installed_precommit_hook(tree)
+        if installed_hook is None:
+            raise ValidationPreparationError(
+                "could not inspect Git pre-commit hook path before snapshot"
+            )
+        has_config = (tree / ".pre-commit-config.yaml").is_file()
+        if installed_hook and not has_config:
+            raise ValidationPreparationError(
+                "installed Git pre-commit hook has no admitted profile gate"
+            )
+        snapshot_sha, snapshot_gate_deferred = self._take_snapshot(
+            request, tree, has_config
+        )
+        return replace(request, tree_sha=snapshot_sha), snapshot_gate_deferred
+
+    def _verify_clean_after_snapshot(
+        self, request: ValidationRequest, tree: Path
+    ) -> None:
         status_after = self._git_output(
             ["status", "--porcelain"], tree, allow_error=True
         )
@@ -874,6 +1091,17 @@ class ValidationRunner:
             raise ValidationPreparationError(
                 "worktree changed during validation preparation"
             )
+
+    def _prepare_request(self, request: ValidationRequest) -> PreparedValidation:
+        tree = self._validate_tree_root(request)
+        self._verify_head_matches(request, tree)
+        status = self._git_output(["status", "--porcelain"], tree, allow_error=True)
+        if status is None:
+            raise ValidationPreparationError("could not inspect worktree status")
+        request, snapshot_gate_deferred = self._snapshot_dirty_tree_if_needed(
+            request, tree, status
+        )
+        self._verify_clean_after_snapshot(request, tree)
         changed_paths = self._derive_changed_paths(request, tree)
         return PreparedValidation(
             request=replace(request, changed_paths=changed_paths),
@@ -904,56 +1132,27 @@ class ValidationRunner:
     ) -> tuple[int, bytes, bytes] | None:
         """Run fixed-argv Git with bounded, streaming stdout/stderr."""
 
-        try:
-            process = subprocess.Popen(  # nosec B603 - argv is constructed locally
-                [_TRUSTED_GIT, *args],
-                cwd=str(tree),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-            )
-        except OSError:
-            return None
-        if process.stdout is None or process.stderr is None:
-            process.kill()
-            process.wait()
+        process = _spawn_git_process(args, tree)
+        if process is None:
             return None
         selector = selectors.DefaultSelector()
         selector.register(process.stdout, selectors.EVENT_READ, "stdout")
         selector.register(process.stderr, selectors.EVENT_READ, "stderr")
         buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
         deadline = time.monotonic() + timeout_seconds
-        overflow = False
         try:
-            while selector.get_map():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    process.kill()
-                    process.wait()
-                    return None
-                events = selector.select(timeout=min(remaining, 0.25))
-                if not events:
-                    continue
-                for key, _ in events:
-                    chunk = os.read(key.fd, 64 * 1024)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    stream = str(key.data)
-                    if len(buffers[stream]) + len(chunk) > max_bytes:
-                        overflow = True
-                        process.kill()
-                        break
-                    buffers[stream].extend(chunk)
-                if overflow:
-                    break
+            state = _pump_bounded_output(
+                process, selector, buffers, deadline, max_bytes
+            )
         except OSError:
             process.kill()
             process.wait()
             return None
         finally:
             selector.close()
-        if overflow:
+        if state == "timeout_killed":
+            return None
+        if state == "overflow_killed":
             process.wait()
             return None
         try:
@@ -1011,48 +1210,19 @@ class ValidationRunner:
         fields = stdout.split(b"\0")
         if fields and fields[-1] == b"":
             fields.pop()
-        paths: list[str] = []
-        index = 0
-        try:
-            while index < len(fields):
-                status = fields[index].decode("ascii")
-                index += 1
-                required = 2 if status.startswith(("R", "C")) else 1
-                if index + required > len(fields):
-                    return None
-                for raw_path in fields[index : index + required]:
-                    path = raw_path.decode("utf-8", "surrogateescape")
-                    candidate = Path(path)
-                    if not path or candidate.is_absolute() or ".." in candidate.parts:
-                        return None
-                    paths.append(path)
-                index += required
-        except (UnicodeError, ValueError):
+        paths = _parse_name_status_fields(fields)
+        if paths is None:
             return None
         return tuple(sorted(set(paths)))
 
-    def _execute_gate(
-        self,
-        job: ValidationJob,
-        gate: ValidationGate,
-        cancellation: CancellationToken,
-    ) -> GateEvidence:
-        started = datetime.now(UTC)
-        if cancellation.is_cancelled():
-            return self._simple_evidence(
-                job,
-                gate,
-                started,
-                outcome=EvidenceOutcome.CANCELLED,
-                failure_class=ValidationFailureClass.CANCELLATION,
-                detail=cancellation.snapshot().reason
-                or "validation cancelled before admission",
-            )
-        tree = Path(job.worktree_path)
+    def _prepare_gate_command(
+        self, ctx: _GateContext
+    ) -> tuple[ExecutionCommand | None, GateEvidence | None]:
+        job, gate, started, tree = ctx.job, ctx.gate, ctx.started, ctx.tree
         try:
             current = self._git_output(["rev-parse", "HEAD"], tree)
             if current != job.tree_sha:
-                return self._simple_evidence(
+                return None, self._simple_evidence(
                     job,
                     gate,
                     started,
@@ -1062,7 +1232,7 @@ class ValidationRunner:
                 )
             status = self._git_output(["status", "--porcelain"], tree, allow_error=True)
             if status is None or status:
-                return self._simple_evidence(
+                return None, self._simple_evidence(
                     job,
                     gate,
                     started,
@@ -1077,7 +1247,7 @@ class ValidationRunner:
                 timeout_seconds=gate.timeout_seconds,
             )
         except (ValidationPreparationError, ValueError) as exc:
-            return self._simple_evidence(
+            return None, self._simple_evidence(
                 job,
                 gate,
                 started,
@@ -1085,10 +1255,16 @@ class ValidationRunner:
                 failure_class=ValidationFailureClass.INVALID_REQUEST,
                 detail=str(exc),
             )
+        return command, None
+
+    def _acquire_lease(
+        self, ctx: _GateContext
+    ) -> tuple[ResourceLease | None, GateEvidence | None]:
+        job, gate, started = ctx.job, ctx.gate, ctx.started
         try:
             lease = self.resource_admission.reserve(job)
         except Exception as exc:
-            return self._simple_evidence(
+            return None, self._simple_evidence(
                 job,
                 gate,
                 started,
@@ -1100,7 +1276,7 @@ class ValidationRunner:
                 ),
             )
         if lease is None:
-            return self._simple_evidence(
+            return None, self._simple_evidence(
                 job,
                 gate,
                 started,
@@ -1108,6 +1284,40 @@ class ValidationRunner:
                 failure_class=ValidationFailureClass.RESOURCE,
                 detail="resource admission refused before process creation",
             )
+        return lease, None
+
+    def _release_with_reconciliation(
+        self,
+        lease: ResourceLease,
+        evidence: GateEvidence,
+        *,
+        override_outcome: EvidenceOutcome | None = None,
+    ) -> GateEvidence:
+        try:
+            release_ok = self.resource_admission.release(
+                lease, outcome=evidence.outcome
+            )
+        except Exception:
+            release_ok = False
+        if release_ok:
+            return evidence
+        if override_outcome is not None:
+            return replace(
+                evidence,
+                outcome=override_outcome,
+                failure_class=ValidationFailureClass.RECONCILIATION,
+                detail=evidence.detail + "; resource release was not confirmed",
+            )
+        return replace(
+            evidence,
+            failure_class=ValidationFailureClass.RECONCILIATION,
+            detail=evidence.detail + "; resource release was not confirmed",
+        )
+
+    def _validate_lease(
+        self, ctx: _GateContext, lease: ResourceLease
+    ) -> GateEvidence | None:
+        job, gate, started = ctx.job, ctx.gate, ctx.started
         if lease.host_id != job.target_host:
             evidence = self._simple_evidence(
                 job,
@@ -1120,19 +1330,7 @@ class ValidationRunner:
                     f"expected {job.target_host}, got {lease.host_id}"
                 ),
             )
-            try:
-                release_ok = self.resource_admission.release(
-                    lease, outcome=evidence.outcome
-                )
-            except Exception:
-                release_ok = False
-            if not release_ok:
-                evidence = replace(
-                    evidence,
-                    failure_class=ValidationFailureClass.RECONCILIATION,
-                    detail=evidence.detail + "; resource release was not confirmed",
-                )
-            return evidence
+            return self._release_with_reconciliation(lease, evidence)
         if lease.resource_digest != job.resource_digest:
             evidence = self._simple_evidence(
                 job,
@@ -1142,116 +1340,109 @@ class ValidationRunner:
                 failure_class=ValidationFailureClass.STALE_FENCE,
                 detail="resource reservation does not match the immutable gate request",
             )
-            try:
-                release_ok = self.resource_admission.release(
-                    lease, outcome=evidence.outcome
+            return self._release_with_reconciliation(lease, evidence)
+        return None
+
+    def _evidence_no_executor(
+        self, ctx: _GateContext, lease: ResourceLease
+    ) -> GateEvidence:
+        evidence = self._simple_evidence(
+            ctx.job,
+            ctx.gate,
+            ctx.started,
+            outcome=EvidenceOutcome.FAILED,
+            failure_class=ValidationFailureClass.ENVIRONMENT,
+            detail="no fixed-argv validation executor was configured",
+        )
+        return self._release_with_reconciliation(
+            lease, evidence, override_outcome=EvidenceOutcome.REFUSED
+        )
+
+    def _collect_result_evidence(
+        self, ctx: _GateContext, command: ExecutionCommand, result: ExecutionResult
+    ) -> GateEvidence:
+        job, gate, started, tree = ctx.job, ctx.gate, ctx.started, ctx.tree
+        try:
+            current_after = self._git_output(["rev-parse", "HEAD"], tree)
+            status_after = self._git_output(
+                ["status", "--porcelain"], tree, allow_error=True
+            )
+            if current_after != job.tree_sha or status_after is None or status_after:
+                return self._simple_evidence(
+                    job,
+                    gate,
+                    started,
+                    outcome=EvidenceOutcome.REFUSED,
+                    failure_class=ValidationFailureClass.STALE_TREE,
+                    detail="worktree changed while the validation command was running",
                 )
-            except Exception:
-                release_ok = False
-            if not release_ok:
-                evidence = replace(
-                    evidence,
-                    failure_class=ValidationFailureClass.RECONCILIATION,
-                    detail=evidence.detail + "; resource release was not confirmed",
-                )
-            return evidence
-        result: ExecutionResult | None = None
-        executor = self.executor
-        if executor is None:
-            evidence = self._simple_evidence(
+            return self._evidence_from_result(job, gate, command, result, started)
+        except Exception as exc:
+            return self._simple_evidence(
                 job,
                 gate,
                 started,
                 outcome=EvidenceOutcome.FAILED,
                 failure_class=ValidationFailureClass.ENVIRONMENT,
-                detail="no fixed-argv validation executor was configured",
+                detail=(
+                    f"validation evidence collection raised {type(exc).__name__}: {exc}"
+                ),
             )
-            try:
-                release_ok = self.resource_admission.release(
-                    lease, outcome=evidence.outcome
-                )
-            except Exception:
-                release_ok = False
-            if not release_ok:
-                evidence = replace(
-                    evidence,
-                    outcome=EvidenceOutcome.REFUSED,
-                    failure_class=ValidationFailureClass.RECONCILIATION,
-                    detail=evidence.detail + "; resource release was not confirmed",
-                )
-            return evidence
+
+    def _invoke_executor(
+        self,
+        ctx: _GateContext,
+        command: ExecutionCommand,
+        lease: ResourceLease,
+        cancellation: CancellationToken,
+    ) -> GateEvidence:
+        job, gate, started = ctx.job, ctx.gate, ctx.started
+        try:
+            result = self.executor.run(
+                command,
+                command_id=job.job_id,
+                worker_id=self.worker_id,
+                fence=lease.fence,
+                cancellation=cancellation,
+            )
+        except Exception as exc:  # executor boundary classifies worker faults
+            return self._simple_evidence(
+                job,
+                gate,
+                started,
+                outcome=EvidenceOutcome.FAILED,
+                failure_class=ValidationFailureClass.ENVIRONMENT,
+                detail=f"executor raised {type(exc).__name__}: {exc}",
+            )
+        if result.command_id != job.job_id or result.fence != lease.fence:
+            return self._simple_evidence(
+                job,
+                gate,
+                started,
+                outcome=EvidenceOutcome.REFUSED,
+                failure_class=ValidationFailureClass.STALE_FENCE,
+                detail="executor result command or fence does not match the leased job",
+            )
+        return self._collect_result_evidence(ctx, command, result)
+
+    def _run_and_release(
+        self,
+        ctx: _GateContext,
+        command: ExecutionCommand,
+        lease: ResourceLease,
+        cancellation: CancellationToken,
+    ) -> GateEvidence:
         evidence = self._simple_evidence(
-            job,
-            gate,
-            started,
+            ctx.job,
+            ctx.gate,
+            ctx.started,
             outcome=EvidenceOutcome.FAILED,
             failure_class=ValidationFailureClass.ENVIRONMENT,
             detail="validation evidence was not produced",
         )
         release_ok = False
         try:
-            try:
-                result = executor.run(
-                    command,
-                    command_id=job.job_id,
-                    worker_id=self.worker_id,
-                    fence=lease.fence,
-                    cancellation=cancellation,
-                )
-            except Exception as exc:  # executor boundary classifies worker faults
-                evidence = self._simple_evidence(
-                    job,
-                    gate,
-                    started,
-                    outcome=EvidenceOutcome.FAILED,
-                    failure_class=ValidationFailureClass.ENVIRONMENT,
-                    detail=f"executor raised {type(exc).__name__}: {exc}",
-                )
-            else:
-                if result.command_id != job.job_id or result.fence != lease.fence:
-                    evidence = self._simple_evidence(
-                        job,
-                        gate,
-                        started,
-                        outcome=EvidenceOutcome.REFUSED,
-                        failure_class=ValidationFailureClass.STALE_FENCE,
-                        detail="executor result command or fence does not match the leased job",
-                    )
-                else:
-                    try:
-                        current_after = self._git_output(["rev-parse", "HEAD"], tree)
-                        status_after = self._git_output(
-                            ["status", "--porcelain"], tree, allow_error=True
-                        )
-                        if (
-                            current_after != job.tree_sha
-                            or status_after is None
-                            or status_after
-                        ):
-                            evidence = self._simple_evidence(
-                                job,
-                                gate,
-                                started,
-                                outcome=EvidenceOutcome.REFUSED,
-                                failure_class=ValidationFailureClass.STALE_TREE,
-                                detail="worktree changed while the validation command was running",
-                            )
-                        else:
-                            evidence = self._evidence_from_result(
-                                job, gate, command, result, started
-                            )
-                    except Exception as exc:
-                        evidence = self._simple_evidence(
-                            job,
-                            gate,
-                            started,
-                            outcome=EvidenceOutcome.FAILED,
-                            failure_class=ValidationFailureClass.ENVIRONMENT,
-                            detail=(
-                                "validation evidence collection raised "
-                                f"{type(exc).__name__}: {exc}"
-                            ),
-                        )
+            evidence = self._invoke_executor(ctx, command, lease, cancellation)
         finally:
             try:
                 release_ok = self.resource_admission.release(
@@ -1271,6 +1462,39 @@ class ValidationRunner:
             )
         return evidence
 
+    def _execute_gate(
+        self,
+        job: ValidationJob,
+        gate: ValidationGate,
+        cancellation: CancellationToken,
+    ) -> GateEvidence:
+        started = datetime.now(UTC)
+        if cancellation.is_cancelled():
+            return self._simple_evidence(
+                job,
+                gate,
+                started,
+                outcome=EvidenceOutcome.CANCELLED,
+                failure_class=ValidationFailureClass.CANCELLATION,
+                detail=cancellation.snapshot().reason
+                or "validation cancelled before admission",
+            )
+        ctx = _GateContext(
+            job=job, gate=gate, started=started, tree=Path(job.worktree_path)
+        )
+        command, evidence = self._prepare_gate_command(ctx)
+        if evidence is not None:
+            return evidence
+        lease, evidence = self._acquire_lease(ctx)
+        if evidence is not None:
+            return evidence
+        evidence = self._validate_lease(ctx, lease)
+        if evidence is not None:
+            return evidence
+        if self.executor is None:
+            return self._evidence_no_executor(ctx, lease)
+        return self._run_and_release(ctx, command, lease, cancellation)
+
     @staticmethod
     def _outcome_from_result(result: ExecutionResult) -> EvidenceOutcome:
         return {
@@ -1281,6 +1505,112 @@ class ValidationRunner:
             ExecutionOutcome.REFUSED: EvidenceOutcome.REFUSED,
         }[result.outcome]
 
+    def _resolve_outcome(
+        self, result: ExecutionResult, gate: ValidationGate
+    ) -> EvidenceOutcome:
+        outcome = self._outcome_from_result(result)
+        if (
+            outcome is EvidenceOutcome.TIMED_OUT
+            and gate.timeout_policy is TimeoutPolicy.DEFER
+        ):
+            return EvidenceOutcome.DEFERRED
+        return outcome
+
+    def _validated_baseline(
+        self, baseline: BaselineObservation, job: ValidationJob
+    ) -> BaselineObservation:
+        if baseline.tree_sha != self._base_sha(job):
+            return BaselineObservation(
+                readable=False,
+                tree_sha=self._base_sha(job),
+                detail="baseline provider returned a different tree SHA",
+            )
+        if baseline.toolchain_digest != job.toolchain_digest:
+            return BaselineObservation(
+                readable=False,
+                tree_sha=self._base_sha(job),
+                detail="baseline provider did not return the exact toolchain digest",
+            )
+        return baseline
+
+    def _resolve_baseline(
+        self, job: ValidationJob, command: ExecutionCommand
+    ) -> BaselineObservation:
+        if not self._base_sha_available(job):
+            return BaselineObservation(
+                readable=False,
+                tree_sha=job.tree_sha,
+                detail="request did not identify an immutable base SHA",
+            )
+        cache_identity = {
+            "base_sha": self._base_sha(job),
+            "gate_config_digest": job.gate_config_digest,
+            "command_digest": job.command_digest,
+            "toolchain_digest": job.toolchain_digest,
+            "target_host": job.target_host,
+        }
+        baseline = self._baseline_cache_get(cache_identity)
+        if baseline is not None:
+            return baseline
+        baseline = self._validated_baseline(
+            self.baseline_provider.run(job, command), job
+        )
+        self._baseline_cache_put(baseline, cache_identity)
+        return baseline
+
+    def _apply_differential_verdict(
+        self,
+        outcome: EvidenceOutcome,
+        failure_class: ValidationFailureClass | None,
+        gate: ValidationGate,
+        baseline: BaselineObservation,
+        candidate_ids: tuple[str, ...],
+        result: ExecutionResult,
+    ) -> tuple[EvidenceOutcome, ValidationFailureClass | None, Any]:
+        if outcome not in {EvidenceOutcome.PASSED, EvidenceOutcome.FAILED}:
+            return outcome, failure_class, None
+        verdict = compare_failure_signals(
+            mode=gate.baseline_mode,
+            baseline=baseline,
+            candidate_exit_code=result.exit_code,
+            candidate_failure_ids=candidate_ids,
+        )
+        if verdict.ok:
+            return EvidenceOutcome.PASSED, None, verdict
+        outcome = (
+            EvidenceOutcome.REFUSED
+            if not verdict.baseline_readable
+            else EvidenceOutcome.FAILED
+        )
+        failure_class = (
+            ValidationFailureClass.BASELINE_UNPRODUCIBLE
+            if not verdict.baseline_readable
+            else ValidationFailureClass.CODE
+        )
+        return outcome, failure_class, verdict
+
+    @staticmethod
+    def _combine_detail(result: ExecutionResult, verdict: Any) -> str:
+        detail = result.stderr_tail or result.stdout_tail
+        if verdict is not None:
+            detail = verdict.detail + (f"; {detail}" if detail else "")
+        return detail
+
+    @staticmethod
+    def _failure_id_fields(
+        outcome: EvidenceOutcome, verdict: Any, candidate_ids: tuple[str, ...]
+    ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+        failure_ids = (
+            ()
+            if outcome is EvidenceOutcome.PASSED
+            else (
+                verdict.new_failure_ids if verdict is not None else tuple(candidate_ids)
+            )
+        )
+        pre_existing_failure_ids = verdict.pre_existing_failure_ids if verdict else ()
+        fixed_failure_ids = verdict.fixed_failure_ids if verdict else ()
+        return failure_ids, pre_existing_failure_ids, fixed_failure_ids
+
     def _evidence_from_result(
         self,
         job: ValidationJob,
@@ -1289,75 +1619,21 @@ class ValidationRunner:
         result: ExecutionResult,
         started: datetime,
     ) -> GateEvidence:
-        outcome = self._outcome_from_result(result)
-        if (
-            outcome is EvidenceOutcome.TIMED_OUT
-            and gate.timeout_policy is TimeoutPolicy.DEFER
-        ):
-            outcome = EvidenceOutcome.DEFERRED
+        outcome = self._resolve_outcome(result, gate)
         finished = result.finished_at
         failure_class = self._failure_class(result)
         candidate_ids = self._failure_ids(gate, result)
         baseline: BaselineObservation | None = None
         verdict = None
         if gate.baseline_mode is BaselineMode.DIFFERENTIAL:
-            if not self._base_sha_available(job):
-                baseline = BaselineObservation(
-                    readable=False,
-                    tree_sha=job.tree_sha,
-                    detail="request did not identify an immutable base SHA",
-                )
-            else:
-                cache_identity = {
-                    "base_sha": self._base_sha(job),
-                    "gate_config_digest": job.gate_config_digest,
-                    "command_digest": job.command_digest,
-                    "toolchain_digest": job.toolchain_digest,
-                    "target_host": job.target_host,
-                }
-                baseline = self._baseline_cache_get(cache_identity)
-                if baseline is None:
-                    baseline = self.baseline_provider.run(job, command)
-                    if baseline.tree_sha != self._base_sha(job):
-                        baseline = BaselineObservation(
-                            readable=False,
-                            tree_sha=self._base_sha(job),
-                            detail="baseline provider returned a different tree SHA",
-                        )
-                    elif baseline.toolchain_digest != job.toolchain_digest:
-                        baseline = BaselineObservation(
-                            readable=False,
-                            tree_sha=self._base_sha(job),
-                            detail=(
-                                "baseline provider did not return the exact "
-                                "toolchain digest"
-                            ),
-                        )
-                    self._baseline_cache_put(baseline, cache_identity)
-            if outcome in {EvidenceOutcome.PASSED, EvidenceOutcome.FAILED}:
-                verdict = compare_failure_signals(
-                    mode=gate.baseline_mode,
-                    baseline=baseline,
-                    candidate_exit_code=result.exit_code,
-                    candidate_failure_ids=candidate_ids,
-                )
-                if verdict.ok:
-                    outcome = EvidenceOutcome.PASSED
-                    failure_class = None
-                else:
-                    outcome = (
-                        EvidenceOutcome.REFUSED
-                        if not verdict.baseline_readable
-                        else EvidenceOutcome.FAILED
-                    )
-                    failure_class = (
-                        ValidationFailureClass.BASELINE_UNPRODUCIBLE
-                        if not verdict.baseline_readable
-                        else ValidationFailureClass.CODE
-                    )
-        detail = result.stderr_tail or result.stdout_tail
-        if verdict is not None:
-            detail = verdict.detail + (f"; {detail}" if detail else "")
+            baseline = self._resolve_baseline(job, command)
+            outcome, failure_class, verdict = self._apply_differential_verdict(
+                outcome, failure_class, gate, baseline, candidate_ids, result
+            )
+        detail = self._combine_detail(result, verdict)
+        failure_ids, pre_existing_failure_ids, fixed_failure_ids = (
+            self._failure_id_fields(outcome, verdict, candidate_ids)
+        )
         return GateEvidence(
             evidence_id=f"evidence:{job.job_id}",
             gate_name=gate.name,
@@ -1379,15 +1655,9 @@ class ValidationRunner:
             baseline_tree_sha=baseline.tree_sha if baseline is not None else None,
             baseline_readable=baseline.readable if baseline is not None else None,
             differential=gate.baseline_mode is BaselineMode.DIFFERENTIAL,
-            failure_ids=()
-            if outcome is EvidenceOutcome.PASSED
-            else (
-                verdict.new_failure_ids if verdict is not None else tuple(candidate_ids)
-            ),
-            pre_existing_failure_ids=verdict.pre_existing_failure_ids
-            if verdict
-            else (),
-            fixed_failure_ids=verdict.fixed_failure_ids if verdict else (),
+            failure_ids=failure_ids,
+            pre_existing_failure_ids=pre_existing_failure_ids,
+            fixed_failure_ids=fixed_failure_ids,
             log_refs=tuple(item.content_address for item in result.log_refs),
             artifact_refs=tuple(item.content_address for item in result.artifact_refs),
             stdout_tail=result.stdout_tail,
@@ -1504,34 +1774,49 @@ class ValidationRunner:
             detail="blocking dependency did not pass; gate was not executed",
         )
 
-    def _certificate_if_ready(
-        self,
-        request: ValidationRequest,
-        plan: ValidationPlan,
-        evidence: Sequence[GateEvidence],
-    ) -> ValidationCertificate | None:
-        cert_gates = tuple(
-            gate for gate in plan.gates if gate.stage is ValidationStage.CERTIFICATION
-        )
-        if not cert_gates or request.generation_id is None:
-            return None
-        blocking = tuple(
-            gate.name for gate in cert_gates if gate.mode is GateMode.BLOCKING
-        )
-        records = tuple(
-            item for item in evidence if item.stage is ValidationStage.CERTIFICATION
-        )
-        if not blocking or any(
+    @staticmethod
+    def _all_blocking_gates_recorded(
+        blocking: tuple[str, ...], records: tuple[GateEvidence, ...]
+    ) -> bool:
+        return not any(
             next((item for item in records if item.gate_name == name), None) is None
             for name in blocking
-        ):
-            return None
-        if any(
+        )
+
+    @staticmethod
+    def _all_blocking_gates_passed(
+        blocking: tuple[str, ...], records: tuple[GateEvidence, ...]
+    ) -> bool:
+        return not any(
             item.outcome is not EvidenceOutcome.PASSED
             for item in records
             if item.gate_name in blocking
-        ):
-            return None
+        )
+
+    @staticmethod
+    def _certification_gates(plan: ValidationPlan) -> tuple[ValidationGate, ...]:
+        return tuple(
+            gate for gate in plan.gates if gate.stage is ValidationStage.CERTIFICATION
+        )
+
+    @staticmethod
+    def _blocking_gate_names(cert_gates: tuple[ValidationGate, ...]) -> tuple[str, ...]:
+        return tuple(gate.name for gate in cert_gates if gate.mode is GateMode.BLOCKING)
+
+    @staticmethod
+    def _certification_records(
+        evidence: Sequence[GateEvidence],
+    ) -> tuple[GateEvidence, ...]:
+        return tuple(
+            item for item in evidence if item.stage is ValidationStage.CERTIFICATION
+        )
+
+    @staticmethod
+    def _issue_certificate(
+        request: ValidationRequest,
+        blocking: tuple[str, ...],
+        records: tuple[GateEvidence, ...],
+    ) -> ValidationCertificate | None:
         try:
             return ValidationCertificate.issue(
                 certificate_id=f"certificate:{request.generation_id}:{request.tree_sha}",
@@ -1548,6 +1833,23 @@ class ValidationRunner:
             )
         except EvidenceError:
             return None
+
+    def _certificate_if_ready(
+        self,
+        request: ValidationRequest,
+        plan: ValidationPlan,
+        evidence: Sequence[GateEvidence],
+    ) -> ValidationCertificate | None:
+        cert_gates = self._certification_gates(plan)
+        if not cert_gates or request.generation_id is None:
+            return None
+        blocking = self._blocking_gate_names(cert_gates)
+        records = self._certification_records(evidence)
+        if not blocking or not self._all_blocking_gates_recorded(blocking, records):
+            return None
+        if not self._all_blocking_gates_passed(blocking, records):
+            return None
+        return self._issue_certificate(request, blocking, records)
 
     @staticmethod
     def post_land_smoke_handoff(
