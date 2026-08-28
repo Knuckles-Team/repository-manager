@@ -474,70 +474,95 @@ class ResourceScheduler:
             existing.attempt,
             existing.fence,
         ) == (request.work_item_id, request.attempt, request.fence)
-        if same_claim and existing.input_fingerprint == input_fingerprint:
-            # A local row is only a projection.  Even an apparently active
-            # row must be exact-queried against native WorkItem authority
-            # before an ADMITTED retry can hand work to an executor.
-            query = getattr(self.work_item_port, "query_reservation", None)
-            if not callable(query):
-                return self._decision(
-                    request,
-                    AdmissionStatus.DEFERRED,
-                    AdmissionReason.NATIVE_QUERY_REQUIRED,
-                    "native reservation revalidation is required; local projection "
-                    "cannot authorize execution",
-                    reservation_id=reservation_id,
-                )
-            native = query(
-                reservation_id=reservation_id,
-                work_item_id=request.work_item_id,
-                attempt=request.attempt,
-                fence=request.fence,
-                expected=existing,
-            )
-            if isinstance(native, ReservationRecord):
-                if native.active and native.input_fingerprint == input_fingerprint:
-                    self._mirror_native_record(native)
-                    native_capacity = (
-                        self.capacity.snapshot(native.host_id, now=now)
-                        if self.capacity.get(native.host_id) is not None
-                        else None
-                    )
-                    return self._decision(
-                        request,
-                        AdmissionStatus.ADMITTED,
-                        AdmissionReason.ADMITTED,
-                        "native reservation revalidated for current WorkItem fence",
-                        host_id=native.host_id,
-                        reservation_id=native.reservation_id,
-                        reservation=native,
-                        capacity=native_capacity,
-                        considered_hosts=(native.host_id,),
-                    )
-                return self._decision(
-                    request,
-                    AdmissionStatus.DEFERRED,
-                    AdmissionReason.FENCE_CONFLICT,
-                    "native reservation lifecycle is not active; local projection "
-                    "cannot authorize execution",
-                    reservation_id=reservation_id,
-                )
-            query_reason = self._native_query_reason(native)
+        if not (same_claim and existing.input_fingerprint == input_fingerprint):
             return self._decision(
                 request,
-                AdmissionStatus.STALE_FENCE
-                if native == FenceDecision.STALE
-                else AdmissionStatus.DEFERRED,
-                query_reason,
-                "native reservation revalidation did not authorize this retry",
+                AdmissionStatus.DEFERRED,
+                AdmissionReason.FENCE_CONFLICT,
+                "reservation identity is already attached to a different "
+                "immutable input",
                 reservation_id=reservation_id,
             )
+        # A local row is only a projection.  Even an apparently active
+        # row must be exact-queried against native WorkItem authority
+        # before an ADMITTED retry can hand work to an executor.
+        query = getattr(self.work_item_port, "query_reservation", None)
+        if not callable(query):
+            return self._decision(
+                request,
+                AdmissionStatus.DEFERRED,
+                AdmissionReason.NATIVE_QUERY_REQUIRED,
+                "native reservation revalidation is required; local projection "
+                "cannot authorize execution",
+                reservation_id=reservation_id,
+            )
+        native = query(
+            reservation_id=reservation_id,
+            work_item_id=request.work_item_id,
+            attempt=request.attempt,
+            fence=request.fence,
+            expected=existing,
+        )
+        return self._decision_from_native_query(
+            request, reservation_id, input_fingerprint, native, now
+        )
+
+    def _decision_from_native_query(
+        self,
+        request: AdmissionRequest,
+        reservation_id: str,
+        input_fingerprint: str,
+        native: Any,
+        now: datetime,
+    ) -> AdmissionDecision:
+        if isinstance(native, ReservationRecord):
+            return self._decision_from_native_record(
+                request, reservation_id, input_fingerprint, native, now
+            )
+        query_reason = self._native_query_reason(native)
         return self._decision(
             request,
-            AdmissionStatus.DEFERRED,
-            AdmissionReason.FENCE_CONFLICT,
-            "reservation identity is already attached to a different immutable input",
+            AdmissionStatus.STALE_FENCE
+            if native == FenceDecision.STALE
+            else AdmissionStatus.DEFERRED,
+            query_reason,
+            "native reservation revalidation did not authorize this retry",
             reservation_id=reservation_id,
+        )
+
+    def _decision_from_native_record(
+        self,
+        request: AdmissionRequest,
+        reservation_id: str,
+        input_fingerprint: str,
+        native: ReservationRecord,
+        now: datetime,
+    ) -> AdmissionDecision:
+        if not (native.active and native.input_fingerprint == input_fingerprint):
+            return self._decision(
+                request,
+                AdmissionStatus.DEFERRED,
+                AdmissionReason.FENCE_CONFLICT,
+                "native reservation lifecycle is not active; local projection "
+                "cannot authorize execution",
+                reservation_id=reservation_id,
+            )
+        self._mirror_native_record(native)
+        native_capacity = (
+            self.capacity.snapshot(native.host_id, now=now)
+            if self.capacity.get(native.host_id) is not None
+            else None
+        )
+        return self._decision(
+            request,
+            AdmissionStatus.ADMITTED,
+            AdmissionReason.ADMITTED,
+            "native reservation revalidated for current WorkItem fence",
+            host_id=native.host_id,
+            reservation_id=native.reservation_id,
+            reservation=native,
+            capacity=native_capacity,
+            considered_hosts=(native.host_id,),
         )
 
     def _evaluate_candidate_hosts(
@@ -709,9 +734,7 @@ class ResourceScheduler:
             capacity_snapshot=view.as_dict(),
             selected_target=TargetPolicy(
                 kind=(
-                    TargetKind.INVENTORY_ALIAS
-                    if view.is_remote
-                    else TargetKind.LOCAL
+                    TargetKind.INVENTORY_ALIAS if view.is_remote else TargetKind.LOCAL
                 ),
                 alias=view.host_id if view.is_remote else None,
                 capability_labels=view.labels,
@@ -877,9 +900,7 @@ class ResourceScheduler:
                 considered_hosts=tuple(item[0].host_id for item in eligible),
                 explanations=tuple(reasons),
             )
-        local_was_held = reservation_id in self.capacity.reservation_ids(
-            view.host_id
-        )
+        local_was_held = reservation_id in self.capacity.reservation_ids(view.host_id)
         if not self.capacity.try_reserve(
             view.host_id, reservation_id, requirement, now=now
         ):
@@ -953,7 +974,6 @@ class ResourceScheduler:
             explanations=tuple(reasons),
         )
 
-
     def release(
         self,
         reservation_id: str,
@@ -1022,7 +1042,9 @@ class ResourceScheduler:
 
         now = (now or datetime.now(UTC)).astimezone(UTC)
         reclaimed: list[str] = []
-        reclaim_expired = getattr(self.work_item_port, "atomic_reclaim_expired", None)
+        reclaim_expired_fn = getattr(
+            self.work_item_port, "atomic_reclaim_expired", None
+        )
         query_native = getattr(self.work_item_port, "query_reservation", None)
         for record in sorted(
             self.reservations.all(), key=lambda item: item.reservation_id
@@ -1030,55 +1052,84 @@ class ResourceScheduler:
             if len(reclaimed) >= limit:
                 break
             if not record.active:
-                if (
-                    record.state is ReservationState.EXPIRED
-                    and callable(reclaim_expired)
-                    and callable(query_native)
-                ):
-                    native_terminal = query_native(
-                        reservation_id=record.reservation_id,
-                        work_item_id=record.work_item_id,
-                        attempt=record.attempt,
-                        fence=record.fence,
-                        expected=record,
-                        for_lifecycle=True,
-                        controller=True,
-                    )
-                    if (
-                        isinstance(native_terminal, ReservationRecord)
-                        and native_terminal.state is ReservationState.EXPIRED
-                        and native_terminal.revision >= record.revision
-                        and native_terminal.same_immutable_input(record)
-                    ):
-                        reclaimed.append(record.reservation_id)
-                continue
-            if not record.expired(now) and not callable(reclaim_expired):
-                continue
-            if callable(reclaim_expired):
-                native = reclaim_expired(reservation=record, now=now)
+                reclaimed_id = self._reclaim_terminal_record(
+                    record, query_native, reclaim_expired_fn
+                )
             else:
-                native = self.work_item_port.atomic_reclaim(
-                    work_item_id=record.work_item_id,
-                    attempt=record.attempt,
-                    fence=record.fence,
-                    reservation_id=record.reservation_id,
-                    reservation=record,
-                    now=now,
+                reclaimed_id = self._reclaim_active_record(
+                    record, now, reclaim_expired_fn
                 )
-            if not self._accepted(native):
-                continue
-            self.capacity.release(
-                record.host_id, record.reservation_id, record.requirement
-            )
-            self.reservations.update(
-                record.with_state(
-                    ReservationState.EXPIRED,
-                    reason="reservation TTL elapsed and native fence authority permitted reclaim",
-                    at=now,
-                )
-            )
-            reclaimed.append(record.reservation_id)
+            if reclaimed_id is not None:
+                reclaimed.append(reclaimed_id)
         return tuple(reclaimed)
+
+    @staticmethod
+    def _reclaim_terminal_record(
+        record: ReservationRecord,
+        query_native: Any,
+        reclaim_expired_fn: Any,
+    ) -> str | None:
+        if not (
+            record.state is ReservationState.EXPIRED
+            and callable(reclaim_expired_fn)
+            and callable(query_native)
+        ):
+            return None
+        native_terminal = query_native(
+            reservation_id=record.reservation_id,
+            work_item_id=record.work_item_id,
+            attempt=record.attempt,
+            fence=record.fence,
+            expected=record,
+            for_lifecycle=True,
+            controller=True,
+        )
+        if (
+            isinstance(native_terminal, ReservationRecord)
+            and native_terminal.state is ReservationState.EXPIRED
+            and native_terminal.revision >= record.revision
+            and native_terminal.same_immutable_input(record)
+        ):
+            return record.reservation_id
+        return None
+
+    def _reclaim_active_record(
+        self,
+        record: ReservationRecord,
+        now: datetime,
+        reclaim_expired_fn: Any,
+    ) -> str | None:
+        if not record.expired(now) and not callable(reclaim_expired_fn):
+            return None
+        native = self._request_native_reclaim(record, now, reclaim_expired_fn)
+        if not self._accepted(native):
+            return None
+        self.capacity.release(record.host_id, record.reservation_id, record.requirement)
+        self.reservations.update(
+            record.with_state(
+                ReservationState.EXPIRED,
+                reason=(
+                    "reservation TTL elapsed and native fence authority "
+                    "permitted reclaim"
+                ),
+                at=now,
+            )
+        )
+        return record.reservation_id
+
+    def _request_native_reclaim(
+        self, record: ReservationRecord, now: datetime, reclaim_expired_fn: Any
+    ) -> Any:
+        if callable(reclaim_expired_fn):
+            return reclaim_expired_fn(reservation=record, now=now)
+        return self.work_item_port.atomic_reclaim(
+            work_item_id=record.work_item_id,
+            attempt=record.attempt,
+            fence=record.fence,
+            reservation_id=record.reservation_id,
+            reservation=record,
+            now=now,
+        )
 
     def select(
         self,
@@ -1194,6 +1245,21 @@ class ResourceScheduler:
     def _eligible_hosts(
         self, resources: ResourceRequest, *, now: datetime | None = None
     ) -> list[CapacityView]:
+        required_alias, preferred_alias = self._target_aliases(resources)
+        views = list(self.capacity.views(now=now))
+        views = self._filter_eligible_views(
+            views, resources, required_alias, preferred_alias
+        )
+        return sorted(
+            views,
+            key=lambda view: (
+                0 if preferred_alias and view.host_id == preferred_alias else 1,
+                view.host_id,
+            ),
+        )
+
+    @staticmethod
+    def _target_aliases(resources: ResourceRequest) -> tuple[str | None, str | None]:
         required = resources.required_target
         preferred = resources.preferred_target
         required_alias = (
@@ -1202,22 +1268,48 @@ class ResourceScheduler:
         preferred_alias = (
             preferred.alias if preferred.kind != TargetKind.LOCAL else None
         )
-        views = list(self.capacity.views(now=now))
-        if required_alias:
-            views = [view for view in views if view.host_id == required_alias]
-        if resources.host_labels:
-            labels = set(resources.host_labels)
-            views = [view for view in views if labels.issubset(view.labels)]
+        return required_alias, preferred_alias
+
+    @staticmethod
+    def _filter_by_required_alias(
+        views: list[CapacityView], required_alias: str | None
+    ) -> list[CapacityView]:
+        if not required_alias:
+            return views
+        return [view for view in views if view.host_id == required_alias]
+
+    @staticmethod
+    def _filter_by_host_labels(
+        views: list[CapacityView], resources: ResourceRequest
+    ) -> list[CapacityView]:
+        if not resources.host_labels:
+            return views
+        labels = set(resources.host_labels)
+        return [view for view in views if labels.issubset(view.labels)]
+
+    @staticmethod
+    def _filter_local_only(
+        views: list[CapacityView],
+        required_alias: str | None,
+        preferred_alias: str | None,
+    ) -> list[CapacityView]:
         # A local request cannot be silently routed to a remote inventory host
         # unless its required/preferred target explicitly names that alias.
-        if required_alias is None and preferred_alias is None:
-            views = [view for view in views if not view.is_remote]
-        return sorted(
-            views,
-            key=lambda view: (
-                0 if preferred_alias and view.host_id == preferred_alias else 1,
-                view.host_id,
-            ),
+        if required_alias is not None or preferred_alias is not None:
+            return views
+        return [view for view in views if not view.is_remote]
+
+    @staticmethod
+    def _filter_eligible_views(
+        views: list[CapacityView],
+        resources: ResourceRequest,
+        required_alias: str | None,
+        preferred_alias: str | None,
+    ) -> list[CapacityView]:
+        views = ResourceScheduler._filter_by_required_alias(views, required_alias)
+        views = ResourceScheduler._filter_by_host_labels(views, resources)
+        return ResourceScheduler._filter_local_only(
+            views, required_alias, preferred_alias
         )
 
     def _host_sort_key(
@@ -1239,36 +1331,106 @@ class ResourceScheduler:
         active: Iterable[ReservationRecord],
     ) -> str:
         records = tuple(active)
-        if profile.concurrency_limit is not None:
-            count = sum(
-                record.concurrency_key
-                == (resources.concurrency_key or profile.concurrency_key)
-                for record in records
+        concurrency = self._concurrency_conflict(profile, resources, records)
+        if concurrency:
+            return concurrency
+        return self._per_record_conflict(profile, request, resources, host_id, records)
+
+    @staticmethod
+    def _concurrency_conflict(
+        profile: ResourceProfile,
+        resources: ResourceRequest,
+        records: tuple[ReservationRecord, ...],
+    ) -> str:
+        if profile.concurrency_limit is None:
+            return ""
+        count = sum(
+            record.concurrency_key
+            == (resources.concurrency_key or profile.concurrency_key)
+            for record in records
+        )
+        if count >= profile.concurrency_limit:
+            return f"concurrency limit for {profile.concurrency_key!r}"
+        return ""
+
+    @staticmethod
+    def _anti_affinity_conflict(
+        profile: ResourceProfile,
+        resources: ResourceRequest,
+        host_id: str,
+        record: ReservationRecord,
+    ) -> str:
+        if record.host_id == host_id and set(record.anti_affinity).intersection(
+            set(resources.anti_affinity).union(profile.anti_affinity)
+        ):
+            return f"anti-affinity conflict with {record.reservation_id!r}"
+        return ""
+
+    @staticmethod
+    def _repository_exclusive_conflict(
+        profile: ResourceProfile,
+        request: AdmissionRequest,
+        record: ReservationRecord,
+    ) -> str:
+        if (
+            (profile.repository_exclusive or record.repository_exclusive)
+            and request.repository_id
+            and record.repository_id == request.repository_id
+        ):
+            return f"repository exclusive reservation {record.reservation_id!r}"
+        return ""
+
+    @staticmethod
+    def _branch_exclusive_conflict(
+        profile: ResourceProfile,
+        request: AdmissionRequest,
+        record: ReservationRecord,
+    ) -> str:
+        if (
+            (profile.branch_exclusive or record.branch_exclusive)
+            and request.repository_id
+            and request.branch
+            and (
+                record.repository_id,
+                record.branch,
             )
-            if count >= profile.concurrency_limit:
-                return f"concurrency limit for {profile.concurrency_key!r}"
+            == (request.repository_id, request.branch)
+        ):
+            return f"branch exclusive reservation {record.reservation_id!r}"
+        return ""
+
+    @staticmethod
+    def _record_conflict(
+        profile: ResourceProfile,
+        request: AdmissionRequest,
+        resources: ResourceRequest,
+        host_id: str,
+        record: ReservationRecord,
+    ) -> str:
+        return (
+            ResourceScheduler._anti_affinity_conflict(
+                profile, resources, host_id, record
+            )
+            or ResourceScheduler._repository_exclusive_conflict(
+                profile, request, record
+            )
+            or ResourceScheduler._branch_exclusive_conflict(profile, request, record)
+        )
+
+    @staticmethod
+    def _per_record_conflict(
+        profile: ResourceProfile,
+        request: AdmissionRequest,
+        resources: ResourceRequest,
+        host_id: str,
+        records: tuple[ReservationRecord, ...],
+    ) -> str:
         for record in records:
-            if record.host_id == host_id and set(record.anti_affinity).intersection(
-                set(resources.anti_affinity).union(profile.anti_affinity)
-            ):
-                return f"anti-affinity conflict with {record.reservation_id!r}"
-            if (
-                (profile.repository_exclusive or record.repository_exclusive)
-                and request.repository_id
-                and record.repository_id == request.repository_id
-            ):
-                return f"repository exclusive reservation {record.reservation_id!r}"
-            if (
-                (profile.branch_exclusive or record.branch_exclusive)
-                and request.repository_id
-                and request.branch
-                and (
-                    record.repository_id,
-                    record.branch,
-                )
-                == (request.repository_id, request.branch)
-            ):
-                return f"branch exclusive reservation {record.reservation_id!r}"
+            conflict = ResourceScheduler._record_conflict(
+                profile, request, resources, host_id, record
+            )
+            if conflict:
+                return conflict
         return ""
 
     @staticmethod
