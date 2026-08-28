@@ -155,7 +155,9 @@ def _require_regular_source_stat(
     if not stat.S_ISREG(source_stat.st_mode):
         raise ArtifactStoreError(f"artifact source is not a regular file: {source}")
     if max_bytes is not None and source_stat.st_size > max_bytes:
-        raise ArtifactStoreError("build artifacts exceed the admitted staging byte bound")
+        raise ArtifactStoreError(
+            "build artifacts exceed the admitted staging byte bound"
+        )
 
 
 def _copy_stream_bounded(
@@ -217,7 +219,9 @@ def _copy_file_no_follow(
             source_descriptor = None
             with os.fdopen(destination_descriptor, "wb") as destination_handle:
                 destination_descriptor = None
-                copied = _copy_stream_bounded(source_handle, destination_handle, max_bytes)
+                copied = _copy_stream_bounded(
+                    source_handle, destination_handle, max_bytes
+                )
         _require_source_unchanged_after_copy(source, source_stat, copied)
         return copied
     except OSError as exc:
@@ -229,6 +233,56 @@ def _copy_file_no_follow(
                     os.close(descriptor)
                 except OSError:
                     pass
+
+
+class _CopyTreeCounters:
+    """Mutable running totals for one `_copy_tree_no_follow` walk."""
+
+    __slots__ = ("entries", "files", "total")
+
+    def __init__(self) -> None:
+        self.entries = 0
+        self.files = 0
+        self.total = 0
+
+
+def _copy_tree_child(
+    child: os.DirEntry[str],
+    destination: Path,
+    depth: int,
+    counters: _CopyTreeCounters,
+    pending: list[tuple[Path, Path, int]],
+) -> None:
+    """Handle one `os.scandir` entry during `_copy_tree_no_follow`'s bounded walk."""
+    counters.entries += 1
+    if counters.entries > _MAX_SCAN_ENTRIES:
+        raise ArtifactStoreError("artifact stage exceeds its entry bound")
+    source_path = Path(child.path)
+    destination_path = destination / child.name
+    if child.is_symlink():
+        raise ArtifactStoreError("symlink artifact component is not allowed")
+    if child.is_dir(follow_symlinks=False):
+        _reject_symlink_path(destination_path)
+        try:
+            destination_path.mkdir(parents=False, exist_ok=False)
+        except OSError as exc:
+            raise ArtifactStoreError(
+                "artifact publication directory could not be created"
+            ) from exc
+        pending.append((source_path, destination_path, depth + 1))
+        return
+    if not child.is_file(follow_symlinks=False):
+        raise ArtifactStoreError("artifact stage contains a non-regular entry")
+    counters.files += 1
+    if counters.files > _MAX_STAGE_ARTIFACTS:
+        raise ArtifactStoreError("artifact stage exceeds its file bound")
+    counters.total += _copy_file_no_follow(
+        source_path,
+        destination_path,
+        max_bytes=_MAX_STAGE_BYTES - counters.total,
+    )
+    if counters.total > _MAX_STAGE_BYTES:
+        raise ArtifactStoreError("artifact stage exceeds its byte bound")
 
 
 def _copy_tree_no_follow(source_root: Path, destination_root: Path) -> None:
@@ -243,10 +297,8 @@ def _copy_tree_no_follow(source_root: Path, destination_root: Path) -> None:
         raise ArtifactStoreError(
             "artifact publication directory could not be created"
         ) from exc
-    pending = [(source_root, destination_root, 0)]
-    entries = 0
-    files = 0
-    total = 0
+    pending: list[tuple[Path, Path, int]] = [(source_root, destination_root, 0)]
+    counters = _CopyTreeCounters()
     while pending:
         source, destination, depth = pending.pop()
         if depth > _MAX_SCAN_DEPTH:
@@ -257,39 +309,7 @@ def _copy_tree_no_follow(source_root: Path, destination_root: Path) -> None:
             raise ArtifactStoreError("artifact stage could not be read") from exc
         with iterator:
             for child in iterator:
-                entries += 1
-                if entries > _MAX_SCAN_ENTRIES:
-                    raise ArtifactStoreError("artifact stage exceeds its entry bound")
-                source_path = Path(child.path)
-                destination_path = destination / child.name
-                if child.is_symlink():
-                    raise ArtifactStoreError(
-                        "symlink artifact component is not allowed"
-                    )
-                if child.is_dir(follow_symlinks=False):
-                    _reject_symlink_path(destination_path)
-                    try:
-                        destination_path.mkdir(parents=False, exist_ok=False)
-                    except OSError as exc:
-                        raise ArtifactStoreError(
-                            "artifact publication directory could not be created"
-                        ) from exc
-                    pending.append((source_path, destination_path, depth + 1))
-                    continue
-                if not child.is_file(follow_symlinks=False):
-                    raise ArtifactStoreError(
-                        "artifact stage contains a non-regular entry"
-                    )
-                files += 1
-                if files > _MAX_STAGE_ARTIFACTS:
-                    raise ArtifactStoreError("artifact stage exceeds its file bound")
-                total += _copy_file_no_follow(
-                    source_path,
-                    destination_path,
-                    max_bytes=_MAX_STAGE_BYTES - total,
-                )
-                if total > _MAX_STAGE_BYTES:
-                    raise ArtifactStoreError("artifact stage exceeds its byte bound")
+                _copy_tree_child(child, destination, depth, counters, pending)
 
 
 def _pattern_matches(relative: PurePosixPath, pattern: str) -> bool:
@@ -612,6 +632,55 @@ def _exact_authority_proof(
     return True
 
 
+@dataclass(frozen=True)
+class _ScanBounds:
+    """Caller-supplied bounds for one `_bounded_tree_size` walk."""
+
+    max_entries: int
+    max_files: int
+    max_bytes: int
+
+
+class _TreeSizeCounters:
+    """Mutable running totals for one `_bounded_tree_size` walk."""
+
+    __slots__ = ("total", "entries", "files")
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.entries = 0
+        self.files = 0
+
+
+def _bounded_tree_size_child(
+    child: os.DirEntry[str],
+    depth: int,
+    counters: _TreeSizeCounters,
+    pending: list[tuple[Path, int]],
+    bounds: _ScanBounds,
+) -> None:
+    """Handle one `os.scandir` entry during `_bounded_tree_size`'s bounded walk."""
+    counters.entries += 1
+    if counters.entries > bounds.max_entries:
+        raise ArtifactStoreError("artifact scan exceeds its entry bound")
+    if child.is_symlink():
+        raise ArtifactStoreError("symlink artifact component is not allowed")
+    if child.is_dir(follow_symlinks=False):
+        pending.append((Path(child.path), depth + 1))
+        return
+    if not child.is_file(follow_symlinks=False):
+        raise ArtifactStoreError("artifact tree contains a non-regular entry")
+    counters.files += 1
+    if counters.files > bounds.max_files:
+        raise ArtifactStoreError("artifact scan exceeds its file bound")
+    try:
+        counters.total += child.stat(follow_symlinks=False).st_size
+    except OSError as exc:
+        raise ArtifactStoreError("artifact scan could not stat a file") from exc
+    if counters.total > bounds.max_bytes:
+        raise ArtifactStoreError("artifact scan exceeds its byte bound")
+
+
 def _bounded_tree_size(
     root: Path,
     *,
@@ -624,10 +693,11 @@ def _bounded_tree_size(
     _reject_symlink_path(root)
     if root.is_symlink() or not root.is_dir():
         raise ArtifactStoreError("artifact scan root is not a regular directory")
-    total = 0
-    entries = 0
-    files = 0
-    pending = [(root, 0)]
+    counters = _TreeSizeCounters()
+    bounds = _ScanBounds(
+        max_entries=max_entries, max_files=max_files, max_bytes=max_bytes
+    )
+    pending: list[tuple[Path, int]] = [(root, 0)]
     while pending:
         current, depth = pending.pop()
         if depth > _MAX_SCAN_DEPTH:
@@ -639,37 +709,16 @@ def _bounded_tree_size(
                 "artifact scan could not read a directory"
             ) from exc
         with iterator:
+            # NOTE: this per-directory bound intentionally uses the module
+            # default `_MAX_SCAN_FILES`, not the caller-supplied `max_files`
+            # -- preserved verbatim from the pre-refactor behaviour.
             children = 0
             for child in iterator:
                 children += 1
                 if children > _MAX_SCAN_FILES:
                     raise ArtifactStoreError("artifact scan directory is too large")
-                entries += 1
-                if entries > max_entries:
-                    raise ArtifactStoreError("artifact scan exceeds its entry bound")
-                if child.is_symlink():
-                    raise ArtifactStoreError(
-                        "symlink artifact component is not allowed"
-                    )
-                if child.is_dir(follow_symlinks=False):
-                    pending.append((Path(child.path), depth + 1))
-                    continue
-                if not child.is_file(follow_symlinks=False):
-                    raise ArtifactStoreError(
-                        "artifact tree contains a non-regular entry"
-                    )
-                files += 1
-                if files > max_files:
-                    raise ArtifactStoreError("artifact scan exceeds its file bound")
-                try:
-                    total += child.stat(follow_symlinks=False).st_size
-                except OSError as exc:
-                    raise ArtifactStoreError(
-                        "artifact scan could not stat a file"
-                    ) from exc
-                if total > max_bytes:
-                    raise ArtifactStoreError("artifact scan exceeds its byte bound")
-    return total
+                _bounded_tree_size_child(child, depth, counters, pending, bounds)
+    return counters.total
 
 
 class BuildArtifactStore:
