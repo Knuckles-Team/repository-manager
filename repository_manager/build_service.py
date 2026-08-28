@@ -15,6 +15,7 @@ import os
 import stat
 import subprocess
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -121,6 +122,56 @@ def _read_bounded_untracked(path: Path, limit: int) -> bytes:
                 pass
 
 
+def _snapshot_untracked_entry(
+    root: Path, raw_name: bytes, total: int
+) -> tuple[bytes, int]:
+    """One untracked-file entry for the dirty snapshot.
+
+    Returns ``(part_bytes, new_total)``. Raises :class:`BuildServiceError` on
+    any bound violation or unsafe path — never silently truncates or skips.
+    """
+    try:
+        relative = raw_name.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BuildServiceError(
+            "dirty build snapshot contains invalid path data"
+        ) from exc
+    candidate = root / relative
+    try:
+        candidate.resolve(strict=False).relative_to(root)
+    except ValueError as exc:
+        raise BuildServiceError(
+            "dirty build snapshot path escapes the repository"
+        ) from exc
+    try:
+        candidate_stat = os.lstat(candidate)
+    except OSError as exc:
+        raise BuildServiceError(
+            "dirty build snapshot could not inspect an untracked path"
+        ) from exc
+    if stat.S_ISLNK(candidate_stat.st_mode):
+        try:
+            content = os.readlink(candidate).encode("utf-8", "surrogateescape")
+        except OSError as exc:
+            raise BuildServiceError(
+                "dirty build snapshot could not read an untracked symlink"
+            ) from exc
+        if (
+            total + len(relative.encode("utf-8")) + len(content)
+            > _DIRTY_SNAPSHOT_MAX_BYTES
+        ):
+            raise BuildServiceError("dirty build snapshot exceeds the durable bound")
+    elif stat.S_ISREG(candidate_stat.st_mode):
+        remaining = _DIRTY_SNAPSHOT_MAX_BYTES - total - len(relative.encode("utf-8"))
+        content = _read_bounded_untracked(candidate, remaining)
+    else:
+        content = b"<non-regular>"
+    new_total = total + len(relative.encode("utf-8")) + len(content)
+    if new_total > _DIRTY_SNAPSHOT_MAX_BYTES:
+        raise BuildServiceError("dirty build snapshot exceeds the durable bound")
+    return relative.encode("utf-8") + b"\0" + content, new_total
+
+
 def dirty_snapshot_digest(tree: Path | str) -> str:
     """Hash a bounded dirty-tree snapshot for honest uncacheable execution."""
 
@@ -143,50 +194,8 @@ def dirty_snapshot_digest(tree: Path | str) -> str:
     for raw_name in untracked:
         if not raw_name:
             continue
-        try:
-            relative = raw_name.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise BuildServiceError(
-                "dirty build snapshot contains invalid path data"
-            ) from exc
-        candidate = root / relative
-        try:
-            candidate.resolve(strict=False).relative_to(root)
-        except ValueError as exc:
-            raise BuildServiceError(
-                "dirty build snapshot path escapes the repository"
-            ) from exc
-        try:
-            candidate_stat = os.lstat(candidate)
-        except OSError as exc:
-            raise BuildServiceError(
-                "dirty build snapshot could not inspect an untracked path"
-            ) from exc
-        if stat.S_ISLNK(candidate_stat.st_mode):
-            try:
-                content = os.readlink(candidate).encode("utf-8", "surrogateescape")
-            except OSError as exc:
-                raise BuildServiceError(
-                    "dirty build snapshot could not read an untracked symlink"
-                ) from exc
-            if (
-                total + len(relative.encode("utf-8")) + len(content)
-                > _DIRTY_SNAPSHOT_MAX_BYTES
-            ):
-                raise BuildServiceError(
-                    "dirty build snapshot exceeds the durable bound"
-                )
-        elif stat.S_ISREG(candidate_stat.st_mode):
-            remaining = (
-                _DIRTY_SNAPSHOT_MAX_BYTES - total - len(relative.encode("utf-8"))
-            )
-            content = _read_bounded_untracked(candidate, remaining)
-        else:
-            content = b"<non-regular>"
-        total += len(relative.encode("utf-8")) + len(content)
-        if total > _DIRTY_SNAPSHOT_MAX_BYTES:
-            raise BuildServiceError("dirty build snapshot exceeds the durable bound")
-        parts.append(relative.encode("utf-8") + b"\0" + content)
+        part, total = _snapshot_untracked_entry(root, raw_name, total)
+        parts.append(part)
     return hashlib.sha256(b"".join(parts)).hexdigest()
 
 
@@ -219,6 +228,458 @@ def _toolchain_digest(fingerprint: str) -> str:
     return _digest({"toolchain_fingerprint": fingerprint})
 
 
+@dataclass(frozen=True)
+class _CurrentBuildInputs:
+    """Freshly recomputed build inputs, for comparison against a submitted
+    typed payload in :func:`_assert_identity_and_contract_unchanged` and its
+    siblings — see :func:`_recompute_current_build_inputs`.
+    """
+
+    head: str
+    spec: bq.BuildSpec
+    repo_id: str
+    key: bq.CacheKey
+    config_digest: str
+    spec_digest: str
+
+
+def _recompute_current_build_inputs(
+    tree: Path, spec_name: str, generation_id: str | None
+) -> _CurrentBuildInputs:
+    try:
+        current_head = bq._require_git(["rev-parse", "HEAD"], tree)  # noqa: SLF001
+        current_config = bq.load_config(tree)
+        current_spec = current_config.spec(spec_name)
+        current_repo_id = bq.stable_repository_id(bq.lane_scope(tree).main_tree)
+        current_key = bq.compute_cache_key(
+            tree,
+            current_spec,
+            repo_name=current_repo_id,
+            generation_id=generation_id,
+        )
+        current_config_digest = bq._config_digest(tree)  # noqa: SLF001
+        current_spec_digest = bq._spec_digest(current_spec)  # noqa: SLF001
+    except Exception as exc:
+        if isinstance(exc, BuildServiceError):
+            raise
+        raise BuildServiceError(
+            "build submission inputs could not be revalidated"
+        ) from exc
+    return _CurrentBuildInputs(
+        head=current_head,
+        spec=current_spec,
+        repo_id=current_repo_id,
+        key=current_key,
+        config_digest=current_config_digest,
+        spec_digest=current_spec_digest,
+    )
+
+
+def _assert_identity_unchanged(payload: Any, current: _CurrentBuildInputs) -> None:
+    if payload.repository_id != current.repo_id:
+        raise BuildServiceError("build submission repository identity changed")
+    if payload.base_sha != current.head:
+        raise BuildServiceError(
+            "build submission HEAD changed before durable submission"
+        )
+    if payload.config_digest != current.config_digest:
+        raise BuildServiceError(
+            "build submission config changed before durable submission"
+        )
+    if payload.spec_digest != current.spec_digest:
+        raise BuildServiceError(
+            "build submission spec changed before durable submission"
+        )
+
+
+def _assert_spec_contract_unchanged(payload: Any, current: _CurrentBuildInputs) -> None:
+    if payload.build_spec_name != current.spec.name:
+        raise BuildServiceError(
+            "build submission spec changed before durable submission"
+        )
+    if payload.argv != current.spec.command:
+        raise BuildServiceError(
+            "build submission command changed before durable submission"
+        )
+    if payload.workdir != current.spec.workdir:
+        raise BuildServiceError(
+            "build submission workdir changed before durable submission"
+        )
+    normalized_artifacts = tuple(sorted(dict.fromkeys(current.spec.artifacts)))
+    if payload.artifact_patterns != normalized_artifacts:
+        raise BuildServiceError(
+            "build submission artifact contract changed before durable submission"
+        )
+    if payload.timeout_seconds != current.spec.timeout:
+        raise BuildServiceError(
+            "build submission timeout changed before durable submission"
+        )
+    if payload.feature_set != " ".join(current.spec.command):
+        raise BuildServiceError(
+            "build submission feature set changed before durable submission"
+        )
+    if payload.target_triple != bq._target_triple(current.spec):  # noqa: SLF001
+        raise BuildServiceError(
+            "build submission target changed before durable submission"
+        )
+
+
+def _assert_identity_and_contract_unchanged(
+    payload: Any, current: _CurrentBuildInputs
+) -> None:
+    _assert_identity_unchanged(payload, current)
+    _assert_spec_contract_unchanged(payload, current)
+
+
+def _assert_generation_and_policy_unchanged(
+    payload: Any,
+    current: _CurrentBuildInputs,
+    key: bq.CacheKey,
+    generation_id: str | None,
+) -> None:
+    if payload.generation_id != (generation_id or current.key.generation_id or None):
+        raise BuildServiceError(
+            "build submission generation changed before durable submission"
+        )
+    if payload.artifact_contract_digest != _artifact_contract_digest(current.spec):
+        raise BuildServiceError(
+            "build submission artifact contract changed before durable submission"
+        )
+    expected_toolchain = (
+        current.key.toolchain_fingerprint if current.key.computable else "unavailable"
+    )
+    if payload.toolchain_digest != _toolchain_digest(expected_toolchain):
+        raise BuildServiceError(
+            "build submission toolchain identity changed before durable submission"
+        )
+    if payload.execution_policy_ref != "repository.build-policy:v1":
+        raise BuildServiceError(
+            "build submission execution policy changed before durable submission"
+        )
+    if payload.cacheable != key.computable:
+        raise BuildServiceError(
+            "build submission cacheability changed before durable submission"
+        )
+    if payload.profile_ref != (
+        f"repository_manager:resource_profile:{current.spec.resource_class}:v1"
+    ):
+        raise BuildServiceError(
+            "build submission resource profile changed before durable submission"
+        )
+
+
+def _assert_cache_key_components_unchanged(
+    payload: Any, current: _CurrentBuildInputs, key: bq.CacheKey
+) -> None:
+    if current.key.components() != key.components():
+        raise BuildServiceError(
+            "build submission key inputs changed before durable submission"
+        )
+    current_components = current.key.components()
+    payload_components = {
+        component.name: component.value for component in payload.cache_key_components
+    }
+    if payload_components != current_components:
+        raise BuildServiceError(
+            "build submission key inputs changed before durable submission"
+        )
+
+
+def _assert_tree_identity_unchanged(
+    payload: Any, current: _CurrentBuildInputs, tree: Path
+) -> None:
+    if payload.cacheable is True:
+        if payload.cache_key_digest != current.key.digest:
+            raise BuildServiceError(
+                "build submission cache key changed before durable submission"
+            )
+        if payload.tree_sha != current.key.tree_sha:
+            raise BuildServiceError(
+                "build submission tree key changed before durable submission"
+            )
+        return
+    try:
+        submitted_tree_sha = bq._require_git(  # noqa: SLF001
+            ["rev-parse", f"{current.head}^{{tree}}"], tree
+        )
+    except Exception as exc:
+        raise BuildServiceError(
+            "build submission tree identity could not be revalidated"
+        ) from exc
+    if payload.tree_sha != submitted_tree_sha:
+        raise BuildServiceError(
+            "build submission tree identity changed before durable submission"
+        )
+    if payload.degraded_reason != current.key.degraded_reason:
+        raise BuildServiceError(
+            "build submission degradation state changed before durable submission"
+        )
+
+
+def _revalidate_head_and_key(
+    tree: Path, spec: bq.BuildSpec, generation_id: str | None, key: bq.CacheKey
+) -> tuple[str, bq.CacheKey, bq.BuildSpec, bq.BuildConfig]:
+    """Re-resolve HEAD/spec/key immediately before durable submission.
+
+    Raises :class:`BuildServiceError` if the tree is dirty, the inputs can't
+    be revalidated, or the key's components have drifted since ``key`` was
+    computed. Returns ``(base_sha, current_key, current_spec, current_config)``
+    — the caller rebinds its own ``key``/``spec``/``config`` to these, exactly
+    as the inline version did.
+    """
+    try:
+        if bq._tree_is_dirty(tree):  # noqa: SLF001
+            raise BuildServiceError(
+                "build submission tree changed or became dirty before durable submission"
+            )
+        base_sha = bq._require_git(["rev-parse", "HEAD"], tree)  # noqa: SLF001
+    except Exception as exc:
+        if isinstance(exc, BuildServiceError):
+            raise
+        raise BuildServiceError(
+            "build submission could not resolve immutable HEAD"
+        ) from exc
+    try:
+        current_config = bq.load_config(tree)
+        current_spec = current_config.spec(spec.name)
+        current_key = bq.compute_cache_key(
+            tree,
+            current_spec,
+            repo_name=bq.stable_repository_id(bq.lane_scope(tree).main_tree),
+            generation_id=generation_id,
+        )
+    except Exception as exc:
+        if isinstance(exc, BuildServiceError):
+            raise
+        raise BuildServiceError(
+            "build submission inputs could not be revalidated"
+        ) from exc
+    if current_key.components() != key.components():
+        raise BuildServiceError(
+            "build submission key inputs changed before durable submission"
+        )
+    return base_sha, current_key, current_spec, current_config
+
+
+def _build_resource_payload(spec: bq.BuildSpec) -> dict[str, Any]:
+    profile = default_resource_profiles().get(spec.resource_class)
+    if profile is None:
+        raise BuildServiceError(
+            f"build spec {spec.name!r} names unknown resource profile {spec.resource_class!r}"
+        )
+    resources = spec.resources
+    preferred_target: dict[str, Any] = {"kind": "local"}
+    required_target: dict[str, Any] | None = None
+    if spec.placement.preferred_host:
+        preferred_target = {
+            "kind": "inventory_alias",
+            "alias": spec.placement.preferred_host,
+        }
+    if spec.placement.required_host:
+        required_target = {
+            "kind": "inventory_alias",
+            "alias": spec.placement.required_host,
+        }
+    return {
+        "resource_class": spec.resource_class,
+        "concurrency_key": profile.concurrency_key,
+        "cpu_weight": max(1, resources.cpu_weight, profile.cpu_weight),
+        "memory_mib": max(1, resources.memory_mb or profile.memory_mib),
+        "disk_mib": max(1, resources.disk_mb or profile.disk_mib),
+        "process_slots": max(1, resources.process_slots, profile.process_slots),
+        "host_labels": sorted(
+            set(spec.placement.required_labels).union(profile.required_labels)
+        ),
+        "preferred_target": preferred_target,
+        "required_target": required_target,
+        "anti_affinity": sorted(
+            set(spec.placement.anti_affinity).union(profile.anti_affinity)
+        ),
+        "fairness_group": profile.default_fairness_group,
+        "disk_low_watermark_mib": profile.disk_low_watermark_mib,
+        "disk_high_watermark_mib": profile.disk_high_watermark_mib,
+    }
+
+
+def _resolve_submission_tree_sha(
+    tree: Path, base_sha: str, key: bq.CacheKey, cacheable: bool
+) -> tuple[str, str]:
+    """``(tree_sha, toolchain_fingerprint)`` for the durable payload."""
+    if cacheable:
+        return key.tree_sha, key.toolchain_fingerprint
+    try:
+        tree_sha = bq._require_git(  # noqa: SLF001
+            ["rev-parse", f"{base_sha}^{{tree}}"], tree
+        )
+    except Exception as exc:
+        raise BuildServiceError(
+            "uncacheable build payload could not resolve submitted tree"
+        ) from exc
+    return tree_sha, "unavailable"
+
+
+@dataclass(frozen=True)
+class _DescriptorInputs:
+    repository_id: str
+    base_sha: str
+    tree_sha: str
+    generation_id: str | None
+    spec: bq.BuildSpec
+    spec_digest: str
+    config_digest: str
+    toolchain_fingerprint: str
+    key: bq.CacheKey
+    cacheable: bool
+
+
+def _build_execution_descriptor(
+    inputs: _DescriptorInputs,
+) -> BuildExecutionDescriptor:
+    try:
+        return BuildExecutionDescriptor(
+            repository_id=inputs.repository_id,
+            base_sha=inputs.base_sha,
+            tree_sha=inputs.tree_sha,
+            generation_id=inputs.generation_id or inputs.key.generation_id or None,
+            build_spec_name=inputs.spec.name,
+            spec_digest=inputs.spec_digest,
+            config_digest=inputs.config_digest,
+            toolchain_digest=_toolchain_digest(inputs.toolchain_fingerprint),
+            artifact_contract_digest=_artifact_contract_digest(inputs.spec),
+            feature_set=" ".join(inputs.spec.command),
+            target_triple=bq._target_triple(inputs.spec),  # noqa: SLF001
+            cache_key_components=tuple(
+                sorted(
+                    (
+                        RepositoryCacheKeyComponent(name=name, value=value)
+                        for name, value in inputs.key.components().items()
+                    ),
+                    key=lambda item: item.name,
+                )
+            ),
+            cache_key_digest=inputs.key.digest if inputs.cacheable else None,
+            argv=inputs.spec.command,
+            workdir=inputs.spec.workdir,
+            timeout_seconds=inputs.spec.timeout,
+            artifact_patterns=inputs.spec.artifacts,
+            environment_refs=(),
+            execution_policy_ref="repository.build-policy:v1",
+            profile_ref=f"repository_manager:resource_profile:{inputs.spec.resource_class}:v1",
+            cacheable=inputs.cacheable,
+            degraded_reason=inputs.key.degraded_reason,
+        )
+    except (TypeError, ValueError) as exc:
+        raise BuildServiceError("build execution payload is invalid") from exc
+
+
+def _validate_job_service_shape(job_service: Any) -> None:
+    if not isinstance(job_service, RepositoryJobService):
+        # Keep this boundary structural for test doubles and for the
+        # production graph adapter's delayed import, while failing early for
+        # an accidental task queue or executor injection.
+        if not callable(getattr(job_service, "submit", None)):
+            raise TypeError("BuildService requires a RepositoryJobService-like object")
+
+
+def _stale_candidate_ids(
+    candidate: Mapping[str, Any],
+) -> tuple[str, str, str, int] | None:
+    """``(job_id, work_item_id, fence, attempt)`` or ``None`` if malformed."""
+    job_id = str(candidate.get("job_id") or "")
+    work_item_id = str(candidate.get("work_item_id") or "")
+    fence = str(candidate.get("fence") or "")
+    try:
+        attempt = int(candidate.get("attempt", 0))
+    except (TypeError, ValueError):
+        return None
+    if not job_id or not work_item_id or not fence or attempt < 1:
+        return None
+    return job_id, work_item_id, fence, attempt
+
+
+def _staleness_proof(
+    view: Any, key: str, job_id: str, work_item_id: str, fence: str, attempt: int
+) -> Mapping[str, Any]:
+    proof = {
+        "job_id": job_id,
+        "work_item_id": work_item_id,
+        "attempt": attempt,
+        "fence": fence,
+        "stale": True,
+    }
+    if view.state is JobState.SUCCEEDED:
+        expected = f"build-manifest:{key}:fence:{fence}"
+        return proof if view.result_ref != expected else {}
+    if view.state in {
+        JobState.FAILED,
+        JobState.CANCELLED,
+        JobState.DEAD_LETTER,
+    }:
+        return proof
+    stale = view.attempt != attempt or (
+        view.lease_fence is not None and view.lease_fence != fence
+    )
+    return proof if stale else {}
+
+
+def _resolve_service_identity(
+    tenant_id: str | None, owner_id: str | None, auth: JobAuthorization | None
+) -> tuple[str, str]:
+    if auth is not None:
+        if tenant_id is not None and tenant_id != auth.tenant_id:
+            raise ValueError("tenant_id disagrees with the authenticated authorization")
+        if owner_id is not None and owner_id != auth.owner_id:
+            raise ValueError("owner_id disagrees with the authenticated authorization")
+        return auth.tenant_id, auth.owner_id
+    tenant = tenant_id or "repository-manager"
+    owner = owner_id or "repository-manager"
+    if not tenant.strip() or not owner.strip():
+        raise ValueError("tenant_id and owner_id must be non-blank")
+    return tenant, owner
+
+
+def _legacy_cache_hit(
+    store: BuildArtifactStore, key: bq.CacheKey
+) -> dict[str, Any] | None:
+    """A validated legacy (v1) manifest hit, or ``None``.
+
+    Read legacy bytes in place. Never write a v2 alias that points into the
+    legacy directory: legacy GC must remain independent of v2 ownership.
+    """
+    legacy = store.read_manifest(key.legacy_digest)
+    if legacy is None or not store.validate_manifest(
+        legacy, require_committed=False, expected_key=key.legacy_digest
+    ):
+        return None
+    return {
+        "ok": True,
+        "cached": True,
+        "degraded": False,
+        "outcome": "hit",
+        "key": key.digest,
+        "components": key.components(),
+        "artifacts": legacy.get("artifacts", []),
+        "built_at": legacy.get("built_at"),
+        "migrated_from": key.legacy_digest,
+    }
+
+
+def _local_cache_hit(
+    manifest: Mapping[str, Any], key: bq.CacheKey, migrated_from: str | None
+) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "cached": True,
+        "degraded": False,
+        "outcome": "hit",
+        "key": key.digest,
+        "components": key.components(),
+        "artifacts": manifest.get("artifacts", []),
+        "built_at": manifest.get("built_at"),
+        **({"migrated_from": migrated_from} if migrated_from else {}),
+    }
+
+
 class BuildService:
     """Cache-aware durable build request service.
 
@@ -242,30 +703,8 @@ class BuildService:
         artifact_store: BuildArtifactStore | None = None,
         max_attempts: int = 3,
     ) -> None:
-        if not isinstance(job_service, RepositoryJobService):
-            # Keep this boundary structural for test doubles and for the
-            # production graph adapter's delayed import, while failing early
-            # for an accidental task queue or executor injection.
-            if not callable(getattr(job_service, "submit", None)):
-                raise TypeError(
-                    "BuildService requires a RepositoryJobService-like object"
-                )
-        if auth is not None:
-            if tenant_id is not None and tenant_id != auth.tenant_id:
-                raise ValueError(
-                    "tenant_id disagrees with the authenticated authorization"
-                )
-            if owner_id is not None and owner_id != auth.owner_id:
-                raise ValueError(
-                    "owner_id disagrees with the authenticated authorization"
-                )
-            tenant = auth.tenant_id
-            owner = auth.owner_id
-        else:
-            tenant = tenant_id or "repository-manager"
-            owner = owner_id or "repository-manager"
-            if not tenant.strip() or not owner.strip():
-                raise ValueError("tenant_id and owner_id must be non-blank")
+        _validate_job_service_shape(job_service)
+        tenant, owner = _resolve_service_identity(tenant_id, owner_id, auth)
         if not 1 <= max_attempts <= 100:
             raise ValueError("max_attempts must be between 1 and 100")
         self.job_service = job_service
@@ -321,54 +760,16 @@ class BuildService:
 
         store = self._store(tree)
         manifest = store.read_manifest(key.digest)
-        quarantined = False
-        if manifest is not None and not store.validate_manifest(
-            manifest, expected_key=key.digest
-        ):
-            # A published-but-not-committed manifest is a normal crash window
-            # owned by the durable producer.  Never delete it merely because
-            # this controller did not observe the terminal marker; quarantine
-            # requires an authority proof that this exact owner is stale or
-            # terminally invalid.
-            quarantined = self._quarantine_if_stale(
-                store, key.digest, manifest, reason="checksum-or-manifest-corrupt"
-            )
-            if quarantined:
-                manifest = None
+        manifest, quarantined = self._quarantine_if_corrupt(store, key, manifest)
         migrated_from: str | None = None
         if manifest is None:
-            legacy = store.read_manifest(key.legacy_digest)
-            if legacy is not None and store.validate_manifest(
-                legacy, require_committed=False, expected_key=key.legacy_digest
-            ):
-                # Read legacy bytes in place.  Do not write a v2 alias that
-                # points into the legacy directory: legacy GC must remain
-                # independent of v2 ownership.
-                return {
-                    "ok": True,
-                    "cached": True,
-                    "degraded": False,
-                    "outcome": "hit",
-                    "key": key.digest,
-                    "components": key.components(),
-                    "artifacts": legacy.get("artifacts", []),
-                    "built_at": legacy.get("built_at"),
-                    "migrated_from": key.legacy_digest,
-                }
+            legacy_hit = _legacy_cache_hit(store, key)
+            if legacy_hit is not None:
+                return legacy_hit
         if manifest is not None and store.validate_manifest(
             manifest, expected_key=key.digest
         ):
-            return {
-                "ok": True,
-                "cached": True,
-                "degraded": False,
-                "outcome": "hit",
-                "key": key.digest,
-                "components": key.components(),
-                "artifacts": manifest.get("artifacts", []),
-                "built_at": manifest.get("built_at"),
-                **({"migrated_from": migrated_from} if migrated_from else {}),
-            }
+            return _local_cache_hit(manifest, key, migrated_from)
 
         request = self._request_mapping(
             key=key,
@@ -451,6 +852,31 @@ class BuildService:
     def _store(self, tree: Path) -> BuildArtifactStore:
         return self.artifact_store or BuildArtifactStore(repo_path=tree)
 
+    def _quarantine_if_corrupt(
+        self,
+        store: BuildArtifactStore,
+        key: bq.CacheKey,
+        manifest: dict[str, Any] | None,
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """``(manifest, quarantined)``.
+
+        A published-but-not-committed manifest is a normal crash window owned
+        by the durable producer.  Never delete it merely because this
+        controller did not observe the terminal marker; quarantine requires
+        an authority proof that this exact owner is stale or terminally
+        invalid.
+        """
+        if manifest is None or store.validate_manifest(
+            manifest, expected_key=key.digest
+        ):
+            return manifest, False
+        quarantined = self._quarantine_if_stale(
+            store, key.digest, manifest, reason="checksum-or-manifest-corrupt"
+        )
+        if quarantined:
+            return None, True
+        return manifest, False
+
     def _quarantine_if_stale(
         self,
         store: BuildArtifactStore,
@@ -462,41 +888,17 @@ class BuildService:
         """Quarantine only with exact durable owner/fence evidence."""
 
         def proves_stale(candidate: Mapping[str, Any]) -> Mapping[str, Any]:
-            job_id = str(candidate.get("job_id") or "")
-            work_item_id = str(candidate.get("work_item_id") or "")
-            fence = str(candidate.get("fence") or "")
-            try:
-                attempt = int(candidate.get("attempt", 0))
-            except (TypeError, ValueError):
+            ids = _stale_candidate_ids(candidate)
+            if ids is None:
                 return {}
-            if not job_id or not work_item_id or not fence or attempt < 1:
-                return {}
+            job_id, work_item_id, fence, attempt = ids
             try:
                 view = self.job_service.get(job_id, auth=self.auth)
             except Exception:
                 return {}
             if view is None or view.work_item_id != work_item_id:
                 return {}
-            proof = {
-                "job_id": job_id,
-                "work_item_id": work_item_id,
-                "attempt": attempt,
-                "fence": fence,
-                "stale": True,
-            }
-            if view.state is JobState.SUCCEEDED:
-                expected = f"build-manifest:{key}:fence:{fence}"
-                return proof if view.result_ref != expected else {}
-            if view.state in {
-                JobState.FAILED,
-                JobState.CANCELLED,
-                JobState.DEAD_LETTER,
-            }:
-                return proof
-            stale = view.attempt != attempt or (
-                view.lease_fence is not None and view.lease_fence != fence
-            )
-            return proof if stale else {}
+            return _staleness_proof(view, key, job_id, work_item_id, fence, attempt)
 
         return (
             store.quarantine_if(
@@ -588,129 +990,31 @@ class BuildService:
         generation_id: str | None,
         cacheable: bool,
     ) -> dict[str, Any]:
-        try:
-            if bq._tree_is_dirty(tree):  # noqa: SLF001
-                raise BuildServiceError(
-                    "build submission tree changed or became dirty before durable submission"
-                )
-            base_sha = bq._require_git(["rev-parse", "HEAD"], tree)  # noqa: SLF001
-        except Exception as exc:
-            if isinstance(exc, BuildServiceError):
-                raise
-            raise BuildServiceError(
-                "build submission could not resolve immutable HEAD"
-            ) from exc
-        try:
-            current_config = bq.load_config(tree)
-            current_spec = current_config.spec(spec.name)
-            current_key = bq.compute_cache_key(
-                tree,
-                current_spec,
-                repo_name=bq.stable_repository_id(bq.lane_scope(tree).main_tree),
-                generation_id=generation_id,
-            )
-        except Exception as exc:
-            if isinstance(exc, BuildServiceError):
-                raise
-            raise BuildServiceError(
-                "build submission inputs could not be revalidated"
-            ) from exc
-        if current_key.components() != key.components():
-            raise BuildServiceError(
-                "build submission key inputs changed before durable submission"
-            )
-        key = current_key
-        spec = current_spec
-        config = current_config
-        profile = default_resource_profiles().get(spec.resource_class)
-        if profile is None:
-            raise BuildServiceError(
-                f"build spec {spec.name!r} names unknown resource profile {spec.resource_class!r}"
-            )
-        resources = spec.resources
-        preferred_target: dict[str, Any] = {"kind": "local"}
-        required_target: dict[str, Any] | None = None
-        if spec.placement.preferred_host:
-            preferred_target = {
-                "kind": "inventory_alias",
-                "alias": spec.placement.preferred_host,
-            }
-        if spec.placement.required_host:
-            required_target = {
-                "kind": "inventory_alias",
-                "alias": spec.placement.required_host,
-            }
-        resource_payload = {
-            "resource_class": spec.resource_class,
-            "concurrency_key": profile.concurrency_key,
-            "cpu_weight": max(1, resources.cpu_weight, profile.cpu_weight),
-            "memory_mib": max(1, resources.memory_mb or profile.memory_mib),
-            "disk_mib": max(1, resources.disk_mb or profile.disk_mib),
-            "process_slots": max(1, resources.process_slots, profile.process_slots),
-            "host_labels": sorted(
-                set(spec.placement.required_labels).union(profile.required_labels)
-            ),
-            "preferred_target": preferred_target,
-            "required_target": required_target,
-            "anti_affinity": sorted(
-                set(spec.placement.anti_affinity).union(profile.anti_affinity)
-            ),
-            "fairness_group": profile.default_fairness_group,
-            "disk_low_watermark_mib": profile.disk_low_watermark_mib,
-            "disk_high_watermark_mib": profile.disk_high_watermark_mib,
-        }
+        base_sha, key, spec, config = _revalidate_head_and_key(
+            tree, spec, generation_id, key
+        )
+        resource_payload = _build_resource_payload(spec)
         scope = bq.lane_scope(tree)
         repository_id = bq.stable_repository_id(scope.main_tree)
         config_digest = bq._config_digest(tree)  # noqa: SLF001
         spec_digest = bq._spec_digest(spec)  # noqa: SLF001
-        if cacheable:
-            tree_sha = key.tree_sha
-            toolchain_fingerprint = key.toolchain_fingerprint
-        else:
-            try:
-                tree_sha = bq._require_git(  # noqa: SLF001
-                    ["rev-parse", f"{base_sha}^{{tree}}"], tree
-                )
-            except Exception as exc:
-                raise BuildServiceError(
-                    "uncacheable build payload could not resolve submitted tree"
-                ) from exc
-            toolchain_fingerprint = "unavailable"
-        try:
-            payload_model = BuildExecutionDescriptor(
+        tree_sha, toolchain_fingerprint = _resolve_submission_tree_sha(
+            tree, base_sha, key, cacheable
+        )
+        payload_model = _build_execution_descriptor(
+            _DescriptorInputs(
                 repository_id=repository_id,
                 base_sha=base_sha,
                 tree_sha=tree_sha,
-                generation_id=generation_id or key.generation_id or None,
-                build_spec_name=spec.name,
+                generation_id=generation_id,
+                spec=spec,
                 spec_digest=spec_digest,
                 config_digest=config_digest,
-                toolchain_digest=_toolchain_digest(toolchain_fingerprint),
-                artifact_contract_digest=_artifact_contract_digest(spec),
-                feature_set=" ".join(spec.command),
-                target_triple=bq._target_triple(spec),  # noqa: SLF001
-                cache_key_components=tuple(
-                    sorted(
-                        (
-                            RepositoryCacheKeyComponent(name=name, value=value)
-                            for name, value in key.components().items()
-                        ),
-                        key=lambda item: item.name,
-                    )
-                ),
-                cache_key_digest=key.digest if cacheable else None,
-                argv=spec.command,
-                workdir=spec.workdir,
-                timeout_seconds=spec.timeout,
-                artifact_patterns=spec.artifacts,
-                environment_refs=(),
-                execution_policy_ref="repository.build-policy:v1",
-                profile_ref=f"repository_manager:resource_profile:{spec.resource_class}:v1",
+                toolchain_fingerprint=toolchain_fingerprint,
+                key=key,
                 cacheable=cacheable,
-                degraded_reason=key.degraded_reason,
             )
-        except (TypeError, ValueError) as exc:
-            raise BuildServiceError("build execution payload is invalid") from exc
+        )
         # For cacheable requests the C-05 key is the idempotency identity. For
         # degraded requests the complete typed body is the identity, so a
         # changed executable input cannot reuse the same WorkItem.
@@ -764,140 +1068,11 @@ class BuildService:
             raise BuildServiceError(
                 "build submission tree changed or became dirty before durable submission"
             )
-        try:
-            current_head = bq._require_git(["rev-parse", "HEAD"], tree)  # noqa: SLF001
-            current_config = bq.load_config(tree)
-            current_spec = current_config.spec(spec_name)
-            current_repo_id = bq.stable_repository_id(bq.lane_scope(tree).main_tree)
-            current_key = bq.compute_cache_key(
-                tree,
-                current_spec,
-                repo_name=current_repo_id,
-                generation_id=generation_id,
-            )
-            current_config_digest = bq._config_digest(tree)  # noqa: SLF001
-            current_spec_digest = bq._spec_digest(current_spec)  # noqa: SLF001
-        except Exception as exc:
-            if isinstance(exc, BuildServiceError):
-                raise
-            raise BuildServiceError(
-                "build submission inputs could not be revalidated"
-            ) from exc
-        if payload.repository_id != current_repo_id:
-            raise BuildServiceError("build submission repository identity changed")
-        if payload.base_sha != current_head:
-            raise BuildServiceError(
-                "build submission HEAD changed before durable submission"
-            )
-        if payload.config_digest != current_config_digest:
-            raise BuildServiceError(
-                "build submission config changed before durable submission"
-            )
-        if payload.spec_digest != current_spec_digest:
-            raise BuildServiceError(
-                "build submission spec changed before durable submission"
-            )
-        if payload.build_spec_name != current_spec.name:
-            raise BuildServiceError(
-                "build submission spec changed before durable submission"
-            )
-        if payload.argv != current_spec.command:
-            raise BuildServiceError(
-                "build submission command changed before durable submission"
-            )
-        if payload.workdir != current_spec.workdir:
-            raise BuildServiceError(
-                "build submission workdir changed before durable submission"
-            )
-        normalized_artifacts = tuple(sorted(dict.fromkeys(current_spec.artifacts)))
-        if payload.artifact_patterns != normalized_artifacts:
-            raise BuildServiceError(
-                "build submission artifact contract changed before durable submission"
-            )
-        if payload.timeout_seconds != current_spec.timeout:
-            raise BuildServiceError(
-                "build submission timeout changed before durable submission"
-            )
-        if payload.feature_set != " ".join(current_spec.command):
-            raise BuildServiceError(
-                "build submission feature set changed before durable submission"
-            )
-        if payload.target_triple != bq._target_triple(current_spec):  # noqa: SLF001
-            raise BuildServiceError(
-                "build submission target changed before durable submission"
-            )
-        if payload.generation_id != (
-            generation_id or current_key.generation_id or None
-        ):
-            raise BuildServiceError(
-                "build submission generation changed before durable submission"
-            )
-        if payload.artifact_contract_digest != _artifact_contract_digest(current_spec):
-            raise BuildServiceError(
-                "build submission artifact contract changed before durable submission"
-            )
-        expected_toolchain = (
-            current_key.toolchain_fingerprint
-            if current_key.computable
-            else "unavailable"
-        )
-        if payload.toolchain_digest != _toolchain_digest(expected_toolchain):
-            raise BuildServiceError(
-                "build submission toolchain identity changed before durable submission"
-            )
-        if payload.execution_policy_ref != "repository.build-policy:v1":
-            raise BuildServiceError(
-                "build submission execution policy changed before durable submission"
-            )
-        if payload.cacheable != key.computable:
-            raise BuildServiceError(
-                "build submission cacheability changed before durable submission"
-            )
-        if payload.profile_ref != (
-            f"repository_manager:resource_profile:{current_spec.resource_class}:v1"
-        ):
-            raise BuildServiceError(
-                "build submission resource profile changed before durable submission"
-            )
-        if current_key.components() != key.components():
-            raise BuildServiceError(
-                "build submission key inputs changed before durable submission"
-            )
-        current_components = current_key.components()
-        payload_components = {
-            component.name: component.value
-            for component in payload.cache_key_components
-        }
-        if payload_components != current_components:
-            raise BuildServiceError(
-                "build submission key inputs changed before durable submission"
-            )
-        if payload.cacheable is True:
-            if payload.cache_key_digest != current_key.digest:
-                raise BuildServiceError(
-                    "build submission cache key changed before durable submission"
-                )
-            if payload.tree_sha != current_key.tree_sha:
-                raise BuildServiceError(
-                    "build submission tree key changed before durable submission"
-                )
-        else:
-            try:
-                submitted_tree_sha = bq._require_git(  # noqa: SLF001
-                    ["rev-parse", f"{current_head}^{{tree}}"], tree
-                )
-            except Exception as exc:
-                raise BuildServiceError(
-                    "build submission tree identity could not be revalidated"
-                ) from exc
-            if payload.tree_sha != submitted_tree_sha:
-                raise BuildServiceError(
-                    "build submission tree identity changed before durable submission"
-                )
-            if payload.degraded_reason != current_key.degraded_reason:
-                raise BuildServiceError(
-                    "build submission degradation state changed before durable submission"
-                )
+        current = _recompute_current_build_inputs(tree, spec_name, generation_id)
+        _assert_identity_and_contract_unchanged(payload, current)
+        _assert_generation_and_policy_unchanged(payload, current, key, generation_id)
+        _assert_cache_key_components_unchanged(payload, current, key)
+        _assert_tree_identity_unchanged(payload, current, tree)
 
     @staticmethod
     def _submission_result(
