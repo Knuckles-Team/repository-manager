@@ -23,6 +23,7 @@ import subprocess  # nosec B404 - fixed argv execution is the guarded boundary
 import threading
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -100,74 +101,92 @@ def _git_executable() -> str:
     return _TRUSTED_GIT
 
 
-def _git_parts(argv: Sequence[str]) -> tuple[int, str | None, str | None]:
-    """Find a git subcommand and reject malformed or alias-bearing argv."""
-    if not argv or os.path.basename(str(argv[0])).lower() != "git":
-        return -1, None, "argv[0] must resolve to git"
+class _ArgvRejected(Exception):
+    """Internal control-flow signal for :func:`_git_parts` — caught there and
+    translated into its ``(-1, None, reason)`` result tuple. Never escapes
+    this module.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+_TAKES_VALUE = frozenset(
+    {_CWD_OPTION, _CONFIG_OPTION, "--git-dir", "--work-tree", "--namespace"}
+)
+
+
+def _validate_git_executable_arg0(argv: Sequence[str]) -> None:
     executable = str(argv[0])
-    if os.path.sep in executable or (os.path.altsep and os.path.altsep in executable):
-        try:
-            if (
-                Path(executable).expanduser().resolve()
-                != Path(_git_executable()).resolve()
-            ):
-                return -1, None, "argv[0] is not the trusted git executable"
-        except OSError:
-            return -1, None, "argv[0] cannot be resolved as the trusted git executable"
+    if not (
+        os.path.sep in executable or (os.path.altsep and os.path.altsep in executable)
+    ):
+        return
+    try:
+        matches = (
+            Path(executable).expanduser().resolve() == Path(_git_executable()).resolve()
+        )
+    except OSError as exc:
+        raise _ArgvRejected(
+            "argv[0] cannot be resolved as the trusted git executable"
+        ) from exc
+    if not matches:
+        raise _ArgvRejected("argv[0] is not the trusted git executable")
+
+
+def _advance_past_global_option(argv: Sequence[str], index: int, token: str) -> int:
+    """``token`` is a bare global option that consumes the next argv value.
+    Returns the new index; raises :class:`_ArgvRejected` for a rejected one.
+    """
+    if index + 1 >= len(argv):
+        raise _ArgvRejected(f"missing value for git global option {token}")
+    if token == _CONFIG_OPTION:
+        raise _ArgvRejected(
+            "git configuration injection is not accepted at this boundary"
+        )
+    if token in {"--git-dir", "--work-tree"}:
+        raise _ArgvRejected(
+            "alternate git directory/work tree is not accepted at this boundary"
+        )
+    return index + 2
+
+
+def _reject_inline_global_option(token: str) -> None:
+    """``token`` is a ``--option=value`` form global option."""
+    if token.startswith(_CONFIG_OPTION + "="):
+        raise _ArgvRejected(
+            "git configuration injection is not accepted at this boundary"
+        )
+    if token.startswith("--git-dir=") or token.startswith("--work-tree="):
+        raise _ArgvRejected(
+            "alternate git directory/work tree is not accepted at this boundary"
+        )
+
+
+def _reject_short_config_option(token: str) -> None:
+    if token.startswith(_CONFIG_OPTION) and len(token) > len(_CONFIG_OPTION):
+        raise _ArgvRejected(
+            "git configuration injection is not accepted at this boundary"
+        )
+    if token.startswith("--config-env="):
+        raise _ArgvRejected(
+            "git configuration injection is not accepted at this boundary"
+        )
+
+
+def _scan_for_git_subcommand(argv: Sequence[str]) -> tuple[int, str | None, str | None]:
     index = 1
-    takes_value = {
-        _CWD_OPTION,
-        _CONFIG_OPTION,
-        "--git-dir",
-        "--work-tree",
-        "--namespace",
-    }
     while index < len(argv):
         token = str(argv[index])
-        if token in takes_value:
-            if index + 1 >= len(argv):
-                return -1, None, f"missing value for git global option {token}"
-            if token == _CONFIG_OPTION:
-                return (
-                    -1,
-                    None,
-                    "git configuration injection is not accepted at this boundary",
-                )
-            if token in {"--git-dir", "--work-tree"}:
-                return (
-                    -1,
-                    None,
-                    "alternate git directory/work tree is not accepted at this boundary",
-                )
-            index += 2
+        if token in _TAKES_VALUE:
+            index = _advance_past_global_option(argv, index, token)
             continue
-        if any(token.startswith(prefix + "=") for prefix in takes_value):
-            if token.startswith(_CONFIG_OPTION + "="):
-                return (
-                    -1,
-                    None,
-                    "git configuration injection is not accepted at this boundary",
-                )
-            if token.startswith("--git-dir=") or token.startswith("--work-tree="):
-                return (
-                    -1,
-                    None,
-                    "alternate git directory/work tree is not accepted at this boundary",
-                )
+        if any(token.startswith(prefix + "=") for prefix in _TAKES_VALUE):
+            _reject_inline_global_option(token)
             index += 1
             continue
-        if token.startswith(_CONFIG_OPTION) and len(token) > len(_CONFIG_OPTION):
-            return (
-                -1,
-                None,
-                "git configuration injection is not accepted at this boundary",
-            )
-        if token.startswith("--config-env="):
-            return (
-                -1,
-                None,
-                "git configuration injection is not accepted at this boundary",
-            )
+        _reject_short_config_option(token)
         if token == _OPTION_TERMINATOR:
             index += 1
             continue
@@ -183,6 +202,17 @@ def _git_parts(argv: Sequence[str]) -> tuple[int, str | None, str | None]:
             )
         return index, subcommand, None
     return -1, None, "git subcommand is required"
+
+
+def _git_parts(argv: Sequence[str]) -> tuple[int, str | None, str | None]:
+    """Find a git subcommand and reject malformed or alias-bearing argv."""
+    if not argv or os.path.basename(str(argv[0])).lower() != "git":
+        return -1, None, "argv[0] must resolve to git"
+    try:
+        _validate_git_executable_arg0(argv)
+        return _scan_for_git_subcommand(argv)
+    except _ArgvRejected as exc:
+        return -1, None, exc.reason
 
 
 def _unsupported(reason: str) -> dict[str, Any]:
@@ -467,6 +497,44 @@ _SUBCOMMAND_CLASSIFIERS: dict[str, Callable[[list[str]], dict[str, Any] | None]]
     "push": _classify_push,
 }
 
+
+def _verify_override_authorization(authorization: Callable[[], bool] | None) -> None:
+    if authorization is None or not callable(authorization):
+        raise PermissionError("explicit override authorization callback required")
+    try:
+        authorized = bool(authorization())
+    except Exception as exc:  # pragma: no cover - external authorization seam
+        raise PermissionError("override authorization callback failed") from exc
+    if not authorized:
+        raise PermissionError("explicit override authorization callback required")
+
+
+def _validate_override_audit_context(audit_context: Mapping[str, str] | None) -> None:
+    required = {"actor", "lane", "operation", "repository", "argv"}
+    if audit_context is None or not required.issubset(audit_context):
+        raise PermissionError(
+            "override audit context must name actor, lane, repository, argv, and operation"
+        )
+    if any(not str(audit_context[key]).strip() for key in required):
+        raise PermissionError("override audit context fields must be non-empty")
+
+
+def _validate_override_audit_argv(audit_context: Mapping[str, str]) -> None:
+    try:
+        normalized_audit_argv = _normalize_argv(shlex.split(str(audit_context["argv"])))
+    except ValueError as exc:
+        raise PermissionError("override audit argv is not valid fixed argv") from exc
+    if str(audit_context["argv"]) != normalized_audit_argv:
+        raise PermissionError("override audit argv must be normalized fixed argv")
+
+
+def _resolve_override_repository(audit_context: Mapping[str, str]) -> str:
+    try:
+        return str(Path(str(audit_context["repository"])).expanduser().resolve())
+    except (OSError, RuntimeError) as exc:
+        raise PermissionError("override repository identity is not resolvable") from exc
+
+
 def issue_override_token(
     *,
     authorization: Callable[[], bool] | None = None,
@@ -480,31 +548,11 @@ def issue_override_token(
     standing ``RM_*`` switch from turning every future refusal into an
     unreviewed destructive action.
     """
-    if authorization is None or not callable(authorization):
-        raise PermissionError("explicit override authorization callback required")
-    try:
-        authorized = bool(authorization())
-    except Exception as exc:  # pragma: no cover - external authorization seam
-        raise PermissionError("override authorization callback failed") from exc
-    if not authorized:
-        raise PermissionError("explicit override authorization callback required")
-    required = {"actor", "lane", "operation", "repository", "argv"}
-    if audit_context is None or not required.issubset(audit_context):
-        raise PermissionError(
-            "override audit context must name actor, lane, repository, argv, and operation"
-        )
-    if any(not str(audit_context[key]).strip() for key in required):
-        raise PermissionError("override audit context fields must be non-empty")
-    try:
-        normalized_audit_argv = _normalize_argv(shlex.split(str(audit_context["argv"])))
-    except ValueError as exc:
-        raise PermissionError("override audit argv is not valid fixed argv") from exc
-    if str(audit_context["argv"]) != normalized_audit_argv:
-        raise PermissionError("override audit argv must be normalized fixed argv")
-    try:
-        repository = str(Path(str(audit_context["repository"])).expanduser().resolve())
-    except (OSError, RuntimeError) as exc:
-        raise PermissionError("override repository identity is not resolvable") from exc
+    _verify_override_authorization(authorization)
+    _validate_override_audit_context(audit_context)
+    assert audit_context is not None
+    _validate_override_audit_argv(audit_context)
+    repository = _resolve_override_repository(audit_context)
     token = f"rm-override-{uuid.uuid4().hex}"
     with _TOKEN_LOCK:
         _ISSUED_TOKENS.add(token)
@@ -615,15 +663,9 @@ def _path_from_argv(argv: Sequence[str], path: Path) -> Path:
     return path
 
 
-def _snapshot(
-    path: Path,
-    lane: str,
-    operation: str,
-    *,
-    timeout: int,
-) -> dict[str, Any]:
-    """Create the commit ref and, when needed, park dirty WIP before execution."""
-    created_at = dt.datetime.now(dt.UTC).isoformat()
+def _snapshot_head_sha(
+    path: Path, operation: str, created_at: str, timeout: int
+) -> tuple[str, dict[str, Any] | None]:
     head = subprocess.run(
         [_git_executable(), "rev-parse", "HEAD"],
         cwd=str(path),
@@ -633,14 +675,19 @@ def _snapshot(
         timeout=timeout,
     )
     sha = head.stdout.strip() if head.returncode == 0 else ""
-    if not sha:
-        return {
-            "ok": False,
-            "snapshot_created_at": created_at,
-            "triggering_operation": operation,
-            "error": "cannot create a recovery point without HEAD",
-        }
-    ref = f"refs/lane-backup/pre-destructive/{_slug(lane)}-{uuid.uuid4().hex}"
+    if sha:
+        return sha, None
+    return "", {
+        "ok": False,
+        "snapshot_created_at": created_at,
+        "triggering_operation": operation,
+        "error": "cannot create a recovery point without HEAD",
+    }
+
+
+def _write_snapshot_ref(
+    path: Path, ref: str, sha: str, operation: str, created_at: str, timeout: int
+) -> dict[str, Any] | None:
     stored = subprocess.run(
         [_git_executable(), "update-ref", ref, sha],
         cwd=str(path),
@@ -649,18 +696,21 @@ def _snapshot(
         check=False,
         timeout=timeout,
     )
-    if stored.returncode != 0:
-        return {
-            "ok": False,
-            "snapshot_ref": ref,
-            "snapshot_sha": sha,
-            "snapshot_created_at": created_at,
-            "triggering_operation": operation,
-            "error": (
-                stored.stderr or stored.stdout or "git update-ref failed"
-            ).strip(),
-        }
+    if stored.returncode == 0:
+        return None
+    return {
+        "ok": False,
+        "snapshot_ref": ref,
+        "snapshot_sha": sha,
+        "snapshot_created_at": created_at,
+        "triggering_operation": operation,
+        "error": (stored.stderr or stored.stdout or "git update-ref failed").strip(),
+    }
 
+
+def _verify_snapshot_tree_status(
+    path: Path, ref: str, sha: str, operation: str, created_at: str, timeout: int
+) -> dict[str, Any] | None:
     status = subprocess.run(
         [_git_executable(), "status", "--porcelain"],
         cwd=str(path),
@@ -669,18 +719,24 @@ def _snapshot(
         check=False,
         timeout=timeout,
     )
-    if status.returncode != 0:
-        return {
-            "ok": False,
-            "snapshot_ref": ref,
-            "snapshot_sha": sha,
-            "snapshot_created_at": created_at,
-            "triggering_operation": operation,
-            "error": (status.stderr or status.stdout or "git status failed").strip(),
-        }
-    # Always use the temp-index/private-tree path.  Porcelain can be empty
-    # for assume-unchanged or skip-worktree entries even when their bytes have
-    # changed, so status is only an error check and never a completeness gate.
+    if status.returncode == 0:
+        return None
+    return {
+        "ok": False,
+        "snapshot_ref": ref,
+        "snapshot_sha": sha,
+        "snapshot_created_at": created_at,
+        "triggering_operation": operation,
+        "error": (status.stderr or status.stdout or "git status failed").strip(),
+    }
+
+
+def _park_snapshot_wip(
+    path: Path, lane: str, ref: str, sha: str, operation: str, created_at: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """``(parked, error)`` — ``error`` is set (and ``parked`` is ``None``) when
+    the WIP park itself failed.
+    """
     parked = stash_guard.park(
         _GitAdapter(),
         str(path),
@@ -688,23 +744,53 @@ def _snapshot(
         message=f"pre-destructive {operation}",
         _lease=False,
     )
-    if not parked.get("ok"):
-        return {
-            "ok": False,
-            "snapshot_ref": ref,
-            "snapshot_sha": sha,
-            "snapshot_created_at": created_at,
-            "triggering_operation": operation,
-            "park_ref": parked.get("ref"),
-            "error": f"snapshot WIP park failed: {parked.get('error', 'unknown error')}",
-        }
+    if parked.get("ok"):
+        return parked, None
+    return None, {
+        "ok": False,
+        "snapshot_ref": ref,
+        "snapshot_sha": sha,
+        "snapshot_created_at": created_at,
+        "triggering_operation": operation,
+        "park_ref": parked.get("ref"),
+        "error": f"snapshot WIP park failed: {parked.get('error', 'unknown error')}",
+    }
+
+
+def _snapshot(
+    path: Path,
+    lane: str,
+    operation: str,
+    *,
+    timeout: int,
+) -> dict[str, Any]:
+    """Create the commit ref and, when needed, park dirty WIP before execution."""
+    created_at = dt.datetime.now(dt.UTC).isoformat()
+    sha, error = _snapshot_head_sha(path, operation, created_at, timeout)
+    if error is not None:
+        return error
+    ref = f"refs/lane-backup/pre-destructive/{_slug(lane)}-{uuid.uuid4().hex}"
+    error = _write_snapshot_ref(path, ref, sha, operation, created_at, timeout)
+    if error is not None:
+        return error
+    error = _verify_snapshot_tree_status(path, ref, sha, operation, created_at, timeout)
+    if error is not None:
+        return error
+    # Always use the temp-index/private-tree path.  Porcelain can be empty
+    # for assume-unchanged or skip-worktree entries even when their bytes have
+    # changed, so status is only an error check and never a completeness gate.
+    parked, error = _park_snapshot_wip(path, lane, ref, sha, operation, created_at)
+    if error is not None:
+        return error
+    assert parked is not None
+    park_ref = parked.get("ref") if parked.get("parked") else None
     logger.warning(
         "destructive override snapshot created: operation=%s lane=%s ref=%s sha=%s park_ref=%s",
         operation,
         lane,
         ref,
         sha,
-        parked.get("ref") if parked.get("parked") else None,
+        park_ref,
     )
     return {
         "ok": True,
@@ -712,8 +798,231 @@ def _snapshot(
         "snapshot_sha": sha,
         "snapshot_created_at": created_at,
         "triggering_operation": operation,
-        "park_ref": parked.get("ref") if parked.get("parked") else None,
+        "park_ref": park_ref,
     }
+
+
+@dataclass
+class _DestructiveRunContext:
+    """Bundled parameters + accumulating result for one guarded destructive
+    run — every phase reads/writes ``base`` in place, exactly as the
+    original single function's locals did.
+    """
+
+    values: list[str]
+    decision: dict[str, Any]
+    tree: Path
+    effective_lane: str
+    override: str | None
+    timeout: int
+    execute: bool
+    base: dict[str, Any]
+
+
+def _refuse_ignored_clean_scope(ctx: _DestructiveRunContext) -> dict[str, Any] | None:
+    if not ctx.decision.get("ignored_scope"):
+        return None
+    ctx.base.update(
+        {
+            "reason": "ignored-clean-forbidden",
+            "error": (
+                "refused git clean -x/-X: ignored content is not captured by "
+                "the bounded private park; remove it only through an explicitly "
+                "reviewed, separate recovery workflow"
+            ),
+        }
+    )
+    logger.warning("destructive git verb refused: ignored clean scope")
+    return ctx.base
+
+
+def _refuse_without_override(ctx: _DestructiveRunContext) -> dict[str, Any] | None:
+    if isinstance(ctx.override, str) and ctx.override.strip():
+        return None
+    ctx.base.update(
+        {
+            "reason": "destructive git verb refused by default",
+            "error": f"refused {ctx.decision['pattern']}: {ctx.decision['safer_alternative']}",
+        }
+    )
+    logger.warning("destructive git verb refused: %s", ctx.decision["pattern"])
+    return ctx.base
+
+
+def _consume_override_or_refuse(ctx: _DestructiveRunContext) -> dict[str, Any] | None:
+    consumed, consume_reason = _consume_override(
+        ctx.override,
+        lane=ctx.effective_lane,
+        operation=ctx.decision["pattern"],
+        argv=ctx.values,
+        repository=ctx.tree,
+    )
+    if consumed:
+        ctx.base["override_consumed"] = True
+        return None
+    ctx.base.update(
+        {
+            "reason": "override-single-use"
+            if "consumed" in consume_reason
+            else "override-scope-mismatch",
+            "error": consume_reason,
+        }
+    )
+    return ctx.base
+
+
+def _snapshot_or_refuse(ctx: _DestructiveRunContext) -> dict[str, Any] | None:
+    ctx.base["snapshot_required"] = True
+    snapshot = _snapshot(
+        ctx.tree, ctx.effective_lane, _normalize_argv(ctx.values), timeout=ctx.timeout
+    )
+    ctx.base.update(
+        {
+            key: snapshot.get(key)
+            for key in (
+                "snapshot_ref",
+                "snapshot_sha",
+                "snapshot_created_at",
+                "triggering_operation",
+                "park_ref",
+            )
+        }
+    )
+    if snapshot.get("ok"):
+        return None
+    ctx.base.update(
+        {
+            "reason": "snapshot-required",
+            "error": snapshot.get("error", "recovery snapshot failed"),
+            "override_consumed": True,
+        }
+    )
+    logger.error("destructive operation refused: recovery snapshot failed")
+    return ctx.base
+
+
+def _preflight_tree_check(ctx: _DestructiveRunContext) -> dict[str, Any] | None:
+    # The snapshot and execution share one cooperative lease.  A second RM
+    # actor cannot introduce WIP between park and the destructive command.
+    preflight = subprocess.run(
+        [_git_executable(), "status", "--porcelain"],
+        cwd=str(ctx.tree),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=ctx.timeout,
+    )
+    if preflight.returncode != 0:
+        return {
+            **ctx.base,
+            "reason": "tree-invariant-failed",
+            "error": (preflight.stderr or preflight.stdout or "status failed").strip(),
+        }
+    if preflight.stdout.strip():
+        return {
+            **ctx.base,
+            "reason": "tree-changed-after-snapshot",
+            "error": "working tree changed after recovery snapshot; operation refused",
+        }
+    return None
+
+
+def _run_destructive_git_command(
+    ctx: _DestructiveRunContext,
+) -> tuple[subprocess.CompletedProcess[str] | None, dict[str, Any] | None]:
+    """``(result, error)`` — ``error`` is the base-derived failure dict to
+    return immediately when the subprocess itself could not be run.
+    """
+    try:
+        result = subprocess.run(
+            [_git_executable(), *ctx.values[1:]],
+            cwd=str(ctx.tree),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=ctx.timeout,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, {
+            **ctx.base,
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "snapshot_required": True,
+        }
+    return result, None
+
+
+def _build_execution_result(
+    ctx: _DestructiveRunContext,
+    result: subprocess.CompletedProcess[str],
+    final_status: str,
+    postcondition_ok: bool,
+) -> dict[str, Any]:
+    if result.returncode == 0 and not postcondition_ok:
+        return {
+            **ctx.base,
+            "ok": False,
+            "status": "postcondition-failed",
+            "executed": True,
+            "returncode": result.returncode,
+            "stdout": _clip(result.stdout or ""),
+            "stderr": _clip(result.stderr or ""),
+            "final_status": final_status,
+            "final_tree_clean": False,
+            "snapshot_required": True,
+            "override_used": True,
+            "error": "working tree is not clean after destructive operation",
+        }
+    return {
+        **ctx.base,
+        "ok": result.returncode == 0,
+        "status": "success" if result.returncode == 0 else "error",
+        "executed": True,
+        "returncode": result.returncode,
+        "stdout": _clip(result.stdout or ""),
+        "stderr": _clip(result.stderr or ""),
+        "final_status": final_status,
+        "final_tree_clean": postcondition_ok,
+        "snapshot_required": True,
+        "override_used": True,
+    }
+
+
+def _postcondition_result(
+    ctx: _DestructiveRunContext, result: subprocess.CompletedProcess[str]
+) -> dict[str, Any]:
+    final = subprocess.run(
+        [_git_executable(), "status", "--porcelain"],
+        cwd=str(ctx.tree),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=ctx.timeout,
+    )
+    final_status = (final.stdout or final.stderr or "").strip()
+    postcondition_ok = final.returncode == 0 and not final.stdout.strip()
+    logger.warning(
+        "destructive override used once: pattern=%s lane=%s snapshot_ref=%s",
+        ctx.decision["pattern"],
+        ctx.effective_lane,
+        ctx.base["snapshot_ref"],
+    )
+    return _build_execution_result(ctx, result, final_status, postcondition_ok)
+
+
+def _execute_and_verify(ctx: _DestructiveRunContext) -> dict[str, Any]:
+    if not ctx.execute:
+        return {
+            **ctx.base,
+            "ok": True,
+            "status": "authorized",
+            "reason": "snapshot-backed override authorized; execution suppressed",
+        }
+    result, error = _run_destructive_git_command(ctx)
+    if error is not None:
+        return error
+    assert result is not None
+    return _postcondition_result(ctx, result)
 
 
 def _run_destructive(
@@ -728,100 +1037,74 @@ def _run_destructive(
 ) -> dict[str, Any]:
     """Run the override path while the caller holds the worktree lease."""
     base.update(decision)
-    if decision.get("ignored_scope"):
-        base.update(
-            {
-                "reason": "ignored-clean-forbidden",
-                "error": (
-                    "refused git clean -x/-X: ignored content is not captured by "
-                    "the bounded private park; remove it only through an explicitly "
-                    "reviewed, separate recovery workflow"
-                ),
-            }
-        )
-        logger.warning("destructive git verb refused: ignored clean scope")
-        return base
-    if not isinstance(override, str) or not override.strip():
-        base.update(
-            {
-                "reason": "destructive git verb refused by default",
-                "error": f"refused {decision['pattern']}: {decision['safer_alternative']}",
-            }
-        )
-        logger.warning("destructive git verb refused: %s", decision["pattern"])
-        return base
-    consumed, consume_reason = _consume_override(
-        override,
-        lane=effective_lane,
-        operation=decision["pattern"],
-        argv=values,
-        repository=tree,
+    ctx = _DestructiveRunContext(
+        values=values,
+        decision=decision,
+        tree=tree,
+        effective_lane=effective_lane,
+        override=override,
+        timeout=timeout,
+        execute=execute,
+        base=base,
     )
-    if not consumed:
-        base.update(
-            {
-                "reason": "override-single-use"
-                if "consumed" in consume_reason
-                else "override-scope-mismatch",
-                "error": consume_reason,
-            }
-        )
-        return base
-    base["override_consumed"] = True
-    base["snapshot_required"] = True
-    snapshot = _snapshot(tree, effective_lane, _normalize_argv(values), timeout=timeout)
+    for phase in (
+        _refuse_ignored_clean_scope,
+        _refuse_without_override,
+        _consume_override_or_refuse,
+        _snapshot_or_refuse,
+        _preflight_tree_check,
+    ):
+        refusal = phase(ctx)
+        if refusal is not None:
+            return refusal
+    return _execute_and_verify(ctx)
+
+
+def _build_guard_base_result(
+    values: list[str], tree: Path, effective_lane: str
+) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "refused",
+        "executed": False,
+        "argv": values,
+        "repository": str(tree),
+        "lane": effective_lane,
+        "snapshot_ref": None,
+        "snapshot_sha": None,
+        "snapshot_created_at": None,
+        "triggering_operation": None,
+        "park_ref": None,
+        "override_consumed": False,
+        "override_used": False,
+        "snapshot_required": False,
+        "stdout": "",
+        "stderr": "",
+    }
+
+
+def _refuse_unsupported_argv(
+    decision: dict[str, Any], base: dict[str, Any]
+) -> dict[str, Any] | None:
+    if decision.get("supported", False):
+        return None
+    base.update(decision)
     base.update(
         {
-            key: snapshot.get(key)
-            for key in (
-                "snapshot_ref",
-                "snapshot_sha",
-                "snapshot_created_at",
-                "triggering_operation",
-                "park_ref",
-            )
+            "status": "refused",
+            "reason": "unsupported-git-argv",
+            "error": decision.get("error", "unsupported or malformed git argv"),
         }
     )
-    if not snapshot.get("ok"):
-        base.update(
-            {
-                "reason": "snapshot-required",
-                "error": snapshot.get("error", "recovery snapshot failed"),
-                "override_consumed": True,
-            }
-        )
-        logger.error("destructive operation refused: recovery snapshot failed")
-        return base
+    logger.warning("git operation refused at guard boundary: %s", base["error"])
+    return base
 
-    # The snapshot and execution share one cooperative lease.  A second RM
-    # actor cannot introduce WIP between park and the destructive command.
-    preflight = subprocess.run(
-        [_git_executable(), "status", "--porcelain"],
-        cwd=str(tree),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
-    if preflight.returncode != 0:
-        return {
-            **base,
-            "reason": "tree-invariant-failed",
-            "error": (preflight.stderr or preflight.stdout or "status failed").strip(),
-        }
-    if preflight.stdout.strip():
-        return {
-            **base,
-            "reason": "tree-changed-after-snapshot",
-            "error": "working tree changed after recovery snapshot; operation refused",
-        }
+
+def _run_safe_argv(
+    values: list[str], tree: Path, timeout: int, execute: bool, base: dict[str, Any]
+) -> dict[str, Any]:
     if not execute:
-        return {
-            **base,
-            "ok": True,
-            "status": "authorized",
-            "reason": "snapshot-backed override authorized; execution suppressed",
-        }
+        return {**base, "ok": True, "status": "allowed", "reason": "safe argv"}
     try:
         result = subprocess.run(
             [_git_executable(), *values[1:]],
@@ -836,38 +1119,6 @@ def _run_destructive(
             **base,
             "status": "error",
             "error": f"{type(exc).__name__}: {exc}",
-            "snapshot_required": True,
-        }
-    final = subprocess.run(
-        [_git_executable(), "status", "--porcelain"],
-        cwd=str(tree),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
-    )
-    final_status = (final.stdout or final.stderr or "").strip()
-    postcondition_ok = final.returncode == 0 and not final.stdout.strip()
-    logger.warning(
-        "destructive override used once: pattern=%s lane=%s snapshot_ref=%s",
-        decision["pattern"],
-        effective_lane,
-        snapshot["snapshot_ref"],
-    )
-    if result.returncode == 0 and not postcondition_ok:
-        return {
-            **base,
-            "ok": False,
-            "status": "postcondition-failed",
-            "executed": True,
-            "returncode": result.returncode,
-            "stdout": _clip(result.stdout or ""),
-            "stderr": _clip(result.stderr or ""),
-            "final_status": final_status,
-            "final_tree_clean": False,
-            "snapshot_required": True,
-            "override_used": True,
-            "error": "working tree is not clean after destructive operation",
         }
     return {
         **base,
@@ -877,11 +1128,37 @@ def _run_destructive(
         "returncode": result.returncode,
         "stdout": _clip(result.stdout or ""),
         "stderr": _clip(result.stderr or ""),
-        "final_status": final_status,
-        "final_tree_clean": postcondition_ok,
-        "snapshot_required": True,
-        "override_used": True,
     }
+
+
+def _run_dangerous_argv(ctx: _DestructiveRunContext) -> dict[str, Any]:
+    try:
+        with stash_guard.hold_tree_mutation_lease(
+            str(ctx.tree), note=f"destructive {ctx.decision['pattern']}"
+        ):
+            return _run_destructive(
+                ctx.values,
+                ctx.decision,
+                ctx.tree,
+                ctx.effective_lane,
+                ctx.override,
+                ctx.timeout,
+                ctx.execute,
+                ctx.base,
+            )
+    except stash_guard.BlockedByLease as exc:
+        return {
+            **ctx.base,
+            "reason": "tree-mutation-busy",
+            "error": str(exc),
+        }
+    except (OSError, RuntimeError) as exc:
+        return {
+            **ctx.base,
+            "status": "error",
+            "reason": "tree-mutation-lease-unavailable",
+            "error": str(exc),
+        }
 
 
 def guard(
@@ -905,90 +1182,25 @@ def guard(
     decision = classify(values)
     tree = _path_from_argv(values, Path(path or os.getcwd()).expanduser().resolve())
     effective_lane = lane or tree.name or "local"
-    base = {
-        "ok": False,
-        "status": "refused",
-        "executed": False,
-        "argv": values,
-        "repository": str(tree),
-        "lane": effective_lane,
-        "snapshot_ref": None,
-        "snapshot_sha": None,
-        "snapshot_created_at": None,
-        "triggering_operation": None,
-        "park_ref": None,
-        "override_consumed": False,
-        "override_used": False,
-        "snapshot_required": False,
-        "stdout": "",
-        "stderr": "",
-    }
-    if not decision.get("supported", False):
-        base.update(decision)
-        base.update(
-            {
-                "status": "refused",
-                "reason": "unsupported-git-argv",
-                "error": decision.get("error", "unsupported or malformed git argv"),
-            }
-        )
-        logger.warning("git operation refused at guard boundary: %s", base["error"])
-        return base
-    if not decision.get("dangerous"):
-        if not execute:
-            return {**base, "ok": True, "status": "allowed", "reason": "safe argv"}
-        try:
-            result = subprocess.run(
-                [_git_executable(), *values[1:]],
-                cwd=str(tree),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            return {
-                **base,
-                "status": "error",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-        return {
-            **base,
-            "ok": result.returncode == 0,
-            "status": "success" if result.returncode == 0 else "error",
-            "executed": True,
-            "returncode": result.returncode,
-            "stdout": _clip(result.stdout or ""),
-            "stderr": _clip(result.stderr or ""),
-        }
+    base = _build_guard_base_result(values, tree, effective_lane)
 
-    try:
-        with stash_guard.hold_tree_mutation_lease(
-            str(tree), note=f"destructive {decision['pattern']}"
-        ):
-            return _run_destructive(
-                values,
-                decision,
-                tree,
-                effective_lane,
-                override,
-                timeout,
-                execute,
-                base,
-            )
-    except stash_guard.BlockedByLease as exc:
-        return {
-            **base,
-            "reason": "tree-mutation-busy",
-            "error": str(exc),
-        }
-    except (OSError, RuntimeError) as exc:
-        return {
-            **base,
-            "status": "error",
-            "reason": "tree-mutation-lease-unavailable",
-            "error": str(exc),
-        }
+    unsupported = _refuse_unsupported_argv(decision, base)
+    if unsupported is not None:
+        return unsupported
+    if not decision.get("dangerous"):
+        return _run_safe_argv(values, tree, timeout, execute, base)
+
+    ctx = _DestructiveRunContext(
+        values=values,
+        decision=decision,
+        tree=tree,
+        effective_lane=effective_lane,
+        override=override,
+        timeout=timeout,
+        execute=execute,
+        base=base,
+    )
+    return _run_dangerous_argv(ctx)
 
 
 def _main(argv: list[str] | None = None) -> int:
