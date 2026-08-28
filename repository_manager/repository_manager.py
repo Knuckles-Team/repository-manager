@@ -7,6 +7,7 @@ multiple repositories in parallel using Python's multiprocessing capabilities.
 """
 
 import contextlib
+import dataclasses
 import datetime
 import fnmatch
 import functools
@@ -537,6 +538,100 @@ def _cleanup_matched_files(dirpath: str, filenames: list[str]) -> None:
                 except Exception as e:
                     logger.debug("Operation failed: error_type=%s", type(e).__name__)
                 break
+
+
+@dataclasses.dataclass
+class _PhaseProgress:
+    """Progress bookkeeping for one phased (bump / push) run.
+
+    Owns the ``progress is not None`` guard and the per-item counters that the
+    phased bump and phased push workflows both maintain, so those workflows
+    read as the phase topology they actually are.
+
+    ``state`` is the caller-supplied progress mapping (``None`` disables every
+    update); ``noun`` is the verb used in the per-item completion log line.
+    """
+
+    state: dict | None
+    noun: str
+    total: int = 0
+    processed: int = 0
+
+    def initialize(self, heading: str, phases: list[tuple[str, list[str]]]) -> None:
+        """Seed the per-phase counters for every phase about to run."""
+        if self.state is None:
+            return
+        self.state["current_phase"] = heading
+        self.state["progress"] = 0
+        self.state["phases"] = {}
+        for name, items in phases:
+            self.state["phases"][name] = {
+                "status": "pending",
+                "total": len(items),
+                "processed": 0,
+                "completed": 0,
+                "success": 0,
+                "failed": 0,
+                "details": dict.fromkeys(items, "pending"),
+                "repos": dict.fromkeys(items, "pending"),
+            }
+
+    def nothing_to_do(self, heading: str) -> None:
+        """Mark the run complete without any phase having run."""
+        if self.state is None:
+            return
+        self.state["current_phase"] = heading
+        self.state["progress"] = 100
+        self.state["phases"] = {}
+
+    def note(self, heading: str) -> None:
+        """Update only the human-readable current-phase banner."""
+        if self.state is None:
+            return
+        self.state["current_phase"] = heading
+
+    def begin_phase(self, phase_name: str) -> None:
+        if self.state is None:
+            return
+        self.state["current_phase"] = f"{phase_name} in progress"
+        self.state["phases"][phase_name]["status"] = "running"
+
+    def end_phase(self, phase_name: str) -> None:
+        if self.state is None:
+            return
+        self.state["phases"][phase_name]["status"] = "completed"
+
+    def begin_item(self, phase_name: str, item: str) -> None:
+        if self.state is None:
+            return
+        phase = self.state["phases"][phase_name]
+        phase["details"][item] = "running"
+        phase["repos"][item] = "running"
+
+    def finish_item(self, phase_name: str, item: str, status_str: str) -> None:
+        """Record one project's terminal status and advance the overall percentage."""
+        if self.state is None:
+            return
+        phase = self.state["phases"][phase_name]
+        phase["details"][item] = status_str
+        phase["repos"][item] = status_str
+        phase["processed"] += 1
+        phase["completed"] += 1
+        phase["success" if status_str == "success" else "failed"] += 1
+
+        self.processed += 1
+        percent = int((self.processed / self.total) * 100)
+        self.state["progress"] = percent
+        logger.info(
+            f"[{self.processed}/{self.total}] ({percent}%) "
+            f"Completed {self.noun} for {item}: {status_str}"
+        )
+
+    def finish(self, heading: str) -> None:
+        if self.state is None:
+            return
+        self.state["current_phase"] = heading
+        self.state["progress"] = 100
 
 
 class Git:
@@ -3689,6 +3784,323 @@ class Git:
             return True
         return False
 
+    @staticmethod
+    def _project_phase_index(config: dict) -> tuple[dict[str, int], int]:
+        """Map every declared project to its phase number, plus the bulk phase.
+
+        Used for the topological dependency check: a bump must not be
+        propagated backwards into a project owned by an earlier phase.
+        """
+        project_phases: dict[str, int] = {}
+        bulk_phase_num = 5
+        for phase in config.get("phases", []):
+            p_num = phase.get("phase", 1)
+            if phase.get("bulk_bump"):
+                bulk_phase_num = p_num
+            projects_in_phase = phase.get("projects", [])[:]
+            if phase.get("project"):
+                projects_in_phase.append(phase.get("project"))
+            for p in projects_in_phase:
+                project_phases[p] = p_num
+        return project_phases, bulk_phase_num
+
+    @staticmethod
+    def _pre_commit_project_names(config: dict) -> list[Any] | None:
+        """Projects the pre-commit stage should cover, or ``None`` for "all".
+
+        A ``bulk_bump`` phase means the run sweeps everything, so scoping the
+        pre-commit stage to a name list would be wrong -- ``None`` is returned
+        the moment one is seen.
+        """
+        if not config:
+            return None
+        projects_to_check: list[Any] = []
+        for phase in config.get("phases", []):
+            if phase.get("bulk_bump"):
+                return None
+            projects_to_check.extend(phase.get("projects", []))
+            if phase.get("project"):
+                projects_to_check.append(phase.get("project"))
+        return projects_to_check
+
+    def _pre_commit_project_dirs(
+        self, projects_to_check: list[Any] | None
+    ) -> list[str]:
+        """Local clone paths for the pre-commit stage's project scope."""
+        if projects_to_check is None:
+            return list(self.project_map.values())
+        dirs: list[str] = []
+        for p_name in projects_to_check:
+            p_path = self._project_path_for(p_name)
+            if p_path is not None:
+                dirs.append(p_path)
+        return dirs
+
+    def _run_bump_pre_commit_stage(self, config: dict) -> list[GitResult]:
+        """Run pre-commit (with autoupdate) and commit the resulting formatting."""
+        projects_to_check = self._pre_commit_project_names(config)
+        results = list(
+            self.pre_commit_projects(
+                run=True, autoupdate=True, projects=projects_to_check
+            )
+        )
+        results.extend(
+            self.commit_projects(
+                message="chore: pre-commit autoupdate and formatting",
+                project_dirs=self._pre_commit_project_dirs(projects_to_check),
+            )
+        )
+        return results
+
+    def _unassigned_project_names(
+        self, assigned_projects: set[str], claimed: list[str]
+    ) -> list[str]:
+        """Mapped project names not claimed by an earlier phase or *claimed*."""
+        names: list[str] = []
+        for url in self.project_map:
+            name = url.split("/")[-1].replace(".git", "")
+            if name not in assigned_projects and name not in claimed:
+                names.append(name)
+        return names
+
+    def _bump_phase_projects(
+        self, phase: dict, filter_set: set[str] | None, assigned_projects: set[str]
+    ) -> list[str]:
+        """The project names one configured phase contributes to the bump plan.
+
+        When a ``project_filter`` set is active, a bulk phase contributes exactly
+        the not-yet-assigned filter members (so filtered agents/services land in
+        the bulk phase). Without a filter, bulk sweeps everything unassigned.
+        """
+        projects = phase.get("projects", [])[:]
+        if phase.get("project"):
+            projects.append(phase.get("project"))
+        if filter_set is not None:
+            projects = [p for p in projects if p in filter_set]
+
+        if not phase.get("bulk_bump"):
+            return projects
+        if filter_set is None:
+            projects.extend(self._unassigned_project_names(assigned_projects, projects))
+            return projects
+        for name in filter_set:
+            if name not in assigned_projects and name not in projects:
+                projects.append(name)
+        return projects
+
+    @staticmethod
+    def _parse_project_filter(project_filter: str | None) -> set[str] | None:
+        """Parse ``project_filter`` into a set of project names, or ``None``.
+
+        ``project_filter`` may be a single name or a comma-separated set, letting
+        a caller re-bump exactly N specific repos (e.g. repos a prior partial
+        run silently skipped) without re-bumping the whole ecosystem. When a
+        filter set is active, the bulk phase is restricted to its members.
+        """
+        if not project_filter:
+            return None
+        return {p.strip() for p in project_filter.split(",") if p.strip()}
+
+    def _build_bump_phase_list(
+        self, *, config: dict, start_phase: int, filter_set: set[str] | None
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Expand the configured phases into the concrete bump plan.
+
+        A project claimed by an earlier phase is dropped from every later one --
+        otherwise a project named in an explicit phase (e.g. agent-utilities in
+        Phase 3) is ALSO swept into the Phase-5 bulk list and gets BUMPED TWICE.
+        (CONCEPT:RM-BUMP single-bump-per-project)
+        """
+        assigned_projects: set[str] = set()
+        phase_list: list[dict[str, Any]] = []
+        total_projects = 0
+
+        for phase in config.get("phases", []):
+            phase_num = phase.get("phase")
+            if phase_num < start_phase:
+                continue
+
+            projects = self._bump_phase_projects(phase, filter_set, assigned_projects)
+            projects = [p for p in projects if p not in assigned_projects]
+            assigned_projects.update(projects)
+            if not projects:
+                continue
+
+            phase_list.append(
+                {
+                    "phase_num": phase_num,
+                    "name": phase.get("name", f"Phase {phase_num}"),
+                    "projects": projects,
+                }
+            )
+            total_projects += len(projects)
+
+        return phase_list, total_projects
+
+    @staticmethod
+    def _parse_bumped_version(data: str) -> str:
+        """Pull the post-bump version out of a ``bump_version`` result payload."""
+        match = re.search(r"new_version=(.*)", data)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r"current_version=(.*)", data)
+        return match.group(1).strip() if match else "success"
+
+    def _bump_one_project(
+        self,
+        *,
+        project_name: str,
+        part: str,
+        dry_run: bool,
+        force: bool,
+        all_results: list[GitResult],
+    ) -> str | None:
+        """Bump one project's version.
+
+        Returns the new version string, ``"skipped"`` when the project had no
+        bump-worthy change, or ``None`` when it was unresolvable or the bump
+        failed. A declared project whose local clone is absent (stale registry
+        entry / never-cloned repo) must not crash the whole phased bump, so it
+        is skipped with a warning and the rest of the topology proceeds.
+        """
+        project_dir = self._project_path_for(project_name)
+        if not project_dir:
+            return None
+
+        if not os.path.isdir(project_dir):
+            logger.warning(
+                "Skipping bump for %s: project directory missing (%s)",
+                project_name,
+                project_dir,
+            )
+            return None
+
+        if not force and self._bump_skip_reason(project_dir):
+            logger.info("Skipping project version bump")
+            return "skipped"
+
+        result = self.bump_version(
+            part=part,
+            allow_dirty=True,
+            path=project_dir,
+            dry_run=dry_run,
+            force=force,
+            verbose=dry_run or not dry_run,
+        )
+        all_results.append(result)
+        if result.status != "success":
+            return None
+        return self._parse_bumped_version(result.data)
+
+    @staticmethod
+    def _dependency_update_result(
+        path: str, project_name: str, new_version: str, dep_file_name: str
+    ) -> GitResult:
+        """The success record for one propagated dependency-pin update."""
+        return GitResult(
+            status="success",
+            data=f"Updated {project_name} to {new_version} in {dep_file_name}",
+            metadata=GitMetadata(
+                command="update_dependency",
+                workspace=_project_label(path),
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    def _update_dependency_files(
+        self, *, path: str, project_name: str, new_version: str, dry_run: bool
+    ) -> list[GitResult]:
+        """Repin *project_name* in every dependency-declaring file under *path*.
+
+        Not just ``pyproject.toml``: ``requirements.txt`` commonly pins the same
+        package (often ``==``) and would otherwise go stale.
+        (CONCEPT:RM-BUMP cross-dependency propagation)
+        """
+        results: list[GitResult] = []
+        for dep_file_name in ("pyproject.toml", "requirements.txt"):
+            dep_file = Path(path) / dep_file_name
+            if not dep_file.exists():
+                continue
+            if not self.update_dependency(
+                str(dep_file), project_name, new_version, dry_run
+            ):
+                continue
+            results.append(
+                self._dependency_update_result(
+                    path, project_name, new_version, dep_file_name
+                )
+            )
+        return results
+
+    def _propagate_bump_to_dependents(
+        self,
+        *,
+        project_name: str,
+        new_version: str,
+        phase_num: int,
+        phase_of: Callable[[str], int],
+        dry_run: bool,
+        all_results: list[GitResult],
+    ) -> None:
+        """Repin the just-bumped project across every same-or-later-phase repo.
+
+        Earlier phases are skipped so a later bump cannot circle back and dirty
+        a phase that has already been released.
+        """
+        for path in self.project_map.values():
+            other_project_name = os.path.basename(path)
+            other_phase = phase_of(other_project_name)
+            if other_phase < phase_num:
+                logger.info(
+                    f"Skipping dependency update for {project_name} in {other_project_name} "
+                    f"to avoid circular updates of earlier phase (Phase {other_phase} < Phase {phase_num})"
+                )
+                continue
+            all_results.extend(
+                self._update_dependency_files(
+                    path=path,
+                    project_name=project_name,
+                    new_version=new_version,
+                    dry_run=dry_run,
+                )
+            )
+
+    @staticmethod
+    def _run_bump_phase(
+        *,
+        p_info: dict[str, Any],
+        tracker: "_PhaseProgress",
+        processed_projects: set[str],
+        bump_one: Callable[[str], str | None],
+        propagate: Callable[[str, str, int], None],
+    ) -> None:
+        """Bump every project in one phase, propagating each new version onward."""
+        phase_name = p_info["name"]
+        phase_num = p_info["phase_num"]
+        tracker.begin_phase(phase_name)
+
+        for project_name in p_info["projects"]:
+            # Defensive: never bump a project twice in one run (a later phase
+            # must not re-bump one an earlier phase already handled).
+            if project_name in processed_projects:
+                continue
+
+            tracker.begin_item(phase_name, project_name)
+            processed_projects.add(project_name)
+            logger.info(
+                f"Bumping version for project: {project_name} in {phase_name}..."
+            )
+            new_version = bump_one(project_name)
+            tracker.finish_item(
+                phase_name, project_name, "success" if new_version else "failed"
+            )
+
+            if new_version and re.match(r"^v?\d+\.\d+\.\d+", new_version):
+                propagate(project_name, new_version, phase_num)
+
+        tracker.end_phase(phase_name)
+
     def phased_bumpversion(
         self,
         part: str = "patch",
@@ -3721,331 +4133,71 @@ class Git:
             progress = self.progress
 
         all_results: list[GitResult] = []
-        if config is None:
-            config_model: MaintenanceConfig | None = None
-            if hasattr(self, "config") and self.config and self.config.maintenance:
-                config_model = self.config.maintenance
-            else:
-                yml_path = os.environ.get("WORKSPACE_YML") or "workspace.yml"
-                if not os.path.isabs(yml_path):
-                    yml_path = os.path.join(self.path, yml_path)
+        resolved = self._resolve_maintenance_config(config)
+        if resolved is None:
+            return []
+        config = resolved
 
-                if os.path.exists(yml_path):
-                    if self.load_projects_from_yaml(yml_path) and self.config:
-                        config_model = self.config.maintenance
-                    else:
-                        config_model = None
-                else:
-                    config_model = None
+        project_phases, bulk_phase_num = self._project_phase_index(config)
 
-            maintenance_cfg = None
-            if config_model:
-                maintenance_cfg = config_model.model_dump()
-            else:
-                logger.error("No maintenance configuration found.")
-                return []
-
-            config = maintenance_cfg
-
-        # Build a map of project_name -> phase_num for topological dependency check
-        project_phases: dict[str, int] = {}
-        bulk_phase_num = 5
-        if config:
-            for phase in config.get("phases", []):
-                p_num = phase.get("phase", 1)
-                if phase.get("bulk_bump"):
-                    bulk_phase_num = p_num
-                projects_in_phase = phase.get("projects", [])[:]
-                if phase.get("project"):
-                    projects_in_phase.append(phase.get("project"))
-                for p in projects_in_phase:
-                    project_phases[p] = p_num
-
-        def get_project_phase(proj_name: str) -> int:
+        def phase_of(proj_name: str) -> int:
             return project_phases.get(proj_name, bulk_phase_num)
 
+        tracker = _PhaseProgress(state=progress, noun="bump")
+
         if auto_start and not project_filter and not force:
-            detected = self._auto_start_phase(config)
+            detected = self._resolve_auto_start_phase(
+                config=config,
+                start_phase=start_phase,
+                tracker=tracker,
+                noun="bump",
+                lowest_label="lowest changed phase",
+            )
             if detected is None:
-                logger.info(
-                    "Phased bump: no repository changes detected; nothing to bump."
-                )
-                if progress is not None:
-                    progress["current_phase"] = "No changes — nothing to bump"
-                    progress["progress"] = 100
-                    progress["phases"] = {}
                 return all_results
-            if detected > start_phase:
-                logger.info(
-                    f"Phased bump: lowest changed phase is {detected}; "
-                    f"starting there (skipping phases {start_phase}–{detected - 1})."
-                )
-            start_phase = max(start_phase, detected)
+            start_phase = detected
 
         if allow_pre_commit:
-            projects_to_check: list[Any] | None = None
-            if config:
-                projects_to_check = []
-                has_bulk = False
-                for phase in config.get("phases", []):
-                    if phase.get("bulk_bump"):
-                        has_bulk = True
-                        break
-                    projects_to_check.extend(phase.get("projects", []))
-                    if phase.get("project"):
-                        projects_to_check.append(phase.get("project"))
-                if has_bulk:
-                    projects_to_check = None
+            all_results.extend(self._run_bump_pre_commit_stage(config))
 
-            pc_results = self.pre_commit_projects(
-                run=True, autoupdate=True, projects=projects_to_check
+        def bump_one(project_name: str) -> str | None:
+            return self._bump_one_project(
+                project_name=project_name,
+                part=part,
+                dry_run=dry_run,
+                force=force,
+                all_results=all_results,
             )
-            all_results.extend(pc_results)
 
-            dirs_to_commit = None
-            if projects_to_check is not None:
-                dirs_to_commit = []
-                for p_name in projects_to_check:
-                    for url, p_path in self.project_map.items():
-                        if url.endswith(f"/{p_name}.git") or url.endswith(f"/{p_name}"):
-                            dirs_to_commit.append(p_path)
-                            break
-            else:
-                dirs_to_commit = list(self.project_map.values())
-
-            commit_res = self.commit_projects(
-                message="chore: pre-commit autoupdate and formatting",
-                project_dirs=dirs_to_commit,
+        def propagate(project_name: str, new_version: str, phase_num: int) -> None:
+            self._propagate_bump_to_dependents(
+                project_name=project_name,
+                new_version=new_version,
+                phase_num=phase_num,
+                phase_of=phase_of,
+                dry_run=dry_run,
+                all_results=all_results,
             )
-            all_results.extend(commit_res)
 
-        def run_step_bump(project_name, phase_num):
-            if start_phase <= phase_num:
-                project_dir = None
-                for url, p_path in self.project_map.items():
-                    if url.endswith(f"/{project_name}.git") or url.endswith(
-                        f"/{project_name}"
-                    ):
-                        project_dir = p_path
-                        break
-
-                if not project_dir:
-                    return None
-
-                # A declared project whose local clone is absent (stale registry
-                # entry / never-cloned repo) must not crash the whole phased bump.
-                # Skip it with a warning so the rest of the topology proceeds.
-                if not os.path.isdir(project_dir):
-                    logger.warning(
-                        "Skipping bump for %s: project directory missing (%s)",
-                        project_name,
-                        project_dir,
-                    )
-                    return None
-
-                if not force:
-                    skip_reason = self._bump_skip_reason(project_dir)
-                    if skip_reason:
-                        logger.info("Skipping project version bump")
-                        return "skipped"
-
-                result = self.bump_version(
-                    part=part,
-                    allow_dirty=True,
-                    path=project_dir,
-                    dry_run=dry_run,
-                    force=force,
-                    verbose=dry_run or not dry_run,
-                )
-                all_results.append(result)
-
-                if result.status == "success":
-                    match = re.search(r"new_version=(.*)", result.data)
-                    if match:
-                        return match.group(1).strip()
-
-                    match = re.search(r"current_version=(.*)", result.data)
-                    return match.group(1).strip() if match else "success"
-                return None
-            return None
-
-        # Pre-expand phases & projects for progress tracking
-        processed_projects: set[str] = set()
-        # Projects already claimed by an EARLIER phase during pre-expansion. The
-        # bulk phase must dedupe against THIS (not ``processed_projects``, which
-        # is empty here and only populated later in the run loop) — otherwise a
-        # project named in an explicit phase (e.g. agent-utilities in Phase 3) is
-        # ALSO swept into the Phase-5 bulk list and gets BUMPED TWICE.
-        # (CONCEPT:RM-BUMP single-bump-per-project)
-        assigned_projects: set[str] = set()
-        phase_list = []
-        total_projects = 0
-
-        # ``project_filter`` may be a single name or a comma-separated set, letting
-        # a caller re-bump exactly N specific repos (e.g. repos a prior partial
-        # run silently skipped) without re-bumping the whole ecosystem. When a
-        # filter set is active, the bulk phase is restricted to its members.
-        filter_set: set[str] | None = (
-            {p.strip() for p in project_filter.split(",") if p.strip()}
-            if project_filter
-            else None
+        filter_set = self._parse_project_filter(project_filter)
+        phase_list, tracker.total = self._build_bump_phase_list(
+            config=config, start_phase=start_phase, filter_set=filter_set
+        )
+        tracker.initialize(
+            "Initializing Bumps", [(p["name"], p["projects"]) for p in phase_list]
         )
 
-        for phase in config.get("phases", []):
-            phase_num = phase.get("phase")
-            if phase_num < start_phase:
-                continue
-
-            projects = phase.get("projects", [])[:]
-            if phase.get("project"):
-                projects.append(phase.get("project"))
-
-            if filter_set is not None:
-                projects = [p for p in projects if p in filter_set]
-
-            # When a filter set is active, a bulk phase contributes exactly the
-            # not-yet-assigned filter members (so filtered agents/services land
-            # in the bulk phase). Without a filter, bulk sweeps everything.
-            if phase.get("bulk_bump") and filter_set is not None:
-                for name in filter_set:
-                    if name not in assigned_projects and name not in projects:
-                        projects.append(name)
-            elif phase.get("bulk_bump") and filter_set is None:
-                bulk_projects = []
-                for url, _ in self.project_map.items():
-                    name = url.split("/")[-1].replace(".git", "")
-                    if name not in assigned_projects and name not in projects:
-                        bulk_projects.append(name)
-                projects.extend(bulk_projects)
-
-            # Drop any project already claimed by an earlier phase, then record
-            # this phase's claims so later (bulk) phases can't re-bump them.
-            projects = [p for p in projects if p not in assigned_projects]
-            assigned_projects.update(projects)
-
-            if not projects:
-                continue
-
-            phase_name = phase.get("name", f"Phase {phase_num}")
-            phase_list.append(
-                {
-                    "phase_num": phase_num,
-                    "name": phase_name,
-                    "projects": projects,
-                }
-            )
-            total_projects += len(projects)
-
-        if progress is not None:
-            progress["current_phase"] = "Initializing Bumps"
-            progress["progress"] = 0
-            progress["phases"] = {}
-            for p_info in phase_list:
-                progress["phases"][p_info["name"]] = {
-                    "status": "pending",
-                    "total": len(p_info["projects"]),
-                    "processed": 0,
-                    "completed": 0,
-                    "success": 0,
-                    "failed": 0,
-                    "details": {proj: "pending" for proj in p_info["projects"]},
-                    "repos": {proj: "pending" for proj in p_info["projects"]},
-                }
-
-        processed_count = 0
+        processed_projects: set[str] = set()
         for p_info in phase_list:
-            phase_name = p_info["name"]
-            phase_num = p_info["phase_num"]
-            projects = p_info["projects"]
+            self._run_bump_phase(
+                p_info=p_info,
+                tracker=tracker,
+                processed_projects=processed_projects,
+                bump_one=bump_one,
+                propagate=propagate,
+            )
 
-            if progress is not None:
-                progress["current_phase"] = f"{phase_name} in progress"
-                progress["phases"][phase_name]["status"] = "running"
-
-            for project_name in projects:
-                # Defensive: never bump a project twice in one run (a later phase
-                # must not re-bump one an earlier phase already handled).
-                if project_name in processed_projects:
-                    continue
-
-                if progress is not None:
-                    progress["phases"][phase_name]["details"][project_name] = "running"
-                    progress["phases"][phase_name]["repos"][project_name] = "running"
-
-                processed_projects.add(project_name)
-                logger.info(
-                    f"Bumping version for project: {project_name} in {phase_name}..."
-                )
-                new_version = run_step_bump(project_name, phase_num)
-
-                status_str = "success" if new_version else "failed"
-
-                if progress is not None:
-                    progress["phases"][phase_name]["details"][project_name] = status_str
-                    progress["phases"][phase_name]["repos"][project_name] = status_str
-                    progress["phases"][phase_name]["processed"] += 1
-                    progress["phases"][phase_name]["completed"] += 1
-                    if status_str == "success":
-                        progress["phases"][phase_name]["success"] += 1
-                    else:
-                        progress["phases"][phase_name]["failed"] += 1
-
-                    processed_count += 1
-                    progress["progress"] = int((processed_count / total_projects) * 100)
-                    logger.info(
-                        f"[{processed_count}/{total_projects}] ({progress['progress']}%) "
-                        f"Completed bump for {project_name}: {status_str}"
-                    )
-
-                if new_version and re.match(r"^v?\d+\.\d+\.\d+", new_version):
-                    for _, path in self.project_map.items():
-                        other_project_name = os.path.basename(path)
-                        other_phase = get_project_phase(other_project_name)
-                        if other_phase < phase_num:
-                            logger.info(
-                                f"Skipping dependency update for {project_name} in {other_project_name} "
-                                f"to avoid circular updates of earlier phase (Phase {other_phase} < Phase {phase_num})"
-                            )
-                            continue
-
-                        # Propagate the bump to EVERY dependency-declaring file —
-                        # not just pyproject.toml. requirements.txt commonly pins
-                        # the same package (often ==) and would otherwise go stale.
-                        # (CONCEPT:RM-BUMP cross-dependency propagation)
-                        for dep_file_name in ("pyproject.toml", "requirements.txt"):
-                            dep_file = Path(path) / dep_file_name
-                            if not dep_file.exists():
-                                continue
-                            is_updated = self.update_dependency(
-                                str(dep_file), project_name, new_version, dry_run
-                            )
-                            if is_updated:
-                                all_results.append(
-                                    GitResult(
-                                        status="success",
-                                        data=(
-                                            f"Updated {project_name} to "
-                                            f"{new_version} in {dep_file_name}"
-                                        ),
-                                        metadata=GitMetadata(
-                                            command="update_dependency",
-                                            workspace=_project_label(path),
-                                            return_code=0,
-                                            timestamp=datetime.datetime.now(
-                                                datetime.UTC
-                                            ).isoformat()
-                                            + "Z",
-                                        ),
-                                    )
-                                )
-
-            if progress is not None:
-                progress["phases"][phase_name]["status"] = "completed"
-
-        if progress is not None:
-            progress["current_phase"] = "Bumps Completed"
-            progress["progress"] = 100
-
+        tracker.finish("Bumps Completed")
         return all_results
 
     maintain_projects = phased_bumpversion
@@ -4072,6 +4224,370 @@ class Git:
             base=base, stale_days=stale_days, prune_merged=prune
         )
 
+    def _maintenance_config_model(self) -> MaintenanceConfig | None:
+        """The ``maintenance`` section of the active workspace config, if any.
+
+        Prefers an already-loaded :attr:`config`; otherwise loads ``workspace.yml``
+        (``WORKSPACE_YML`` overrides the name, relative paths resolve against
+        :attr:`path`). Returns ``None`` when no maintenance config is reachable.
+        """
+        if hasattr(self, "config") and self.config and self.config.maintenance:
+            return self.config.maintenance
+
+        yml_path = os.environ.get("WORKSPACE_YML") or "workspace.yml"
+        if not os.path.isabs(yml_path):
+            yml_path = os.path.join(self.path, yml_path)
+        if not os.path.exists(yml_path):
+            return None
+        if self.load_projects_from_yaml(yml_path) and self.config:
+            return self.config.maintenance
+        return None
+
+    def _resolve_maintenance_config(self, config: dict | None) -> dict | None:
+        """Return *config* unchanged, or load the maintenance config in its place.
+
+        ``None`` means no maintenance configuration is reachable and the caller
+        must abort; the error is logged here so every phased workflow reports it
+        identically.
+        """
+        if config is not None:
+            return config
+        config_model = self._maintenance_config_model()
+        if config_model is None:
+            logger.error("No maintenance configuration found.")
+            return None
+        return config_model.model_dump()
+
+    def _resolve_auto_start_phase(
+        self,
+        *,
+        config: dict,
+        start_phase: int,
+        tracker: "_PhaseProgress",
+        noun: str,
+        lowest_label: str,
+    ) -> int | None:
+        """Advance *start_phase* to the lowest phase that still has pending work.
+
+        Never moves the start phase backwards. Returns ``None`` when nothing at
+        all is pending — in which case *tracker* has already been finalized and
+        the caller should return immediately.
+        """
+        detected = self._auto_start_phase(config)
+        if detected is None:
+            logger.info(
+                f"Phased {noun}: no repository changes detected; nothing to {noun}."
+            )
+            tracker.nothing_to_do(f"No changes — nothing to {noun}")
+            return None
+        if detected > start_phase:
+            logger.info(
+                f"Phased {noun}: {lowest_label} is {detected}; "
+                f"starting there (skipping phases {start_phase}–{detected - 1})."
+            )
+        return max(start_phase, detected)
+
+    def _project_path_for(self, project_name: str) -> str | None:
+        """Local clone path of *project_name* from the URL->path project map."""
+        for url, p_path in self.project_map.items():
+            if url.endswith(f"/{project_name}.git") or url.endswith(f"/{project_name}"):
+                return p_path
+        return None
+
+    def _bulk_push_targets(self, processed_projects: set[str]) -> list[tuple[str, str]]:
+        """Every mapped project not already claimed by an earlier phase."""
+        targets: list[tuple[str, str]] = []
+        for url, path in self.project_map.items():
+            name = url.split("/")[-1].replace(".git", "")
+            if name in processed_projects:
+                continue
+            targets.append((name, path))
+        return targets
+
+    def _named_push_targets(
+        self, projects: list[str], processed_projects: set[str]
+    ) -> list[tuple[str, str]]:
+        """Resolve an explicit ``projects:`` list to (name, path) pairs.
+
+        Claims every named project in *processed_projects* (even one with no
+        local clone) so a later bulk phase cannot re-push it.
+        """
+        targets: list[tuple[str, str]] = []
+        for project_name in projects:
+            processed_projects.add(project_name)
+            p_path = self._project_path_for(project_name)
+            if p_path is not None:
+                targets.append((project_name, p_path))
+        return targets
+
+    def _phase_push_targets(
+        self, phase: dict, project_filter: str | None, processed_projects: set[str]
+    ) -> list[tuple[str, str]]:
+        """The (name, path) pairs one configured phase would push."""
+        projects = phase.get("projects", [])[:]
+        if phase.get("project"):
+            projects.append(phase.get("project"))
+
+        if project_filter:
+            projects = [p for p in projects if p == project_filter]
+            if (
+                not projects
+                and phase.get("bulk_push")
+                and project_filter not in processed_projects
+            ):
+                projects = [project_filter]
+
+        if phase.get("bulk_push") and not project_filter:
+            return self._bulk_push_targets(processed_projects)
+        return self._named_push_targets(projects, processed_projects)
+
+    @staticmethod
+    def _apply_phase_excludes(
+        phase: dict, phase_num: Any, targets: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        """Drop targets matching the phase's declarative ``exclude`` patterns.
+
+        fnmatch patterns are checked against the project name for every phase
+        (not only ``bulk_push`` ones) so an operator can carve a specific repo
+        out of an explicit ``projects:`` list too.
+        """
+        exclude_patterns = phase.get("exclude") or []
+        if not exclude_patterns:
+            return targets
+        kept: list[tuple[str, str]] = []
+        for name, path in targets:
+            if any(fnmatch.fnmatch(name, pat) for pat in exclude_patterns):
+                logger.info(
+                    "Phase %s: excluding %s (matches an 'exclude' pattern)",
+                    phase_num,
+                    name,
+                )
+                continue
+            kept.append((name, path))
+        return kept
+
+    @staticmethod
+    def _drop_missing_clones(
+        targets: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """Drop declared projects whose local clone is absent.
+
+        A stale registry entry / never-cloned repo must not surface as a false
+        push failure -- mirrors the same guard in the phased bump.
+        """
+        kept: list[tuple[str, str]] = []
+        for name, path in targets:
+            if not os.path.isdir(path):
+                logger.warning(
+                    "Skipping push for %s: project directory missing (%s)", name, path
+                )
+                continue
+            kept.append((name, path))
+        return kept
+
+    def _build_push_phase_list(
+        self, *, config: dict, start_phase: int, project_filter: str | None
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Expand the configured phases into the concrete push plan.
+
+        Returns the ordered phase records and the total number of projects
+        across them (used for the overall progress percentage).
+        """
+        processed_projects: set[str] = set()
+        phase_list: list[dict[str, Any]] = []
+        total_projects = 0
+
+        for phase in config.get("phases", []):
+            phase_num = phase.get("phase")
+            if phase_num < start_phase:
+                continue
+
+            targets = self._phase_push_targets(
+                phase, project_filter, processed_projects
+            )
+            targets = self._apply_phase_excludes(phase, phase_num, targets)
+            targets = self._drop_missing_clones(targets)
+            if not targets:
+                continue
+
+            phase_list.append(
+                {
+                    "phase_num": phase_num,
+                    "name": phase.get("name", f"Phase {phase_num}"),
+                    "projects_to_push": targets,
+                    "wait_minutes": float(phase.get("wait_minutes", 0)),
+                }
+            )
+            total_projects += len(targets)
+
+        return phase_list, total_projects
+
+    @staticmethod
+    def _collect_push_result(
+        future: "concurrent.futures.Future", all_results: list[GitResult]
+    ) -> tuple[str, bool]:
+        """Append one push future's outcome; return (status, pushed-anything)."""
+        try:
+            res = future.result()
+        except Exception as e:
+            all_results.append(
+                GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=type(e).__name__, code=1),
+                )
+            )
+            return "failed", False
+
+        all_results.append(res)
+        if res.status != "success":
+            return "failed", False
+        return "success", "Everything up-to-date" not in res.data
+
+    def _execute_push_phase(
+        self,
+        *,
+        p_info: dict[str, Any],
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> bool:
+        """Push one phase's projects in parallel; return whether anything landed."""
+        phase_name = p_info["name"]
+        projects_to_push = p_info["projects_to_push"]
+
+        tracker.begin_phase(phase_name)
+        logger.info(
+            f"Starting {phase_name} push for {len(projects_to_push)} projects..."
+        )
+
+        phase_had_pushes = False
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            future_to_proj = {}
+            for proj_name, p_path in projects_to_push:
+                tracker.begin_item(phase_name, proj_name)
+                future = executor.submit(self.push_project, path=p_path)
+                future_to_proj[future] = proj_name
+
+            for future in concurrent.futures.as_completed(future_to_proj):
+                proj_name = future_to_proj[future]
+                status_str, pushed = self._collect_push_result(future, all_results)
+                phase_had_pushes = phase_had_pushes or pushed
+                tracker.finish_item(phase_name, proj_name, status_str)
+
+        tracker.end_phase(phase_name)
+        return phase_had_pushes
+
+    @staticmethod
+    def _report_barrier_timeout(
+        *,
+        outcome: Any,
+        p_info: dict[str, Any],
+        next_phase_name: str,
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> None:
+        """Log, record, and surface a timed-out downstream gate-readiness barrier."""
+        phase_name = p_info["name"]
+        unresolved = "; ".join(f"{f.repo_name} ({f.detail})" for f in outcome.failures)
+        logger.error(
+            "Phase %s gate-readiness barrier TIMED OUT after %.1fs "
+            "(%d attempt(s)) with %d downstream repo(s) still failing "
+            "their pre-push gate -- ABORTING the wave before %s (or "
+            "any later phase) starts: %s. Set %s=<reason> to override "
+            "(loud + audit-logged), or re-run once the failing repo(s) "
+            "pass their own gate.",
+            p_info["phase_num"],
+            outcome.waited_s,
+            outcome.attempts,
+            len(outcome.failures),
+            next_phase_name,
+            unresolved,
+            dependency_readiness.OVERRIDE_ENV_VAR,
+        )
+        tracker.note(f"ABORTED — downstream gate(s) unmet after {phase_name}")
+        all_results.append(
+            GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=(
+                        f"phased_push aborted after {phase_name}: "
+                        f"downstream gate-readiness barrier timed out "
+                        f"after {outcome.waited_s:.1f}s "
+                        f"({outcome.attempts} attempt(s)) still "
+                        f"failing: {unresolved}"
+                    ),
+                    code=1,
+                ),
+            )
+        )
+
+    def _settle_phase_barrier(
+        self,
+        *,
+        p_info: dict[str, Any],
+        phase_had_pushes: bool,
+        later_phases: list[dict[str, Any]],
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> bool:
+        """Hold the wave until downstream repos pass their own pre-push gate.
+
+        Returns ``False`` when the barrier timed out and ``phased_push`` must
+        abort before any later phase starts.
+        """
+        wait_minutes = p_info["wait_minutes"]
+        if wait_minutes <= 0:
+            return True
+
+        phase_name = p_info["name"]
+        phase_num = p_info["phase_num"]
+        if not phase_had_pushes:
+            logger.info(
+                f"Phase {phase_num} complete. Skipping the {wait_minutes}-minute "
+                "gate-readiness ceiling because 0 commits were pushed."
+            )
+            return True
+
+        tracker.note(
+            f"Running downstream pre-push gates after {phase_name} "
+            f"(retry ceiling {wait_minutes} min)"
+        )
+        outcome = self._await_phase_dependency_readiness(
+            phase_num=phase_num,
+            phase_name=phase_name,
+            projects_to_push=p_info["projects_to_push"],
+            later_phases=later_phases,
+            wait_minutes=wait_minutes,
+        )
+        if not outcome.ok:
+            self._report_barrier_timeout(
+                outcome=outcome,
+                p_info=p_info,
+                next_phase_name=(
+                    later_phases[0]["name"] if later_phases else "the next phase"
+                ),
+                tracker=tracker,
+                all_results=all_results,
+            )
+            return False
+
+        if outcome.targets_checked:
+            logger.info(
+                "Phase %s gate-readiness barrier satisfied after %.1fs "
+                "(%d attempt(s)) for %d downstream repo(s)%s — proceeding "
+                "immediately (retry ceiling was %s min).",
+                phase_num,
+                outcome.waited_s,
+                outcome.attempts,
+                len(outcome.targets_checked),
+                " (override used)" if outcome.overridden else "",
+                wait_minutes,
+            )
+        return True
+
     def phased_push(
         self,
         start_phase: int = 1,
@@ -4094,311 +4610,51 @@ class Git:
         Concept:
             CONCEPT:RM-PUSH
         """
-
         if progress is None:
             progress = self.progress
 
         all_results: list[GitResult] = []
-        if config is None:
-            config_model: MaintenanceConfig | None = None
-            if hasattr(self, "config") and self.config and self.config.maintenance:
-                config_model = self.config.maintenance
-            else:
-                yml_path = os.environ.get("WORKSPACE_YML") or "workspace.yml"
-                if not os.path.isabs(yml_path):
-                    yml_path = os.path.join(self.path, yml_path)
+        resolved = self._resolve_maintenance_config(config)
+        if resolved is None:
+            return []
+        config = resolved
 
-                if os.path.exists(yml_path):
-                    if self.load_projects_from_yaml(yml_path) and self.config:
-                        config_model = self.config.maintenance
-                    else:
-                        config_model = None
-                else:
-                    config_model = None
-
-            if config_model:
-                config = config_model.model_dump()
-            else:
-                logger.error("No maintenance configuration found.")
-                return []
+        tracker = _PhaseProgress(state=progress, noun="push")
 
         if auto_start and not project_filter:
-            detected = self._auto_start_phase(config)
-            if detected is None:
-                logger.info(
-                    "Phased push: no repository changes detected; nothing to push."
-                )
-                if progress is not None:
-                    progress["current_phase"] = "No changes — nothing to push"
-                    progress["progress"] = 100
-                    progress["phases"] = {}
-                return all_results
-            if detected > start_phase:
-                logger.info(
-                    f"Phased push: lowest unpushed phase is {detected}; "
-                    f"starting there (skipping phases {start_phase}–{detected - 1})."
-                )
-            start_phase = max(start_phase, detected)
-
-        processed_projects = set()
-        phase_list: list[dict[str, Any]] = []
-        total_projects = 0
-
-        for phase in config.get("phases", []):
-            phase_num = phase.get("phase")
-            if phase_num < start_phase:
-                continue
-
-            projects_to_push = []
-
-            projects = phase.get("projects", [])[:]
-            if phase.get("project"):
-                projects.append(phase.get("project"))
-
-            if project_filter:
-                projects = [p for p in projects if p == project_filter]
-                if not projects and phase.get("bulk_push"):
-                    if project_filter not in processed_projects:
-                        projects = [project_filter]
-
-            if phase.get("bulk_push") and not project_filter:
-                for url, path in self.project_map.items():
-                    name = url.split("/")[-1].replace(".git", "")
-                    if name in processed_projects:
-                        continue
-                    projects_to_push.append((name, path))
-            else:
-                for project_name in projects:
-                    processed_projects.add(project_name)
-                    for url, p_path in self.project_map.items():
-                        if url.endswith(f"/{project_name}.git") or url.endswith(
-                            f"/{project_name}"
-                        ):
-                            projects_to_push.append((project_name, p_path))
-                            break
-
-            # Wire the (previously unused) declarative `exclude` field: fnmatch
-            # patterns against the project name, checked for every phase (not
-            # only bulk_push) so an operator can carve a specific repo out of
-            # an explicit `projects:` list too.
-            exclude_patterns = phase.get("exclude") or []
-            if exclude_patterns:
-                excluded = [
-                    (n, p)
-                    for (n, p) in projects_to_push
-                    if any(fnmatch.fnmatch(n, pat) for pat in exclude_patterns)
-                ]
-                for n, _p in excluded:
-                    logger.info(
-                        "Phase %s: excluding %s (matches an 'exclude' pattern)",
-                        phase_num,
-                        n,
-                    )
-                projects_to_push = [
-                    (n, p)
-                    for (n, p) in projects_to_push
-                    if not any(fnmatch.fnmatch(n, pat) for pat in exclude_patterns)
-                ]
-
-            # Drop declared projects whose local clone is absent (stale registry
-            # entry / never-cloned repo) so they don't surface as false push
-            # failures — mirrors the same guard in the phased bump.
-            missing = [(n, p) for (n, p) in projects_to_push if not os.path.isdir(p)]
-            for n, p in missing:
-                logger.warning(
-                    "Skipping push for %s: project directory missing (%s)", n, p
-                )
-            projects_to_push = [
-                (n, p) for (n, p) in projects_to_push if os.path.isdir(p)
-            ]
-
-            if not projects_to_push:
-                continue
-
-            phase_name = phase.get("name", f"Phase {phase_num}")
-            phase_list.append(
-                {
-                    "phase_num": phase_num,
-                    "name": phase_name,
-                    "projects_to_push": projects_to_push,
-                    "wait_minutes": float(phase.get("wait_minutes", 0)),
-                }
+            detected = self._resolve_auto_start_phase(
+                config=config,
+                start_phase=start_phase,
+                tracker=tracker,
+                noun="push",
+                lowest_label="lowest unpushed phase",
             )
-            total_projects += len(projects_to_push)
+            if detected is None:
+                return all_results
+            start_phase = detected
 
-        if progress is not None:
-            progress["current_phase"] = "Initializing Pushes"
-            progress["progress"] = 0
-            progress["phases"] = {}
-            for p_info in phase_list:
-                progress["phases"][p_info["name"]] = {
-                    "status": "pending",
-                    "total": len(p_info["projects_to_push"]),
-                    "processed": 0,
-                    "completed": 0,
-                    "success": 0,
-                    "failed": 0,
-                    "details": {
-                        proj: "pending" for proj, _ in p_info["projects_to_push"]
-                    },
-                    "repos": {
-                        proj: "pending" for proj, _ in p_info["projects_to_push"]
-                    },
-                }
-
-        processed_count = 0
+        phase_list, tracker.total = self._build_push_phase_list(
+            config=config, start_phase=start_phase, project_filter=project_filter
+        )
+        tracker.initialize(
+            "Initializing Pushes",
+            [(p["name"], [n for n, _ in p["projects_to_push"]]) for p in phase_list],
+        )
 
         for phase_idx, p_info in enumerate(phase_list):
-            phase_name = p_info["name"]
-            phase_num = p_info["phase_num"]
-            projects_to_push = p_info["projects_to_push"]
-            wait_minutes = p_info["wait_minutes"]
-
-            if progress is not None:
-                progress["current_phase"] = f"{phase_name} in progress"
-                progress["phases"][phase_name]["status"] = "running"
-
-            logger.info(
-                f"Starting {phase_name} push for {len(projects_to_push)} projects..."
+            phase_had_pushes = self._execute_push_phase(
+                p_info=p_info, tracker=tracker, all_results=all_results
             )
+            if not self._settle_phase_barrier(
+                p_info=p_info,
+                phase_had_pushes=phase_had_pushes,
+                later_phases=phase_list[phase_idx + 1 :],
+                tracker=tracker,
+                all_results=all_results,
+            ):
+                return all_results
 
-            phase_had_pushes = False
-
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.threads
-            ) as executor:
-                future_to_proj = {}
-                for proj_name, p_path in projects_to_push:
-                    if progress is not None:
-                        progress["phases"][phase_name]["details"][proj_name] = "running"
-                        progress["phases"][phase_name]["repos"][proj_name] = "running"
-                    future = executor.submit(self.push_project, path=p_path)
-                    future_to_proj[future] = proj_name
-
-                for future in concurrent.futures.as_completed(future_to_proj):
-                    proj_name = future_to_proj[future]
-                    try:
-                        res = future.result()
-                        all_results.append(res)
-                        status_str = "success" if res.status == "success" else "failed"
-                        if (
-                            res.status == "success"
-                            and "Everything up-to-date" not in res.data
-                        ):
-                            phase_had_pushes = True
-                    except Exception as e:
-                        all_results.append(
-                            GitResult(
-                                status="error",
-                                data="",
-                                error=GitError(message=type(e).__name__, code=1),
-                            )
-                        )
-                        status_str = "failed"
-
-                    if progress is not None:
-                        progress["phases"][phase_name]["details"][proj_name] = (
-                            status_str
-                        )
-                        progress["phases"][phase_name]["repos"][proj_name] = status_str
-                        progress["phases"][phase_name]["processed"] += 1
-                        progress["phases"][phase_name]["completed"] += 1
-                        if status_str == "success":
-                            progress["phases"][phase_name]["success"] += 1
-                        else:
-                            progress["phases"][phase_name]["failed"] += 1
-
-                        processed_count += 1
-                        progress["progress"] = int(
-                            (processed_count / total_projects) * 100
-                        )
-                        logger.info(
-                            f"[{processed_count}/{total_projects}] ({progress['progress']}%) "
-                            f"Completed push for {proj_name}: {status_str}"
-                        )
-
-            if progress is not None:
-                progress["phases"][phase_name]["status"] = "completed"
-
-            if wait_minutes > 0:
-                if not phase_had_pushes:
-                    logger.info(
-                        f"Phase {phase_num} complete. Skipping the {wait_minutes}-minute "
-                        "gate-readiness ceiling because 0 commits were pushed."
-                    )
-                else:
-                    if progress is not None:
-                        progress["current_phase"] = (
-                            f"Running downstream pre-push gates after {phase_name} "
-                            f"(retry ceiling {wait_minutes} min)"
-                        )
-                    outcome = self._await_phase_dependency_readiness(
-                        phase_num=phase_num,
-                        phase_name=phase_name,
-                        projects_to_push=projects_to_push,
-                        later_phases=phase_list[phase_idx + 1 :],
-                        wait_minutes=wait_minutes,
-                    )
-                    if not outcome.ok:
-                        unresolved = "; ".join(
-                            f"{f.repo_name} ({f.detail})" for f in outcome.failures
-                        )
-                        logger.error(
-                            "Phase %s gate-readiness barrier TIMED OUT after %.1fs "
-                            "(%d attempt(s)) with %d downstream repo(s) still failing "
-                            "their pre-push gate -- ABORTING the wave before %s (or "
-                            "any later phase) starts: %s. Set %s=<reason> to override "
-                            "(loud + audit-logged), or re-run once the failing repo(s) "
-                            "pass their own gate.",
-                            phase_num,
-                            outcome.waited_s,
-                            outcome.attempts,
-                            len(outcome.failures),
-                            phase_list[phase_idx + 1]["name"]
-                            if phase_idx + 1 < len(phase_list)
-                            else "the next phase",
-                            unresolved,
-                            dependency_readiness.OVERRIDE_ENV_VAR,
-                        )
-                        if progress is not None:
-                            progress["current_phase"] = (
-                                f"ABORTED — downstream gate(s) unmet after {phase_name}"
-                            )
-                        all_results.append(
-                            GitResult(
-                                status="error",
-                                data="",
-                                error=GitError(
-                                    message=(
-                                        f"phased_push aborted after {phase_name}: "
-                                        f"downstream gate-readiness barrier timed out "
-                                        f"after {outcome.waited_s:.1f}s "
-                                        f"({outcome.attempts} attempt(s)) still "
-                                        f"failing: {unresolved}"
-                                    ),
-                                    code=1,
-                                ),
-                            )
-                        )
-                        return all_results
-                    if outcome.targets_checked:
-                        note = " (override used)" if outcome.overridden else ""
-                        logger.info(
-                            "Phase %s gate-readiness barrier satisfied after %.1fs "
-                            "(%d attempt(s)) for %d downstream repo(s)%s — proceeding "
-                            "immediately (retry ceiling was %s min).",
-                            phase_num,
-                            outcome.waited_s,
-                            outcome.attempts,
-                            len(outcome.targets_checked),
-                            note,
-                            wait_minutes,
-                        )
-
-        if progress is not None:
-            progress["current_phase"] = "Pushes Completed"
-            progress["progress"] = 100
-
+        tracker.finish("Pushes Completed")
         return all_results
 
     def _phase_published_packages(
