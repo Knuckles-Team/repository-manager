@@ -49,6 +49,18 @@ class DiskUsage:
         }
 
 
+@dataclass
+class _DiskScanState:
+    """Mutable accumulator threaded through ``_measure_uncached``'s helpers."""
+
+    total: int = 0
+    entries: int = 0
+    directories: int = 0
+    skipped_symlinks: int = 0
+    skipped_errors: int = 0
+    bounded: bool = False
+
+
 class DiskAccountingProbe:
     """Cacheable, bounded, no-follow-links disk accounting.
 
@@ -120,48 +132,65 @@ class DiskAccountingProbe:
         if not root.exists():
             return DiskUsage(path=str(root), observed_at=observed_at)
 
-        total = entries = directories = skipped_symlinks = skipped_errors = 0
-        bounded = False
+        state = _DiskScanState()
         pending: list[tuple[Path, int]] = [(root, 0)]
         while pending:
             current, depth = pending.pop()
-            try:
-                with os.scandir(current) as iterator:
-                    for entry in iterator:
-                        if entries >= self.max_entries:
-                            bounded = True
-                            break
-                        entries += 1
-                        try:
-                            if entry.is_symlink():
-                                skipped_symlinks += 1
-                                continue
-                            if entry.is_dir(follow_symlinks=False):
-                                directories += 1
-                                if depth >= self.max_depth:
-                                    bounded = True
-                                else:
-                                    pending.append((Path(entry.path), depth + 1))
-                                continue
-                            info = entry.stat(follow_symlinks=False)
-                            if stat.S_ISREG(info.st_mode):
-                                total += max(0, int(info.st_size))
-                        except (OSError, ValueError):
-                            skipped_errors += 1
-                if entries >= self.max_entries and pending:
-                    bounded = True
-            except (OSError, ValueError):
-                skipped_errors += 1
+            self._scan_directory(current, depth, state, pending)
         return DiskUsage(
             path=str(root),
-            bytes=total,
-            entries=entries,
-            directories=directories,
-            skipped_symlinks=skipped_symlinks,
-            skipped_errors=skipped_errors,
-            bounded=bounded,
+            bytes=state.total,
+            entries=state.entries,
+            directories=state.directories,
+            skipped_symlinks=state.skipped_symlinks,
+            skipped_errors=state.skipped_errors,
+            bounded=state.bounded,
             observed_at=observed_at,
         )
+
+    def _scan_directory(
+        self,
+        current: Path,
+        depth: int,
+        state: _DiskScanState,
+        pending: list[tuple[Path, int]],
+    ) -> None:
+        try:
+            with os.scandir(current) as iterator:
+                for entry in iterator:
+                    if state.entries >= self.max_entries:
+                        state.bounded = True
+                        break
+                    state.entries += 1
+                    self._scan_one_entry(entry, depth, state, pending)
+            if state.entries >= self.max_entries and pending:
+                state.bounded = True
+        except (OSError, ValueError):
+            state.skipped_errors += 1
+
+    def _scan_one_entry(
+        self,
+        entry: os.DirEntry[str],
+        depth: int,
+        state: _DiskScanState,
+        pending: list[tuple[Path, int]],
+    ) -> None:
+        try:
+            if entry.is_symlink():
+                state.skipped_symlinks += 1
+                return
+            if entry.is_dir(follow_symlinks=False):
+                state.directories += 1
+                if depth >= self.max_depth:
+                    state.bounded = True
+                else:
+                    pending.append((Path(entry.path), depth + 1))
+                return
+            info = entry.stat(follow_symlinks=False)
+            if stat.S_ISREG(info.st_mode):
+                state.total += max(0, int(info.st_size))
+        except (OSError, ValueError):
+            state.skipped_errors += 1
 
 
 @dataclass(frozen=True)
@@ -327,8 +356,40 @@ class LaneQuota:
         if predicted_disk_bytes < 0:
             raise ValueError("predicted disk bytes must be non-negative")
         current = self.usage(records)
+        scopes = self._quota_scopes(
+            current,
+            owner_id=owner_id,
+            session_id=session_id,
+            repository_id=repository_id,
+            host_id=host_id,
+        )
+        decision = self._scope_limit_decision(scopes, predicted_disk_bytes, current)
+        if decision is not None:
+            return decision
+        decision = self._predicted_disk_decision(predicted_disk_bytes, current)
+        if decision is not None:
+            return decision
+        decision = self._observed_disk_decision(predicted_disk_bytes, current)
+        if decision is not None:
+            return decision
+        return LaneQuotaDecision(
+            True,
+            requested_predicted_disk_bytes=predicted_disk_bytes,
+            usage=current,
+            policy=self.policy,
+        )
+
+    def _quota_scopes(
+        self,
+        current: LaneQuotaUsage,
+        *,
+        owner_id: str | None,
+        session_id: str | None,
+        repository_id: str,
+        host_id: str | None,
+    ) -> tuple[tuple[str, int | None, int], ...]:
         next_total = current.total_active + 1
-        scopes = (
+        return (
             (
                 "agent",
                 self.policy.max_per_agent,
@@ -351,6 +412,13 @@ class LaneQuota:
             ),
             ("total", self.policy.max_total_active, next_total),
         )
+
+    def _scope_limit_decision(
+        self,
+        scopes: tuple[tuple[str, int | None, int], ...],
+        predicted_disk_bytes: int,
+        current: LaneQuotaUsage,
+    ) -> LaneQuotaDecision | None:
         for scope, limit, value in scopes:
             if limit is not None and value > limit:
                 return LaneQuotaDecision(
@@ -361,6 +429,11 @@ class LaneQuota:
                     usage=current,
                     policy=self.policy,
                 )
+        return None
+
+    def _predicted_disk_decision(
+        self, predicted_disk_bytes: int, current: LaneQuotaUsage
+    ) -> LaneQuotaDecision | None:
         predicted = current.predicted_disk_bytes + predicted_disk_bytes
         if (
             self.policy.max_predicted_disk_bytes is not None
@@ -377,6 +450,11 @@ class LaneQuota:
                 usage=current,
                 policy=self.policy,
             )
+        return None
+
+    def _observed_disk_decision(
+        self, predicted_disk_bytes: int, current: LaneQuotaUsage
+    ) -> LaneQuotaDecision | None:
         if self.policy.max_observed_disk_bytes is not None and (
             current.observed_disk_bytes > self.policy.max_observed_disk_bytes
         ):
@@ -391,12 +469,7 @@ class LaneQuota:
                 usage=current,
                 policy=self.policy,
             )
-        return LaneQuotaDecision(
-            True,
-            requested_predicted_disk_bytes=predicted_disk_bytes,
-            usage=current,
-            policy=self.policy,
-        )
+        return None
 
 
 __all__ = [
