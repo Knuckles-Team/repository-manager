@@ -774,6 +774,40 @@ def _bounded_tree_size(
     return counters.total
 
 
+def _is_stale_entry(manifest: Mapping[str, Any], cutoff: float) -> bool:
+    built_at = manifest.get("built_at")
+    try:
+        return built_at is None or float(built_at) < cutoff
+    except (TypeError, ValueError):
+        return True
+
+
+@dataclass(frozen=True)
+class _GCPolicy:
+    """Immutable per-run GC decision inputs, bundled to keep helpers <=7 params."""
+
+    recent: set[str]
+    cutoff: float
+    high_watermark_mib: int
+    live_keys: Iterable[str]
+    pinned_keys: Iterable[str]
+    waited_keys: Iterable[str]
+    running_keys: Iterable[str]
+    authority_probe: Callable[[str, Mapping[str, Any]], Mapping[str, Any]]
+
+
+class _GCState:
+    """Mutable running result/pressure state for one `garbage_collect` pass."""
+
+    __slots__ = ("pressure", "removed", "kept", "reclaimed")
+
+    def __init__(self, pressure: bool) -> None:
+        self.pressure = pressure
+        self.removed: list[str] = []
+        self.kept: list[str] = []
+        self.reclaimed = 0
+
+
 class BuildArtifactStore:
     """Content-addressed artifact storage with explicit recovery states.
 
@@ -1599,6 +1633,41 @@ class BuildArtifactStore:
             finally:
                 unlock(lock.fileno())
 
+    def _gc_process_entry(
+        self,
+        key: str,
+        manifest: Mapping[str, Any],
+        policy: _GCPolicy,
+        state: _GCState,
+    ) -> None:
+        """Apply the keep/remove decision for one GC candidate, mutating ``state``."""
+        if key in policy.recent:
+            state.kept.append(key)
+            return
+        if not state.pressure and not _is_stale_entry(manifest, policy.cutoff):
+            state.kept.append(key)
+            return
+        gained = self.remove_entry(
+            key,
+            live_keys=policy.live_keys,
+            pinned_keys=policy.pinned_keys,
+            waited_keys=policy.waited_keys,
+            running_keys=policy.running_keys,
+            authority_probe=policy.authority_probe,
+        )
+        if not gained:
+            state.kept.append(key)
+            return
+        state.removed.append(key)
+        state.reclaimed += gained
+        usage = shutil.disk_usage(self.root)
+        if (
+            state.pressure
+            and policy.high_watermark_mib > 0
+            and usage.free >= policy.high_watermark_mib * 1024 * 1024
+        ):
+            state.pressure = False
+
     def garbage_collect(
         self,
         *,
@@ -1631,42 +1700,25 @@ class BuildArtifactStore:
         pressure = (
             low_watermark_mib > 0 and usage.free < low_watermark_mib * 1024 * 1024
         )
-        removed: list[str] = []
-        kept: list[str] = []
-        reclaimed = 0
+
+        policy = _GCPolicy(
+            recent=recent,
+            cutoff=cutoff,
+            high_watermark_mib=high_watermark_mib,
+            live_keys=live_keys,
+            pinned_keys=pinned_keys,
+            waited_keys=waited_keys,
+            running_keys=running_keys,
+            authority_probe=authority_probe,
+        )
+        state = _GCState(pressure=pressure)
         for key, manifest in reversed(entries):
-            if key in recent:
-                kept.append(key)
-                continue
-            built_at = manifest.get("built_at")
-            try:
-                old = built_at is None or float(built_at) < cutoff
-            except (TypeError, ValueError):
-                old = True
-            if not pressure and not old:
-                kept.append(key)
-                continue
-            gained = self.remove_entry(
-                key,
-                live_keys=live_keys,
-                pinned_keys=pinned_keys,
-                waited_keys=waited_keys,
-                running_keys=running_keys,
-                authority_probe=authority_probe,
-            )
-            if gained:
-                removed.append(key)
-                reclaimed += gained
-                usage = shutil.disk_usage(self.root)
-                if (
-                    pressure
-                    and high_watermark_mib > 0
-                    and usage.free >= high_watermark_mib * 1024 * 1024
-                ):
-                    pressure = False
-            else:
-                kept.append(key)
-        return {"removed": removed, "kept": kept, "reclaimed_bytes": reclaimed}
+            self._gc_process_entry(key, manifest, policy, state)
+        return {
+            "removed": state.removed,
+            "kept": state.kept,
+            "reclaimed_bytes": state.reclaimed,
+        }
 
     gc = garbage_collect
 
