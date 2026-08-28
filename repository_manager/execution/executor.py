@@ -7,6 +7,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -126,15 +127,23 @@ class ApprovedEnvironment:
     ) -> tuple[dict[str, str], tuple[str, ...]]:
         """Resolve approved references or fail closed before process creation."""
 
-        environment = (
-            {
-                name: os.environ[name]
-                for name in _OPERATIONAL_ENV_NAMES
-                if name in os.environ
-            }
-            if self._inherit
-            else {}
-        )
+        environment = self._inherited_environment()
+        secrets = self._resolve_references(environment, references)
+        secrets.extend(self._scan_sensitive_values(environment))
+        return environment, tuple(secret for secret in secrets if secret)
+
+    def _inherited_environment(self) -> dict[str, str]:
+        if not self._inherit:
+            return {}
+        return {
+            name: os.environ[name]
+            for name in _OPERATIONAL_ENV_NAMES
+            if name in os.environ
+        }
+
+    def _resolve_references(
+        self, environment: dict[str, str], references: Sequence[str]
+    ) -> list[str]:
         secrets: list[str] = []
         for reference in references:
             if reference in self._values:
@@ -147,11 +156,15 @@ class ApprovedEnvironment:
                 )
             environment[reference] = value
             secrets.append(value)
+        return secrets
 
-        for name, value in environment.items():
-            if _SENSITIVE_ENV_NAME.search(name) or _CREDENTIAL_URL.match(value):
-                secrets.append(value)
-        return environment, tuple(secret for secret in secrets if secret)
+    @staticmethod
+    def _scan_sensitive_values(environment: Mapping[str, str]) -> list[str]:
+        return [
+            value
+            for name, value in environment.items()
+            if _SENSITIVE_ENV_NAME.search(name) or _CREDENTIAL_URL.match(value)
+        ]
 
 
 @runtime_checkable
@@ -202,6 +215,38 @@ class PublicationPort(Protocol):
 
     def publish(self, result: ExecutionResult, *, fence: str) -> PublicationDecision:
         """Atomically accept the result or reject it as stale."""
+
+
+@dataclass(frozen=True)
+class _RunIdentity:
+    """Command/worker/fence identity plus start timestamps for one run."""
+
+    command_id: str
+    worker_id: str
+    fence: str
+    started_at: datetime
+    started_mono: float
+
+
+@dataclass(frozen=True)
+class _LoopWatch:
+    """Cancellation/fence/heartbeat/reader-error signals watched while a
+    child process is running."""
+
+    token: CancellationToken
+    checker: Callable[[], bool]
+    heartbeat: Callable[[], bool | None] | None
+    sink_error: list[BaseException]
+
+
+@dataclass(frozen=True)
+class _RunState:
+    """The outcome/failure-class/cleanup-ok trio threaded through post-exit
+    reconciliation, sink close-out, and publication."""
+
+    outcome: ExecutionOutcome
+    failure_class: FailureClass | None
+    cleanup_ok: bool
 
 
 class LocalExecutor:
@@ -272,26 +317,100 @@ class LocalExecutor:
     ) -> ExecutionResult:
         """Execute a command with bounded cancellation and fence checks."""
 
-        started_at = self.clock.now()
-        started_mono = self.clock.monotonic()
-        effective_worker = worker_id or self.worker_id
+        identity = _RunIdentity(
+            command_id=command_id,
+            worker_id=worker_id or self.worker_id,
+            fence=fence,
+            started_at=self.clock.now(),
+            started_mono=self.clock.monotonic(),
+        )
         token = cancellation or CancellationToken()
         checker = fence_check or (lambda: True)
 
-        if not all(
-            isinstance(value, str) and value.strip()
-            for value in (command_id, effective_worker, fence)
-        ):
-            return self._result(
+        if not self._identity_is_well_formed(identity):
+            invalid_identity = _RunIdentity(
                 command_id="command:invalid",
                 worker_id=self.worker_id,
                 fence="fence:invalid",
-                outcome=ExecutionOutcome.REFUSED,
-                failure_class=FailureClass.INVALID_REQUEST,
-                started_at=started_at,
-                started_mono=started_mono,
-                log_sink=None,
+                started_at=identity.started_at,
+                started_mono=identity.started_mono,
             )
+            return self._result(
+                invalid_identity,
+                ExecutionOutcome.REFUSED,
+                FailureClass.INVALID_REQUEST,
+                None,
+            )
+
+        environment, secrets, prep_failure = self._prepare_environment(command)
+        if prep_failure is not None or environment is None:
+            return self._result(
+                identity,
+                ExecutionOutcome.REFUSED,
+                prep_failure or FailureClass.WORKER_ENVIRONMENT_FAILURE,
+                None,
+            )
+
+        sink = self._build_log_sink(command, log_sink, secrets)
+
+        early_refusal = self._pre_spawn_refusal(token, checker, sink)
+        if early_refusal is not None:
+            outcome, failure_class = early_refusal
+            return self._finish_without_process(identity, outcome, failure_class, sink)
+
+        process = self._try_spawn(command, environment)
+        if process is None:
+            sink.abort()
+            return self._finish_without_process(
+                identity,
+                ExecutionOutcome.FAILED,
+                FailureClass.WORKER_ENVIRONMENT_FAILURE,
+                sink,
+            )
+
+        sink_error: list[BaseException] = []
+        readers = self._start_readers(process, sink, sink_error)
+        watch = _LoopWatch(
+            token=token, checker=checker, heartbeat=heartbeat, sink_error=sink_error
+        )
+        state = self._run_until_exit(process, command, watch)
+
+        returncode, cleanup_ok = self._finalize_process(
+            process, readers, state.cleanup_ok
+        )
+        state = _RunState(state.outcome, state.failure_class, cleanup_ok)
+        state, signal_number, exit_code = self._reconcile_outcome(
+            state, watch, returncode
+        )
+        state = self._close_sink(sink, state)
+        state = self._publish_result(publisher, identity, state, sink, returncode)
+
+        return self._result(
+            identity,
+            state.outcome,
+            state.failure_class,
+            sink,
+            exit_code=exit_code,
+            signal_number=signal_number,
+            cleanup_ok=state.cleanup_ok,
+        )
+
+    def execute(self, command: ExecutionCommand, **kwargs: object) -> ExecutionResult:
+        """Alias for adapters that use an imperative ``execute`` verb."""
+
+        return self.run(command, **kwargs)  # type: ignore[arg-type]
+
+    @staticmethod
+    def _identity_is_well_formed(identity: _RunIdentity) -> bool:
+        return all(
+            isinstance(value, str) and value.strip()
+            for value in (identity.command_id, identity.worker_id, identity.fence)
+        )
+
+    def _prepare_environment(
+        self, command: ExecutionCommand
+    ) -> tuple[dict[str, str] | None, tuple[str, ...], FailureClass | None]:
+        """Validate the command and materialize its environment, or report why not."""
 
         try:
             self.validate(command)
@@ -299,29 +418,20 @@ class LocalExecutor:
                 command.environment_refs
             )
         except ExecutionRefused:
-            return self._result(
-                command_id=command_id,
-                worker_id=effective_worker,
-                fence=fence,
-                outcome=ExecutionOutcome.REFUSED,
-                failure_class=FailureClass.INVALID_REQUEST,
-                started_at=started_at,
-                started_mono=started_mono,
-                log_sink=None,
-            )
+            return None, (), FailureClass.INVALID_REQUEST
         except ValueError:
-            return self._result(
-                command_id=command_id,
-                worker_id=effective_worker,
-                fence=fence,
-                outcome=ExecutionOutcome.REFUSED,
-                failure_class=FailureClass.WORKER_ENVIRONMENT_FAILURE,
-                started_at=started_at,
-                started_mono=started_mono,
-                log_sink=None,
-            )
+            return None, (), FailureClass.WORKER_ENVIRONMENT_FAILURE
+        return environment, secrets, None
 
-        sink: LogSink = log_sink or BoundedLogSink(
+    @staticmethod
+    def _build_log_sink(
+        command: ExecutionCommand,
+        log_sink: LogSink | None,
+        secrets: tuple[str, ...],
+    ) -> LogSink:
+        if log_sink is not None:
+            return RedactingLogSink(log_sink, secrets)
+        return BoundedLogSink(
             max_stdout_bytes=command.max_stdout_bytes,
             max_stderr_bytes=command.max_stderr_bytes,
             terminal_tail_bytes=min(
@@ -329,94 +439,128 @@ class LocalExecutor:
             ),
             redactions=secrets,
         )
-        if log_sink is not None:
-            sink = RedactingLogSink(log_sink, secrets)
+
+    def _pre_spawn_refusal(
+        self,
+        token: CancellationToken,
+        checker: Callable[[], bool],
+        sink: LogSink,
+    ) -> tuple[ExecutionOutcome, FailureClass] | None:
+        """Return the refusal outcome if the run must not spawn, else None."""
 
         if token.is_cancelled():
-            return self._finish_without_process(
-                command_id,
-                effective_worker,
-                fence,
-                ExecutionOutcome.CANCELLED,
-                FailureClass.CANCELLED_DEADLINE,
-                started_at,
-                started_mono,
-                sink,
-            )
+            return ExecutionOutcome.CANCELLED, FailureClass.CANCELLED_DEADLINE
         if not self._fence_is_valid(checker):
             sink.abort()
-            return self._finish_without_process(
-                command_id,
-                effective_worker,
-                fence,
-                ExecutionOutcome.REFUSED,
-                FailureClass.STALE_FENCE_DUPLICATE_EFFECT,
-                started_at,
-                started_mono,
-                sink,
-            )
+            return ExecutionOutcome.REFUSED, FailureClass.STALE_FENCE_DUPLICATE_EFFECT
+        return None
 
+    def _try_spawn(
+        self, command: ExecutionCommand, environment: Mapping[str, str]
+    ) -> ProcessLike | None:
         try:
-            process = self.supervisor.spawn(
+            return self.supervisor.spawn(
                 command.argv,
                 cwd=Path(command.workdir),
                 env=environment,
             )
         except (OSError, ValueError):
-            sink.abort()
-            return self._finish_without_process(
-                command_id,
-                effective_worker,
-                fence,
-                ExecutionOutcome.FAILED,
-                FailureClass.WORKER_ENVIRONMENT_FAILURE,
-                started_at,
-                started_mono,
-                sink,
-            )
+            return None
 
-        sink_error: list[BaseException] = []
-        readers = self._start_readers(process, sink, sink_error)
+    def _run_until_exit(
+        self,
+        process: ProcessLike,
+        command: ExecutionCommand,
+        watch: _LoopWatch,
+    ) -> _RunState:
+        """Poll the child until it exits or a watched signal forces termination."""
+
         outcome = ExecutionOutcome.SUCCEEDED
         failure_class: FailureClass | None = None
         cleanup_ok = True
-        termination_requested = False
         next_heartbeat = self.clock.monotonic() + command.heartbeat_interval_seconds
         deadline = self.clock.monotonic() + command.timeout_seconds
 
         while process.poll() is None:
             now = self.clock.monotonic()
-            if sink_error:
-                outcome = ExecutionOutcome.FAILED
-                failure_class = FailureClass.WORKER_ENVIRONMENT_FAILURE
-                termination_requested = True
-            elif token.is_cancelled():
-                outcome = ExecutionOutcome.CANCELLED
-                failure_class = FailureClass.CANCELLED_DEADLINE
-                termination_requested = True
-            elif not self._fence_is_valid(checker):
-                outcome = ExecutionOutcome.REFUSED
-                failure_class = FailureClass.STALE_FENCE_DUPLICATE_EFFECT
-                termination_requested = True
-            elif now >= deadline:
-                outcome = ExecutionOutcome.TIMED_OUT
-                failure_class = FailureClass.CANCELLED_DEADLINE
-                termination_requested = True
-            elif now >= next_heartbeat:
-                if not self._heartbeat_is_valid(heartbeat):
-                    outcome = ExecutionOutcome.REFUSED
-                    failure_class = FailureClass.WORKER_ENVIRONMENT_FAILURE
-                    termination_requested = True
-                else:
-                    next_heartbeat = now + command.heartbeat_interval_seconds
-
-            if termination_requested:
+            terminate, loop_outcome, loop_failure, next_heartbeat = (
+                self._next_loop_state(
+                    now,
+                    deadline,
+                    next_heartbeat,
+                    command.heartbeat_interval_seconds,
+                    watch,
+                )
+            )
+            if terminate:
+                outcome = loop_outcome or outcome
+                failure_class = loop_failure
                 report = self.supervisor.terminate(process)
                 cleanup_ok = report.cleanup_ok
                 break
             self.clock.sleep(
                 min(self.supervisor.poll_interval, max(0.0, deadline - now))
             )
+
+        return _RunState(outcome, failure_class, cleanup_ok)
+
+    def _next_loop_state(
+        self,
+        now: float,
+        deadline: float,
+        next_heartbeat: float,
+        heartbeat_interval: float,
+        watch: _LoopWatch,
+    ) -> tuple[bool, ExecutionOutcome | None, FailureClass | None, float]:
+        """Decide whether to keep polling or terminate, for one loop tick."""
+
+        if watch.sink_error:
+            return (
+                True,
+                ExecutionOutcome.FAILED,
+                FailureClass.WORKER_ENVIRONMENT_FAILURE,
+                next_heartbeat,
+            )
+        if watch.token.is_cancelled():
+            return (
+                True,
+                ExecutionOutcome.CANCELLED,
+                FailureClass.CANCELLED_DEADLINE,
+                next_heartbeat,
+            )
+        if not self._fence_is_valid(watch.checker):
+            return (
+                True,
+                ExecutionOutcome.REFUSED,
+                FailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+                next_heartbeat,
+            )
+        if now >= deadline:
+            return (
+                True,
+                ExecutionOutcome.TIMED_OUT,
+                FailureClass.CANCELLED_DEADLINE,
+                next_heartbeat,
+            )
+        if now >= next_heartbeat:
+            if not self._heartbeat_is_valid(watch.heartbeat):
+                return (
+                    True,
+                    ExecutionOutcome.REFUSED,
+                    FailureClass.WORKER_ENVIRONMENT_FAILURE,
+                    next_heartbeat,
+                )
+            return False, None, None, now + heartbeat_interval
+        return False, None, None, next_heartbeat
+
+    def _finalize_process(
+        self,
+        process: ProcessLike,
+        readers: tuple[threading.Thread, ...],
+        cleanup_ok: bool,
+    ) -> tuple[int | None, bool]:
+        """Force-terminate a still-running child, collect its exit code, and
+        join output readers."""
 
         if process.poll() is None:
             report = self.supervisor.terminate(process)
@@ -433,6 +577,36 @@ class LocalExecutor:
             if reader.is_alive():
                 cleanup_ok = False
 
+        return returncode, cleanup_ok
+
+    def _reconcile_outcome(
+        self,
+        state: _RunState,
+        watch: _LoopWatch,
+        returncode: int | None,
+    ) -> tuple[_RunState, int | None, int | None]:
+        """Downgrade a SUCCEEDED outcome once the exit code and post-exit
+        signals are known, and compute the final signal/exit-code pair."""
+
+        outcome, failure_class, signal_number, exit_code = self._reconcile_exit_status(
+            state.outcome, state.failure_class, watch.sink_error, returncode
+        )
+        outcome, failure_class = self._reconcile_post_exit_signals(
+            outcome, failure_class, watch, state.cleanup_ok
+        )
+        return (
+            _RunState(outcome, failure_class, state.cleanup_ok),
+            signal_number,
+            exit_code,
+        )
+
+    @staticmethod
+    def _reconcile_exit_status(
+        outcome: ExecutionOutcome,
+        failure_class: FailureClass | None,
+        sink_error: list[BaseException],
+        returncode: int | None,
+    ) -> tuple[ExecutionOutcome, FailureClass | None, int | None, int | None]:
         if sink_error and outcome == ExecutionOutcome.SUCCEEDED:
             outcome = ExecutionOutcome.FAILED
             failure_class = FailureClass.WORKER_ENVIRONMENT_FAILURE
@@ -447,76 +621,83 @@ class LocalExecutor:
                 if signal_number is not None
                 else FailureClass.VALIDATION_CANDIDATE_FAILURE
             )
-        if outcome == ExecutionOutcome.SUCCEEDED and token.is_cancelled():
+        return outcome, failure_class, signal_number, exit_code
+
+    def _reconcile_post_exit_signals(
+        self,
+        outcome: ExecutionOutcome,
+        failure_class: FailureClass | None,
+        watch: _LoopWatch,
+        cleanup_ok: bool,
+    ) -> tuple[ExecutionOutcome, FailureClass | None]:
+        if outcome == ExecutionOutcome.SUCCEEDED and watch.token.is_cancelled():
             outcome = ExecutionOutcome.CANCELLED
             failure_class = FailureClass.CANCELLED_DEADLINE
-        if outcome == ExecutionOutcome.SUCCEEDED and not self._fence_is_valid(checker):
+        if outcome == ExecutionOutcome.SUCCEEDED and not self._fence_is_valid(
+            watch.checker
+        ):
             outcome = ExecutionOutcome.REFUSED
             failure_class = FailureClass.STALE_FENCE_DUPLICATE_EFFECT
         if outcome == ExecutionOutcome.SUCCEEDED and not cleanup_ok:
             outcome = ExecutionOutcome.FAILED
             failure_class = FailureClass.WORKER_ENVIRONMENT_FAILURE
+        return outcome, failure_class
 
+    @staticmethod
+    def _close_sink(sink: LogSink, state: _RunState) -> _RunState:
         try:
-            if outcome == ExecutionOutcome.REFUSED:
+            if state.outcome == ExecutionOutcome.REFUSED:
                 sink.abort()
             else:
                 sink.close()
         except Exception:  # pragma: no cover - defensive sink boundary
-            outcome = ExecutionOutcome.FAILED
-            failure_class = FailureClass.WORKER_ENVIRONMENT_FAILURE
-            cleanup_ok = False
-
-        if outcome == ExecutionOutcome.SUCCEEDED and publisher is not None:
-            publication_result = self._result(
-                command_id=command_id,
-                worker_id=effective_worker,
-                fence=fence,
-                outcome=outcome,
-                failure_class=None,
-                started_at=started_at,
-                started_mono=started_mono,
-                log_sink=sink,
-                exit_code=returncode if returncode == 0 else None,
-                signal_number=None,
-                cleanup_ok=cleanup_ok,
+            return _RunState(
+                ExecutionOutcome.FAILED, FailureClass.WORKER_ENVIRONMENT_FAILURE, False
             )
-            try:
-                decision = publisher.publish(
-                    publication_result,
-                    fence=fence,
-                )
-            except Exception:  # pragma: no cover - defensive publication boundary
-                outcome = ExecutionOutcome.FAILED
-                failure_class = FailureClass.WORKER_ENVIRONMENT_FAILURE
-                cleanup_ok = False
-            else:
-                if decision != PublicationDecision.ACCEPTED:
-                    outcome = ExecutionOutcome.REFUSED
-                    failure_class = FailureClass.STALE_FENCE_DUPLICATE_EFFECT
-                    try:
-                        sink.abort()
-                    except Exception:  # pragma: no cover - defensive sink boundary
-                        cleanup_ok = False
+        return state
 
-        return self._result(
-            command_id=command_id,
-            worker_id=effective_worker,
-            fence=fence,
-            outcome=outcome,
-            failure_class=failure_class,
-            started_at=started_at,
-            started_mono=started_mono,
-            log_sink=sink,
-            exit_code=exit_code,
-            signal_number=signal_number,
-            cleanup_ok=cleanup_ok,
+    def _publish_result(
+        self,
+        publisher: PublicationPort | None,
+        identity: _RunIdentity,
+        state: _RunState,
+        sink: LogSink,
+        returncode: int | None,
+    ) -> _RunState:
+        """Publish a SUCCEEDED result atomically, downgrading it if the fence
+        moved or publication itself failed."""
+
+        if state.outcome != ExecutionOutcome.SUCCEEDED or publisher is None:
+            return state
+
+        publication_result = self._result(
+            identity,
+            state.outcome,
+            None,
+            sink,
+            exit_code=returncode if returncode == 0 else None,
+            signal_number=None,
+            cleanup_ok=state.cleanup_ok,
         )
+        try:
+            decision = publisher.publish(publication_result, fence=identity.fence)
+        except Exception:  # pragma: no cover - defensive publication boundary
+            return _RunState(
+                ExecutionOutcome.FAILED, FailureClass.WORKER_ENVIRONMENT_FAILURE, False
+            )
 
-    def execute(self, command: ExecutionCommand, **kwargs: object) -> ExecutionResult:
-        """Alias for adapters that use an imperative ``execute`` verb."""
-
-        return self.run(command, **kwargs)  # type: ignore[arg-type]
+        if decision != PublicationDecision.ACCEPTED:
+            cleanup_ok = state.cleanup_ok
+            try:
+                sink.abort()
+            except Exception:  # pragma: no cover - defensive sink boundary
+                cleanup_ok = False
+            return _RunState(
+                ExecutionOutcome.REFUSED,
+                FailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+                cleanup_ok,
+            )
+        return state
 
     def _validate(self, command: ExecutionCommand) -> None:
         if not isinstance(command, ExecutionCommand):
@@ -524,7 +705,17 @@ class LocalExecutor:
                 RefusalCode.INVALID_REQUEST,
                 "executor accepts only ExecutionCommand, not a shell string",
             )
-        argv = command.argv
+        self._validate_argv(command.argv)
+        self._validate_resource_limits(command)
+        self._validate_workdir(command)
+
+    @staticmethod
+    def _validate_argv(argv: Sequence[str]) -> None:
+        LocalExecutor._validate_argv_content(argv)
+        LocalExecutor._validate_executable_token(argv[0])
+
+    @staticmethod
+    def _validate_argv_content(argv: Sequence[str]) -> None:
         if isinstance(argv, (str, bytes)) or not argv:
             raise ExecutionRefused(
                 RefusalCode.SHELL_COMMAND_FORBIDDEN,
@@ -540,7 +731,9 @@ class LocalExecutor:
                 RefusalCode.SHELL_COMMAND_FORBIDDEN,
                 "control characters are not valid in fixed argv",
             )
-        executable = argv[0]
+
+    @staticmethod
+    def _validate_executable_token(executable: str) -> None:
         if not executable.strip() or any(char.isspace() for char in executable):
             raise ExecutionRefused(
                 RefusalCode.SHELL_COMMAND_FORBIDDEN,
@@ -551,6 +744,9 @@ class LocalExecutor:
                 RefusalCode.SHELL_COMMAND_FORBIDDEN,
                 "shell escaping/control syntax is not permitted in executable argv",
             )
+
+    @staticmethod
+    def _validate_resource_limits(command: ExecutionCommand) -> None:
         if command.timeout_seconds <= 0 or command.heartbeat_interval_seconds <= 0:
             raise ExecutionRefused(
                 RefusalCode.RESOURCE_LIMIT_INVALID,
@@ -569,6 +765,7 @@ class LocalExecutor:
                 "output and artifact limits must be non-negative",
             )
 
+    def _validate_workdir(self, command: ExecutionCommand) -> None:
         workdir = self._canonical_root(Path(command.workdir))
         if not workdir.is_dir():
             raise ExecutionRefused(
@@ -582,8 +779,7 @@ class LocalExecutor:
                 RefusalCode.PATH_OUTSIDE_CONFIGURED_ROOT,
                 "execution workdir is outside configured authorized roots",
             )
-
-        if executable in {".", ".."}:
+        if command.argv[0] in {".", ".."}:
             raise ExecutionRefused(
                 RefusalCode.INVALID_REQUEST,
                 "executable token is not runnable",
@@ -647,38 +843,21 @@ class LocalExecutor:
 
     def _finish_without_process(
         self,
-        command_id: str,
-        worker_id: str,
-        fence: str,
+        identity: _RunIdentity,
         outcome: ExecutionOutcome,
         failure_class: FailureClass,
-        started_at: datetime,
-        started_mono: float,
         sink: LogSink,
     ) -> ExecutionResult:
         sink.close()
-        return self._result(
-            command_id=command_id,
-            worker_id=worker_id,
-            fence=fence,
-            outcome=outcome,
-            failure_class=failure_class,
-            started_at=started_at,
-            started_mono=started_mono,
-            log_sink=sink,
-        )
+        return self._result(identity, outcome, failure_class, sink)
 
     def _result(
         self,
-        *,
-        command_id: str,
-        worker_id: str,
-        fence: str,
+        identity: _RunIdentity,
         outcome: ExecutionOutcome,
         failure_class: FailureClass | None,
-        started_at: datetime,
-        started_mono: float,
         log_sink: LogSink | None,
+        *,
         exit_code: int | None = None,
         signal_number: int | None = None,
         cleanup_ok: bool = True,
@@ -686,18 +865,18 @@ class LocalExecutor:
         finished_at = self.clock.now()
         duration_ms = max(
             0,
-            int(round((self.clock.monotonic() - started_mono) * 1000)),
+            int(round((self.clock.monotonic() - identity.started_mono) * 1000)),
         )
         return ExecutionResult(
-            command_id=command_id,
+            command_id=identity.command_id,
             outcome=outcome,
             exit_code=exit_code,
             signal=signal_number,
-            started_at=started_at,
+            started_at=identity.started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,
-            worker_id=worker_id,
-            fence=fence,
+            worker_id=identity.worker_id,
+            fence=identity.fence,
             stdout_tail=log_sink.tail_text("stdout") if log_sink else "",
             stderr_tail=log_sink.tail_text("stderr") if log_sink else "",
             failure_class=failure_class,
