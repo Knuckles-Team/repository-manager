@@ -188,6 +188,99 @@ def _oom_evidence(unit: str) -> dict[str, Any]:
     return evidence
 
 
+def _stage_argv(
+    wrapped: str,
+    *,
+    unit: str,
+    workdir: Path,
+    profile: ResourceProfile,
+    environ: Mapping[str, str],
+    use_systemd: bool,
+) -> list[str]:
+    if not use_systemd:
+        return ["bash", "-c", wrapped]
+    return [
+        "systemd-run",
+        "--user",
+        "--collect",
+        "--wait",
+        f"--unit={unit}",
+        f"--working-directory={workdir}",
+        *profile.unit_args(),
+        *[f"--setenv={k}={v}" for k, v in environ.items()],
+        "bash",
+        "-c",
+        wrapped,
+    ]
+
+
+def _run_one_stage(
+    name: str,
+    command: str,
+    *,
+    workdir: Path,
+    log_dir: Path,
+    profile: ResourceProfile,
+    environ: Mapping[str, str],
+    use_systemd: bool,
+) -> StageOutcome:
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", name).strip("-") or "stage"
+    unit = f"rmjob-{slug}-{uuid.uuid4().hex[:8]}"
+    log_path = log_dir / f"{slug}.log"
+    # The sentinel is appended by the SHELL, after the command returns.
+    # If the command takes the shell down with it, no sentinel is written —
+    # which is precisely the signal we want.
+    wrapped = (
+        f"{command} > {shlex.quote(str(log_path))} 2>&1; "
+        f'echo "{_SENTINEL}=$?" >> {shlex.quote(str(log_path))}'
+    )
+    argv = _stage_argv(
+        wrapped,
+        unit=unit,
+        workdir=workdir,
+        profile=profile,
+        environ=environ,
+        use_systemd=use_systemd,
+    )
+
+    started = time.monotonic()
+    try:
+        subprocess.run(  # nosec B603 - fixed argv, no shell
+            argv,
+            cwd=str(workdir),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return StageOutcome(
+            name=name,
+            status=KILLED,
+            log_path=str(log_path),
+            termination=f"runner error: {exc}",
+            duration_seconds=time.monotonic() - started,
+        )
+
+    duration = time.monotonic() - started
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    status, code = classify_log(text)
+    outcome = StageOutcome(
+        name=name,
+        status=status,
+        exit_code=code,
+        duration_seconds=duration,
+        log_path=str(log_path),
+    )
+    if status == KILLED:
+        evidence = _oom_evidence(unit) if use_systemd else {}
+        outcome.termination = evidence.get("termination", "no completion sentinel")
+        outcome.evidence = evidence
+    return outcome
+
+
 def run_stages(
     stages: Sequence[tuple[str, str]],
     *,
@@ -210,74 +303,18 @@ def run_stages(
     log_dir.mkdir(parents=True, exist_ok=True)
     environ = dict(env or {})
 
-    outcomes: list[StageOutcome] = []
-    for name, command in stages:
-        slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", name).strip("-") or "stage"
-        unit = f"rmjob-{slug}-{uuid.uuid4().hex[:8]}"
-        log_path = log_dir / f"{slug}.log"
-        # The sentinel is appended by the SHELL, after the command returns.
-        # If the command takes the shell down with it, no sentinel is written —
-        # which is precisely the signal we want.
-        wrapped = (
-            f"{command} > {shlex.quote(str(log_path))} 2>&1; "
-            f'echo "{_SENTINEL}=$?" >> {shlex.quote(str(log_path))}'
+    outcomes = [
+        _run_one_stage(
+            name,
+            command,
+            workdir=workdir,
+            log_dir=log_dir,
+            profile=profile,
+            environ=environ,
+            use_systemd=use_systemd,
         )
-
-        started = time.monotonic()
-        if use_systemd:
-            argv = [
-                "systemd-run",
-                "--user",
-                "--collect",
-                "--wait",
-                f"--unit={unit}",
-                f"--working-directory={workdir}",
-                *profile.unit_args(),
-                *[f"--setenv={k}={v}" for k, v in environ.items()],
-                "bash",
-                "-c",
-                wrapped,
-            ]
-        else:
-            argv = ["bash", "-c", wrapped]
-        try:
-            subprocess.run(  # nosec B603 - fixed argv, no shell
-                argv,
-                cwd=str(workdir),
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            outcomes.append(
-                StageOutcome(
-                    name=name,
-                    status=KILLED,
-                    log_path=str(log_path),
-                    termination=f"runner error: {exc}",
-                    duration_seconds=time.monotonic() - started,
-                )
-            )
-            continue
-
-        duration = time.monotonic() - started
-        try:
-            text = log_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            text = ""
-        status, code = classify_log(text)
-        outcome = StageOutcome(
-            name=name,
-            status=status,
-            exit_code=code,
-            duration_seconds=duration,
-            log_path=str(log_path),
-        )
-        if status == KILLED:
-            evidence = _oom_evidence(unit) if use_systemd else {}
-            outcome.termination = evidence.get("termination", "no completion sentinel")
-            outcome.evidence = evidence
-        outcomes.append(outcome)
+        for name, command in stages
+    ]
 
     fully_measured = all(o.measured for o in outcomes)
     job = JobOutcome(
