@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
@@ -243,6 +244,19 @@ _LOCAL_TO_TERMINAL = {
     LaneLifecycleState.EXPIRED: "failed",
     LaneLifecycleState.QUARANTINED: "failed",
 }
+
+
+@dataclass(frozen=True)
+class _HoldFields:
+    """Bundled fields extracted from a raw hold mapping, shared by
+    ``transition_lane``'s helpers so they stay under the parameter cap."""
+
+    work_item_id: str
+    attempt: int
+    lease_epoch: int
+    fencing_token: int
+    hold_id: str
+    hold_revision: int
 
 
 class NativeLaneAuthority:
@@ -646,63 +660,100 @@ class NativeLaneAuthority:
     ) -> LaneRecord:
         hold = self._current_hold(lane_id)
         self._authorize_hold(hold, owner_id=owner_id, fence=fence)
-        work_item_id = _string(hold.get("work_item_id"), name="hold.work_item_id")
-        attempt = _integer(hold.get("attempt"), name="hold.attempt", minimum=1)
-        lease_epoch = _integer(hold.get("lease_epoch"), name="hold.lease_epoch")
-        fencing_token = _integer(hold.get("fencing_token"), name="hold.fencing_token")
-        hold_id = _string(hold.get("hold_id"), name="hold.hold_id")
-        hold_revision = _integer(
-            hold.get("hold_revision"), name="hold.hold_revision", minimum=0
+        fields = self._extract_hold_fields(hold)
+        resolved_target = self._resolve_transition_target(operation, target)
+        base = self._build_transition_base(
+            fields, owner_id=owner_id, operation=operation, now=now
         )
-        resolved_target = (
-            LaneLifecycleState(target)
-            if target is not None
-            else {
-                "activate": LaneLifecycleState.ACTIVE,
-                "submit": LaneLifecycleState.SUBMITTED,
-                "finish": LaneLifecycleState.LANDED,
-                "abort": LaneLifecycleState.ABORTED,
-                "expire": LaneLifecycleState.EXPIRED,
-                "quarantine": LaneLifecycleState.QUARANTINED,
-            }.get(operation)
+        result = self._call_transition_verb(resolved_target, base, updates)
+        new_hold = self._validate_transition_result(result)
+        record = self._record_from_hold(new_hold)
+        return record.model_copy(
+            update={"state": resolved_target, "last_transition": operation}
         )
-        if resolved_target is None:
+
+    @staticmethod
+    def _extract_hold_fields(hold: Mapping[str, Any]) -> _HoldFields:
+        return _HoldFields(
+            work_item_id=_string(hold.get("work_item_id"), name="hold.work_item_id"),
+            attempt=_integer(hold.get("attempt"), name="hold.attempt", minimum=1),
+            lease_epoch=_integer(hold.get("lease_epoch"), name="hold.lease_epoch"),
+            fencing_token=_integer(
+                hold.get("fencing_token"), name="hold.fencing_token"
+            ),
+            hold_id=_string(hold.get("hold_id"), name="hold.hold_id"),
+            hold_revision=_integer(
+                hold.get("hold_revision"), name="hold.hold_revision", minimum=0
+            ),
+        )
+
+    @staticmethod
+    def _resolve_transition_target(
+        operation: str, target: LaneLifecycleState | str | None
+    ) -> LaneLifecycleState:
+        if target is not None:
+            return LaneLifecycleState(target)
+        resolved = {
+            "activate": LaneLifecycleState.ACTIVE,
+            "submit": LaneLifecycleState.SUBMITTED,
+            "finish": LaneLifecycleState.LANDED,
+            "abort": LaneLifecycleState.ABORTED,
+            "expire": LaneLifecycleState.EXPIRED,
+            "quarantine": LaneLifecycleState.QUARANTINED,
+        }.get(operation)
+        if resolved is None:
             raise LaneTransitionError(f"unknown lane operation: {operation}")
-        base = {
+        return resolved
+
+    def _build_transition_base(
+        self,
+        fields: _HoldFields,
+        *,
+        owner_id: str | None,
+        operation: str,
+        now: datetime,
+    ) -> dict[str, Any]:
+        return {
             "schema_version": "1",
             "tenant_ref": self._tenant_ref,
-            "work_item_id": work_item_id,
+            "work_item_id": fields.work_item_id,
             "owner_id": owner_id,
-            "attempt": attempt,
-            "lease_epoch": lease_epoch,
-            "fencing_token": fencing_token,
-            "work_item_fence": str(fencing_token),
-            "hold_id": hold_id,
-            "expected_hold_revision": hold_revision,
-            "idempotency_key": f"{operation}:{hold_id}:{hold_revision}",
+            "attempt": fields.attempt,
+            "lease_epoch": fields.lease_epoch,
+            "fencing_token": fields.fencing_token,
+            "work_item_fence": str(fields.fencing_token),
+            "hold_id": fields.hold_id,
+            "expected_hold_revision": fields.hold_revision,
+            "idempotency_key": f"{operation}:{fields.hold_id}:{fields.hold_revision}",
             "now_ms": self._now_ms(now),
         }
+
+    def _call_transition_verb(
+        self,
+        resolved_target: LaneLifecycleState,
+        base: dict[str, Any],
+        updates: Mapping[str, Any] | None,
+    ) -> Mapping[str, Any]:
         if resolved_target in _LOCAL_TO_TERMINAL:
             base["terminal_state"] = _LOCAL_TO_TERMINAL[resolved_target]
-            result = self._call("finish", base)
-        elif resolved_target == LaneLifecycleState.ACTIVE:
+            return self._call("finish", base)
+        if resolved_target in (
+            LaneLifecycleState.ACTIVE,
+            LaneLifecycleState.SUBMITTED,
+        ):
             # ALLOCATING -> ACTIVE has no dedicated native verb; renew keeps
             # the hold current without inventing a synthetic finish/reserve.
             base["ttl_ms"] = (
                 _integer((updates or {}).get("ttl_seconds", 3600), name="ttl_seconds")
                 * 1000
             )
-            result = self._call("renew", base)
-        elif resolved_target == LaneLifecycleState.SUBMITTED:
-            base["ttl_ms"] = (
-                _integer((updates or {}).get("ttl_seconds", 3600), name="ttl_seconds")
-                * 1000
-            )
-            result = self._call("renew", base)
-        else:
-            raise LaneTransitionError(
-                f"illegal lane transition target: {resolved_target.value}"
-            )
+            return self._call("renew", base)
+        raise LaneTransitionError(
+            f"illegal lane transition target: {resolved_target.value}"
+        )
+
+    @staticmethod
+    def _validate_transition_result(result: Mapping[str, Any]) -> Mapping[str, Any]:
         decision = _string(result.get("decision"), name="result.decision")
         if decision in {"stale", "wrong_owner", "wrong_fence", "wrong_attempt"}:
             raise StaleLaneFence("lane mutation refused: owner or fence is not current")
@@ -717,10 +768,7 @@ class NativeLaneAuthority:
         new_hold = result.get("hold")
         if new_hold is None:
             raise NativeLaneProtocolError("accepted native transition lacks a hold")
-        record = self._record_from_hold(_mapping(new_hold, name="result.hold"))
-        return record.model_copy(
-            update={"state": resolved_target, "last_transition": operation}
-        )
+        return _mapping(new_hold, name="result.hold")
 
     def heartbeat_lane(
         self,
