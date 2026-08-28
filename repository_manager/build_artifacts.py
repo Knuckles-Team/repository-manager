@@ -1031,6 +1031,93 @@ def _verify_manifest_checksums(verified_metadata: list[tuple[Path, str, int]]) -
     return True
 
 
+@dataclass(frozen=True)
+class _ReconcilePolicy:
+    """Immutable per-run inputs for `reconcile_staging`."""
+
+    max_entries: int
+    cutoff: float
+    authority_probe: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
+
+
+class _ReconcileState:
+    """Mutable running result/scan-budget state for one `reconcile_staging` pass."""
+
+    __slots__ = ("removed", "kept", "errors", "scanned")
+
+    def __init__(self) -> None:
+        self.removed: list[str] = []
+        self.kept: list[str] = []
+        self.errors: list[str] = []
+        self.scanned = 0
+
+    def as_result(self) -> dict[str, Any]:
+        return {"removed": self.removed, "kept": self.kept, "errors": self.errors}
+
+
+def _record_scan_overflow(state: _ReconcileState, max_entries: int) -> bool:
+    """Bump the scan counter; return True (recording an error) once over budget."""
+    state.scanned += 1
+    if state.scanned > max_entries:
+        state.errors.append("staging entry scan exceeds its bound")
+        return True
+    return False
+
+
+def _stage_manifest_identity(
+    stage_manifest: Mapping[str, Any],
+) -> tuple[str, str, str, str, int]:
+    """Extract ``(key, fence, job_id, work_item_id, attempt)`` from a stage manifest."""
+    stage_key = str(stage_manifest.get("key") or "")
+    stage_fence = str(stage_manifest.get("fence") or "")
+    stage_job = str(stage_manifest.get("job_id") or "")
+    stage_work = str(stage_manifest.get("work_item_id") or "")
+    try:
+        stage_attempt = int(stage_manifest.get("attempt", 0))
+    except (TypeError, ValueError):
+        stage_attempt = 0
+    return stage_key, stage_fence, stage_job, stage_work, stage_attempt
+
+
+def _is_valid_stage_identity(
+    identity: tuple[str, str, str, str, int], key_entry_name: str
+) -> bool:
+    stage_key, stage_fence, stage_job, stage_work, stage_attempt = identity
+    return not (
+        not stage_key
+        or not stage_fence
+        or not stage_job
+        or not stage_work
+        or stage_attempt < 1
+        or _safe(stage_key) != key_entry_name
+    )
+
+
+def _staged_artifacts_from_stage_manifest(
+    key_entry: os.DirEntry[str],
+    stage_entry: os.DirEntry[str],
+    stage_manifest: Mapping[str, Any],
+) -> StagedArtifacts | None:
+    """Build the `StagedArtifacts` a stale ``stage_entry`` claims to be.
+
+    Returns None if its manifest identity fields are incomplete or the
+    manifest's own key does not match the directory it was found under.
+    """
+    identity = _stage_manifest_identity(stage_manifest)
+    if not _is_valid_stage_identity(identity, key_entry.name):
+        return None
+    stage_key, stage_fence, stage_job, stage_work, stage_attempt = identity
+    return StagedArtifacts(
+        key=stage_key,
+        stage_dir=Path(stage_entry.path),
+        manifest=stage_manifest,
+        fence=stage_fence,
+        attempt=stage_attempt,
+        job_id=stage_job,
+        work_item_id=stage_work,
+    )
+
+
 class BuildArtifactStore:
     """Content-addressed artifact storage with explicit recovery states.
 
@@ -1354,6 +1441,88 @@ class BuildArtifactStore:
             return False
         return not stage_dir.exists()
 
+    def _authority_proven_stale_manifest(
+        self,
+        label: str,
+        stage_entry: os.DirEntry[str],
+        policy: _ReconcilePolicy,
+        state: _ReconcileState,
+    ) -> Mapping[str, Any] | None:
+        """Return the stage manifest only if it is durably proven stale.
+
+        Mutates ``state`` exactly as the original inline checks did: an
+        mtime-stat OSError records only an error (the entry is neither kept
+        nor removed this pass); every other rejection records it as kept.
+        """
+        try:
+            old = stage_entry.stat(follow_symlinks=False).st_mtime < policy.cutoff
+        except OSError as exc:
+            state.errors.append(f"{stage_entry.name}: {exc}")
+            return None
+        stage_manifest = _read_bounded_json(Path(stage_entry.path) / MANIFEST_NAME)
+        if not old or policy.authority_probe is None or stage_manifest is None:
+            state.kept.append(label)
+            return None
+        try:
+            proof = policy.authority_probe(stage_manifest)
+        except Exception as exc:
+            state.errors.append(f"{stage_entry.name}: {exc}")
+            state.kept.append(label)
+            return None
+        if not _exact_authority_proof(stage_manifest, proof, marker="stale"):
+            state.kept.append(label)
+            return None
+        return stage_manifest
+
+    def _reconcile_stage_entry(
+        self,
+        key_entry: os.DirEntry[str],
+        stage_entry: os.DirEntry[str],
+        policy: _ReconcilePolicy,
+        state: _ReconcileState,
+    ) -> None:
+        """Apply the keep/remove decision for one candidate stale stage dir."""
+        label = f"{key_entry.name}/{stage_entry.name}"
+        if stage_entry.is_symlink() or not stage_entry.is_dir(follow_symlinks=False):
+            state.kept.append(label)
+            return
+        stage_manifest = self._authority_proven_stale_manifest(
+            label, stage_entry, policy, state
+        )
+        if stage_manifest is None:
+            return
+        staged = _staged_artifacts_from_stage_manifest(
+            key_entry, stage_entry, stage_manifest
+        )
+        if staged is None:
+            state.kept.append(label)
+            return
+        if self.discard_stage(staged):
+            state.removed.append(label)
+        else:
+            state.kept.append(label)
+
+    def _reconcile_key_entry(
+        self,
+        key_entry: os.DirEntry[str],
+        policy: _ReconcilePolicy,
+        state: _ReconcileState,
+    ) -> None:
+        """Scan one top-level staging key directory for stale stage dirs."""
+        if key_entry.is_symlink() or not key_entry.is_dir(follow_symlinks=False):
+            state.kept.append(key_entry.name)
+            return
+        try:
+            stage_iterator = os.scandir(key_entry.path)
+        except OSError as exc:
+            state.errors.append(f"{key_entry.name}: {exc}")
+            return
+        with stage_iterator:
+            for stage_entry in stage_iterator:
+                if _record_scan_overflow(state, policy.max_entries):
+                    break
+                self._reconcile_stage_entry(key_entry, stage_entry, policy, state)
+
     def reconcile_staging(
         self,
         *,
@@ -1369,99 +1538,22 @@ class BuildArtifactStore:
 
         if max_age_seconds < 0 or max_entries < 1:
             raise ValueError("staging reconciliation bounds must be non-negative")
-        cutoff = time.time() - max_age_seconds
-        removed: list[str] = []
-        kept: list[str] = []
-        errors: list[str] = []
-        scanned = 0
+        policy = _ReconcilePolicy(
+            max_entries=max_entries,
+            cutoff=time.time() - max_age_seconds,
+            authority_probe=authority_probe,
+        )
+        state = _ReconcileState()
         try:
             key_iterator = os.scandir(self.staging_root)
         except OSError as exc:
             return {"removed": [], "kept": [], "errors": [str(exc)]}
         with key_iterator:
             for key_entry in key_iterator:
-                scanned += 1
-                if scanned > max_entries:
-                    errors.append("staging entry scan exceeds its bound")
+                if _record_scan_overflow(state, policy.max_entries):
                     break
-                if key_entry.is_symlink() or not key_entry.is_dir(
-                    follow_symlinks=False
-                ):
-                    kept.append(key_entry.name)
-                    continue
-                try:
-                    stage_iterator = os.scandir(key_entry.path)
-                except OSError as exc:
-                    errors.append(f"{key_entry.name}: {exc}")
-                    continue
-                with stage_iterator:
-                    for stage_entry in stage_iterator:
-                        scanned += 1
-                        if scanned > max_entries:
-                            errors.append("staging entry scan exceeds its bound")
-                            break
-                        if stage_entry.is_symlink() or not stage_entry.is_dir(
-                            follow_symlinks=False
-                        ):
-                            kept.append(f"{key_entry.name}/{stage_entry.name}")
-                            continue
-                        try:
-                            old = (
-                                stage_entry.stat(follow_symlinks=False).st_mtime
-                                < cutoff
-                            )
-                        except OSError as exc:
-                            errors.append(f"{stage_entry.name}: {exc}")
-                            continue
-                        stage_manifest = _read_bounded_json(
-                            Path(stage_entry.path) / MANIFEST_NAME
-                        )
-                        if not old or authority_probe is None or stage_manifest is None:
-                            kept.append(f"{key_entry.name}/{stage_entry.name}")
-                            continue
-                        try:
-                            proof = authority_probe(stage_manifest)
-                        except Exception as exc:
-                            errors.append(f"{stage_entry.name}: {exc}")
-                            kept.append(f"{key_entry.name}/{stage_entry.name}")
-                            continue
-                        if not _exact_authority_proof(
-                            stage_manifest, proof, marker="stale"
-                        ):
-                            kept.append(f"{key_entry.name}/{stage_entry.name}")
-                            continue
-                        stage_key = str(stage_manifest.get("key") or "")
-                        stage_fence = str(stage_manifest.get("fence") or "")
-                        stage_job = str(stage_manifest.get("job_id") or "")
-                        stage_work = str(stage_manifest.get("work_item_id") or "")
-                        try:
-                            stage_attempt = int(stage_manifest.get("attempt", 0))
-                        except (TypeError, ValueError):
-                            stage_attempt = 0
-                        if (
-                            not stage_key
-                            or not stage_fence
-                            or not stage_job
-                            or not stage_work
-                            or stage_attempt < 1
-                            or _safe(stage_key) != key_entry.name
-                        ):
-                            kept.append(f"{key_entry.name}/{stage_entry.name}")
-                            continue
-                        stage = StagedArtifacts(
-                            key=stage_key,
-                            stage_dir=Path(stage_entry.path),
-                            manifest=stage_manifest,
-                            fence=stage_fence,
-                            attempt=stage_attempt,
-                            job_id=stage_job,
-                            work_item_id=stage_work,
-                        )
-                        if self.discard_stage(stage):
-                            removed.append(f"{key_entry.name}/{stage_entry.name}")
-                        else:
-                            kept.append(f"{key_entry.name}/{stage_entry.name}")
-        return {"removed": removed, "kept": kept, "errors": errors}
+                self._reconcile_key_entry(key_entry, policy, state)
+        return state.as_result()
 
     def _reconcile_existing_publication(
         self, staged: StagedArtifacts, stage_manifest: Mapping[str, Any]
