@@ -95,6 +95,37 @@ def _read_bounded_json(path: Path) -> dict[str, Any] | None:
     return dict(value) if isinstance(value, Mapping) else None
 
 
+def _require_regular_file_stat(
+    file_stat: os.stat_result, path: Path, max_bytes: int | None
+) -> None:
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ArtifactStoreError(f"artifact is not a regular file: {path}")
+    if max_bytes is not None and file_stat.st_size > max_bytes:
+        raise ArtifactStoreError("artifact exceeds its bounded byte limit")
+
+
+def _hash_file_stream(handle: Any, digest: Any, max_bytes: int | None) -> int:
+    """Read ``handle`` in bounded chunks into ``digest``; return bytes copied."""
+    copied = 0
+    for chunk in iter(lambda: handle.read(1 << 20), b""):
+        copied += len(chunk)
+        if max_bytes is not None and copied > max_bytes:
+            raise ArtifactStoreError("artifact exceeds its bounded byte limit")
+        digest.update(chunk)
+    return copied
+
+
+def _require_unchanged_during_read(
+    initial: os.stat_result, final: os.stat_result, copied: int
+) -> None:
+    if (
+        final.st_dev != initial.st_dev
+        or final.st_ino != initial.st_ino
+        or final.st_size != copied
+    ):
+        raise ArtifactStoreError("artifact changed while it was checksummed")
+
+
 def _sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
     digest = hashlib.sha256()
     descriptor: int | None = None
@@ -103,23 +134,10 @@ def _sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = None
             initial = os.fstat(handle.fileno())
-            if not stat.S_ISREG(initial.st_mode):
-                raise ArtifactStoreError(f"artifact is not a regular file: {path}")
-            if max_bytes is not None and initial.st_size > max_bytes:
-                raise ArtifactStoreError("artifact exceeds its bounded byte limit")
-            copied = 0
-            for chunk in iter(lambda: handle.read(1 << 20), b""):
-                copied += len(chunk)
-                if max_bytes is not None and copied > max_bytes:
-                    raise ArtifactStoreError("artifact exceeds its bounded byte limit")
-                digest.update(chunk)
+            _require_regular_file_stat(initial, path, max_bytes)
+            copied = _hash_file_stream(handle, digest, max_bytes)
             final = os.fstat(handle.fileno())
-            if (
-                final.st_dev != initial.st_dev
-                or final.st_ino != initial.st_ino
-                or final.st_size != copied
-            ):
-                raise ArtifactStoreError("artifact changed while it was checksummed")
+            _require_unchanged_during_read(initial, final, copied)
     except OSError as exc:
         raise ArtifactStoreError(f"could not checksum artifact {path}") from exc
     finally:
@@ -129,6 +147,48 @@ def _sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
             except OSError:
                 pass
     return digest.hexdigest()
+
+
+def _require_regular_source_stat(
+    source_stat: os.stat_result, source: Path, max_bytes: int | None
+) -> None:
+    if not stat.S_ISREG(source_stat.st_mode):
+        raise ArtifactStoreError(f"artifact source is not a regular file: {source}")
+    if max_bytes is not None and source_stat.st_size > max_bytes:
+        raise ArtifactStoreError("build artifacts exceed the admitted staging byte bound")
+
+
+def _copy_stream_bounded(
+    source_handle: Any, destination_handle: Any, max_bytes: int | None
+) -> int:
+    """Copy ``source_handle`` into ``destination_handle`` in bounded chunks."""
+    copied = 0
+    while True:
+        chunk = source_handle.read(1 << 20)
+        if not chunk:
+            break
+        copied += len(chunk)
+        if max_bytes is not None and copied > max_bytes:
+            raise ArtifactStoreError(
+                "build artifacts exceed the admitted staging byte bound"
+            )
+        destination_handle.write(chunk)
+    destination_handle.flush()
+    os.fsync(destination_handle.fileno())
+    return copied
+
+
+def _require_source_unchanged_after_copy(
+    source: Path, source_stat: os.stat_result, copied: int
+) -> None:
+    final_source_stat = os.stat(source, follow_symlinks=False)
+    if (
+        final_source_stat.st_dev != source_stat.st_dev
+        or final_source_stat.st_ino != source_stat.st_ino
+        or final_source_stat.st_size != source_stat.st_size
+        or final_source_stat.st_size != copied
+    ):
+        raise ArtifactStoreError("artifact source changed while it was copied")
 
 
 def _copy_file_no_follow(
@@ -145,12 +205,7 @@ def _copy_file_no_follow(
     try:
         source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         source_stat = os.fstat(source_descriptor)
-        if not stat.S_ISREG(source_stat.st_mode):
-            raise ArtifactStoreError(f"artifact source is not a regular file: {source}")
-        if max_bytes is not None and source_stat.st_size > max_bytes:
-            raise ArtifactStoreError(
-                "build artifacts exceed the admitted staging byte bound"
-            )
+        _require_regular_source_stat(source_stat, source, max_bytes)
         _reject_symlink_path(destination.parent)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination_descriptor = os.open(
@@ -158,31 +213,12 @@ def _copy_file_no_follow(
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
             0o600,
         )
-        copied = 0
         with os.fdopen(source_descriptor, "rb") as source_handle:
             source_descriptor = None
             with os.fdopen(destination_descriptor, "wb") as destination_handle:
                 destination_descriptor = None
-                while True:
-                    chunk = source_handle.read(1 << 20)
-                    if not chunk:
-                        break
-                    copied += len(chunk)
-                    if max_bytes is not None and copied > max_bytes:
-                        raise ArtifactStoreError(
-                            "build artifacts exceed the admitted staging byte bound"
-                        )
-                    destination_handle.write(chunk)
-                destination_handle.flush()
-                os.fsync(destination_handle.fileno())
-        final_source_stat = os.stat(source, follow_symlinks=False)
-        if (
-            final_source_stat.st_dev != source_stat.st_dev
-            or final_source_stat.st_ino != source_stat.st_ino
-            or final_source_stat.st_size != source_stat.st_size
-            or final_source_stat.st_size != copied
-        ):
-            raise ArtifactStoreError("artifact source changed while it was copied")
+                copied = _copy_stream_bounded(source_handle, destination_handle, max_bytes)
+        _require_source_unchanged_after_copy(source, source_stat, copied)
         return copied
     except OSError as exc:
         raise ArtifactStoreError(f"could not copy artifact {source}") from exc
