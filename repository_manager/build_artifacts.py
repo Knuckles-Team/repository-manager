@@ -600,6 +600,59 @@ def _manifest_attempt(manifest: Mapping[str, Any]) -> int | None:
         return None
 
 
+def _require_finalize_preconditions(
+    terminal_check: Callable[[], bool] | None,
+    job_id: str,
+    work_item_id: str,
+    attempt: int | None,
+) -> None:
+    """Reject `finalize()` calls missing durable WorkItem identity/proof."""
+    if terminal_check is None or not job_id.strip() or not work_item_id.strip():
+        raise ArtifactFenceLost(
+            "durable terminal WorkItem identity/proof is required before finalize"
+        )
+    if attempt is None or attempt < 1:
+        raise ArtifactFenceLost("durable WorkItem attempt is required before finalize")
+
+
+def _require_matching_manifest_identity(
+    manifest: dict[str, Any] | None,
+    key: str,
+    fence: str,
+    job_id: str,
+    work_item_id: str,
+    attempt: int | None,
+) -> dict[str, Any]:
+    """Return ``manifest`` only if it exactly matches this fenced identity."""
+    if (
+        manifest is None
+        or manifest.get("schema") != ARTIFACT_SCHEMA
+        or manifest.get("key") != key
+        or manifest.get("fence") != fence
+        or manifest.get("job_id") != job_id
+        or manifest.get("work_item_id") != work_item_id
+        or _manifest_attempt(manifest) != attempt
+    ):
+        raise ArtifactFenceLost(
+            "artifact manifest is missing or belongs to another fence"
+        )
+    return manifest
+
+
+def _require_finalize_terminal_state(terminal_check: Callable[[], bool]) -> None:
+    """Verify the durable terminal WorkItem state authorizes commit."""
+    try:
+        terminal = terminal_check()
+    except Exception as exc:  # pragma: no cover - defensive authority boundary
+        raise ArtifactFenceLost(
+            "durable terminal WorkItem state could not be verified"
+        ) from exc
+    if not terminal:
+        raise ArtifactFenceLost(
+            "durable terminal WorkItem state does not match this publication"
+        )
+
+
 def _exact_authority_proof(
     manifest: Mapping[str, Any],
     proof: object,
@@ -1329,14 +1382,7 @@ class BuildArtifactStore:
         """Mark a published manifest committed after WorkItem terminal commit."""
 
         self._require_fence(fence_check)
-        if terminal_check is None or not job_id.strip() or not work_item_id.strip():
-            raise ArtifactFenceLost(
-                "durable terminal WorkItem identity/proof is required before finalize"
-            )
-        if attempt is None or attempt < 1:
-            raise ArtifactFenceLost(
-                "durable WorkItem attempt is required before finalize"
-            )
+        _require_finalize_preconditions(terminal_check, job_id, work_item_id, attempt)
         lock_path = self._lock_path(key)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as lock:
@@ -1345,37 +1391,16 @@ class BuildArtifactStore:
                 # A terminal proof and fence observation made before waiting
                 # for the key lock cannot authorize a later replacement.
                 self._require_fence(fence_check)
-                manifest = self.read_manifest(key)
-                if (
-                    manifest is None
-                    or manifest.get("schema") != ARTIFACT_SCHEMA
-                    or manifest.get("key") != key
-                    or manifest.get("fence") != fence
-                    or manifest.get("job_id") != job_id
-                    or manifest.get("work_item_id") != work_item_id
-                    or _manifest_attempt(manifest) != attempt
-                ):
-                    raise ArtifactFenceLost(
-                        "artifact manifest is missing or belongs to another fence"
-                    )
+                manifest = _require_matching_manifest_identity(
+                    self.read_manifest(key), key, fence, job_id, work_item_id, attempt
+                )
                 if not self.validate_manifest(
                     manifest, require_committed=False, expected_key=key
                 ):
                     raise ArtifactStoreError(
                         f"published artifact {key!r} failed checksum validation"
                     )
-                try:
-                    terminal = terminal_check()
-                except (
-                    Exception
-                ) as exc:  # pragma: no cover - defensive authority boundary
-                    raise ArtifactFenceLost(
-                        "durable terminal WorkItem state could not be verified"
-                    ) from exc
-                if not terminal:
-                    raise ArtifactFenceLost(
-                        "durable terminal WorkItem state does not match this publication"
-                    )
+                _require_finalize_terminal_state(terminal_check)
                 if manifest.get("publication_state") == "committed":
                     return manifest
                 manifest["publication_state"] = "committed"
@@ -1510,6 +1535,33 @@ class BuildArtifactStore:
                 entries.append((directory.name, manifest))
         return tuple(entries)
 
+    def _authorize_entry_removal(
+        self,
+        key: str,
+        directory: Path,
+        authority_probe: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None,
+    ) -> int | None:
+        """Return the entry's byte size if removal is durably authorized, else None."""
+        if directory.is_symlink() or not directory.is_dir():
+            return None
+        manifest = self.read_manifest(key)
+        if manifest is None or authority_probe is None:
+            return None
+        try:
+            probe = authority_probe(key, manifest)
+        except Exception:
+            return None
+        if not _exact_authority_proof(manifest, probe, marker="safe_to_remove"):
+            return None
+        if any(
+            bool(probe.get(name)) for name in ("live", "pinned", "waited", "running")
+        ):
+            return None
+        try:
+            return _bounded_tree_size(directory)
+        except ArtifactStoreError:
+            return None
+
     def remove_entry(
         self,
         key: str,
@@ -1534,25 +1586,8 @@ class BuildArtifactStore:
             lock_exclusive(lock.fileno())
             try:
                 directory = self._key_dir(key)
-                if directory.is_symlink() or not directory.is_dir():
-                    return 0
-                manifest = self.read_manifest(key)
-                if manifest is None or authority_probe is None:
-                    return 0
-                try:
-                    probe = authority_probe(key, manifest)
-                except Exception:
-                    return 0
-                if not _exact_authority_proof(manifest, probe, marker="safe_to_remove"):
-                    return 0
-                if any(
-                    bool(probe.get(name))
-                    for name in ("live", "pinned", "waited", "running")
-                ):
-                    return 0
-                try:
-                    total = _bounded_tree_size(directory)
-                except ArtifactStoreError:
+                total = self._authorize_entry_removal(key, directory, authority_probe)
+                if total is None:
                     return 0
                 try:
                     shutil.rmtree(directory)
