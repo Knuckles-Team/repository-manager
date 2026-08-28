@@ -921,10 +921,7 @@ def test_profile_and_decision_descriptor_matrix_rejects_without_introspection() 
     assert Evil.calls == 0
 
 
-def test_profile_records_are_exact_and_deep_reconstructed() -> None:
-    graph, selection, version_plan = _fixture()
-    project_id = selection.selected_project_ids[0]
-
+def _assert_hostile_profile_access_is_rejected(graph, selection, version_plan) -> None:
     class TrapBuildProfile(BuildProfile):
         calls = 0
 
@@ -960,6 +957,10 @@ def test_profile_records_are_exact_and_deep_reconstructed() -> None:
     assert TrapBuildProfile.calls == 0
     assert TrapValidationProfile.calls == 0
 
+
+def _assert_forged_descriptor_is_rejected_without_repr_leak(
+    graph, selection, version_plan, project_id
+) -> None:
     forged_build = object.__new__(BuildProfile)
     forged_validation = object.__new__(ValidationProfile)
     forged_binding = object.__new__(ProfileBinding)
@@ -983,6 +984,10 @@ def test_profile_records_are_exact_and_deep_reconstructed() -> None:
             )
         assert "object at" not in str(captured.value)
 
+
+def _assert_invalid_descriptor_is_rejected(
+    graph, selection, version_plan, project_id
+) -> None:
     invalid_build = object.__new__(BuildProfile)
     object.__setattr__(invalid_build, "name", "invalid/build")
     object.__setattr__(invalid_build, "digest", "a" * 64)
@@ -1013,6 +1018,10 @@ def test_profile_records_are_exact_and_deep_reconstructed() -> None:
                 **invalid_kwargs,  # type: ignore[arg-type]
             )
 
+
+def _assert_profiles_are_deep_copied_and_owned(
+    graph, selection, version_plan, project_id
+) -> None:
     valid_build = BuildProfile("owned-build", "a" * 64)
     valid_validation = ValidationProfile("owned-validation", "b" * 64)
     valid_binding = ProfileBinding(
@@ -1077,6 +1086,20 @@ def test_profile_records_are_exact_and_deep_reconstructed() -> None:
     )
     assert plan.validation_profiles[0] is not valid_validation
     assert plan.build_profiles[0] is not valid_build
+
+
+def test_profile_records_are_exact_and_deep_reconstructed() -> None:
+    graph, selection, version_plan = _fixture()
+    project_id = selection.selected_project_ids[0]
+
+    _assert_hostile_profile_access_is_rejected(graph, selection, version_plan)
+    _assert_forged_descriptor_is_rejected_without_repr_leak(
+        graph, selection, version_plan, project_id
+    )
+    _assert_invalid_descriptor_is_rejected(graph, selection, version_plan, project_id)
+    _assert_profiles_are_deep_copied_and_owned(
+        graph, selection, version_plan, project_id
+    )
 
 
 def test_malformed_exact_decision_records_are_privacy_safe() -> None:
