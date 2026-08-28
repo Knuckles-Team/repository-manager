@@ -115,6 +115,56 @@ def _ordered_unique(
     return tuple(sorted(by_id.values(), key=_candidate_sort_key))
 
 
+def _partition_maturity(
+    unique: tuple[CandidateSnapshot, ...],
+    late: tuple[CandidateSnapshot, ...],
+    *,
+    current: datetime,
+    debounce_seconds: float,
+    maximum_age_seconds: float,
+) -> tuple[list[CandidateSnapshot], list[CandidateSnapshot]]:
+    """Split non-late candidates into ``(eligible, waiting)`` by maturity."""
+
+    eligible: list[CandidateSnapshot] = []
+    waiting: list[CandidateSnapshot] = []
+    for candidate in unique:
+        if candidate in late:
+            continue
+        age = max(
+            0.0, (current - timestamp_value(candidate.enqueued_at)).total_seconds()
+        )
+        mature = age >= debounce_seconds
+        forced = maximum_age_seconds > 0 and age >= maximum_age_seconds
+        if mature or forced:
+            eligible.append(candidate)
+        else:
+            waiting.append(candidate)
+    return eligible, waiting
+
+
+def _coalesce_compatible(
+    eligible: list[CandidateSnapshot], batch_size: int
+) -> tuple[tuple[CandidateSnapshot, ...], ...]:
+    """Greedily pack mature candidates into compatible, size-bounded batches."""
+
+    batches: list[tuple[CandidateSnapshot, ...]] = []
+    remaining = list(eligible)
+    while remaining:
+        seed = remaining.pop(0)
+        batch = [seed]
+        retained: list[CandidateSnapshot] = []
+        for candidate in remaining:
+            if len(batch) < batch_size and all(
+                candidates_compatible(member, candidate) for member in batch
+            ):
+                batch.append(candidate)
+            else:
+                retained.append(candidate)
+        remaining = retained
+        batches.append(tuple(batch))
+    return tuple(batches)
+
+
 def select_batches(
     candidates: Iterable[CandidateSnapshot],
     *,
@@ -138,40 +188,16 @@ def select_batches(
     seal = timestamp_value(sealed_at) if sealed_at is not None else current
     unique = _ordered_unique(candidates)
     late = tuple(item for item in unique if timestamp_value(item.enqueued_at) > seal)
-    eligible: list[CandidateSnapshot] = []
-    waiting: list[CandidateSnapshot] = []
-    debounce_seconds = _seconds(debounce)
-    maximum_age_seconds = _seconds(maximum_age)
-    for candidate in unique:
-        if candidate in late:
-            continue
-        age = max(
-            0.0, (current - timestamp_value(candidate.enqueued_at)).total_seconds()
-        )
-        mature = age >= debounce_seconds
-        forced = maximum_age_seconds > 0 and age >= maximum_age_seconds
-        if mature or forced:
-            eligible.append(candidate)
-        else:
-            waiting.append(candidate)
-
-    batches: list[tuple[CandidateSnapshot, ...]] = []
-    remaining = list(eligible)
-    while remaining:
-        seed = remaining.pop(0)
-        batch = [seed]
-        retained: list[CandidateSnapshot] = []
-        for candidate in remaining:
-            if len(batch) < batch_size and all(
-                candidates_compatible(member, candidate) for member in batch
-            ):
-                batch.append(candidate)
-            else:
-                retained.append(candidate)
-        remaining = retained
-        batches.append(tuple(batch))
+    eligible, waiting = _partition_maturity(
+        unique,
+        late,
+        current=current,
+        debounce_seconds=_seconds(debounce),
+        maximum_age_seconds=_seconds(maximum_age),
+    )
+    batches = _coalesce_compatible(eligible, batch_size)
     return CoalescingResult(
-        batches=tuple(batches),
+        batches=batches,
         late=late,
         waiting=tuple(waiting),
         sealed_at=seal,
