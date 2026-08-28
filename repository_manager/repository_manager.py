@@ -7,6 +7,7 @@ multiple repositories in parallel using Python's multiprocessing capabilities.
 """
 
 import contextlib
+import dataclasses
 import datetime
 import fnmatch
 import functools
@@ -86,6 +87,27 @@ _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", re.DOTALL)
 _SHELL_CONTROL_TOKENS = {"&&", "||", ";", "|", "&", "(", ")"}
 _MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024
 _MutationResult = TypeVar("_MutationResult")
+_CONSOLIDATED_UNIVERSAL_SKILLS = (
+    "agent-package-builder",
+    "mcp-builder",
+    "agent-builder",
+    "skill-builder",
+    "skill-graph-builder",
+    "api-wrapper-builder",
+    "web-search",
+    "web-crawler",
+)
+
+_CONSOLIDATED_SKILL_GRAPHS = (
+    "docker-docs",
+    "fastapi-docs",
+    "fastmcp-docs",
+    "nodejs-docs",
+    "vercel-docs",
+    "python-docs",
+    "pydantic-ai-docs",
+)
+
 _UV_WORKSPACE_SIBLINGS_DIRNAME = ".uv-workspace-siblings"
 _PEP503_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z")
 _PEP503_NAME_SEPARATORS = re.compile(r"[-_.]+")
@@ -539,6 +561,130 @@ def _cleanup_matched_files(dirpath: str, filenames: list[str]) -> None:
                 break
 
 
+@dataclasses.dataclass
+class _CommandOutputCapture:
+    """Bounded capture of one repository command's interleaved stdout/stderr.
+
+    Output past ``_MAX_CAPTURED_OUTPUT_BYTES`` is dropped rather than held in
+    memory, and the fact that it was dropped is reported in the text.
+    """
+
+    lines: list[str] = dataclasses.field(default_factory=list)
+    byte_count: int = 0
+    truncated: bool = False
+
+    def add(self, line: str) -> None:
+        """Append one output line, clipping at the capture ceiling."""
+        encoded = line.encode("utf-8", "replace")
+        remaining = _MAX_CAPTURED_OUTPUT_BYTES - self.byte_count
+        if remaining > 0:
+            clipped = encoded[:remaining].decode("utf-8", "ignore")
+            self.lines.append(clipped)
+            self.byte_count += len(clipped.encode("utf-8"))
+        if len(encoded) > remaining:
+            self.truncated = True
+
+    def text(self) -> str:
+        """The captured output, with a marker appended when it was clipped."""
+        if self.truncated:
+            return "".join([*self.lines, "\n[repository output truncated]\n"])
+        return "".join(self.lines)
+
+
+@dataclasses.dataclass
+class _PhaseProgress:
+    """Progress bookkeeping for one phased (bump / push) run.
+
+    Owns the ``progress is not None`` guard and the per-item counters that the
+    phased bump and phased push workflows both maintain, so those workflows
+    read as the phase topology they actually are.
+
+    ``state`` is the caller-supplied progress mapping (``None`` disables every
+    update); ``noun`` is the verb used in the per-item completion log line.
+    """
+
+    state: dict | None
+    noun: str
+    total: int = 0
+    processed: int = 0
+
+    def initialize(self, heading: str, phases: list[tuple[str, list[str]]]) -> None:
+        """Seed the per-phase counters for every phase about to run."""
+        if self.state is None:
+            return
+        self.state["current_phase"] = heading
+        self.state["progress"] = 0
+        self.state["phases"] = {}
+        for name, items in phases:
+            self.state["phases"][name] = {
+                "status": "pending",
+                "total": len(items),
+                "processed": 0,
+                "completed": 0,
+                "success": 0,
+                "failed": 0,
+                "details": dict.fromkeys(items, "pending"),
+                "repos": dict.fromkeys(items, "pending"),
+            }
+
+    def nothing_to_do(self, heading: str) -> None:
+        """Mark the run complete without any phase having run."""
+        if self.state is None:
+            return
+        self.state["current_phase"] = heading
+        self.state["progress"] = 100
+        self.state["phases"] = {}
+
+    def note(self, heading: str) -> None:
+        """Update only the human-readable current-phase banner."""
+        if self.state is None:
+            return
+        self.state["current_phase"] = heading
+
+    def begin_phase(self, phase_name: str) -> None:
+        if self.state is None:
+            return
+        self.state["current_phase"] = f"{phase_name} in progress"
+        self.state["phases"][phase_name]["status"] = "running"
+
+    def end_phase(self, phase_name: str) -> None:
+        if self.state is None:
+            return
+        self.state["phases"][phase_name]["status"] = "completed"
+
+    def begin_item(self, phase_name: str, item: str) -> None:
+        if self.state is None:
+            return
+        phase = self.state["phases"][phase_name]
+        phase["details"][item] = "running"
+        phase["repos"][item] = "running"
+
+    def finish_item(self, phase_name: str, item: str, status_str: str) -> None:
+        """Record one project's terminal status and advance the overall percentage."""
+        if self.state is None:
+            return
+        phase = self.state["phases"][phase_name]
+        phase["details"][item] = status_str
+        phase["repos"][item] = status_str
+        phase["processed"] += 1
+        phase["completed"] += 1
+        phase["success" if status_str == "success" else "failed"] += 1
+
+        self.processed += 1
+        percent = int((self.processed / self.total) * 100)
+        self.state["progress"] = percent
+        logger.info(
+            f"[{self.processed}/{self.total}] ({percent}%) "
+            f"Completed {self.noun} for {item}: {status_str}"
+        )
+
+    def finish(self, heading: str) -> None:
+        if self.state is None:
+            return
+        self.state["current_phase"] = heading
+        self.state["progress"] = 100
+
+
 class Git:
     """A class to handle Git operations such as cloning and pulling repositories."""
 
@@ -630,6 +776,81 @@ class Git:
             return "yarn"
         return "npm"
 
+    def _sync_workspace_repositories(self) -> list[GitResult]:
+        """Create the workspace tree, then clone or pull every declared repo."""
+        logger.info("Creating configured workspace structure")
+        os.makedirs(self.path, exist_ok=True)
+        for project_path in self.project_map.values():
+            os.makedirs(os.path.dirname(project_path), exist_ok=True)
+
+        logger.info("Syncing repositories (Clone/Pull)...")
+        results = []
+        for url, project_path in self.project_map.items():
+            if os.path.exists(project_path):
+                results.append(self.pull_project(project_path))
+            else:
+                results.append(self.clone_repository(url, project_path))
+        return results
+
+    def _setup_metadata(self, failed: bool) -> GitMetadata:
+        """Metadata for a ``setup_workspace`` result."""
+        return GitMetadata(
+            command="setup_workspace",
+            workspace=_project_label(self.path),
+            return_code=1 if failed else 0,
+            timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+        )
+
+    def _clone_only_setup_result(self, failed_clones: list[GitResult]) -> GitResult:
+        """The workspace-setup result when no install step was requested."""
+        return GitResult(
+            status="success" if not failed_clones else "error",
+            data="Workspace setup completed",
+            error=(
+                GitError(
+                    message=f"{len(failed_clones)} repository(ies) failed to clone/pull",
+                    code=1,
+                )
+                if failed_clones
+                else None
+            ),
+            metadata=self._setup_metadata(bool(failed_clones)),
+        )
+
+    def _install_setup_result(
+        self, results: list[GitResult], failed_clones: list[GitResult]
+    ) -> GitResult:
+        """Install every synced project and fold the outcome into one result."""
+        install_results = self.install_projects()
+        failed_installs = [r for r in install_results if r.status != "success"]
+        summary = [
+            f"Cloned/pulled {len(results) - len(failed_clones)}/{len(results)} "
+            "repository(ies).",
+            f"Installed {len(install_results) - len(failed_installs)}/"
+            f"{len(install_results)} project(s).",
+        ]
+        for r in install_results:
+            label = r.metadata.workspace if r.metadata else "unknown"
+            summary.append(f"- {label}: {r.status}")
+
+        failures = failed_clones + failed_installs
+        return GitResult(
+            status="success" if not failures else "error",
+            data="\n".join(summary),
+            error=(
+                GitError(
+                    message=(
+                        f"{len(failed_clones)} clone/pull failure(s), "
+                        f"{len(failed_installs)} install failure(s)"
+                    ),
+                    code=1,
+                )
+                if failures
+                else None
+            ),
+            metadata=self._setup_metadata(bool(failures)),
+        )
+
     def setup_from_yaml(self, yaml_path: str, install: bool = False) -> GitResult:
         """Sets up the workspace structure from a YAML file.
 
@@ -660,76 +881,12 @@ class Git:
                 error=GitError(message="Failed to load YAML", code=1),
             )
 
-        logger.info("Creating configured workspace structure")
-        os.makedirs(self.path, exist_ok=True)
-
-        for _, project_path in self.project_map.items():
-            os.makedirs(os.path.dirname(project_path), exist_ok=True)
-
-        logger.info("Syncing repositories (Clone/Pull)...")
-        results = []
-        for url, project_path in self.project_map.items():
-            if os.path.exists(project_path):
-                results.append(self.pull_project(project_path))
-            else:
-                results.append(self.clone_repository(url, project_path))
-
+        results = self._sync_workspace_repositories()
         failed_clones = [r for r in results if r.status != "success"]
 
         if not install:
-            return GitResult(
-                status="success" if not failed_clones else "error",
-                data="Workspace setup completed",
-                error=(
-                    GitError(
-                        message=f"{len(failed_clones)} repository(ies) failed to clone/pull",
-                        code=1,
-                    )
-                    if failed_clones
-                    else None
-                ),
-                metadata=GitMetadata(
-                    command="setup_workspace",
-                    workspace=_project_label(self.path),
-                    return_code=0 if not failed_clones else 1,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
-            )
-
-        install_results = self.install_projects()
-        failed_installs = [r for r in install_results if r.status != "success"]
-        summary = [
-            f"Cloned/pulled {len(results) - len(failed_clones)}/{len(results)} "
-            "repository(ies).",
-            f"Installed {len(install_results) - len(failed_installs)}/"
-            f"{len(install_results)} project(s).",
-        ]
-        for r in install_results:
-            label = r.metadata.workspace if r.metadata else "unknown"
-            summary.append(f"- {label}: {r.status}")
-
-        failures = failed_clones + failed_installs
-        return GitResult(
-            status="success" if not failures else "error",
-            data="\n".join(summary),
-            error=(
-                GitError(
-                    message=(
-                        f"{len(failed_clones)} clone/pull failure(s), "
-                        f"{len(failed_installs)} install failure(s)"
-                    ),
-                    code=1,
-                )
-                if failures
-                else None
-            ),
-            metadata=GitMetadata(
-                command="setup_workspace",
-                workspace=_project_label(self.path),
-                return_code=0 if not failures else 1,
-                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-            ),
-        )
+            return self._clone_only_setup_result(failed_clones)
+        return self._install_setup_result(results, failed_clones)
 
     def _find_project_path(self, name: str) -> str | None:
         """Return the cloned path for project *name* (by directory basename)."""
@@ -852,6 +1009,42 @@ class Git:
             raise ValueError(f"workspace root is not a directory {root}")
         return root
 
+    @staticmethod
+    def _check_path_components(
+        root: Path,
+        components: tuple[str, ...],
+        *,
+        label: str,
+        allow_leaf_symlink: bool,
+    ) -> None:
+        """Refuse a symlink or non-directory component anywhere along a path."""
+        current = root
+        for index, component in enumerate(components):
+            current /= component
+            if current.is_symlink() and not (
+                allow_leaf_symlink and index == len(components) - 1
+            ):
+                raise ValueError(f"{label} contains symlink component {current}")
+            if (
+                index < len(components) - 1
+                and current.exists()
+                and not current.is_dir()
+            ):
+                raise ValueError(f"{label} contains non-directory component {current}")
+
+    @staticmethod
+    def _check_real_containment(path: Path, root: Path, *, label: str) -> None:
+        """Verify the RESOLVED path is still inside the workspace root.
+
+        Closes the lexical-vs-real containment gap if the filesystem changed
+        during validation.
+        """
+        try:
+            real_path = path.resolve(strict=False)
+            real_path.relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{label} escapes workspace root") from exc
+
     def _validate_workspace_path(
         self,
         candidate: str | Path,
@@ -877,20 +1070,12 @@ class Git:
         except ValueError as exc:
             raise ValueError(f"{label} escapes workspace root") from exc
 
-        current = root
-        components = relative.parts
-        for index, component in enumerate(components):
-            current /= component
-            if current.is_symlink() and not (
-                allow_leaf_symlink and index == len(components) - 1
-            ):
-                raise ValueError(f"{label} contains symlink component {current}")
-            if (
-                index < len(components) - 1
-                and current.exists()
-                and not current.is_dir()
-            ):
-                raise ValueError(f"{label} contains non-directory component {current}")
+        self._check_path_components(
+            root,
+            relative.parts,
+            label=label,
+            allow_leaf_symlink=allow_leaf_symlink,
+        )
 
         if require_directory and (not path.exists() or not path.is_dir()):
             raise ValueError(f"{label} is not a directory {path}")
@@ -899,11 +1084,7 @@ class Git:
         # still verify the real path to close lexical-vs-real containment gaps
         # if the filesystem changed during validation.
         if not (allow_leaf_symlink and path.is_symlink()):
-            try:
-                real_path = path.resolve(strict=False)
-                real_path.relative_to(root)
-            except (OSError, ValueError) as exc:
-                raise ValueError(f"{label} escapes workspace root") from exc
+            self._check_real_containment(path, root, label=label)
         return path
 
     @staticmethod
@@ -949,28 +1130,16 @@ class Git:
         return name
 
     @staticmethod
-    def _validate_uv_source_entry(
-        source_name: str,
-        entry: dict[str, Any],
-        *,
-        project_name: str | None,
-    ) -> str | None:
-        """Validate one uv source alternative and return a local sibling name.
-
-        ``None`` means that the alternative is remote (or that it is the
-        owning project represented by ``path = \".\"``), not that it was
-        skipped without validation.  Every alternative is checked before any
-        sibling directory or link is created.
-        """
-        source_label = f"uv source {source_name!r}"
+    def _reject_unknown_uv_fields(source_label: str, entry: dict[str, Any]) -> None:
+        """Refuse any field the uv source schema does not define."""
         unknown = set(entry) - _UV_SOURCE_KEYS
         if unknown:
             unknown_text = ", ".join(sorted(str(key) for key in unknown))
             raise ValueError(f"{source_label} has unknown field(s): {unknown_text}")
 
-        normalized_source = Git._normalize_uv_name(
-            source_name, label=f"{source_label} name"
-        )
+    @staticmethod
+    def _validate_uv_field_types(source_label: str, entry: dict[str, Any]) -> None:
+        """Type-check every declared field of one uv source alternative."""
         for key in _UV_SOURCE_STRING_KEYS & set(entry):
             value = entry[key]
             if not isinstance(value, str) or not value:
@@ -983,14 +1152,22 @@ class Git:
             if not isinstance(entry[key], bool):
                 raise ValueError(f"{source_label} field {key!r} must be boolean")
 
+    @staticmethod
+    def _uv_source_kind(source_label: str, entry: dict[str, Any]) -> str:
+        """The single source kind (git / index / path / url / workspace) declared."""
         primary = _UV_SOURCE_PRIMARY_KEYS & set(entry)
         if len(primary) != 1:
             if not primary:
                 raise ValueError(f"{source_label} must declare exactly one source kind")
             kinds = ", ".join(sorted(primary))
             raise ValueError(f"{source_label} has conflicting source kinds: {kinds}")
-        source_kind = next(iter(primary))
+        return next(iter(primary))
 
+    @staticmethod
+    def _validate_uv_selectors(
+        source_label: str, entry: dict[str, Any], source_kind: str
+    ) -> None:
+        """Branch/rev/tag selectors are git-only and mutually exclusive."""
         selectors = _UV_SOURCE_SELECTOR_KEYS & set(entry)
         if selectors and source_kind != "git":
             names = ", ".join(sorted(selectors))
@@ -1000,6 +1177,12 @@ class Git:
             raise ValueError(
                 f"{source_label} has mutually exclusive selectors: {names}"
             )
+
+    @staticmethod
+    def _validate_uv_source_kind_flags(
+        source_label: str, entry: dict[str, Any], source_kind: str
+    ) -> None:
+        """The boolean flags each source kind is allowed to carry."""
         if (
             source_kind == "git"
             and "lfs" in entry
@@ -1010,6 +1193,12 @@ class Git:
             raise ValueError(f"{source_label} editable requires a path source")
         if "lfs" in entry and source_kind != "git":
             raise ValueError(f"{source_label} lfs requires a git source")
+
+    @staticmethod
+    def _validate_uv_source_kind_fields(
+        source_label: str, entry: dict[str, Any], source_kind: str
+    ) -> None:
+        """The addressing fields each source kind is allowed to carry."""
         if "subdirectory" in entry and source_kind not in {"git", "url"}:
             raise ValueError(f"{source_label} subdirectory requires git or url")
         if "package" in entry and source_kind not in {"git", "url"}:
@@ -1019,23 +1208,25 @@ class Git:
         if source_kind == "path" and "subdirectory" in entry:
             raise ValueError(f"{source_label} path cannot select a subdirectory")
 
-        if source_kind != "path":
-            return None
+    @staticmethod
+    def _validate_uv_own_project_source(
+        source_label: str, normalized_source: str, project_name: str | None
+    ) -> None:
+        """A ``path = "."`` source may only name the project that declares it."""
+        if project_name is None:
+            raise ValueError(f"{source_label} path '.' requires an owning project name")
+        if normalized_source != Git._normalize_uv_name(
+            project_name, label="owning project name"
+        ):
+            raise ValueError(
+                f"{source_label} path '.' may identify only its owning project"
+            )
 
-        raw_path = entry["path"]
-        if raw_path == ".":
-            if project_name is None:
-                raise ValueError(
-                    f"{source_label} path '.' requires an owning project name"
-                )
-            if normalized_source != Git._normalize_uv_name(
-                project_name, label="owning project name"
-            ):
-                raise ValueError(
-                    f"{source_label} path '.' may identify only its owning project"
-                )
-            return None
-
+    @staticmethod
+    def _uv_sibling_name_from_path(
+        source_label: str, raw_path: str, normalized_source: str
+    ) -> str:
+        """The sibling repository name a local path source resolves to."""
         prefix = _UV_WORKSPACE_SIBLINGS_DIRNAME
         parts = raw_path.split("/")
         if (
@@ -1058,6 +1249,101 @@ class Git:
         return sibling_name
 
     @staticmethod
+    def _validate_uv_source_entry(
+        source_name: str,
+        entry: dict[str, Any],
+        *,
+        project_name: str | None,
+    ) -> str | None:
+        """Validate one uv source alternative and return a local sibling name.
+
+        ``None`` means that the alternative is remote (or that it is the
+        owning project represented by ``path = "."``), not that it was
+        skipped without validation.  Every alternative is checked before any
+        sibling directory or link is created.
+
+        The checks run in a fixed order -- unknown fields, field types, source
+        kind, selectors, then kind-specific constraints -- so a doubly-invalid
+        entry always reports the same error it reported before.
+        """
+        source_label = f"uv source {source_name!r}"
+        Git._reject_unknown_uv_fields(source_label, entry)
+
+        normalized_source = Git._normalize_uv_name(
+            source_name, label=f"{source_label} name"
+        )
+        Git._validate_uv_field_types(source_label, entry)
+        source_kind = Git._uv_source_kind(source_label, entry)
+        Git._validate_uv_selectors(source_label, entry, source_kind)
+        Git._validate_uv_source_kind_flags(source_label, entry, source_kind)
+        Git._validate_uv_source_kind_fields(source_label, entry, source_kind)
+
+        if source_kind != "path":
+            return None
+
+        raw_path = entry["path"]
+        if raw_path == ".":
+            Git._validate_uv_own_project_source(
+                source_label, normalized_source, project_name
+            )
+            return None
+
+        return Git._uv_sibling_name_from_path(source_label, raw_path, normalized_source)
+
+    @staticmethod
+    def _uv_sources_table(document: dict[str, Any]) -> dict[str, Any] | None:
+        """The ``[tool.uv.sources]`` table of a manifest, or ``None`` if absent."""
+        tool = document.get("tool")
+        if tool is None:
+            return None
+        if not isinstance(tool, dict):
+            raise ValueError("[tool] must be a table")
+        uv = tool.get("uv")
+        if uv is None:
+            return None
+        if not isinstance(uv, dict):
+            raise ValueError("[tool.uv] must be a table")
+        sources = uv.get("sources")
+        if sources is None:
+            return None
+        if not isinstance(sources, dict):
+            raise ValueError("[tool.uv.sources] must be a table")
+        return sources
+
+    @staticmethod
+    def _uv_source_entries(source_name: str, configured: Any) -> list[Any]:
+        """The list of alternatives one uv source declaration expands to.
+
+        Element types are deliberately NOT checked here: the caller validates
+        each alternative as it consumes it, so a malformed second alternative
+        still reports the first one's error first.
+        """
+        if isinstance(configured, list):
+            if not configured:
+                raise ValueError(
+                    f"uv source {source_name!r} must contain at least one table"
+                )
+            return configured
+        if isinstance(configured, dict):
+            return [configured]
+        raise ValueError(f"uv source {source_name!r} must be a table or list of tables")
+
+    @staticmethod
+    def _record_uv_sibling_name(
+        sibling_name: str | None, names: list[str], normalized_names: set[str]
+    ) -> None:
+        """Append a newly seen sibling name, de-duplicated by normalized form."""
+        if sibling_name is None:
+            return
+        normalized_name = Git._normalize_uv_name(
+            sibling_name, label="uv sibling path component"
+        )
+        if normalized_name in normalized_names:
+            return
+        normalized_names.add(normalized_name)
+        names.append(sibling_name)
+
+    @staticmethod
     def _declared_uv_sibling_names(project_path: str) -> tuple[str, ...]:
         """Return the sibling names declared by a project's uv sources.
 
@@ -1073,21 +1359,9 @@ class Git:
         if not document:
             return ()
 
-        tool = document.get("tool")
-        if tool is None:
-            return ()
-        if not isinstance(tool, dict):
-            raise ValueError("[tool] must be a table")
-        uv = tool.get("uv")
-        if uv is None:
-            return ()
-        if not isinstance(uv, dict):
-            raise ValueError("[tool.uv] must be a table")
-        sources = uv.get("sources")
+        sources = Git._uv_sources_table(document)
         if sources is None:
             return ()
-        if not isinstance(sources, dict):
-            raise ValueError("[tool.uv.sources] must be a table")
 
         project_name = Git._project_name_from_manifest(document, label=str(manifest))
         names: list[str] = []
@@ -1095,19 +1369,7 @@ class Git:
         for source_name, configured in sources.items():
             if not isinstance(source_name, str):  # pragma: no cover - TOML keys are str
                 raise ValueError("uv source names must be strings")
-            if isinstance(configured, list):
-                if not configured:
-                    raise ValueError(
-                        f"uv source {source_name!r} must contain at least one table"
-                    )
-                entries = configured
-            elif isinstance(configured, dict):
-                entries = [configured]
-            else:
-                raise ValueError(
-                    f"uv source {source_name!r} must be a table or list of tables"
-                )
-            for entry in entries:
+            for entry in Git._uv_source_entries(source_name, configured):
                 if not isinstance(entry, dict):
                     raise ValueError(
                         f"uv source {source_name!r} must contain only tables"
@@ -1117,13 +1379,7 @@ class Git:
                     entry,
                     project_name=project_name,
                 )
-                if sibling_name is not None:
-                    normalized_name = Git._normalize_uv_name(
-                        sibling_name, label="uv sibling path component"
-                    )
-                    if normalized_name not in normalized_names:
-                        normalized_names.add(normalized_name)
-                        names.append(sibling_name)
+                Git._record_uv_sibling_name(sibling_name, names, normalized_names)
         return tuple(names)
 
     def _canonical_uv_sibling_targets(self) -> dict[str, Path]:
@@ -1226,6 +1482,41 @@ class Git:
         return []
 
     @staticmethod
+    def _rollback_new_uv_link(link: Path, new_target: str, errors: list[str]) -> None:
+        """Remove a link this transaction created, if it is still ours to remove."""
+        if not link.is_symlink():
+            if link.exists():
+                errors.append(
+                    f"refusing to remove non-symlink path during rollback: {link}"
+                )
+            return
+        if os.readlink(link) != new_target:
+            errors.append(f"refusing to remove changed symlink during rollback: {link}")
+            return
+        link.unlink()
+
+    @staticmethod
+    def _restore_uv_link(link: Path, previous_target: str, errors: list[str]) -> None:
+        """Point a pre-existing link back at the target it had before."""
+        if link.is_symlink() and os.readlink(link) == previous_target:
+            return
+        if link.exists() and not link.is_symlink():
+            errors.append(
+                f"refusing to replace non-symlink path during rollback: {link}"
+            )
+            return
+
+        restore = Git._uv_sibling_temp_path(link)
+        restore_created = False
+        try:
+            restore.symlink_to(previous_target)
+            restore_created = True
+            os.replace(restore, link)
+        finally:
+            if restore_created:
+                errors.extend(Git._cleanup_uv_sibling_temp(restore, previous_target))
+
+    @staticmethod
     def _rollback_uv_sibling_links(
         updates: list[tuple[Path, Path, str | None, Path]],
     ) -> list[str]:
@@ -1237,45 +1528,174 @@ class Git:
         """
         errors: list[str] = []
         for link, target, previous_target, _staged in updates:
-            new_target = os.fspath(target)
             try:
                 if previous_target is None:
-                    if not link.is_symlink():
-                        if link.exists():
-                            errors.append(
-                                f"refusing to remove non-symlink path during rollback: {link}"
-                            )
-                        continue
-                    if os.readlink(link) != new_target:
-                        errors.append(
-                            f"refusing to remove changed symlink during rollback: {link}"
-                        )
-                        continue
-                    link.unlink()
-                    continue
-
-                if link.is_symlink() and os.readlink(link) == previous_target:
-                    continue
-                if link.exists() and not link.is_symlink():
-                    errors.append(
-                        f"refusing to replace non-symlink path during rollback: {link}"
-                    )
-                    continue
-
-                restore = Git._uv_sibling_temp_path(link)
-                restore_created = False
-                try:
-                    restore.symlink_to(previous_target)
-                    restore_created = True
-                    os.replace(restore, link)
-                finally:
-                    if restore_created:
-                        errors.extend(
-                            Git._cleanup_uv_sibling_temp(restore, previous_target)
-                        )
+                    Git._rollback_new_uv_link(link, os.fspath(target), errors)
+                else:
+                    Git._restore_uv_link(link, previous_target, errors)
             except BaseException as exc:
                 errors.append(f"cannot restore {link}: {exc}")
         return errors
+
+    def _resolve_uv_sibling_targets(self, names: tuple[str, ...]) -> dict[str, Path]:
+        """Map every declared sibling name to its canonical workspace directory."""
+        targets = self._canonical_uv_sibling_targets()
+        resolved_targets: dict[str, Path] = {}
+        for name in names:
+            normalized_name = self._normalize_uv_name(
+                name, label="uv sibling path component"
+            )
+            target = targets.get(normalized_name)
+            if target is None or not target.is_dir():
+                raise ValueError(
+                    f"canonical sibling target {name!r} is missing from the workspace map"
+                )
+            resolved_targets[normalized_name] = target
+        return resolved_targets
+
+    def _validated_uv_sibling_links(
+        self,
+        sibling_dir: Path,
+        names: tuple[str, ...],
+        resolved_targets: dict[str, Path],
+    ) -> list[tuple[str, Path]]:
+        """Validate every owned link before the sibling directory is created.
+
+        A malformed second declaration must not leave the first link behind.
+        """
+        validated_links: list[tuple[str, Path]] = []
+        for name in names:
+            link = sibling_dir / name
+            self._validate_workspace_path(
+                link,
+                label=f"uv sibling link {name!r}",
+                allow_leaf_symlink=True,
+            )
+            if link.exists() and not link.is_symlink():
+                raise ValueError(f"refusing to replace non-symlink path {link}")
+            normalized_name = self._normalize_uv_name(
+                name, label="uv sibling path component"
+            )
+            validated_links.append((name, resolved_targets[normalized_name]))
+        return validated_links
+
+    @staticmethod
+    def _uv_link_already_points_at(link: Path, target: Path) -> bool:
+        """True when *link* already resolves to *target*.
+
+        A broken or looping registration answers ``False`` and is replaced.
+        """
+        try:
+            return link.resolve(strict=False) == target
+        except (OSError, RuntimeError):
+            return False
+
+    def _pending_uv_sibling_updates(
+        self, sibling_dir: Path, validated_links: list[tuple[str, Path]]
+    ) -> list[tuple[Path, Path, str | None, Path]]:
+        """The links that actually need re-pointing, with their staging paths."""
+        updates: list[tuple[Path, Path, str | None, Path]] = []
+        for name, target in validated_links:
+            link = sibling_dir / name
+            previous_target = os.readlink(link) if link.is_symlink() else None
+            if previous_target is not None and self._uv_link_already_points_at(
+                link, target
+            ):
+                continue
+            updates.append(
+                (link, target, previous_target, self._uv_sibling_temp_path(link))
+            )
+        return updates
+
+    @staticmethod
+    def _stage_uv_sibling_links(
+        updates: list[tuple[Path, Path, str | None, Path]],
+        staged: list[tuple[Path, str]],
+    ) -> None:
+        """Create every replacement symlink under a task-owned staging name."""
+        for _link, target, _previous_target, staged_path in updates:
+            staged_path.symlink_to(target, target_is_directory=True)
+            staged.append((staged_path, os.fspath(target)))
+
+    @staticmethod
+    def _swap_uv_sibling_links(
+        updates: list[tuple[Path, Path, str | None, Path]],
+    ) -> None:
+        """Move every staged symlink onto its final name."""
+        for link, _target, _previous_target, staged_path in updates:
+            if link.exists() and not link.is_symlink():
+                raise ValueError(f"refusing to replace non-symlink path {link}")
+            os.replace(staged_path, link)
+
+    @staticmethod
+    def _remove_created_uv_sibling_dir(sibling_dir: Path) -> list[str]:
+        """Remove a sibling directory this transaction created, if still safe."""
+        if sibling_dir.is_symlink() or not sibling_dir.is_dir():
+            return [f"refusing to remove changed sibling directory {sibling_dir}"]
+        try:
+            sibling_dir.rmdir()
+        except OSError as cleanup_exc:
+            return [
+                f"cannot remove empty sibling directory {sibling_dir}: {cleanup_exc}"
+            ]
+        return []
+
+    def _recover_failed_uv_publication(
+        self,
+        *,
+        sibling_dir: Path,
+        updates: list[tuple[Path, Path, str | None, Path]],
+        staged: list[tuple[Path, str]],
+        created_sibling_dir: bool,
+    ) -> list[str]:
+        """Undo a failed publication; return whatever could not be undone."""
+        rollback_errors = self._rollback_uv_sibling_links(updates)
+        cleanup_errors: list[str] = []
+        for staged_path, expected_target in staged:
+            cleanup_errors.extend(
+                self._cleanup_uv_sibling_temp(staged_path, expected_target)
+            )
+        if created_sibling_dir:
+            cleanup_errors.extend(self._remove_created_uv_sibling_dir(sibling_dir))
+        return rollback_errors + cleanup_errors
+
+    def _publish_uv_sibling_links(
+        self,
+        sibling_dir: Path,
+        updates: list[tuple[Path, Path, str | None, Path]],
+    ) -> None:
+        """Stage and swap every pending sibling link as one transaction.
+
+        Any failure rolls the whole set back; an incomplete rollback is raised
+        as a RuntimeError chained from the original exception.
+        """
+        created_sibling_dir = False
+        staged: list[tuple[Path, str]] = []
+        try:
+            if not sibling_dir.exists():
+                try:
+                    sibling_dir.mkdir()
+                    created_sibling_dir = True
+                except FileExistsError:
+                    pass
+            if sibling_dir.is_symlink() or not sibling_dir.is_dir():
+                raise ValueError(f"sibling path is not a directory {sibling_dir}")
+
+            self._stage_uv_sibling_links(updates, staged)
+            self._swap_uv_sibling_links(updates)
+        except BaseException as exc:
+            errors = self._recover_failed_uv_publication(
+                sibling_dir=sibling_dir,
+                updates=updates,
+                staged=staged,
+                created_sibling_dir=created_sibling_dir,
+            )
+            if errors:
+                detail = "; ".join(errors)
+                raise RuntimeError(
+                    f"uv sibling publication failed and rollback was incomplete: {detail}"
+                ) from exc
+            raise
 
     def _materialize_uv_siblings(self, project_path: str) -> tuple[str, ...]:
         """Materialize every declared uv sibling from the canonical map.
@@ -1294,18 +1714,7 @@ class Git:
         if not names:
             return ()
 
-        targets = self._canonical_uv_sibling_targets()
-        resolved_targets: dict[str, Path] = {}
-        for name in names:
-            normalized_name = self._normalize_uv_name(
-                name, label="uv sibling path component"
-            )
-            target = targets.get(normalized_name)
-            if target is None or not target.is_dir():
-                raise ValueError(
-                    f"canonical sibling target {name!r} is missing from the workspace map"
-                )
-            resolved_targets[normalized_name] = target
+        resolved_targets = self._resolve_uv_sibling_targets(names)
 
         sibling_dir = project / _UV_WORKSPACE_SIBLINGS_DIRNAME
         if sibling_dir.is_symlink():
@@ -1313,95 +1722,14 @@ class Git:
         if sibling_dir.exists() and not sibling_dir.is_dir():
             raise ValueError(f"sibling path is not a directory {sibling_dir}")
 
-        # Validate every owned link before creating the directory.  A malformed
-        # second declaration must not leave the first link behind.
-        validated_links: list[tuple[str, Path]] = []
-        for name in names:
-            link = sibling_dir / name
-            self._validate_workspace_path(
-                link,
-                label=f"uv sibling link {name!r}",
-                allow_leaf_symlink=True,
-            )
-            if link.exists() and not link.is_symlink():
-                raise ValueError(f"refusing to replace non-symlink path {link}")
-            validated_links.append(
-                (
-                    name,
-                    resolved_targets[
-                        self._normalize_uv_name(name, label="uv sibling path component")
-                    ],
-                )
-            )
-        updates: list[tuple[Path, Path, str | None, Path]] = []
-        for name, target in validated_links:
-            link = sibling_dir / name
-            previous_target = os.readlink(link) if link.is_symlink() else None
-            if previous_target is not None:
-                try:
-                    if link.resolve(strict=False) == target:
-                        continue
-                except (OSError, RuntimeError):
-                    # Broken/looping registrations are safely replaced below.
-                    pass
-            updates.append(
-                (
-                    link,
-                    target,
-                    previous_target,
-                    self._uv_sibling_temp_path(link),
-                )
-            )
+        validated_links = self._validated_uv_sibling_links(
+            sibling_dir, names, resolved_targets
+        )
+        updates = self._pending_uv_sibling_updates(sibling_dir, validated_links)
         if not updates:
             return names
 
-        created_sibling_dir = False
-        staged: list[tuple[Path, str]] = []
-        try:
-            if not sibling_dir.exists():
-                try:
-                    sibling_dir.mkdir()
-                    created_sibling_dir = True
-                except FileExistsError:
-                    pass
-            if sibling_dir.is_symlink() or not sibling_dir.is_dir():
-                raise ValueError(f"sibling path is not a directory {sibling_dir}")
-
-            for _link, target, _previous_target, staged_path in updates:
-                staged_path.symlink_to(target, target_is_directory=True)
-                staged.append((staged_path, os.fspath(target)))
-
-            for link, _target, _previous_target, staged_path in updates:
-                if link.exists() and not link.is_symlink():
-                    raise ValueError(f"refusing to replace non-symlink path {link}")
-                os.replace(staged_path, link)
-        except BaseException as exc:
-            rollback_errors = self._rollback_uv_sibling_links(updates)
-            cleanup_errors: list[str] = []
-            for staged_path, expected_target in staged:
-                cleanup_errors.extend(
-                    self._cleanup_uv_sibling_temp(staged_path, expected_target)
-                )
-            if created_sibling_dir:
-                if sibling_dir.is_symlink() or not sibling_dir.is_dir():
-                    cleanup_errors.append(
-                        f"refusing to remove changed sibling directory {sibling_dir}"
-                    )
-                else:
-                    try:
-                        sibling_dir.rmdir()
-                    except OSError as cleanup_exc:
-                        cleanup_errors.append(
-                            f"cannot remove empty sibling directory {sibling_dir}: "
-                            f"{cleanup_exc}"
-                        )
-            errors = rollback_errors + cleanup_errors
-            if errors:
-                detail = "; ".join(errors)
-                raise RuntimeError(
-                    f"uv sibling publication failed and rollback was incomplete: {detail}"
-                ) from exc
-            raise
+        self._publish_uv_sibling_links(sibling_dir, updates)
         return names
 
     def install_projects(
@@ -1634,6 +1962,65 @@ class Git:
         logger.info("Validating configured project")
         return run_gate_stage(repo_path, "fast", trigger="validate", colocated=True)
 
+    @staticmethod
+    def _collect_validation_result(
+        future: "concurrent.futures.Future",
+    ) -> tuple[Any, bool]:
+        """One project's validation payload plus whether it counts as a pass.
+
+        A result object with no ``success`` attribute cannot be read as a pass,
+        so it is recorded verbatim and treated as a failure.
+        """
+        try:
+            result = future.result()
+        except Exception as e:
+            logger.error("Operation failed: error_type=%s", type(e).__name__)
+            return {"success": False, "error": "Operation failed"}, False
+
+        entry = result.model_dump() if hasattr(result, "model_dump") else result
+        if not hasattr(result, "success"):
+            return entry, False
+        return entry, bool(result.success)
+
+    def _run_parallel_validation(
+        self, effective_threads: int
+    ) -> tuple[dict[str, Any], bool]:
+        """Validate every mapped project; return per-repo results and the verdict."""
+        validation_results: dict[str, Any] = {}
+        passed = True
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=effective_threads
+        ) as executor:
+            futures = {
+                executor.submit(self.validate_single_project, path): url
+                for url, path in self.project_map.items()
+            }
+            for future in concurrent.futures.as_completed(futures):
+                repo_name = futures[future].split("/")[-1].replace(".git", "")
+                entry, ok = self._collect_validation_result(future)
+                validation_results[repo_name] = entry
+                passed = passed and ok
+        return validation_results, passed
+
+    def _release_after_validation(
+        self, *, passed: bool, auto_bump: bool, auto_push: bool, bump_part: str
+    ) -> dict[str, Any]:
+        """Run the bump/push release steps, but only when validation passed."""
+        if not passed:
+            if auto_bump or auto_push:
+                logger.warning("Validation failed. Skipping bump and push.")
+            return {}
+
+        logger.info("All validations passed.")
+        release_results: dict[str, Any] = {}
+        if auto_bump:
+            logger.info(f"Triggering phased bumpversion ({bump_part})...")
+            release_results["bump"] = self.phased_bumpversion(part=bump_part)
+        if auto_push:
+            logger.info("Triggering phased push...")
+            release_results["push"] = self.phased_push()
+        return release_results
+
     def validate_and_release(
         self,
         threads: int | None = None,
@@ -1651,49 +2038,13 @@ class Git:
             f"Validating {len(self.project_map)} projects in parallel ({effective_threads} threads)..."
         )
 
-        validation_results: dict[str, Any] = {}
-        passed = True
-
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=effective_threads
-        ) as executor:
-            futures = {
-                executor.submit(self.validate_single_project, path): url
-                for url, path in self.project_map.items()
-            }
-            for future in concurrent.futures.as_completed(futures):
-                url = futures[future]
-                repo_name = url.split("/")[-1].replace(".git", "")
-                try:
-                    result = future.result()
-                    validation_results[repo_name] = (
-                        result.model_dump() if hasattr(result, "model_dump") else result
-                    )
-                    if hasattr(result, "success"):
-                        if not result.success:
-                            passed = False
-                    else:
-                        passed = False
-                except Exception as e:
-                    logger.error("Operation failed: error_type=%s", type(e).__name__)
-                    validation_results[repo_name] = {
-                        "success": False,
-                        "error": "Operation failed",
-                    }
-                    passed = False
-
-        release_results = {}
-        if passed:
-            logger.info("All validations passed.")
-            if auto_bump:
-                logger.info(f"Triggering phased bumpversion ({bump_part})...")
-                release_results["bump"] = self.phased_bumpversion(part=bump_part)
-            if auto_push:
-                logger.info("Triggering phased push...")
-                release_results["push"] = self.phased_push()
-        else:
-            if auto_bump or auto_push:
-                logger.warning("Validation failed. Skipping bump and push.")
+        validation_results, passed = self._run_parallel_validation(effective_threads)
+        release_results = self._release_after_validation(
+            passed=passed,
+            auto_bump=auto_bump,
+            auto_push=auto_push,
+            bump_part=bump_part,
+        )
 
         return {
             "passed": passed,
@@ -1723,6 +2074,81 @@ class Git:
             )
 
     @staticmethod
+    def _summary_result_name(result: GitResult) -> str:
+        """The project label used for one result row in a markdown summary."""
+        if result.metadata:
+            return os.path.basename(result.metadata.workspace)
+        return "unknown"
+
+    @staticmethod
+    def _summary_success_message(action: str, result: GitResult) -> str:
+        """The one-line success blurb for *result*.
+
+        Bulk actions with uninteresting stdout collapse to "Success", as does
+        any multi-line payload that is not a version-bump report.
+        """
+        msg = result.data or "Success"
+        if action.lower() in ["installation", "build", "validation"]:
+            return "Success"
+        if (
+            msg.count("\n") > 2
+            and "new_version=" not in msg
+            and "current_version=" not in msg
+        ):
+            return "Success"
+        return msg
+
+    @staticmethod
+    def _summary_success_section(action: str, successes: list[GitResult]) -> list[str]:
+        """The "Successes" block of a markdown summary."""
+        md = ["## Successes ✅"]
+        for r in successes:
+            name = Git._summary_result_name(r)
+            msg = Git._summary_success_message(action, r)
+            md.append(f"- **{name}**: {msg}")
+        md.append("")
+        return md
+
+    @staticmethod
+    def _summary_failure_entry(result: GitResult) -> list[str]:
+        """The per-project detail block for one failed result."""
+        md = [f"### ⚠️ {Git._summary_result_name(result)}"]
+        if result.metadata:
+            md.append(f"**Command:** `{result.metadata.command}`")
+        err_msg = result.error.message if result.error else "Unknown error"
+        md.append("**Error:**")
+        md.append(f"```text\n{err_msg}\n```")
+        if result.data:
+            md.append("**Output:**")
+            md.append(f"```text\n{result.data}\n```")
+        md.append("---")
+        return md
+
+    @staticmethod
+    def _summary_failure_section(failures: list[GitResult]) -> list[str]:
+        """The "Failures" block of a markdown summary."""
+        md = ["## Failures ❌"]
+        for r in failures:
+            md.extend(Git._summary_failure_entry(r))
+        md.append("")
+        return md
+
+    @staticmethod
+    def _summary_skip_section(skips: list[GitResult]) -> list[str]:
+        """The "Skipped" block of a markdown summary, grouped by reason."""
+        reasons: dict[str, list[str]] = {}
+        for r in skips:
+            reason = r.data or "No reason provided"
+            reasons.setdefault(reason, []).append(Git._summary_result_name(r))
+
+        md = ["## Skipped ⏭️"]
+        for reason, projects in sorted(reasons.items()):
+            project_list = ", ".join(sorted(set(projects)))
+            md.append(f"- **{reason}**: {project_list}")
+        md.append("")
+        return md
+
+    @staticmethod
     def generate_markdown_summary(action: str, results: list[GitResult]) -> str:
         """Generates a beautiful markdown summary of bulk operation results."""
         successes = [r for r in results if r.status == "success"]
@@ -1739,83 +2165,22 @@ class Git:
         ]
 
         if successes:
-            md.append("## Successes ✅")
-            for r in successes:
-                name = (
-                    os.path.basename(r.metadata.workspace) if r.metadata else "unknown"
-                )
-
-                msg = r.data or "Success"
-                if action.lower() in ["installation", "build", "validation"]:
-                    msg = "Success"
-                elif msg.count("\n") > 2:
-                    if "new_version=" not in msg and "current_version=" not in msg:
-                        msg = "Success"
-
-                md.append(f"- **{name}**: {msg}")
-            md.append("")
-
+            md.extend(Git._summary_success_section(action, successes))
         if failures:
-            md.append("## Failures ❌")
-            for r in failures:
-                name = (
-                    os.path.basename(r.metadata.workspace) if r.metadata else "unknown"
-                )
-                err_msg = r.error.message if r.error else "Unknown error"
-                md.append(f"### ⚠️ {name}")
-                if r.metadata:
-                    md.append(f"**Command:** `{r.metadata.command}`")
-                md.append("**Error:**")
-                md.append(f"```text\n{err_msg}\n```")
-                if r.data:
-                    md.append("**Output:**")
-                    md.append(f"```text\n{r.data}\n```")
-                md.append("---")
-            md.append("")
-
+            md.extend(Git._summary_failure_section(failures))
         if skips:
-            md.append("## Skipped ⏭️")
-            reasons: dict[str, list[str]] = {}
-            for r in skips:
-                reason = r.data or "No reason provided"
-                if reason not in reasons:
-                    reasons[reason] = []
-                reasons[reason].append(
-                    os.path.basename(r.metadata.workspace) if r.metadata else "unknown"
-                )
-
-            for reason, projects in sorted(reasons.items()):
-                project_list = ", ".join(sorted(list(set(projects))))
-                md.append(f"- **{reason}**: {project_list}")
-            md.append("")
+            md.extend(Git._summary_skip_section(skips))
 
         return "\n".join(md)
 
-    def git_action(
-        self,
-        command: str,
-        path: str | None = None,
-        quiet: bool = False,
-        env: dict | None = None,
-        timeout: int = 1800,
-        raw_output: bool = False,
-    ) -> GitResult:
+    @staticmethod
+    def _parse_repository_command(command: str) -> tuple[list[str], dict[str, str]]:
+        """Split one repository command into argv plus leading VAR=value pairs.
+
+        Shell control syntax is refused outright: this executor never runs a
+        shell, so a pipeline or redirect would silently become a literal
+        argument rather than doing what its author intended.
         """
-        Execute a Git command in the specified directory.
-
-        Args:
-            command (str): The Git command to execute.
-            path (str, optional): The directory to execute the command in.
-                Defaults to the base path.
-
-        Returns:
-            GitResult: The combined stdout and stderr output of the command in structured format.
-
-        Concept:
-            CONCEPT:RM-GIT-ACTION
-        """
-        target_path = self._resolve_path(path)
-
         try:
             command_argv = shlex.split(str(command), posix=True)
         except ValueError as exc:
@@ -1838,109 +2203,79 @@ class Git:
             for token in command_argv
         ):
             raise ValueError("shell control syntax is not permitted")
+        return command_argv, command_env
 
-        # Ensure ~/.local/bin is in PATH for tools like bump2version
+    @staticmethod
+    def _repository_command_env(
+        env: dict | None, command_env: dict[str, str]
+    ) -> dict[str, str]:
+        """The child environment for one repository command."""
         current_env = env if env else os.environ.copy()
         current_env.update(command_env)
+
+        # Ensure ~/.local/bin is in PATH for tools like bump2version
         local_bin = os.path.expanduser("~/.local/bin")
         if local_bin not in current_env.get("PATH", ""):
             current_env["PATH"] = f"{local_bin}:{current_env.get('PATH', '')}"
 
         # Ensure Python output is unbuffered so we get real-time logs
         current_env["PYTHONUNBUFFERED"] = "1"
+        return current_env
 
-        operation = _operation_label(command_argv)
-        logger.info("Executing repository operation")
+    def _append_debug_log(self, text: str) -> None:
+        """Append one entry to the debug log under the shared lock."""
+        with self.debug_lock, open(self.debug_log_path, "a") as log_file:
+            log_file.write(text)
+            log_file.flush()
 
-        process = subprocess.Popen(
-            command_argv,
-            shell=False,
-            cwd=target_path,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            env=current_env,
-            bufsize=1,  # Line buffered
-            start_new_session=True,  # Isolate process group so killpg only kills the command
-        )
+    def _drain_process_output(
+        self, process: subprocess.Popen, capture: "_CommandOutputCapture"
+    ) -> None:
+        """Read the child's output line by line as it becomes available."""
+        if not process.stdout:
+            return
+        for line in process.stdout:
+            capture.add(line)
+            self._append_debug_log(
+                f"[{datetime.datetime.now().isoformat()}] "
+                "[repository output line omitted]\n"
+            )
 
-        output_lines: list[str] = []
-        output_bytes = 0
-        output_truncated = False
+    @staticmethod
+    def _kill_process(process: subprocess.Popen) -> None:
+        """Last-resort kill of a command that would not terminate."""
+        process.kill()
         try:
-            # Write start marker
-            with self.debug_lock:
-                with open(self.debug_log_path, "a") as log_file:
-                    log_file.write(
-                        f"\n[{datetime.datetime.now().isoformat()}] Starting repository operation\n"
-                    )
-                    log_file.flush()
-
-            # Read output line by line as it becomes available
-            def _read_output():
-                nonlocal output_bytes, output_truncated
-                if process.stdout:
-                    for line in process.stdout:
-                        encoded = line.encode("utf-8", "replace")
-                        remaining = _MAX_CAPTURED_OUTPUT_BYTES - output_bytes
-                        if remaining > 0:
-                            clipped = encoded[:remaining].decode("utf-8", "ignore")
-                            output_lines.append(clipped)
-                            output_bytes += len(clipped.encode("utf-8"))
-                        if len(encoded) > remaining:
-                            output_truncated = True
-                        with self.debug_lock:
-                            with open(self.debug_log_path, "a") as log_file:
-                                log_file.write(
-                                    f"[{datetime.datetime.now().isoformat()}] "
-                                    "[repository output line omitted]\n"
-                                )
-                                log_file.flush()
-
-            reader_thread = threading.Thread(target=_read_output, daemon=True)
-            reader_thread.start()
-
-            # Wait for process to complete, with a safety timeout
-            process.wait(timeout=timeout)
-            reader_thread.join(timeout=1.0)
-            process.wait(timeout=timeout)
+            process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            logger.warning("Repository operation timed out")
-            if hasattr(os, "killpg"):
-                try:
-                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-                        process.wait(timeout=5)
-                except Exception:  # nosec B110
-                    process.kill()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pass
-            else:
-                process.kill()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
+            pass
 
-            with self.debug_lock:
-                with open(self.debug_log_path, "a") as log_file:
-                    log_file.write(
-                        f"[{datetime.datetime.now().isoformat()}] ERROR: Command timed out after {timeout} seconds\n"
-                    )
-                    log_file.flush()
+    @staticmethod
+    def _terminate_process_group(process: subprocess.Popen) -> None:
+        """SIGTERM then SIGKILL a timed-out command's whole process group."""
+        if not hasattr(os, "killpg"):
+            Git._kill_process(process)
+            return
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                process.wait(timeout=5)
+        except Exception:  # nosec B110
+            Git._kill_process(process)
 
-        if output_truncated:
-            output_lines.append("\n[repository output truncated]\n")
-        captured = "".join(output_lines)
-        out = captured if raw_output else _privacy_safe_diagnostic(captured)
-        return_code = process.returncode
-
+    @staticmethod
+    def _repository_command_result(
+        *,
+        operation: str,
+        target_path: str,
+        return_code: int,
+        out: str,
+        quiet: bool,
+    ) -> GitResult:
+        """Build -- and log -- the result of one finished repository command."""
         metadata = GitMetadata(
             command=operation,
             workspace=_project_label(target_path),
@@ -1968,6 +2303,96 @@ class Git:
             logger.info("Repository operation completed")
 
         return result
+
+    def _await_repository_command(
+        self,
+        process: subprocess.Popen,
+        capture: "_CommandOutputCapture",
+        timeout: int,
+    ) -> None:
+        """Drain and wait for one command, killing it if it overruns *timeout*."""
+        try:
+            # Write start marker
+            self._append_debug_log(
+                f"\n[{datetime.datetime.now().isoformat()}] "
+                "Starting repository operation\n"
+            )
+
+            reader_thread = threading.Thread(
+                target=self._drain_process_output,
+                args=(process, capture),
+                daemon=True,
+            )
+            reader_thread.start()
+
+            # Wait for process to complete, with a safety timeout
+            process.wait(timeout=timeout)
+            reader_thread.join(timeout=1.0)
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.warning("Repository operation timed out")
+            self._terminate_process_group(process)
+            self._append_debug_log(
+                f"[{datetime.datetime.now().isoformat()}] "
+                f"ERROR: Command timed out after {timeout} seconds\n"
+            )
+
+    def git_action(
+        self,
+        command: str,
+        path: str | None = None,
+        quiet: bool = False,
+        env: dict | None = None,
+        timeout: int = 1800,
+        raw_output: bool = False,
+    ) -> GitResult:
+        """
+        Execute a Git command in the specified directory.
+
+        Args:
+            command (str): The Git command to execute.
+            path (str, optional): The directory to execute the command in.
+                Defaults to the base path.
+
+        Returns:
+            GitResult: The combined stdout and stderr output of the command in structured format.
+
+        Concept:
+            CONCEPT:RM-GIT-ACTION
+        """
+        target_path = self._resolve_path(path)
+
+        command_argv, command_env = self._parse_repository_command(command)
+        current_env = self._repository_command_env(env, command_env)
+
+        operation = _operation_label(command_argv)
+        logger.info("Executing repository operation")
+
+        process = subprocess.Popen(
+            command_argv,
+            shell=False,
+            cwd=target_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            env=current_env,
+            bufsize=1,  # Line buffered
+            start_new_session=True,  # Isolate process group so killpg only kills the command
+        )
+
+        capture = _CommandOutputCapture()
+        self._await_repository_command(process, capture, timeout)
+
+        captured = capture.text()
+        out = captured if raw_output else _privacy_safe_diagnostic(captured)
+        return self._repository_command_result(
+            operation=operation,
+            target_path=target_path,
+            return_code=process.returncode,
+            out=out,
+            quiet=quiet,
+        )
 
     def cleanup_artifacts(self, target_dir: str) -> None:
         """Removes test artifacts and temporary files from the specified directory."""
@@ -2112,6 +2537,100 @@ class Git:
         _run_post_hydration_mount_checks(self.path)
         return results
 
+    @staticmethod
+    def _checkout_guard_skip(repo_label: str, blocked: dict) -> GitResult:
+        """The ``skipped`` record for a checkout the canonical guard refused."""
+        return GitResult(
+            status="skipped",
+            data=blocked.get("detail", ""),
+            error=GitError(message=blocked["error"], code=0),
+            metadata=GitMetadata(
+                command="checkout-guard",
+                workspace=repo_label,
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    def _guarded_default_branch_checkout(
+        self, target_path: str, default_branch: str, results: list[GitResult]
+    ) -> None:
+        """Check out *default_branch*, never on a dirty canonical tree.
+
+        WT-3 (CONCEPT:RM-WORKTREE, CONCEPT:RM-CANON-GUARD) --
+        non-destructive / worktree-aware. Never switch branches on a
+        dirty canonical tree: a concurrent session may have
+        uncommitted work here, and a forced checkout would disrupt
+        it. guarded_canonical_mutation skips the checkout (loudly,
+        with the repo named) instead. Session work belongs in a
+        worktree under WORKTREE_ROOT anyway, which this never
+        touches.
+        """
+        repo_label = _project_label(target_path)
+        with guarded_canonical_mutation(
+            self, target_path, repo_label, "check out default branch"
+        ) as blocked:
+            if blocked is not None:
+                results.append(self._checkout_guard_skip(repo_label, blocked))
+                return
+            checkout_result = self.git_action(
+                f'git checkout "{default_branch}"',
+                path=target_path,
+            )
+            results.append(checkout_result)
+            logger.info("Checked out configured default branch")
+
+    def _checkout_default_branch(
+        self, target_path: str, results: list[GitResult]
+    ) -> None:
+        """Resolve the project's default branch and switch to it if needed."""
+        default_branch_result = self.git_action(
+            "git symbolic-ref refs/remotes/origin/HEAD",
+            path=target_path,
+        )
+        if default_branch_result.status != "success":
+            results.append(default_branch_result)
+            logger.error("Failed to resolve the configured default branch")
+            return
+
+        default_branch = re.sub(
+            "refs/remotes/origin/", "", default_branch_result.data
+        ).strip()
+        current_branch = self.git_action(
+            "git rev-parse --abbrev-ref HEAD", path=target_path, quiet=True
+        ).data.strip()
+        if current_branch == default_branch:
+            logger.info("Configured project is already on its default branch")
+            return
+
+        self._guarded_default_branch_checkout(target_path, default_branch, results)
+
+    @staticmethod
+    def _combine_pull_results(target_path: str, results: list[GitResult]) -> GitResult:
+        """Fold the pull (and optional checkout) results into one result."""
+        combined_status = (
+            "success" if all(r.status == "success" for r in results) else "error"
+        )
+        combined_data = "\n".join(
+            [
+                f"[{r.metadata.command if r.metadata else 'unknown'}]: {r.data}"
+                for r in results
+            ]
+        )
+        combined_error = next((r.error for r in results if r.error), None)
+        metadata = GitMetadata(
+            command="pull_project",
+            workspace=_project_label(target_path),
+            return_code=0 if combined_status == "success" else 1,
+            timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+        )
+        return GitResult(
+            status=combined_status,
+            data=combined_data,
+            error=combined_error,
+            metadata=metadata,
+        )
+
     @_exclusive_repo_mutation
     def pull_project(self, path: str | None = None) -> GitResult:
         """
@@ -2124,94 +2643,14 @@ class Git:
             GitResult: The result of the pull operation.
         """
         target_path = self._resolve_path(path)
-        results = []
-
-        pull_result = self.git_action(command="git pull", path=target_path)
-        results.append(pull_result)
+        results = [self.git_action(command="git pull", path=target_path)]
 
         logger.info("Repository pull completed")
 
         if self.set_to_default_branch:
-            default_branch_result = self.git_action(
-                "git symbolic-ref refs/remotes/origin/HEAD",
-                path=target_path,
-            )
-            if default_branch_result.status == "success":
-                default_branch = re.sub(
-                    "refs/remotes/origin/", "", default_branch_result.data
-                ).strip()
-                # WT-3 (CONCEPT:RM-WORKTREE, CONCEPT:RM-CANON-GUARD) —
-                # non-destructive / worktree-aware. Never switch branches on a
-                # dirty canonical tree: a concurrent session may have
-                # uncommitted work here, and a forced checkout would disrupt
-                # it. guarded_canonical_mutation skips the checkout (loudly,
-                # with the repo named) instead. Session work belongs in a
-                # worktree under WORKTREE_ROOT anyway, which this never
-                # touches.
-                current_branch = self.git_action(
-                    "git rev-parse --abbrev-ref HEAD", path=target_path, quiet=True
-                ).data.strip()
-                if current_branch == default_branch:
-                    logger.info("Configured project is already on its default branch")
-                else:
-                    repo_label = _project_label(target_path)
-                    with guarded_canonical_mutation(
-                        self, target_path, repo_label, "check out default branch"
-                    ) as blocked:
-                        if blocked is not None:
-                            results.append(
-                                GitResult(
-                                    status="skipped",
-                                    data=blocked.get("detail", ""),
-                                    error=GitError(message=blocked["error"], code=0),
-                                    metadata=GitMetadata(
-                                        command="checkout-guard",
-                                        workspace=repo_label,
-                                        return_code=0,
-                                        timestamp=datetime.datetime.now(
-                                            datetime.UTC
-                                        ).isoformat()
-                                        + "Z",
-                                    ),
-                                )
-                            )
-                        else:
-                            checkout_result = self.git_action(
-                                f'git checkout "{default_branch}"',
-                                path=target_path,
-                            )
-                            results.append(checkout_result)
-                            logger.info("Checked out configured default branch")
-            else:
-                results.append(default_branch_result)
-                logger.error("Failed to resolve the configured default branch")
+            self._checkout_default_branch(target_path, results)
 
-        combined_status = (
-            "success" if all(r.status == "success" for r in results) else "error"
-        )
-
-        combined_data = "\n".join(
-            [
-                f"[{r.metadata.command if r.metadata else 'unknown'}]: {r.data}"
-                for r in results
-            ]
-        )
-
-        combined_error = next((r.error for r in results if r.error), None)
-
-        metadata = GitMetadata(
-            command="pull_project",
-            workspace=_project_label(target_path),
-            return_code=0 if combined_status == "success" else 1,
-            timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-        )
-
-        return GitResult(
-            status=combined_status,
-            data=combined_data,
-            error=combined_error,
-            metadata=metadata,
-        )
+        return self._combine_pull_results(target_path, results)
 
     def push_projects(self, project_dirs: list[str] | None = None) -> list[GitResult]:
         """
@@ -2266,6 +2705,82 @@ class Git:
             return []
         return [line.strip() for line in res.data.splitlines() if line.strip()]
 
+    @staticmethod
+    def _gate_incomplete_result(error: object) -> GitResult:
+        """The refusal for a pre-push gate that never reached a verdict.
+
+        No hook reported a verdict -- the gate did not complete (timeout,
+        tooling error). Reporting that as "Pre-push gate failed (pre-push
+        gate)" made a 600s HEAVY-tier timeout look identical to a real
+        hook failure, which is how agent-utilities appeared to be blocked
+        on merit when it had simply run out of clock. Surface the harness
+        error verbatim instead of inventing a hook name.
+        """
+        logger.error("Pre-push gate did not complete: %s", error)
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=f"Pre-push gate did not complete; push aborted. {error}",
+                code=1,
+            ),
+        )
+
+    @staticmethod
+    def _gate_unrunnable_result(unrunnable: list[str]) -> GitResult:
+        """The refusal for a gate whose every failing hook is simply missing.
+
+        A gate that could not RUN is not a gate that found a defect. Saying
+        "fix the gate" would send the reader hunting for a defect that does
+        not exist. The push is still refused -- an ungated push is worse --
+        but the reason is reported truthfully so it can be acted on.
+        """
+        missing = ", ".join(unrunnable)
+        logger.error("Pre-push gate cannot run in this environment: %s", missing)
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=(
+                    f"Pre-push gate CANNOT RUN here; push aborted. Every failing "
+                    f"hook ({missing}) failed because its executable is missing "
+                    f"from this environment, not because it found a defect. This "
+                    f"is an environment gap, not a code verdict -- install the "
+                    f"toolchain these hooks need, or run the gate and the push "
+                    f"from a host that has it."
+                ),
+                code=1,
+            ),
+        )
+
+    @staticmethod
+    def _gate_failed_result(failed: list[str]) -> GitResult:
+        """The refusal for a gate that genuinely found a defect."""
+        names = ", ".join(failed) or "pre-push gate"
+        logger.error("Pre-push gate failed: %s", names)
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=(
+                    f"Pre-push gate failed ({names}); push aborted. "
+                    "Fix the gate, or set RM_GATE_BEFORE_PUSH=false to bypass."
+                ),
+                code=1,
+            ),
+        )
+
+    @staticmethod
+    def _pre_push_gate_refusal(result: Any) -> GitResult:
+        """Explain WHY the pre-push gate refused this push."""
+        failed = [h.hook_id for h in result.hooks if not h.passed]
+        if not failed and result.error:
+            return Git._gate_incomplete_result(result.error)
+        unrunnable = [h.hook_id for h in result.hooks if not h.passed and h.unrunnable]
+        if unrunnable and len(unrunnable) == len(failed):
+            return Git._gate_unrunnable_result(unrunnable)
+        return Git._gate_failed_result(failed)
+
     def _gate_before_push(self, target_path: str) -> GitResult | None:
         """Run the repo's declared HEAVY (pre-push-stage) gates before pushing.
 
@@ -2309,66 +2824,132 @@ class Git:
         except Exception as e:  # pragma: no cover - tooling/env failure
             logger.warning("Operation failed: error_type=%s", type(e).__name__)
             return None
+
         if result.success:
             return None
-        failed = [h.hook_id for h in result.hooks if not h.passed]
-        if not failed and result.error:
-            # No hook reported a verdict -- the gate did not complete (timeout,
-            # tooling error). Reporting that as "Pre-push gate failed (pre-push
-            # gate)" made a 600s HEAVY-tier timeout look identical to a real
-            # hook failure, which is how agent-utilities appeared to be blocked
-            # on merit when it had simply run out of clock. Surface the harness
-            # error verbatim instead of inventing a hook name.
-            logger.error("Pre-push gate did not complete: %s", result.error)
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=(
-                        f"Pre-push gate did not complete; push aborted. {result.error}"
-                    ),
-                    code=1,
-                ),
-            )
-        # A gate that could not RUN is not a gate that found a defect.
-        #
-        # If every failing hook failed because its executable is absent, this
-        # environment cannot gate this repository at all, and saying "fix the
-        # gate" sends the reader hunting for a defect that does not exist. The
-        # push is still refused -- an ungated push is worse -- but the reason is
-        # reported truthfully so it can be acted on.
-        unrunnable = [h.hook_id for h in result.hooks if not h.passed and h.unrunnable]
-        if unrunnable and len(unrunnable) == len(failed):
-            missing = ", ".join(unrunnable)
-            logger.error("Pre-push gate cannot run in this environment: %s", missing)
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=(
-                        f"Pre-push gate CANNOT RUN here; push aborted. Every failing "
-                        f"hook ({missing}) failed because its executable is missing "
-                        f"from this environment, not because it found a defect. This "
-                        f"is an environment gap, not a code verdict -- install the "
-                        f"toolchain these hooks need, or run the gate and the push "
-                        f"from a host that has it."
-                    ),
-                    code=1,
-                ),
-            )
-        names = ", ".join(failed) or "pre-push gate"
-        logger.error("Pre-push gate failed: %s", names)
+        return self._pre_push_gate_refusal(result)
+
+    @staticmethod
+    def _dirty_push_refusal(target_path: str) -> GitResult:
+        """Refuse to push a repository with uncommitted changes."""
         return GitResult(
             status="error",
             data="",
             error=GitError(
                 message=(
-                    f"Pre-push gate failed ({names}); push aborted. "
-                    "Fix the gate, or set RM_GATE_BEFORE_PUSH=false to bypass."
+                    "Push refused: the repository has uncommitted changes. "
+                    "Review and commit them explicitly before pushing."
                 ),
-                code=1,
+                code=409,
+            ),
+            metadata=GitMetadata(
+                command="git push",
+                workspace=_project_label(target_path),
+                return_code=409,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
             ),
         )
+
+    @staticmethod
+    def _secret_scanning_refusal(target_path: str) -> GitResult:
+        """GitHub push protection (GH013) -- unrecoverable without manual action."""
+        return GitResult(
+            status="error",
+            data="GitHub push protection blocked the push",
+            error=GitError(
+                message="GitHub secret scanning (GH013) blocked the push. "
+                "A file in the commit history contains a detected secret. "
+                "Use git-filter-repo to expunge it or allow the secret via GitHub settings.",
+                code=1,
+            ),
+            metadata=GitMetadata(
+                command="git push --follow-tags",
+                workspace=_project_label(target_path),
+                return_code=1,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    @staticmethod
+    def _diverged_push_refusal(result: GitResult) -> GitResult:
+        """A divergent remote requires an explicit reviewed sync.
+
+        Never rewrite remote history or mutate the local branch as a fallback.
+        """
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=(
+                    "Push refused: the remote branch has diverged. "
+                    "Fetch and perform an explicit reviewed merge or rebase; "
+                    "automatic force-push is permanently disabled."
+                ),
+                code=409,
+            ),
+            metadata=result.metadata,
+        )
+
+    @staticmethod
+    def _push_error_text(result: GitResult) -> str:
+        """The combined error message and output of a failed push."""
+        error_text = ""
+        if result.error:
+            error_text = (
+                str(result.error.message)
+                if hasattr(result.error, "message")
+                else str(result.error)
+            )
+        if result.data:
+            error_text += " " + result.data
+        return error_text
+
+    def _push_release_tag(self, target_path: str) -> None:
+        """Push the CURRENT release tag explicitly after a successful branch push.
+
+        ``--follow-tags`` only pushes ANNOTATED tags. bump2version can emit
+        LIGHTWEIGHT tags (objecttype=commit), which would silently never
+        reach the remote — so no tag-triggered CI / image build. Pushing the
+        current release tag (v<current_version> from .bumpversion.cfg) covers
+        both annotated and lightweight, WITHOUT also dumping stale
+        never-pushed historical tags onto the remote (which would trigger CI
+        for old versions).
+        (CONCEPT:RM-BUMP tag-publish correctness)
+        """
+        rel_tag = self._current_release_tag(target_path)
+        if not rel_tag:
+            return
+        tag_res = self.git_action(
+            command=f"git push origin {rel_tag}", path=target_path
+        )
+        if tag_res.status != "success":
+            logger.warning("Branch pushed but the release-tag push failed")
+
+    def _handle_push_failure(self, target_path: str, result: GitResult) -> GitResult:
+        """Translate a failed ``git push`` into an actionable result."""
+        error_text = self._push_error_text(result)
+
+        # GitHub secret scanning block (GH013) — unrecoverable without manual action
+        if "GH013" in error_text or "GITHUB PUSH PROTECTION" in error_text:
+            logger.error(
+                "GitHub secret scanning blocked the push; remove the secret from history"
+            )
+            return self._secret_scanning_refusal(target_path)
+
+        if (
+            "non-fast-forward" in error_text
+            or "tip of your current branch is behind" in error_text
+        ):
+            logger.warning("Push refused because the remote branch has diverged")
+            return self._diverged_push_refusal(result)
+
+        # Tag already exists on remote — retry without tags
+        if "tag already exists" in error_text:
+            logger.warning("Tag conflict detected; retrying without follow-tags")
+            return self.git_action(command="git push origin main", path=target_path)
+
+        # Unknown error — return as-is
+        return result
 
     @_exclusive_repo_mutation
     def push_project(self, path: str | None = None) -> GitResult:
@@ -2388,23 +2969,7 @@ class Git:
         )
         if status_check.status == "success" and status_check.data.strip():
             logger.warning("Push refused because the configured project is dirty")
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=(
-                        "Push refused: the repository has uncommitted changes. "
-                        "Review and commit them explicitly before pushing."
-                    ),
-                    code=409,
-                ),
-                metadata=GitMetadata(
-                    command="git push",
-                    workspace=_project_label(target_path),
-                    return_code=409,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
-            )
+            return self._dirty_push_refusal(target_path)
 
         # Fast pre-push gate: run the repo's own pre-commit gates (minus the
         # slow full pytest suite) so a push can't ship a commit the repo's CI
@@ -2418,85 +2983,10 @@ class Git:
         max_attempts = 1
         for _attempt in range(1, max_attempts + 1):
             result = self.git_action(command="git push --follow-tags", path=target_path)
-
             if result.status == "success":
-                # --follow-tags only pushes ANNOTATED tags. bump2version can emit
-                # LIGHTWEIGHT tags (objecttype=commit), which would silently never
-                # reach the remote — so no tag-triggered CI / image build. Push the
-                # CURRENT release tag explicitly (v<current_version> from
-                # .bumpversion.cfg) to cover both annotated and lightweight, WITHOUT
-                # also dumping stale never-pushed historical tags onto the remote
-                # (which would trigger CI for old versions).
-                # (CONCEPT:RM-BUMP tag-publish correctness)
-                rel_tag = self._current_release_tag(target_path)
-                if rel_tag:
-                    tag_res = self.git_action(
-                        command=f"git push origin {rel_tag}", path=target_path
-                    )
-                    if tag_res.status != "success":
-                        logger.warning("Branch pushed but the release-tag push failed")
+                self._push_release_tag(target_path)
                 return result
-
-            error_text = ""
-            if result.error:
-                error_text = (
-                    str(result.error.message)
-                    if hasattr(result.error, "message")
-                    else str(result.error)
-                )
-            if result.data:
-                error_text += " " + result.data
-
-            # GitHub secret scanning block (GH013) — unrecoverable without manual action
-            if "GH013" in error_text or "GITHUB PUSH PROTECTION" in error_text:
-                logger.error(
-                    "GitHub secret scanning blocked the push; remove the secret from history"
-                )
-                return GitResult(
-                    status="error",
-                    data="GitHub push protection blocked the push",
-                    error=GitError(
-                        message="GitHub secret scanning (GH013) blocked the push. "
-                        "A file in the commit history contains a detected secret. "
-                        "Use git-filter-repo to expunge it or allow the secret via GitHub settings.",
-                        code=1,
-                    ),
-                    metadata=GitMetadata(
-                        command="git push --follow-tags",
-                        workspace=_project_label(target_path),
-                        return_code=1,
-                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                    ),
-                )
-
-            # A divergent remote requires an explicit reviewed sync. Never
-            # rewrite remote history or mutate the local branch as a fallback.
-            if (
-                "non-fast-forward" in error_text
-                or "tip of your current branch is behind" in error_text
-            ):
-                logger.warning("Push refused because the remote branch has diverged")
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message=(
-                            "Push refused: the remote branch has diverged. "
-                            "Fetch and perform an explicit reviewed merge or rebase; "
-                            "automatic force-push is permanently disabled."
-                        ),
-                        code=409,
-                    ),
-                    metadata=result.metadata,
-                )
-
-            # Tag already exists on remote — retry without tags
-            if "tag already exists" in error_text:
-                logger.warning("Tag conflict detected; retrying without follow-tags")
-                return self.git_action(command="git push origin main", path=target_path)
-
-            # Unknown error — return as-is
-            return result
+            return self._handle_push_failure(target_path, result)
 
         return result
 
@@ -2600,6 +3090,38 @@ class Git:
         safe_msg = quote(message)
         return self.git_action(command=f"git commit -m {safe_msg}", path=target_path)
 
+    @staticmethod
+    def _commit_code_skip(target_path: str, reason: str) -> GitResult:
+        """A no-op commit_code outcome (missing clone, or nothing to commit)."""
+        return GitResult(
+            status="skipped",
+            data=reason,
+            error=None,
+            metadata=GitMetadata(
+                command="commit_code",
+                workspace=_project_label(target_path),
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    def _stamp_commit_sha(self, result: GitResult, target_path: str) -> GitResult:
+        """Append the resulting commit SHA to a successful commit result.
+
+        D-CDX-60 acceptance: a truthful commit_code result names BOTH the
+        resolved repository/worktree it acted on (already carried by
+        metadata.workspace) AND the resulting commit SHA, so a caller can
+        verify what actually happened rather than trust a bare "success".
+        """
+        sha_res = self.git_action(
+            command="git rev-parse HEAD", path=target_path, quiet=True
+        )
+        if sha_res.status != "success" or not sha_res.data.strip():
+            return result
+        return result.model_copy(
+            update={"data": f"{result.data}\ncommit_sha={sha_res.data.strip()}"}
+        )
+
     @_exclusive_repo_mutation
     def commit_code_project(
         self, message: str, run_precommit: bool = True, path: str | None = None
@@ -2625,33 +3147,15 @@ class Git:
         # ``os.path.exists`` accepts either shape, matching the check at
         # `_resolve_path`'s sibling validation above.
         if not os.path.exists(os.path.join(target_path, ".git")):
-            return GitResult(
-                status="skipped",
-                data="Configured project is not a cloned Git repository",
-                error=None,
-                metadata=GitMetadata(
-                    command="commit_code",
-                    workspace=_project_label(target_path),
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
+            return self._commit_code_skip(
+                target_path, "Configured project is not a cloned Git repository"
             )
 
         status_res = self.git_action(
             command="git status --porcelain", path=target_path, quiet=True
         )
         if status_res.status == "success" and not status_res.data.strip():
-            return GitResult(
-                status="skipped",
-                data="No changes to commit.",
-                error=None,
-                metadata=GitMetadata(
-                    command="commit_code",
-                    workspace=_project_label(target_path),
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
-            )
+            return self._commit_code_skip(target_path, "No changes to commit.")
 
         # The stage, optional gate, re-stage, and commit intentionally happen in
         # this one call.  Callers must use this ordered operation instead of
@@ -2671,21 +3175,10 @@ class Git:
         stage_res = self.add_project(target_path)
         if stage_res.status != "success":
             return stage_res
+
         result = self.commit_project(message, path=target_path)
         if result.status == "success":
-            # D-CDX-60 acceptance: a truthful commit_code result names BOTH the
-            # resolved repository/worktree it acted on (already carried by
-            # metadata.workspace) AND the resulting commit SHA, so a caller can
-            # verify what actually happened rather than trust a bare "success".
-            sha_res = self.git_action(
-                command="git rev-parse HEAD", path=target_path, quiet=True
-            )
-            if sha_res.status == "success" and sha_res.data.strip():
-                result = result.model_copy(
-                    update={
-                        "data": (f"{result.data}\ncommit_sha={sha_res.data.strip()}")
-                    }
-                )
+            result = self._stamp_commit_sha(result, target_path)
         return result
 
     def commit_code_projects(
@@ -2767,6 +3260,117 @@ class Git:
             )
             self.threads = self.maximum_threads
 
+    @staticmethod
+    def _precommit_skipped(target_path: str, reason: str) -> GitResult:
+        """A no-op pre-commit outcome for a project there is nothing to run on."""
+        return GitResult(
+            status="skipped",
+            data=reason,
+            error=None,
+            metadata=GitMetadata(
+                command="pre_commit_check",
+                workspace=_project_label(target_path),
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    @staticmethod
+    def _precommit_env() -> dict[str, str]:
+        """Environment for a pre-commit run.
+
+        Skips the branch lock (this helper is used off-branch on purpose) and
+        bounds any pytest hook so a repo's own ``-n auto`` cannot fan out.
+        """
+        env = os.environ.copy()
+        if "SKIP" in env:
+            env["SKIP"] += ",no-commit-to-branch"
+        else:
+            env["SKIP"] = "no-commit-to-branch"
+        env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "4"
+        lane_pytest_options = env.get("PYTEST_ADDOPTS", "").strip()
+        bounded_pytest_options = '-q --tb=short -m "not slow" --timeout=60'
+        env["PYTEST_ADDOPTS"] = " ".join(
+            option for option in (lane_pytest_options, bounded_pytest_options) if option
+        )
+        return env
+
+    def _run_precommit_autoupdate(self, target_path: str, env: dict) -> GitResult:
+        """``pre-commit autoupdate``, then stage whatever it rewrote.
+
+        Returns the first error encountered, or the autoupdate result itself.
+        """
+        result = self.git_action(
+            command="pre-commit autoupdate",
+            path=target_path,
+            env=env,
+            timeout=600,
+        )
+        if result.status == "error":
+            return result
+        staged = self.git_action(command="git add -A", path=target_path)
+        if staged.status == "error":
+            return staged
+        return result
+
+    def _run_precommit_hooks(
+        self, target_path: str, env: dict
+    ) -> tuple[GitResult, bool]:
+        """Stage, run the FAST-tier hooks, and retry once after reformatting.
+
+        Returns ``(result, is_final)``; ``is_final`` marks a *staging* failure,
+        which the caller must surface verbatim without the branch-lock
+        post-processing that applies to hook results.
+        """
+        staged = self.git_action(command="git add -A", path=target_path)
+        if staged.status == "error":
+            return staged, True
+
+        # Explicit, not pre-commit's implicit default: this method is the
+        # FAST tier's interactive stage-and-commit helper (CONCEPT
+        # GOC-59/60 two-tier gate model) -- declare the stage it runs
+        # rather than relying on `pre-commit run` defaulting to it.
+        hook_stage = HOOK_STAGE_BY_GATE_STAGE["fast"]
+        hook_command = f"pre-commit run --hook-stage {hook_stage} --all-files --verbose"
+        result = self.git_action(
+            command=hook_command, path=target_path, env=env, timeout=600
+        )
+        if result.status == "error":
+            # Hooks may have reformatted files. Stage those bounded changes
+            # and run once more, without a shell retry expression.
+            restaged = self.git_action(command="git add -A", path=target_path)
+            if restaged.status == "error":
+                return restaged, True
+            result = self.git_action(
+                command=hook_command, path=target_path, env=env, timeout=600
+            )
+
+        self.git_action(command="git add -A", path=target_path)
+        return result, False
+
+    @staticmethod
+    def _is_branch_lock_only_failure(result: GitResult) -> bool:
+        """True when the ONLY pre-commit failure was the no-commit-to-branch lock."""
+        if result.status != "error" or not result.error:
+            return False
+        msg = result.error.message.lower()
+        if "don't commit to branch" not in msg and "no-commit-to-branch" not in msg:
+            return False
+        lines = (result.error.message + "\n" + result.data).splitlines()
+        return not any(
+            "Failed" in line and "don't commit to branch" not in line.lower()
+            for line in lines
+        )
+
+    @staticmethod
+    def _branch_lock_success(result: GitResult) -> GitResult:
+        """Re-badge a branch-lock-only failure as the success it really was."""
+        return GitResult(
+            status="success",
+            data=result.data or "Skipped branch lock check",
+            metadata=result.metadata,
+        )
+
     @_exclusive_repo_mutation
     def pre_commit(
         self,
@@ -2788,108 +3392,36 @@ class Git:
         self.cleanup_artifacts(target_path)
 
         if not os.path.exists(os.path.join(target_path, ".pre-commit-config.yaml")):
-            return GitResult(
-                status="skipped",
-                data="No .pre-commit-config.yaml found.",
-                error=None,
-                metadata=GitMetadata(
-                    command="pre_commit_check",
-                    workspace=_project_label(target_path),
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
+            return self._precommit_skipped(
+                target_path, "No .pre-commit-config.yaml found."
             )
 
         if not autoupdate and not run:
-            return GitResult(
-                status="skipped",
-                data="No action selected (run=False, autoupdate=False).",
-                error=None,
-                metadata=GitMetadata(
-                    command="pre_commit_check",
-                    workspace=_project_label(target_path),
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
+            return self._precommit_skipped(
+                target_path, "No action selected (run=False, autoupdate=False)."
             )
 
-        env = os.environ.copy()
-        if "SKIP" in env:
-            env["SKIP"] += ",no-commit-to-branch"
-        else:
-            env["SKIP"] = "no-commit-to-branch"
-        env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "4"
-        lane_pytest_options = env.get("PYTEST_ADDOPTS", "").strip()
-        bounded_pytest_options = '-q --tb=short -m "not slow" --timeout=60'
-        env["PYTEST_ADDOPTS"] = " ".join(
-            option for option in (lane_pytest_options, bounded_pytest_options) if option
-        )
+        env = self._precommit_env()
 
         result: GitResult | None = None
         if autoupdate:
-            result = self.git_action(
-                command="pre-commit autoupdate",
-                path=target_path,
-                env=env,
-                timeout=600,
-            )
+            result = self._run_precommit_autoupdate(target_path, env)
             if result.status == "error":
                 return result
-            staged = self.git_action(command="git add -A", path=target_path)
-            if staged.status == "error":
-                return staged
 
         if run:
-            staged = self.git_action(command="git add -A", path=target_path)
-            if staged.status == "error":
-                return staged
-            # Explicit, not pre-commit's implicit default: this method is the
-            # FAST tier's interactive stage-and-commit helper (CONCEPT
-            # GOC-59/60 two-tier gate model) -- declare the stage it runs
-            # rather than relying on `pre-commit run` defaulting to it.
-            hook_stage = HOOK_STAGE_BY_GATE_STAGE["fast"]
-            hook_command = (
-                f"pre-commit run --hook-stage {hook_stage} --all-files --verbose"
-            )
-            result = self.git_action(
-                command=hook_command, path=target_path, env=env, timeout=600
-            )
-            if result.status == "error":
-                # Hooks may have reformatted files. Stage those bounded changes
-                # and run once more, without a shell retry expression.
-                restaged = self.git_action(command="git add -A", path=target_path)
-                if restaged.status == "error":
-                    return restaged
-                result = self.git_action(
-                    command=hook_command, path=target_path, env=env, timeout=600
-                )
-            self.git_action(command="git add -A", path=target_path)
+            result, is_final = self._run_precommit_hooks(target_path, env)
+            if is_final:
+                return result
 
         if result is None:
             raise RuntimeError("pre-commit operation produced no result")
 
-        if result.status == "error" and result.error:
-            msg = result.error.message.lower()
-            if "don't commit to branch" in msg or "no-commit-to-branch" in msg:
-                other_failures = False
-                lines = (result.error.message + "\n" + result.data).splitlines()
-                for line in lines:
-                    if (
-                        "Failed" in line
-                        and "don't commit to branch" not in line.lower()
-                    ):
-                        other_failures = True
-                        break
-
-                if not other_failures:
-                    logger.info(
-                        f"Ignoring safe pre-commit failure (branch lock) in {target_path}"
-                    )
-                    return GitResult(
-                        status="success",
-                        data=result.data or "Skipped branch lock check",
-                        metadata=result.metadata,
-                    )
+        if self._is_branch_lock_only_failure(result):
+            logger.info(
+                f"Ignoring safe pre-commit failure (branch lock) in {target_path}"
+            )
+            return self._branch_lock_success(result)
 
         return result
 
@@ -2900,6 +3432,98 @@ class Git:
         res = self.git_action(cmd, path=path, env=env, timeout=timeout)
         results.append(res)
         return results
+
+    @staticmethod
+    def _find_test_target(path: str) -> str | None:
+        """The pytest target dir for *path* -- unit test dirs preferred."""
+        for candidate in ("tests/unit", "test/unit", "tests", "test"):
+            if os.path.exists(os.path.join(path, candidate)):
+                return candidate
+        return None
+
+    def _project_test_plan(self, path: str) -> tuple[str | None, str | None]:
+        """``(pytest target dir, skip reason)`` for one project.
+
+        Exactly one half is ever set. Order matters: a project with neither a
+        pre-commit config nor a ``pyproject.toml`` is reported as unconfigured
+        even when it happens to carry a tests directory.
+        """
+        has_precommit = os.path.exists(os.path.join(path, ".pre-commit-config.yaml"))
+        has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
+        if not has_precommit and not has_pyproject:
+            return None, "Skipped (No .pre-commit-config.yaml and no pyproject.toml)"
+
+        test_target = self._find_test_target(path)
+        if test_target is None:
+            return None, "No tests directory found"
+        return test_target, None
+
+    @staticmethod
+    def _skipped_test_result(path: str, reason: str) -> GitResult:
+        """The ``skipped`` record for a project that cannot be pytest'd."""
+        return GitResult(
+            status="skipped",
+            data=reason,
+            metadata=GitMetadata(
+                command="pytest",
+                workspace=_project_label(path),
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    @staticmethod
+    def _pytest_command(path: str, test_target: str) -> str:
+        """The pytest invocation for *path*, preferring uv when it is uv-locked."""
+        bounded = '-q --tb=short -m "not slow" --timeout=60'
+        if os.path.exists(os.path.join(path, "uv.lock")):
+            return f"uv run --extra test pytest {test_target} {bounded}"
+        return f"{sys.executable} -m pytest {test_target} {bounded}"
+
+    @staticmethod
+    def _pytest_environment() -> dict[str, str]:
+        """Test env: memory-safe ladybug, validation mode, in-memory graph."""
+        test_env = os.environ.copy()
+        test_env["LADYBUG_MAX_DB_SIZE"] = "1073741824"
+        test_env["VALIDATION_MODE"] = "True"
+        test_env["KNOWLEDGE_GRAPH_SYNC_BACKGROUND"] = "False"
+        test_env["GRAPH_DB_PATH"] = ":memory:"
+        return test_env
+
+    @staticmethod
+    def _mark_repo_progress(
+        progress_dict: dict | None,
+        progress_phase: str | None,
+        repo_name: str,
+        status: str,
+        *,
+        recount_failures: bool = False,
+    ) -> None:
+        """Record one repo's status in the shared live-progress mapping."""
+        if not progress_dict or not progress_phase:
+            return
+        phases = progress_dict.get("phases", {})
+        if progress_phase not in phases:
+            return
+        phase = phases[progress_phase]
+        phase["repos"][repo_name] = status
+        phase["completed"] = len(phase["repos"])
+        if recount_failures:
+            phase["failed"] = sum(1 for s in phase["repos"].values() if s == "error")
+
+    @staticmethod
+    def _collect_project_test_results(
+        future: "concurrent.futures.Future", results: list[GitResult]
+    ) -> str:
+        """Append one project's test results; return its aggregate status."""
+        res_list = future.result()
+        if not isinstance(res_list, list):
+            results.append(res_list)
+            return res_list.status
+        results.extend(res_list)
+        if any(r.status == "error" for r in res_list):
+            return "error"
+        return "success"
 
     def test_projects(
         self,
@@ -2914,7 +3538,7 @@ class Git:
             progress_phase: Phase name for live progress updates.
             progress_dict: Shared mutable dict for live progress reporting.
         """
-        results = []
+        results: list[GitResult] = []
         thread_count = self._cpu_aware_threads()
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=thread_count
@@ -2927,114 +3551,99 @@ class Git:
                 path = target["path"]
                 repo_name = target.get("name", os.path.basename(path))
 
-                has_precommit = os.path.exists(
-                    os.path.join(path, ".pre-commit-config.yaml")
-                )
-                has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
-                if not has_precommit and not has_pyproject:
-                    results.append(
-                        GitResult(
-                            status="skipped",
-                            data="Skipped (No .pre-commit-config.yaml and no pyproject.toml)",
-                            metadata=GitMetadata(
-                                command="pytest",
-                                workspace=_project_label(path),
-                                return_code=0,
-                                timestamp=datetime.datetime.now(
-                                    datetime.UTC
-                                ).isoformat()
-                                + "Z",
-                            ),
-                        )
+                test_target, skip_reason = self._project_test_plan(path)
+                if skip_reason is not None:
+                    results.append(self._skipped_test_result(path, skip_reason))
+                    self._mark_repo_progress(
+                        progress_dict, progress_phase, repo_name, "skipped"
                     )
-                    if progress_dict and progress_phase:
-                        phases = progress_dict.get("phases", {})
-                        if progress_phase in phases:
-                            phases[progress_phase]["repos"][repo_name] = "skipped"
-                            phases[progress_phase]["completed"] = len(
-                                phases[progress_phase]["repos"]
-                            )
                     continue
 
-                # Check for the existence of unit test directories first, then general test directories
-                test_target = None
-                for candidate in ["tests/unit", "test/unit", "tests", "test"]:
-                    if os.path.exists(os.path.join(path, candidate)):
-                        test_target = candidate
-                        break
-
-                if test_target is not None:
-                    # Detect if we should use uv or standard python
-                    if os.path.exists(os.path.join(path, "uv.lock")):
-                        cmd = f'uv run --extra test pytest {test_target} -q --tb=short -m "not slow" --timeout=60'
-                    else:
-                        cmd = f'{sys.executable} -m pytest {test_target} -q --tb=short -m "not slow" --timeout=60'
-
-                    # Ensure memory safety for ladybug and set validation mode
-                    test_env = os.environ.copy()
-                    test_env["LADYBUG_MAX_DB_SIZE"] = "1073741824"
-                    test_env["VALIDATION_MODE"] = "True"
-                    test_env["KNOWLEDGE_GRAPH_SYNC_BACKGROUND"] = "False"
-                    test_env["GRAPH_DB_PATH"] = ":memory:"
-
-                    fut = executor.submit(
-                        self._run_project_test,
-                        cmd,
-                        path,
-                        test_env,
-                        600,  # 10 minute timeout for tests
-                    )
-                    future_to_repo[fut] = repo_name
-                else:
-                    results.append(
-                        GitResult(
-                            status="skipped",
-                            data="No tests directory found",
-                            metadata=GitMetadata(
-                                command="pytest",
-                                workspace=_project_label(path),
-                                return_code=0,
-                                timestamp=datetime.datetime.now(
-                                    datetime.UTC
-                                ).isoformat()
-                                + "Z",
-                            ),
-                        )
-                    )
-                    if progress_dict and progress_phase:
-                        phases = progress_dict.get("phases", {})
-                        if progress_phase in phases:
-                            phases[progress_phase]["repos"][repo_name] = "skipped"
-                            phases[progress_phase]["completed"] = len(
-                                phases[progress_phase]["repos"]
-                            )
+                fut = executor.submit(
+                    self._run_project_test,
+                    self._pytest_command(path, test_target),
+                    path,
+                    self._pytest_environment(),
+                    600,  # 10 minute timeout for tests
+                )
+                future_to_repo[fut] = repo_name
 
             for future in concurrent.futures.as_completed(future_to_repo):
                 repo_name = future_to_repo[future]
-                res_list = future.result()
-                # Determine aggregate status for the repo
-                status = "success"
-                if isinstance(res_list, list):
-                    results.extend(res_list)
-                    if any(r.status == "error" for r in res_list):
-                        status = "error"
-                else:
-                    results.append(res_list)
-                    status = res_list.status
-                # Update live progress
-                if progress_dict and progress_phase:
-                    phases = progress_dict.get("phases", {})
-                    if progress_phase in phases:
-                        phases[progress_phase]["repos"][repo_name] = status
-                        phases[progress_phase]["completed"] = len(
-                            phases[progress_phase]["repos"]
-                        )
-                        phases[progress_phase]["failed"] = sum(
-                            1
-                            for s in phases[progress_phase]["repos"].values()
-                            if s == "error"
-                        )
+                status = self._collect_project_test_results(future, results)
+                self._mark_repo_progress(
+                    progress_dict,
+                    progress_phase,
+                    repo_name,
+                    status,
+                    recount_failures=True,
+                )
         return results
+
+    def _named_precommit_dirs(self, projects: list[str]) -> list[str]:
+        """Resolve an explicit project list to hook-carrying directories."""
+        dirs: list[str] = []
+        for p in projects:
+            if os.path.isabs(p) and os.path.exists(p):
+                p_path: str | None = p
+            else:
+                p_path = self._project_path_for(p)
+            if (
+                p_path
+                and os.path.isdir(p_path)
+                and os.path.exists(os.path.join(p_path, ".pre-commit-config.yaml"))
+            ):
+                dirs.append(p_path)
+        return dirs
+
+    def _precommit_project_dirs(self, projects: list[str] | None) -> list[str]:
+        """Directories carrying a ``.pre-commit-config.yaml`` for the given scope.
+
+        ``projects=None`` means "every mapped project"; an empty project map is
+        warned about and yields nothing to run.
+        """
+        if projects is not None:
+            return self._named_precommit_dirs(projects)
+        if not self.project_map:
+            logger.warning("No projects found in project_map for pre-commit.")
+            return []
+        return [
+            p
+            for p in self.project_map.values()
+            if os.path.exists(os.path.join(p, ".pre-commit-config.yaml"))
+        ]
+
+    def _run_precommit_pool(
+        self, project_dirs: list[str], run: bool, autoupdate: bool
+    ) -> list[GitResult]:
+        """Run pre-commit across *project_dirs* in parallel."""
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            futures = {
+                executor.submit(self.pre_commit, run, autoupdate, d): d
+                for d in project_dirs
+            }
+            return [
+                future.result() for future in concurrent.futures.as_completed(futures)
+            ]
+
+    def _precommit_projects_error(self, exc: Exception) -> GitResult:
+        """The failure record for a parallel pre-commit sweep that blew up."""
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=f"Parallel pre-commit failed: {type(exc).__name__}",
+                code=-1,
+            ),
+            metadata=GitMetadata(
+                command="pre_commit_projects",
+                workspace=_project_label(self.path),
+                return_code=-1,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
 
     def pre_commit_projects(
         self,
@@ -3053,70 +3662,15 @@ class Git:
             if not os.path.exists(expanded_path):
                 return []
 
-            if projects is None:
-                if self.project_map:
-                    project_dirs = [
-                        p
-                        for p in self.project_map.values()
-                        if os.path.exists(os.path.join(p, ".pre-commit-config.yaml"))
-                    ]
-                else:
-                    logger.warning("No projects found in project_map for pre-commit.")
-                    return []
-            else:
-                project_dirs = []
-                for p in projects:
-                    p_path = None
-                    if os.path.isabs(p) and os.path.exists(p):
-                        p_path = p
-                    else:
-                        for url, path in self.project_map.items():
-                            if url.endswith(f"/{p}.git") or url.endswith(f"/{p}"):
-                                p_path = path
-                                break
-                    if (
-                        p_path
-                        and os.path.isdir(p_path)
-                        and os.path.exists(
-                            os.path.join(p_path, ".pre-commit-config.yaml")
-                        )
-                    ):
-                        project_dirs.append(p_path)
-
+            project_dirs = self._precommit_project_dirs(projects)
             if not project_dirs:
                 return []
 
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.threads
-            ) as executor:
-                futures = {
-                    executor.submit(self.pre_commit, run, autoupdate, d): d
-                    for d in project_dirs
-                }
-                results = []
-                for future in concurrent.futures.as_completed(futures):
-                    results.append(future.result())
-
-            return results
+            return self._run_precommit_pool(project_dirs, run, autoupdate)
 
         except Exception as e:
             logger.error("Parallel pre-commit failed: error_type=%s", type(e).__name__)
-            return [
-                GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message=f"Parallel pre-commit failed: {type(e).__name__}",
-                        code=-1,
-                    ),
-                    metadata=GitMetadata(
-                        command="pre_commit_projects",
-                        workspace=_project_label(self.path),
-                        return_code=-1,
-                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                    ),
-                )
-            ]
+            return [self._precommit_projects_error(e)]
 
     def install_project(self, path: str | None = None, extra: str = "all") -> GitResult:
         """
@@ -3689,6 +4243,323 @@ class Git:
             return True
         return False
 
+    @staticmethod
+    def _project_phase_index(config: dict) -> tuple[dict[str, int], int]:
+        """Map every declared project to its phase number, plus the bulk phase.
+
+        Used for the topological dependency check: a bump must not be
+        propagated backwards into a project owned by an earlier phase.
+        """
+        project_phases: dict[str, int] = {}
+        bulk_phase_num = 5
+        for phase in config.get("phases", []):
+            p_num = phase.get("phase", 1)
+            if phase.get("bulk_bump"):
+                bulk_phase_num = p_num
+            projects_in_phase = phase.get("projects", [])[:]
+            if phase.get("project"):
+                projects_in_phase.append(phase.get("project"))
+            for p in projects_in_phase:
+                project_phases[p] = p_num
+        return project_phases, bulk_phase_num
+
+    @staticmethod
+    def _pre_commit_project_names(config: dict) -> list[Any] | None:
+        """Projects the pre-commit stage should cover, or ``None`` for "all".
+
+        A ``bulk_bump`` phase means the run sweeps everything, so scoping the
+        pre-commit stage to a name list would be wrong -- ``None`` is returned
+        the moment one is seen.
+        """
+        if not config:
+            return None
+        projects_to_check: list[Any] = []
+        for phase in config.get("phases", []):
+            if phase.get("bulk_bump"):
+                return None
+            projects_to_check.extend(phase.get("projects", []))
+            if phase.get("project"):
+                projects_to_check.append(phase.get("project"))
+        return projects_to_check
+
+    def _pre_commit_project_dirs(
+        self, projects_to_check: list[Any] | None
+    ) -> list[str]:
+        """Local clone paths for the pre-commit stage's project scope."""
+        if projects_to_check is None:
+            return list(self.project_map.values())
+        dirs: list[str] = []
+        for p_name in projects_to_check:
+            p_path = self._project_path_for(p_name)
+            if p_path is not None:
+                dirs.append(p_path)
+        return dirs
+
+    def _run_bump_pre_commit_stage(self, config: dict) -> list[GitResult]:
+        """Run pre-commit (with autoupdate) and commit the resulting formatting."""
+        projects_to_check = self._pre_commit_project_names(config)
+        results = list(
+            self.pre_commit_projects(
+                run=True, autoupdate=True, projects=projects_to_check
+            )
+        )
+        results.extend(
+            self.commit_projects(
+                message="chore: pre-commit autoupdate and formatting",
+                project_dirs=self._pre_commit_project_dirs(projects_to_check),
+            )
+        )
+        return results
+
+    def _unassigned_project_names(
+        self, assigned_projects: set[str], claimed: list[str]
+    ) -> list[str]:
+        """Mapped project names not claimed by an earlier phase or *claimed*."""
+        names: list[str] = []
+        for url in self.project_map:
+            name = url.split("/")[-1].replace(".git", "")
+            if name not in assigned_projects and name not in claimed:
+                names.append(name)
+        return names
+
+    def _bump_phase_projects(
+        self, phase: dict, filter_set: set[str] | None, assigned_projects: set[str]
+    ) -> list[str]:
+        """The project names one configured phase contributes to the bump plan.
+
+        When a ``project_filter`` set is active, a bulk phase contributes exactly
+        the not-yet-assigned filter members (so filtered agents/services land in
+        the bulk phase). Without a filter, bulk sweeps everything unassigned.
+        """
+        projects = phase.get("projects", [])[:]
+        if phase.get("project"):
+            projects.append(phase.get("project"))
+        if filter_set is not None:
+            projects = [p for p in projects if p in filter_set]
+
+        if not phase.get("bulk_bump"):
+            return projects
+        if filter_set is None:
+            projects.extend(self._unassigned_project_names(assigned_projects, projects))
+            return projects
+        for name in filter_set:
+            if name not in assigned_projects and name not in projects:
+                projects.append(name)
+        return projects
+
+    @staticmethod
+    def _parse_project_filter(project_filter: str | None) -> set[str] | None:
+        """Parse ``project_filter`` into a set of project names, or ``None``.
+
+        ``project_filter`` may be a single name or a comma-separated set, letting
+        a caller re-bump exactly N specific repos (e.g. repos a prior partial
+        run silently skipped) without re-bumping the whole ecosystem. When a
+        filter set is active, the bulk phase is restricted to its members.
+        """
+        if not project_filter:
+            return None
+        return {p.strip() for p in project_filter.split(",") if p.strip()}
+
+    def _build_bump_phase_list(
+        self, *, config: dict, start_phase: int, filter_set: set[str] | None
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Expand the configured phases into the concrete bump plan.
+
+        A project claimed by an earlier phase is dropped from every later one --
+        otherwise a project named in an explicit phase (e.g. agent-utilities in
+        Phase 3) is ALSO swept into the Phase-5 bulk list and gets BUMPED TWICE.
+        (CONCEPT:RM-BUMP single-bump-per-project)
+        """
+        assigned_projects: set[str] = set()
+        phase_list: list[dict[str, Any]] = []
+        total_projects = 0
+
+        for phase in config.get("phases", []):
+            phase_num = phase.get("phase")
+            if phase_num < start_phase:
+                continue
+
+            projects = self._bump_phase_projects(phase, filter_set, assigned_projects)
+            projects = [p for p in projects if p not in assigned_projects]
+            assigned_projects.update(projects)
+            if not projects:
+                continue
+
+            phase_list.append(
+                {
+                    "phase_num": phase_num,
+                    "name": phase.get("name", f"Phase {phase_num}"),
+                    "projects": projects,
+                }
+            )
+            total_projects += len(projects)
+
+        return phase_list, total_projects
+
+    @staticmethod
+    def _parse_bumped_version(data: str) -> str:
+        """Pull the post-bump version out of a ``bump_version`` result payload."""
+        match = re.search(r"new_version=(.*)", data)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r"current_version=(.*)", data)
+        return match.group(1).strip() if match else "success"
+
+    def _bump_one_project(
+        self,
+        *,
+        project_name: str,
+        part: str,
+        dry_run: bool,
+        force: bool,
+        all_results: list[GitResult],
+    ) -> str | None:
+        """Bump one project's version.
+
+        Returns the new version string, ``"skipped"`` when the project had no
+        bump-worthy change, or ``None`` when it was unresolvable or the bump
+        failed. A declared project whose local clone is absent (stale registry
+        entry / never-cloned repo) must not crash the whole phased bump, so it
+        is skipped with a warning and the rest of the topology proceeds.
+        """
+        project_dir = self._project_path_for(project_name)
+        if not project_dir:
+            return None
+
+        if not os.path.isdir(project_dir):
+            logger.warning(
+                "Skipping bump for %s: project directory missing (%s)",
+                project_name,
+                project_dir,
+            )
+            return None
+
+        if not force and self._bump_skip_reason(project_dir):
+            logger.info("Skipping project version bump")
+            return "skipped"
+
+        result = self.bump_version(
+            part=part,
+            allow_dirty=True,
+            path=project_dir,
+            dry_run=dry_run,
+            force=force,
+            verbose=dry_run or not dry_run,
+        )
+        all_results.append(result)
+        if result.status != "success":
+            return None
+        return self._parse_bumped_version(result.data)
+
+    @staticmethod
+    def _dependency_update_result(
+        path: str, project_name: str, new_version: str, dep_file_name: str
+    ) -> GitResult:
+        """The success record for one propagated dependency-pin update."""
+        return GitResult(
+            status="success",
+            data=f"Updated {project_name} to {new_version} in {dep_file_name}",
+            metadata=GitMetadata(
+                command="update_dependency",
+                workspace=_project_label(path),
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    def _update_dependency_files(
+        self, *, path: str, project_name: str, new_version: str, dry_run: bool
+    ) -> list[GitResult]:
+        """Repin *project_name* in every dependency-declaring file under *path*.
+
+        Not just ``pyproject.toml``: ``requirements.txt`` commonly pins the same
+        package (often ``==``) and would otherwise go stale.
+        (CONCEPT:RM-BUMP cross-dependency propagation)
+        """
+        results: list[GitResult] = []
+        for dep_file_name in ("pyproject.toml", "requirements.txt"):
+            dep_file = Path(path) / dep_file_name
+            if not dep_file.exists():
+                continue
+            if not self.update_dependency(
+                str(dep_file), project_name, new_version, dry_run
+            ):
+                continue
+            results.append(
+                self._dependency_update_result(
+                    path, project_name, new_version, dep_file_name
+                )
+            )
+        return results
+
+    def _propagate_bump_to_dependents(
+        self,
+        *,
+        project_name: str,
+        new_version: str,
+        phase_num: int,
+        phase_of: Callable[[str], int],
+        dry_run: bool,
+        all_results: list[GitResult],
+    ) -> None:
+        """Repin the just-bumped project across every same-or-later-phase repo.
+
+        Earlier phases are skipped so a later bump cannot circle back and dirty
+        a phase that has already been released.
+        """
+        for path in self.project_map.values():
+            other_project_name = os.path.basename(path)
+            other_phase = phase_of(other_project_name)
+            if other_phase < phase_num:
+                logger.info(
+                    f"Skipping dependency update for {project_name} in {other_project_name} "
+                    f"to avoid circular updates of earlier phase (Phase {other_phase} < Phase {phase_num})"
+                )
+                continue
+            all_results.extend(
+                self._update_dependency_files(
+                    path=path,
+                    project_name=project_name,
+                    new_version=new_version,
+                    dry_run=dry_run,
+                )
+            )
+
+    @staticmethod
+    def _run_bump_phase(
+        *,
+        p_info: dict[str, Any],
+        tracker: "_PhaseProgress",
+        processed_projects: set[str],
+        bump_one: Callable[[str], str | None],
+        propagate: Callable[[str, str, int], None],
+    ) -> None:
+        """Bump every project in one phase, propagating each new version onward."""
+        phase_name = p_info["name"]
+        phase_num = p_info["phase_num"]
+        tracker.begin_phase(phase_name)
+
+        for project_name in p_info["projects"]:
+            # Defensive: never bump a project twice in one run (a later phase
+            # must not re-bump one an earlier phase already handled).
+            if project_name in processed_projects:
+                continue
+
+            tracker.begin_item(phase_name, project_name)
+            processed_projects.add(project_name)
+            logger.info(
+                f"Bumping version for project: {project_name} in {phase_name}..."
+            )
+            new_version = bump_one(project_name)
+            tracker.finish_item(
+                phase_name, project_name, "success" if new_version else "failed"
+            )
+
+            if new_version and re.match(r"^v?\d+\.\d+\.\d+", new_version):
+                propagate(project_name, new_version, phase_num)
+
+        tracker.end_phase(phase_name)
+
     def phased_bumpversion(
         self,
         part: str = "patch",
@@ -3721,331 +4592,71 @@ class Git:
             progress = self.progress
 
         all_results: list[GitResult] = []
-        if config is None:
-            config_model: MaintenanceConfig | None = None
-            if hasattr(self, "config") and self.config and self.config.maintenance:
-                config_model = self.config.maintenance
-            else:
-                yml_path = os.environ.get("WORKSPACE_YML") or "workspace.yml"
-                if not os.path.isabs(yml_path):
-                    yml_path = os.path.join(self.path, yml_path)
+        resolved = self._resolve_maintenance_config(config)
+        if resolved is None:
+            return []
+        config = resolved
 
-                if os.path.exists(yml_path):
-                    if self.load_projects_from_yaml(yml_path) and self.config:
-                        config_model = self.config.maintenance
-                    else:
-                        config_model = None
-                else:
-                    config_model = None
+        project_phases, bulk_phase_num = self._project_phase_index(config)
 
-            maintenance_cfg = None
-            if config_model:
-                maintenance_cfg = config_model.model_dump()
-            else:
-                logger.error("No maintenance configuration found.")
-                return []
-
-            config = maintenance_cfg
-
-        # Build a map of project_name -> phase_num for topological dependency check
-        project_phases: dict[str, int] = {}
-        bulk_phase_num = 5
-        if config:
-            for phase in config.get("phases", []):
-                p_num = phase.get("phase", 1)
-                if phase.get("bulk_bump"):
-                    bulk_phase_num = p_num
-                projects_in_phase = phase.get("projects", [])[:]
-                if phase.get("project"):
-                    projects_in_phase.append(phase.get("project"))
-                for p in projects_in_phase:
-                    project_phases[p] = p_num
-
-        def get_project_phase(proj_name: str) -> int:
+        def phase_of(proj_name: str) -> int:
             return project_phases.get(proj_name, bulk_phase_num)
 
+        tracker = _PhaseProgress(state=progress, noun="bump")
+
         if auto_start and not project_filter and not force:
-            detected = self._auto_start_phase(config)
+            detected = self._resolve_auto_start_phase(
+                config=config,
+                start_phase=start_phase,
+                tracker=tracker,
+                noun="bump",
+                lowest_label="lowest changed phase",
+            )
             if detected is None:
-                logger.info(
-                    "Phased bump: no repository changes detected; nothing to bump."
-                )
-                if progress is not None:
-                    progress["current_phase"] = "No changes — nothing to bump"
-                    progress["progress"] = 100
-                    progress["phases"] = {}
                 return all_results
-            if detected > start_phase:
-                logger.info(
-                    f"Phased bump: lowest changed phase is {detected}; "
-                    f"starting there (skipping phases {start_phase}–{detected - 1})."
-                )
-            start_phase = max(start_phase, detected)
+            start_phase = detected
 
         if allow_pre_commit:
-            projects_to_check: list[Any] | None = None
-            if config:
-                projects_to_check = []
-                has_bulk = False
-                for phase in config.get("phases", []):
-                    if phase.get("bulk_bump"):
-                        has_bulk = True
-                        break
-                    projects_to_check.extend(phase.get("projects", []))
-                    if phase.get("project"):
-                        projects_to_check.append(phase.get("project"))
-                if has_bulk:
-                    projects_to_check = None
+            all_results.extend(self._run_bump_pre_commit_stage(config))
 
-            pc_results = self.pre_commit_projects(
-                run=True, autoupdate=True, projects=projects_to_check
+        def bump_one(project_name: str) -> str | None:
+            return self._bump_one_project(
+                project_name=project_name,
+                part=part,
+                dry_run=dry_run,
+                force=force,
+                all_results=all_results,
             )
-            all_results.extend(pc_results)
 
-            dirs_to_commit = None
-            if projects_to_check is not None:
-                dirs_to_commit = []
-                for p_name in projects_to_check:
-                    for url, p_path in self.project_map.items():
-                        if url.endswith(f"/{p_name}.git") or url.endswith(f"/{p_name}"):
-                            dirs_to_commit.append(p_path)
-                            break
-            else:
-                dirs_to_commit = list(self.project_map.values())
-
-            commit_res = self.commit_projects(
-                message="chore: pre-commit autoupdate and formatting",
-                project_dirs=dirs_to_commit,
+        def propagate(project_name: str, new_version: str, phase_num: int) -> None:
+            self._propagate_bump_to_dependents(
+                project_name=project_name,
+                new_version=new_version,
+                phase_num=phase_num,
+                phase_of=phase_of,
+                dry_run=dry_run,
+                all_results=all_results,
             )
-            all_results.extend(commit_res)
 
-        def run_step_bump(project_name, phase_num):
-            if start_phase <= phase_num:
-                project_dir = None
-                for url, p_path in self.project_map.items():
-                    if url.endswith(f"/{project_name}.git") or url.endswith(
-                        f"/{project_name}"
-                    ):
-                        project_dir = p_path
-                        break
-
-                if not project_dir:
-                    return None
-
-                # A declared project whose local clone is absent (stale registry
-                # entry / never-cloned repo) must not crash the whole phased bump.
-                # Skip it with a warning so the rest of the topology proceeds.
-                if not os.path.isdir(project_dir):
-                    logger.warning(
-                        "Skipping bump for %s: project directory missing (%s)",
-                        project_name,
-                        project_dir,
-                    )
-                    return None
-
-                if not force:
-                    skip_reason = self._bump_skip_reason(project_dir)
-                    if skip_reason:
-                        logger.info("Skipping project version bump")
-                        return "skipped"
-
-                result = self.bump_version(
-                    part=part,
-                    allow_dirty=True,
-                    path=project_dir,
-                    dry_run=dry_run,
-                    force=force,
-                    verbose=dry_run or not dry_run,
-                )
-                all_results.append(result)
-
-                if result.status == "success":
-                    match = re.search(r"new_version=(.*)", result.data)
-                    if match:
-                        return match.group(1).strip()
-
-                    match = re.search(r"current_version=(.*)", result.data)
-                    return match.group(1).strip() if match else "success"
-                return None
-            return None
-
-        # Pre-expand phases & projects for progress tracking
-        processed_projects: set[str] = set()
-        # Projects already claimed by an EARLIER phase during pre-expansion. The
-        # bulk phase must dedupe against THIS (not ``processed_projects``, which
-        # is empty here and only populated later in the run loop) — otherwise a
-        # project named in an explicit phase (e.g. agent-utilities in Phase 3) is
-        # ALSO swept into the Phase-5 bulk list and gets BUMPED TWICE.
-        # (CONCEPT:RM-BUMP single-bump-per-project)
-        assigned_projects: set[str] = set()
-        phase_list = []
-        total_projects = 0
-
-        # ``project_filter`` may be a single name or a comma-separated set, letting
-        # a caller re-bump exactly N specific repos (e.g. repos a prior partial
-        # run silently skipped) without re-bumping the whole ecosystem. When a
-        # filter set is active, the bulk phase is restricted to its members.
-        filter_set: set[str] | None = (
-            {p.strip() for p in project_filter.split(",") if p.strip()}
-            if project_filter
-            else None
+        filter_set = self._parse_project_filter(project_filter)
+        phase_list, tracker.total = self._build_bump_phase_list(
+            config=config, start_phase=start_phase, filter_set=filter_set
+        )
+        tracker.initialize(
+            "Initializing Bumps", [(p["name"], p["projects"]) for p in phase_list]
         )
 
-        for phase in config.get("phases", []):
-            phase_num = phase.get("phase")
-            if phase_num < start_phase:
-                continue
-
-            projects = phase.get("projects", [])[:]
-            if phase.get("project"):
-                projects.append(phase.get("project"))
-
-            if filter_set is not None:
-                projects = [p for p in projects if p in filter_set]
-
-            # When a filter set is active, a bulk phase contributes exactly the
-            # not-yet-assigned filter members (so filtered agents/services land
-            # in the bulk phase). Without a filter, bulk sweeps everything.
-            if phase.get("bulk_bump") and filter_set is not None:
-                for name in filter_set:
-                    if name not in assigned_projects and name not in projects:
-                        projects.append(name)
-            elif phase.get("bulk_bump") and filter_set is None:
-                bulk_projects = []
-                for url, _ in self.project_map.items():
-                    name = url.split("/")[-1].replace(".git", "")
-                    if name not in assigned_projects and name not in projects:
-                        bulk_projects.append(name)
-                projects.extend(bulk_projects)
-
-            # Drop any project already claimed by an earlier phase, then record
-            # this phase's claims so later (bulk) phases can't re-bump them.
-            projects = [p for p in projects if p not in assigned_projects]
-            assigned_projects.update(projects)
-
-            if not projects:
-                continue
-
-            phase_name = phase.get("name", f"Phase {phase_num}")
-            phase_list.append(
-                {
-                    "phase_num": phase_num,
-                    "name": phase_name,
-                    "projects": projects,
-                }
-            )
-            total_projects += len(projects)
-
-        if progress is not None:
-            progress["current_phase"] = "Initializing Bumps"
-            progress["progress"] = 0
-            progress["phases"] = {}
-            for p_info in phase_list:
-                progress["phases"][p_info["name"]] = {
-                    "status": "pending",
-                    "total": len(p_info["projects"]),
-                    "processed": 0,
-                    "completed": 0,
-                    "success": 0,
-                    "failed": 0,
-                    "details": {proj: "pending" for proj in p_info["projects"]},
-                    "repos": {proj: "pending" for proj in p_info["projects"]},
-                }
-
-        processed_count = 0
+        processed_projects: set[str] = set()
         for p_info in phase_list:
-            phase_name = p_info["name"]
-            phase_num = p_info["phase_num"]
-            projects = p_info["projects"]
+            self._run_bump_phase(
+                p_info=p_info,
+                tracker=tracker,
+                processed_projects=processed_projects,
+                bump_one=bump_one,
+                propagate=propagate,
+            )
 
-            if progress is not None:
-                progress["current_phase"] = f"{phase_name} in progress"
-                progress["phases"][phase_name]["status"] = "running"
-
-            for project_name in projects:
-                # Defensive: never bump a project twice in one run (a later phase
-                # must not re-bump one an earlier phase already handled).
-                if project_name in processed_projects:
-                    continue
-
-                if progress is not None:
-                    progress["phases"][phase_name]["details"][project_name] = "running"
-                    progress["phases"][phase_name]["repos"][project_name] = "running"
-
-                processed_projects.add(project_name)
-                logger.info(
-                    f"Bumping version for project: {project_name} in {phase_name}..."
-                )
-                new_version = run_step_bump(project_name, phase_num)
-
-                status_str = "success" if new_version else "failed"
-
-                if progress is not None:
-                    progress["phases"][phase_name]["details"][project_name] = status_str
-                    progress["phases"][phase_name]["repos"][project_name] = status_str
-                    progress["phases"][phase_name]["processed"] += 1
-                    progress["phases"][phase_name]["completed"] += 1
-                    if status_str == "success":
-                        progress["phases"][phase_name]["success"] += 1
-                    else:
-                        progress["phases"][phase_name]["failed"] += 1
-
-                    processed_count += 1
-                    progress["progress"] = int((processed_count / total_projects) * 100)
-                    logger.info(
-                        f"[{processed_count}/{total_projects}] ({progress['progress']}%) "
-                        f"Completed bump for {project_name}: {status_str}"
-                    )
-
-                if new_version and re.match(r"^v?\d+\.\d+\.\d+", new_version):
-                    for _, path in self.project_map.items():
-                        other_project_name = os.path.basename(path)
-                        other_phase = get_project_phase(other_project_name)
-                        if other_phase < phase_num:
-                            logger.info(
-                                f"Skipping dependency update for {project_name} in {other_project_name} "
-                                f"to avoid circular updates of earlier phase (Phase {other_phase} < Phase {phase_num})"
-                            )
-                            continue
-
-                        # Propagate the bump to EVERY dependency-declaring file —
-                        # not just pyproject.toml. requirements.txt commonly pins
-                        # the same package (often ==) and would otherwise go stale.
-                        # (CONCEPT:RM-BUMP cross-dependency propagation)
-                        for dep_file_name in ("pyproject.toml", "requirements.txt"):
-                            dep_file = Path(path) / dep_file_name
-                            if not dep_file.exists():
-                                continue
-                            is_updated = self.update_dependency(
-                                str(dep_file), project_name, new_version, dry_run
-                            )
-                            if is_updated:
-                                all_results.append(
-                                    GitResult(
-                                        status="success",
-                                        data=(
-                                            f"Updated {project_name} to "
-                                            f"{new_version} in {dep_file_name}"
-                                        ),
-                                        metadata=GitMetadata(
-                                            command="update_dependency",
-                                            workspace=_project_label(path),
-                                            return_code=0,
-                                            timestamp=datetime.datetime.now(
-                                                datetime.UTC
-                                            ).isoformat()
-                                            + "Z",
-                                        ),
-                                    )
-                                )
-
-            if progress is not None:
-                progress["phases"][phase_name]["status"] = "completed"
-
-        if progress is not None:
-            progress["current_phase"] = "Bumps Completed"
-            progress["progress"] = 100
-
+        tracker.finish("Bumps Completed")
         return all_results
 
     maintain_projects = phased_bumpversion
@@ -4072,6 +4683,370 @@ class Git:
             base=base, stale_days=stale_days, prune_merged=prune
         )
 
+    def _maintenance_config_model(self) -> MaintenanceConfig | None:
+        """The ``maintenance`` section of the active workspace config, if any.
+
+        Prefers an already-loaded :attr:`config`; otherwise loads ``workspace.yml``
+        (``WORKSPACE_YML`` overrides the name, relative paths resolve against
+        :attr:`path`). Returns ``None`` when no maintenance config is reachable.
+        """
+        if hasattr(self, "config") and self.config and self.config.maintenance:
+            return self.config.maintenance
+
+        yml_path = os.environ.get("WORKSPACE_YML") or "workspace.yml"
+        if not os.path.isabs(yml_path):
+            yml_path = os.path.join(self.path, yml_path)
+        if not os.path.exists(yml_path):
+            return None
+        if self.load_projects_from_yaml(yml_path) and self.config:
+            return self.config.maintenance
+        return None
+
+    def _resolve_maintenance_config(self, config: dict | None) -> dict | None:
+        """Return *config* unchanged, or load the maintenance config in its place.
+
+        ``None`` means no maintenance configuration is reachable and the caller
+        must abort; the error is logged here so every phased workflow reports it
+        identically.
+        """
+        if config is not None:
+            return config
+        config_model = self._maintenance_config_model()
+        if config_model is None:
+            logger.error("No maintenance configuration found.")
+            return None
+        return config_model.model_dump()
+
+    def _resolve_auto_start_phase(
+        self,
+        *,
+        config: dict,
+        start_phase: int,
+        tracker: "_PhaseProgress",
+        noun: str,
+        lowest_label: str,
+    ) -> int | None:
+        """Advance *start_phase* to the lowest phase that still has pending work.
+
+        Never moves the start phase backwards. Returns ``None`` when nothing at
+        all is pending — in which case *tracker* has already been finalized and
+        the caller should return immediately.
+        """
+        detected = self._auto_start_phase(config)
+        if detected is None:
+            logger.info(
+                f"Phased {noun}: no repository changes detected; nothing to {noun}."
+            )
+            tracker.nothing_to_do(f"No changes — nothing to {noun}")
+            return None
+        if detected > start_phase:
+            logger.info(
+                f"Phased {noun}: {lowest_label} is {detected}; "
+                f"starting there (skipping phases {start_phase}–{detected - 1})."
+            )
+        return max(start_phase, detected)
+
+    def _project_path_for(self, project_name: str) -> str | None:
+        """Local clone path of *project_name* from the URL->path project map."""
+        for url, p_path in self.project_map.items():
+            if url.endswith(f"/{project_name}.git") or url.endswith(f"/{project_name}"):
+                return p_path
+        return None
+
+    def _bulk_push_targets(self, processed_projects: set[str]) -> list[tuple[str, str]]:
+        """Every mapped project not already claimed by an earlier phase."""
+        targets: list[tuple[str, str]] = []
+        for url, path in self.project_map.items():
+            name = url.split("/")[-1].replace(".git", "")
+            if name in processed_projects:
+                continue
+            targets.append((name, path))
+        return targets
+
+    def _named_push_targets(
+        self, projects: list[str], processed_projects: set[str]
+    ) -> list[tuple[str, str]]:
+        """Resolve an explicit ``projects:`` list to (name, path) pairs.
+
+        Claims every named project in *processed_projects* (even one with no
+        local clone) so a later bulk phase cannot re-push it.
+        """
+        targets: list[tuple[str, str]] = []
+        for project_name in projects:
+            processed_projects.add(project_name)
+            p_path = self._project_path_for(project_name)
+            if p_path is not None:
+                targets.append((project_name, p_path))
+        return targets
+
+    def _phase_push_targets(
+        self, phase: dict, project_filter: str | None, processed_projects: set[str]
+    ) -> list[tuple[str, str]]:
+        """The (name, path) pairs one configured phase would push."""
+        projects = phase.get("projects", [])[:]
+        if phase.get("project"):
+            projects.append(phase.get("project"))
+
+        if project_filter:
+            projects = [p for p in projects if p == project_filter]
+            if (
+                not projects
+                and phase.get("bulk_push")
+                and project_filter not in processed_projects
+            ):
+                projects = [project_filter]
+
+        if phase.get("bulk_push") and not project_filter:
+            return self._bulk_push_targets(processed_projects)
+        return self._named_push_targets(projects, processed_projects)
+
+    @staticmethod
+    def _apply_phase_excludes(
+        phase: dict, phase_num: Any, targets: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        """Drop targets matching the phase's declarative ``exclude`` patterns.
+
+        fnmatch patterns are checked against the project name for every phase
+        (not only ``bulk_push`` ones) so an operator can carve a specific repo
+        out of an explicit ``projects:`` list too.
+        """
+        exclude_patterns = phase.get("exclude") or []
+        if not exclude_patterns:
+            return targets
+        kept: list[tuple[str, str]] = []
+        for name, path in targets:
+            if any(fnmatch.fnmatch(name, pat) for pat in exclude_patterns):
+                logger.info(
+                    "Phase %s: excluding %s (matches an 'exclude' pattern)",
+                    phase_num,
+                    name,
+                )
+                continue
+            kept.append((name, path))
+        return kept
+
+    @staticmethod
+    def _drop_missing_clones(
+        targets: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        """Drop declared projects whose local clone is absent.
+
+        A stale registry entry / never-cloned repo must not surface as a false
+        push failure -- mirrors the same guard in the phased bump.
+        """
+        kept: list[tuple[str, str]] = []
+        for name, path in targets:
+            if not os.path.isdir(path):
+                logger.warning(
+                    "Skipping push for %s: project directory missing (%s)", name, path
+                )
+                continue
+            kept.append((name, path))
+        return kept
+
+    def _build_push_phase_list(
+        self, *, config: dict, start_phase: int, project_filter: str | None
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Expand the configured phases into the concrete push plan.
+
+        Returns the ordered phase records and the total number of projects
+        across them (used for the overall progress percentage).
+        """
+        processed_projects: set[str] = set()
+        phase_list: list[dict[str, Any]] = []
+        total_projects = 0
+
+        for phase in config.get("phases", []):
+            phase_num = phase.get("phase")
+            if phase_num < start_phase:
+                continue
+
+            targets = self._phase_push_targets(
+                phase, project_filter, processed_projects
+            )
+            targets = self._apply_phase_excludes(phase, phase_num, targets)
+            targets = self._drop_missing_clones(targets)
+            if not targets:
+                continue
+
+            phase_list.append(
+                {
+                    "phase_num": phase_num,
+                    "name": phase.get("name", f"Phase {phase_num}"),
+                    "projects_to_push": targets,
+                    "wait_minutes": float(phase.get("wait_minutes", 0)),
+                }
+            )
+            total_projects += len(targets)
+
+        return phase_list, total_projects
+
+    @staticmethod
+    def _collect_push_result(
+        future: "concurrent.futures.Future", all_results: list[GitResult]
+    ) -> tuple[str, bool]:
+        """Append one push future's outcome; return (status, pushed-anything)."""
+        try:
+            res = future.result()
+        except Exception as e:
+            all_results.append(
+                GitResult(
+                    status="error",
+                    data="",
+                    error=GitError(message=type(e).__name__, code=1),
+                )
+            )
+            return "failed", False
+
+        all_results.append(res)
+        if res.status != "success":
+            return "failed", False
+        return "success", "Everything up-to-date" not in res.data
+
+    def _execute_push_phase(
+        self,
+        *,
+        p_info: dict[str, Any],
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> bool:
+        """Push one phase's projects in parallel; return whether anything landed."""
+        phase_name = p_info["name"]
+        projects_to_push = p_info["projects_to_push"]
+
+        tracker.begin_phase(phase_name)
+        logger.info(
+            f"Starting {phase_name} push for {len(projects_to_push)} projects..."
+        )
+
+        phase_had_pushes = False
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            future_to_proj = {}
+            for proj_name, p_path in projects_to_push:
+                tracker.begin_item(phase_name, proj_name)
+                future = executor.submit(self.push_project, path=p_path)
+                future_to_proj[future] = proj_name
+
+            for future in concurrent.futures.as_completed(future_to_proj):
+                proj_name = future_to_proj[future]
+                status_str, pushed = self._collect_push_result(future, all_results)
+                phase_had_pushes = phase_had_pushes or pushed
+                tracker.finish_item(phase_name, proj_name, status_str)
+
+        tracker.end_phase(phase_name)
+        return phase_had_pushes
+
+    @staticmethod
+    def _report_barrier_timeout(
+        *,
+        outcome: Any,
+        p_info: dict[str, Any],
+        next_phase_name: str,
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> None:
+        """Log, record, and surface a timed-out downstream gate-readiness barrier."""
+        phase_name = p_info["name"]
+        unresolved = "; ".join(f"{f.repo_name} ({f.detail})" for f in outcome.failures)
+        logger.error(
+            "Phase %s gate-readiness barrier TIMED OUT after %.1fs "
+            "(%d attempt(s)) with %d downstream repo(s) still failing "
+            "their pre-push gate -- ABORTING the wave before %s (or "
+            "any later phase) starts: %s. Set %s=<reason> to override "
+            "(loud + audit-logged), or re-run once the failing repo(s) "
+            "pass their own gate.",
+            p_info["phase_num"],
+            outcome.waited_s,
+            outcome.attempts,
+            len(outcome.failures),
+            next_phase_name,
+            unresolved,
+            dependency_readiness.OVERRIDE_ENV_VAR,
+        )
+        tracker.note(f"ABORTED — downstream gate(s) unmet after {phase_name}")
+        all_results.append(
+            GitResult(
+                status="error",
+                data="",
+                error=GitError(
+                    message=(
+                        f"phased_push aborted after {phase_name}: "
+                        f"downstream gate-readiness barrier timed out "
+                        f"after {outcome.waited_s:.1f}s "
+                        f"({outcome.attempts} attempt(s)) still "
+                        f"failing: {unresolved}"
+                    ),
+                    code=1,
+                ),
+            )
+        )
+
+    def _settle_phase_barrier(
+        self,
+        *,
+        p_info: dict[str, Any],
+        phase_had_pushes: bool,
+        later_phases: list[dict[str, Any]],
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> bool:
+        """Hold the wave until downstream repos pass their own pre-push gate.
+
+        Returns ``False`` when the barrier timed out and ``phased_push`` must
+        abort before any later phase starts.
+        """
+        wait_minutes = p_info["wait_minutes"]
+        if wait_minutes <= 0:
+            return True
+
+        phase_name = p_info["name"]
+        phase_num = p_info["phase_num"]
+        if not phase_had_pushes:
+            logger.info(
+                f"Phase {phase_num} complete. Skipping the {wait_minutes}-minute "
+                "gate-readiness ceiling because 0 commits were pushed."
+            )
+            return True
+
+        tracker.note(
+            f"Running downstream pre-push gates after {phase_name} "
+            f"(retry ceiling {wait_minutes} min)"
+        )
+        outcome = self._await_phase_dependency_readiness(
+            phase_num=phase_num,
+            phase_name=phase_name,
+            projects_to_push=p_info["projects_to_push"],
+            later_phases=later_phases,
+            wait_minutes=wait_minutes,
+        )
+        if not outcome.ok:
+            self._report_barrier_timeout(
+                outcome=outcome,
+                p_info=p_info,
+                next_phase_name=(
+                    later_phases[0]["name"] if later_phases else "the next phase"
+                ),
+                tracker=tracker,
+                all_results=all_results,
+            )
+            return False
+
+        if outcome.targets_checked:
+            logger.info(
+                "Phase %s gate-readiness barrier satisfied after %.1fs "
+                "(%d attempt(s)) for %d downstream repo(s)%s — proceeding "
+                "immediately (retry ceiling was %s min).",
+                phase_num,
+                outcome.waited_s,
+                outcome.attempts,
+                len(outcome.targets_checked),
+                " (override used)" if outcome.overridden else "",
+                wait_minutes,
+            )
+        return True
+
     def phased_push(
         self,
         start_phase: int = 1,
@@ -4094,311 +5069,51 @@ class Git:
         Concept:
             CONCEPT:RM-PUSH
         """
-
         if progress is None:
             progress = self.progress
 
         all_results: list[GitResult] = []
-        if config is None:
-            config_model: MaintenanceConfig | None = None
-            if hasattr(self, "config") and self.config and self.config.maintenance:
-                config_model = self.config.maintenance
-            else:
-                yml_path = os.environ.get("WORKSPACE_YML") or "workspace.yml"
-                if not os.path.isabs(yml_path):
-                    yml_path = os.path.join(self.path, yml_path)
+        resolved = self._resolve_maintenance_config(config)
+        if resolved is None:
+            return []
+        config = resolved
 
-                if os.path.exists(yml_path):
-                    if self.load_projects_from_yaml(yml_path) and self.config:
-                        config_model = self.config.maintenance
-                    else:
-                        config_model = None
-                else:
-                    config_model = None
-
-            if config_model:
-                config = config_model.model_dump()
-            else:
-                logger.error("No maintenance configuration found.")
-                return []
+        tracker = _PhaseProgress(state=progress, noun="push")
 
         if auto_start and not project_filter:
-            detected = self._auto_start_phase(config)
-            if detected is None:
-                logger.info(
-                    "Phased push: no repository changes detected; nothing to push."
-                )
-                if progress is not None:
-                    progress["current_phase"] = "No changes — nothing to push"
-                    progress["progress"] = 100
-                    progress["phases"] = {}
-                return all_results
-            if detected > start_phase:
-                logger.info(
-                    f"Phased push: lowest unpushed phase is {detected}; "
-                    f"starting there (skipping phases {start_phase}–{detected - 1})."
-                )
-            start_phase = max(start_phase, detected)
-
-        processed_projects = set()
-        phase_list: list[dict[str, Any]] = []
-        total_projects = 0
-
-        for phase in config.get("phases", []):
-            phase_num = phase.get("phase")
-            if phase_num < start_phase:
-                continue
-
-            projects_to_push = []
-
-            projects = phase.get("projects", [])[:]
-            if phase.get("project"):
-                projects.append(phase.get("project"))
-
-            if project_filter:
-                projects = [p for p in projects if p == project_filter]
-                if not projects and phase.get("bulk_push"):
-                    if project_filter not in processed_projects:
-                        projects = [project_filter]
-
-            if phase.get("bulk_push") and not project_filter:
-                for url, path in self.project_map.items():
-                    name = url.split("/")[-1].replace(".git", "")
-                    if name in processed_projects:
-                        continue
-                    projects_to_push.append((name, path))
-            else:
-                for project_name in projects:
-                    processed_projects.add(project_name)
-                    for url, p_path in self.project_map.items():
-                        if url.endswith(f"/{project_name}.git") or url.endswith(
-                            f"/{project_name}"
-                        ):
-                            projects_to_push.append((project_name, p_path))
-                            break
-
-            # Wire the (previously unused) declarative `exclude` field: fnmatch
-            # patterns against the project name, checked for every phase (not
-            # only bulk_push) so an operator can carve a specific repo out of
-            # an explicit `projects:` list too.
-            exclude_patterns = phase.get("exclude") or []
-            if exclude_patterns:
-                excluded = [
-                    (n, p)
-                    for (n, p) in projects_to_push
-                    if any(fnmatch.fnmatch(n, pat) for pat in exclude_patterns)
-                ]
-                for n, _p in excluded:
-                    logger.info(
-                        "Phase %s: excluding %s (matches an 'exclude' pattern)",
-                        phase_num,
-                        n,
-                    )
-                projects_to_push = [
-                    (n, p)
-                    for (n, p) in projects_to_push
-                    if not any(fnmatch.fnmatch(n, pat) for pat in exclude_patterns)
-                ]
-
-            # Drop declared projects whose local clone is absent (stale registry
-            # entry / never-cloned repo) so they don't surface as false push
-            # failures — mirrors the same guard in the phased bump.
-            missing = [(n, p) for (n, p) in projects_to_push if not os.path.isdir(p)]
-            for n, p in missing:
-                logger.warning(
-                    "Skipping push for %s: project directory missing (%s)", n, p
-                )
-            projects_to_push = [
-                (n, p) for (n, p) in projects_to_push if os.path.isdir(p)
-            ]
-
-            if not projects_to_push:
-                continue
-
-            phase_name = phase.get("name", f"Phase {phase_num}")
-            phase_list.append(
-                {
-                    "phase_num": phase_num,
-                    "name": phase_name,
-                    "projects_to_push": projects_to_push,
-                    "wait_minutes": float(phase.get("wait_minutes", 0)),
-                }
+            detected = self._resolve_auto_start_phase(
+                config=config,
+                start_phase=start_phase,
+                tracker=tracker,
+                noun="push",
+                lowest_label="lowest unpushed phase",
             )
-            total_projects += len(projects_to_push)
+            if detected is None:
+                return all_results
+            start_phase = detected
 
-        if progress is not None:
-            progress["current_phase"] = "Initializing Pushes"
-            progress["progress"] = 0
-            progress["phases"] = {}
-            for p_info in phase_list:
-                progress["phases"][p_info["name"]] = {
-                    "status": "pending",
-                    "total": len(p_info["projects_to_push"]),
-                    "processed": 0,
-                    "completed": 0,
-                    "success": 0,
-                    "failed": 0,
-                    "details": {
-                        proj: "pending" for proj, _ in p_info["projects_to_push"]
-                    },
-                    "repos": {
-                        proj: "pending" for proj, _ in p_info["projects_to_push"]
-                    },
-                }
-
-        processed_count = 0
+        phase_list, tracker.total = self._build_push_phase_list(
+            config=config, start_phase=start_phase, project_filter=project_filter
+        )
+        tracker.initialize(
+            "Initializing Pushes",
+            [(p["name"], [n for n, _ in p["projects_to_push"]]) for p in phase_list],
+        )
 
         for phase_idx, p_info in enumerate(phase_list):
-            phase_name = p_info["name"]
-            phase_num = p_info["phase_num"]
-            projects_to_push = p_info["projects_to_push"]
-            wait_minutes = p_info["wait_minutes"]
-
-            if progress is not None:
-                progress["current_phase"] = f"{phase_name} in progress"
-                progress["phases"][phase_name]["status"] = "running"
-
-            logger.info(
-                f"Starting {phase_name} push for {len(projects_to_push)} projects..."
+            phase_had_pushes = self._execute_push_phase(
+                p_info=p_info, tracker=tracker, all_results=all_results
             )
+            if not self._settle_phase_barrier(
+                p_info=p_info,
+                phase_had_pushes=phase_had_pushes,
+                later_phases=phase_list[phase_idx + 1 :],
+                tracker=tracker,
+                all_results=all_results,
+            ):
+                return all_results
 
-            phase_had_pushes = False
-
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.threads
-            ) as executor:
-                future_to_proj = {}
-                for proj_name, p_path in projects_to_push:
-                    if progress is not None:
-                        progress["phases"][phase_name]["details"][proj_name] = "running"
-                        progress["phases"][phase_name]["repos"][proj_name] = "running"
-                    future = executor.submit(self.push_project, path=p_path)
-                    future_to_proj[future] = proj_name
-
-                for future in concurrent.futures.as_completed(future_to_proj):
-                    proj_name = future_to_proj[future]
-                    try:
-                        res = future.result()
-                        all_results.append(res)
-                        status_str = "success" if res.status == "success" else "failed"
-                        if (
-                            res.status == "success"
-                            and "Everything up-to-date" not in res.data
-                        ):
-                            phase_had_pushes = True
-                    except Exception as e:
-                        all_results.append(
-                            GitResult(
-                                status="error",
-                                data="",
-                                error=GitError(message=type(e).__name__, code=1),
-                            )
-                        )
-                        status_str = "failed"
-
-                    if progress is not None:
-                        progress["phases"][phase_name]["details"][proj_name] = (
-                            status_str
-                        )
-                        progress["phases"][phase_name]["repos"][proj_name] = status_str
-                        progress["phases"][phase_name]["processed"] += 1
-                        progress["phases"][phase_name]["completed"] += 1
-                        if status_str == "success":
-                            progress["phases"][phase_name]["success"] += 1
-                        else:
-                            progress["phases"][phase_name]["failed"] += 1
-
-                        processed_count += 1
-                        progress["progress"] = int(
-                            (processed_count / total_projects) * 100
-                        )
-                        logger.info(
-                            f"[{processed_count}/{total_projects}] ({progress['progress']}%) "
-                            f"Completed push for {proj_name}: {status_str}"
-                        )
-
-            if progress is not None:
-                progress["phases"][phase_name]["status"] = "completed"
-
-            if wait_minutes > 0:
-                if not phase_had_pushes:
-                    logger.info(
-                        f"Phase {phase_num} complete. Skipping the {wait_minutes}-minute "
-                        "gate-readiness ceiling because 0 commits were pushed."
-                    )
-                else:
-                    if progress is not None:
-                        progress["current_phase"] = (
-                            f"Running downstream pre-push gates after {phase_name} "
-                            f"(retry ceiling {wait_minutes} min)"
-                        )
-                    outcome = self._await_phase_dependency_readiness(
-                        phase_num=phase_num,
-                        phase_name=phase_name,
-                        projects_to_push=projects_to_push,
-                        later_phases=phase_list[phase_idx + 1 :],
-                        wait_minutes=wait_minutes,
-                    )
-                    if not outcome.ok:
-                        unresolved = "; ".join(
-                            f"{f.repo_name} ({f.detail})" for f in outcome.failures
-                        )
-                        logger.error(
-                            "Phase %s gate-readiness barrier TIMED OUT after %.1fs "
-                            "(%d attempt(s)) with %d downstream repo(s) still failing "
-                            "their pre-push gate -- ABORTING the wave before %s (or "
-                            "any later phase) starts: %s. Set %s=<reason> to override "
-                            "(loud + audit-logged), or re-run once the failing repo(s) "
-                            "pass their own gate.",
-                            phase_num,
-                            outcome.waited_s,
-                            outcome.attempts,
-                            len(outcome.failures),
-                            phase_list[phase_idx + 1]["name"]
-                            if phase_idx + 1 < len(phase_list)
-                            else "the next phase",
-                            unresolved,
-                            dependency_readiness.OVERRIDE_ENV_VAR,
-                        )
-                        if progress is not None:
-                            progress["current_phase"] = (
-                                f"ABORTED — downstream gate(s) unmet after {phase_name}"
-                            )
-                        all_results.append(
-                            GitResult(
-                                status="error",
-                                data="",
-                                error=GitError(
-                                    message=(
-                                        f"phased_push aborted after {phase_name}: "
-                                        f"downstream gate-readiness barrier timed out "
-                                        f"after {outcome.waited_s:.1f}s "
-                                        f"({outcome.attempts} attempt(s)) still "
-                                        f"failing: {unresolved}"
-                                    ),
-                                    code=1,
-                                ),
-                            )
-                        )
-                        return all_results
-                    if outcome.targets_checked:
-                        note = " (override used)" if outcome.overridden else ""
-                        logger.info(
-                            "Phase %s gate-readiness barrier satisfied after %.1fs "
-                            "(%d attempt(s)) for %d downstream repo(s)%s — proceeding "
-                            "immediately (retry ceiling was %s min).",
-                            phase_num,
-                            outcome.waited_s,
-                            outcome.attempts,
-                            len(outcome.targets_checked),
-                            note,
-                            wait_minutes,
-                        )
-
-        if progress is not None:
-            progress["current_phase"] = "Pushes Completed"
-            progress["progress"] = 100
-
+        tracker.finish("Pushes Completed")
         return all_results
 
     def _phase_published_packages(
@@ -4597,6 +5312,27 @@ class Git:
             )
             return False
 
+    @staticmethod
+    def _git_remote_url(repo_path: str) -> str | None:
+        """The configured ``origin`` URL of a repository, or ``None``."""
+        try:
+            git_path = shutil.which("git") or "git"
+            res = subprocess.run(
+                [git_path, "config", "--get", "remote.origin.url"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except Exception as exc:
+            logger.debug(
+                "Failed to get a remote URL: error_type=%s",
+                type(exc).__name__,
+            )
+        return None
+
     def discover_projects(self) -> dict[str, str]:
         """
         Scan self.path for immediate subdirectories containing a .git folder.
@@ -4610,34 +5346,12 @@ class Git:
         try:
             for item in os.listdir(expanded_path):
                 full_path = os.path.join(expanded_path, item)
-                if os.path.isdir(full_path) and os.path.exists(
+                if not os.path.isdir(full_path) or not os.path.exists(
                     os.path.join(full_path, ".git")
                 ):
-                    # Get remote URL
-                    remote_url = None
-                    try:
-                        import shutil
-
-                        git_path = shutil.which("git") or "git"
-                        res = subprocess.run(
-                            [git_path, "config", "--get", "remote.origin.url"],
-                            cwd=full_path,
-                            capture_output=True,
-                            text=True,
-                            check=False,
-                        )
-                        if res.returncode == 0 and res.stdout.strip():
-                            remote_url = res.stdout.strip()
-                    except Exception as exc:
-                        logger.debug(
-                            "Failed to get a remote URL: error_type=%s",
-                            type(exc).__name__,
-                        )
-
-                    if not remote_url:
-                        remote_url = f"local://{item}"
-
-                    self.project_map[remote_url] = os.path.abspath(full_path)
+                    continue
+                remote_url = self._git_remote_url(full_path) or f"local://{item}"
+                self.project_map[remote_url] = os.path.abspath(full_path)
 
             logger.info(
                 f"Auto-discovered {len(self.project_map)} git repositories in {expanded_path}"
@@ -4760,69 +5474,52 @@ class Git:
                 error=GitError(message="Failed to save workspace", code=1),
             )
 
+    @staticmethod
+    def _collect_consolidated_skills(
+        paths: list[str],
+        package: str,
+        subdir: str,
+        wanted: tuple[str, ...],
+        fallback: Callable[[], list[str]],
+    ) -> None:
+        """Append the wanted skills packaged under ``<package>/<subdir>``.
+
+        The packaged-resource lookup is preferred; if it fails the caller's own
+        path resolver is filtered by basename instead.
+        """
+        try:
+            base = files(package) / subdir
+            for name in wanted:
+                skill_path = base / name
+                if skill_path.joinpath("SKILL.md").is_file():
+                    paths.append(str(skill_path))
+        except Exception as e:
+            logger.warning("Operation failed: error_type=%s", type(e).__name__)
+            paths.extend(p for p in fallback() if os.path.basename(p) in wanted)
+
     def get_consolidated_skill_paths(self) -> list[str]:
         """
         Returns absolute paths to the 15 specific building and documentation skills.
         """
-        required_universal = [
-            "agent-package-builder",
-            "mcp-builder",
-            "agent-builder",
-            "skill-builder",
-            "skill-graph-builder",
-            "api-wrapper-builder",
-            "web-search",
-            "web-crawler",
-        ]
-        required_graphs = [
-            "docker-docs",
-            "fastapi-docs",
-            "fastmcp-docs",
-            "nodejs-docs",
-            "vercel-docs",
-            "python-docs",
-            "pydantic-ai-docs",
-        ]
-
-        paths = []
+        paths: list[str] = []
 
         if get_universal_skills_path:
-            try:
-                from importlib.resources import files
-
-                base = files("universal_skills") / "skills"
-                for skill in required_universal:
-                    skill_path = base / skill
-                    if skill_path.joinpath("SKILL.md").is_file():
-                        paths.append(str(skill_path))
-            except Exception as e:
-                logger.warning("Operation failed: error_type=%s", type(e).__name__)
-
-                all_universal = get_universal_skills_path()
-                paths.extend(
-                    [
-                        p
-                        for p in all_universal
-                        if os.path.basename(p) in required_universal
-                    ]
-                )
+            self._collect_consolidated_skills(
+                paths,
+                "universal_skills",
+                "skills",
+                _CONSOLIDATED_UNIVERSAL_SKILLS,
+                get_universal_skills_path,
+            )
 
         if get_skill_graphs_path:
-            try:
-                from importlib.resources import files
-
-                base = files("skill_graphs") / "skill_graphs"
-                for graph in required_graphs:
-                    graph_path = base / graph
-                    if graph_path.joinpath("SKILL.md").is_file():
-                        paths.append(str(graph_path))
-            except Exception as e:
-                logger.warning("Operation failed: error_type=%s", type(e).__name__)
-
-                all_graphs = get_skill_graphs_path(default_enabled=True)
-                paths.extend(
-                    [p for p in all_graphs if os.path.basename(p) in required_graphs]
-                )
+            self._collect_consolidated_skills(
+                paths,
+                "skill_graphs",
+                "skill_graphs",
+                _CONSOLIDATED_SKILL_GRAPHS,
+                lambda: get_skill_graphs_path(default_enabled=True),
+            )
 
         return list(set(paths))
 
