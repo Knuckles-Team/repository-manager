@@ -2757,91 +2757,105 @@ def _snapshot_graph(graph: DependencyGraph) -> DependencyGraph:
         ) from None
 
 
+def _closure_project_edge_pairs(
+    selection: SelectedChangeClosure,
+) -> tuple[tuple[str, str], ...]:
+    """Canonicalize the endpoint pairs of the closure project edges."""
+
+    raw_project_edges = _exact_nested_tuple(
+        selection.project_edges, "closure project edges", max_items=MAX_EDGES
+    )
+    project_edges: list[tuple[str, str]] = []
+    for pair in raw_project_edges:
+        if (
+            type(pair) not in (tuple, list)
+            or len(cast(tuple[object, ...] | list[object], pair)) != 2
+        ):
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT, "closure project edge is invalid"
+            )
+        project_edges.append(
+            (
+                _canonical_repository_exact(
+                    cast(tuple[object, ...] | list[object], pair)[0],
+                    "closure project edge endpoint",
+                ),
+                _canonical_repository_exact(
+                    cast(tuple[object, ...] | list[object], pair)[1],
+                    "closure project edge endpoint",
+                ),
+            )
+        )
+    return tuple(project_edges)
+
+
+def _snapshot_selection_unchecked(
+    selection: SelectedChangeClosure,
+) -> SelectedChangeClosure:
+    """Rebuild a selected closure from its own evidence and check its digest."""
+
+    if type(selection) is not SelectedChangeClosure:
+        raise _fail(ReleasePlanCode.SELECTION_DRIFT, "selection is not a C-11 record")
+    source = _snapshot_graph(selection.source_graph)
+    policy = _strict_selection_policy(selection.policy)
+    known = _canonical_project_ids(
+        selection.known_project_ids, "known project IDs", allow_empty=False
+    )
+    selected = _canonical_project_ids(
+        selection.selected_project_ids, "selected project IDs", allow_empty=False
+    )
+    projects = tuple(
+        _revalidate_project(cast(ProjectRecord, item))
+        for item in _exact_nested_tuple(
+            selection.projects, "closure projects", max_items=MAX_PROJECTS
+        )
+    )
+    edges = tuple(
+        _revalidate_edge(cast(DependencyEdge, item))
+        for item in _exact_nested_tuple(
+            selection.edges, "closure edges", max_items=MAX_EDGES
+        )
+    )
+    project_edges = _closure_project_edge_pairs(selection)
+    raw_groups = _exact_nested_tuple(
+        selection.parallel_groups, "closure parallel groups", max_items=MAX_PROJECTS
+    )
+    groups = tuple(
+        _canonical_project_ids(group, "closure parallel group") for group in raw_groups
+    )
+    raw_explanations = _exact_nested_tuple(
+        selection.explanations, "closure explanations", max_items=MAX_PROJECTS
+    )
+    explanations = tuple(
+        _strict_selection_explanation(cast(SelectionExplanation, item))
+        for item in raw_explanations
+    )
+    digest = _strict_digest(selection.digest, "selection digest")
+    candidate = SelectedChangeClosure(
+        policy=policy,
+        known_project_ids=known,
+        selected_project_ids=selected,
+        projects=projects,
+        edges=edges,
+        project_edges=project_edges,
+        parallel_groups=groups,
+        explanations=explanations,
+        source_graph=source,
+        digest=digest,
+    )
+    if candidate.digest != digest:
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT,
+            "selection digest does not match contents",
+        )
+    return candidate
+
+
 def _snapshot_selection(selection: SelectedChangeClosure) -> SelectedChangeClosure:
     """Copy a selected closure without walking lazy/hostile containers."""
 
     try:
-        if type(selection) is not SelectedChangeClosure:
-            raise _fail(
-                ReleasePlanCode.SELECTION_DRIFT, "selection is not a C-11 record"
-            )
-        source = _snapshot_graph(selection.source_graph)
-        policy = _strict_selection_policy(selection.policy)
-        known = _canonical_project_ids(
-            selection.known_project_ids, "known project IDs", allow_empty=False
-        )
-        selected = _canonical_project_ids(
-            selection.selected_project_ids, "selected project IDs", allow_empty=False
-        )
-        projects = tuple(
-            _revalidate_project(cast(ProjectRecord, item))
-            for item in _exact_nested_tuple(
-                selection.projects, "closure projects", max_items=MAX_PROJECTS
-            )
-        )
-        edges = tuple(
-            _revalidate_edge(cast(DependencyEdge, item))
-            for item in _exact_nested_tuple(
-                selection.edges, "closure edges", max_items=MAX_EDGES
-            )
-        )
-        raw_project_edges = _exact_nested_tuple(
-            selection.project_edges, "closure project edges", max_items=MAX_EDGES
-        )
-        project_edges: list[tuple[str, str]] = []
-        for pair in raw_project_edges:
-            if (
-                type(pair) not in (tuple, list)
-                or len(cast(tuple[object, ...] | list[object], pair)) != 2
-            ):
-                raise _fail(
-                    ReleasePlanCode.SELECTION_DRIFT, "closure project edge is invalid"
-                )
-            project_edges.append(
-                (
-                    _canonical_repository_exact(
-                        cast(tuple[object, ...] | list[object], pair)[0],
-                        "closure project edge endpoint",
-                    ),
-                    _canonical_repository_exact(
-                        cast(tuple[object, ...] | list[object], pair)[1],
-                        "closure project edge endpoint",
-                    ),
-                )
-            )
-        raw_groups = _exact_nested_tuple(
-            selection.parallel_groups, "closure parallel groups", max_items=MAX_PROJECTS
-        )
-        groups = tuple(
-            _canonical_project_ids(group, "closure parallel group")
-            for group in raw_groups
-        )
-        raw_explanations = _exact_nested_tuple(
-            selection.explanations, "closure explanations", max_items=MAX_PROJECTS
-        )
-        explanations = [
-            _strict_selection_explanation(cast(SelectionExplanation, item))
-            for item in raw_explanations
-        ]
-        digest = _strict_digest(selection.digest, "selection digest")
-        candidate = SelectedChangeClosure(
-            policy=policy,
-            known_project_ids=known,
-            selected_project_ids=selected,
-            projects=projects,
-            edges=edges,
-            project_edges=tuple(project_edges),
-            parallel_groups=groups,
-            explanations=tuple(explanations),
-            source_graph=source,
-            digest=digest,
-        )
-        if candidate.digest != digest:
-            raise _fail(
-                ReleasePlanCode.SELECTION_DRIFT,
-                "selection digest does not match contents",
-            )
-        return candidate
+        return _snapshot_selection_unchecked(selection)
     except ReleasePlanError:
         raise
     except _UNTRUSTED_DATA_ERRORS:
@@ -2850,97 +2864,126 @@ def _snapshot_selection(selection: SelectedChangeClosure) -> SelectedChangeClosu
         ) from None
 
 
+def _revalidate_next_versions(
+    version_plan: VersionPlan,
+) -> tuple[tuple[str, Version], ...]:
+    """Re-materialize the (package identity, next version) pairs of a plan."""
+
+    raw_next = _exact_nested_tuple(
+        version_plan.next_versions,
+        "version plan next versions",
+        max_items=MAX_PACKAGES,
+    )
+    next_versions: list[tuple[str, Version]] = []
+    for pair in raw_next:
+        if (
+            type(pair) not in (tuple, list)
+            or len(cast(tuple[object, ...] | list[object], pair)) != 2
+        ):
+            raise _fail(
+                ReleasePlanCode.VERSION_PLAN_DRIFT,
+                "version plan next version pair is invalid",
+            )
+        pair_values = cast(tuple[object, ...] | list[object], pair)
+        next_versions.append(
+            (
+                _strict_text(pair_values[0], "version plan package identity"),
+                _revalidate_version(pair_values[1], "version plan next version"),
+            )
+        )
+    return tuple(next_versions)
+
+
+def _revalidate_package_batches(
+    version_plan: VersionPlan,
+) -> tuple[tuple[str, ...], ...]:
+    """Re-materialize the bounded package batches of a version plan."""
+
+    raw_batches = _exact_nested_tuple(
+        version_plan.package_batches,
+        "version plan package batches",
+        max_items=MAX_PACKAGES,
+    )
+    return tuple(
+        tuple(
+            _strict_text(item, "version plan package identity")
+            for item in _exact_nested_tuple(
+                batch, "version plan package batch", max_items=MAX_PACKAGES
+            )
+        )
+        for batch in raw_batches
+    )
+
+
+def _revalidate_version_plan_previews(
+    version_plan: VersionPlan,
+) -> tuple[tuple[VersionPreview, ...], tuple[FloorPreview, ...]]:
+    """Re-materialize the version and floor preview tuples of a plan."""
+
+    raw_versions = _exact_nested_tuple(
+        version_plan.version_previews,
+        "version plan version previews",
+        max_items=MAX_PACKAGES,
+    )
+    raw_floors = _exact_nested_tuple(
+        version_plan.floor_previews,
+        "version plan floor previews",
+        max_items=MAX_EDGES,
+    )
+    versions = tuple(
+        _revalidate_version_preview(cast(VersionPreview, item)) for item in raw_versions
+    )
+    floors = tuple(
+        _revalidate_floor_preview(cast(FloorPreview, item)) for item in raw_floors
+    )
+    return versions, floors
+
+
+def _revalidate_version_plan_unchecked(version_plan: VersionPlan) -> VersionPlan:
+    """Rebuild a version plan from its own evidence and prove it is canonical."""
+
+    if type(version_plan) is not VersionPlan:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "version plan is not a C-11 record"
+        )
+    graph_digest = _strict_digest(
+        version_plan.graph_digest, "version plan graph digest"
+    )
+    selection_digest = _strict_digest(
+        version_plan.selection_digest, "version plan selection digest"
+    )
+    plan_digest = _strict_digest(version_plan.plan_digest, "version plan digest")
+    next_versions = _revalidate_next_versions(version_plan)
+    package_batches = _revalidate_package_batches(version_plan)
+    versions, floors = _revalidate_version_plan_previews(version_plan)
+    candidate = VersionPlan(
+        graph_digest=graph_digest,
+        selection_digest=selection_digest,
+        next_versions=next_versions,
+        package_batches=package_batches,
+        version_previews=versions,
+        floor_previews=floors,
+        plan_digest=plan_digest,
+    )
+    if (
+        candidate.next_versions != next_versions
+        or candidate.package_batches != package_batches
+        or candidate.version_previews != versions
+        or candidate.floor_previews != floors
+        or candidate.plan_digest != plan_digest
+    ):
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT,
+            "version plan evidence is not canonical",
+        )
+    return candidate
+
+
 def _revalidate_version_plan(version_plan: VersionPlan) -> VersionPlan:
     """Reconstruct CP3 evidence instead of trusting a forged dataclass shell."""
 
     try:
-        if type(version_plan) is not VersionPlan:
-            raise _fail(
-                ReleasePlanCode.VERSION_PLAN_DRIFT, "version plan is not a C-11 record"
-            )
-        graph_digest = _strict_digest(
-            version_plan.graph_digest, "version plan graph digest"
-        )
-        selection_digest = _strict_digest(
-            version_plan.selection_digest, "version plan selection digest"
-        )
-        plan_digest = _strict_digest(version_plan.plan_digest, "version plan digest")
-        raw_next = _exact_nested_tuple(
-            version_plan.next_versions,
-            "version plan next versions",
-            max_items=MAX_PACKAGES,
-        )
-        next_versions: list[tuple[str, Version]] = []
-        for pair in raw_next:
-            if (
-                type(pair) not in (tuple, list)
-                or len(cast(tuple[object, ...] | list[object], pair)) != 2
-            ):
-                raise _fail(
-                    ReleasePlanCode.VERSION_PLAN_DRIFT,
-                    "version plan next version pair is invalid",
-                )
-            pair_values = cast(tuple[object, ...] | list[object], pair)
-            next_versions.append(
-                (
-                    _strict_text(pair_values[0], "version plan package identity"),
-                    _revalidate_version(pair_values[1], "version plan next version"),
-                )
-            )
-        raw_batches = _exact_nested_tuple(
-            version_plan.package_batches,
-            "version plan package batches",
-            max_items=MAX_PACKAGES,
-        )
-        package_batches: list[tuple[str, ...]] = []
-        for batch in raw_batches:
-            raw_batch = _exact_nested_tuple(
-                batch, "version plan package batch", max_items=MAX_PACKAGES
-            )
-            package_batches.append(
-                tuple(
-                    _strict_text(item, "version plan package identity")
-                    for item in raw_batch
-                )
-            )
-        raw_versions = _exact_nested_tuple(
-            version_plan.version_previews,
-            "version plan version previews",
-            max_items=MAX_PACKAGES,
-        )
-        raw_floors = _exact_nested_tuple(
-            version_plan.floor_previews,
-            "version plan floor previews",
-            max_items=MAX_EDGES,
-        )
-        versions = tuple(
-            _revalidate_version_preview(cast(VersionPreview, item))
-            for item in raw_versions
-        )
-        floors = tuple(
-            _revalidate_floor_preview(cast(FloorPreview, item)) for item in raw_floors
-        )
-        candidate = VersionPlan(
-            graph_digest=graph_digest,
-            selection_digest=selection_digest,
-            next_versions=tuple(next_versions),
-            package_batches=tuple(package_batches),
-            version_previews=versions,
-            floor_previews=floors,
-            plan_digest=plan_digest,
-        )
-        if (
-            candidate.next_versions != tuple(next_versions)
-            or candidate.package_batches != tuple(package_batches)
-            or candidate.version_previews != versions
-            or candidate.floor_previews != floors
-            or candidate.plan_digest != plan_digest
-        ):
-            raise _fail(
-                ReleasePlanCode.VERSION_PLAN_DRIFT,
-                "version plan evidence is not canonical",
-            )
-        return candidate
+        return _revalidate_version_plan_unchecked(version_plan)
     except ReleasePlanError:
         raise
     except VersionPlanningError:
