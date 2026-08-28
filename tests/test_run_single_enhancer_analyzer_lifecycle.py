@@ -1,4 +1,4 @@
-"""Characterization tests for run_single_enhancer.py::run_enhancer (wD10-C-MISC).
+"""Characterization tests for run_single_enhancer.py::run_enhancer.
 
 run_enhancer() dynamically loads a fixed roster of analyzer scripts (plus a
 report generator and an SDD-handoff generator) from

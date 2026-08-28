@@ -1,4 +1,4 @@
-"""Characterization tests for check_gate_toolchain_coverage.py (wD10-C-MISC).
+"""Characterization tests for check_gate_toolchain_coverage.py.
 
 This is a security/gate scanner (SPECIAL CASE in the wave's PREAMBLE): a
 `language: system` pre-commit hook or mergequeue gate that invokes a binary

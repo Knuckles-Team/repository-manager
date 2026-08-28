@@ -1,4 +1,4 @@
-"""Characterization tests for security_contract.py (wD10-C-MISC).
+"""Characterization tests for security_contract.py.
 
 security_contract.py is a security gate (bounded SPDX license-policy
 validation + sandboxed hook execution). Per the wave's SPECIAL CASE rule for

@@ -1,4 +1,4 @@
-"""Characterization tests for check_import_safety.py internals (wD10-C-MISC).
+"""Characterization tests for check_import_safety.py internals.
 
 Pins the branch outputs of ``_windows_condition``, ``_windows_platform_value``,
 and the ``_WindowsImportVisitor._visit`` dispatch before an extract-method

@@ -1,4 +1,4 @@
-"""Characterization tests for check_workspace_docs.py::check_repository (wD10-C-MISC).
+"""Characterization tests for check_workspace_docs.py::check_repository.
 
 check_workspace_docs.py is a documentation/privacy gate (SPECIAL CASE in the
 wave's PREAMBLE): it must catch a missing required doc file, a README missing

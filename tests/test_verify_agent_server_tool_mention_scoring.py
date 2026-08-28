@@ -1,4 +1,4 @@
-"""Characterization tests for verify_agent_server.py::compare_tool_results (wD10-C-MISC).
+"""Characterization tests for verify_agent_server.py::compare_tool_results.
 
 verify_agent_server.py is a smoke-test/validation gate (SPECIAL CASE in the
 wave's PREAMBLE) that fails validation if the agent's chat response omits

@@ -1,5 +1,4 @@
-"""Characterization tests for test_agent_integration.py's SSE stream parsing
-(wD10-C-MISC).
+"""Characterization tests for test_agent_integration.py's SSE stream parsing.
 
 test_get_workspace_projects_via_graph (18/38) requires a live
 repository-manager agent server plus a reachable LLM backend to actually
