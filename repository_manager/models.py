@@ -741,6 +741,44 @@ def _clean_and_truncate_error_lines(
     return formatted
 
 
+_EXCEPTION_LINE_RE = re.compile(
+    r"^(?:[a-zA-Z_]\w*Error|Exception|ImportError|SyntaxError):\s+.+$"
+)
+
+
+def _first_matching_line(
+    lines: list[str], predicate: Callable[[str], bool]
+) -> str | None:
+    """Search ``lines`` bottom-up for the first one matching ``predicate``."""
+    for line in reversed(lines):
+        if predicate(line):
+            return line
+    return None
+
+
+def _is_error_tagged_line(line: str) -> bool:
+    return line.startswith("ERROR:") or "error:" in line.lower()
+
+
+def _is_failed_tagged_line(line: str) -> bool:
+    return "failed:" in line.lower() or "failed" in line.lower()
+
+
+def _extracted_error_fallback_line(content: str, command: str | None) -> str | None:
+    """Return the first actionable line from `_extract_error_lines`, if any."""
+    is_pytest = bool(command and "pytest" in command.lower())
+    extracted = _extract_error_lines(content, is_pytest=is_pytest)
+    if not extracted:
+        return None
+    # Filter out headers and keep the first real line of error details
+    for line in extracted:
+        stripped_line = line.strip()
+        if not (stripped_line.startswith("- **") or stripped_line.startswith("##")):
+            return stripped_line
+    # Fallback to the first extracted line
+    return extracted[0].strip()
+
+
 def _get_single_error_line(
     output: str | None,
     message: str | None = None,
@@ -758,45 +796,64 @@ def _get_single_error_line(
 
     lines = [line.strip() for line in content.split("\n") if line.strip()]
 
-    # Bottom-up search for Python exception or error
-    exception_pattern = re.compile(
-        r"^(?:[a-zA-Z_]\w*Error|Exception|ImportError|SyntaxError):\s+.+$"
+    strategies: tuple[Callable[[], str | None], ...] = (
+        lambda: _first_matching_line(lines, _EXCEPTION_LINE_RE.match),
+        lambda: _first_matching_line(lines, _is_error_tagged_line),
+        lambda: _first_matching_line(lines, _is_failed_tagged_line),
+        lambda: _extracted_error_fallback_line(content, command),
     )
-    for line in reversed(lines):
-        if exception_pattern.match(line):
-            return line
-
-    # Look for ERROR: or ERROR tags
-    for line in reversed(lines):
-        if line.startswith("ERROR:") or "error:" in line.lower():
-            return line
-
-    # Look for failed / failed: tags
-    for line in reversed(lines):
-        if "failed:" in line.lower() or "failed" in line.lower():
-            return line
-
-    # Use first error line found by _extract_error_lines if available
-    is_pytest = False
-    if command:
-        cmd_str = command.lower()
-        if "pytest" in cmd_str:
-            is_pytest = True
-    extracted = _extract_error_lines(content, is_pytest=is_pytest)
-    if extracted:
-        # Filter out headers and keep the first real line of error details
-        for line in extracted:
-            stripped_line = line.strip()
-            if not (stripped_line.startswith("- **") or stripped_line.startswith("##")):
-                return stripped_line
-        # Fallback to the first extracted line
-        return extracted[0].strip()
+    for strategy in strategies:
+        found = strategy()
+        if found:
+            return found
 
     # Fallback to the very last line, or first line
     if lines:
         return lines[-1]
 
     return "Unknown error occurred."
+
+
+def _filter_categories_for_project_summary(
+    project: str,
+    categories: list["ValidationCategory"],
+    allowed_categories: tuple[str, ...],
+) -> tuple[list["ValidationCategory"], int, int, int, int]:
+    """Filter ``categories`` to one project's allowed-category results, with totals."""
+    filtered_cats: list[ValidationCategory] = []
+    total = success_count = failure_count = skipped_count = 0
+    for cat in categories:
+        if cat.name not in allowed_categories:
+            continue
+        filtered = cat.for_project(project)
+        if filtered.total == 0:
+            continue
+        filtered_cats.append(filtered)
+        total += filtered.total
+        success_count += filtered.success_count
+        failure_count += filtered.failure_count
+        skipped_count += filtered.skipped_count
+    return filtered_cats, total, success_count, failure_count, skipped_count
+
+
+def _render_project_summary_failures(
+    filtered_cats: list["ValidationCategory"],
+) -> list[str]:
+    """Render the '## ❌ Failures' body for a project summary, one line per failure."""
+    md: list[str] = []
+    for cat in filtered_cats:
+        if cat.failure_count == 0:
+            continue
+        md.append(f"### {cat.name}")
+        for failure in cat.failures:
+            error_line = _get_single_error_line(
+                output=failure.output,
+                message=failure.message,
+                command=failure.command,
+            )
+            md.append(f"- ❌ **Error:** `{error_line}`")
+        md.append("")
+    return md
 
 
 def _build_project_summary_md(
@@ -811,21 +868,9 @@ def _build_project_summary_md(
     """
     allowed_categories = ("Ecosystem Installation", "Pre-commit Standard Compliance")
 
-    filtered_cats = []
-    total = 0
-    success_count = 0
-    failure_count = 0
-    skipped_count = 0
-
-    for cat in categories:
-        if cat.name in allowed_categories:
-            filtered = cat.for_project(project)
-            if filtered.total > 0:
-                filtered_cats.append(filtered)
-                total += filtered.total
-                success_count += filtered.success_count
-                failure_count += filtered.failure_count
-                skipped_count += filtered.skipped_count
+    filtered_cats, total, success_count, failure_count, skipped_count = (
+        _filter_categories_for_project_summary(project, categories, allowed_categories)
+    )
 
     md = [
         f"# 📋 {project} Validation Summary",
@@ -838,22 +883,131 @@ def _build_project_summary_md(
     if failure_count > 0:
         md.append("## ❌ Failures")
         md.append("")
-        for cat in filtered_cats:
-            if cat.failure_count > 0:
-                md.append(f"### {cat.name}")
-                for failure in cat.failures:
-                    error_line = _get_single_error_line(
-                        output=failure.output,
-                        message=failure.message,
-                        command=failure.command,
-                    )
-                    md.append(f"- ❌ **Error:** `{error_line}`")
-                md.append("")
+        md.extend(_render_project_summary_failures(filtered_cats))
     else:
         md.append("🎉 All checks passed successfully!")
         md.append("")
 
     return md
+
+
+def _is_pytest_failure_result(failure: "ProjectResult", cat_name: str) -> bool:
+    cmd_str = (failure.command or "").lower()
+    return "pytest" in cmd_str or cat_name == "Pytest Suite"
+
+
+def _render_message_only_failure(failure: "ProjectResult") -> tuple[list[str], int]:
+    """Render one failure's raw message when structured error lines are absent."""
+    # No structured output — just show the message, but truncated cleanly if it is multiline
+    msg_lines = (failure.message or "").strip().split("\n")
+    lines = [f"- {msg_lines[0]}"]
+    if len(msg_lines) > 15:
+        lines.extend(f"  {mline}" for mline in msg_lines[1:15])
+        lines.append(f"  > ℹ️ ... and {len(msg_lines) - 15} more lines of output.")
+    else:
+        lines.extend(f"  {mline}" for mline in msg_lines[1:])
+    return lines, min(len(msg_lines), 16)
+
+
+def _render_extracted_error_lines(
+    error_lines: list[str],
+    *,
+    cat_name: str,
+    repo_dir: str,
+    repo_line_count: int,
+    max_lines_per_repo: int,
+) -> tuple[list[str], int, bool]:
+    """Clean/truncate structured error lines to the per-repository line budget."""
+    # Add error lines with per-hook truncation and overall repository limit
+    cleaned_lines = _clean_and_truncate_error_lines(error_lines, max_lines_per_block=15)
+    remaining = max_lines_per_repo - repo_line_count
+    truncated = len(cleaned_lines) > remaining
+    if truncated:
+        cleaned_lines = cleaned_lines[:remaining]
+
+    lines = list(cleaned_lines)
+    if truncated:
+        _slug = CATEGORY_SLUG_MAP.get(cat_name, cat_name.lower().replace(" ", "-"))
+        lines.append(
+            f"> ℹ️ ...truncated at {max_lines_per_repo} lines. "
+            f"See full output: [{repo_dir}/]({repo_dir}/)"
+        )
+    return lines, len(cleaned_lines), truncated
+
+
+def _render_repo_failure_entry(
+    failure: "ProjectResult",
+    cat_name: str,
+    *,
+    repo_dir: str,
+    repo_line_count: int,
+    max_lines_per_repo: int,
+) -> tuple[list[str], int, bool]:
+    """Render one repository failure entry. Returns (lines, lines_added, truncated)."""
+    # Extract actionable error lines from output.
+    # When r.error is None, the entire raw stdout ends up in
+    # failure.message (not failure.output) because
+    # output = None when message == data.  Always try both —
+    # _extract_error_lines handles content without hooks
+    # gracefully (returns []).
+    raw = failure.output or failure.message or ""
+    error_lines = _extract_error_lines(
+        raw, is_pytest=_is_pytest_failure_result(failure, cat_name)
+    )
+    if not error_lines:
+        lines, added = _render_message_only_failure(failure)
+        return lines, added, False
+    return _render_extracted_error_lines(
+        error_lines,
+        cat_name=cat_name,
+        repo_dir=repo_dir,
+        repo_line_count=repo_line_count,
+        max_lines_per_repo=max_lines_per_repo,
+    )
+
+
+def _render_repo_failures_block(
+    project: str,
+    categories: list["ValidationCategory"],
+    max_lines_per_repo: int,
+) -> list[str]:
+    """Render the '### ❌ <project>' failures block for one failed repository."""
+    safe_project = _sanitize_filename(project)
+    repo_dir = f"{safe_project}-results"
+    summary_md = [
+        f"### ❌ {project}",
+        f"> 📂 Full logs: [{repo_dir}/]({repo_dir}/)",
+        "",
+    ]
+
+    repo_line_count = 0
+    truncated = False
+
+    for cat in categories:
+        if truncated:
+            break
+        filtered = cat.for_project(project)
+        if filtered.failure_count == 0:
+            continue
+
+        summary_md.append(f"**{cat.name}**")
+        repo_line_count += 1
+
+        for failure in filtered.failures:
+            if truncated:
+                break
+            entry_lines, added, truncated = _render_repo_failure_entry(
+                failure,
+                cat.name,
+                repo_dir=repo_dir,
+                repo_line_count=repo_line_count,
+                max_lines_per_repo=max_lines_per_repo,
+            )
+            summary_md.extend(entry_lines)
+            repo_line_count += added
+
+    summary_md.append("")
+    return summary_md
 
 
 def _build_summary_md(
@@ -908,81 +1062,9 @@ def _build_summary_md(
 
     if failed_projects:
         for project in failed_projects:
-            safe_project = _sanitize_filename(project)
-            repo_dir = f"{safe_project}-results"
-            summary_md.append(f"### ❌ {project}")
-            summary_md.append(f"> 📂 Full logs: [{repo_dir}/]({repo_dir}/)")
-            summary_md.append("")
-
-            repo_line_count = 0
-            truncated = False
-
-            for cat in categories:
-                if truncated:
-                    break
-                filtered = cat.for_project(project)
-                if filtered.failure_count == 0:
-                    continue
-
-                summary_md.append(f"**{cat.name}**")
-                repo_line_count += 1
-
-                for failure in filtered.failures:
-                    if truncated:
-                        break
-
-                    # Extract actionable error lines from output.
-                    # When r.error is None, the entire raw stdout ends up in
-                    # failure.message (not failure.output) because
-                    # output = None when message == data.  Always try both —
-                    # _extract_error_lines handles content without hooks
-                    # gracefully (returns []).
-                    raw = failure.output or failure.message or ""
-                    is_pytest = False
-                    cmd_str = (failure.command or "").lower()
-                    if "pytest" in cmd_str or cat.name == "Pytest Suite":
-                        is_pytest = True
-                    error_lines = _extract_error_lines(raw, is_pytest=is_pytest)
-
-                    if not error_lines:
-                        # No structured output — just show the message, but truncated cleanly if it is multiline
-                        msg_lines = (failure.message or "").strip().split("\n")
-                        if len(msg_lines) > 15:
-                            summary_md.append(f"- {msg_lines[0]}")
-                            for mline in msg_lines[1:15]:
-                                summary_md.append(f"  {mline}")
-                            summary_md.append(
-                                f"  > ℹ️ ... and {len(msg_lines) - 15} more lines of output."
-                            )
-                        else:
-                            summary_md.append(f"- {msg_lines[0]}")
-                            for mline in msg_lines[1:]:
-                                summary_md.append(f"  {mline}")
-                        repo_line_count += min(len(msg_lines), 16)
-                    else:
-                        # Add error lines with per-hook truncation and overall repository limit
-                        cleaned_lines = _clean_and_truncate_error_lines(
-                            error_lines, max_lines_per_block=15
-                        )
-                        remaining = MAX_LINES_PER_REPO - repo_line_count
-                        if len(cleaned_lines) > remaining:
-                            cleaned_lines = cleaned_lines[:remaining]
-                            truncated = True
-
-                        for eline in cleaned_lines:
-                            summary_md.append(eline)
-                            repo_line_count += 1
-
-                        if truncated:
-                            _slug = CATEGORY_SLUG_MAP.get(
-                                cat.name, cat.name.lower().replace(" ", "-")
-                            )
-                            summary_md.append(
-                                f"> ℹ️ ...truncated at {MAX_LINES_PER_REPO} lines. "
-                                f"See full output: [{repo_dir}/]({repo_dir}/)"
-                            )
-
-            summary_md.append("")
+            summary_md.extend(
+                _render_repo_failures_block(project, categories, MAX_LINES_PER_REPO)
+            )
     else:
         summary_md.append("🎉 No failures found across any repository!")
         summary_md.append("")
