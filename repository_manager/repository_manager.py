@@ -1044,28 +1044,16 @@ class Git:
         return name
 
     @staticmethod
-    def _validate_uv_source_entry(
-        source_name: str,
-        entry: dict[str, Any],
-        *,
-        project_name: str | None,
-    ) -> str | None:
-        """Validate one uv source alternative and return a local sibling name.
-
-        ``None`` means that the alternative is remote (or that it is the
-        owning project represented by ``path = \".\"``), not that it was
-        skipped without validation.  Every alternative is checked before any
-        sibling directory or link is created.
-        """
-        source_label = f"uv source {source_name!r}"
+    def _reject_unknown_uv_fields(source_label: str, entry: dict[str, Any]) -> None:
+        """Refuse any field the uv source schema does not define."""
         unknown = set(entry) - _UV_SOURCE_KEYS
         if unknown:
             unknown_text = ", ".join(sorted(str(key) for key in unknown))
             raise ValueError(f"{source_label} has unknown field(s): {unknown_text}")
 
-        normalized_source = Git._normalize_uv_name(
-            source_name, label=f"{source_label} name"
-        )
+    @staticmethod
+    def _validate_uv_field_types(source_label: str, entry: dict[str, Any]) -> None:
+        """Type-check every declared field of one uv source alternative."""
         for key in _UV_SOURCE_STRING_KEYS & set(entry):
             value = entry[key]
             if not isinstance(value, str) or not value:
@@ -1078,14 +1066,22 @@ class Git:
             if not isinstance(entry[key], bool):
                 raise ValueError(f"{source_label} field {key!r} must be boolean")
 
+    @staticmethod
+    def _uv_source_kind(source_label: str, entry: dict[str, Any]) -> str:
+        """The single source kind (git / index / path / url / workspace) declared."""
         primary = _UV_SOURCE_PRIMARY_KEYS & set(entry)
         if len(primary) != 1:
             if not primary:
                 raise ValueError(f"{source_label} must declare exactly one source kind")
             kinds = ", ".join(sorted(primary))
             raise ValueError(f"{source_label} has conflicting source kinds: {kinds}")
-        source_kind = next(iter(primary))
+        return next(iter(primary))
 
+    @staticmethod
+    def _validate_uv_selectors(
+        source_label: str, entry: dict[str, Any], source_kind: str
+    ) -> None:
+        """Branch/rev/tag selectors are git-only and mutually exclusive."""
         selectors = _UV_SOURCE_SELECTOR_KEYS & set(entry)
         if selectors and source_kind != "git":
             names = ", ".join(sorted(selectors))
@@ -1095,6 +1091,12 @@ class Git:
             raise ValueError(
                 f"{source_label} has mutually exclusive selectors: {names}"
             )
+
+    @staticmethod
+    def _validate_uv_source_kind_flags(
+        source_label: str, entry: dict[str, Any], source_kind: str
+    ) -> None:
+        """The boolean flags each source kind is allowed to carry."""
         if (
             source_kind == "git"
             and "lfs" in entry
@@ -1105,6 +1107,12 @@ class Git:
             raise ValueError(f"{source_label} editable requires a path source")
         if "lfs" in entry and source_kind != "git":
             raise ValueError(f"{source_label} lfs requires a git source")
+
+    @staticmethod
+    def _validate_uv_source_kind_fields(
+        source_label: str, entry: dict[str, Any], source_kind: str
+    ) -> None:
+        """The addressing fields each source kind is allowed to carry."""
         if "subdirectory" in entry and source_kind not in {"git", "url"}:
             raise ValueError(f"{source_label} subdirectory requires git or url")
         if "package" in entry and source_kind not in {"git", "url"}:
@@ -1114,23 +1122,25 @@ class Git:
         if source_kind == "path" and "subdirectory" in entry:
             raise ValueError(f"{source_label} path cannot select a subdirectory")
 
-        if source_kind != "path":
-            return None
+    @staticmethod
+    def _validate_uv_own_project_source(
+        source_label: str, normalized_source: str, project_name: str | None
+    ) -> None:
+        """A ``path = "."`` source may only name the project that declares it."""
+        if project_name is None:
+            raise ValueError(f"{source_label} path '.' requires an owning project name")
+        if normalized_source != Git._normalize_uv_name(
+            project_name, label="owning project name"
+        ):
+            raise ValueError(
+                f"{source_label} path '.' may identify only its owning project"
+            )
 
-        raw_path = entry["path"]
-        if raw_path == ".":
-            if project_name is None:
-                raise ValueError(
-                    f"{source_label} path '.' requires an owning project name"
-                )
-            if normalized_source != Git._normalize_uv_name(
-                project_name, label="owning project name"
-            ):
-                raise ValueError(
-                    f"{source_label} path '.' may identify only its owning project"
-                )
-            return None
-
+    @staticmethod
+    def _uv_sibling_name_from_path(
+        source_label: str, raw_path: str, normalized_source: str
+    ) -> str:
+        """The sibling repository name a local path source resolves to."""
         prefix = _UV_WORKSPACE_SIBLINGS_DIRNAME
         parts = raw_path.split("/")
         if (
@@ -1153,6 +1163,101 @@ class Git:
         return sibling_name
 
     @staticmethod
+    def _validate_uv_source_entry(
+        source_name: str,
+        entry: dict[str, Any],
+        *,
+        project_name: str | None,
+    ) -> str | None:
+        """Validate one uv source alternative and return a local sibling name.
+
+        ``None`` means that the alternative is remote (or that it is the
+        owning project represented by ``path = "."``), not that it was
+        skipped without validation.  Every alternative is checked before any
+        sibling directory or link is created.
+
+        The checks run in a fixed order -- unknown fields, field types, source
+        kind, selectors, then kind-specific constraints -- so a doubly-invalid
+        entry always reports the same error it reported before.
+        """
+        source_label = f"uv source {source_name!r}"
+        Git._reject_unknown_uv_fields(source_label, entry)
+
+        normalized_source = Git._normalize_uv_name(
+            source_name, label=f"{source_label} name"
+        )
+        Git._validate_uv_field_types(source_label, entry)
+        source_kind = Git._uv_source_kind(source_label, entry)
+        Git._validate_uv_selectors(source_label, entry, source_kind)
+        Git._validate_uv_source_kind_flags(source_label, entry, source_kind)
+        Git._validate_uv_source_kind_fields(source_label, entry, source_kind)
+
+        if source_kind != "path":
+            return None
+
+        raw_path = entry["path"]
+        if raw_path == ".":
+            Git._validate_uv_own_project_source(
+                source_label, normalized_source, project_name
+            )
+            return None
+
+        return Git._uv_sibling_name_from_path(source_label, raw_path, normalized_source)
+
+    @staticmethod
+    def _uv_sources_table(document: dict[str, Any]) -> dict[str, Any] | None:
+        """The ``[tool.uv.sources]`` table of a manifest, or ``None`` if absent."""
+        tool = document.get("tool")
+        if tool is None:
+            return None
+        if not isinstance(tool, dict):
+            raise ValueError("[tool] must be a table")
+        uv = tool.get("uv")
+        if uv is None:
+            return None
+        if not isinstance(uv, dict):
+            raise ValueError("[tool.uv] must be a table")
+        sources = uv.get("sources")
+        if sources is None:
+            return None
+        if not isinstance(sources, dict):
+            raise ValueError("[tool.uv.sources] must be a table")
+        return sources
+
+    @staticmethod
+    def _uv_source_entries(source_name: str, configured: Any) -> list[Any]:
+        """The list of alternatives one uv source declaration expands to.
+
+        Element types are deliberately NOT checked here: the caller validates
+        each alternative as it consumes it, so a malformed second alternative
+        still reports the first one's error first.
+        """
+        if isinstance(configured, list):
+            if not configured:
+                raise ValueError(
+                    f"uv source {source_name!r} must contain at least one table"
+                )
+            return configured
+        if isinstance(configured, dict):
+            return [configured]
+        raise ValueError(f"uv source {source_name!r} must be a table or list of tables")
+
+    @staticmethod
+    def _record_uv_sibling_name(
+        sibling_name: str | None, names: list[str], normalized_names: set[str]
+    ) -> None:
+        """Append a newly seen sibling name, de-duplicated by normalized form."""
+        if sibling_name is None:
+            return
+        normalized_name = Git._normalize_uv_name(
+            sibling_name, label="uv sibling path component"
+        )
+        if normalized_name in normalized_names:
+            return
+        normalized_names.add(normalized_name)
+        names.append(sibling_name)
+
+    @staticmethod
     def _declared_uv_sibling_names(project_path: str) -> tuple[str, ...]:
         """Return the sibling names declared by a project's uv sources.
 
@@ -1168,21 +1273,9 @@ class Git:
         if not document:
             return ()
 
-        tool = document.get("tool")
-        if tool is None:
-            return ()
-        if not isinstance(tool, dict):
-            raise ValueError("[tool] must be a table")
-        uv = tool.get("uv")
-        if uv is None:
-            return ()
-        if not isinstance(uv, dict):
-            raise ValueError("[tool.uv] must be a table")
-        sources = uv.get("sources")
+        sources = Git._uv_sources_table(document)
         if sources is None:
             return ()
-        if not isinstance(sources, dict):
-            raise ValueError("[tool.uv.sources] must be a table")
 
         project_name = Git._project_name_from_manifest(document, label=str(manifest))
         names: list[str] = []
@@ -1190,19 +1283,7 @@ class Git:
         for source_name, configured in sources.items():
             if not isinstance(source_name, str):  # pragma: no cover - TOML keys are str
                 raise ValueError("uv source names must be strings")
-            if isinstance(configured, list):
-                if not configured:
-                    raise ValueError(
-                        f"uv source {source_name!r} must contain at least one table"
-                    )
-                entries = configured
-            elif isinstance(configured, dict):
-                entries = [configured]
-            else:
-                raise ValueError(
-                    f"uv source {source_name!r} must be a table or list of tables"
-                )
-            for entry in entries:
+            for entry in Git._uv_source_entries(source_name, configured):
                 if not isinstance(entry, dict):
                     raise ValueError(
                         f"uv source {source_name!r} must contain only tables"
@@ -1212,13 +1293,7 @@ class Git:
                     entry,
                     project_name=project_name,
                 )
-                if sibling_name is not None:
-                    normalized_name = Git._normalize_uv_name(
-                        sibling_name, label="uv sibling path component"
-                    )
-                    if normalized_name not in normalized_names:
-                        normalized_names.add(normalized_name)
-                        names.append(sibling_name)
+                Git._record_uv_sibling_name(sibling_name, names, normalized_names)
         return tuple(names)
 
     def _canonical_uv_sibling_targets(self) -> dict[str, Path]:
@@ -1321,6 +1396,41 @@ class Git:
         return []
 
     @staticmethod
+    def _rollback_new_uv_link(link: Path, new_target: str, errors: list[str]) -> None:
+        """Remove a link this transaction created, if it is still ours to remove."""
+        if not link.is_symlink():
+            if link.exists():
+                errors.append(
+                    f"refusing to remove non-symlink path during rollback: {link}"
+                )
+            return
+        if os.readlink(link) != new_target:
+            errors.append(f"refusing to remove changed symlink during rollback: {link}")
+            return
+        link.unlink()
+
+    @staticmethod
+    def _restore_uv_link(link: Path, previous_target: str, errors: list[str]) -> None:
+        """Point a pre-existing link back at the target it had before."""
+        if link.is_symlink() and os.readlink(link) == previous_target:
+            return
+        if link.exists() and not link.is_symlink():
+            errors.append(
+                f"refusing to replace non-symlink path during rollback: {link}"
+            )
+            return
+
+        restore = Git._uv_sibling_temp_path(link)
+        restore_created = False
+        try:
+            restore.symlink_to(previous_target)
+            restore_created = True
+            os.replace(restore, link)
+        finally:
+            if restore_created:
+                errors.extend(Git._cleanup_uv_sibling_temp(restore, previous_target))
+
+    @staticmethod
     def _rollback_uv_sibling_links(
         updates: list[tuple[Path, Path, str | None, Path]],
     ) -> list[str]:
@@ -1332,45 +1442,174 @@ class Git:
         """
         errors: list[str] = []
         for link, target, previous_target, _staged in updates:
-            new_target = os.fspath(target)
             try:
                 if previous_target is None:
-                    if not link.is_symlink():
-                        if link.exists():
-                            errors.append(
-                                f"refusing to remove non-symlink path during rollback: {link}"
-                            )
-                        continue
-                    if os.readlink(link) != new_target:
-                        errors.append(
-                            f"refusing to remove changed symlink during rollback: {link}"
-                        )
-                        continue
-                    link.unlink()
-                    continue
-
-                if link.is_symlink() and os.readlink(link) == previous_target:
-                    continue
-                if link.exists() and not link.is_symlink():
-                    errors.append(
-                        f"refusing to replace non-symlink path during rollback: {link}"
-                    )
-                    continue
-
-                restore = Git._uv_sibling_temp_path(link)
-                restore_created = False
-                try:
-                    restore.symlink_to(previous_target)
-                    restore_created = True
-                    os.replace(restore, link)
-                finally:
-                    if restore_created:
-                        errors.extend(
-                            Git._cleanup_uv_sibling_temp(restore, previous_target)
-                        )
+                    Git._rollback_new_uv_link(link, os.fspath(target), errors)
+                else:
+                    Git._restore_uv_link(link, previous_target, errors)
             except BaseException as exc:
                 errors.append(f"cannot restore {link}: {exc}")
         return errors
+
+    def _resolve_uv_sibling_targets(self, names: tuple[str, ...]) -> dict[str, Path]:
+        """Map every declared sibling name to its canonical workspace directory."""
+        targets = self._canonical_uv_sibling_targets()
+        resolved_targets: dict[str, Path] = {}
+        for name in names:
+            normalized_name = self._normalize_uv_name(
+                name, label="uv sibling path component"
+            )
+            target = targets.get(normalized_name)
+            if target is None or not target.is_dir():
+                raise ValueError(
+                    f"canonical sibling target {name!r} is missing from the workspace map"
+                )
+            resolved_targets[normalized_name] = target
+        return resolved_targets
+
+    def _validated_uv_sibling_links(
+        self,
+        sibling_dir: Path,
+        names: tuple[str, ...],
+        resolved_targets: dict[str, Path],
+    ) -> list[tuple[str, Path]]:
+        """Validate every owned link before the sibling directory is created.
+
+        A malformed second declaration must not leave the first link behind.
+        """
+        validated_links: list[tuple[str, Path]] = []
+        for name in names:
+            link = sibling_dir / name
+            self._validate_workspace_path(
+                link,
+                label=f"uv sibling link {name!r}",
+                allow_leaf_symlink=True,
+            )
+            if link.exists() and not link.is_symlink():
+                raise ValueError(f"refusing to replace non-symlink path {link}")
+            normalized_name = self._normalize_uv_name(
+                name, label="uv sibling path component"
+            )
+            validated_links.append((name, resolved_targets[normalized_name]))
+        return validated_links
+
+    @staticmethod
+    def _uv_link_already_points_at(link: Path, target: Path) -> bool:
+        """True when *link* already resolves to *target*.
+
+        A broken or looping registration answers ``False`` and is replaced.
+        """
+        try:
+            return link.resolve(strict=False) == target
+        except (OSError, RuntimeError):
+            return False
+
+    def _pending_uv_sibling_updates(
+        self, sibling_dir: Path, validated_links: list[tuple[str, Path]]
+    ) -> list[tuple[Path, Path, str | None, Path]]:
+        """The links that actually need re-pointing, with their staging paths."""
+        updates: list[tuple[Path, Path, str | None, Path]] = []
+        for name, target in validated_links:
+            link = sibling_dir / name
+            previous_target = os.readlink(link) if link.is_symlink() else None
+            if previous_target is not None and self._uv_link_already_points_at(
+                link, target
+            ):
+                continue
+            updates.append(
+                (link, target, previous_target, self._uv_sibling_temp_path(link))
+            )
+        return updates
+
+    @staticmethod
+    def _stage_uv_sibling_links(
+        updates: list[tuple[Path, Path, str | None, Path]],
+        staged: list[tuple[Path, str]],
+    ) -> None:
+        """Create every replacement symlink under a task-owned staging name."""
+        for _link, target, _previous_target, staged_path in updates:
+            staged_path.symlink_to(target, target_is_directory=True)
+            staged.append((staged_path, os.fspath(target)))
+
+    @staticmethod
+    def _swap_uv_sibling_links(
+        updates: list[tuple[Path, Path, str | None, Path]],
+    ) -> None:
+        """Move every staged symlink onto its final name."""
+        for link, _target, _previous_target, staged_path in updates:
+            if link.exists() and not link.is_symlink():
+                raise ValueError(f"refusing to replace non-symlink path {link}")
+            os.replace(staged_path, link)
+
+    @staticmethod
+    def _remove_created_uv_sibling_dir(sibling_dir: Path) -> list[str]:
+        """Remove a sibling directory this transaction created, if still safe."""
+        if sibling_dir.is_symlink() or not sibling_dir.is_dir():
+            return [f"refusing to remove changed sibling directory {sibling_dir}"]
+        try:
+            sibling_dir.rmdir()
+        except OSError as cleanup_exc:
+            return [
+                f"cannot remove empty sibling directory {sibling_dir}: {cleanup_exc}"
+            ]
+        return []
+
+    def _recover_failed_uv_publication(
+        self,
+        *,
+        sibling_dir: Path,
+        updates: list[tuple[Path, Path, str | None, Path]],
+        staged: list[tuple[Path, str]],
+        created_sibling_dir: bool,
+    ) -> list[str]:
+        """Undo a failed publication; return whatever could not be undone."""
+        rollback_errors = self._rollback_uv_sibling_links(updates)
+        cleanup_errors: list[str] = []
+        for staged_path, expected_target in staged:
+            cleanup_errors.extend(
+                self._cleanup_uv_sibling_temp(staged_path, expected_target)
+            )
+        if created_sibling_dir:
+            cleanup_errors.extend(self._remove_created_uv_sibling_dir(sibling_dir))
+        return rollback_errors + cleanup_errors
+
+    def _publish_uv_sibling_links(
+        self,
+        sibling_dir: Path,
+        updates: list[tuple[Path, Path, str | None, Path]],
+    ) -> None:
+        """Stage and swap every pending sibling link as one transaction.
+
+        Any failure rolls the whole set back; an incomplete rollback is raised
+        as a RuntimeError chained from the original exception.
+        """
+        created_sibling_dir = False
+        staged: list[tuple[Path, str]] = []
+        try:
+            if not sibling_dir.exists():
+                try:
+                    sibling_dir.mkdir()
+                    created_sibling_dir = True
+                except FileExistsError:
+                    pass
+            if sibling_dir.is_symlink() or not sibling_dir.is_dir():
+                raise ValueError(f"sibling path is not a directory {sibling_dir}")
+
+            self._stage_uv_sibling_links(updates, staged)
+            self._swap_uv_sibling_links(updates)
+        except BaseException as exc:
+            errors = self._recover_failed_uv_publication(
+                sibling_dir=sibling_dir,
+                updates=updates,
+                staged=staged,
+                created_sibling_dir=created_sibling_dir,
+            )
+            if errors:
+                detail = "; ".join(errors)
+                raise RuntimeError(
+                    f"uv sibling publication failed and rollback was incomplete: {detail}"
+                ) from exc
+            raise
 
     def _materialize_uv_siblings(self, project_path: str) -> tuple[str, ...]:
         """Materialize every declared uv sibling from the canonical map.
@@ -1389,18 +1628,7 @@ class Git:
         if not names:
             return ()
 
-        targets = self._canonical_uv_sibling_targets()
-        resolved_targets: dict[str, Path] = {}
-        for name in names:
-            normalized_name = self._normalize_uv_name(
-                name, label="uv sibling path component"
-            )
-            target = targets.get(normalized_name)
-            if target is None or not target.is_dir():
-                raise ValueError(
-                    f"canonical sibling target {name!r} is missing from the workspace map"
-                )
-            resolved_targets[normalized_name] = target
+        resolved_targets = self._resolve_uv_sibling_targets(names)
 
         sibling_dir = project / _UV_WORKSPACE_SIBLINGS_DIRNAME
         if sibling_dir.is_symlink():
@@ -1408,95 +1636,14 @@ class Git:
         if sibling_dir.exists() and not sibling_dir.is_dir():
             raise ValueError(f"sibling path is not a directory {sibling_dir}")
 
-        # Validate every owned link before creating the directory.  A malformed
-        # second declaration must not leave the first link behind.
-        validated_links: list[tuple[str, Path]] = []
-        for name in names:
-            link = sibling_dir / name
-            self._validate_workspace_path(
-                link,
-                label=f"uv sibling link {name!r}",
-                allow_leaf_symlink=True,
-            )
-            if link.exists() and not link.is_symlink():
-                raise ValueError(f"refusing to replace non-symlink path {link}")
-            validated_links.append(
-                (
-                    name,
-                    resolved_targets[
-                        self._normalize_uv_name(name, label="uv sibling path component")
-                    ],
-                )
-            )
-        updates: list[tuple[Path, Path, str | None, Path]] = []
-        for name, target in validated_links:
-            link = sibling_dir / name
-            previous_target = os.readlink(link) if link.is_symlink() else None
-            if previous_target is not None:
-                try:
-                    if link.resolve(strict=False) == target:
-                        continue
-                except (OSError, RuntimeError):
-                    # Broken/looping registrations are safely replaced below.
-                    pass
-            updates.append(
-                (
-                    link,
-                    target,
-                    previous_target,
-                    self._uv_sibling_temp_path(link),
-                )
-            )
+        validated_links = self._validated_uv_sibling_links(
+            sibling_dir, names, resolved_targets
+        )
+        updates = self._pending_uv_sibling_updates(sibling_dir, validated_links)
         if not updates:
             return names
 
-        created_sibling_dir = False
-        staged: list[tuple[Path, str]] = []
-        try:
-            if not sibling_dir.exists():
-                try:
-                    sibling_dir.mkdir()
-                    created_sibling_dir = True
-                except FileExistsError:
-                    pass
-            if sibling_dir.is_symlink() or not sibling_dir.is_dir():
-                raise ValueError(f"sibling path is not a directory {sibling_dir}")
-
-            for _link, target, _previous_target, staged_path in updates:
-                staged_path.symlink_to(target, target_is_directory=True)
-                staged.append((staged_path, os.fspath(target)))
-
-            for link, _target, _previous_target, staged_path in updates:
-                if link.exists() and not link.is_symlink():
-                    raise ValueError(f"refusing to replace non-symlink path {link}")
-                os.replace(staged_path, link)
-        except BaseException as exc:
-            rollback_errors = self._rollback_uv_sibling_links(updates)
-            cleanup_errors: list[str] = []
-            for staged_path, expected_target in staged:
-                cleanup_errors.extend(
-                    self._cleanup_uv_sibling_temp(staged_path, expected_target)
-                )
-            if created_sibling_dir:
-                if sibling_dir.is_symlink() or not sibling_dir.is_dir():
-                    cleanup_errors.append(
-                        f"refusing to remove changed sibling directory {sibling_dir}"
-                    )
-                else:
-                    try:
-                        sibling_dir.rmdir()
-                    except OSError as cleanup_exc:
-                        cleanup_errors.append(
-                            f"cannot remove empty sibling directory {sibling_dir}: "
-                            f"{cleanup_exc}"
-                        )
-            errors = rollback_errors + cleanup_errors
-            if errors:
-                detail = "; ".join(errors)
-                raise RuntimeError(
-                    f"uv sibling publication failed and rollback was incomplete: {detail}"
-                ) from exc
-            raise
+        self._publish_uv_sibling_links(sibling_dir, updates)
         return names
 
     def install_projects(
@@ -1818,6 +1965,81 @@ class Git:
             )
 
     @staticmethod
+    def _summary_result_name(result: GitResult) -> str:
+        """The project label used for one result row in a markdown summary."""
+        if result.metadata:
+            return os.path.basename(result.metadata.workspace)
+        return "unknown"
+
+    @staticmethod
+    def _summary_success_message(action: str, result: GitResult) -> str:
+        """The one-line success blurb for *result*.
+
+        Bulk actions with uninteresting stdout collapse to "Success", as does
+        any multi-line payload that is not a version-bump report.
+        """
+        msg = result.data or "Success"
+        if action.lower() in ["installation", "build", "validation"]:
+            return "Success"
+        if (
+            msg.count("\n") > 2
+            and "new_version=" not in msg
+            and "current_version=" not in msg
+        ):
+            return "Success"
+        return msg
+
+    @staticmethod
+    def _summary_success_section(action: str, successes: list[GitResult]) -> list[str]:
+        """The "Successes" block of a markdown summary."""
+        md = ["## Successes ✅"]
+        for r in successes:
+            name = Git._summary_result_name(r)
+            msg = Git._summary_success_message(action, r)
+            md.append(f"- **{name}**: {msg}")
+        md.append("")
+        return md
+
+    @staticmethod
+    def _summary_failure_entry(result: GitResult) -> list[str]:
+        """The per-project detail block for one failed result."""
+        md = [f"### ⚠️ {Git._summary_result_name(result)}"]
+        if result.metadata:
+            md.append(f"**Command:** `{result.metadata.command}`")
+        err_msg = result.error.message if result.error else "Unknown error"
+        md.append("**Error:**")
+        md.append(f"```text\n{err_msg}\n```")
+        if result.data:
+            md.append("**Output:**")
+            md.append(f"```text\n{result.data}\n```")
+        md.append("---")
+        return md
+
+    @staticmethod
+    def _summary_failure_section(failures: list[GitResult]) -> list[str]:
+        """The "Failures" block of a markdown summary."""
+        md = ["## Failures ❌"]
+        for r in failures:
+            md.extend(Git._summary_failure_entry(r))
+        md.append("")
+        return md
+
+    @staticmethod
+    def _summary_skip_section(skips: list[GitResult]) -> list[str]:
+        """The "Skipped" block of a markdown summary, grouped by reason."""
+        reasons: dict[str, list[str]] = {}
+        for r in skips:
+            reason = r.data or "No reason provided"
+            reasons.setdefault(reason, []).append(Git._summary_result_name(r))
+
+        md = ["## Skipped ⏭️"]
+        for reason, projects in sorted(reasons.items()):
+            project_list = ", ".join(sorted(set(projects)))
+            md.append(f"- **{reason}**: {project_list}")
+        md.append("")
+        return md
+
+    @staticmethod
     def generate_markdown_summary(action: str, results: list[GitResult]) -> str:
         """Generates a beautiful markdown summary of bulk operation results."""
         successes = [r for r in results if r.status == "success"]
@@ -1834,55 +2056,11 @@ class Git:
         ]
 
         if successes:
-            md.append("## Successes ✅")
-            for r in successes:
-                name = (
-                    os.path.basename(r.metadata.workspace) if r.metadata else "unknown"
-                )
-
-                msg = r.data or "Success"
-                if action.lower() in ["installation", "build", "validation"]:
-                    msg = "Success"
-                elif msg.count("\n") > 2:
-                    if "new_version=" not in msg and "current_version=" not in msg:
-                        msg = "Success"
-
-                md.append(f"- **{name}**: {msg}")
-            md.append("")
-
+            md.extend(Git._summary_success_section(action, successes))
         if failures:
-            md.append("## Failures ❌")
-            for r in failures:
-                name = (
-                    os.path.basename(r.metadata.workspace) if r.metadata else "unknown"
-                )
-                err_msg = r.error.message if r.error else "Unknown error"
-                md.append(f"### ⚠️ {name}")
-                if r.metadata:
-                    md.append(f"**Command:** `{r.metadata.command}`")
-                md.append("**Error:**")
-                md.append(f"```text\n{err_msg}\n```")
-                if r.data:
-                    md.append("**Output:**")
-                    md.append(f"```text\n{r.data}\n```")
-                md.append("---")
-            md.append("")
-
+            md.extend(Git._summary_failure_section(failures))
         if skips:
-            md.append("## Skipped ⏭️")
-            reasons: dict[str, list[str]] = {}
-            for r in skips:
-                reason = r.data or "No reason provided"
-                if reason not in reasons:
-                    reasons[reason] = []
-                reasons[reason].append(
-                    os.path.basename(r.metadata.workspace) if r.metadata else "unknown"
-                )
-
-            for reason, projects in sorted(reasons.items()):
-                project_list = ", ".join(sorted(list(set(projects))))
-                md.append(f"- **{reason}**: {project_list}")
-            md.append("")
+            md.extend(Git._summary_skip_section(skips))
 
         return "\n".join(md)
 
