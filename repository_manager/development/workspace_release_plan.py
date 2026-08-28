@@ -702,6 +702,48 @@ def _default_reference(name: str) -> ImmutableDigestReference:
     )
 
 
+_BRANCH_FORBIDDEN_CHARS = (":", "~", "^", "?", "*", "[", "]", "\\")
+_BRANCH_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+\-]*")
+
+
+def _branch_suffix_has_bad_edges(suffix: str) -> bool:
+    """Whether the ref suffix is empty or starts/ends with a separator or dot."""
+
+    return (
+        not suffix
+        or suffix.startswith("/")
+        or suffix.endswith("/")
+        or suffix.startswith(".")
+        or suffix.endswith(".")
+    )
+
+
+def _branch_suffix_has_bad_sequence(suffix: str) -> bool:
+    """Whether the ref suffix contains a forbidden sequence or control byte."""
+
+    return (
+        "//" in suffix
+        or ".." in suffix
+        or "@{" in suffix
+        or "://" in suffix
+        or any(char in suffix for char in _BRANCH_FORBIDDEN_CHARS)
+        or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in suffix)
+    )
+
+
+def _branch_component_is_malformed(component: str) -> bool:
+    """Whether one slash-separated ref component is not a canonical name."""
+
+    return (
+        not component
+        or component in {".", ".."}
+        or component.startswith(".")
+        or component.endswith(".")
+        or component.endswith(".lock")
+        or not _BRANCH_COMPONENT.fullmatch(component)
+    )
+
+
 def _normalize_target_branch(value: object) -> str:
     text = _strict_text(
         value,
@@ -717,31 +759,10 @@ def _normalize_target_branch(value: object) -> str:
         suffix = text
     if text.startswith("refs/") and not text.startswith("refs/heads/"):
         raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
-    if (
-        not suffix
-        or suffix.startswith("/")
-        or suffix.endswith("/")
-        or suffix.startswith(".")
-        or suffix.endswith(".")
-        or "//" in suffix
-        or ".." in suffix
-        or "@{" in suffix
-        or any(char in suffix for char in (":", "~", "^", "?", "*", "[", "]", "\\"))
-        or "://" in suffix
-        or suffix.startswith("/")
-        or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in suffix)
-    ):
+    if _branch_suffix_has_bad_edges(suffix) or _branch_suffix_has_bad_sequence(suffix):
         raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
     components = suffix.split("/")
-    if any(
-        not component
-        or component in {".", ".."}
-        or component.startswith(".")
-        or component.endswith(".")
-        or component.endswith(".lock")
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+\-]*", component)
-        for component in components
-    ):
+    if any(_branch_component_is_malformed(component) for component in components):
         raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
     return "refs/heads/" + "/".join(components)
 
@@ -791,7 +812,9 @@ class ReleaseDecisionContext:
                 "decision profile evidence could not be validated",
             ) from None
 
-    def _validate_decision_context(self) -> None:
+    def _validate_decision_references(self) -> None:
+        """Re-materialize every immutable name/digest reference field."""
+
         fields = (
             ("release profile", "release_profile", self.release_profile),
             ("candidate reference", "candidate", self.candidate),
@@ -815,9 +838,10 @@ class ReleaseDecisionContext:
             # Re-materialize even exact-type forged dataclass shells.
             normalized = ImmutableDigestReference(value.name, value.digest)
             object.__setattr__(self, attribute, normalized)
-        object.__setattr__(
-            self, "target_branch", _normalize_target_branch(self.target_branch)
-        )
+
+    def _validate_decision_policy_bounds(self) -> None:
+        """The retry/timeout policies and their counters must be exact and bounded."""
+
         if type(self.retry_policy) is not RetryPolicy:
             raise _fail(ReleasePlanCode.INVALID_INPUT, "retry policy is unsupported")
         if type(self.timeout_policy) is not TimeoutPolicy:
@@ -834,6 +858,10 @@ class ReleaseDecisionContext:
             raise _fail(ReleasePlanCode.INVALID_INPUT, "timeout must be an integer")
         if not 0 <= self.timeout_seconds <= 604800:
             raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "timeout exceeds the bound")
+
+    def _validate_decision_policy_agreement(self) -> None:
+        """Each policy must agree with the counter declared alongside it."""
+
         if self.retry_policy is RetryPolicy.NONE and self.retry_count != 0:
             raise _fail(
                 ReleasePlanCode.CONFLICT, "retry count conflicts with retry policy"
@@ -848,6 +876,14 @@ class ReleaseDecisionContext:
             raise _fail(
                 ReleasePlanCode.CONFLICT, "timeout policy requires timeout seconds"
             )
+
+    def _validate_decision_context(self) -> None:
+        self._validate_decision_references()
+        object.__setattr__(
+            self, "target_branch", _normalize_target_branch(self.target_branch)
+        )
+        self._validate_decision_policy_bounds()
+        self._validate_decision_policy_agreement()
 
     def canonical_payload(self) -> dict[str, object]:
         return {
@@ -893,68 +929,32 @@ def _normalize_decision_context(
     timeout_policy: object | None = None,
     timeout_seconds: object | None = None,
 ) -> ReleaseDecisionContext:
-    aliases = (
-        release_profile,
-        target_branch,
-        candidate,
-        certificate,
-        config,
-        toolchain,
-        command,
-        artifact_contract,
-        resource_profile,
-        retry_policy,
-        retry_count,
-        timeout_policy,
-        timeout_seconds,
-    )
+    overrides: dict[str, object | None] = {
+        "release_profile": release_profile,
+        "target_branch": target_branch,
+        "candidate": candidate,
+        "certificate": certificate,
+        "config": config,
+        "toolchain": toolchain,
+        "command": command,
+        "artifact_contract": artifact_contract,
+        "resource_profile": resource_profile,
+        "retry_policy": retry_policy,
+        "retry_count": retry_count,
+        "timeout_policy": timeout_policy,
+        "timeout_seconds": timeout_seconds,
+    }
     if context is not None and type(context) is not ReleaseDecisionContext:
         raise _fail(ReleasePlanCode.PROFILE, "decision context is unsupported")
-    if context is not None and any(item is not None for item in aliases):
+    if context is not None and any(item is not None for item in overrides.values()):
         raise _fail(ReleasePlanCode.CONFLICT, "decision context aliases conflict")
     if context is not None:
-        return ReleaseDecisionContext(
-            release_profile=context.release_profile,
-            target_branch=context.target_branch,
-            candidate=context.candidate,
-            certificate=context.certificate,
-            config=context.config,
-            toolchain=context.toolchain,
-            command=context.command,
-            artifact_contract=context.artifact_contract,
-            resource_profile=context.resource_profile,
-            retry_policy=context.retry_policy,
-            retry_count=context.retry_count,
-            timeout_policy=context.timeout_policy,
-            timeout_seconds=context.timeout_seconds,
-        )
+        carried = {name: getattr(context, name) for name in overrides}
+        return ReleaseDecisionContext(**carried)  # type: ignore[arg-type]
     defaults = ReleaseDecisionContext()
     values = {
-        "release_profile": defaults.release_profile
-        if release_profile is None
-        else release_profile,
-        "target_branch": defaults.target_branch
-        if target_branch is None
-        else target_branch,
-        "candidate": defaults.candidate if candidate is None else candidate,
-        "certificate": defaults.certificate if certificate is None else certificate,
-        "config": defaults.config if config is None else config,
-        "toolchain": defaults.toolchain if toolchain is None else toolchain,
-        "command": defaults.command if command is None else command,
-        "artifact_contract": defaults.artifact_contract
-        if artifact_contract is None
-        else artifact_contract,
-        "resource_profile": defaults.resource_profile
-        if resource_profile is None
-        else resource_profile,
-        "retry_policy": defaults.retry_policy if retry_policy is None else retry_policy,
-        "retry_count": defaults.retry_count if retry_count is None else retry_count,
-        "timeout_policy": defaults.timeout_policy
-        if timeout_policy is None
-        else timeout_policy,
-        "timeout_seconds": defaults.timeout_seconds
-        if timeout_seconds is None
-        else timeout_seconds,
+        name: getattr(defaults, name) if value is None else value
+        for name, value in overrides.items()
     }
     return ReleaseDecisionContext(**values)  # type: ignore[arg-type]
 
