@@ -144,6 +144,31 @@ def regenerate_view(repo_root: Path) -> list[dict[str, Any]]:
     return folded
 
 
+def _missing_and_extra_reasons(
+    expected_ids: set[str], on_disk_ids: set[str]
+) -> list[str]:
+    reasons: list[str] = []
+    for missing in sorted(expected_ids - on_disk_ids):
+        reasons.append(f"{missing}: present in fold, missing from generated view")
+    for extra in sorted(on_disk_ids - expected_ids):
+        reasons.append(f"{extra}: present in generated view, absent from fold")
+    return reasons
+
+
+def _mismatched_shared_reasons(
+    expected: list[dict[str, Any]],
+    on_disk: list[dict[str, Any]],
+    shared_ids: set[str],
+) -> list[str]:
+    reasons: list[str] = []
+    for shared in sorted(shared_ids):
+        exp_row = next(row for row in expected if row["concept_id"] == shared)
+        disk_row = next(row for row in on_disk if row.get("concept_id") == shared)
+        if exp_row != disk_row:
+            reasons.append(f"{shared}: generated view does not match the fragment fold")
+    return reasons
+
+
 def verify_generated_view_is_fold(repo_root: Path) -> tuple[bool, list[str]]:
     """Return whether the on-disk generated view is exactly the current fold.
 
@@ -160,14 +185,8 @@ def verify_generated_view_is_fold(repo_root: Path) -> tuple[bool, list[str]]:
     on_disk_ids: set[str] = {
         str(row["concept_id"]) for row in on_disk if row.get("concept_id") is not None
     }
-    reasons: list[str] = []
-    for missing in sorted(expected_ids - on_disk_ids):
-        reasons.append(f"{missing}: present in fold, missing from generated view")
-    for extra in sorted(on_disk_ids - expected_ids):
-        reasons.append(f"{extra}: present in generated view, absent from fold")
-    for shared in sorted(expected_ids & on_disk_ids):
-        exp_row = next(row for row in expected if row["concept_id"] == shared)
-        disk_row = next(row for row in on_disk if row.get("concept_id") == shared)
-        if exp_row != disk_row:
-            reasons.append(f"{shared}: generated view does not match the fragment fold")
+    reasons = _missing_and_extra_reasons(expected_ids, on_disk_ids)
+    reasons.extend(
+        _mismatched_shared_reasons(expected, on_disk, expected_ids & on_disk_ids)
+    )
     return False, reasons
