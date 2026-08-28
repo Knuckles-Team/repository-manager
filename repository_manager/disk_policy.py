@@ -121,6 +121,22 @@ class GCRequestPort(Protocol):
         """Record or enqueue a bounded GC request."""
 
 
+@dataclass(frozen=True)
+class _EvalContext:
+    """Bundled request/observation state shared by ``evaluate``'s decision
+    helpers.  Bundled so those helpers stay under the fleet's parameter cap;
+    ``evaluate`` itself keeps its existing keyword-only signature."""
+
+    host_id: str
+    observation: DiskObservation
+    predicted_used: int
+    predicted_free: int
+    requested_mib: int
+    reservation_id: str
+    request_gc: bool
+    mutate: bool
+
+
 class DiskPolicy:
     """Native-policy-keyed disk state machine with high/low hysteresis.
 
@@ -172,15 +188,7 @@ class DiskPolicy:
         observation = DiskObservation(total_mib, free_mib)
         if requested_mib < 0:
             raise ValueError("requested_mib cannot be negative")
-        if watermarks.high_mib is not None and watermarks.low_mib is None:
-            low: int | None = watermarks.high_mib
-        else:
-            low = watermarks.low_mib
-        high = watermarks.high_mib
-        if low != watermarks.low_mib:
-            watermarks = DiskWatermarks(
-                low_mib=low, high_mib=high, policy_key=policy_key
-            )
+        watermarks, low, high = self._normalize_watermarks(watermarks, policy_key)
         if low is not None and high is not None and low > high:
             return DiskDecision(
                 DiskDecisionCode.INVALID_WATERMARKS,
@@ -194,25 +202,109 @@ class DiskPolicy:
 
         predicted_used = observation.used_mib + requested_mib
         predicted_free = observation.free_mib - requested_mib
+        ctx = _EvalContext(
+            host_id=host_id,
+            observation=observation,
+            predicted_used=predicted_used,
+            predicted_free=predicted_free,
+            requested_mib=requested_mib,
+            reservation_id=reservation_id,
+            request_gc=request_gc,
+            mutate=mutate,
+        )
         if predicted_free < 0:
-            if mutate:
-                with self._lock:
-                    self._states[key] = DiskState.BLOCKED
-                    self._watermarks.setdefault(key, watermarks)
-            decision = DiskDecision(
-                DiskDecisionCode.INSUFFICIENT_FREE,
-                DiskState.BLOCKED,
-                host_id,
-                observation,
-                predicted_used,
-                predicted_free,
-                "predicted reservation exceeds observed free disk",
-                max(0, requested_mib - observation.free_mib),
-            )
-            if mutate:
-                self._maybe_request_gc(decision, reservation_id, request_gc)
-            return decision
+            return self._insufficient_free_decision(key, watermarks, ctx)
 
+        watermarks, state = self._resolve_authoritative_state(
+            key, watermarks, predicted_used, mutate
+        )
+        low = watermarks.low_mib
+        high = watermarks.high_mib
+
+        if state == DiskState.BLOCKED:
+            return self._high_watermark_decision(state, low, high, ctx)
+
+        return DiskDecision(
+            DiskDecisionCode.ADMIT,
+            state,
+            host_id,
+            observation,
+            predicted_used,
+            predicted_free,
+            "disk watermarks and predicted reservation permit admission",
+        )
+
+    def _insufficient_free_decision(
+        self,
+        key: tuple[str, str],
+        watermarks: DiskWatermarks,
+        ctx: _EvalContext,
+    ) -> DiskDecision:
+        if ctx.mutate:
+            with self._lock:
+                self._states[key] = DiskState.BLOCKED
+                self._watermarks.setdefault(key, watermarks)
+        decision = DiskDecision(
+            DiskDecisionCode.INSUFFICIENT_FREE,
+            DiskState.BLOCKED,
+            ctx.host_id,
+            ctx.observation,
+            ctx.predicted_used,
+            ctx.predicted_free,
+            "predicted reservation exceeds observed free disk",
+            max(0, ctx.requested_mib - ctx.observation.free_mib),
+        )
+        if ctx.mutate:
+            self._maybe_request_gc(decision, ctx.reservation_id, ctx.request_gc)
+        return decision
+
+    def _high_watermark_decision(
+        self,
+        state: DiskState,
+        low: int | None,
+        high: int | None,
+        ctx: _EvalContext,
+    ) -> DiskDecision:
+        decision = DiskDecision(
+            DiskDecisionCode.HIGH_WATERMARK,
+            state,
+            ctx.host_id,
+            ctx.observation,
+            ctx.predicted_used,
+            ctx.predicted_free,
+            (
+                f"predicted used disk {ctx.predicted_used} MiB reaches high "
+                f"watermark {high} MiB; admission deferred until usage is "
+                f"<= {low} MiB"
+            ),
+            max(0, ctx.predicted_used - (low or ctx.predicted_used)),
+        )
+        if ctx.mutate:
+            self._maybe_request_gc(decision, ctx.reservation_id, ctx.request_gc)
+        return decision
+
+    @staticmethod
+    def _normalize_watermarks(
+        watermarks: DiskWatermarks, policy_key: str
+    ) -> tuple[DiskWatermarks, int | None, int | None]:
+        if watermarks.high_mib is not None and watermarks.low_mib is None:
+            low: int | None = watermarks.high_mib
+        else:
+            low = watermarks.low_mib
+        high = watermarks.high_mib
+        if low != watermarks.low_mib:
+            watermarks = DiskWatermarks(
+                low_mib=low, high_mib=high, policy_key=policy_key
+            )
+        return watermarks, low, high
+
+    def _resolve_authoritative_state(
+        self,
+        key: tuple[str, str],
+        watermarks: DiskWatermarks,
+        predicted_used: int,
+        mutate: bool,
+    ) -> tuple[DiskWatermarks, DiskState]:
         with self._lock:
             # A policy key owns its first accepted thresholds.  A missing or
             # divergent request cannot silently clear native hysteresis; a
@@ -244,34 +336,7 @@ class DiskPolicy:
                 )
             if mutate:
                 self._states[key] = state
-
-        if state == DiskState.BLOCKED:
-            decision = DiskDecision(
-                DiskDecisionCode.HIGH_WATERMARK,
-                state,
-                host_id,
-                observation,
-                predicted_used,
-                predicted_free,
-                (
-                    f"predicted used disk {predicted_used} MiB reaches high watermark "
-                    f"{high} MiB; admission deferred until usage is <= {low} MiB"
-                ),
-                max(0, predicted_used - (low or predicted_used)),
-            )
-            if mutate:
-                self._maybe_request_gc(decision, reservation_id, request_gc)
-            return decision
-
-        return DiskDecision(
-            DiskDecisionCode.ADMIT,
-            state,
-            host_id,
-            observation,
-            predicted_used,
-            predicted_free,
-            "disk watermarks and predicted reservation permit admission",
-        )
+        return watermarks, state
 
     def _maybe_request_gc(
         self, decision: DiskDecision, reservation_id: str, enabled: bool
