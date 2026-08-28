@@ -14,6 +14,7 @@ import hashlib
 import importlib.resources
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -214,24 +215,50 @@ def _contained_path(root: Path, value: object, label: str) -> Path:
     return resolved
 
 
-def _safe_identifier(value: object) -> str:
-    if not isinstance(value, str) or not value or "\\" in value:
-        raise DocsReadinessError("repository-identity-invalid")
-    raw_parts = value.split("/")
-    if any(
+def _has_invalid_identifier_component(value: str) -> bool:
+    return any(
         not part or part in {".", ".."} or ord(character) < 32
-        for part in raw_parts
+        for part in value.split("/")
         for character in part
-    ):
-        raise DocsReadinessError("repository-identity-invalid")
-    path = PurePosixPath(value)
-    if (
+    )
+
+
+def _is_invalid_identifier_path(path: PurePosixPath) -> bool:
+    return (
         path.is_absolute()
         or not path.parts
         or any(part in {"", ".", ".."} for part in path.parts)
-    ):
+    )
+
+
+def _safe_identifier(value: object) -> str:
+    if not isinstance(value, str) or not value or "\\" in value:
+        raise DocsReadinessError("repository-identity-invalid")
+    if _has_invalid_identifier_component(value):
+        raise DocsReadinessError("repository-identity-invalid")
+    path = PurePosixPath(value)
+    if _is_invalid_identifier_path(path):
         raise DocsReadinessError("repository-identity-invalid")
     return path.as_posix()
+
+
+def _resolve_manifest_entry(
+    entry: Any, root: Path, seen: set[str]
+) -> RepositoryIdentity:
+    identifier = _safe_identifier(entry.identifier)
+    if identifier in seen:
+        raise DocsReadinessError("workspace-manifest-duplicate")
+    seen.add(identifier)
+    target = root.joinpath(*PurePosixPath(identifier).parts)
+    _reject_symlink_components(root, target, "repository-path")
+    try:
+        resolved = target.resolve(strict=False)
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise DocsReadinessError("repository-path-containment") from exc
+    if target.exists() and (resolved != target or target.is_symlink()):
+        raise DocsReadinessError("repository-path-invalid")
+    return RepositoryIdentity(identifier=identifier, name=entry.name, path=resolved)
 
 
 def _manifest_repositories(
@@ -256,30 +283,26 @@ def _manifest_repositories(
     if len(entries) > MAX_REPOSITORIES:
         raise DocsReadinessError("workspace-manifest-too-large")
 
-    identities: list[RepositoryIdentity] = []
     seen: set[str] = set()
-    for entry in entries:
-        identifier = _safe_identifier(entry.identifier)
-        if identifier in seen:
-            raise DocsReadinessError("workspace-manifest-duplicate")
-        seen.add(identifier)
-        target = root.joinpath(*PurePosixPath(identifier).parts)
-        _reject_symlink_components(root, target, "repository-path")
-        try:
-            resolved = target.resolve(strict=False)
-            resolved.relative_to(root)
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise DocsReadinessError("repository-path-containment") from exc
-        if target.exists() and (resolved != target or target.is_symlink()):
-            raise DocsReadinessError("repository-path-invalid")
-        identities.append(
-            RepositoryIdentity(identifier=identifier, name=entry.name, path=resolved)
-        )
+    identities = [_resolve_manifest_entry(entry, root, seen) for entry in entries]
     return tuple(identities)
 
 
 def _is_non_publishable(identifier: str) -> bool:
     return identifier in NON_PUBLISHABLE_IDENTITIES
+
+
+def _fleet_count_invalid(expected_count: int, actual_count: int) -> bool:
+    return (
+        type(expected_count) is not int
+        or expected_count < 0
+        or expected_count > MAX_REPOSITORIES
+        or actual_count != expected_count
+    )
+
+
+def _fleet_paths_invalid(selected: tuple[RepositoryIdentity, ...]) -> bool:
+    return any(not item.path.is_dir() or item.path.is_symlink() for item in selected)
 
 
 def _validate_fleet_selection(
@@ -306,17 +329,11 @@ def _validate_fleet_selection(
     selected = tuple(
         item for item in agent_fleet if not _is_non_publishable(item.identifier)
     )
-    if expected_count is not None:
-        if (
-            type(expected_count) is not int
-            or expected_count < 0
-            or expected_count > MAX_REPOSITORIES
-            or len(selected) != expected_count
-        ):
-            raise DocsReadinessError("fleet-selection-drift")
-    if validate_paths and any(
-        not item.path.is_dir() or item.path.is_symlink() for item in selected
+    if expected_count is not None and _fleet_count_invalid(
+        expected_count, len(selected)
     ):
+        raise DocsReadinessError("fleet-selection-drift")
+    if validate_paths and _fleet_paths_invalid(selected):
         raise DocsReadinessError("fleet-selection-drift")
     return selected
 
@@ -349,13 +366,7 @@ def _select_repositories(
     return selected
 
 
-def _git_snapshot(
-    path: Path,
-) -> tuple[bool, str, frozenset[str] | None]:
-    """Return clean state plus bounded relative dirty paths for mutation checks."""
-
-    if _GIT_EXECUTABLE is None:
-        return False, "repository-git-unavailable", None
+def _git_toplevel(path: Path) -> tuple[Path | None, str]:
     try:
         probe = subprocess.run(
             [_GIT_EXECUTABLE, "-C", str(path), "rev-parse", "--show-toplevel"],
@@ -365,16 +376,18 @@ def _git_snapshot(
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
-        return False, "repository-not-git", None
+        return None, "repository-not-git"
     if probe.returncode != 0:
-        return False, "repository-not-git", None
+        return None, "repository-not-git"
     try:
         top = Path(probe.stdout.strip()).resolve(strict=True)
         top.relative_to(path)
     except (OSError, RuntimeError, ValueError):
-        return False, "repository-root-mismatch", None
-    if top != path:
-        return False, "repository-root-mismatch", None
+        return None, "repository-root-mismatch"
+    return top, ""
+
+
+def _git_status_stdout(path: Path) -> tuple[str | None, str]:
     try:
         status = subprocess.run(
             [
@@ -391,35 +404,73 @@ def _git_snapshot(
             timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
-        return False, "repository-status-unavailable", None
+        return None, "repository-status-unavailable"
     if status.returncode != 0:
-        return False, "repository-status-unavailable", None
+        return None, "repository-status-unavailable"
     if len(status.stdout) > MAX_GIT_STATUS_BYTES:
-        return False, "repository-status-too-large", None
-    if not status.stdout:
-        return True, "", frozenset()
+        return None, "repository-status-too-large"
+    return status.stdout, ""
 
+
+def _validate_dirty_path(raw_path: str) -> str | None:
+    try:
+        relative = PurePosixPath(raw_path)
+    except (TypeError, ValueError):
+        return None
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+    ):
+        return None
+    return relative.as_posix()
+
+
+def _parse_dirty_line(line: str, dirty: set[str]) -> str | None:
+    """Add every path named on one status line to ``dirty``; None means ok."""
+
+    if len(line) < 4:
+        return "repository-status-unavailable"
+    for raw_path in line[3:].split(" -> "):
+        normalized = _validate_dirty_path(raw_path)
+        if normalized is None:
+            return "repository-status-unavailable"
+        dirty.add(normalized)
+        if len(dirty) > MAX_OUTPUTS:
+            return "repository-status-too-large"
+    return None
+
+
+def _parse_dirty_paths(stdout: str) -> tuple[frozenset[str] | None, str]:
     dirty: set[str] = set()
-    for line in status.stdout.splitlines():
-        if len(line) < 4:
-            return False, "repository-status-unavailable", None
-        raw_paths = line[3:]
-        candidates = raw_paths.split(" -> ")
-        for raw_path in candidates:
-            try:
-                relative = PurePosixPath(raw_path)
-            except (TypeError, ValueError):
-                return False, "repository-status-unavailable", None
-            if (
-                relative.is_absolute()
-                or not relative.parts
-                or any(part in {"", ".", ".."} for part in relative.parts)
-            ):
-                return False, "repository-status-unavailable", None
-            dirty.add(relative.as_posix())
-            if len(dirty) > MAX_OUTPUTS:
-                return False, "repository-status-too-large", None
-    return False, "repository-dirty", frozenset(dirty)
+    for line in stdout.splitlines():
+        reason = _parse_dirty_line(line, dirty)
+        if reason is not None:
+            return None, reason
+    return frozenset(dirty), ""
+
+
+def _git_snapshot(
+    path: Path,
+) -> tuple[bool, str, frozenset[str] | None]:
+    """Return clean state plus bounded relative dirty paths for mutation checks."""
+
+    if _GIT_EXECUTABLE is None:
+        return False, "repository-git-unavailable", None
+    top, reason = _git_toplevel(path)
+    if top is None:
+        return False, reason, None
+    if top != path:
+        return False, "repository-root-mismatch", None
+    stdout, reason = _git_status_stdout(path)
+    if stdout is None:
+        return False, reason, None
+    if not stdout:
+        return True, "", frozenset()
+    dirty, reason = _parse_dirty_paths(stdout)
+    if dirty is None:
+        return False, reason, None
+    return False, "repository-dirty", dirty
 
 
 def _git_status(path: Path) -> tuple[bool, str]:
@@ -480,30 +531,38 @@ def _input_preflight(path: Path) -> None:
     _contained_path(path, "mkdocs.yml", "mkdocs")
 
 
+def _validate_output_root_shape(
+    first: str, relative: PurePosixPath, field: str
+) -> None:
+    if first not in {"llms-sections", ".well-known"} and len(relative.parts) != 1:
+        raise DocsReadinessError(f"generator-{field}-invalid")
+    if first == "llms-sections" and (
+        len(relative.parts) < 2 or relative.parts[-1] != "llms.txt"
+    ):
+        raise DocsReadinessError(f"generator-{field}-invalid")
+    if first == ".well-known" and relative.parts[1:] != (_WELL_KNOWN_LEAF,):
+        raise DocsReadinessError(f"generator-{field}-invalid")
+
+
+def _validate_output_path(raw: object, field: str) -> str:
+    if not isinstance(raw, str) or not raw or "\\" in raw:
+        raise DocsReadinessError(f"generator-{field}-invalid")
+    relative = PurePosixPath(raw)
+    if relative.is_absolute() or any(
+        part in {"", ".", ".."} for part in relative.parts
+    ):
+        raise DocsReadinessError(f"generator-{field}-invalid")
+    first = relative.parts[0]
+    if first not in _OUTPUT_ROOTS:
+        raise DocsReadinessError(f"generator-{field}-outside-contract")
+    _validate_output_root_shape(first, relative, field)
+    return relative.as_posix()
+
+
 def _safe_outputs(value: object, field: str) -> list[str]:
     if not isinstance(value, list) or len(value) > MAX_OUTPUTS:
         raise DocsReadinessError(f"generator-{field}-invalid")
-    outputs: list[str] = []
-    for raw in value:
-        if not isinstance(raw, str) or not raw or "\\" in raw:
-            raise DocsReadinessError(f"generator-{field}-invalid")
-        relative = PurePosixPath(raw)
-        if relative.is_absolute() or any(
-            part in {"", ".", ".."} for part in relative.parts
-        ):
-            raise DocsReadinessError(f"generator-{field}-invalid")
-        first = relative.parts[0]
-        if first not in _OUTPUT_ROOTS:
-            raise DocsReadinessError(f"generator-{field}-outside-contract")
-        if first not in {"llms-sections", ".well-known"} and len(relative.parts) != 1:
-            raise DocsReadinessError(f"generator-{field}-invalid")
-        if first == "llms-sections" and (
-            len(relative.parts) < 2 or relative.parts[-1] != "llms.txt"
-        ):
-            raise DocsReadinessError(f"generator-{field}-invalid")
-        if first == ".well-known" and relative.parts[1:] != (_WELL_KNOWN_LEAF,):
-            raise DocsReadinessError(f"generator-{field}-invalid")
-        outputs.append(relative.as_posix())
+    outputs = [_validate_output_path(raw, field) for raw in value]
     if len(set(outputs)) != len(outputs):
         raise DocsReadinessError(f"generator-{field}-duplicate")
     return sorted(outputs)
@@ -561,6 +620,94 @@ def _generator_result(
     }
 
 
+def _check_strict_top_level(root: Path, allowed: set[str] | None) -> None:
+    if allowed is None:
+        raise DocsReadinessError("output-contract-invalid")
+    try:
+        top_level = sorted(root.iterdir(), key=lambda child: child.name)
+    except OSError as exc:
+        raise DocsReadinessError("output-unavailable") from exc
+    if any(child.name not in _OUTPUT_ROOTS for child in top_level):
+        raise DocsReadinessError("output-outside-contract")
+
+
+def _check_strict_contract(files: dict[str, bytes], allowed: set[str] | None) -> None:
+    assert allowed is not None
+    observed = set(files)
+    if observed - allowed:
+        raise DocsReadinessError("output-outside-contract")
+    if allowed - observed:
+        raise DocsReadinessError("output-contract-incomplete")
+
+
+class _ArtifactCollector:
+    """Bounded, symlink-safe collector for the generator-owned output tree."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.files: dict[str, bytes] = {}
+        self.total_bytes = 0
+
+    def _add_payload(
+        self, relative_key: str, path: Path, metadata: os.stat_result
+    ) -> None:
+        if metadata.st_nlink != 1:
+            raise DocsReadinessError("output-not-regular")
+        if len(self.files) >= MAX_OUTPUTS:
+            raise DocsReadinessError("output-count-exceeded")
+        if self.total_bytes + metadata.st_size > MAX_OUTPUT_BYTES:
+            raise DocsReadinessError("output-oversize")
+        try:
+            payload = path.read_bytes()
+        except OSError as exc:
+            raise DocsReadinessError("output-unavailable") from exc
+        self.total_bytes += len(payload)
+        if self.total_bytes > MAX_OUTPUT_BYTES:
+            raise DocsReadinessError("output-oversize")
+        self.files[relative_key] = payload
+
+    def _visit_child(self, child: Path) -> None:
+        if child.is_symlink():
+            raise DocsReadinessError("output-symlink")
+        if child.is_dir():
+            self.visit_directory(child)
+            return
+        if not child.is_file():
+            raise DocsReadinessError("output-not-regular")
+        try:
+            metadata = child.lstat()
+        except OSError as exc:
+            raise DocsReadinessError("output-unavailable") from exc
+        self._add_payload(child.relative_to(self.root).as_posix(), child, metadata)
+
+    def visit_directory(self, directory: Path) -> None:
+        try:
+            children = sorted(directory.iterdir(), key=lambda child: child.name)
+        except OSError as exc:
+            raise DocsReadinessError("output-unavailable") from exc
+        if len(children) > MAX_OUTPUTS:
+            raise DocsReadinessError("output-count-exceeded")
+        for child in children:
+            self._visit_child(child)
+
+    def visit_root(self, relative_root: str) -> None:
+        candidate = self.root / relative_root
+        if candidate.is_symlink():
+            raise DocsReadinessError("output-symlink")
+        if not candidate.exists():
+            return
+        if candidate.is_file():
+            try:
+                metadata = candidate.lstat()
+            except OSError as exc:
+                raise DocsReadinessError("output-unavailable") from exc
+            self._add_payload(relative_root, candidate, metadata)
+            return
+        if not candidate.is_dir():
+            raise DocsReadinessError("output-not-regular")
+        self.visit_directory(candidate)
+
+
 def _artifact_files(
     root: Path, *, strict: bool = False, allowed: set[str] | None = None
 ) -> dict[str, bytes]:
@@ -573,91 +720,15 @@ def _artifact_files(
     contains ordinary project files outside the generated namespace.
     """
 
-    files: dict[str, bytes] = {}
-    total_bytes = 0
-
     if strict:
-        if allowed is None:
-            raise DocsReadinessError("output-contract-invalid")
-        try:
-            top_level = sorted(root.iterdir(), key=lambda child: child.name)
-        except OSError as exc:
-            raise DocsReadinessError("output-unavailable") from exc
-        if any(child.name not in _OUTPUT_ROOTS for child in top_level):
-            raise DocsReadinessError("output-outside-contract")
+        _check_strict_top_level(root, allowed)
 
-    def visit(directory: Path) -> None:
-        nonlocal total_bytes
-        try:
-            children = sorted(directory.iterdir(), key=lambda child: child.name)
-        except OSError as exc:
-            raise DocsReadinessError("output-unavailable") from exc
-        if len(children) > MAX_OUTPUTS:
-            raise DocsReadinessError("output-count-exceeded")
-        for child in children:
-            if child.is_symlink():
-                raise DocsReadinessError("output-symlink")
-            if child.is_dir():
-                visit(child)
-                continue
-            if not child.is_file():
-                raise DocsReadinessError("output-not-regular")
-            try:
-                metadata = child.lstat()
-            except OSError as exc:
-                raise DocsReadinessError("output-unavailable") from exc
-            if metadata.st_nlink != 1:
-                raise DocsReadinessError("output-not-regular")
-            if len(files) >= MAX_OUTPUTS:
-                raise DocsReadinessError("output-count-exceeded")
-            if total_bytes + metadata.st_size > MAX_OUTPUT_BYTES:
-                raise DocsReadinessError("output-oversize")
-            try:
-                payload = child.read_bytes()
-            except OSError as exc:
-                raise DocsReadinessError("output-unavailable") from exc
-            total_bytes += len(payload)
-            if total_bytes > MAX_OUTPUT_BYTES:
-                raise DocsReadinessError("output-oversize")
-            files[child.relative_to(root).as_posix()] = payload
-
+    collector = _ArtifactCollector(root)
     for relative_root in sorted(_OUTPUT_ROOTS):
-        candidate = root / relative_root
-        if candidate.is_symlink():
-            raise DocsReadinessError("output-symlink")
-        if not candidate.exists():
-            continue
-        if candidate.is_file():
-            try:
-                metadata = candidate.lstat()
-            except OSError as exc:
-                raise DocsReadinessError("output-unavailable") from exc
-            if metadata.st_nlink != 1:
-                raise DocsReadinessError("output-not-regular")
-            if len(files) >= MAX_OUTPUTS:
-                raise DocsReadinessError("output-count-exceeded")
-            if total_bytes + metadata.st_size > MAX_OUTPUT_BYTES:
-                raise DocsReadinessError("output-oversize")
-            try:
-                payload = candidate.read_bytes()
-            except OSError as exc:
-                raise DocsReadinessError("output-unavailable") from exc
-            total_bytes += len(payload)
-            if total_bytes > MAX_OUTPUT_BYTES:
-                raise DocsReadinessError("output-oversize")
-            files[relative_root] = payload
-            continue
-        if not candidate.is_dir():
-            raise DocsReadinessError("output-not-regular")
-        visit(candidate)
+        collector.visit_root(relative_root)
     if strict:
-        assert allowed is not None
-        observed = set(files)
-        if observed - allowed:
-            raise DocsReadinessError("output-outside-contract")
-        if allowed - observed:
-            raise DocsReadinessError("output-contract-incomplete")
-    return files
+        _check_strict_contract(collector.files, allowed)
+    return collector.files
 
 
 def _remove_artifact_path(path: Path, counters: list[int]) -> None:
@@ -715,6 +786,67 @@ def _restore_artifacts(root: Path, snapshot: Mapping[str, bytes]) -> bool:
         return False
 
 
+def _verify_current_staged(
+    generator: Generator,
+    root: Path,
+    staging: Path,
+    dirty_before: frozenset[str],
+) -> dict[str, Any]:
+    staging.mkdir()
+    actual_before = _artifact_files(root)
+    raw = generator(
+        root,
+        output_dir=staging,
+        check=False,
+        adopt_existing=True,
+    )
+    if not isinstance(raw, Mapping):
+        return {"ok": False, "error_code": "generator-result-invalid"}
+    generated = _safe_outputs(raw.get("generated"), "outputs")
+    _safe_outputs(raw.get("planned", []), "planned")
+    _safe_outputs(raw.get("pruned", []), "pruned")
+    expected = _artifact_files(
+        staging,
+        strict=True,
+        allowed=set(generated) | {"agent-readiness-manifest.json"},
+    )
+    _, status_after_reason, dirty_after = _git_snapshot(root)
+    if dirty_after is None:
+        return {
+            "ok": False,
+            "error_code": _safe_reason(
+                status_after_reason, "verification-target-status"
+            ),
+        }
+    if dirty_after != dirty_before:
+        return {
+            "ok": False,
+            "error_code": "verification-mutated-target",
+        }
+    actual_after = _artifact_files(root)
+    if actual_after != actual_before:
+        return {
+            "ok": False,
+            "error_code": "verification-mutated-target",
+        }
+    if expected != actual_after:
+        return {
+            "ok": False,
+            "error_code": "artifacts-not-current",
+        }
+    return {
+        "ok": True,
+        "generated": generated,
+        "planned": [],
+        "pruned": [],
+        "provenance_digest": _result_digest(raw),
+        "generator_version": _safe_version(
+            raw.get("generator_version")
+            or (raw.get("provenance") or {}).get("generator_version")
+        ),
+    }
+
+
 def _verify_current(
     generator: Generator,
     root: Path,
@@ -749,59 +881,7 @@ def _verify_current(
             dirty_before = frozenset()
         with tempfile.TemporaryDirectory(prefix="rm-docs-readiness-") as tmp:
             staging = Path(tmp) / "artifacts"
-            staging.mkdir()
-            actual_before = _artifact_files(root)
-            raw = generator(
-                root,
-                output_dir=staging,
-                check=False,
-                adopt_existing=True,
-            )
-            if not isinstance(raw, Mapping):
-                return {"ok": False, "error_code": "generator-result-invalid"}
-            generated = _safe_outputs(raw.get("generated"), "outputs")
-            _safe_outputs(raw.get("planned", []), "planned")
-            _safe_outputs(raw.get("pruned", []), "pruned")
-            expected = _artifact_files(
-                staging,
-                strict=True,
-                allowed=set(generated) | {"agent-readiness-manifest.json"},
-            )
-            _, status_after_reason, dirty_after = _git_snapshot(root)
-            if dirty_after is None:
-                return {
-                    "ok": False,
-                    "error_code": _safe_reason(
-                        status_after_reason, "verification-target-status"
-                    ),
-                }
-            if dirty_after != dirty_before:
-                return {
-                    "ok": False,
-                    "error_code": "verification-mutated-target",
-                }
-            actual_after = _artifact_files(root)
-            if actual_after != actual_before:
-                return {
-                    "ok": False,
-                    "error_code": "verification-mutated-target",
-                }
-            if expected != actual_after:
-                return {
-                    "ok": False,
-                    "error_code": "artifacts-not-current",
-                }
-            return {
-                "ok": True,
-                "generated": generated,
-                "planned": [],
-                "pruned": [],
-                "provenance_digest": _result_digest(raw),
-                "generator_version": _safe_version(
-                    raw.get("generator_version")
-                    or (raw.get("provenance") or {}).get("generator_version")
-                ),
-            }
+            return _verify_current_staged(generator, root, staging, dirty_before)
     except DocsReadinessError as exc:
         return {
             "ok": False,
@@ -818,64 +898,71 @@ def _empty_result(
     return {"repository": identity.identifier, "status": status, "reason": reason}
 
 
-def _dispatch_one(
-    action: str,
-    identity: RepositoryIdentity,
-    generator: Generator,
-) -> dict[str, Any]:
-    if _is_non_publishable(identity.identifier):
-        return _empty_result(identity, "excluded", "non-publishable-agent-tests")
-    clean, reason = _git_status(identity.path)
-    if not clean:
-        return _empty_result(identity, "blocked", reason)
+def _dispatch_preflight(
+    action: str, identity: RepositoryIdentity
+) -> tuple[dict[str, bytes] | None, dict[str, Any] | None]:
     try:
         _input_preflight(identity.path)
     except DocsReadinessError as exc:
-        return _empty_result(identity, "blocked", _safe_reason(str(exc)))
-    before_artifacts: dict[str, bytes] | None = None
-    if action == "apply":
-        try:
-            before_artifacts = _artifact_files(identity.path)
-        except DocsReadinessError as exc:
-            return _empty_result(identity, "blocked", _safe_reason(str(exc)))
-    result = (
-        _verify_current(generator, identity.path)
-        if action == "verify"
-        else _generator_result(generator, action, identity.path)
+        return None, _empty_result(identity, "blocked", _safe_reason(str(exc)))
+    if action != "apply":
+        return None, None
+    try:
+        return _artifact_files(identity.path), None
+    except DocsReadinessError as exc:
+        return None, _empty_result(identity, "blocked", _safe_reason(str(exc)))
+
+
+def _dispatch_failure_result(
+    identity: RepositoryIdentity,
+    action: str,
+    before_artifacts: dict[str, bytes] | None,
+    result: dict[str, Any],
+) -> dict[str, Any]:
+    if action == "apply" and before_artifacts is not None:
+        if not _restore_artifacts(identity.path, before_artifacts):
+            return _empty_result(identity, "blocked", "apply-rollback-failed")
+    return {
+        "repository": identity.identifier,
+        "status": "blocked",
+        "reason": result.get("error_code", "generator-failed"),
+        **{
+            key: result[key]
+            for key in ("generated", "planned", "pruned")
+            if key in result
+        },
+    }
+
+
+def _dispatch_apply_verify(
+    generator: Generator,
+    identity: RepositoryIdentity,
+    before_artifacts: dict[str, bytes] | None,
+    result: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    current = _verify_current(
+        generator,
+        identity.path,
+        allowed_dirty_paths=set(result.get("generated", []))
+        | set(result.get("pruned", []))
+        | {"agent-readiness-manifest.json"},
     )
-    if not result.get("ok"):
-        if action == "apply" and before_artifacts is not None:
-            if not _restore_artifacts(identity.path, before_artifacts):
-                return _empty_result(identity, "blocked", "apply-rollback-failed")
-        return {
+    if not current.get("ok"):
+        if before_artifacts is not None and not _restore_artifacts(
+            identity.path, before_artifacts
+        ):
+            return None, _empty_result(identity, "blocked", "apply-rollback-failed")
+        return None, {
             "repository": identity.identifier,
             "status": "blocked",
-            "reason": result.get("error_code", "generator-failed"),
-            **{
-                key: result[key]
-                for key in ("generated", "planned", "pruned")
-                if key in result
-            },
+            "reason": current.get("error_code", "artifacts-not-current"),
         }
-    if action == "apply":
-        current = _verify_current(
-            generator,
-            identity.path,
-            allowed_dirty_paths=set(result.get("generated", []))
-            | set(result.get("pruned", []))
-            | {"agent-readiness-manifest.json"},
-        )
-        if not current.get("ok"):
-            if before_artifacts is not None and not _restore_artifacts(
-                identity.path, before_artifacts
-            ):
-                return _empty_result(identity, "blocked", "apply-rollback-failed")
-            return {
-                "repository": identity.identifier,
-                "status": "blocked",
-                "reason": current.get("error_code", "artifacts-not-current"),
-            }
-        result = {**result, "provenance_digest": current["provenance_digest"]}
+    return {**result, "provenance_digest": current["provenance_digest"]}, None
+
+
+def _dispatch_success_result(
+    action: str, identity: RepositoryIdentity, result: dict[str, Any]
+) -> dict[str, Any]:
     status = (
         "verified"
         if action == "verify"
@@ -892,30 +979,58 @@ def _dispatch_one(
     }
 
 
-def dispatch(action: str = "preview", **kwargs: Any) -> dict[str, Any]:
-    """Run one read-only preview, guarded apply, or read-only verification.
-
-    ``repository`` is always a full manifest-relative identity, never a
-    basename or arbitrary path.  The private ``_generator`` keyword exists
-    solely for offline tests; production callers use the canonical package
-    authority resolved above.
-    """
-
-    if action not in ACTIONS:
-        return {"ok": False, "error_code": "unknown-action", "actions": list(ACTIONS)}
+def _dispatch_one(
+    action: str,
+    identity: RepositoryIdentity,
+    generator: Generator,
+) -> dict[str, Any]:
+    if _is_non_publishable(identity.identifier):
+        return _empty_result(identity, "excluded", "non-publishable-agent-tests")
+    clean, reason = _git_status(identity.path)
+    if not clean:
+        return _empty_result(identity, "blocked", reason)
+    before_artifacts, error = _dispatch_preflight(action, identity)
+    if error is not None:
+        return error
+    result = (
+        _verify_current(generator, identity.path)
+        if action == "verify"
+        else _generator_result(generator, action, identity.path)
+    )
+    if not result.get("ok"):
+        return _dispatch_failure_result(identity, action, before_artifacts, result)
     if action == "apply":
-        if kwargs.get("repository") is None:
-            return {
-                "ok": False,
-                "action": action,
-                "error_code": "apply-requires-exact-repository",
-            }
-        if kwargs.get("confirm") is not True:
-            return {
-                "ok": False,
-                "action": action,
-                "error_code": "apply-confirmation-required",
-            }
+        result, error = _dispatch_apply_verify(
+            generator, identity, before_artifacts, result
+        )
+        if error is not None:
+            return error
+    return _dispatch_success_result(action, identity, result)
+
+
+def _apply_precondition_error(
+    action: str, kwargs: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    if action != "apply":
+        return None
+    if kwargs.get("repository") is None:
+        return {
+            "ok": False,
+            "action": action,
+            "error_code": "apply-requires-exact-repository",
+        }
+    if kwargs.get("confirm") is not True:
+        return {
+            "ok": False,
+            "action": action,
+            "error_code": "apply-confirmation-required",
+        }
+    return None
+
+
+def _resolve_selection(
+    action: str, kwargs: Mapping[str, Any]
+) -> tuple[tuple[RepositoryIdentity, ...] | None, dict[str, Any] | None]:
     try:
         root = _safe_root(kwargs.get("workspace_root", Path.cwd()))
         manifest_value = kwargs.get("manifest_path")
@@ -931,16 +1046,53 @@ def dispatch(action: str = "preview", **kwargs: Any) -> dict[str, Any]:
             expected_count=EXPECTED_AGENT_FLEET_COUNT,
             validate_paths=True,
         )
+        return selected, None
     except DocsReadinessError as exc:
-        return {"ok": False, "action": action, "error_code": _safe_reason(str(exc))}
+        return None, {
+            "ok": False,
+            "action": action,
+            "error_code": _safe_reason(str(exc)),
+        }
+
+
+def _resolve_generator(
+    action: str, kwargs: Mapping[str, Any]
+) -> tuple[Generator | None, dict[str, Any] | None]:
     generator = kwargs.get("_generator")
     if generator is None:
         try:
             generator = _canonical_generator()
         except DocsReadinessError as exc:
-            return {"ok": False, "action": action, "error_code": _safe_reason(str(exc))}
+            return None, {
+                "ok": False,
+                "action": action,
+                "error_code": _safe_reason(str(exc)),
+            }
     if not callable(generator):
-        return {"ok": False, "action": action, "error_code": "generator-invalid"}
+        return None, {"ok": False, "action": action, "error_code": "generator-invalid"}
+    return generator, None
+
+
+def dispatch(action: str = "preview", **kwargs: Any) -> dict[str, Any]:
+    """Run one read-only preview, guarded apply, or read-only verification.
+
+    ``repository`` is always a full manifest-relative identity, never a
+    basename or arbitrary path.  The private ``_generator`` keyword exists
+    solely for offline tests; production callers use the canonical package
+    authority resolved above.
+    """
+
+    if action not in ACTIONS:
+        return {"ok": False, "error_code": "unknown-action", "actions": list(ACTIONS)}
+    precondition_error = _apply_precondition_error(action, kwargs)
+    if precondition_error is not None:
+        return precondition_error
+    selected, error = _resolve_selection(action, kwargs)
+    if error is not None:
+        return error
+    generator, error = _resolve_generator(action, kwargs)
+    if error is not None:
+        return error
 
     results = [_dispatch_one(action, identity, generator) for identity in selected]
     failures = [item for item in results if item.get("status") == "blocked"]
