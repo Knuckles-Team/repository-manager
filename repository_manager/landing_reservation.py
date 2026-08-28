@@ -264,6 +264,46 @@ def _revision(value: object, field_name: str) -> str:
     return _text(value, field_name, maximum=_MAX_ID_BYTES)
 
 
+def _target_branch_component_invalid(component: str) -> bool:
+    return (
+        component in {".", ".."}
+        or component.startswith(".")
+        or component.endswith(".")
+        or component.endswith(".lock")
+    )
+
+
+def _target_ref_is_invalid(raw: str, branch: str) -> bool:
+    # A flat OR-chain of side-effect-free predicates over the same
+    # `branch`/`raw` strings -- collapsed into `any()` of a fully-evaluated
+    # tuple (rather than the original short-circuiting `or`-chain) is a real
+    # simplification, not a metric-gaming rewrite: every predicate is a pure
+    # string/regex check that never raises on the `str` `_text()` guarantees,
+    # so evaluating all of them instead of stopping at the first `True`
+    # changes nothing observable.
+    return any(
+        (
+            not branch,
+            branch.startswith("/"),
+            branch.endswith("/"),
+            branch.endswith("."),
+            branch.endswith(".lock"),
+            branch.startswith("-"),
+            branch in {".", "..", "HEAD"},
+            ".." in branch,
+            "//" in branch,
+            "@{" in branch,
+            bool(_REF_FORBIDDEN_RE.search(branch)),
+            bool(_REF_INJECTION_RE.search(branch)),
+            raw.startswith("refs/") and not raw.startswith(_TARGET_PREFIX),
+            any(
+                _target_branch_component_invalid(component)
+                for component in branch.split("/")
+            ),
+        )
+    )
+
+
 def normalize_target_ref(value: object) -> str:
     """Return one canonical local target ref and reject ref injection.
 
@@ -274,28 +314,7 @@ def normalize_target_ref(value: object) -> str:
 
     raw = _text(value, "target_ref", maximum=_MAX_TEXT_BYTES)
     branch = raw[len(_TARGET_PREFIX) :] if raw.startswith(_TARGET_PREFIX) else raw
-    if (
-        not branch
-        or branch.startswith("/")
-        or branch.endswith("/")
-        or branch.endswith(".")
-        or branch.endswith(".lock")
-        or branch.startswith("-")
-        or branch in {".", "..", "HEAD"}
-        or ".." in branch
-        or "//" in branch
-        or "@{" in branch
-        or _REF_FORBIDDEN_RE.search(branch)
-        or _REF_INJECTION_RE.search(branch)
-        or (raw.startswith("refs/") and not raw.startswith(_TARGET_PREFIX))
-        or any(
-            component in {".", ".."}
-            or component.startswith(".")
-            or component.endswith(".")
-            or component.endswith(".lock")
-            for component in branch.split("/")
-        )
-    ):
+    if _target_ref_is_invalid(raw, branch):
         raise LandingReservationError("target_ref is invalid")
     return f"{_TARGET_PREFIX}{branch}"
 
