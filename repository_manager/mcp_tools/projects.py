@@ -147,26 +147,32 @@ def _classify_existing_validate_job(
     return None, None, None
 
 
+def _hook_failures(hooks: Any) -> list[str]:
+    failures: list[str] = []
+    for hook in hooks:
+        if not getattr(hook, "passed", True):
+            output = getattr(hook, "output", "").strip()
+            failures.append(
+                f"Hook '{hook.hook_id}' failed: {output}"
+                if output
+                else f"Hook '{hook.hook_id}' failed."
+            )
+    return failures
+
+
 def _build_cache_summary(existing_job_result: Any) -> dict[str, Any]:
     """Derive the compact pass/fail cache summary for a completed validate
     job's cached result. Extracted verbatim from ``rm_projects``.
     """
     cache_summary: dict[str, Any] = {"passed": False, "failures": []}
-    if existing_job_result:
-        if hasattr(existing_job_result, "success"):
-            cache_summary["passed"] = existing_job_result.success
-        if hasattr(existing_job_result, "hooks"):
-            cache_summary["failures"] = []
-            for hook in existing_job_result.hooks:
-                if not getattr(hook, "passed", True):
-                    output = getattr(hook, "output", "").strip()
-                    cache_summary["failures"].append(
-                        f"Hook '{hook.hook_id}' failed: {output}"
-                        if output
-                        else f"Hook '{hook.hook_id}' failed."
-                    )
-        if hasattr(existing_job_result, "error") and existing_job_result.error:
-            cache_summary["failures"].append(existing_job_result.error)
+    if not existing_job_result:
+        return cache_summary
+    if hasattr(existing_job_result, "success"):
+        cache_summary["passed"] = existing_job_result.success
+    if hasattr(existing_job_result, "hooks"):
+        cache_summary["failures"] = _hook_failures(existing_job_result.hooks)
+    if hasattr(existing_job_result, "error") and existing_job_result.error:
+        cache_summary["failures"].append(existing_job_result.error)
     return cache_summary
 
 
@@ -182,8 +188,8 @@ def _scan_existing_validate_jobs(
     """
     result_payload: dict[str, Any] = {"queued": {}, "running": {}, "completed": {}}
     with adapter_context.jobs_lock:
-        running_by_repo, completed_by_repo = (
-            _index_running_and_completed_validate_jobs(adapter_context.jobs)
+        running_by_repo, completed_by_repo = _index_running_and_completed_validate_jobs(
+            adapter_context.jobs
         )
         for repo_name, _path in targets:
             status, job_id, job_result = _classify_existing_validate_job(
@@ -571,7 +577,12 @@ def register_project_tools(
                 result_payload,
             )
             push_dependencies = _submit_bump_job(
-                adapter_context, git, bump_dependencies, auto_bump, bump_part, result_payload
+                adapter_context,
+                git,
+                bump_dependencies,
+                auto_bump,
+                bump_part,
+                result_payload,
             )
             _submit_push_job(
                 adapter_context, git, push_dependencies, auto_push, result_payload
