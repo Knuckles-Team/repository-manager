@@ -134,7 +134,7 @@ def _bounded_utf8(value: str, maximum_bytes: int) -> bool:
         return False
 
 
-def _tokenize_spdx(expression: str) -> tuple[str, ...]:
+def _validate_spdx_expression_bounds(expression: str) -> None:
     if (
         not isinstance(expression, str)
         or not expression
@@ -142,6 +142,20 @@ def _tokenize_spdx(expression: str) -> tuple[str, ...]:
         or "\x00" in expression
     ):
         raise _SpdxSyntaxError
+
+
+def _spdx_scan_word(expression: str, position: int) -> tuple[str, int]:
+    end = position
+    while end < len(expression):
+        candidate = expression[end]
+        if candidate.isspace() or candidate in "()":
+            break
+        end += 1
+    return expression[position:end], end
+
+
+def _tokenize_spdx(expression: str) -> tuple[str, ...]:
+    _validate_spdx_expression_bounds(expression)
     tokens: list[str] = []
     position = 0
     while position < len(expression):
@@ -153,17 +167,10 @@ def _tokenize_spdx(expression: str) -> tuple[str, ...]:
             tokens.append(character)
             position += 1
         else:
-            end = position
-            while end < len(expression):
-                candidate = expression[end]
-                if candidate.isspace() or candidate in "()":
-                    break
-                end += 1
-            token = expression[position:end]
+            token, position = _spdx_scan_word(expression, position)
             if token not in _SPDX_OPERATORS and not _is_spdx_identifier(token):
                 raise _SpdxSyntaxError
             tokens.append(token)
-            position = end
         if len(tokens) > MAX_LICENSE_TOKENS:
             raise _SpdxSyntaxError
     if not tokens:
@@ -277,62 +284,60 @@ def _read_json(path: Path, *, maximum_bytes: int) -> dict[str, Any]:
     return value
 
 
-def load_contract(root: Path, reference: str) -> dict[str, Any]:
-    """Load and fully validate one versioned assurance contract."""
+def _validate_hook_argv(argv: Any) -> None:
+    if (
+        not isinstance(argv, list)
+        or not 1 <= len(argv) <= MAX_ARGV_ITEMS
+        or any(
+            not isinstance(argument, str)
+            or not argument
+            or len(argument.encode()) > MAX_ARGUMENT_BYTES
+            or "\x00" in argument
+            for argument in argv
+        )
+    ):
+        raise SecurityContractError("security hook argv is invalid")
 
-    contract = _read_json(
-        _relative_file(root, reference, maximum_bytes=MAX_CONTRACT_BYTES),
-        maximum_bytes=MAX_CONTRACT_BYTES,
-    )
-    if set(contract) != {"version", "hooks", "license_policy"}:
-        raise SecurityContractError("security contract fields are invalid")
-    if contract.get("version") != 2 or not isinstance(contract.get("hooks"), dict):
-        raise SecurityContractError("security contract version is unsupported")
-    hooks = contract["hooks"]
+
+def _validate_hook_limits(hook: dict[str, Any]) -> None:
+    timeout = hook["timeout_seconds"]
+    if not isinstance(timeout, int) or not 1 <= timeout <= 900:
+        raise SecurityContractError("security hook timeout is invalid")
+    min_cases = hook["min_cases"]
+    if not isinstance(min_cases, int) or not 1 <= min_cases <= 100_000_000:
+        raise SecurityContractError("security hook case threshold is invalid")
+
+
+def _validate_hook_evidence_reference(evidence: Any) -> None:
+    if (
+        not isinstance(evidence, str)
+        or Path(evidence).is_absolute()
+        or ".." in Path(evidence).parts
+    ):
+        raise SecurityContractError("security hook evidence path is invalid")
+
+
+def _validate_hook_declaration(hook: Any) -> None:
+    if not isinstance(hook, dict) or set(hook) != {
+        "argv",
+        "timeout_seconds",
+        "evidence",
+        "min_cases",
+    }:
+        raise SecurityContractError("security hook declaration is invalid")
+    _validate_hook_argv(hook["argv"])
+    _validate_hook_limits(hook)
+    _validate_hook_evidence_reference(hook["evidence"])
+
+
+def _validate_hooks(hooks: Any) -> None:
     if set(hooks) != set(HOOK_KINDS):
         raise SecurityContractError("security contract must declare every hook")
     for kind in HOOK_KINDS:
-        hook = hooks[kind]
-        if not isinstance(hook, dict) or set(hook) != {
-            "argv",
-            "timeout_seconds",
-            "evidence",
-            "min_cases",
-        }:
-            raise SecurityContractError("security hook declaration is invalid")
-        argv = hook["argv"]
-        if (
-            not isinstance(argv, list)
-            or not 1 <= len(argv) <= MAX_ARGV_ITEMS
-            or any(
-                not isinstance(argument, str)
-                or not argument
-                or len(argument.encode()) > MAX_ARGUMENT_BYTES
-                or "\x00" in argument
-                for argument in argv
-            )
-        ):
-            raise SecurityContractError("security hook argv is invalid")
-        timeout = hook["timeout_seconds"]
-        if not isinstance(timeout, int) or not 1 <= timeout <= 900:
-            raise SecurityContractError("security hook timeout is invalid")
-        min_cases = hook["min_cases"]
-        if not isinstance(min_cases, int) or not 1 <= min_cases <= 100_000_000:
-            raise SecurityContractError("security hook case threshold is invalid")
-        evidence = hook["evidence"]
-        if (
-            not isinstance(evidence, str)
-            or Path(evidence).is_absolute()
-            or ".." in Path(evidence).parts
-        ):
-            raise SecurityContractError("security hook evidence path is invalid")
-    policy = contract["license_policy"]
-    if not isinstance(policy, dict) or set(policy) != {
-        "allowed",
-        "allowed_exceptions",
-        "denied",
-    }:
-        raise SecurityContractError("license policy declaration is invalid")
+        _validate_hook_declaration(hooks[kind])
+
+
+def _validate_license_policy_values(policy: dict[str, Any]) -> None:
     for key in ("allowed", "allowed_exceptions", "denied"):
         values = policy[key]
         if (
@@ -345,12 +350,37 @@ def load_contract(root: Path, reference: str) -> dict[str, Any]:
             or len(set(values)) != len(values)
         ):
             raise SecurityContractError("license policy identifiers are invalid")
+
+
+def _validate_license_policy(policy: Any) -> None:
+    if not isinstance(policy, dict) or set(policy) != {
+        "allowed",
+        "allowed_exceptions",
+        "denied",
+    }:
+        raise SecurityContractError("license policy declaration is invalid")
+    _validate_license_policy_values(policy)
     if not policy["allowed"]:
         raise SecurityContractError("license policy must declare an allow-list")
     if set(policy["denied"]) & (
         set(policy["allowed"]) | set(policy["allowed_exceptions"])
     ):
         raise SecurityContractError("license policy allow and deny lists overlap")
+
+
+def load_contract(root: Path, reference: str) -> dict[str, Any]:
+    """Load and fully validate one versioned assurance contract."""
+
+    contract = _read_json(
+        _relative_file(root, reference, maximum_bytes=MAX_CONTRACT_BYTES),
+        maximum_bytes=MAX_CONTRACT_BYTES,
+    )
+    if set(contract) != {"version", "hooks", "license_policy"}:
+        raise SecurityContractError("security contract fields are invalid")
+    if contract.get("version") != 2 or not isinstance(contract.get("hooks"), dict):
+        raise SecurityContractError("security contract version is unsupported")
+    _validate_hooks(contract["hooks"])
+    _validate_license_policy(contract["license_policy"])
     return contract
 
 
@@ -386,14 +416,17 @@ def _limit_hook_output() -> None:
     )
 
 
-def _validate_hook_evidence(
-    kind: str, hook: dict[str, Any], evidence: dict[str, Any]
-) -> None:
+def _validate_hook_evidence_schema(kind: str, evidence: dict[str, Any]) -> None:
     required = {"version", "kind", "passed", "cases", "failures"}
     if not required.issubset(evidence) or evidence.get("version") != 1:
         raise SecurityContractError("security hook evidence schema is invalid")
     if evidence.get("kind") != kind or evidence.get("passed") is not True:
         raise SecurityContractError("security hook did not pass")
+
+
+def _validate_hook_evidence_threshold(
+    hook: dict[str, Any], evidence: dict[str, Any]
+) -> None:
     cases = evidence.get("cases")
     failures = evidence.get("failures")
     if (
@@ -403,6 +436,9 @@ def _validate_hook_evidence(
         or failures != 0
     ):
         raise SecurityContractError("security hook evidence threshold was not met")
+
+
+def _validate_hook_evidence_kind_specific(kind: str, evidence: dict[str, Any]) -> None:
     if kind == "fuzz" and evidence.get("crashes") != 0:
         raise SecurityContractError("fuzz hook reported a crash")
     if (
@@ -412,18 +448,18 @@ def _validate_hook_evidence(
         raise SecurityContractError("authenticated-negative hook reported a bypass")
 
 
-def run_hook(root: Path, contract: dict[str, Any], kind: str, result_root: str) -> None:
-    """Run one declared hook without a shell and require bounded passing evidence."""
+def _validate_hook_evidence(
+    kind: str, hook: dict[str, Any], evidence: dict[str, Any]
+) -> None:
+    _validate_hook_evidence_schema(kind, evidence)
+    _validate_hook_evidence_threshold(hook, evidence)
+    _validate_hook_evidence_kind_specific(kind, evidence)
 
-    if kind not in HOOK_KINDS:
-        raise SecurityContractError("security hook kind is invalid")
-    if _resource is None:
-        raise SecurityContractError(
-            "run-hook requires Unix resource limits and is unavailable on Windows"
-        )
-    results = root.joinpath(result_root)
+
+def _prepare_result_root(root: Path, result_root: str) -> Path:
     if Path(result_root).is_absolute() or ".." in Path(result_root).parts:
         raise SecurityContractError("security result root is invalid")
+    results = root.joinpath(result_root)
     results.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         resolved_results = results.resolve(strict=True)
@@ -432,7 +468,10 @@ def run_hook(root: Path, contract: dict[str, Any], kind: str, result_root: str) 
         raise SecurityContractError("security result root is invalid") from exc
     if results.is_symlink() or resolved_results != results or not results.is_dir():
         raise SecurityContractError("security result root is invalid")
-    hook = contract["hooks"][kind]
+    return resolved_results
+
+
+def _hook_evidence_path(root: Path, resolved_results: Path, hook: dict[str, Any]) -> Path:
     evidence = root.joinpath(hook["evidence"])
     try:
         evidence.relative_to(resolved_results)
@@ -440,8 +479,10 @@ def run_hook(root: Path, contract: dict[str, Any], kind: str, result_root: str) 
         raise SecurityContractError(
             "security hook evidence must stay in the result root"
         ) from exc
-    evidence.unlink(missing_ok=True)
-    log_path = results.joinpath(f"{kind}.log")
+    return evidence
+
+
+def _execute_hook(root: Path, hook: dict[str, Any], log_path: Path) -> int:
     try:
         with log_path.open("wb") as log:
             process = subprocess.Popen(
@@ -456,7 +497,7 @@ def run_hook(root: Path, contract: dict[str, Any], kind: str, result_root: str) 
                 preexec_fn=_limit_hook_output,
             )
             try:
-                return_code = process.wait(timeout=hook["timeout_seconds"])
+                return process.wait(timeout=hook["timeout_seconds"])
             except subprocess.TimeoutExpired as exc:
                 os.killpg(process.pid, signal.SIGKILL)
                 process.wait()
@@ -467,6 +508,23 @@ def run_hook(root: Path, contract: dict[str, Any], kind: str, result_root: str) 
         raise
     except Exception as exc:
         raise SecurityContractError("security hook execution failed") from exc
+
+
+def run_hook(root: Path, contract: dict[str, Any], kind: str, result_root: str) -> None:
+    """Run one declared hook without a shell and require bounded passing evidence."""
+
+    if kind not in HOOK_KINDS:
+        raise SecurityContractError("security hook kind is invalid")
+    if _resource is None:
+        raise SecurityContractError(
+            "run-hook requires Unix resource limits and is unavailable on Windows"
+        )
+    resolved_results = _prepare_result_root(root, result_root)
+    hook = contract["hooks"][kind]
+    evidence = _hook_evidence_path(root, resolved_results, hook)
+    evidence.unlink(missing_ok=True)
+    log_path = resolved_results.joinpath(f"{kind}.log")
+    return_code = _execute_hook(root, hook, log_path)
     if return_code != 0:
         raise SecurityContractError("security hook returned a failure")
     evidence_file = _relative_file(
@@ -484,6 +542,18 @@ def run_hook(root: Path, contract: dict[str, Any], kind: str, result_root: str) 
     _validate_hook_evidence(kind, hook, evidence_value)
 
 
+def _declared_license_value(declaration: dict[str, Any]) -> Any:
+    """Extract the raw license value from one declaration (or None if unusable)."""
+    if "expression" in declaration:
+        return declaration["expression"]
+    license_value = declaration.get("license")
+    if not isinstance(license_value, dict):
+        return None
+    identifier = license_value.get("id")
+    name = license_value.get("name")
+    return identifier if isinstance(identifier, str) and identifier else name
+
+
 def _component_licenses(component: dict[str, Any]) -> tuple[tuple[str, ...], bool]:
     """Return bounded declarations and whether any declaration was malformed."""
 
@@ -498,16 +568,7 @@ def _component_licenses(component: dict[str, Any]) -> tuple[tuple[str, ...], boo
         if not isinstance(declaration, dict):
             malformed = True
             continue
-        if "expression" in declaration:
-            value = declaration["expression"]
-        else:
-            license_value = declaration.get("license")
-            if not isinstance(license_value, dict):
-                malformed = True
-                continue
-            identifier = license_value.get("id")
-            name = license_value.get("name")
-            value = identifier if isinstance(identifier, str) and identifier else name
+        value = _declared_license_value(declaration)
         if (
             not isinstance(value, str)
             or not value
@@ -517,6 +578,50 @@ def _component_licenses(component: dict[str, Any]) -> tuple[tuple[str, ...], boo
             continue
         values.append(value)
     return tuple(values), malformed
+
+
+def _classify_component_licenses(
+    component: dict[str, Any],
+    *,
+    allowed: set[str],
+    allowed_exceptions: set[str],
+    denied: set[str],
+) -> str:
+    """Classify one CycloneDX component as "ok", "unknown", or "violation"."""
+    licenses, malformed = _component_licenses(component)
+    if not licenses:
+        return "violation" if malformed else "unknown"
+    if malformed or any(
+        not _spdx_expression_is_allowed(
+            value,
+            allowed=allowed,
+            allowed_exceptions=allowed_exceptions,
+            denied=denied,
+        )
+        for value in licenses
+    ):
+        return "violation"
+    return "ok"
+
+
+def _write_license_evidence(
+    root: Path, output_reference: str, payload: dict[str, Any]
+) -> None:
+    if Path(output_reference).is_absolute() or ".." in Path(output_reference).parts:
+        raise SecurityContractError("license evidence path is invalid")
+    output = root.joinpath(output_reference)
+    try:
+        output.relative_to(root)
+    except ValueError as exc:
+        raise SecurityContractError("license evidence path is invalid") from exc
+    output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        output.parent.resolve(strict=True).relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise SecurityContractError("license evidence path is invalid") from exc
+    if output.parent.is_symlink():
+        raise SecurityContractError("license evidence path is invalid")
+    output.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
 
 def check_licenses(
@@ -547,51 +652,28 @@ def check_licenses(
             raise SecurityContractError(
                 "software bill of materials component is invalid"
             )
-        licenses, malformed = _component_licenses(component)
-        if not licenses:
-            if malformed:
-                violations += 1
-            else:
-                unknown += 1
-            continue
-        if malformed or any(
-            not _spdx_expression_is_allowed(
-                value,
-                allowed=allowed,
-                allowed_exceptions=allowed_exceptions,
-                denied=denied,
-            )
-            for value in licenses
-        ):
+        classification = _classify_component_licenses(
+            component,
+            allowed=allowed,
+            allowed_exceptions=allowed_exceptions,
+            denied=denied,
+        )
+        if classification == "unknown":
+            unknown += 1
+        elif classification == "violation":
             violations += 1
     passed = violations == 0 and unknown == 0
-    if Path(output_reference).is_absolute() or ".." in Path(output_reference).parts:
-        raise SecurityContractError("license evidence path is invalid")
-    output = root.joinpath(output_reference)
-    try:
-        output.relative_to(root)
-    except ValueError as exc:
-        raise SecurityContractError("license evidence path is invalid") from exc
-    output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    try:
-        output.parent.resolve(strict=True).relative_to(root)
-    except (OSError, ValueError) as exc:
-        raise SecurityContractError("license evidence path is invalid") from exc
-    if output.parent.is_symlink():
-        raise SecurityContractError("license evidence path is invalid")
-    output.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "kind": "license_policy",
-                "passed": passed,
-                "components": len(components),
-                "unknown": unknown,
-                "violations": violations,
-            },
-            sort_keys=True,
-        ),
-        encoding="utf-8",
+    _write_license_evidence(
+        root,
+        output_reference,
+        {
+            "version": 2,
+            "kind": "license_policy",
+            "passed": passed,
+            "components": len(components),
+            "unknown": unknown,
+            "violations": violations,
+        },
     )
     if not passed:
         raise SecurityContractError(
