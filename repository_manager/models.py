@@ -3,6 +3,7 @@ import glob
 import logging
 import os
 import re
+from collections.abc import Callable
 
 from agent_utilities.security.persistence_privacy import sanitize_for_persistence
 from pydantic import BaseModel, Field, model_validator
@@ -463,6 +464,95 @@ _NOISE_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
+class _PytestFailureState:
+    """Mutable accumulation state for one `_extract_pytest_failures` pass."""
+
+    __slots__ = (
+        "result",
+        "current_test_block",
+        "in_failures_section",
+        "in_short_summary",
+    )
+
+    def __init__(self) -> None:
+        self.result: list[str] = []
+        self.current_test_block: list[str] = []
+        self.in_failures_section = False
+        self.in_short_summary = False
+
+
+def _flush_pytest_test_block(state: _PytestFailureState) -> None:
+    """Format and truncate the individual test traceback block if too long."""
+    if not state.current_test_block:
+        return
+    block_len = len(state.current_test_block)
+    if block_len > 15:
+        state.result.extend(state.current_test_block[:15])
+        state.result.append(f"  > ℹ️ ... and {block_len - 15} more lines of traceback.")
+    else:
+        state.result.extend(state.current_test_block)
+    state.current_test_block.clear()
+
+
+def _handle_pytest_section_boundary(line: str, state: _PytestFailureState) -> bool:
+    """Handle a pytest `===`-bordered section header line.
+
+    Returns True when ``line`` was such a header (and was fully handled).
+    """
+    if not line.startswith("==="):
+        return False
+    if "FAILURES" in line:
+        state.in_failures_section = True
+        state.in_short_summary = False
+        state.result.append("- **pytest Failures**")
+    elif "short test summary" in line:
+        _flush_pytest_test_block(state)
+        state.in_failures_section = False
+        state.in_short_summary = True
+        state.result.append("- **pytest Short Summary**")
+    elif _PYTEST_RESULT_LINE_RE.match(line):
+        _flush_pytest_test_block(state)
+        state.in_failures_section = False
+        state.in_short_summary = False
+        clean = line.strip("= ").strip()
+        state.result.append(f"  **Result:** {clean}")
+    else:
+        # Any other major section (like warnings, etc.) turns off our capture
+        _flush_pytest_test_block(state)
+        state.in_failures_section = False
+        state.in_short_summary = False
+    return True
+
+
+def _handle_pytest_content_line(
+    line: str, stripped: str, state: _PytestFailureState
+) -> None:
+    """Accumulate one non-header line into the current section, if any."""
+    if state.in_failures_section:
+        # A new test failure traceback block starts with '___ '
+        if line.startswith("___"):
+            _flush_pytest_test_block(state)
+            state.current_test_block.append(f"  **{stripped.strip('_ ')}**")
+        else:
+            # Add to current test block, indent slightly for readability
+            state.current_test_block.append(f"  {line}")
+    elif state.in_short_summary:
+        # In short summary, keep FAILED or ERROR lines
+        if stripped.startswith("FAILED") or stripped.startswith("ERROR"):
+            state.result.append(f"  {stripped}")
+
+
+def _pytest_failure_fallback(lines: list[str]) -> list[str]:
+    """Best-effort summary when structured parsing found nothing."""
+    result: list[str] = []
+    for line in lines[:20]:
+        if "error" in line.lower() or "failed" in line.lower():
+            result.append(f"  {line.strip()}")
+    if not result:
+        result.append("  pytest check failed (check full logs).")
+    return result
+
+
 def _extract_pytest_failures(output: str) -> list[str]:
     """Parse standard pytest output, isolating test failure tracebacks and short summaries.
 
@@ -472,84 +562,94 @@ def _extract_pytest_failures(output: str) -> list[str]:
         return []
 
     lines = output.split("\n")
-    result: list[str] = []
-
-    in_failures_section = False
-    in_short_summary = False
-
-    current_test_block: list[str] = []
-
-    def flush_test_block():
-        if current_test_block:
-            # Format and truncate the individual test traceback block if it's too long
-            block_len = len(current_test_block)
-            if block_len > 15:
-                result.extend(current_test_block[:15])
-                result.append(
-                    f"  > ℹ️ ... and {block_len - 15} more lines of traceback."
-                )
-            else:
-                result.extend(current_test_block)
-            current_test_block.clear()
+    state = _PytestFailureState()
 
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-
-        # Section boundary check
-        if line.startswith("===") and "FAILURES" in line:
-            in_failures_section = True
-            in_short_summary = False
-            result.append("- **pytest Failures**")
+        if _handle_pytest_section_boundary(line, state):
             continue
-        elif line.startswith("===") and "short test summary" in line:
-            flush_test_block()
-            in_failures_section = False
-            in_short_summary = True
-            result.append("- **pytest Short Summary**")
-            continue
-        elif line.startswith("===") and _PYTEST_RESULT_LINE_RE.match(line):
-            flush_test_block()
-            in_failures_section = False
-            in_short_summary = False
-            # Clean up the '=' borders
-            clean = line.strip("= ").strip()
-            result.append(f"  **Result:** {clean}")
-            continue
-        elif line.startswith("==="):
-            flush_test_block()
-            # Any other major section (like warnings, etc.) turns off our capture
-            in_failures_section = False
-            in_short_summary = False
-            continue
+        _handle_pytest_content_line(line, stripped, state)
 
-        if in_failures_section:
-            # We are inside the FAILURES section.
-            # A new test failure traceback block starts with '___ '
-            if line.startswith("___"):
-                flush_test_block()
-                current_test_block.append(f"  **{stripped.strip('_ ')}**")
-            else:
-                # Add to current test block, indent slightly for readability
-                current_test_block.append(f"  {line}")
-
-        elif in_short_summary:
-            # In short summary, keep FAILED or ERROR lines
-            if stripped.startswith("FAILED") or stripped.startswith("ERROR"):
-                result.append(f"  {stripped}")
-
-    flush_test_block()
+    _flush_pytest_test_block(state)
 
     # If we found nothing (e.g. pytest failed to run or crashed), return a fallback
-    if not result:
-        for line in lines[:20]:
-            if "error" in line.lower() or "failed" in line.lower():
-                result.append(f"  {line.strip()}")
-        if not result:
-            result.append("  pytest check failed (check full logs).")
+    if not state.result:
+        return _pytest_failure_fallback(lines)
 
-    return result
+    return state.result
+
+
+def _flush_fixing_files(fixing_files: list[str], result: list[str]) -> None:
+    """Collapse accumulated 'Fixing ...' lines into a compact summary."""
+    if not fixing_files:
+        return
+    if len(fixing_files) <= 3:
+        for ff in fixing_files:
+            result.append(f"  Fixing {ff}")
+    else:
+        result.append(
+            f"  Fixing {len(fixing_files)} files: "
+            f"{fixing_files[0]}, {fixing_files[1]}, ... {fixing_files[-1]}"
+        )
+    fixing_files.clear()
+
+
+def _handle_error_hook_boundary(hook_match: re.Match[str], result: list[str]) -> bool:
+    """Handle a hook-status header line; return the new in-failed-block state."""
+    status = hook_match.group(2)
+    if status != "Failed":
+        return False
+    hook_name = hook_match.group(1).strip().rstrip(".")
+    result.append(f"- **{hook_name}** — Failed")
+    return True
+
+
+def _matches_any(stripped: str, checks: tuple) -> bool:
+    return any(check(stripped) for check in checks)
+
+
+# Patterns kept verbatim (as "  {stripped}"), grouped by where they sit relative
+# to the special-cased "Fixing <file>" / pytest-result / pytest-short-summary
+# checks in the original scan order. Combining same-action checks into one
+# `any(...)` preserves behaviour because the *result* of a match in each group
+# is identical regardless of which member matched.
+_ERROR_KEEP_BEFORE_FIXING = (_EXIT_CODE_RE.match, _FILES_MODIFIED_RE.match)
+_ERROR_KEEP_AFTER_FIXING = (
+    _ERROR_LINE_RE.search,
+    _RUFF_DIAG_RE.match,
+    _FOUND_ERRORS_RE.match,
+    _PYTEST_FAILED_RE.match,
+)
+_ERROR_KEEP_TAIL = (
+    lambda s: s.startswith("-->"),
+    _BANDIT_ISSUE_RE.match,
+    _BANDIT_LOCATION_RE.match,
+    _BANDIT_SEVERITY_RE.match,
+    _VULTURE_UNUSED_RE.search,
+)
+
+
+def _extract_error_content_line(stripped: str, fixing_files: list[str]) -> str | None:
+    """Classify one line inside a Failed hook block. None means drop it."""
+    if any(pat.search(stripped) for pat in _NOISE_PATTERNS):
+        return None
+    if _matches_any(stripped, _ERROR_KEEP_BEFORE_FIXING):
+        return f"  {stripped}"
+    if _FIXING_RE.match(stripped):
+        fixing_files.append(stripped.replace("Fixing ", "").strip())
+        return None
+    if _matches_any(stripped, _ERROR_KEEP_AFTER_FIXING):
+        return f"  {stripped}"
+    if _PYTEST_RESULT_LINE_RE.match(stripped):
+        # Clean up the '=' borders
+        return f"  {stripped.strip('= ').strip()}"
+    if _PYTEST_SHORT_SUMMARY_RE.match(stripped):
+        return None  # Skip the header itself, FAILED lines follow
+    if _matches_any(stripped, _ERROR_KEEP_TAIL):
+        return f"  {stripped}"
+    return None
 
 
 def _extract_error_lines(output: str, is_pytest: bool = False) -> list[str]:
@@ -580,119 +680,26 @@ def _extract_error_lines(output: str, is_pytest: bool = False) -> list[str]:
     in_failed_block = False
     fixing_files: list[str] = []
 
-    def _flush_fixing() -> None:
-        """Collapse accumulated 'Fixing ...' lines into a compact summary."""
-        if not fixing_files:
-            return
-        if len(fixing_files) <= 3:
-            for ff in fixing_files:
-                result.append(f"  Fixing {ff}")
-        else:
-            result.append(
-                f"  Fixing {len(fixing_files)} files: "
-                f"{fixing_files[0]}, {fixing_files[1]}, ... {fixing_files[-1]}"
-            )
-        fixing_files.clear()
-
     for line in raw_lines:
         stripped = line.strip()
         if not stripped:
             continue
 
-        # --- Hook boundary detection ---
         hook_match = _HOOK_STATUS_RE.match(stripped)
         if hook_match:
-            _flush_fixing()
-            status = hook_match.group(2)
-            if status == "Failed":
-                in_failed_block = True
-                hook_name = hook_match.group(1).strip().rstrip(".")
-                result.append(f"- **{hook_name}** — Failed")
-            else:
-                in_failed_block = False
+            _flush_fixing_files(fixing_files, result)
+            in_failed_block = _handle_error_hook_boundary(hook_match, result)
             continue
 
         # Only process lines inside a Failed block
         if not in_failed_block:
             continue
 
-        # --- Drop noise lines ---
-        if any(pat.search(stripped) for pat in _NOISE_PATTERNS):
-            continue
+        kept = _extract_error_content_line(stripped, fixing_files)
+        if kept is not None:
+            result.append(kept)
 
-        # --- Keep: exit code ---
-        if _EXIT_CODE_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: files were modified ---
-        if _FILES_MODIFIED_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: Fixing <file> (accumulate) ---
-        fix_match = _FIXING_RE.match(stripped)
-        if fix_match:
-            # Extract just the filename
-            fname = stripped.replace("Fixing ", "").strip()
-            fixing_files.append(fname)
-            continue
-
-        # --- Keep: error lines (mypy, ruff, general) ---
-        if _ERROR_LINE_RE.search(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: ruff diagnostic header (e.g. "B904 Within an...") ---
-        if _RUFF_DIAG_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: "Found N errors" summary ---
-        if _FOUND_ERRORS_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: FAILED test names ---
-        if _PYTEST_FAILED_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: pytest result summary line (e.g. "= 6 failed, 2287 passed =") ---
-        if _PYTEST_RESULT_LINE_RE.match(stripped):
-            # Clean up the '=' borders
-            clean = stripped.strip("= ").strip()
-            result.append(f"  {clean}")
-            continue
-
-        # --- Keep: pytest short test summary header ---
-        if _PYTEST_SHORT_SUMMARY_RE.match(stripped):
-            continue  # Skip the header itself, FAILED lines follow
-
-        # --- Keep: ruff arrow lines (e.g. "--> arr_mcp/mcp_server.py:84:9") ---
-        if stripped.startswith("-->"):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: bandit issue lines (e.g. ">> Issue: [B311:blacklist]") ---
-        if _BANDIT_ISSUE_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: bandit Location and Severity ---
-        if _BANDIT_LOCATION_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-        if _BANDIT_SEVERITY_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: vulture unused variable/function/etc. ---
-        if _VULTURE_UNUSED_RE.search(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-    _flush_fixing()
+    _flush_fixing_files(fixing_files, result)
     return result
 
 
@@ -984,7 +991,9 @@ def _build_summary_md(
 
 
 def _is_ecosystem_installation_result(r: "GitResult") -> bool:
-    return bool(r.metadata and r.metadata.command and "pip install" in r.metadata.command)
+    return bool(
+        r.metadata and r.metadata.command and "pip install" in r.metadata.command
+    )
 
 
 def _is_version_metadata_sync_result(r: "GitResult") -> bool:
@@ -1022,9 +1031,7 @@ def _is_agent_runtime_web_ui_result(r: "GitResult") -> bool:
     return bool(
         r.metadata
         and r.metadata.command
-        and (
-            "runtime_check" in r.metadata.command or "--web" in r.metadata.command
-        )
+        and ("runtime_check" in r.metadata.command or "--web" in r.metadata.command)
     )
 
 
@@ -1041,9 +1048,7 @@ def _is_pytest_suite_result(r: "GitResult") -> bool:
 # Declaration order matters: it is the category order in the final report
 # (before the 'Additional Operational Checks' catch-all, which is always
 # appended last, not interleaved here).
-_RESULT_CATEGORY_PREDICATES: tuple[
-    tuple[str, "Callable[[GitResult], bool]"], ...
-] = (
+_RESULT_CATEGORY_PREDICATES: tuple[tuple[str, "Callable[[GitResult], bool]"], ...] = (
     ("Ecosystem Installation", _is_ecosystem_installation_result),
     ("Version Metadata Sync (Dry Run)", _is_version_metadata_sync_result),
     ("Agent Standards Compliance", _is_agent_standards_compliance_result),
