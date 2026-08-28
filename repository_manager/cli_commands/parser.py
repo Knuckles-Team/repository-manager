@@ -786,26 +786,35 @@ def _load_workspace_file(
         git.load_projects_from_yaml(runtime.default_workspace_yml)
 
 
-def _apply_repository_filter(git: object, args: argparse.Namespace) -> None:
-    if args.repositories:
-        repositories = args.repositories.replace(" ", "").split(",")
-        names_to_keep = set(repositories)
-        if git.project_map:
-            filtered = {}
-            for url, path in git.project_map.items():
-                name = url.split("/")[-1].replace(".git", "")
-                if name in names_to_keep:
-                    filtered[url] = path
-            git.project_map = filtered
+def _filter_existing_project_map(git: object, names_to_keep: set[str]) -> None:
+    filtered = {}
+    for url, path in git.project_map.items():
+        name = url.split("/")[-1].replace(".git", "")
+        if name in names_to_keep:
+            filtered[url] = path
+    git.project_map = filtered
+
+
+def _seed_project_map_from_names(git: object, repositories: list[str]) -> None:
+    for r in repositories:
+        if "/" in r:
+            name = r.split("/")[-1].replace(".git", "")
+            git.project_map[r] = os.path.join(git.path, name)
         else:
-            for r in repositories:
-                if "/" in r:
-                    name = r.split("/")[-1].replace(".git", "")
-                    git.project_map[r] = os.path.join(git.path, name)
-                else:
-                    git.project_map[os.path.join("https://github.com/", r)] = (
-                        os.path.join(git.path, r)
-                    )
+            git.project_map[os.path.join("https://github.com/", r)] = os.path.join(
+                git.path, r
+            )
+
+
+def _apply_repository_filter(git: object, args: argparse.Namespace) -> None:
+    if not args.repositories:
+        return
+    repositories = args.repositories.replace(" ", "").split(",")
+    names_to_keep = set(repositories)
+    if git.project_map:
+        _filter_existing_project_map(git, names_to_keep)
+    else:
+        _seed_project_map_from_names(git, repositories)
 
 
 def _maybe_setup_from_file(
@@ -866,7 +875,9 @@ def _run_basic_bulk_verbs(
         git._export_report(summary, "build_report.md")
 
 
-def _run_gate_dispatch(runtime: CliRuntime, git: object, args: argparse.Namespace) -> bool:
+def _run_gate_dispatch(
+    runtime: CliRuntime, git: object, args: argparse.Namespace
+) -> bool:
     """Run --gate / --gate-retest. Extracted verbatim from ``run``, including
     its three nested closures (unchanged) -- only the surrounding statements
     moved; lizard measures nested ``def``s as their own units, so moving them
@@ -976,7 +987,12 @@ def _run_gate_dispatch(runtime: CliRuntime, git: object, args: argparse.Namespac
 
         if args.gate:
             if _run_gate(
-                runtime, args, gate_runner, _resolve_targets, _make_submit_one, _log_result
+                runtime,
+                args,
+                gate_runner,
+                _resolve_targets,
+                _make_submit_one,
+                _log_result,
             ):
                 has_errors = True
 
@@ -1129,6 +1145,15 @@ def _dispatch_bump(
     return has_errors
 
 
+def _load_config_file(runtime: CliRuntime, config_path: str) -> dict[str, Any] | None:
+    try:
+        with open(config_path) as f:
+            return json.load(f)
+    except Exception as e:
+        runtime.logger.error("Operation failed: error_type=%s", type(e).__name__)
+        sys.exit(1)
+
+
 def _dispatch_maintain(
     runtime: CliRuntime, git: object, args: argparse.Namespace, has_errors: bool
 ) -> bool:
@@ -1140,16 +1165,7 @@ def _dispatch_maintain(
         )
         has_errors = True
     else:
-        config = None
-        if args.config:
-            try:
-                with open(args.config) as f:
-                    config = json.load(f)
-            except Exception as e:
-                runtime.logger.error(
-                    "Operation failed: error_type=%s", type(e).__name__
-                )
-                sys.exit(1)
+        config = _load_config_file(runtime, args.config) if args.config else None
 
         results = git.phased_bumpversion(
             part=args.bump if args.bump else "patch",
