@@ -2495,6 +2495,73 @@ def _revalidate_floor_preview(preview: FloorPreview) -> FloorPreview:
     )
 
 
+def _package_owner_counts(
+    packages: tuple[PackageRecord, ...],
+) -> dict[tuple[Ecosystem, str], int]:
+    """Count how many packages claim each (ecosystem, name) owner key."""
+
+    owner_counts: dict[tuple[Ecosystem, str], int] = {}
+    for package in packages:
+        owner_key = (package.key.ecosystem, package.key.name)
+        owner_counts[owner_key] = owner_counts.get(owner_key, 0) + 1
+    return owner_counts
+
+
+def _edge_dependency_specs(
+    dependent: PackageRecord, edge: DependencyEdge
+) -> tuple[DependencySpec, ...]:
+    """Select the declared dependency specs an edge could have come from."""
+
+    return tuple(
+        spec
+        for spec in dependent.dependencies
+        if spec.target.ecosystem is edge.dependency.ecosystem
+        and spec.target.name == edge.dependency.name
+        and (
+            spec.target.repository_id is None
+            or spec.target.repository_id == edge.dependency.repository_id
+        )
+    )
+
+
+def _validate_edge_source_binding(
+    edge: DependencyEdge,
+    package_map: dict[str, PackageRecord],
+    owner_counts: dict[tuple[Ecosystem, str], int],
+) -> None:
+    """Bind one graph edge to the package declaration that evidences it."""
+
+    dependent = package_map.get(edge.dependent.value)
+    if dependent is None or edge.dependency.value not in package_map:
+        raise _fail(
+            ReleasePlanCode.MISSING,
+            "graph edge names an unknown package",
+        )
+    candidates = _edge_dependency_specs(dependent, edge)
+    if not candidates:
+        raise _fail(
+            ReleasePlanCode.GRAPH_DRIFT,
+            "graph edge is not supported by package dependency evidence",
+        )
+    target = candidates[0].target
+    owner_count = owner_counts.get(
+        (target.ecosystem, target.name),
+        0,
+    )
+    # A uniquely resolved target with a declared floor has a complete
+    # source declaration. Overlay-only edges are permitted to resolve an
+    # explicit owner or fill a missing floor.
+    if candidates[0].floor is not None and (
+        target.repository_id is not None or owner_count == 1
+    ):
+        spec = candidates[0]
+        if spec.floor != edge.floor or spec.source != edge.source:
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT,
+                "graph edge provenance does not match package evidence",
+            )
+
+
 def _validate_edge_source_evidence(
     projects: tuple[ProjectRecord, ...], edges: tuple[DependencyEdge, ...]
 ) -> None:
@@ -2509,141 +2576,162 @@ def _validate_edge_source_evidence(
 
     packages = tuple(package for project in projects for package in project.packages)
     package_map = {package.key.value: package for package in packages}
-    owner_counts: dict[tuple[Ecosystem, str], int] = {}
-    for package in packages:
-        owner_key = (package.key.ecosystem, package.key.name)
-        owner_counts[owner_key] = owner_counts.get(owner_key, 0) + 1
+    owner_counts = _package_owner_counts(packages)
     for edge in edges:
-        dependent = package_map.get(edge.dependent.value)
-        if dependent is None or edge.dependency.value not in package_map:
-            raise _fail(
-                ReleasePlanCode.MISSING,
-                "graph edge names an unknown package",
-            )
-        candidates = tuple(
-            spec
-            for spec in dependent.dependencies
-            if spec.target.ecosystem is edge.dependency.ecosystem
-            and spec.target.name == edge.dependency.name
-            and (
-                spec.target.repository_id is None
-                or spec.target.repository_id == edge.dependency.repository_id
-            )
-        )
-        if not candidates:
-            raise _fail(
-                ReleasePlanCode.GRAPH_DRIFT,
-                "graph edge is not supported by package dependency evidence",
-            )
-        target = candidates[0].target
-        owner_count = owner_counts.get(
-            (target.ecosystem, target.name),
-            0,
-        )
-        # A uniquely resolved target with a declared floor has a complete
-        # source declaration. Overlay-only edges are permitted to resolve an
-        # explicit owner or fill a missing floor.
-        if candidates[0].floor is not None and (
-            target.repository_id is not None or owner_count == 1
+        _validate_edge_source_binding(edge, package_map, owner_counts)
+
+
+def _graph_project_edge_pairs(
+    raw_project_edges: tuple[object, ...],
+) -> tuple[tuple[str, str], ...]:
+    """Canonicalize the endpoint pairs of the frozen graph project edges."""
+
+    project_edges: list[tuple[str, str]] = []
+    for pair in raw_project_edges:
+        if (
+            type(pair) not in (tuple, list)
+            or len(cast(tuple[object, ...] | list[object], pair)) != 2
         ):
-            spec = candidates[0]
-            if spec.floor != edge.floor or spec.source != edge.source:
-                raise _fail(
-                    ReleasePlanCode.GRAPH_DRIFT,
-                    "graph edge provenance does not match package evidence",
-                )
+            raise _fail(ReleasePlanCode.INVALID_INPUT, "graph project edge is invalid")
+        left, right = cast(tuple[object, ...] | list[object], pair)
+        project_edges.append(
+            (
+                _canonical_repository_exact(left, "graph project edge endpoint"),
+                _canonical_repository_exact(right, "graph project edge endpoint"),
+            )
+        )
+    return tuple(project_edges)
+
+
+def _graph_inventory_keys(
+    projects: tuple[ProjectRecord, ...],
+    packages: tuple[PackageRecord, ...],
+    edges: tuple[DependencyEdge, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Project the identity keys used to compare two graph inventories."""
+
+    return (
+        tuple(project.project_id for project in projects),
+        tuple(package.key.value for package in packages),
+        tuple(edge.value for edge in edges),
+    )
+
+
+def _assert_graph_matches_derived(
+    *,
+    projects: tuple[ProjectRecord, ...],
+    packages: tuple[PackageRecord, ...],
+    edges: tuple[DependencyEdge, ...],
+    project_edges: tuple[tuple[str, str], ...],
+    groups: tuple[tuple[str, ...], ...],
+    digest: str,
+    derived: DependencyGraph,
+) -> None:
+    """The frozen inventory and digest must equal the recomputed graph."""
+
+    if (
+        _graph_inventory_keys(projects, packages, edges)
+        != _graph_inventory_keys(derived.projects, derived.packages, derived.edges)
+        or project_edges != derived.project_edges
+        or groups != derived.parallel_groups
+    ):
+        raise _fail(
+            ReleasePlanCode.GRAPH_DRIFT,
+            "graph inventory does not match package evidence",
+        )
+    if derived.digest != digest:
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph digest does not match sources")
+
+
+def _assert_graph_candidate_canonical(
+    *,
+    candidate: DependencyGraph,
+    projects: tuple[ProjectRecord, ...],
+    packages: tuple[PackageRecord, ...],
+    edges: tuple[DependencyEdge, ...],
+    project_edges: tuple[tuple[str, str], ...],
+    groups: tuple[tuple[str, ...], ...],
+) -> None:
+    """The reconstructed graph must be byte-identical to its own canonical form."""
+
+    if candidate.projects != projects or candidate.packages != packages:
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph records are not canonical")
+    if candidate.digest != _digest_payload(candidate.canonical_payload()):
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph digest does not match contents")
+    if (
+        project_edges != candidate.project_edges
+        or groups != candidate.parallel_groups
+        or candidate.edges != edges
+    ):
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph topology is not canonical")
+
+
+def _snapshot_graph_unchecked(graph: DependencyGraph) -> DependencyGraph:
+    """Rebuild the graph from its own evidence and prove it did not drift."""
+
+    if type(graph) is not DependencyGraph:
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph is not a C-11 record")
+    raw_projects = _exact_nested_tuple(
+        graph.projects, "graph projects", max_items=MAX_PROJECTS
+    )
+    raw_packages = _exact_nested_tuple(
+        graph.packages, "graph packages", max_items=MAX_PACKAGES
+    )
+    raw_edges = _exact_nested_tuple(graph.edges, "graph edges", max_items=MAX_EDGES)
+    raw_project_edges = _exact_nested_tuple(
+        graph.project_edges, "graph project edges", max_items=MAX_EDGES
+    )
+    raw_groups = _exact_nested_tuple(
+        graph.parallel_groups, "graph parallel groups", max_items=MAX_PROJECTS
+    )
+    projects = tuple(
+        _revalidate_project(cast(ProjectRecord, item)) for item in raw_projects
+    )
+    packages = tuple(
+        _revalidate_package(cast(PackageRecord, item)) for item in raw_packages
+    )
+    edges = tuple(_revalidate_edge(cast(DependencyEdge, item)) for item in raw_edges)
+    _validate_edge_source_evidence(projects, edges)
+    project_edges = _graph_project_edge_pairs(raw_project_edges)
+    groups = tuple(
+        _canonical_project_ids(raw_group, "graph parallel group")
+        for raw_group in raw_groups
+    )
+    digest = _strict_digest(graph.digest, "graph digest")
+    derived = build_dependency_graph(projects, overlay_edges=edges)
+    candidate = DependencyGraph(
+        projects=projects,
+        packages=packages,
+        edges=edges,
+        project_edges=project_edges,
+        parallel_groups=groups,
+        digest=digest,
+    )
+    _assert_graph_matches_derived(
+        projects=projects,
+        packages=packages,
+        edges=edges,
+        project_edges=project_edges,
+        groups=groups,
+        digest=digest,
+        derived=derived,
+    )
+    _assert_graph_candidate_canonical(
+        candidate=candidate,
+        projects=projects,
+        packages=packages,
+        edges=edges,
+        project_edges=project_edges,
+        groups=groups,
+    )
+    return candidate
 
 
 def _snapshot_graph(graph: DependencyGraph) -> DependencyGraph:
     """Copy a graph only after proving every container is bounded and builtin."""
 
     try:
-        if type(graph) is not DependencyGraph:
-            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph is not a C-11 record")
-        raw_projects = _exact_nested_tuple(
-            graph.projects, "graph projects", max_items=MAX_PROJECTS
-        )
-        raw_packages = _exact_nested_tuple(
-            graph.packages, "graph packages", max_items=MAX_PACKAGES
-        )
-        raw_edges = _exact_nested_tuple(graph.edges, "graph edges", max_items=MAX_EDGES)
-        raw_project_edges = _exact_nested_tuple(
-            graph.project_edges, "graph project edges", max_items=MAX_EDGES
-        )
-        raw_groups = _exact_nested_tuple(
-            graph.parallel_groups, "graph parallel groups", max_items=MAX_PROJECTS
-        )
-        projects = tuple(
-            _revalidate_project(cast(ProjectRecord, item)) for item in raw_projects
-        )
-        packages = tuple(
-            _revalidate_package(cast(PackageRecord, item)) for item in raw_packages
-        )
-        edges = tuple(
-            _revalidate_edge(cast(DependencyEdge, item)) for item in raw_edges
-        )
-        _validate_edge_source_evidence(projects, edges)
-        project_edges: list[tuple[str, str]] = []
-        for pair in raw_project_edges:
-            if (
-                type(pair) not in (tuple, list)
-                or len(cast(tuple[object, ...] | list[object], pair)) != 2
-            ):
-                raise _fail(
-                    ReleasePlanCode.INVALID_INPUT, "graph project edge is invalid"
-                )
-            left, right = cast(tuple[object, ...] | list[object], pair)
-            project_edges.append(
-                (
-                    _canonical_repository_exact(left, "graph project edge endpoint"),
-                    _canonical_repository_exact(right, "graph project edge endpoint"),
-                )
-            )
-        groups: list[tuple[str, ...]] = []
-        for raw_group in raw_groups:
-            group = _canonical_project_ids(raw_group, "graph parallel group")
-            groups.append(group)
-        digest = _strict_digest(graph.digest, "graph digest")
-        derived = build_dependency_graph(projects, overlay_edges=edges)
-        candidate = DependencyGraph(
-            projects=projects,
-            packages=packages,
-            edges=edges,
-            project_edges=tuple(project_edges),
-            parallel_groups=tuple(groups),
-            digest=digest,
-        )
-        if (
-            tuple(project.project_id for project in projects)
-            != tuple(project.project_id for project in derived.projects)
-            or tuple(package.key.value for package in packages)
-            != tuple(package.key.value for package in derived.packages)
-            or tuple(edge.value for edge in edges)
-            != tuple(edge.value for edge in derived.edges)
-            or tuple(project_edges) != derived.project_edges
-            or tuple(groups) != derived.parallel_groups
-        ):
-            raise _fail(
-                ReleasePlanCode.GRAPH_DRIFT,
-                "graph inventory does not match package evidence",
-            )
-        if derived.digest != digest:
-            raise _fail(
-                ReleasePlanCode.GRAPH_DRIFT, "graph digest does not match sources"
-            )
-        if candidate.projects != projects or candidate.packages != packages:
-            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph records are not canonical")
-        if candidate.digest != _digest_payload(candidate.canonical_payload()):
-            raise _fail(
-                ReleasePlanCode.GRAPH_DRIFT, "graph digest does not match contents"
-            )
-        if (
-            tuple(project_edges) != candidate.project_edges
-            or tuple(groups) != candidate.parallel_groups
-            or candidate.edges != edges
-        ):
-            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph topology is not canonical")
-        return candidate
+        return _snapshot_graph_unchecked(graph)
     except ReleasePlanError:
         raise
     except _UNTRUSTED_DATA_ERRORS:
