@@ -959,6 +959,17 @@ def _normalize_decision_context(
     return ReleaseDecisionContext(**values)  # type: ignore[arg-type]
 
 
+def _strict_profile_name(value: object) -> str:
+    """Validate a profile name scalar: bounded text that is not a path or URL."""
+
+    name = _strict_text(
+        value, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
+    )
+    if "/" in name or "\\" in name or "://" in name:
+        raise _fail(ReleasePlanCode.PROFILE, "profile name must not be a path or URL")
+    return name
+
+
 def _profile_digest_from_object_unchecked(
     value: object, kind: ProfileKind
 ) -> tuple[str, str]:
@@ -968,32 +979,18 @@ def _profile_digest_from_object_unchecked(
         if value.kind is not kind:
             raise _fail(ReleasePlanCode.PROFILE, "profile kind does not match binding")
         project = _canonical_repository_exact(value.project_id, "profile project")
-        name = _strict_text(
-            value.name, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
-        )
-        if "/" in name or "\\" in name or "://" in name:
-            raise _fail(
-                ReleasePlanCode.PROFILE, "profile name must not be a path or URL"
-            )
+        name = _strict_profile_name(value.name)
         digest = _strict_digest(
             value.digest, "profile digest", code=ReleasePlanCode.PROFILE
         )
         normalized = ProfileBinding(project, name, digest, kind)
         return normalized.name, normalized.digest
 
-    descriptor_type: type[ValidationProfile] | type[BuildProfile]
-    if kind is ProfileKind.VALIDATION:
-        descriptor_type = ValidationProfile
-    else:
-        descriptor_type = BuildProfile
+    descriptor_type: type[ValidationProfile] | type[BuildProfile] = (
+        ValidationProfile if kind is ProfileKind.VALIDATION else BuildProfile
+    )
     if type(value) is descriptor_type:
-        name = _strict_text(
-            value.name, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
-        )
-        if "/" in name or "\\" in name or "://" in name:
-            raise _fail(
-                ReleasePlanCode.PROFILE, "profile name must not be a path or URL"
-            )
+        name = _strict_profile_name(value.name)
         digest = _strict_digest(
             value.digest, "profile digest", code=ReleasePlanCode.PROFILE
         )
@@ -1001,13 +998,7 @@ def _profile_digest_from_object_unchecked(
         return normalized_profile.name, normalized_profile.digest
 
     if type(value) is str:
-        name = _strict_text(
-            value, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
-        )
-        if "/" in name or "\\" in name or "://" in name:
-            raise _fail(
-                ReleasePlanCode.PROFILE, "profile name must not be a path or URL"
-            )
+        name = _strict_profile_name(value)
         if _DIGEST.fullmatch(name):
             return "declared", name.lower()
         return name, _digest_payload({"profile_kind": kind.value, "profile_name": name})
@@ -1025,60 +1016,89 @@ def _profile_digest_from_object(value: object, kind: ProfileKind) -> tuple[str, 
         ) from None
 
 
-def _normalize_profiles_unchecked(
+def _profile_entries_from_mapping(
+    value: object, kind: ProfileKind
+) -> dict[str, object]:
+    """Collect per-project profile declarations from an exact mapping."""
+
+    entries: dict[str, object] = {}
+    raw = _strict_mapping(value, f"{kind.value} profiles")
+    for key, item in raw.items():
+        project = _canonical_repository(key)
+        if project in entries:
+            raise _fail(ReleasePlanCode.DUPLICATE, "profile project appears twice")
+        entries[project] = item
+    return entries
+
+
+def _profile_entry_from_pair(pair: object, kind: ProfileKind) -> tuple[str, object]:
+    """Normalize one binding declaration into a (project, descriptor) pair."""
+
+    if type(pair) is ProfileBinding:
+        if pair.kind is not kind:
+            raise _fail(
+                ReleasePlanCode.PROFILE,
+                "profile binding kind does not match declaration",
+            )
+        return _canonical_repository(pair.project_id), pair
+    if type(pair) not in (tuple, list):
+        raise _fail(ReleasePlanCode.PROFILE, "profile bindings must contain pairs")
+    pair_values = cast(tuple[object, ...] | list[object], pair)
+    if len(pair_values) != 2:
+        raise _fail(ReleasePlanCode.PROFILE, "profile bindings must contain pairs")
+    return _canonical_repository(pair_values[0]), pair_values[1]
+
+
+def _profile_entries_from_sequence(
+    value: object, kind: ProfileKind
+) -> dict[str, object]:
+    """Collect per-project profile declarations from an exact sequence."""
+
+    entries: dict[str, object] = {}
+    pairs = _bounded_tuple(
+        value, f"{kind.value} profile bindings", max_items=MAX_PROFILE_BINDINGS
+    )
+    for pair in pairs:
+        project, item = _profile_entry_from_pair(pair, kind)
+        if project in entries:
+            raise _fail(ReleasePlanCode.DUPLICATE, "profile project appears twice")
+        entries[project] = item
+    return entries
+
+
+def _default_profile_entries(
+    selected: tuple[str, ...], kind: ProfileKind
+) -> dict[str, object]:
+    """Synthesize the built-in default descriptor for every selected project."""
+
+    default_name = (
+        "default-validation" if kind is ProfileKind.VALIDATION else "default-build"
+    )
+    default_digest = _digest_payload(
+        {"profile_kind": kind.value, "profile_name": default_name}
+    )
+    descriptor_type: type[ValidationProfile] | type[BuildProfile] = (
+        ValidationProfile if kind is ProfileKind.VALIDATION else BuildProfile
+    )
+    return {
+        project: descriptor_type(default_name, default_digest) for project in selected
+    }
+
+
+def _profile_entries_from_declaration(
     value: object,
     selected: tuple[str, ...],
     kind: ProfileKind,
-    *,
-    global_value: object | None = None,
-) -> tuple[ProfileBinding, ...]:
-    """Expand global or per-project declarations into canonical bindings."""
+    global_value: object | None,
+) -> dict[str, object]:
+    """Resolve per-project, global, and default declarations into one mapping."""
 
-    selected_set = set(selected)
     entries: dict[str, object] = {}
     if value is not None:
         if type(value) is dict:
-            raw = _strict_mapping(value, f"{kind.value} profiles")
-            for key, item in raw.items():
-                project = _canonical_repository(key)
-                if project in entries:
-                    raise _fail(
-                        ReleasePlanCode.DUPLICATE, "profile project appears twice"
-                    )
-                entries[project] = item
+            entries = _profile_entries_from_mapping(value, kind)
         elif type(value) in (tuple, list):
-            pairs = _bounded_tuple(
-                value, f"{kind.value} profile bindings", max_items=MAX_PROFILE_BINDINGS
-            )
-            for pair in pairs:
-                if type(pair) is ProfileBinding:
-                    if pair.kind is not kind:
-                        raise _fail(
-                            ReleasePlanCode.PROFILE,
-                            "profile binding kind does not match declaration",
-                        )
-                    project = _canonical_repository(pair.project_id)
-                    if project in entries:
-                        raise _fail(
-                            ReleasePlanCode.DUPLICATE, "profile project appears twice"
-                        )
-                    entries[project] = pair
-                    continue
-                if type(pair) not in (tuple, list):
-                    raise _fail(
-                        ReleasePlanCode.PROFILE, "profile bindings must contain pairs"
-                    )
-                pair_values = cast(tuple[object, ...] | list[object], pair)
-                if len(pair_values) != 2:
-                    raise _fail(
-                        ReleasePlanCode.PROFILE, "profile bindings must contain pairs"
-                    )
-                project = _canonical_repository(pair_values[0])
-                if project in entries:
-                    raise _fail(
-                        ReleasePlanCode.DUPLICATE, "profile project appears twice"
-                    )
-                entries[project] = pair_values[1]
+            entries = _profile_entries_from_sequence(value, kind)
         else:
             global_value = value
     if global_value is not None:
@@ -1088,19 +1108,21 @@ def _normalize_profiles_unchecked(
             )
         entries = {project: global_value for project in selected}
     if not entries:
-        default_name = (
-            "default-validation" if kind is ProfileKind.VALIDATION else "default-build"
-        )
-        default_digest = _digest_payload(
-            {"profile_kind": kind.value, "profile_name": default_name}
-        )
-        entries = {
-            project: ValidationProfile(default_name, default_digest)
-            if kind is ProfileKind.VALIDATION
-            else BuildProfile(default_name, default_digest)
-            for project in selected
-        }
-    if set(entries) != selected_set:
+        entries = _default_profile_entries(selected, kind)
+    return entries
+
+
+def _normalize_profiles_unchecked(
+    value: object,
+    selected: tuple[str, ...],
+    kind: ProfileKind,
+    *,
+    global_value: object | None = None,
+) -> tuple[ProfileBinding, ...]:
+    """Expand global or per-project declarations into canonical bindings."""
+
+    entries = _profile_entries_from_declaration(value, selected, kind, global_value)
+    if set(entries) != set(selected):
         raise _fail(
             ReleasePlanCode.IDENTITY,
             "profiles must cover exactly the selected projects",
@@ -3047,7 +3069,9 @@ def _validate_frozen_plan_edges(
     selected: tuple[str, ...],
     project_values: tuple[ProjectRecord, ...],
     source_selection: SelectedChangeClosure,
-) -> tuple[dict[str, PackageKey], tuple[DependencyEdge, ...], tuple[tuple[str, str], ...]]:
+) -> tuple[
+    dict[str, PackageKey], tuple[DependencyEdge, ...], tuple[tuple[str, str], ...]
+]:
     packages = _package_map(project_values)
     edge_values = _bounded_tuple(plan.edges, "plan edges", max_items=MAX_EDGES)
     if any(type(edge) is not DependencyEdge for edge in edge_values):
@@ -3078,7 +3102,10 @@ def _validate_frozen_plan_edges_reference_known_selected_packages(
     selected: tuple[str, ...],
 ) -> None:
     for edge in edge_tuple:
-        if edge.dependent.value not in packages or edge.dependency.value not in packages:
+        if (
+            edge.dependent.value not in packages
+            or edge.dependency.value not in packages
+        ):
             raise _fail(ReleasePlanCode.MISSING, "frozen edge names an unknown package")
         if {edge.dependent_project_id, edge.dependency_project_id} - set(selected):
             raise _fail(
@@ -3809,7 +3836,10 @@ def _freeze_validate_graph_selection_version(
             ReleasePlanCode.INVALID_INPUT,
             "graph, selection, and version plan are required",
         )
-    if type(graph) is not DependencyGraph or type(selection) is not SelectedChangeClosure:
+    if (
+        type(graph) is not DependencyGraph
+        or type(selection) is not SelectedChangeClosure
+    ):
         raise _fail(
             ReleasePlanCode.INVALID_INPUT,
             "graph and selection must be frozen C-11 models",
@@ -3873,7 +3903,10 @@ def _freeze_selected_projects_and_groups(
     edges = tuple(sorted(selection.edges, key=lambda edge: edge.value))
     packages = _package_map(projects)
     for edge in edges:
-        if edge.dependent.value not in packages or edge.dependency.value not in packages:
+        if (
+            edge.dependent.value not in packages
+            or edge.dependency.value not in packages
+        ):
             raise _fail(
                 ReleasePlanCode.MISSING, "selection edge names an unknown package"
             )
@@ -3916,9 +3949,7 @@ def _freeze_resolve_profiles(
         if validation_profile is not None
         else validation_profile_digest
     )
-    build_profile = (
-        build_profile if build_profile is not None else build_profile_digest
-    )
+    build_profile = build_profile if build_profile is not None else build_profile_digest
     validation = _normalize_profiles(
         validation_profiles,
         selected,
@@ -3941,9 +3972,7 @@ def _freeze_resolve_consent(
     consent_aliases = (push_consent, consent_reference, consent_ref)
     consent_candidates = tuple(item for item in consent_aliases if item is not None)
     if any(type(item) is not PushConsentReference for item in consent_candidates):
-        raise _fail(
-            ReleasePlanCode.CONSENT, "push consent must be immutable evidence"
-        )
+        raise _fail(ReleasePlanCode.CONSENT, "push consent must be immutable evidence")
     # Rebuild every exact-type consent before comparing aliases.  A forged
     # dataclass shell may carry hostile scalar fields whose hash/equality
     # methods must never run during alias conflict detection.
@@ -3993,9 +4022,7 @@ def _freeze_validate_push_flag_types_and_agreement(
     include_push: bool | None, allow_push: bool | None
 ) -> None:
     if include_push is not None and type(include_push) is not bool:
-        raise _fail(
-            ReleasePlanCode.PUSH_CONSENT, "push inclusion flag must be boolean"
-        )
+        raise _fail(ReleasePlanCode.PUSH_CONSENT, "push inclusion flag must be boolean")
     if allow_push is not None and type(allow_push) is not bool:
         raise _fail(
             ReleasePlanCode.PUSH_CONSENT, "push authorization flag must be boolean"
@@ -4130,6 +4157,7 @@ def _freeze_build_plan(
         push_consent=accepted_consent,
         plan_digest=digest,
     )
+
 
 def build_frozen_release_plan(*args: object, **kwargs: object) -> FrozenReleasePlan:
     """Compatibility factory alias for :func:`freeze_release_plan`."""
