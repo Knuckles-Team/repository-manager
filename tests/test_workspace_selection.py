@@ -666,6 +666,52 @@ def test_maximum_bounded_phase_mismatch_returns_a_bounded_report() -> None:
     )
 
 
+def _phase_projects(phase: dict[str, object]) -> list[str]:
+    return cast(list[str], phase["projects"])
+
+
+def _reversed_phases(phases: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {**phase, "projects": list(reversed(_phase_projects(phase)))}
+        for phase in phases
+    ]
+
+
+def _shuffled_phases(phases: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [
+        {
+            **phase,
+            "projects": random.Random(cast(int, phase["phase"])).sample(
+                _phase_projects(phase), len(_phase_projects(phase))
+            ),
+        }
+        for phase in phases
+    ]
+
+
+def _missing_project_subjects(report: PhaseShadowReport) -> tuple[str, ...]:
+    return tuple(
+        item.subject
+        for item in report.diagnostics
+        if item.code == ShadowDiagnosticCode.MISSING_PROJECT
+    )
+
+
+def _overflow_diagnostic(report: PhaseShadowReport):
+    return next(
+        item
+        for item in report.diagnostics
+        if item.code == ShadowDiagnosticCode.DIAGNOSTICS_TRUNCATED
+    )
+
+
+def _assert_canonical_equivalence(
+    normal: PhaseShadowReport, other: PhaseShadowReport
+) -> None:
+    assert normal.canonical_payload() == other.canonical_payload()
+    assert normal.report_digest == other.report_digest
+
+
 def test_overflow_diagnostics_are_canonical_under_reference_permutations() -> None:
     closure = derive_selected_closure(
         _chain_graph(),
@@ -682,81 +728,38 @@ def test_overflow_diagnostics_are_canonical_under_reference_permutations() -> No
         for phase in range(1, 16)
     ]
 
-    def phase_projects(phase: dict[str, object]) -> list[str]:
-        return cast(list[str], phase["projects"])
-
     def build_report(references: list[dict[str, object]]) -> PhaseShadowReport:
         return compare_legacy_phases(
             closure,
             phase_manifest_from_mapping({"phases": references}),
         )
 
-    reversed_phases = [
-        {**phase, "projects": list(reversed(phase_projects(phase)))} for phase in phases
-    ]
-    shuffled_phases = [
-        {
-            **phase,
-            "projects": random.Random(cast(int, phase["phase"])).sample(
-                phase_projects(phase), len(phase_projects(phase))
-            ),
-        }
-        for phase in phases
-    ]
     normal = build_report(phases)
-    reversed_report = build_report(reversed_phases)
-    shuffled_report = build_report(shuffled_phases)
+    reversed_report = build_report(_reversed_phases(phases))
+    shuffled_report = build_report(_shuffled_phases(phases))
 
     assert len(normal.diagnostics) == MAX_SHADOW_DIAGNOSTICS
-    assert normal.canonical_payload() == reversed_report.canonical_payload()
-    assert normal.canonical_payload() == shuffled_report.canonical_payload()
-    assert normal.report_digest == reversed_report.report_digest
-    assert normal.report_digest == shuffled_report.report_digest
-    retained = tuple(
-        item.subject
-        for item in normal.diagnostics
-        if item.code == ShadowDiagnosticCode.MISSING_PROJECT
-    )
-    assert retained == tuple(
-        item.subject
-        for item in reversed_report.diagnostics
-        if item.code == ShadowDiagnosticCode.MISSING_PROJECT
-    )
-    assert retained == tuple(
-        item.subject
-        for item in shuffled_report.diagnostics
-        if item.code == ShadowDiagnosticCode.MISSING_PROJECT
-    )
-    overflow = next(
-        item
-        for item in normal.diagnostics
-        if item.code == ShadowDiagnosticCode.DIAGNOSTICS_TRUNCATED
-    )
+    _assert_canonical_equivalence(normal, reversed_report)
+    _assert_canonical_equivalence(normal, shuffled_report)
+
+    retained = _missing_project_subjects(normal)
+    assert retained == _missing_project_subjects(reversed_report)
+    assert retained == _missing_project_subjects(shuffled_report)
+
+    overflow = _overflow_diagnostic(normal)
     assert dict(overflow.details)["omitted"] == "13631"
-    assert overflow.details == next(
-        item.details
-        for item in reversed_report.diagnostics
-        if item.code == ShadowDiagnosticCode.DIAGNOSTICS_TRUNCATED
-    )
+    assert overflow.details == _overflow_diagnostic(reversed_report).details
 
     duplicate_in_omitted = [
-        {**phase, "projects": list(phase_projects(phase))} for phase in phases
+        {**phase, "projects": list(_phase_projects(phase))} for phase in phases
     ]
     duplicate_last = cast(list[str], duplicate_in_omitted[-1]["projects"])
     duplicate_previous = cast(list[str], duplicate_in_omitted[-2]["projects"])
     duplicate_last[-1] = duplicate_previous[-1]
     duplicate_report = build_report(duplicate_in_omitted)
-    duplicate_retained = tuple(
-        item.subject
-        for item in duplicate_report.diagnostics
-        if item.code == ShadowDiagnosticCode.MISSING_PROJECT
-    )
+    duplicate_retained = _missing_project_subjects(duplicate_report)
     assert duplicate_retained == retained
-    duplicate_overflow = next(
-        item
-        for item in duplicate_report.diagnostics
-        if item.code == ShadowDiagnosticCode.DIAGNOSTICS_TRUNCATED
-    )
+    duplicate_overflow = _overflow_diagnostic(duplicate_report)
     assert dict(duplicate_overflow.details)["omitted"] == "13631"
     assert duplicate_overflow.details != overflow.details
 
