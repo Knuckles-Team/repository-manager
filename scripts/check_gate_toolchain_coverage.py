@@ -386,32 +386,51 @@ def _command_tokens(script: str) -> list[str]:
     scoped to exactly the `\\(`/`\\)`/`\\;`/`\\|` shapes actually observed
     in this fleet, not general escape handling.
     """
-    _ESCAPE_NAMES = {"(": "LPAREN", ")": "RPAREN", "{": "LBRACE", "}": "RBRACE", ";": "SEMI", "|": "PIPE"}
-    script = re.sub(r"\\([(){};|])", lambda m: f"ESCAPED_{_ESCAPE_NAMES[m.group(1)]}_CHAR", script)
-    try:
-        lexer = shlex.shlex(script, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
+    script = _escape_shell_metacharacters(script)
+    tokens = _shlex_tokenize(script)
+    if tokens is None:
         # Unbalanced quotes or similar -- cannot safely tokenize; surface
         # the whole fragment as unclassified rather than guess.
         return [f"<<TOKENIZE-FAILED: {script!r}>>"]
+    return _scan_command_positions(tokens)
 
+
+def _escape_shell_metacharacters(script: str) -> str:
+    escape_names = {"(": "LPAREN", ")": "RPAREN", "{": "LBRACE", "}": "RBRACE", ";": "SEMI", "|": "PIPE"}
+    return re.sub(r"\\([(){};|])", lambda m: f"ESCAPED_{escape_names[m.group(1)]}_CHAR", script)
+
+
+def _shlex_tokenize(script: str) -> list[str] | None:
+    try:
+        lexer = shlex.shlex(script, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        return list(lexer)
+    except ValueError:
+        return None
+
+
+def _command_position_kind(tok: str) -> str:
+    """Classify one raw token's effect on command-position tracking."""
+    if tok in _SEPARATOR_TRIGGER or tok in _STRUCTURAL_TRIGGER:
+        return "triggers"
+    if tok in _NON_TRIGGER_PUNCTUATION or tok in _STRUCTURAL_NO_TRIGGER:
+        return "non-command"
+    return "candidate"
+
+
+def _scan_command_positions(tokens: list[str]) -> list[str]:
     commands: list[str] = []
     expect_command = True
     i = 0
     n = len(tokens)
     while i < n:
         tok = tokens[i]
-        if tok in _SEPARATOR_TRIGGER or tok in _STRUCTURAL_TRIGGER:
+        kind = _command_position_kind(tok)
+        if kind == "triggers":
             expect_command = True
             i += 1
             continue
-        if tok in _NON_TRIGGER_PUNCTUATION:
-            expect_command = False
-            i += 1
-            continue
-        if tok in _STRUCTURAL_NO_TRIGGER:
+        if kind == "non-command":
             expect_command = False
             i += 1
             continue
@@ -460,29 +479,54 @@ def _classify(token: str) -> tuple[str, str | None]:
     return "unclassified", None
 
 
-def _iter_precommit_system_entries(path: Path) -> list[tuple[str, str]]:
-    """Return [(hook_id, entry_text), ...] for language: system hooks."""
+def _load_fleet_yaml_mapping(path: Path) -> dict | None:
+    """Load a fleet config file as a YAML mapping, or None if unusable."""
     try:
         doc = yaml.safe_load(path.read_text())
     except (yaml.YAMLError, OSError) as exc:
         print(f"WARNING: could not parse {path}: {exc}", file=sys.stderr)
-        return []
-    if not isinstance(doc, dict):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _precommit_system_entry(hook: object) -> tuple[str, str] | None:
+    if not isinstance(hook, dict) or hook.get("language") != "system":
+        return None
+    entry = hook.get("entry")
+    if not isinstance(entry, str):
+        return None
+    return hook.get("id", "<unnamed>"), entry
+
+
+def _iter_precommit_system_entries(path: Path) -> list[tuple[str, str]]:
+    """Return [(hook_id, entry_text), ...] for language: system hooks."""
+    doc = _load_fleet_yaml_mapping(path)
+    if doc is None:
         return []
     out: list[tuple[str, str]] = []
     for repo in doc.get("repos") or []:
         if not isinstance(repo, dict):
             continue
         for hook in repo.get("hooks") or []:
-            if not isinstance(hook, dict):
-                continue
-            if hook.get("language") != "system":
-                continue
-            entry = hook.get("entry")
-            hook_id = hook.get("id", "<unnamed>")
-            if isinstance(entry, str):
-                out.append((hook_id, entry))
+            entry = _precommit_system_entry(hook)
+            if entry is not None:
+                out.append(entry)
     return out
+
+
+def _mergequeue_entry(gate: object) -> tuple[str, str] | None:
+    if not isinstance(gate, dict):
+        return None
+    command = gate.get("command")
+    name = gate.get("name", "<unnamed>")
+    if not isinstance(command, list) or not command:
+        return None
+    # ["bash", "-c", "<script>", ...] -- the script is what to scan;
+    # anything else is already a literal argv list (command[0] is the
+    # binary, unambiguous, no shell text to parse).
+    if command[0] in ("bash", "sh") and len(command) >= 3 and command[1] == "-c":
+        return name, command[2]
+    return name, shlex.join(str(c) for c in command)
 
 
 def _iter_mergequeue_entries(path: Path) -> list[tuple[str, str]]:
@@ -491,28 +535,14 @@ def _iter_mergequeue_entries(path: Path) -> list[tuple[str, str]]:
     There is no `language` field in .mergequeue.yaml -- every gate is a
     raw subprocess, so every gate's `command:` is in scope.
     """
-    try:
-        doc = yaml.safe_load(path.read_text())
-    except (yaml.YAMLError, OSError) as exc:
-        print(f"WARNING: could not parse {path}: {exc}", file=sys.stderr)
-        return []
-    if not isinstance(doc, dict):
+    doc = _load_fleet_yaml_mapping(path)
+    if doc is None:
         return []
     out: list[tuple[str, str]] = []
     for gate in doc.get("gates") or []:
-        if not isinstance(gate, dict):
-            continue
-        command = gate.get("command")
-        name = gate.get("name", "<unnamed>")
-        if not isinstance(command, list) or not command:
-            continue
-        # ["bash", "-c", "<script>", ...] -- the script is what to scan;
-        # anything else is already a literal argv list (command[0] is the
-        # binary, unambiguous, no shell text to parse).
-        if command[0] in ("bash", "sh") and len(command) >= 3 and command[1] == "-c":
-            out.append((name, command[2]))
-        else:
-            out.append((name, shlex.join(str(c) for c in command)))
+        entry = _mergequeue_entry(gate)
+        if entry is not None:
+            out.append(entry)
     return out
 
 
@@ -639,11 +669,8 @@ def _find_fleet_root(start: Path) -> Path | None:
     return None
 
 
-def main() -> int:
+def _build_arg_parser(default_fleet_root: Path | None, default_dockerfile: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    here = Path(__file__).resolve()
-    default_dockerfile = here.parents[1] / "docker" / "Dockerfile"  # repository-manager/docker/Dockerfile
-    default_fleet_root = _find_fleet_root(here)
     parser.add_argument(
         "--fleet-root",
         type=Path,
@@ -660,85 +687,112 @@ def main() -> int:
         default=None,
         help=f"Statically scan a Dockerfile's declared installs (local mode). Default: {default_dockerfile}",
     )
-    args = parser.parse_args()
+    return parser
 
+
+def _parse_and_validate_args(
+    parser: argparse.ArgumentParser, default_dockerfile: Path
+) -> tuple[argparse.Namespace, Path]:
+    args = parser.parse_args()
     if args.image and args.dockerfile:
         parser.error("--image and --dockerfile are mutually exclusive")
     if not args.image and not args.dockerfile:
         args.dockerfile = default_dockerfile
-
     fleet_root = args.fleet_root.resolve()
     if not fleet_root.is_dir():
         parser.error(f"--fleet-root {fleet_root} is not a directory")
+    return args, fleet_root
 
-    result = scan_fleet(fleet_root)
-    required_binaries = sorted(result.required)
 
-    verdicts: dict[str, bool | None]
+def _resolve_verdicts(
+    parser: argparse.ArgumentParser, args: argparse.Namespace, required_binaries: list[str]
+) -> tuple[str, dict[str, bool | None]]:
     if args.image:
-        mode = f"image probe ({args.image})"
-        verdicts = _probe_image(args.image, required_binaries)
-    else:
-        dockerfile = args.dockerfile.resolve()
-        if not dockerfile.is_file():
-            parser.error(f"--dockerfile {dockerfile} does not exist")
-        mode = f"static Dockerfile scan ({dockerfile})"
-        verdicts = _probe_dockerfile(dockerfile, required_binaries)
+        return f"image probe ({args.image})", _probe_image(args.image, required_binaries)
+    dockerfile = args.dockerfile.resolve()
+    if not dockerfile.is_file():
+        parser.error(f"--dockerfile {dockerfile} does not exist")
+    return f"static Dockerfile scan ({dockerfile})", _probe_dockerfile(dockerfile, required_binaries)
 
+
+def _print_scan_header(fleet_root: Path, mode: str, required_binaries: list[str]) -> None:
     print(f"# rm_gates toolchain coverage — fleet root: {fleet_root}")
     print(f"# mode: {mode}")
     print(f"# {len(required_binaries)} distinct toolchain(s) declared by language: system "
           f"hooks / mergequeue gates fleet-wide\n")
 
+
+def _binary_verdict_status(
+    binary: str, uses: list[RequiredUse], verdict: bool | None
+) -> tuple[str, list[RequiredUse], bool, bool]:
+    """Return (status, gap_sites, is_hard_failure, is_structural_gap)."""
+    if verdict is True:
+        policy = DAEMON_DEPENDENCE_POLICY.get(binary)
+        gap_sites = [u for u in uses if not policy(u.full_text)] if policy is not None else []
+        if gap_sites:
+            return "GAP", gap_sites, False, True
+        return "OK", [], False, False
+    if verdict is False:
+        return "MISSING", [], True, False
+    return (
+        "UNKNOWN (no static signature for this binary — rerun with --image)",
+        [],
+        True,
+        False,
+    )
+
+
+def _print_binary_report(
+    binary: str, uses: list[RequiredUse], status: str, gap_sites: list[RequiredUse]
+) -> None:
+    sites = ", ".join(f"{u.source_file}::{u.site_id}" for u in uses[:3])
+    more = f" (+{len(uses) - 3} more)" if len(uses) > 3 else ""
+    print(f"[{status:7}] {binary:16} — {TOOLCHAIN_BINARIES[binary]}")
+    print(f"          required by: {sites}{more}")
+    if gap_sites:
+        gap_desc = ", ".join(f"{u.source_file}::{u.site_id}" for u in gap_sites[:3])
+        gap_more = f" (+{len(gap_sites) - 3} more)" if len(gap_sites) > 3 else ""
+        print(f"          STRUCTURAL GAP, BY DECISION: {binary} is installed (CLI present), "
+              f"but this specific invocation needs a live daemon this image deliberately does "
+              f"NOT provide (mounting the host socket / a DinD sidecar grants effective host "
+              f"root -- an operator decision, not a default). Not covered by \"OK\": {gap_desc}"
+              f"{gap_more}")
+
+
+def _report_binaries(
+    result: ScanResult, required_binaries: list[str], verdicts: dict[str, bool | None]
+) -> tuple[bool, bool]:
     hard_failure = False
     structural_gap = False
     for binary in required_binaries:
         uses = result.required[binary]
         verdict = verdicts.get(binary)
-        gap_sites: list[RequiredUse] = []
-        if verdict is True:
-            policy = DAEMON_DEPENDENCE_POLICY.get(binary)
-            if policy is not None:
-                gap_sites = [u for u in uses if not policy(u.full_text)]
-            if gap_sites:
-                status = "GAP"
-                structural_gap = True
-            else:
-                status = "OK"
-        elif verdict is False:
-            status = "MISSING"
-            hard_failure = True
-        else:
-            status = "UNKNOWN (no static signature for this binary — rerun with --image)"
-            hard_failure = True
-        sites = ", ".join(f"{u.source_file}::{u.site_id}" for u in uses[:3])
-        more = f" (+{len(uses) - 3} more)" if len(uses) > 3 else ""
-        print(f"[{status:7}] {binary:16} — {TOOLCHAIN_BINARIES[binary]}")
-        print(f"          required by: {sites}{more}")
-        if gap_sites:
-            gap_desc = ", ".join(f"{u.source_file}::{u.site_id}" for u in gap_sites[:3])
-            gap_more = f" (+{len(gap_sites) - 3} more)" if len(gap_sites) > 3 else ""
-            print(f"          STRUCTURAL GAP, BY DECISION: {binary} is installed (CLI present), "
-                  f"but this specific invocation needs a live daemon this image deliberately does "
-                  f"NOT provide (mounting the host socket / a DinD sidecar grants effective host "
-                  f"root -- an operator decision, not a default). Not covered by \"OK\": {gap_desc}"
-                  f"{gap_more}")
+        status, gap_sites, is_hard_failure, is_gap = _binary_verdict_status(binary, uses, verdict)
+        hard_failure = hard_failure or is_hard_failure
+        structural_gap = structural_gap or is_gap
+        _print_binary_report(binary, uses, status, gap_sites)
+    return hard_failure, structural_gap
 
-    if result.unclassified:
-        hard_failure = True
-        print(f"\n{len(result.unclassified)} UNCLASSIFIED command(s) — a language: system hook or "
-              f"mergequeue gate invokes something outside both TOOLCHAIN_BINARIES and BASE_PROVIDED. "
-              f"This fails LOUD rather than silently assuming the command is harmless (that silent "
-              f"assumption is the exact failure mode that let the node/pnpm gap ship). Add the "
-              f"binary to one of the two allowlists in this script, with a justification, to clear it.")
-        seen: set[tuple[str, str]] = set()
-        for u in result.unclassified:
-            key = (u.token, u.source_file)
-            if key in seen:
-                continue
-            seen.add(key)
-            print(f"  - {u.token!r} in {u.source_file}::{u.site_id}: {u.snippet}")
 
+def _report_unclassified(result: ScanResult) -> bool:
+    if not result.unclassified:
+        return False
+    print(f"\n{len(result.unclassified)} UNCLASSIFIED command(s) — a language: system hook or "
+          f"mergequeue gate invokes something outside both TOOLCHAIN_BINARIES and BASE_PROVIDED. "
+          f"This fails LOUD rather than silently assuming the command is harmless (that silent "
+          f"assumption is the exact failure mode that let the node/pnpm gap ship). Add the "
+          f"binary to one of the two allowlists in this script, with a justification, to clear it.")
+    seen: set[tuple[str, str]] = set()
+    for u in result.unclassified:
+        key = (u.token, u.source_file)
+        if key in seen:
+            continue
+        seen.add(key)
+        print(f"  - {u.token!r} in {u.source_file}::{u.site_id}: {u.snippet}")
+    return True
+
+
+def _final_verdict(hard_failure: bool, structural_gap: bool) -> int:
     if hard_failure:
         print("\nFAIL — see MISSING/UNKNOWN/UNCLASSIFIED above.")
         return 1
@@ -751,6 +805,26 @@ def main() -> int:
         return 3
     print("\nPASS — every declared toolchain is covered.")
     return 0
+
+
+def main() -> int:
+    here = Path(__file__).resolve()
+    default_dockerfile = here.parents[1] / "docker" / "Dockerfile"  # repository-manager/docker/Dockerfile
+    default_fleet_root = _find_fleet_root(here)
+    parser = _build_arg_parser(default_fleet_root, default_dockerfile)
+    args, fleet_root = _parse_and_validate_args(parser, default_dockerfile)
+
+    result = scan_fleet(fleet_root)
+    required_binaries = sorted(result.required)
+    mode, verdicts = _resolve_verdicts(parser, args, required_binaries)
+
+    _print_scan_header(fleet_root, mode, required_binaries)
+
+    hard_failure, structural_gap = _report_binaries(result, required_binaries, verdicts)
+    if _report_unclassified(result):
+        hard_failure = True
+
+    return _final_verdict(hard_failure, structural_gap)
 
 
 if __name__ == "__main__":
