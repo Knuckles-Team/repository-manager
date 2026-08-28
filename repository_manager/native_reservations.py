@@ -18,6 +18,7 @@ from __future__ import annotations
 import inspect
 import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 
@@ -212,6 +213,75 @@ def _sync_value(value: object, *, name: str) -> object:
             f"native sync port received an async {name}"
         )
     return value
+
+
+@dataclass(frozen=True)
+class _StatusRequestFilters:
+    """Bundled optional filters ``_validate_status_request_filters`` checks.
+
+    Bundled so the validation helper stays under the fleet's parameter cap;
+    ``_status_request`` itself keeps its existing keyword-only signature
+    (pre-existing debt, not widened here).
+    """
+
+    work_item_id: str | None
+    reservation_id: str | None
+    host_ref: str | None
+    owner_id: str | None
+    fence: str | None
+    attempt: int | None
+    lease_epoch: int | None
+    fencing_token: int | None
+    input_fingerprint: str | None
+    cursor: str | None
+
+
+@dataclass(frozen=True)
+class _ReservationRequestContext:
+    """Derived/validated values ``_build_reservation_payload`` assembles.
+
+    Bundled so the builder helper stays under the fleet's parameter cap.
+    """
+
+    tenant: str
+    owner: str
+    requirement: dict[str, int]
+    target_kind: str
+    target_alias: str | None
+    profile_version: str
+    input_fingerprint: str
+    required_labels: list[str]
+    anti_affinity: list[str]
+    reserved_at_ms: int
+    expires_at_ms: int
+    host_revision: int | None
+    now: datetime | None
+    operation: str
+
+
+@dataclass(frozen=True)
+class _HostUpdateRequest:
+    """Bundled inputs for ``NativeWorkItemReservationPort.update_host``.
+
+    Bundled so the payload-building helper stays under the fleet's
+    parameter cap; ``update_host`` itself keeps its existing keyword-only
+    signature (pre-existing debt, not widened here).
+    """
+
+    host_ref: str
+    revision: int
+    capacity: ResourceVector
+    observed: ResourceVector
+    heartbeat_at: datetime
+    heartbeat_ttl_ms: int
+    target_kind: str
+    target_alias: str | None
+    now: datetime | None
+    draining: bool
+    quarantined: bool
+    labels: Sequence[str]
+    disk_used_mib: int
+    disk_capacity_mib: int
 
 
 class NativeWorkItemReservationPort(WorkItemReservationPort):
@@ -444,11 +514,24 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
         """Assert that a resolved RM record did not under-declare its profile."""
 
         profile = self._trusted_profile(record.profile_name)
+        self._validate_profile_resources(record, profile)
+        self._validate_profile_policy_fields(record, profile)
+        self._validate_profile_watermarks(record, profile)
+        self._validate_profile_fairness_cost(record)
+        return _string(str(profile.profile_version), name="profile_version")
+
+    @staticmethod
+    def _validate_profile_resources(record: ReservationRecord, profile: Any) -> None:
         for field in ("cpu_weight", "memory_mib", "disk_mib", "process_slots"):
             if getattr(record.requirement, field) < getattr(profile, field):
                 raise NativeReservationProtocolError(
                     f"reservation requirement under-declares profile {field}"
                 )
+
+    @staticmethod
+    def _validate_profile_policy_fields(
+        record: ReservationRecord, profile: Any
+    ) -> None:
         if record.concurrency_key != profile.concurrency_key:
             raise NativeReservationProtocolError(
                 "reservation concurrency_key does not match trusted profile"
@@ -473,6 +556,9 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "reservation anti_affinity under-declares trusted profile"
             )
+
+    @staticmethod
+    def _validate_profile_watermarks(record: ReservationRecord, profile: Any) -> None:
         for field in ("disk_low_watermark_mib", "disk_high_watermark_mib"):
             profile_value = getattr(profile, field)
             record_value = getattr(record, field)
@@ -487,6 +573,9 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "reservation disk_policy_key does not match trusted profile"
             )
+
+    @staticmethod
+    def _validate_profile_fairness_cost(record: ReservationRecord) -> None:
         expected_fairness_cost = max(
             1, record.requirement.cpu_weight + record.requirement.process_slots
         )
@@ -494,7 +583,6 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "reservation fairness_cost does not match RMDD-08 rule"
             )
-        return _string(str(profile.profile_version), name="profile_version")
 
     def _request(
         self,
@@ -507,7 +595,57 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
         host_revision = self._host_revision(record)
         reserved_at_ms = self._now_ms(record.reserved_at)
         expires_at_ms = self._now_ms(record.expires_at)
+        requirement = self._validate_reservation_requirement(record)
+        required_labels, anti_affinity = self._validate_reservation_labels(record)
+        target_kind, target_alias = _target_fields(
+            record.selected_target.kind.value,
+            record.selected_target.alias,
+            name="reservation",
+        )
+        profile_version = self._validate_profile(record)
+        input_fingerprint = self._validate_reservation_fingerprint(record)
+        self._validate_reservation_concurrency_fields(record)
+        self._validate_reservation_watermarks(record)
+        ctx = _ReservationRequestContext(
+            tenant=tenant,
+            owner=owner,
+            requirement=requirement,
+            target_kind=target_kind,
+            target_alias=target_alias,
+            profile_version=profile_version,
+            input_fingerprint=input_fingerprint,
+            required_labels=required_labels,
+            anti_affinity=anti_affinity,
+            reserved_at_ms=reserved_at_ms,
+            expires_at_ms=expires_at_ms,
+            host_revision=host_revision,
+            now=now,
+            operation=operation,
+        )
+        payload = self._build_reservation_payload(record, ctx)
+        if expires_at_ms <= reserved_at_ms:
+            raise NativeReservationProtocolError(
+                "reservation expiry must be after start"
+            )
+        return payload
+
+    @staticmethod
+    def _validate_reservation_requirement(
+        record: ReservationRecord,
+    ) -> dict[str, int]:
         requirement = record.requirement.as_dict()
+        for field, requirement_value in requirement.items():
+            _integer(
+                requirement_value,
+                name=f"reservation.requirement.{field}",
+                minimum=1,
+            )
+        return requirement
+
+    @staticmethod
+    def _validate_reservation_labels(
+        record: ReservationRecord,
+    ) -> tuple[list[str], list[str]]:
         required_labels = [
             _string(item, name="reservation.required_label")
             for item in record.required_labels
@@ -526,18 +664,10 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "reservation anti_affinity must be unique and bounded"
             )
-        for field, requirement_value in requirement.items():
-            _integer(
-                requirement_value,
-                name=f"reservation.requirement.{field}",
-                minimum=1,
-            )
-        target_kind, target_alias = _target_fields(
-            record.selected_target.kind.value,
-            record.selected_target.alias,
-            name="reservation",
-        )
-        profile_version = self._validate_profile(record)
+        return required_labels, anti_affinity
+
+    @staticmethod
+    def _validate_reservation_fingerprint(record: ReservationRecord) -> str:
         input_fingerprint = _string(
             record.input_fingerprint, name="reservation.input_fingerprint"
         )
@@ -545,6 +675,10 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "reservation.input_fingerprint must use v1 namespace"
             )
+        return input_fingerprint
+
+    @staticmethod
+    def _validate_reservation_concurrency_fields(record: ReservationRecord) -> None:
         if record.concurrency_limit is not None:
             _integer(
                 record.concurrency_limit,
@@ -554,6 +688,9 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
         _boolean(record.repository_exclusive, name="reservation.repository_exclusive")
         _boolean(record.branch_exclusive, name="reservation.branch_exclusive")
         _integer(record.fairness_cost, name="reservation.fairness_cost", minimum=1)
+
+    @staticmethod
+    def _validate_reservation_watermarks(record: ReservationRecord) -> None:
         for field, watermark_value in (
             ("disk_low_watermark_mib", record.disk_low_watermark_mib),
             ("disk_high_watermark_mib", record.disk_high_watermark_mib),
@@ -568,23 +705,27 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "reservation disk low watermark exceeds high watermark"
             )
-        payload: dict[str, object] = {
+
+    def _build_reservation_payload(
+        self, record: ReservationRecord, ctx: _ReservationRequestContext
+    ) -> dict[str, object]:
+        return {
             "schema_version": "1",
-            "tenant_ref": tenant,
+            "tenant_ref": ctx.tenant,
             "work_item_id": record.work_item_id,
-            "owner_id": owner,
+            "owner_id": ctx.owner,
             **self._fence_fields(record.fence),
             "attempt": record.attempt,
             "reservation_id": record.reservation_id,
-            "input_fingerprint": input_fingerprint,
+            "input_fingerprint": ctx.input_fingerprint,
             "profile_name": _string(
                 record.profile_name, name="reservation.profile_name"
             ),
-            "profile_version": profile_version,
+            "profile_version": ctx.profile_version,
             "host_ref": record.host_id,
-            "requirement": requirement,
-            "target_kind": target_kind,
-            "target_alias": target_alias,
+            "requirement": ctx.requirement,
+            "target_kind": ctx.target_kind,
+            "target_alias": ctx.target_alias,
             "repository_id": _string(
                 record.repository_id, name="reservation.repository_id"
             ),
@@ -595,8 +736,8 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             "concurrency_limit": record.concurrency_limit,
             "repository_exclusive": record.repository_exclusive,
             "branch_exclusive": record.branch_exclusive,
-            "required_labels": required_labels,
-            "anti_affinity": anti_affinity,
+            "required_labels": ctx.required_labels,
+            "anti_affinity": ctx.anti_affinity,
             "fairness_group": _string(
                 record.fairness_group, name="reservation.fairness_group"
             ),
@@ -606,21 +747,16 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             "disk_policy_key": _string(
                 record.disk_policy_key, name="reservation.disk_policy_key"
             ),
-            "reserved_at_ms": reserved_at_ms,
-            "expires_at_ms": expires_at_ms,
+            "reserved_at_ms": ctx.reserved_at_ms,
+            "expires_at_ms": ctx.expires_at_ms,
             "idempotency_key": _string(
-                self._operation_key_factory(operation, record.reservation_id),
+                self._operation_key_factory(ctx.operation, record.reservation_id),
                 name="idempotency_key",
             ),
-            "now_ms": self._now_ms(now),
-            "expected_host_revision": host_revision,
+            "now_ms": self._now_ms(ctx.now),
+            "expected_host_revision": ctx.host_revision,
             "expected_lifecycle_revision": record.revision,
         }
-        if expires_at_ms <= reserved_at_ms:
-            raise NativeReservationProtocolError(
-                "reservation expiry must be after start"
-            )
-        return payload
 
     def _status_request(
         self,
@@ -640,32 +776,20 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
     ) -> dict[str, object]:
         if limit < 1 or limit > 1000:
             raise ValueError("native status limit must be between 1 and 1000")
-        for field, value in (
-            ("work_item_id", work_item_id),
-            ("reservation_id", reservation_id),
-            ("host_ref", host_ref),
-            ("owner_id", owner_id),
-            ("fence", fence),
-            ("cursor", cursor),
-        ):
-            if value is not None:
-                _string(value, name=f"status.{field}")
-        if attempt is not None:
-            _integer(attempt, name="status.attempt", minimum=1)
-        if lease_epoch is not None:
-            _integer(lease_epoch, name="status.lease_epoch")
-        if fencing_token is not None:
-            _integer(fencing_token, name="status.fencing_token")
-        if input_fingerprint is not None:
-            fingerprint = _string(input_fingerprint, name="status.input_fingerprint")
-            if len(fingerprint) != 67 or not fingerprint.startswith("v1:"):
-                raise NativeReservationProtocolError(
-                    "status.input_fingerprint must use v1 namespace"
-                )
-        if work_item_id is None and reservation_id is None and host_ref is None:
-            raise ValueError(
-                "native status requires a WorkItem, reservation, or host filter"
+        self._validate_status_request_filters(
+            _StatusRequestFilters(
+                work_item_id=work_item_id,
+                reservation_id=reservation_id,
+                host_ref=host_ref,
+                owner_id=owner_id,
+                fence=fence,
+                attempt=attempt,
+                lease_epoch=lease_epoch,
+                fencing_token=fencing_token,
+                input_fingerprint=input_fingerprint,
+                cursor=cursor,
             )
+        )
         return {
             "schema_version": "1",
             "tenant_ref": self._tenant_ref,
@@ -683,19 +807,53 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             "now_ms": self._now_ms(now),
         }
 
-    def _result(
-        self,
-        value: NativeResult,
-        *,
-        work_item_id: str,
-        attempt: int,
-        fence: str,
-        reservation_id: str,
-        expected: ReservationRecord | None,
-        require_changed_id: bool,
-        expected_admission: Mapping[str, object] | None = None,
-        expected_fence: tuple[int, int] | None = None,
-    ) -> tuple[FenceDecision, ReservationRecord | None]:
+    @staticmethod
+    def _validate_status_string_filters(filters: _StatusRequestFilters) -> None:
+        for field, value in (
+            ("work_item_id", filters.work_item_id),
+            ("reservation_id", filters.reservation_id),
+            ("host_ref", filters.host_ref),
+            ("owner_id", filters.owner_id),
+            ("fence", filters.fence),
+            ("cursor", filters.cursor),
+        ):
+            if value is not None:
+                _string(value, name=f"status.{field}")
+        if filters.attempt is not None:
+            _integer(filters.attempt, name="status.attempt", minimum=1)
+        if filters.lease_epoch is not None:
+            _integer(filters.lease_epoch, name="status.lease_epoch")
+        if filters.fencing_token is not None:
+            _integer(filters.fencing_token, name="status.fencing_token")
+
+    @staticmethod
+    def _validate_status_fingerprint_filter(filters: _StatusRequestFilters) -> None:
+        if filters.input_fingerprint is None:
+            return
+        fingerprint = _string(
+            filters.input_fingerprint, name="status.input_fingerprint"
+        )
+        if len(fingerprint) != 67 or not fingerprint.startswith("v1:"):
+            raise NativeReservationProtocolError(
+                "status.input_fingerprint must use v1 namespace"
+            )
+
+    @staticmethod
+    def _validate_status_request_filters(filters: _StatusRequestFilters) -> None:
+        NativeWorkItemReservationPort._validate_status_string_filters(filters)
+        NativeWorkItemReservationPort._validate_status_fingerprint_filter(filters)
+        if (
+            filters.work_item_id is None
+            and filters.reservation_id is None
+            and filters.host_ref is None
+        ):
+            raise ValueError(
+                "native status requires a WorkItem, reservation, or host filter"
+            )
+
+    def _validate_result_top_level(
+        self, value: NativeResult, *, work_item_id: str, attempt: int, fence: str
+    ) -> tuple[FenceDecision, int, int]:
         if value.get("schema_version") != "1":
             raise NativeReservationProtocolError(
                 "native result schema_version must be 1"
@@ -721,6 +879,10 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             self._validate_fence(direct_fence, result_epoch, result_token)
             if direct_fence != fence:
                 raise NativeReservationProtocolError("native result fence mismatch")
+        return decision, result_epoch, result_token
+
+    @staticmethod
+    def _validate_result_state_fields(value: NativeResult) -> tuple[str, bool]:
         top_state = _string(value.get("state"), name="result.state")
         if top_state not in {
             "reserved",
@@ -748,6 +910,17 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             "fairness_debt",
         ):
             _integer(value.get(field), name=f"result.{field}")
+        return top_state, top_tombstone
+
+    @staticmethod
+    def _validate_result_reservation_and_changed(
+        value: NativeResult,
+        *,
+        decision: FenceDecision,
+        reservation_id: str,
+        work_item_id: str,
+        require_changed_id: bool,
+    ) -> None:
         result_reservation_id = value.get("reservation_id")
         if (
             decision in {FenceDecision.ACCEPTED, FenceDecision.IDEMPOTENT}
@@ -778,22 +951,34 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "native result omitted changed WorkItem"
             )
-        record_value = value.get("record")
-        if record_value is None:
-            if (
-                expected_fence is not None
-                and (result_epoch, result_token) != expected_fence
-            ):
-                raise NativeReservationProtocolError(
-                    "native result fence correlation mismatch"
-                )
-            if decision is FenceDecision.NOT_FOUND:
-                if expected_fence is None:
-                    raise NativeReservationProtocolError(
-                        "native not-found fence correlation mismatch"
-                    )
-                return decision, None
-            return decision, None
+
+    @staticmethod
+    def _validate_missing_record(
+        *,
+        decision: FenceDecision,
+        expected_fence: tuple[int, int] | None,
+        result_epoch: int,
+        result_token: int,
+    ) -> None:
+        if (
+            expected_fence is not None
+            and (result_epoch, result_token) != expected_fence
+        ):
+            raise NativeReservationProtocolError(
+                "native result fence correlation mismatch"
+            )
+        if decision is FenceDecision.NOT_FOUND and expected_fence is None:
+            raise NativeReservationProtocolError(
+                "native not-found fence correlation mismatch"
+            )
+
+    def _parse_result_record(
+        self,
+        record_value: object,
+        *,
+        result_epoch: int,
+        result_token: int,
+    ) -> tuple[ReservationRecord, Mapping[str, object]]:
         record_payload = _mapping(record_value, name="native reservation record")
         record = self._record_from_native(record_payload)
         record_epoch = _integer(
@@ -806,36 +991,52 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "native result and reservation fence numbers disagree"
             )
-        if expected_admission is not None:
-            for field in (
-                "profile_name",
-                "profile_version",
-                "requirement",
-                "target_kind",
-                "target_alias",
-                "repository_id",
-                "branch",
-                "concurrency_key",
-                "concurrency_limit",
-                "repository_exclusive",
-                "branch_exclusive",
-                "required_labels",
-                "anti_affinity",
-                "fairness_group",
-                "fairness_cost",
-                "disk_low_watermark_mib",
-                "disk_high_watermark_mib",
-                "disk_policy_key",
-                "input_fingerprint",
-            ):
-                expected_value = expected_admission.get(field)
-                native_value = record_payload.get(field)
-                if field in {"required_labels", "anti_affinity"}:
-                    expected_value = list(cast(Sequence[object], expected_value or ()))
-                if expected_value != native_value:
-                    raise NativeReservationProtocolError(
-                        f"native immutable admission field mismatch: {field}"
-                    )
+        return record, record_payload
+
+    @staticmethod
+    def _validate_expected_admission(
+        record_payload: Mapping[str, object],
+        expected_admission: Mapping[str, object],
+    ) -> None:
+        for field in (
+            "profile_name",
+            "profile_version",
+            "requirement",
+            "target_kind",
+            "target_alias",
+            "repository_id",
+            "branch",
+            "concurrency_key",
+            "concurrency_limit",
+            "repository_exclusive",
+            "branch_exclusive",
+            "required_labels",
+            "anti_affinity",
+            "fairness_group",
+            "fairness_cost",
+            "disk_low_watermark_mib",
+            "disk_high_watermark_mib",
+            "disk_policy_key",
+            "input_fingerprint",
+        ):
+            expected_value = expected_admission.get(field)
+            native_value = record_payload.get(field)
+            if field in {"required_labels", "anti_affinity"}:
+                expected_value = list(cast(Sequence[object], expected_value or ()))
+            if expected_value != native_value:
+                raise NativeReservationProtocolError(
+                    f"native immutable admission field mismatch: {field}"
+                )
+
+    def _validate_record_correlation(
+        self,
+        record: ReservationRecord,
+        *,
+        work_item_id: str,
+        attempt: int,
+        fence: str,
+        reservation_id: str,
+    ) -> None:
         if (record.work_item_id, record.attempt, record.fence) != (
             work_item_id,
             attempt,
@@ -850,6 +1051,16 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError("native reservation tenant mismatch")
         if self._owner_id and record.owner_id != self._owner_id:
             raise NativeReservationProtocolError("native reservation owner mismatch")
+
+    @staticmethod
+    def _validate_record_state_consistency(
+        value: NativeResult,
+        record: ReservationRecord,
+        record_payload: Mapping[str, object],
+        *,
+        top_state: str,
+        top_tombstone: bool,
+    ) -> None:
         if top_state != record_payload.get("state"):
             raise NativeReservationProtocolError("native result state mismatch")
         if top_tombstone != (record.state is not ReservationState.RESERVED):
@@ -867,6 +1078,10 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
         )
         if top_revision != native_lifecycle:
             raise NativeReservationProtocolError("native lifecycle revision mismatch")
+
+    def _validate_host_correlation(
+        self, value: NativeResult, record: ReservationRecord
+    ) -> None:
         host_ref = value.get("host_ref")
         if host_ref is None:
             raise NativeReservationProtocolError("native result lacks host correlation")
@@ -877,6 +1092,60 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
         )
         if host_revision != self._host_revision(record):
             raise NativeReservationProtocolError("native host revision mismatch")
+
+    def _result(
+        self,
+        value: NativeResult,
+        *,
+        work_item_id: str,
+        attempt: int,
+        fence: str,
+        reservation_id: str,
+        expected: ReservationRecord | None,
+        require_changed_id: bool,
+        expected_admission: Mapping[str, object] | None = None,
+        expected_fence: tuple[int, int] | None = None,
+    ) -> tuple[FenceDecision, ReservationRecord | None]:
+        decision, result_epoch, result_token = self._validate_result_top_level(
+            value, work_item_id=work_item_id, attempt=attempt, fence=fence
+        )
+        top_state, top_tombstone = self._validate_result_state_fields(value)
+        self._validate_result_reservation_and_changed(
+            value,
+            decision=decision,
+            reservation_id=reservation_id,
+            work_item_id=work_item_id,
+            require_changed_id=require_changed_id,
+        )
+        record_value = value.get("record")
+        if record_value is None:
+            self._validate_missing_record(
+                decision=decision,
+                expected_fence=expected_fence,
+                result_epoch=result_epoch,
+                result_token=result_token,
+            )
+            return decision, None
+        record, record_payload = self._parse_result_record(
+            record_value, result_epoch=result_epoch, result_token=result_token
+        )
+        if expected_admission is not None:
+            self._validate_expected_admission(record_payload, expected_admission)
+        self._validate_record_correlation(
+            record,
+            work_item_id=work_item_id,
+            attempt=attempt,
+            fence=fence,
+            reservation_id=reservation_id,
+        )
+        self._validate_record_state_consistency(
+            value,
+            record,
+            record_payload,
+            top_state=top_state,
+            top_tombstone=top_tombstone,
+        )
+        self._validate_host_correlation(value, record)
         if expected is not None and not self._same_immutable(expected, record):
             raise NativeReservationProtocolError(
                 "native immutable reservation mismatch"
@@ -967,17 +1236,12 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             == native.selected_target.capability_labels
         )
 
-    def _record_from_native(self, value: Mapping[str, object]) -> ReservationRecord:
-        reservation_id = _string(
-            value.get("reservation_id"), name="record.reservation_id"
-        )
-        work_item_id = _string(value.get("work_item_id"), name="record.work_item_id")
-        attempt = _integer(value.get("attempt"), name="record.attempt", minimum=1)
-        fence = self._decode_fence(value)
+    @staticmethod
+    def _parse_native_requirement(value: Mapping[str, object]) -> ResourceVector:
         requirement_value = _mapping(
             value.get("requirement"), name="record.requirement"
         )
-        requirement = ResourceVector(
+        return ResourceVector(
             cpu_weight=_integer(
                 requirement_value.get("cpu_weight"),
                 name="requirement.cpu_weight",
@@ -999,10 +1263,15 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
                 minimum=1,
             ),
         )
+
+    @staticmethod
+    def _parse_native_capacity_snapshot(
+        value: Mapping[str, object],
+    ) -> dict[str, int]:
         snapshot_value = _mapping(
             value.get("capacity_snapshot"), name="record.capacity_snapshot"
         )
-        snapshot = {
+        return {
             "cpu_weight": _integer(
                 snapshot_value.get("cpu_weight"), name="capacity_snapshot.cpu_weight"
             ),
@@ -1021,6 +1290,9 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
                 name="capacity_snapshot.host_revision",
             ),
         }
+
+    @staticmethod
+    def _parse_native_selected_target(value: Mapping[str, object]) -> TargetPolicy:
         _target_fields(
             value.get("target_kind"),
             value.get("target_alias"),
@@ -1047,7 +1319,7 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             )
         try:
             target_kind = TargetKind(selected_kind_value)
-            selected_target = TargetPolicy(
+            return TargetPolicy(
                 kind=target_kind,
                 alias=selected_alias,
                 # Native v1 carries selected-host capability observations in
@@ -1059,9 +1331,11 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "native target policy is invalid"
             ) from exc
-        state_value = _string(value.get("state"), name="record.state")
-        if state_value not in _STATE_MAP:
-            raise NativeReservationProtocolError("native reservation state is unknown")
+
+    @staticmethod
+    def _parse_native_timestamps(
+        value: Mapping[str, object],
+    ) -> tuple[datetime, datetime]:
         reserved_ms = _integer(
             value.get("reserved_at_ms"), name="record.reserved_at_ms"
         )
@@ -1077,6 +1351,12 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             ) from exc
         if expires_at <= reserved_at:
             raise NativeReservationProtocolError("native reservation expiry is invalid")
+        return reserved_at, expires_at
+
+    @staticmethod
+    def _parse_native_labels(
+        value: Mapping[str, object],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         labels = tuple(
             _string(item, name="record.required_label")
             for item in _list(
@@ -1095,6 +1375,23 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "native record anti_affinity must be unique"
             )
+        return labels, anti_affinity
+
+    def _record_from_native(self, value: Mapping[str, object]) -> ReservationRecord:
+        reservation_id = _string(
+            value.get("reservation_id"), name="record.reservation_id"
+        )
+        work_item_id = _string(value.get("work_item_id"), name="record.work_item_id")
+        attempt = _integer(value.get("attempt"), name="record.attempt", minimum=1)
+        fence = self._decode_fence(value)
+        requirement = self._parse_native_requirement(value)
+        snapshot = self._parse_native_capacity_snapshot(value)
+        selected_target = self._parse_native_selected_target(value)
+        state_value = _string(value.get("state"), name="record.state")
+        if state_value not in _STATE_MAP:
+            raise NativeReservationProtocolError("native reservation state is unknown")
+        reserved_at, expires_at = self._parse_native_timestamps(value)
+        labels, anti_affinity = self._parse_native_labels(value)
         # The request target is an immutable policy assertion; the nested
         # selected_target is the native host-selection observation.  Both are
         # parsed above, while RM's ReservationRecord retains the latter.
@@ -1187,6 +1484,29 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             now=None,
         )
         result = self._call("query_reservation", request)
+        decision = self._validate_current_result_correlation(
+            result,
+            work_item_id=work_item_id,
+            attempt=attempt,
+            fence=fence,
+            fence_fields=fence_fields,
+        )
+        tombstone = self._resolve_current_tombstone(
+            result, work_item_id=work_item_id, attempt=attempt, fence=fence
+        )
+        if tombstone:
+            return FenceDecision.STALE
+        return decision
+
+    def _validate_current_result_correlation(
+        self,
+        result: NativeResult,
+        *,
+        work_item_id: str,
+        attempt: int,
+        fence: str,
+        fence_fields: Mapping[str, object],
+    ) -> FenceDecision:
         if result.get("schema_version") != "1":
             raise NativeReservationProtocolError(
                 "native current WorkItem schema_version must be 1"
@@ -1217,25 +1537,28 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             self._validate_fence(direct_value, *result_pair)
             if direct_value != fence:
                 raise NativeReservationProtocolError("native current fence mismatch")
+        return decision
+
+    def _resolve_current_tombstone(
+        self, result: NativeResult, *, work_item_id: str, attempt: int, fence: str
+    ) -> bool:
         tombstone = _boolean(result.get("tombstone"), name="result.tombstone")
         record_value = result.get("record")
-        if record_value is not None:
-            record_payload = _mapping(record_value, name="native current record")
-            record = self._record_from_native(record_payload)
-            if (
-                record.work_item_id,
-                record.attempt,
-                record.fence,
-                record.tenant_id,
-                record.owner_id,
-            ) != (work_item_id, attempt, fence, self._tenant_ref, self._owner_id):
-                raise NativeReservationProtocolError(
-                    "native current record correlation mismatch"
-                )
-            tombstone = record.state is not ReservationState.RESERVED
-        if tombstone:
-            return FenceDecision.STALE
-        return decision
+        if record_value is None:
+            return tombstone
+        record_payload = _mapping(record_value, name="native current record")
+        record = self._record_from_native(record_payload)
+        if (
+            record.work_item_id,
+            record.attempt,
+            record.fence,
+            record.tenant_id,
+            record.owner_id,
+        ) != (work_item_id, attempt, fence, self._tenant_ref, self._owner_id):
+            raise NativeReservationProtocolError(
+                "native current record correlation mismatch"
+            )
+        return record.state is not ReservationState.RESERVED
 
     def is_current(self, work_item_id: str, attempt: int, fence: str) -> bool:
         try:
@@ -1478,14 +1801,7 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
         return result
 
     @staticmethod
-    def _validate_status_result(
-        result: NativeResult,
-        *,
-        limit: int,
-        work_item_id: str | None = None,
-        reservation_id: str | None = None,
-        host_ref: str | None = None,
-    ) -> None:
+    def _validate_status_pagination(result: NativeResult) -> None:
         if result.get("schema_version") != "1":
             raise NativeReservationProtocolError(
                 "native status schema_version must be 1"
@@ -1498,6 +1814,11 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError("complete status page has a cursor")
         if not complete and next_cursor is None:
             raise NativeReservationProtocolError("incomplete status page has no cursor")
+
+    @staticmethod
+    def _validate_status_host_and_fields(
+        result: NativeResult, *, host_ref: str | None
+    ) -> None:
         result_host_ref = result.get("host_ref")
         if result_host_ref is not None:
             _string(result_host_ref, name="status.host_ref")
@@ -1514,79 +1835,118 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             "superseded_count",
         ):
             _integer(result.get(field), name=f"status.{field}")
+
+    @staticmethod
+    def _validate_status_top_level(
+        result: NativeResult, *, host_ref: str | None
+    ) -> None:
+        NativeWorkItemReservationPort._validate_status_pagination(result)
+        NativeWorkItemReservationPort._validate_status_host_and_fields(
+            result, host_ref=host_ref
+        )
+
+    @staticmethod
+    def _validate_status_reservation_summary(
+        reservation: object,
+        index: int,
+        *,
+        work_item_id: str | None,
+        reservation_id: str | None,
+        host_ref: str | None,
+    ) -> None:
+        summary = _mapping(reservation, name=f"status.reservations[{index}]")
+        for field in (
+            "reservation_id",
+            "work_item_id",
+            "host_ref",
+            "profile_name",
+        ):
+            _string(
+                summary.get(field),
+                name=f"status.reservations[{index}].{field}",
+            )
+        _integer(
+            summary.get("attempt"),
+            name=f"status.reservations[{index}].attempt",
+            minimum=1,
+        )
+        state = _string(
+            summary.get("state"),
+            name=f"status.reservations[{index}].state",
+        )
+        if state not in {
+            "reserved",
+            "released",
+            "reclaimed",
+            "expired",
+            "superseded",
+            "absent",
+        }:
+            raise NativeReservationProtocolError(
+                f"status.reservations[{index}].state is unknown"
+            )
+        _integer(
+            summary.get("revision"),
+            name=f"status.reservations[{index}].revision",
+            minimum=1,
+        )
+        _integer(
+            summary.get("expires_at_ms"),
+            name=f"status.reservations[{index}].expires_at_ms",
+        )
+        for field in (
+            "held_cpu_weight",
+            "held_memory_mib",
+            "held_disk_mib",
+            "held_process_slots",
+        ):
+            _integer(
+                summary.get(field),
+                name=f"status.reservations[{index}].{field}",
+            )
+        _boolean(
+            summary.get("tombstone"),
+            name=f"status.reservations[{index}].tombstone",
+        )
+        if work_item_id is not None and summary.get("work_item_id") != work_item_id:
+            raise NativeReservationProtocolError(
+                f"status.reservations[{index}] WorkItem filter mismatch"
+            )
+        if (
+            reservation_id is not None
+            and summary.get("reservation_id") != reservation_id
+        ):
+            raise NativeReservationProtocolError(
+                f"status.reservations[{index}] reservation filter mismatch"
+            )
+        if host_ref is not None and summary.get("host_ref") != host_ref:
+            raise NativeReservationProtocolError(
+                f"status.reservations[{index}] host filter mismatch"
+            )
+
+    @staticmethod
+    def _validate_status_result(
+        result: NativeResult,
+        *,
+        limit: int,
+        work_item_id: str | None = None,
+        reservation_id: str | None = None,
+        host_ref: str | None = None,
+    ) -> None:
+        NativeWorkItemReservationPort._validate_status_top_level(
+            result, host_ref=host_ref
+        )
         reservations = _list(
             result.get("reservations"), name="status.reservations", maximum=limit
         )
         for index, reservation in enumerate(reservations):
-            summary = _mapping(reservation, name=f"status.reservations[{index}]")
-            for field in (
-                "reservation_id",
-                "work_item_id",
-                "host_ref",
-                "profile_name",
-            ):
-                _string(
-                    summary.get(field),
-                    name=f"status.reservations[{index}].{field}",
-                )
-            _integer(
-                summary.get("attempt"),
-                name=f"status.reservations[{index}].attempt",
-                minimum=1,
+            NativeWorkItemReservationPort._validate_status_reservation_summary(
+                reservation,
+                index,
+                work_item_id=work_item_id,
+                reservation_id=reservation_id,
+                host_ref=host_ref,
             )
-            state = _string(
-                summary.get("state"),
-                name=f"status.reservations[{index}].state",
-            )
-            if state not in {
-                "reserved",
-                "released",
-                "reclaimed",
-                "expired",
-                "superseded",
-                "absent",
-            }:
-                raise NativeReservationProtocolError(
-                    f"status.reservations[{index}].state is unknown"
-                )
-            _integer(
-                summary.get("revision"),
-                name=f"status.reservations[{index}].revision",
-                minimum=1,
-            )
-            _integer(
-                summary.get("expires_at_ms"),
-                name=f"status.reservations[{index}].expires_at_ms",
-            )
-            for field in (
-                "held_cpu_weight",
-                "held_memory_mib",
-                "held_disk_mib",
-                "held_process_slots",
-            ):
-                _integer(
-                    summary.get(field),
-                    name=f"status.reservations[{index}].{field}",
-                )
-            _boolean(
-                summary.get("tombstone"),
-                name=f"status.reservations[{index}].tombstone",
-            )
-            if work_item_id is not None and summary.get("work_item_id") != work_item_id:
-                raise NativeReservationProtocolError(
-                    f"status.reservations[{index}] WorkItem filter mismatch"
-                )
-            if (
-                reservation_id is not None
-                and summary.get("reservation_id") != reservation_id
-            ):
-                raise NativeReservationProtocolError(
-                    f"status.reservations[{index}] reservation filter mismatch"
-                )
-            if host_ref is not None and summary.get("host_ref") != host_ref:
-                raise NativeReservationProtocolError(
-                    f"status.reservations[{index}] host filter mismatch"
-                )
 
     def status_pages(
         self,
@@ -1622,27 +1982,34 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
                 reservation_id=reservation_id,
                 host_ref=host_ref,
             )
-            complete = _boolean(page.get("complete"), name="status.complete")
-            next_cursor = page.get("next_cursor")
-            if next_cursor is not None:
-                next_cursor = _string(next_cursor, name="status.next_cursor")
-            if complete and next_cursor is not None:
-                raise NativeReservationProtocolError(
-                    "complete status page has a cursor"
-                )
-            if not complete and next_cursor is None:
-                raise NativeReservationProtocolError(
-                    "incomplete status page has no cursor"
-                )
+            complete, next_cursor = self._validate_status_page_cursor(page)
             yield page
             if complete:
                 return
-            assert isinstance(next_cursor, str)
-            if next_cursor in seen or next_cursor == cursor:
-                raise NativeReservationProtocolError("status cursor did not advance")
-            seen.add(next_cursor)
-            cursor = next_cursor
+            cursor = self._advance_status_cursor(next_cursor, cursor, seen)
         raise NativeReservationProtocolError("native status pagination exceeded bound")
+
+    @staticmethod
+    def _validate_status_page_cursor(page: NativeResult) -> tuple[bool, str | None]:
+        complete = _boolean(page.get("complete"), name="status.complete")
+        next_cursor = page.get("next_cursor")
+        if next_cursor is not None:
+            next_cursor = _string(next_cursor, name="status.next_cursor")
+        if complete and next_cursor is not None:
+            raise NativeReservationProtocolError("complete status page has a cursor")
+        if not complete and next_cursor is None:
+            raise NativeReservationProtocolError("incomplete status page has no cursor")
+        return complete, next_cursor
+
+    @staticmethod
+    def _advance_status_cursor(
+        next_cursor: str | None, cursor: str | None, seen: set[str]
+    ) -> str:
+        assert isinstance(next_cursor, str)
+        if next_cursor in seen or next_cursor == cursor:
+            raise NativeReservationProtocolError("status cursor did not advance")
+        seen.add(next_cursor)
+        return next_cursor
 
     def update_host(
         self,
@@ -1662,39 +2029,80 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
         disk_used_mib: int = 0,
         disk_capacity_mib: int = 0,
     ) -> NativeResult:
-        _integer(revision, name="host revision", minimum=1)
-        _integer(heartbeat_ttl_ms, name="heartbeat TTL", minimum=1)
-        if disk_used_mib < 0 or disk_capacity_mib < 0:
+        request = _HostUpdateRequest(
+            host_ref=host_ref,
+            revision=revision,
+            capacity=capacity,
+            observed=observed,
+            heartbeat_at=heartbeat_at,
+            heartbeat_ttl_ms=heartbeat_ttl_ms,
+            target_kind=target_kind,
+            target_alias=target_alias,
+            now=now,
+            draining=draining,
+            quarantined=quarantined,
+            labels=labels,
+            disk_used_mib=disk_used_mib,
+            disk_capacity_mib=disk_capacity_mib,
+        )
+        payload = self._build_update_host_payload(request)
+        result = self._call("update_host", payload)
+        self._validate_update_host_result(
+            result,
+            host_ref=host_ref,
+            revision=revision,
+            draining=draining,
+            quarantined=quarantined,
+        )
+        return result
+
+    def _build_update_host_payload(
+        self, request: _HostUpdateRequest
+    ) -> dict[str, object]:
+        _integer(request.revision, name="host revision", minimum=1)
+        _integer(request.heartbeat_ttl_ms, name="heartbeat TTL", minimum=1)
+        if request.disk_used_mib < 0 or request.disk_capacity_mib < 0:
             raise ValueError("disk telemetry must be non-negative")
-        if disk_used_mib > disk_capacity_mib:
+        if request.disk_used_mib > request.disk_capacity_mib:
             raise ValueError("disk used telemetry must not exceed disk capacity")
-        if not isinstance(draining, bool) or not isinstance(quarantined, bool):
+        if not isinstance(request.draining, bool) or not isinstance(
+            request.quarantined, bool
+        ):
             raise ValueError("host drain/quarantine telemetry must be boolean")
-        bounded_labels = [_string(item, name="host label") for item in labels]
+        bounded_labels = [_string(item, name="host label") for item in request.labels]
         if len(bounded_labels) > 128 or len(set(bounded_labels)) != len(bounded_labels):
             raise ValueError("host labels must be unique and bounded")
         native_target_kind, native_target_alias = _target_fields(
-            target_kind, target_alias, name="host"
+            request.target_kind, request.target_alias, name="host"
         )
-        payload = {
+        return {
             "schema_version": "1",
             "tenant_ref": self._tenant_ref,
-            "host_ref": _string(host_ref, name="host_ref"),
-            "revision": revision,
-            "capacity": capacity.as_dict(),
-            "observed": observed.as_dict(),
-            "heartbeat_at_ms": self._now_ms(heartbeat_at),
-            "heartbeat_ttl_ms": heartbeat_ttl_ms,
-            "now_ms": self._now_ms(now),
-            "draining": draining,
-            "quarantined": quarantined,
+            "host_ref": _string(request.host_ref, name="host_ref"),
+            "revision": request.revision,
+            "capacity": request.capacity.as_dict(),
+            "observed": request.observed.as_dict(),
+            "heartbeat_at_ms": self._now_ms(request.heartbeat_at),
+            "heartbeat_ttl_ms": request.heartbeat_ttl_ms,
+            "now_ms": self._now_ms(request.now),
+            "draining": request.draining,
+            "quarantined": request.quarantined,
             "labels": sorted(bounded_labels),
             "target_kind": native_target_kind,
             "target_alias": native_target_alias,
-            "disk_used_mib": disk_used_mib,
-            "disk_capacity_mib": disk_capacity_mib,
+            "disk_used_mib": request.disk_used_mib,
+            "disk_capacity_mib": request.disk_capacity_mib,
         }
-        result = self._call("update_host", payload)
+
+    @staticmethod
+    def _validate_update_host_result(
+        result: NativeResult,
+        *,
+        host_ref: str,
+        revision: int,
+        draining: bool,
+        quarantined: bool,
+    ) -> None:
         if result.get("schema_version") != "1":
             raise NativeReservationProtocolError(
                 "native host result schema_version must be 1"
@@ -1736,7 +2144,6 @@ class NativeWorkItemReservationPort(WorkItemReservationPort):
             raise NativeReservationProtocolError(
                 "native accepted host policy does not match request"
             )
-        return result
 
 
 def create_production_resource_scheduler(
