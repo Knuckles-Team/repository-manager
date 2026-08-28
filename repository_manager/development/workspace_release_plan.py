@@ -1209,16 +1209,16 @@ def _project_edges(edges: tuple[DependencyEdge, ...]) -> tuple[tuple[str, str], 
     return tuple(sorted(values))
 
 
-def _topological_groups(
+def _project_dependency_index(
     projects: tuple[str, ...],
     edges: tuple[tuple[str, str], ...],
-) -> tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]:
-    """Return dependency-first project groups or a stable cycle witness."""
+) -> dict[str, set[str]]:
+    """Index project edges as a dependency set, rejecting unknown ids and loops."""
 
-    remaining = set(projects)
+    known = set(projects)
     dependencies: dict[str, set[str]] = {project: set() for project in projects}
     for dependent, dependency in edges:
-        if dependent not in remaining or dependency not in remaining:
+        if dependent not in known or dependency not in known:
             raise _fail(
                 ReleasePlanCode.MISSING, "project edge names an unknown project"
             )
@@ -1227,6 +1227,17 @@ def _topological_groups(
                 ReleasePlanCode.CYCLE, "project dependency graph contains a cycle"
             )
         dependencies[dependent].add(dependency)
+    return dependencies
+
+
+def _topological_groups(
+    projects: tuple[str, ...],
+    edges: tuple[tuple[str, str], ...],
+) -> tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]:
+    """Return dependency-first project groups or a stable cycle witness."""
+
+    dependencies = _project_dependency_index(projects, edges)
+    remaining = set(projects)
     groups: list[tuple[str, ...]] = []
     while remaining:
         ready = tuple(
@@ -2163,11 +2174,9 @@ def _revalidate_floor(value: object, field_name: str) -> VersionFloor:
     )
 
 
-def _revalidate_package(package: PackageRecord) -> PackageRecord:
-    if type(package) is not PackageRecord:
-        raise _fail(ReleasePlanCode.INVALID_INPUT, "plan package is not a C-11 record")
-    key = _revalidate_package_key(package.key, "package key")
-    version = _revalidate_version(package.version, "package version")
+def _revalidate_version_sources(package: PackageRecord) -> tuple[VersionSource, ...]:
+    """Re-materialize the declared version-source sites of one package."""
+
     raw_sources = _exact_nested_tuple(
         package.version_sources, "package version sources", max_items=MAX_STRING_LENGTH
     )
@@ -2183,49 +2192,57 @@ def _revalidate_package(package: PackageRecord) -> PackageRecord:
                 _revalidate_version(source.version, "version source version"),
             )
         )
+    return tuple(sources)
+
+
+def _revalidate_dependency_spec(dependency: object) -> DependencySpec:
+    """Re-materialize one declared dependency spec and its package reference."""
+
+    if type(dependency) is not DependencySpec:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "package dependency is invalid")
+    target = dependency.target
+    if type(target) is not PackageReference or type(target.ecosystem) is not Ecosystem:
+        raise _fail(ReleasePlanCode.IDENTITY, "package dependency target is invalid")
+    repository_id = target.repository_id
+    if repository_id is not None:
+        repository_id = _canonical_repository_exact(
+            repository_id, "dependency target repository"
+        )
+    floor = (
+        None
+        if dependency.floor is None
+        else _revalidate_floor(dependency.floor, "dependency floor")
+    )
+    return DependencySpec(
+        PackageReference(
+            target.ecosystem,
+            _strict_text(target.name, "dependency target name", max_length=256),
+            repository_id,
+        ),
+        floor,
+        _strict_text(dependency.source, "dependency source"),
+    )
+
+
+def _revalidate_package(package: PackageRecord) -> PackageRecord:
+    if type(package) is not PackageRecord:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "plan package is not a C-11 record")
+    key = _revalidate_package_key(package.key, "package key")
+    version = _revalidate_version(package.version, "package version")
+    sources = _revalidate_version_sources(package)
     raw_dependencies = _exact_nested_tuple(
         package.dependencies, "package dependencies", max_items=MAX_EDGES
     )
-    dependencies: list[DependencySpec] = []
-    for dependency in raw_dependencies:
-        if type(dependency) is not DependencySpec:
-            raise _fail(ReleasePlanCode.INVALID_INPUT, "package dependency is invalid")
-        target = dependency.target
-        if (
-            type(target) is not PackageReference
-            or type(target.ecosystem) is not Ecosystem
-        ):
-            raise _fail(
-                ReleasePlanCode.IDENTITY, "package dependency target is invalid"
-            )
-        repository_id = target.repository_id
-        if repository_id is not None:
-            repository_id = _canonical_repository_exact(
-                repository_id, "dependency target repository"
-            )
-        floor = (
-            None
-            if dependency.floor is None
-            else _revalidate_floor(dependency.floor, "dependency floor")
-        )
-        dependencies.append(
-            DependencySpec(
-                PackageReference(
-                    target.ecosystem,
-                    _strict_text(target.name, "dependency target name", max_length=256),
-                    repository_id,
-                ),
-                floor,
-                _strict_text(dependency.source, "dependency source"),
-            )
-        )
+    dependencies = tuple(
+        _revalidate_dependency_spec(dependency) for dependency in raw_dependencies
+    )
     raw_metadata = _exact_nested_tuple(
         package.metadata_files, "package metadata files", max_items=MAX_STRING_LENGTH
     )
     metadata = tuple(
         _strict_text(item, "package metadata file") for item in raw_metadata
     )
-    return PackageRecord(key, version, tuple(sources), tuple(dependencies), metadata)
+    return PackageRecord(key, version, sources, dependencies, metadata)
 
 
 def _revalidate_project(project: ProjectRecord) -> ProjectRecord:
