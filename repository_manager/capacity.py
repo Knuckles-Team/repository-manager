@@ -33,6 +33,16 @@ class CapacityError(ValueError):
     """Capacity inventory input or accounting error."""
 
 
+def _validate_positive_int(value: int, message: str) -> None:
+    """Raise ``CapacityError(message)`` unless ``value`` is a positive int.
+
+    ``bool`` is rejected even though it is technically an ``int`` subclass.
+    """
+
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise CapacityError(message)
+
+
 @dataclass(frozen=True)
 class ResourceVector:
     """Four weighted dimensions used for admission and accounting."""
@@ -118,20 +128,27 @@ class HostCapacity:
     version: int = 1
 
     def __post_init__(self) -> None:
+        self._validate_identity()
+        self._validate_telemetry_bounds()
+        self._validate_labels()
+        self._validate_usage()
+
+    def _validate_identity(self) -> None:
         if not self.host_id or self.host_id.strip() != self.host_id:
             raise CapacityError("host_id must be non-blank")
         if self.target_kind not in {"local", "remote", "inventory_alias"}:
             raise CapacityError(f"unknown target_kind {self.target_kind!r}")
+
+    def _validate_telemetry_bounds(self) -> None:
         if self.heartbeat_ttl_seconds < 1:
             raise CapacityError("heartbeat_ttl_seconds must be positive")
-        if (
-            isinstance(self.version, bool)
-            or not isinstance(self.version, int)
-            or self.version < 1
-        ):
-            raise CapacityError("host capacity version must be positive")
+        _validate_positive_int(self.version, "host capacity version must be positive")
+
+    def _validate_labels(self) -> None:
         if any(not label.strip() for label in self.labels):
             raise CapacityError("host labels must be non-blank")
+
+    def _validate_usage(self) -> None:
         if not self.total.fits(self.live):
             raise CapacityError("live usage cannot exceed host capacity")
         if self.observed_disk_free_mib is not None and self.observed_disk_free_mib < 0:
@@ -165,12 +182,7 @@ class CapacityView:
     version: int = 1
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.version, bool)
-            or not isinstance(self.version, int)
-            or self.version < 1
-        ):
-            raise CapacityError("capacity view version must be positive")
+        _validate_positive_int(self.version, "capacity view version must be positive")
 
     @property
     def is_remote(self) -> bool:
@@ -206,6 +218,26 @@ class CapacityView:
             "heartbeat_ttl_seconds": self.heartbeat_ttl_seconds,
             "version": self.version,
         }
+
+
+def _next_monotonic_version(
+    current_version: int, version: int | None, error_message: str
+) -> int | None:
+    """Resolve the next monotonic revision for a refresh call.
+
+    Returns ``current_version + 1`` when ``version`` is omitted (the local
+    convenience meaning "next"). When ``version`` is given, it must be a
+    positive int; returns ``None`` when it is not newer than
+    ``current_version`` (an idempotent no-op the caller should short-circuit
+    on), otherwise returns ``version`` unchanged.
+    """
+
+    if version is None:
+        return current_version + 1
+    _validate_positive_int(version, error_message)
+    if version <= current_version:
+        return None
+    return version
 
 
 class CapacityInventory:
@@ -277,13 +309,11 @@ class CapacityInventory:
 
         with self._lock:
             host = self.require(host_id)
-            if version is not None and (
-                isinstance(version, bool) or not isinstance(version, int) or version < 1
-            ):
-                raise CapacityError("heartbeat version must be positive")
-            if version is not None and version <= host.version:
+            next_version = _next_monotonic_version(
+                host.version, version, "heartbeat version must be positive"
+            )
+            if next_version is None:
                 return host
-            next_version = host.version + 1 if version is None else version
             next_live = live if live is not None else host.live
             if not host.total.fits(next_live + self._reserved_total(host_id)):
                 raise CapacityError(
@@ -310,13 +340,11 @@ class CapacityInventory:
 
         with self._lock:
             host = self.require(host_id)
-            if version is not None and (
-                isinstance(version, bool) or not isinstance(version, int) or version < 1
-            ):
-                raise CapacityError("state version must be positive")
-            if version is not None and version <= host.version:
+            next_version = _next_monotonic_version(
+                host.version, version, "state version must be positive"
+            )
+            if next_version is None:
                 return host
-            next_version = host.version + 1 if version is None else version
             updated = replace(
                 host,
                 state=HostState(state),

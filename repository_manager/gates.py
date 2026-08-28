@@ -61,6 +61,7 @@ import re
 import socket
 import subprocess  # nosec B404 - fixed argv only, never shell=True
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -422,6 +423,144 @@ def _record_gate_run(
         return ""
 
 
+@dataclass
+class _GateInvocation:
+    """Everything :func:`_run_gate_process` needs to shell out to pre-commit.
+
+    Bundled so the helper stays under the 7-parameter cap -- these fields are
+    exactly the subset of :func:`run_gate_stage`'s own parameters (plus the
+    two values it derives before the subprocess call) that the process-running
+    step needs; nothing here changes behaviour versus passing them loose.
+    """
+
+    repo_path: str
+    stage: str
+    hook_stage: str
+    files: list[str] | None
+    hook_ids: list[str] | None
+    effective_timeout: int
+    needs_build_reservation: bool
+
+
+def _missing_hook_output_error(
+    raw_output: str, hook_stage: str, returncode: int
+) -> str:
+    """Diagnostic text for a non-zero exit that parsed no failing hook lines.
+
+    This is the env/install/config-error case (no hook ever ran) rather than
+    an ordinary hook failure -- the real diagnostic lives only in the raw
+    pre-commit output, so surface its tail rather than leaving ``error`` empty.
+    """
+    tail = "\n".join(raw_output.strip().splitlines()[-40:]).strip()
+    if tail:
+        return (
+            f"pre-commit --hook-stage {hook_stage} exited {returncode} "
+            f"with no parseable hook results (likely an init/config/environment "
+            f"error):\n{tail}"
+        )
+    return f"pre-commit --hook-stage {hook_stage} exited {returncode} with no output."
+
+
+def _needs_build_reservation(
+    stage: str, colocated: bool | None, repo_path: str
+) -> bool:
+    """Does this HEAVY run need the shared ``"build"`` reservation first?
+
+    True only for a HEAVY-tier, explicitly-colocated run against a repo with
+    a ``Cargo.toml`` at its root -- see :func:`run_gate_stage`'s docstring
+    ("Build reservation") for why each of those three conditions matters.
+    """
+    if stage != "heavy" or colocated is not True:
+        return False
+    return os.path.exists(os.path.join(repo_path, _CARGO_MANIFEST))
+
+
+def _run_gate_process(
+    invocation: _GateInvocation, started: float
+) -> tuple[subprocess.CompletedProcess | None, RepoScanResult | None]:
+    """Run pre-commit for *invocation*, taking a build reservation if needed.
+
+    Returns ``(process, None)`` on a completed run, or ``(None, result)`` with
+    the early-return :class:`RepoScanResult` to hand back verbatim when the
+    build reservation was refused, the run timed out, or it raised -- each of
+    those is a DEFERRAL or a non-verdict, never an ordinary hook failure, so
+    the mapping to a result lives here exactly as it did inline before.
+    """
+    try:
+        if invocation.needs_build_reservation:
+            with task_queue.acquire(
+                "build",
+                operation=f"gate:{invocation.stage}",
+                path=invocation.repo_path,
+                colocated=True,
+            ):
+                result = _run_pre_commit(
+                    invocation.repo_path,
+                    invocation.hook_stage,
+                    files=invocation.files,
+                    hook_ids=invocation.hook_ids,
+                    timeout=invocation.effective_timeout,
+                )
+        else:
+            result = _run_pre_commit(
+                invocation.repo_path,
+                invocation.hook_stage,
+                files=invocation.files,
+                hook_ids=invocation.hook_ids,
+                timeout=invocation.effective_timeout,
+            )
+    except task_queue.TaskQueueError as exc:
+        # The build reservation was refused (every POOL slot busy, or -- were
+        # this call ever made without colocated=True -- ColocationRequired).
+        # This is a DEFERRAL, not a verdict: the gate never ran, so there is
+        # nothing here to have found a defect. Reporting it as an ordinary
+        # failure is how transient build contention turns into a false
+        # regression on whatever code happened to be checked out at the time.
+        return None, RepoScanResult(
+            repo_path=invocation.repo_path,
+            success=False,
+            exit_code=-1,
+            deferred=True,
+            error=(
+                f"DEFERRED, not a verdict: the HEAVY gate for {invocation.repo_path} "
+                f"needs a 'build' reservation (a Cargo.toml is present) and none "
+                f"was free: {exc}. The gate did not run against this code; retry "
+                f"once a build slot frees rather than treating this as a hook "
+                f"failure."
+            ),
+            stage=invocation.stage,
+            duration_s=time.monotonic() - started,
+        )
+    except subprocess.TimeoutExpired:
+        return None, RepoScanResult(
+            repo_path=invocation.repo_path,
+            success=False,
+            exit_code=-1,
+            error=(
+                f"TIMEOUT after {invocation.effective_timeout}s running the "
+                f"{invocation.stage!r} ({invocation.hook_stage}) gate -- the gate "
+                f"did NOT finish, so this is not a hook verdict. Raise "
+                f"{_TIMEOUT_ENV_VAR} or speed up the suite; do not read this as "
+                f"the gate finding a defect."
+            ),
+            stage=invocation.stage,
+            duration_s=time.monotonic() - started,
+        )
+    except Exception as e:
+        return None, RepoScanResult(
+            repo_path=invocation.repo_path,
+            success=False,
+            exit_code=-1,
+            error=(
+                f"Error executing the {invocation.stage!r} "
+                f"({invocation.hook_stage}) gate: {type(e).__name__}"
+            ),
+            stage=invocation.stage,
+            duration_s=time.monotonic() - started,
+        )
+    return result, None
+
+
 def run_gate_stage(
     repo_path: str,
     stage: GateStage,
@@ -508,77 +647,25 @@ def run_gate_stage(
     hook_stage = HOOK_STAGE_BY_GATE_STAGE[stage]
     effective_timeout = timeout if timeout is not None else default_gate_timeout(stage)
 
-    needs_build_reservation = (
-        stage == "heavy"
-        and colocated is True
-        and os.path.exists(os.path.join(repo_path, _CARGO_MANIFEST))
-    )
+    needs_build_reservation = _needs_build_reservation(stage, colocated, repo_path)
 
     started = time.monotonic()
-    try:
-        if needs_build_reservation:
-            with task_queue.acquire(
-                "build", operation=f"gate:{stage}", path=repo_path, colocated=True
-            ):
-                result = _run_pre_commit(
-                    repo_path,
-                    hook_stage,
-                    files=files,
-                    hook_ids=hook_ids,
-                    timeout=effective_timeout,
-                )
-        else:
-            result = _run_pre_commit(
-                repo_path,
-                hook_stage,
-                files=files,
-                hook_ids=hook_ids,
-                timeout=effective_timeout,
-            )
-    except task_queue.TaskQueueError as exc:
-        # The build reservation was refused (every POOL slot busy, or -- were
-        # this call ever made without colocated=True -- ColocationRequired).
-        # This is a DEFERRAL, not a verdict: the gate never ran, so there is
-        # nothing here to have found a defect. Reporting it as an ordinary
-        # failure is how transient build contention turns into a false
-        # regression on whatever code happened to be checked out at the time.
-        return RepoScanResult(
+    process, early_result = _run_gate_process(
+        _GateInvocation(
             repo_path=repo_path,
-            success=False,
-            exit_code=-1,
-            deferred=True,
-            error=(
-                f"DEFERRED, not a verdict: the HEAVY gate for {repo_path} needs a "
-                f"'build' reservation (a Cargo.toml is present) and none was free: "
-                f"{exc}. The gate did not run against this code; retry once a build "
-                f"slot frees rather than treating this as a hook failure."
-            ),
             stage=stage,
-            duration_s=time.monotonic() - started,
-        )
-    except subprocess.TimeoutExpired:
-        return RepoScanResult(
-            repo_path=repo_path,
-            success=False,
-            exit_code=-1,
-            error=(
-                f"TIMEOUT after {effective_timeout}s running the {stage!r} "
-                f"({hook_stage}) gate -- the gate did NOT finish, so this is "
-                f"not a hook verdict. Raise {_TIMEOUT_ENV_VAR} or speed up the "
-                f"suite; do not read this as the gate finding a defect."
-            ),
-            stage=stage,
-            duration_s=time.monotonic() - started,
-        )
-    except Exception as e:
-        return RepoScanResult(
-            repo_path=repo_path,
-            success=False,
-            exit_code=-1,
-            error=f"Error executing the {stage!r} ({hook_stage}) gate: {type(e).__name__}",
-            stage=stage,
-            duration_s=time.monotonic() - started,
-        )
+            hook_stage=hook_stage,
+            files=files,
+            hook_ids=hook_ids,
+            effective_timeout=effective_timeout,
+            needs_build_reservation=needs_build_reservation,
+        ),
+        started,
+    )
+    if early_result is not None:
+        return early_result
+    assert process is not None  # guaranteed when early_result is None
+    result = process
     duration_s = time.monotonic() - started
 
     raw_output = result.stdout + "\n" + result.stderr
@@ -591,14 +678,7 @@ def run_gate_stage(
     # failure is never silently empty.
     error: str | None = None
     if not success and not any(not h.passed for h in hooks):
-        tail = "\n".join(raw_output.strip().splitlines()[-40:]).strip()
-        error = (
-            f"pre-commit --hook-stage {hook_stage} exited {result.returncode} "
-            f"with no parseable hook results (likely an init/config/environment "
-            f"error):\n{tail}"
-            if tail
-            else f"pre-commit --hook-stage {hook_stage} exited {result.returncode} with no output."
-        )
+        error = _missing_hook_output_error(raw_output, hook_stage, result.returncode)
 
     run_id = ""
     if record:
@@ -628,6 +708,19 @@ def run_gate_stage(
     )
 
 
+def _format_failed_hook(hook: HookResult, max_lines_per_hook: int) -> str:
+    """Render one failing hook's trimmed output as an ``explain`` bullet."""
+    body_lines = [ln for ln in hook.output.splitlines() if ln.strip()]
+    snippet = "\n".join(body_lines[:max_lines_per_hook])
+    if len(body_lines) > max_lines_per_hook:
+        snippet += (
+            f"\n... ({len(body_lines) - max_lines_per_hook} more line(s) truncated)"
+        )
+    if snippet:
+        return f"- {hook.hook_id}:\n{snippet}"
+    return f"- {hook.hook_id}: failed (no captured output)"
+
+
 def explain_gate_result(result: RepoScanResult, *, max_lines_per_hook: int = 12) -> str:
     """Condense a :class:`RepoScanResult` to the actionable lines: what failed, why.
 
@@ -643,18 +736,7 @@ def explain_gate_result(result: RepoScanResult, *, max_lines_per_hook: int = 12)
     failed = [h for h in result.hooks if not h.passed]
     if not failed and result.error:
         parts.append(result.error)
-    for h in failed:
-        body_lines = [ln for ln in h.output.splitlines() if ln.strip()]
-        snippet = "\n".join(body_lines[:max_lines_per_hook])
-        if len(body_lines) > max_lines_per_hook:
-            snippet += (
-                f"\n... ({len(body_lines) - max_lines_per_hook} more line(s) truncated)"
-            )
-        parts.append(
-            f"- {h.hook_id}:\n{snippet}"
-            if snippet
-            else f"- {h.hook_id}: failed (no captured output)"
-        )
+    parts.extend(_format_failed_hook(h, max_lines_per_hook) for h in failed)
     return "\n".join(parts)
 
 
