@@ -541,6 +541,36 @@ def _cleanup_matched_files(dirpath: str, filenames: list[str]) -> None:
 
 
 @dataclasses.dataclass
+class _CommandOutputCapture:
+    """Bounded capture of one repository command's interleaved stdout/stderr.
+
+    Output past ``_MAX_CAPTURED_OUTPUT_BYTES`` is dropped rather than held in
+    memory, and the fact that it was dropped is reported in the text.
+    """
+
+    lines: list[str] = dataclasses.field(default_factory=list)
+    byte_count: int = 0
+    truncated: bool = False
+
+    def add(self, line: str) -> None:
+        """Append one output line, clipping at the capture ceiling."""
+        encoded = line.encode("utf-8", "replace")
+        remaining = _MAX_CAPTURED_OUTPUT_BYTES - self.byte_count
+        if remaining > 0:
+            clipped = encoded[:remaining].decode("utf-8", "ignore")
+            self.lines.append(clipped)
+            self.byte_count += len(clipped.encode("utf-8"))
+        if len(encoded) > remaining:
+            self.truncated = True
+
+    def text(self) -> str:
+        """The captured output, with a marker appended when it was clipped."""
+        if self.truncated:
+            return "".join([*self.lines, "\n[repository output truncated]\n"])
+        return "".join(self.lines)
+
+
+@dataclasses.dataclass
 class _PhaseProgress:
     """Progress bookkeeping for one phased (bump / push) run.
 
@@ -2064,31 +2094,14 @@ class Git:
 
         return "\n".join(md)
 
-    def git_action(
-        self,
-        command: str,
-        path: str | None = None,
-        quiet: bool = False,
-        env: dict | None = None,
-        timeout: int = 1800,
-        raw_output: bool = False,
-    ) -> GitResult:
+    @staticmethod
+    def _parse_repository_command(command: str) -> tuple[list[str], dict[str, str]]:
+        """Split one repository command into argv plus leading VAR=value pairs.
+
+        Shell control syntax is refused outright: this executor never runs a
+        shell, so a pipeline or redirect would silently become a literal
+        argument rather than doing what its author intended.
         """
-        Execute a Git command in the specified directory.
-
-        Args:
-            command (str): The Git command to execute.
-            path (str, optional): The directory to execute the command in.
-                Defaults to the base path.
-
-        Returns:
-            GitResult: The combined stdout and stderr output of the command in structured format.
-
-        Concept:
-            CONCEPT:RM-GIT-ACTION
-        """
-        target_path = self._resolve_path(path)
-
         try:
             command_argv = shlex.split(str(command), posix=True)
         except ValueError as exc:
@@ -2111,109 +2124,79 @@ class Git:
             for token in command_argv
         ):
             raise ValueError("shell control syntax is not permitted")
+        return command_argv, command_env
 
-        # Ensure ~/.local/bin is in PATH for tools like bump2version
+    @staticmethod
+    def _repository_command_env(
+        env: dict | None, command_env: dict[str, str]
+    ) -> dict[str, str]:
+        """The child environment for one repository command."""
         current_env = env if env else os.environ.copy()
         current_env.update(command_env)
+
+        # Ensure ~/.local/bin is in PATH for tools like bump2version
         local_bin = os.path.expanduser("~/.local/bin")
         if local_bin not in current_env.get("PATH", ""):
             current_env["PATH"] = f"{local_bin}:{current_env.get('PATH', '')}"
 
         # Ensure Python output is unbuffered so we get real-time logs
         current_env["PYTHONUNBUFFERED"] = "1"
+        return current_env
 
-        operation = _operation_label(command_argv)
-        logger.info("Executing repository operation")
+    def _append_debug_log(self, text: str) -> None:
+        """Append one entry to the debug log under the shared lock."""
+        with self.debug_lock, open(self.debug_log_path, "a") as log_file:
+            log_file.write(text)
+            log_file.flush()
 
-        process = subprocess.Popen(
-            command_argv,
-            shell=False,
-            cwd=target_path,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            env=current_env,
-            bufsize=1,  # Line buffered
-            start_new_session=True,  # Isolate process group so killpg only kills the command
-        )
+    def _drain_process_output(
+        self, process: subprocess.Popen, capture: "_CommandOutputCapture"
+    ) -> None:
+        """Read the child's output line by line as it becomes available."""
+        if not process.stdout:
+            return
+        for line in process.stdout:
+            capture.add(line)
+            self._append_debug_log(
+                f"[{datetime.datetime.now().isoformat()}] "
+                "[repository output line omitted]\n"
+            )
 
-        output_lines: list[str] = []
-        output_bytes = 0
-        output_truncated = False
+    @staticmethod
+    def _kill_process(process: subprocess.Popen) -> None:
+        """Last-resort kill of a command that would not terminate."""
+        process.kill()
         try:
-            # Write start marker
-            with self.debug_lock:
-                with open(self.debug_log_path, "a") as log_file:
-                    log_file.write(
-                        f"\n[{datetime.datetime.now().isoformat()}] Starting repository operation\n"
-                    )
-                    log_file.flush()
-
-            # Read output line by line as it becomes available
-            def _read_output():
-                nonlocal output_bytes, output_truncated
-                if process.stdout:
-                    for line in process.stdout:
-                        encoded = line.encode("utf-8", "replace")
-                        remaining = _MAX_CAPTURED_OUTPUT_BYTES - output_bytes
-                        if remaining > 0:
-                            clipped = encoded[:remaining].decode("utf-8", "ignore")
-                            output_lines.append(clipped)
-                            output_bytes += len(clipped.encode("utf-8"))
-                        if len(encoded) > remaining:
-                            output_truncated = True
-                        with self.debug_lock:
-                            with open(self.debug_log_path, "a") as log_file:
-                                log_file.write(
-                                    f"[{datetime.datetime.now().isoformat()}] "
-                                    "[repository output line omitted]\n"
-                                )
-                                log_file.flush()
-
-            reader_thread = threading.Thread(target=_read_output, daemon=True)
-            reader_thread.start()
-
-            # Wait for process to complete, with a safety timeout
-            process.wait(timeout=timeout)
-            reader_thread.join(timeout=1.0)
-            process.wait(timeout=timeout)
+            process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            logger.warning("Repository operation timed out")
-            if hasattr(os, "killpg"):
-                try:
-                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-                        process.wait(timeout=5)
-                except Exception:  # nosec B110
-                    process.kill()
-                    try:
-                        process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        pass
-            else:
-                process.kill()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
+            pass
 
-            with self.debug_lock:
-                with open(self.debug_log_path, "a") as log_file:
-                    log_file.write(
-                        f"[{datetime.datetime.now().isoformat()}] ERROR: Command timed out after {timeout} seconds\n"
-                    )
-                    log_file.flush()
+    @staticmethod
+    def _terminate_process_group(process: subprocess.Popen) -> None:
+        """SIGTERM then SIGKILL a timed-out command's whole process group."""
+        if not hasattr(os, "killpg"):
+            Git._kill_process(process)
+            return
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                process.wait(timeout=5)
+        except Exception:  # nosec B110
+            Git._kill_process(process)
 
-        if output_truncated:
-            output_lines.append("\n[repository output truncated]\n")
-        captured = "".join(output_lines)
-        out = captured if raw_output else _privacy_safe_diagnostic(captured)
-        return_code = process.returncode
-
+    @staticmethod
+    def _repository_command_result(
+        *,
+        operation: str,
+        target_path: str,
+        return_code: int,
+        out: str,
+        quiet: bool,
+    ) -> GitResult:
+        """Build -- and log -- the result of one finished repository command."""
         metadata = GitMetadata(
             command=operation,
             workspace=_project_label(target_path),
@@ -2241,6 +2224,96 @@ class Git:
             logger.info("Repository operation completed")
 
         return result
+
+    def _await_repository_command(
+        self,
+        process: subprocess.Popen,
+        capture: "_CommandOutputCapture",
+        timeout: int,
+    ) -> None:
+        """Drain and wait for one command, killing it if it overruns *timeout*."""
+        try:
+            # Write start marker
+            self._append_debug_log(
+                f"\n[{datetime.datetime.now().isoformat()}] "
+                "Starting repository operation\n"
+            )
+
+            reader_thread = threading.Thread(
+                target=self._drain_process_output,
+                args=(process, capture),
+                daemon=True,
+            )
+            reader_thread.start()
+
+            # Wait for process to complete, with a safety timeout
+            process.wait(timeout=timeout)
+            reader_thread.join(timeout=1.0)
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            logger.warning("Repository operation timed out")
+            self._terminate_process_group(process)
+            self._append_debug_log(
+                f"[{datetime.datetime.now().isoformat()}] "
+                f"ERROR: Command timed out after {timeout} seconds\n"
+            )
+
+    def git_action(
+        self,
+        command: str,
+        path: str | None = None,
+        quiet: bool = False,
+        env: dict | None = None,
+        timeout: int = 1800,
+        raw_output: bool = False,
+    ) -> GitResult:
+        """
+        Execute a Git command in the specified directory.
+
+        Args:
+            command (str): The Git command to execute.
+            path (str, optional): The directory to execute the command in.
+                Defaults to the base path.
+
+        Returns:
+            GitResult: The combined stdout and stderr output of the command in structured format.
+
+        Concept:
+            CONCEPT:RM-GIT-ACTION
+        """
+        target_path = self._resolve_path(path)
+
+        command_argv, command_env = self._parse_repository_command(command)
+        current_env = self._repository_command_env(env, command_env)
+
+        operation = _operation_label(command_argv)
+        logger.info("Executing repository operation")
+
+        process = subprocess.Popen(
+            command_argv,
+            shell=False,
+            cwd=target_path,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            env=current_env,
+            bufsize=1,  # Line buffered
+            start_new_session=True,  # Isolate process group so killpg only kills the command
+        )
+
+        capture = _CommandOutputCapture()
+        self._await_repository_command(process, capture, timeout)
+
+        captured = capture.text()
+        out = captured if raw_output else _privacy_safe_diagnostic(captured)
+        return self._repository_command_result(
+            operation=operation,
+            target_path=target_path,
+            return_code=process.returncode,
+            out=out,
+            quiet=quiet,
+        )
 
     def cleanup_artifacts(self, target_dir: str) -> None:
         """Removes test artifacts and temporary files from the specified directory."""
