@@ -341,6 +341,241 @@ def _pattern_matches(relative: PurePosixPath, pattern: str) -> bool:
     return fnmatchcase(remainder_value, suffix) or fnmatchcase(remainder.name, suffix)
 
 
+# (pattern, literal_parts, recursive, max_depth)
+_CandidateSpec = tuple[str, tuple[str, ...], bool, "int | None"]
+
+
+def _require_scan_root_dir(root: Path) -> None:
+    _reject_symlink_path(root)
+    try:
+        root_stat = os.lstat(root)
+    except OSError as exc:
+        raise ArtifactStoreError("artifact output root could not be read") from exc
+    if not stat.S_ISDIR(root_stat.st_mode):
+        raise ArtifactStoreError("artifact output root is not a regular directory")
+
+
+def _pattern_candidate_spec(root: Path, pattern: str) -> tuple[Path, _CandidateSpec]:
+    """Compute one pattern's literal-prefix candidate root and matching spec.
+
+    A literal prefix keeps a ``dist/**`` publication from walking an
+    unrelated node_modules tree.  Non-recursive patterns also carry a
+    maximum relative depth, so ``*.js`` only scans direct output files.
+    """
+    normalized = pattern.replace(os.sep, "/").strip("/")
+    parts = tuple(PurePosixPath(normalized).parts)
+    literal_count = 0
+    for part in parts:
+        if any(marker in part for marker in "*?["):
+            break
+        literal_count += 1
+    literal_parts = parts[:literal_count]
+    candidate_root = root.joinpath(*literal_parts)
+    recursive = "**" in parts[literal_count:]
+    max_depth = None if recursive else len(parts) - literal_count
+    return candidate_root, (pattern, literal_parts, recursive, max_depth)
+
+
+def _build_candidate_specs(
+    root: Path, patterns: tuple[str, ...]
+) -> dict[Path, list[_CandidateSpec]]:
+    specs: dict[Path, list[_CandidateSpec]] = {}
+    for pattern in patterns:
+        candidate_root, spec = _pattern_candidate_spec(root, pattern)
+        specs.setdefault(candidate_root, []).append(spec)
+    return specs
+
+
+class _MatchState:
+    """Mutable running result/scan-budget state for one `_bounded_matching_files` pass."""
+
+    __slots__ = ("matched", "pending", "entries", "matching_files", "total_bytes")
+
+    def __init__(self, patterns: tuple[str, ...]) -> None:
+        self.matched: dict[str, list[Path]] = {pattern: [] for pattern in patterns}
+        self.pending: list[
+            tuple[Path, tuple[str, ...], tuple[_CandidateSpec, ...]]
+        ] = []
+        self.entries = 0
+        self.matching_files = 0
+        self.total_bytes = 0
+
+
+def _match_literal_candidate_file(
+    candidate_root: Path,
+    candidate_stat: os.stat_result,
+    candidate_specs: list[_CandidateSpec],
+    bounds: _ScanBounds,
+    state: _MatchState,
+) -> None:
+    """Match a literal-candidate regular file against every pattern rooted there.
+
+    A matching file counts toward the matching-file/byte bounds once PER
+    MATCHING PATTERN here (unlike the tree-walk phase's `_record_tree_match`,
+    which counts a child once regardless of how many patterns it matches) --
+    preserved exactly from the pre-refactor behaviour; see the lane report
+    for this asymmetry.
+    """
+    relative = PurePosixPath(*candidate_specs[0][1])
+    for pattern, _literal, _recursive, _max_depth in candidate_specs:
+        if not _pattern_matches(relative, pattern):
+            continue
+        state.matching_files += 1
+        if state.matching_files > bounds.max_files:
+            raise ArtifactStoreError("artifact output exceeds its matching file bound")
+        try:
+            size = candidate_stat.st_size
+        except OSError as exc:
+            raise ArtifactStoreError("artifact output could not be statted") from exc
+        state.total_bytes += size
+        if state.total_bytes > bounds.max_bytes:
+            raise ArtifactStoreError("artifact output exceeds its matching byte bound")
+        state.matched[pattern].append(candidate_root)
+
+
+def _process_literal_candidate_root(
+    candidate_root: Path,
+    candidate_specs: list[_CandidateSpec],
+    bounds: _ScanBounds,
+    state: _MatchState,
+) -> None:
+    """Handle one literal-prefix candidate root: descend if a directory, else
+    match it directly against every pattern rooted there.
+    """
+    _reject_symlink_path(candidate_root)
+    try:
+        candidate_stat = os.lstat(candidate_root)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ArtifactStoreError(
+            "artifact output candidate root could not be read"
+        ) from exc
+    if stat.S_ISLNK(candidate_stat.st_mode):
+        raise ArtifactStoreError("symlink artifact candidate root is not allowed")
+    if stat.S_ISDIR(candidate_stat.st_mode):
+        state.pending.append(
+            (candidate_root, candidate_specs[0][1], tuple(candidate_specs))
+        )
+        return
+    if not stat.S_ISREG(candidate_stat.st_mode):
+        return
+    state.entries += 1
+    if state.entries > bounds.max_entries:
+        raise ArtifactStoreError("artifact output tree exceeds its entry bound")
+    _match_literal_candidate_file(
+        candidate_root, candidate_stat, candidate_specs, bounds, state
+    )
+
+
+def _scan_literal_candidate_roots(
+    specs: dict[Path, list[_CandidateSpec]], bounds: _ScanBounds, state: _MatchState
+) -> None:
+    for candidate_root, candidate_specs in specs.items():
+        _process_literal_candidate_root(candidate_root, candidate_specs, bounds, state)
+
+
+def _matching_patterns(
+    relative: PurePosixPath, specs: tuple[_CandidateSpec, ...]
+) -> list[str]:
+    return [
+        pattern
+        for pattern, _literal, _recursive, _max_depth in specs
+        if _pattern_matches(relative, pattern)
+    ]
+
+
+def _can_descend_into(
+    relative_parts: tuple[str, ...], specs: tuple[_CandidateSpec, ...]
+) -> bool:
+    return any(
+        recursive
+        or max_depth is None
+        or len(relative_parts) < len(literal_parts) + max_depth
+        for _pattern, literal_parts, recursive, max_depth in specs
+    )
+
+
+def _record_tree_match(
+    pattern_matches: list[str],
+    size: int,
+    path: Path,
+    bounds: _ScanBounds,
+    state: _MatchState,
+) -> None:
+    """Record one matched tree-walk child once, across all its matching patterns."""
+    state.matching_files += 1
+    if state.matching_files > bounds.max_files:
+        raise ArtifactStoreError("artifact output tree exceeds its file bound")
+    state.total_bytes += size
+    if state.total_bytes > bounds.max_bytes:
+        raise ArtifactStoreError("artifact output tree exceeds its byte bound")
+    for pattern in pattern_matches:
+        state.matched[pattern].append(path)
+
+
+def _process_scan_child(
+    child: os.DirEntry[str],
+    relative_prefix: tuple[str, ...],
+    current_specs: tuple[_CandidateSpec, ...],
+    bounds: _ScanBounds,
+    state: _MatchState,
+) -> None:
+    """Classify and (if matching) record one `os.scandir` child during the
+    bounded tree-walk phase of `_bounded_matching_files`.
+    """
+    state.entries += 1
+    if state.entries > bounds.max_entries:
+        raise ArtifactStoreError("artifact output tree exceeds its entry bound")
+    relative_parts = (*relative_prefix, child.name)
+    relative = PurePosixPath(*relative_parts)
+    matches = _matching_patterns(relative, current_specs)
+    if child.is_symlink():
+        if matches:
+            raise ArtifactStoreError("symlink artifact component is not allowed")
+        return
+    if child.is_dir(follow_symlinks=False):
+        if _can_descend_into(relative_parts, current_specs):
+            state.pending.append((Path(child.path), relative_parts, current_specs))
+        return
+    if not child.is_file(follow_symlinks=False):
+        if matches:
+            raise ArtifactStoreError("artifact output has a non-regular matching entry")
+        return
+    if not matches:
+        return
+    try:
+        size = child.stat(follow_symlinks=False).st_size
+    except OSError as exc:
+        raise ArtifactStoreError("artifact output could not be statted") from exc
+    _record_tree_match(matches, size, Path(child.path), bounds, state)
+
+
+def _process_pending_dir(
+    current: Path,
+    relative_prefix: tuple[str, ...],
+    current_specs: tuple[_CandidateSpec, ...],
+    bounds: _ScanBounds,
+    state: _MatchState,
+) -> None:
+    """Scan one pending directory's direct children."""
+    if len(relative_prefix) > _MAX_SCAN_DEPTH:
+        raise ArtifactStoreError("artifact output tree exceeds its depth bound")
+    try:
+        iterator = os.scandir(current)
+    except OSError as exc:
+        raise ArtifactStoreError("artifact output tree could not be read") from exc
+    with iterator:
+        for child in iterator:
+            _process_scan_child(child, relative_prefix, current_specs, bounds, state)
+
+
+def _walk_pending_dirs(bounds: _ScanBounds, state: _MatchState) -> None:
+    while state.pending:
+        current, relative_prefix, current_specs = state.pending.pop()
+        _process_pending_dir(current, relative_prefix, current_specs, bounds, state)
+
+
 def _bounded_matching_files(
     root: Path,
     patterns: tuple[str, ...],
@@ -351,151 +586,17 @@ def _bounded_matching_files(
 ) -> dict[str, list[Path]]:
     """Traverse candidate pattern roots once, without following symlinks."""
 
-    _reject_symlink_path(root)
-    try:
-        root_stat = os.lstat(root)
-    except OSError as exc:
-        raise ArtifactStoreError("artifact output root could not be read") from exc
-    if not stat.S_ISDIR(root_stat.st_mode):
-        raise ArtifactStoreError("artifact output root is not a regular directory")
-    matched: dict[str, list[Path]] = {pattern: [] for pattern in patterns}
-    # A literal prefix keeps a ``dist/**`` publication from walking an
-    # unrelated node_modules tree.  Non-recursive patterns also carry a
-    # maximum relative depth, so ``*.js`` only scans direct output files.
-    specs: dict[Path, list[tuple[str, tuple[str, ...], bool, int | None]]] = {}
-    for pattern in patterns:
-        normalized = pattern.replace(os.sep, "/").strip("/")
-        parts = tuple(PurePosixPath(normalized).parts)
-        literal_count = 0
-        for part in parts:
-            if any(marker in part for marker in "*?["):
-                break
-            literal_count += 1
-        literal_parts = parts[:literal_count]
-        candidate_root = root.joinpath(*literal_parts)
-        recursive = "**" in parts[literal_count:]
-        max_depth = None if recursive else len(parts) - literal_count
-        specs.setdefault(candidate_root, []).append(
-            (pattern, literal_parts, recursive, max_depth)
-        )
-    pending: list[
-        tuple[
-            Path,
-            tuple[str, ...],
-            tuple[tuple[str, tuple[str, ...], bool, int | None], ...],
-        ]
-    ] = []
-    entries = matching_files = total_bytes = 0
-    for candidate_root, candidate_specs in specs.items():
-        _reject_symlink_path(candidate_root)
-        try:
-            candidate_stat = os.lstat(candidate_root)
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise ArtifactStoreError(
-                "artifact output candidate root could not be read"
-            ) from exc
-        if stat.S_ISLNK(candidate_stat.st_mode):
-            raise ArtifactStoreError("symlink artifact candidate root is not allowed")
-        if stat.S_ISDIR(candidate_stat.st_mode):
-            pending.append(
-                (candidate_root, candidate_specs[0][1], tuple(candidate_specs))
-            )
-        elif stat.S_ISREG(candidate_stat.st_mode):
-            entries += 1
-            if entries > max_entries:
-                raise ArtifactStoreError("artifact output tree exceeds its entry bound")
-            relative = PurePosixPath(*candidate_specs[0][1])
-            for pattern, _literal, _recursive, _max_depth in candidate_specs:
-                if not _pattern_matches(relative, pattern):
-                    continue
-                matching_files += 1
-                if matching_files > max_files:
-                    raise ArtifactStoreError(
-                        "artifact output exceeds its matching file bound"
-                    )
-                try:
-                    size = candidate_stat.st_size
-                except OSError as exc:
-                    raise ArtifactStoreError(
-                        "artifact output could not be statted"
-                    ) from exc
-                total_bytes += size
-                if total_bytes > max_bytes:
-                    raise ArtifactStoreError(
-                        "artifact output exceeds its matching byte bound"
-                    )
-                matched[pattern].append(candidate_root)
-    while pending:
-        current, relative_prefix, current_specs = pending.pop()
-        if len(relative_prefix) > _MAX_SCAN_DEPTH:
-            raise ArtifactStoreError("artifact output tree exceeds its depth bound")
-        try:
-            iterator = os.scandir(current)
-        except OSError as exc:
-            raise ArtifactStoreError("artifact output tree could not be read") from exc
-        with iterator:
-            for child in iterator:
-                entries += 1
-                if entries > max_entries:
-                    raise ArtifactStoreError(
-                        "artifact output tree exceeds its entry bound"
-                    )
-                relative_parts = (*relative_prefix, child.name)
-                relative = PurePosixPath(*relative_parts)
-                matches = [
-                    pattern
-                    for pattern, _literal, _recursive, _max_depth in current_specs
-                    if _pattern_matches(relative, pattern)
-                ]
-                if child.is_symlink():
-                    if matches:
-                        raise ArtifactStoreError(
-                            "symlink artifact component is not allowed"
-                        )
-                    continue
-                if child.is_dir(follow_symlinks=False):
-                    can_descend = any(
-                        recursive
-                        or max_depth is None
-                        or len(relative_parts) < len(literal_parts) + max_depth
-                        for _pattern, literal_parts, recursive, max_depth in current_specs
-                    )
-                    if can_descend:
-                        pending.append(
-                            (Path(child.path), relative_parts, current_specs)
-                        )
-                    continue
-                if not child.is_file(follow_symlinks=False):
-                    if matches:
-                        raise ArtifactStoreError(
-                            "artifact output has a non-regular matching entry"
-                        )
-                    continue
-                if not matches:
-                    continue
-                matching_files += 1
-                if matching_files > max_files:
-                    raise ArtifactStoreError(
-                        "artifact output tree exceeds its file bound"
-                    )
-                try:
-                    size = child.stat(follow_symlinks=False).st_size
-                except OSError as exc:
-                    raise ArtifactStoreError(
-                        "artifact output could not be statted"
-                    ) from exc
-                total_bytes += size
-                if total_bytes > max_bytes:
-                    raise ArtifactStoreError(
-                        "artifact output tree exceeds its byte bound"
-                    )
-                for pattern in matches:
-                    matched[pattern].append(Path(child.path))
-    for paths in matched.values():
+    _require_scan_root_dir(root)
+    specs = _build_candidate_specs(root, patterns)
+    bounds = _ScanBounds(
+        max_entries=max_entries, max_files=max_files, max_bytes=max_bytes
+    )
+    state = _MatchState(patterns)
+    _scan_literal_candidate_roots(specs, bounds, state)
+    _walk_pending_dirs(bounds, state)
+    for paths in state.matched.values():
         paths.sort()
-    return matched
+    return state.matched
 
 
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
