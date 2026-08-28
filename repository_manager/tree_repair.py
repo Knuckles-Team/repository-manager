@@ -23,6 +23,7 @@ import json
 import os
 import subprocess  # nosec B404 - fixed argv git repair commands
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +187,35 @@ def _core_bare_drift(path: Path) -> dict[str, Any] | None:
     }
 
 
+def _resolve_baseline_for_diagnosis(
+    tree: Path, head_names: list[str]
+) -> dict[str, Any] | None:
+    baseline = _load_baseline(tree)
+    if baseline is None and head_names:
+        baseline = _save_baseline(tree, head_names, _content_digest(tree, head_names))
+    return baseline
+
+
+def _index_collapse_evidence(
+    tree: Path, baseline: dict[str, Any] | None, head_names: list[str]
+) -> tuple[bool, dict[str, Any]]:
+    indexed, index_error = _index_paths(tree)
+    expected_count = int((baseline or {}).get("tracked_count", len(head_names)))
+    actual_count = len(indexed)
+    evidence = {
+        "baseline_count": expected_count,
+        "indexed_count": actual_count,
+        "index_error": index_error,
+        "baseline": baseline,
+    }
+    collapsed = (
+        expected_count >= _INDEX_COLLAPSE_COUNT and actual_count < _INDEX_COLLAPSE_COUNT
+    ) or (
+        expected_count >= 100 and actual_count < expected_count * _INDEX_COLLAPSE_RATIO
+    )
+    return collapsed, evidence
+
+
 def diagnose(path: Path | str) -> dict[str, Any]:
     """Diagnose one tree as ``probable-index-wipe``, ``core-bare-drift``, or clean."""
     tree = Path(path).expanduser().resolve()
@@ -196,26 +226,10 @@ def diagnose(path: Path | str) -> dict[str, Any]:
         findings.append("core-bare-drift")
         evidence["core_bare"] = bare
 
-    baseline = _load_baseline(tree)
     head_names = _head_paths(tree)
-    if baseline is None and head_names:
-        baseline = _save_baseline(tree, head_names, _content_digest(tree, head_names))
-    indexed, index_error = _index_paths(tree)
-    expected_count = int((baseline or {}).get("tracked_count", len(head_names)))
-    actual_count = len(indexed)
-    evidence.update(
-        {
-            "baseline_count": expected_count,
-            "indexed_count": actual_count,
-            "index_error": index_error,
-            "baseline": baseline,
-        }
-    )
-    collapsed = (
-        expected_count >= _INDEX_COLLAPSE_COUNT and actual_count < _INDEX_COLLAPSE_COUNT
-    ) or (
-        expected_count >= 100 and actual_count < expected_count * _INDEX_COLLAPSE_RATIO
-    )
+    baseline = _resolve_baseline_for_diagnosis(tree, head_names)
+    collapsed, collapse_evidence = _index_collapse_evidence(tree, baseline, head_names)
+    evidence.update(collapse_evidence)
     if collapsed:
         findings.append("probable-index-wipe")
 
@@ -229,6 +243,145 @@ def diagnose(path: Path | str) -> dict[str, Any]:
         "findings": findings or ["clean"],
         "evidence": evidence,
         "baseline": baseline,
+    }
+
+
+@dataclass
+class _RepairContext:
+    """Immutable snapshot the freshly re-confirmed diagnosis produced, shared
+    read-only across each phase of :func:`_repair_locked` (all under the
+    SAME repair lease acquired before this context is built).
+    """
+
+    tree: Path
+    requested: str
+    before_names: list[str]
+    before_digest: str
+    trusted_baseline: dict[str, Any] | None
+    current: dict[str, Any]
+
+
+def _refuse_if_finding_stale(ctx: _RepairContext) -> dict[str, Any] | None:
+    if ctx.requested in set(ctx.current.get("findings", [])):
+        return None
+    return {
+        "ok": False,
+        "status": "refused",
+        "finding": ctx.requested,
+        "actual_finding": ctx.current.get("finding", "unavailable"),
+        "path": str(ctx.tree),
+        "error": (
+            "requested repair finding is stale or mismatched; no mutation performed"
+        ),
+        "checksum_before": ctx.before_digest,
+        "checksum_after": ctx.before_digest,
+        "content_preserved": True,
+        "post_diagnosis": ctx.current,
+    }
+
+
+def _refuse_if_baseline_mismatch(ctx: _RepairContext) -> dict[str, Any] | None:
+    if ctx.requested != "probable-index-wipe":
+        return None
+    trusted_digest = (
+        ctx.trusted_baseline.get("content_digest")
+        if ctx.trusted_baseline is not None
+        else None
+    )
+    if isinstance(trusted_digest, str) and ctx.before_digest == trusted_digest:
+        return None
+    return {
+        "ok": False,
+        "status": "refused",
+        "finding": ctx.requested,
+        "actual_finding": ctx.current.get("finding", "unavailable"),
+        "path": str(ctx.tree),
+        "error": (
+            "tracked content does not match the last trusted baseline; "
+            "no index repair performed"
+        ),
+        "checksum_before": ctx.before_digest,
+        "checksum_after": ctx.before_digest,
+        "content_preserved": True,
+        "post_diagnosis": ctx.current,
+    }
+
+
+def _clean_noop_result(ctx: _RepairContext) -> dict[str, Any] | None:
+    if ctx.requested != "clean":
+        return None
+    return {
+        "ok": True,
+        "status": "noop",
+        "finding": "clean",
+        "path": str(ctx.tree),
+        "checksum_before": ctx.before_digest,
+        "checksum_after": ctx.before_digest,
+        "content_preserved": True,
+        "post_diagnosis": ctx.current,
+    }
+
+
+def _run_repair_command(ctx: _RepairContext) -> dict[str, Any] | None:
+    command = (
+        ["git", "read-tree", "HEAD"]
+        if ctx.requested == "probable-index-wipe"
+        else ["git", "config", "core.bare", "false"]
+    )
+    result = _run(command, ctx.tree)
+    if result.returncode == 0:
+        return None
+    return {
+        "ok": False,
+        "status": "error",
+        "finding": ctx.requested,
+        "path": str(ctx.tree),
+        "error": _detail(result) or "repair command failed",
+        "checksum_before": ctx.before_digest,
+    }
+
+
+def _verify_and_finalize_repair(ctx: _RepairContext) -> dict[str, Any]:
+    after_names = _head_paths(ctx.tree)
+    after_digest = _content_digest(ctx.tree, after_names)
+    preserved = ctx.before_names == after_names and ctx.before_digest == after_digest
+    if not preserved:
+        return {
+            "ok": False,
+            "status": "error",
+            "finding": ctx.requested,
+            "path": str(ctx.tree),
+            "error": "repair changed tracked working-tree content",
+            "checksum_before": ctx.before_digest,
+            "checksum_after": after_digest,
+            "content_preserved": False,
+        }
+
+    baseline = _save_baseline(ctx.tree, after_names, after_digest)
+    post_diagnosis = diagnose(ctx.tree)
+    if ctx.requested in set(post_diagnosis.get("findings", [])):
+        return {
+            "ok": False,
+            "status": "error",
+            "finding": ctx.requested,
+            "path": str(ctx.tree),
+            "error": "repair completed but the requested finding remains",
+            "checksum_before": ctx.before_digest,
+            "checksum_after": after_digest,
+            "content_preserved": True,
+            "baseline": baseline,
+            "post_diagnosis": post_diagnosis,
+        }
+    return {
+        "ok": True,
+        "status": "repaired",
+        "finding": ctx.requested,
+        "path": str(ctx.tree),
+        "checksum_before": ctx.before_digest,
+        "checksum_after": after_digest,
+        "content_preserved": True,
+        "baseline": baseline,
+        "post_diagnosis": post_diagnosis,
     }
 
 
@@ -252,116 +405,24 @@ def _repair_locked(
     with _repair_lease(tree):
         before_names = _head_paths(tree)
         before_digest = _content_digest(tree, before_names)
-        trusted_baseline = _load_baseline(tree)
-        current = diagnose(tree)
-        current_findings = set(current.get("findings", []))
-        if requested not in current_findings:
-            return {
-                "ok": False,
-                "status": "refused",
-                "finding": requested,
-                "actual_finding": current.get("finding", "unavailable"),
-                "path": str(tree),
-                "error": (
-                    "requested repair finding is stale or mismatched; "
-                    "no mutation performed"
-                ),
-                "checksum_before": before_digest,
-                "checksum_after": before_digest,
-                "content_preserved": True,
-                "post_diagnosis": current,
-            }
-        if requested == "probable-index-wipe":
-            trusted_digest = (
-                trusted_baseline.get("content_digest")
-                if trusted_baseline is not None
-                else None
-            )
-            if not isinstance(trusted_digest, str) or before_digest != trusted_digest:
-                return {
-                    "ok": False,
-                    "status": "refused",
-                    "finding": requested,
-                    "actual_finding": current.get("finding", "unavailable"),
-                    "path": str(tree),
-                    "error": (
-                        "tracked content does not match the last trusted baseline; "
-                        "no index repair performed"
-                    ),
-                    "checksum_before": before_digest,
-                    "checksum_after": before_digest,
-                    "content_preserved": True,
-                    "post_diagnosis": current,
-                }
-        if requested == "clean":
-            return {
-                "ok": True,
-                "status": "noop",
-                "finding": "clean",
-                "path": str(tree),
-                "checksum_before": before_digest,
-                "checksum_after": before_digest,
-                "content_preserved": True,
-                "post_diagnosis": current,
-            }
-
-        command = (
-            ["git", "read-tree", "HEAD"]
-            if requested == "probable-index-wipe"
-            else ["git", "config", "core.bare", "false"]
+        ctx = _RepairContext(
+            tree=tree,
+            requested=requested,
+            before_names=before_names,
+            before_digest=before_digest,
+            trusted_baseline=_load_baseline(tree),
+            current=diagnose(tree),
         )
-        result = _run(command, tree)
-        if result.returncode != 0:
-            return {
-                "ok": False,
-                "status": "error",
-                "finding": requested,
-                "path": str(tree),
-                "error": _detail(result) or "repair command failed",
-                "checksum_before": before_digest,
-            }
-
-        after_names = _head_paths(tree)
-        after_digest = _content_digest(tree, after_names)
-        preserved = before_names == after_names and before_digest == after_digest
-        if not preserved:
-            return {
-                "ok": False,
-                "status": "error",
-                "finding": requested,
-                "path": str(tree),
-                "error": "repair changed tracked working-tree content",
-                "checksum_before": before_digest,
-                "checksum_after": after_digest,
-                "content_preserved": False,
-            }
-
-        baseline = _save_baseline(tree, after_names, after_digest)
-        post_diagnosis = diagnose(tree)
-        if requested in set(post_diagnosis.get("findings", [])):
-            return {
-                "ok": False,
-                "status": "error",
-                "finding": requested,
-                "path": str(tree),
-                "error": "repair completed but the requested finding remains",
-                "checksum_before": before_digest,
-                "checksum_after": after_digest,
-                "content_preserved": True,
-                "baseline": baseline,
-                "post_diagnosis": post_diagnosis,
-            }
-        return {
-            "ok": True,
-            "status": "repaired",
-            "finding": requested,
-            "path": str(tree),
-            "checksum_before": before_digest,
-            "checksum_after": after_digest,
-            "content_preserved": True,
-            "baseline": baseline,
-            "post_diagnosis": post_diagnosis,
-        }
+        for phase in (
+            _refuse_if_finding_stale,
+            _refuse_if_baseline_mismatch,
+            _clean_noop_result,
+            _run_repair_command,
+        ):
+            outcome = phase(ctx)
+            if outcome is not None:
+                return outcome
+        return _verify_and_finalize_repair(ctx)
 
 
 def repair(path: Path | str, *, finding: str | dict[str, Any]) -> dict[str, Any]:
