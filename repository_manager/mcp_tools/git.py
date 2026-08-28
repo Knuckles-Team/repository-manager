@@ -8,6 +8,8 @@ application cores.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 from agent_utilities.mcp.action_dispatch import resolve_action
@@ -21,6 +23,222 @@ from repository_manager.mcp_tools.contracts import RM_GIT_ACTIONS
 from repository_manager.models import GitError, GitResult
 
 logger = get_logger("RepositoryManagerServer")
+
+
+def _resolve_project_dirs(
+    adapter_context: McpToolContext, git: Any, spec: str | None
+) -> list[str] | None:
+    """Split a comma-separated project spec into resolved repo directories."""
+    if not spec:
+        return None
+    dirs: list[str] = []
+    for project in spec.split(","):
+        project = project.strip()
+        if not project:
+            continue
+        dirs.append(adapter_context.resolve_repo_dir(git, project))
+    return dirs
+
+
+@dataclass
+class PhasedPushArgs:
+    """Parameters specific to the 'phased_push' action."""
+
+    phase: int | None
+    target_project: str | None
+    auto_start: bool
+
+
+@dataclass
+class GitActionArgs:
+    """Bundled request parameters shared across the dict-dispatched actions."""
+
+    command: str | None = None
+    path: str | None = None
+    projects: str | None = None
+    message: str | None = None
+    run_precommit: bool = True
+    phased: PhasedPushArgs | None = None
+
+
+async def _handle_raw(
+    adapter_context: McpToolContext, git: Any, args: GitActionArgs
+) -> GitResult:
+    return GitResult(
+        status="error",
+        data="",
+        error=GitError(
+            message=(
+                "Raw host commands are permanently retired; use a typed "
+                "repository-manager action through governed delegation."
+            ),
+            code=13,
+        ),
+    )
+
+
+async def _handle_enumerate(
+    adapter_context: McpToolContext, git: Any, args: GitActionArgs
+) -> dict[str, Any]:
+    # Remote VCS enumeration for enterprise-scale ingestion.
+    from repository_manager.kg_ingest import ingest_repositories
+    from repository_manager.vcs_enumerator import (
+        enumerate_github,
+        enumerate_gitlab,
+        write_manifest,
+    )
+
+    vcs = (args.command or "gitlab").strip().lower()
+    scopes = (
+        [s.strip() for s in args.projects.split(",") if s.strip()]
+        if args.projects
+        else None
+    )
+    run_id = uuid.uuid4().hex[:10]
+    if vcs == "github":
+        refs = await run_blocking(enumerate_github, orgs=scopes, user=not scopes)
+    else:
+        refs = await run_blocking(enumerate_gitlab, groups=scopes)
+    manifest_path = await run_blocking(write_manifest, refs, run_id)
+    ingested = None
+    try:
+        ingested = await run_blocking(ingest_repositories, refs)
+    except Exception as exc:  # noqa: BLE001 - ingestion is best-effort
+        logger.debug("KG ingest skipped: %s", exc)
+    return {
+        "status": "ok",
+        "vcs": vcs,
+        "count": len(refs),
+        "run_id": run_id,
+        "manifest": manifest_path,
+        "ingested": ingested,
+    }
+
+
+async def _handle_clone(
+    adapter_context: McpToolContext, git: Any, args: GitActionArgs
+) -> Any:
+    urls = None
+    if args.projects:
+        urls = [url.strip() for url in args.projects.split(",") if url.strip()]
+    return adapter_context.submit_job("clone", git.clone_projects, projects=urls)
+
+
+async def _handle_pull(
+    adapter_context: McpToolContext, git: Any, args: GitActionArgs
+) -> Any:
+    dirs = _resolve_project_dirs(adapter_context, git, args.projects)
+    return adapter_context.submit_job("pull", git.pull_projects, project_dirs=dirs)
+
+
+async def _handle_push(
+    adapter_context: McpToolContext, git: Any, args: GitActionArgs
+) -> Any:
+    dirs = _resolve_project_dirs(adapter_context, git, args.projects)
+    return adapter_context.submit_job("push", git.push_projects, project_dirs=dirs)
+
+
+async def _handle_add(
+    adapter_context: McpToolContext, git: Any, args: GitActionArgs
+) -> Any:
+    dirs = _resolve_project_dirs(adapter_context, git, args.projects)
+    return adapter_context.submit_job("add", git.add_projects, project_dirs=dirs)
+
+
+async def _handle_commit(
+    adapter_context: McpToolContext, git: Any, args: GitActionArgs
+) -> Any:
+    if not args.message:
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(message="message is required for 'commit' action", code=1),
+        )
+    dirs = _resolve_project_dirs(adapter_context, git, args.projects)
+    return adapter_context.submit_job(
+        "commit", git.commit_projects, message=args.message, project_dirs=dirs
+    )
+
+
+async def _handle_pre_commit(
+    adapter_context: McpToolContext, git: Any, args: GitActionArgs
+) -> Any:
+    run_precommit = args.run_precommit
+    if not isinstance(run_precommit, bool):
+        run_precommit = True
+    dirs = _resolve_project_dirs(adapter_context, git, args.projects)
+    return adapter_context.submit_job(
+        "pre_commit", git.pre_commit_projects, projects=dirs
+    )
+
+
+async def _handle_commit_code(
+    adapter_context: McpToolContext, git: Any, args: GitActionArgs
+) -> Any:
+    if not args.message:
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message="message is required for 'commit_code' action", code=1
+            ),
+        )
+    run_precommit = args.run_precommit
+    if not isinstance(run_precommit, bool):
+        run_precommit = True
+    dirs = _resolve_project_dirs(adapter_context, git, args.projects)
+    if dirs is None and args.path:
+        target, error = adapter_context.resolve_commit_code_target(args.path)
+        if error:
+            return GitResult(
+                status="error", data="", error=GitError(message=error, code=1)
+            )
+        dirs = [cast(str, target)]
+    return adapter_context.submit_job(
+        "commit_code",
+        git.commit_code_projects,
+        message=args.message,
+        run_precommit=run_precommit,
+        project_dirs=dirs,
+    )
+
+
+async def _handle_phased_push(
+    adapter_context: McpToolContext, git: Any, args: GitActionArgs
+) -> Any:
+    phased = args.phased or PhasedPushArgs(
+        phase=1, target_project=None, auto_start=True
+    )
+    progress: dict[str, Any] = {
+        "current_phase": "Initializing Pushes",
+        "progress": 0,
+        "phases": {},
+    }
+    return adapter_context.submit_job(
+        "phased_push",
+        git.phased_push,
+        start_phase=phased.phase or 1,
+        project_filter=phased.target_project,
+        auto_start=phased.auto_start,
+        progress=progress,
+        _extra_job_data={"progress_detail": progress},
+    )
+
+
+_ACTION_HANDLERS: dict[
+    str, Callable[[McpToolContext, Any, GitActionArgs], Awaitable[Any]]
+] = {
+    "raw": _handle_raw,
+    "enumerate": _handle_enumerate,
+    "clone": _handle_clone,
+    "pull": _handle_pull,
+    "push": _handle_push,
+    "add": _handle_add,
+    "commit": _handle_commit,
+    "pre_commit": _handle_pre_commit,
+    "commit_code": _handle_commit_code,
+    "phased_push": _handle_phased_push,
+}
 
 
 def register_git_operations_tools(
@@ -136,187 +354,18 @@ def register_git_operations_tools(
 
         git = adapter_context.get_git_instance(path=path, threads=threads)
 
-        if action == "raw":
-            del command
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=(
-                        "Raw host commands are permanently retired; use a typed "
-                        "repository-manager action through governed delegation."
-                    ),
-                    code=13,
-                ),
-            )
-
-        if action == "enumerate":
-            # Remote VCS enumeration for enterprise-scale ingestion.
-            from repository_manager.kg_ingest import ingest_repositories
-            from repository_manager.vcs_enumerator import (
-                enumerate_github,
-                enumerate_gitlab,
-                write_manifest,
-            )
-
-            vcs = (command or "gitlab").strip().lower()
-            scopes = (
-                [s.strip() for s in projects.split(",") if s.strip()]
-                if projects
-                else None
-            )
-            run_id = uuid.uuid4().hex[:10]
-            if vcs == "github":
-                refs = await run_blocking(
-                    enumerate_github, orgs=scopes, user=not scopes
-                )
-            else:
-                refs = await run_blocking(enumerate_gitlab, groups=scopes)
-            manifest_path = await run_blocking(write_manifest, refs, run_id)
-            ingested = None
-            try:
-                ingested = await run_blocking(ingest_repositories, refs)
-            except Exception as exc:  # noqa: BLE001 - ingestion is best-effort
-                logger.debug("KG ingest skipped: %s", exc)
-            return {
-                "status": "ok",
-                "vcs": vcs,
-                "count": len(refs),
-                "run_id": run_id,
-                "manifest": manifest_path,
-                "ingested": ingested,
-            }
-
-        if action == "clone":
-            urls = None
-            if projects:
-                urls = [url.strip() for url in projects.split(",") if url.strip()]
-            return adapter_context.submit_job(
-                "clone", git.clone_projects, projects=urls
-            )
-
-        if action == "pull":
-            pull_dirs: list[str] | None = None
-            if projects:
-                pull_dirs = []
-                for project in projects.split(","):
-                    project = project.strip()
-                    if not project:
-                        continue
-                    pull_dirs.append(adapter_context.resolve_repo_dir(git, project))
-            return adapter_context.submit_job(
-                "pull", git.pull_projects, project_dirs=pull_dirs
-            )
-
-        if action == "push":
-            push_dirs: list[str] | None = None
-            if projects:
-                push_dirs = []
-                for project in projects.split(","):
-                    project = project.strip()
-                    if not project:
-                        continue
-                    push_dirs.append(adapter_context.resolve_repo_dir(git, project))
-            return adapter_context.submit_job(
-                "push", git.push_projects, project_dirs=push_dirs
-            )
-
-        if action == "add":
-            add_dirs: list[str] | None = None
-            if projects:
-                add_dirs = []
-                for project in projects.split(","):
-                    project = project.strip()
-                    if not project:
-                        continue
-                    add_dirs.append(adapter_context.resolve_repo_dir(git, project))
-            return adapter_context.submit_job(
-                "add", git.add_projects, project_dirs=add_dirs
-            )
-
-        if action == "commit":
-            if not message:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message="message is required for 'commit' action", code=1
-                    ),
-                )
-            commit_dirs: list[str] | None = None
-            if projects:
-                commit_dirs = []
-                for project in projects.split(","):
-                    project = project.strip()
-                    if not project:
-                        continue
-                    commit_dirs.append(adapter_context.resolve_repo_dir(git, project))
-            return adapter_context.submit_job(
-                "commit", git.commit_projects, message=message, project_dirs=commit_dirs
-            )
-
-        def resolve_dirs(spec: str | None) -> list[str] | None:
-            if not spec:
-                return None
-            out: list[str] = []
-            for project in spec.split(","):
-                project = project.strip()
-                if not project:
-                    continue
-                out.append(adapter_context.resolve_repo_dir(git, project))
-            return out
-
-        if action == "pre_commit":
-            if not isinstance(run_precommit, bool):
-                run_precommit = True
-            pc_dirs = resolve_dirs(projects)
-            return adapter_context.submit_job(
-                "pre_commit", git.pre_commit_projects, projects=pc_dirs
-            )
-
-        if action == "commit_code":
-            if not message:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message="message is required for 'commit_code' action", code=1
-                    ),
-                )
-            if not isinstance(run_precommit, bool):
-                run_precommit = True
-            commit_code_dirs = resolve_dirs(projects)
-            if commit_code_dirs is None and path:
-                target, error = adapter_context.resolve_commit_code_target(path)
-                if error:
-                    return GitResult(
-                        status="error",
-                        data="",
-                        error=GitError(message=error, code=1),
-                    )
-                commit_code_dirs = [cast(str, target)]
-            return adapter_context.submit_job(
-                "commit_code",
-                git.commit_code_projects,
-                message=message,
-                run_precommit=run_precommit,
-                project_dirs=commit_code_dirs,
-            )
-
-        if action == "phased_push":
-            progress = {
-                "current_phase": "Initializing Pushes",
-                "progress": 0,
-                "phases": {},
-            }
-            return adapter_context.submit_job(
-                "phased_push",
-                git.phased_push,
-                start_phase=phase or 1,
-                project_filter=target_project,
-                auto_start=auto_start,
-                progress=progress,
-                _extra_job_data={"progress_detail": progress},
-            )
+        args = GitActionArgs(
+            command=command,
+            path=path,
+            projects=projects,
+            message=message,
+            run_precommit=run_precommit,
+            phased=PhasedPushArgs(
+                phase=phase, target_project=target_project, auto_start=auto_start
+            ),
+        )
+        handler = _ACTION_HANDLERS.get(action)
+        if handler is not None:
+            return await handler(adapter_context, git, args)
 
         return f"Error: Unknown action '{action}'"
