@@ -163,20 +163,24 @@ def _validate_no_secrets(value: object) -> None:
     """Reject secret-bearing manifest data before it reaches either destination."""
 
     if isinstance(value, dict):
-        for key, child in value.items():
-            if not isinstance(key, str):
-                raise WorkspaceManifestError("Manifest mapping keys must be strings")
-            normalized = key.lower().replace("-", "_")
-            if normalized in _SECRET_FIELD_NAMES and child not in (None, ""):
-                raise WorkspaceManifestError(
-                    "Canonical manifest must not contain embedded secrets"
-                )
-            _validate_no_secrets(child)
+        _validate_no_secrets_dict(value)
     elif isinstance(value, list):
         for child in value:
             _validate_no_secrets(child)
     elif isinstance(value, str) and "://" in value:
         _endpoint_host(value)
+
+
+def _validate_no_secrets_dict(value: dict[object, object]) -> None:
+    for key, child in value.items():
+        if not isinstance(key, str):
+            raise WorkspaceManifestError("Manifest mapping keys must be strings")
+        normalized = key.lower().replace("-", "_")
+        if normalized in _SECRET_FIELD_NAMES and child not in (None, ""):
+            raise WorkspaceManifestError(
+                "Canonical manifest must not contain embedded secrets"
+            )
+        _validate_no_secrets(child)
 
 
 def _endpoint_host(value: str) -> tuple[str, bool, SplitResult | None]:
@@ -287,8 +291,11 @@ def _validate_portable_seed(value: object, *, field: str = "") -> None:
         for child in value:
             _validate_portable_seed(child, field=field)
         return
-    if not isinstance(value, str):
-        return
+    if isinstance(value, str):
+        _validate_portable_seed_string(value, field=field)
+
+
+def _validate_portable_seed_string(value: str, *, field: str) -> None:
     references = set(_ENV_REFERENCE.findall(value))
     if references and not references <= _PORTABLE_ENVIRONMENT_REFERENCES:
         raise WorkspaceManifestError(
@@ -408,10 +415,19 @@ def _repository_entries(
 ) -> list[_ManifestRepository]:
     if not isinstance(node, dict):
         raise WorkspaceManifestError("Each workspace directory must be a mapping")
-    entries: list[_ManifestRepository] = []
-    repositories = node.get("repositories", [])
+    entries = _repository_entries_from_list(node.get("repositories", []), parent)
+    entries.extend(
+        _repository_entries_from_subdirectories(node.get("subdirectories", {}), parent)
+    )
+    return entries
+
+
+def _repository_entries_from_list(
+    repositories: object, parent: tuple[str, ...]
+) -> list[_ManifestRepository]:
     if not isinstance(repositories, list):
         raise WorkspaceManifestError("repositories must be a list")
+    entries: list[_ManifestRepository] = []
     for repository in repositories:
         if not isinstance(repository, dict) or not isinstance(
             repository.get("url"), str
@@ -424,9 +440,15 @@ def _repository_entries(
         entries.append(
             _ManifestRepository(identifier="/".join((*parent, name)), name=name)
         )
-    subdirectories = node.get("subdirectories", {})
+    return entries
+
+
+def _repository_entries_from_subdirectories(
+    subdirectories: object, parent: tuple[str, ...]
+) -> list[_ManifestRepository]:
     if not isinstance(subdirectories, dict):
         raise WorkspaceManifestError("subdirectories must be a mapping")
+    entries: list[_ManifestRepository] = []
     for directory, child in subdirectories.items():
         if (
             not isinstance(directory, str)
@@ -469,8 +491,16 @@ def _profile_and_selector_data(
     if not isinstance(raw_selectors, dict):
         raise WorkspaceManifestError("selectors must be a mapping")
 
+    profiles = _parse_manifest_profiles(raw_profiles)
+    selectors = _parse_manifest_selectors(raw_selectors)
+    _validate_profile_selector_refs(profiles, selectors)
+    return profiles, selectors
+
+
+def _parse_manifest_profiles(
+    raw_profiles: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
     profiles: dict[str, dict[str, Any]] = {}
-    selectors: dict[str, dict[str, Any]] = {}
     for name, profile in raw_profiles.items():
         if not isinstance(name, str) or not name or not isinstance(profile, dict):
             raise WorkspaceManifestError("Each profile must be a named mapping")
@@ -490,6 +520,13 @@ def _profile_and_selector_data(
                 f"profiles.{name}.selectors must name at least one selector"
             )
         profiles[name] = profile
+    return profiles
+
+
+def _parse_manifest_selectors(
+    raw_selectors: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    selectors: dict[str, dict[str, Any]] = {}
     for name, selector in raw_selectors.items():
         if not isinstance(name, str) or not name or not isinstance(selector, dict):
             raise WorkspaceManifestError("Each selector must be a named mapping")
@@ -508,7 +545,12 @@ def _profile_and_selector_data(
         _string_list(selector.get("include"), label=f"selectors.{name}.include")
         _string_list(selector.get("exclude"), label=f"selectors.{name}.exclude")
         selectors[name] = selector
+    return selectors
 
+
+def _validate_profile_selector_refs(
+    profiles: dict[str, dict[str, Any]], selectors: dict[str, dict[str, Any]]
+) -> None:
     for name, profile in profiles.items():
         for selector_name in _string_list(
             profile.get("selectors"), label=f"profiles.{name}.selectors"
@@ -518,7 +560,6 @@ def _profile_and_selector_data(
                     f"profiles.{name}.selectors references unknown selector: "
                     f"{selector_name}"
                 )
-    return profiles, selectors
 
 
 def _resolve_repository_reference(
@@ -585,22 +626,9 @@ def _resolved_selector_members(
     return selected
 
 
-def select_repositories(
+def _repository_identifiers_and_aliases(
     data: dict[str, Any],
-    *,
-    profile: str | None = None,
-    selectors: Iterable[str] = (),
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    """Resolve visible bootstrap selectors to repository names.
-
-    ``profiles.<name>.selectors`` names selector mappings. A selector's
-    ``include`` and ``exclude`` lists contain workspace-relative repository
-    identifiers, unambiguous basenames, or ``*``. A missing ``include`` means
-    all repositories, while an explicit empty ``include`` means none. Multiple
-    selectors are unioned after applying each selector's exclusions. Without a
-    requested profile or selector, all declared repositories are visible.
-    """
-
+) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
     entries = _repository_entries(data)
     repositories = tuple(entry.identifier for entry in entries)
     if len(set(repositories)) != len(repositories):
@@ -610,7 +638,15 @@ def select_repositories(
     aliases: dict[str, tuple[str, ...]] = {}
     for entry in entries:
         aliases[entry.name] = (*aliases.get(entry.name, ()), entry.identifier)
-    profiles, selector_map = _profile_and_selector_data(data)
+    return repositories, aliases
+
+
+def _resolve_requested_selectors(
+    profile: str | None,
+    selectors: Iterable[str],
+    profiles: dict[str, dict[str, Any]],
+    selector_map: dict[str, dict[str, Any]],
+) -> list[str]:
     requested = list(dict.fromkeys(selectors))
     if profile is not None:
         if profile not in profiles:
@@ -627,6 +663,28 @@ def select_repositories(
     for selector_name in requested:
         if selector_name not in selector_map:
             raise WorkspaceManifestError(f"Unknown workspace selector: {selector_name}")
+    return requested
+
+
+def select_repositories(
+    data: dict[str, Any],
+    *,
+    profile: str | None = None,
+    selectors: Iterable[str] = (),
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Resolve visible bootstrap selectors to repository names.
+
+    ``profiles.<name>.selectors`` names selector mappings. A selector's
+    ``include`` and ``exclude`` lists contain workspace-relative repository
+    identifiers, unambiguous basenames, or ``*``. A missing ``include`` means
+    all repositories, while an explicit empty ``include`` means none. Multiple
+    selectors are unioned after applying each selector's exclusions. Without a
+    requested profile or selector, all declared repositories are visible.
+    """
+
+    repositories, aliases = _repository_identifiers_and_aliases(data)
+    profiles, selector_map = _profile_and_selector_data(data)
+    requested = _resolve_requested_selectors(profile, selectors, profiles, selector_map)
 
     for name, selector_config in selector_map.items():
         _resolved_selector_members(
@@ -716,6 +774,13 @@ def _synchronize_destinations(
 ) -> None:
     """Replace all drifted projections or roll back every replacement."""
 
+    staged = _stage_destination_snapshots(snapshots)
+    _replace_staged_destinations(snapshots, staged)
+
+
+def _stage_destination_snapshots(
+    snapshots: tuple[_DestinationSnapshot, ...],
+) -> dict[str, Path]:
     staged: dict[str, Path] = {}
     try:
         for snapshot in snapshots:
@@ -730,7 +795,12 @@ def _synchronize_destinations(
         raise WorkspaceManifestError(
             "Failed to stage workspace manifest mirrors; no mirror was replaced"
         ) from exc
+    return staged
 
+
+def _replace_staged_destinations(
+    snapshots: tuple[_DestinationSnapshot, ...], staged: dict[str, Path]
+) -> None:
     replaced: list[_DestinationSnapshot] = []
     try:
         for snapshot in snapshots:
@@ -775,25 +845,7 @@ def _matches_projection(
         return False
 
 
-def synchronize_workspace_manifest(
-    source: str | Path,
-    *,
-    runtime_destination: str | Path | None = None,
-    seed_destination: str | Path | None = None,
-    check: bool = False,
-    dry_run: bool = False,
-    profile: str | None = None,
-    selectors: Iterable[str] = (),
-) -> WorkspaceManifestReport:
-    """Validate an authoritative manifest and synchronize its two projections.
-
-    The runtime copy retains the canonical bytes. The packaged seed is a
-    deterministic, portable projection. ``check`` and ``dry_run`` never write.
-    """
-
-    if check and dry_run:
-        raise WorkspaceManifestError("check and dry_run cannot be combined")
-
+def _load_manifest_source(source: str | Path) -> tuple[Path, bytes, dict]:
     source_candidate = Path(source).expanduser()
     if source_candidate.is_symlink():
         raise WorkspaceManifestError(
@@ -802,16 +854,13 @@ def synchronize_workspace_manifest(
     source_path = source_candidate.resolve()
     source_bytes, data = _manifest_content(source_path)
     _validate_no_secrets(data)
-    portable_seed = project_portable_seed(data)
-    selected, profiles, available_selectors = select_repositories(
-        data, profile=profile, selectors=selectors
-    )
-    source_digest = _content_digest(source_bytes)
-    projections = {
-        "runtime": (source_bytes, data),
-        "packaged_seed": (_portable_yaml(portable_seed), portable_seed),
-    }
-    destinations = (
+    return source_path, source_bytes, data
+
+
+def _resolve_manifest_destinations(
+    runtime_destination: str | Path | None, seed_destination: str | Path | None
+) -> tuple[tuple[str, Path], ...]:
+    return (
         (
             "runtime",
             _destination_path(
@@ -831,6 +880,11 @@ def synchronize_workspace_manifest(
             ),
         ),
     )
+
+
+def _validate_manifest_destinations(
+    source_path: Path, destinations: tuple[tuple[str, Path], ...]
+) -> None:
     resolved_destinations = tuple(
         path.resolve(strict=False) for _, path in destinations
     )
@@ -841,6 +895,11 @@ def synchronize_workspace_manifest(
     if len(set(resolved_destinations)) != len(resolved_destinations):
         raise WorkspaceManifestError("Manifest mirror destinations must be distinct")
 
+
+def _snapshot_manifest_destinations(
+    destinations: tuple[tuple[str, Path], ...],
+    projections: dict[str, tuple[bytes, dict]],
+) -> tuple[list[_DestinationSnapshot], list[tuple[str, bool, str | None, bool]]]:
     snapshots: list[_DestinationSnapshot] = []
     initial: list[tuple[str, bool, str | None, bool]] = []
     for role, raw_destination in destinations:
@@ -876,10 +935,17 @@ def synchronize_workspace_manifest(
                     replacement=projections[role][0],
                 )
             )
+    return snapshots, initial
 
-    if not check and not dry_run and snapshots:
-        _synchronize_destinations(tuple(snapshots))
 
+def _build_destination_statuses(
+    destinations: tuple[tuple[str, Path], ...],
+    initial: list[tuple[str, bool, str | None, bool]],
+    projections: dict[str, tuple[bytes, dict]],
+    *,
+    check: bool,
+    dry_run: bool,
+) -> list[ManifestDestinationStatus]:
     statuses: list[ManifestDestinationStatus] = []
     for role, existed, initial_digest, initially_matched in initial:
         destination = dict(destinations)[role].expanduser()
@@ -919,6 +985,49 @@ def synchronize_workspace_manifest(
                 action=action,
             )
         )
+    return statuses
+
+
+def synchronize_workspace_manifest(
+    source: str | Path,
+    *,
+    runtime_destination: str | Path | None = None,
+    seed_destination: str | Path | None = None,
+    check: bool = False,
+    dry_run: bool = False,
+    profile: str | None = None,
+    selectors: Iterable[str] = (),
+) -> WorkspaceManifestReport:
+    """Validate an authoritative manifest and synchronize its two projections.
+
+    The runtime copy retains the canonical bytes. The packaged seed is a
+    deterministic, portable projection. ``check`` and ``dry_run`` never write.
+    """
+
+    if check and dry_run:
+        raise WorkspaceManifestError("check and dry_run cannot be combined")
+
+    source_path, source_bytes, data = _load_manifest_source(source)
+    portable_seed = project_portable_seed(data)
+    selected, profiles, available_selectors = select_repositories(
+        data, profile=profile, selectors=selectors
+    )
+    source_digest = _content_digest(source_bytes)
+    projections = {
+        "runtime": (source_bytes, data),
+        "packaged_seed": (_portable_yaml(portable_seed), portable_seed),
+    }
+    destinations = _resolve_manifest_destinations(runtime_destination, seed_destination)
+    _validate_manifest_destinations(source_path, destinations)
+
+    snapshots, initial = _snapshot_manifest_destinations(destinations, projections)
+
+    if not check and not dry_run and snapshots:
+        _synchronize_destinations(tuple(snapshots))
+
+    statuses = _build_destination_statuses(
+        destinations, initial, projections, check=check, dry_run=dry_run
+    )
     return WorkspaceManifestReport(
         source_digest=source_digest,
         profiles=profiles,
