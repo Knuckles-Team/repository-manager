@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
@@ -192,6 +193,59 @@ def from_remote_result(result: RemoteExecutionResult) -> ExecutionResult:
     )
 
 
+@dataclass
+class _RefusalContext:
+    """The fields every early-return ``ExecutionResult`` in ``run`` shares.
+
+    Bundled so ``RemoteWorkerExecutor._refused`` and its callers stay under
+    the 7-parameter cap instead of threading five invariant fields through
+    every call site individually.
+    """
+
+    command_id: str
+    worker_id: str
+    fence: str
+    started_at: datetime
+    log_sink: LogSink | None
+
+
+@dataclass
+class _CancellationWatch:
+    """The inputs the dispatch poll loop consults on every tick.
+
+    Bundled for the same reason as :class:`_RefusalContext`: these five
+    values travel together from ``run`` through ``_dispatch_and_wait`` into
+    ``_poll_until_done``/``_detect_cancel_reason`` without any of those
+    helpers needing to know about the others' internals.
+    """
+
+    workdir: str
+    fence: str
+    token: CancellationToken
+    checker: object
+    heartbeat: object | None
+
+
+# Which (outcome, failure_class) a reported success is downgraded to when a
+# cancellation/fence-loss/heartbeat-failure marker was already sent to the
+# remote worker before it reported success.  A dict dispatch table rather
+# than an if/elif ladder: every arm is a straight equality lookup.
+_CANCEL_REASON_OUTCOMES: dict[str, tuple[RmExecutionOutcome, RmFailureClass]] = {
+    "cancelled": (
+        RmExecutionOutcome.CANCELLED,
+        RmFailureClass.CANCELLED_DEADLINE,
+    ),
+    "fence": (
+        RmExecutionOutcome.REFUSED,
+        RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+    ),
+    "heartbeat": (
+        RmExecutionOutcome.REFUSED,
+        RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
+    ),
+}
+
+
 def cancellation_marker_path(workdir: str, fence: str) -> str:
     """Return the deterministic per-attempt cooperative cancellation marker.
 
@@ -256,48 +310,86 @@ class RemoteWorkerExecutor:
         effective_worker = worker_id or self.worker_id
         token = cancellation or CancellationToken()
         checker = fence_check or (lambda: True)
-        started_at = datetime.now(UTC)
+        ctx = _RefusalContext(
+            command_id=command_id,
+            worker_id=effective_worker,
+            fence=fence,
+            started_at=datetime.now(UTC),
+            log_sink=log_sink,
+        )
 
-        if token.is_cancelled():
-            return self._refused(
-                command_id,
-                effective_worker,
-                fence,
-                RmExecutionOutcome.CANCELLED,
-                RmFailureClass.CANCELLED_DEADLINE,
-                started_at,
-                log_sink,
-                "cancelled before remote dispatch",
-            )
-        if not self._checker_ok(checker):
-            return self._refused(
-                command_id,
-                effective_worker,
-                fence,
-                RmExecutionOutcome.REFUSED,
-                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
-                started_at,
-                log_sink,
-                "fence invalid before remote dispatch",
-            )
+        refusal = self._refuse_before_dispatch(token, checker, ctx)
+        if refusal is not None:
+            return refusal
 
         try:
             request = to_remote_request(command)
         except ValidationError as exc:
             return self._refused(
-                command_id,
-                effective_worker,
-                fence,
+                ctx,
                 RmExecutionOutcome.REFUSED,
                 RmFailureClass.INVALID_REQUEST,
-                started_at,
-                log_sink,
                 f"command failed remote translation: {exc.error_count()} error(s)",
             )
 
         context = RemoteExecutionContext(
             command_id=command_id, worker_id=effective_worker, fence=fence
         )
+        watch = _CancellationWatch(
+            workdir=command.workdir,
+            fence=fence,
+            token=token,
+            checker=checker,
+            heartbeat=heartbeat,
+        )
+        remote_result, dispatch_error, cancel_reason = self._dispatch_and_wait(
+            request, context, watch
+        )
+
+        if dispatch_error is not None:
+            return self._refused(
+                ctx,
+                RmExecutionOutcome.FAILED,
+                RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
+                f"remote dispatch raised {type(dispatch_error).__name__}",
+            )
+
+        result = from_remote_result(remote_result)
+        result = self._finalize_outcome(result, cancel_reason, checker)
+
+        if log_sink is not None:
+            self._emit_to_log_sink(log_sink, result)
+
+        return self._publish_result(result, publisher, fence)
+
+    def _refuse_before_dispatch(
+        self, token: CancellationToken, checker: object, ctx: _RefusalContext
+    ) -> ExecutionResult | None:
+        """Reject before ever opening a connection, if already invalid."""
+
+        if token.is_cancelled():
+            return self._refused(
+                ctx,
+                RmExecutionOutcome.CANCELLED,
+                RmFailureClass.CANCELLED_DEADLINE,
+                "cancelled before remote dispatch",
+            )
+        if not self._checker_ok(checker):
+            return self._refused(
+                ctx,
+                RmExecutionOutcome.REFUSED,
+                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+                "fence invalid before remote dispatch",
+            )
+        return None
+
+    def _dispatch_and_wait(
+        self,
+        request: RemoteCommandRequest,
+        context: RemoteExecutionContext,
+        watch: _CancellationWatch,
+    ) -> tuple[RemoteExecutionResult | None, BaseException | None, str | None]:
+        """Run the blocking TM dispatch on a thread while polling for cancellation."""
 
         outcome_box: list[RemoteExecutionResult] = []
         error_box: list[BaseException] = []
@@ -314,105 +406,103 @@ class RemoteWorkerExecutor:
             target=_dispatch, name="repository-manager-remote-dispatch", daemon=True
         )
         thread.start()
-        # Track *which* check first failed, not just that one did: a lost
-        # fence and an operator cancellation are different failure classes
-        # (parity with LocalExecutor's own poll loop, which distinguishes
-        # cancellation/fence-loss/heartbeat-failure into three different
-        # outcomes rather than collapsing them all into "cancelled").  Once
-        # one check fails the marker is sent and the reason is latched; later
-        # checks never overwrite an already-latched reason.
+        cancel_reason = self._poll_until_done(thread, watch, context)
+
+        if error_box:
+            return None, error_box[0], cancel_reason
+        return outcome_box[0], None, cancel_reason
+
+    def _poll_until_done(
+        self,
+        thread: threading.Thread,
+        watch: _CancellationWatch,
+        context: RemoteExecutionContext,
+    ) -> str | None:
+        """Poll ``thread`` to completion, latching the first cancel reason seen.
+
+        Track *which* check first failed, not just that one did: a lost
+        fence and an operator cancellation are different failure classes
+        (parity with LocalExecutor's own poll loop, which distinguishes
+        cancellation/fence-loss/heartbeat-failure into three different
+        outcomes rather than collapsing them all into "cancelled").  Once
+        one check fails the marker is sent and the reason is latched; later
+        checks never overwrite an already-latched reason.
+        """
+
         cancel_reason: str | None = None
         while thread.is_alive():
             if cancel_reason is None:
-                if token.is_cancelled():
-                    cancel_reason = "cancelled"
-                elif not self._checker_ok(checker):
-                    cancel_reason = "fence"
-                elif not self._heartbeat_ok(heartbeat):
-                    cancel_reason = "heartbeat"
+                cancel_reason = self._detect_cancel_reason(watch)
                 if cancel_reason is not None:
-                    self._send_cancellation_marker(command.workdir, fence, context)
+                    self._send_cancellation_marker(watch.workdir, watch.fence, context)
             thread.join(timeout=self.poll_interval_seconds)
+        return cancel_reason
 
-        if error_box:
-            dispatch_error = error_box[0]
-            return self._refused(
-                command_id,
-                effective_worker,
-                fence,
-                RmExecutionOutcome.FAILED,
-                RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
-                started_at,
-                log_sink,
-                f"remote dispatch raised {type(dispatch_error).__name__}",
-            )
+    def _detect_cancel_reason(self, watch: _CancellationWatch) -> str | None:
+        if watch.token.is_cancelled():
+            return "cancelled"
+        if not self._checker_ok(watch.checker):
+            return "fence"
+        if not self._heartbeat_ok(watch.heartbeat):
+            return "heartbeat"
+        return None
 
-        result = from_remote_result(outcome_box[0])
+    def _finalize_outcome(
+        self, result: ExecutionResult, cancel_reason: str | None, checker: object
+    ) -> ExecutionResult:
+        """Downgrade a reported success that raced a cancellation/fence-loss signal.
 
-        _CANCEL_REASON_OUTCOMES: dict[
-            str, tuple[RmExecutionOutcome, RmFailureClass]
-        ] = {
-            "cancelled": (
-                RmExecutionOutcome.CANCELLED,
-                RmFailureClass.CANCELLED_DEADLINE,
-            ),
-            "fence": (
-                RmExecutionOutcome.REFUSED,
-                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
-            ),
-            "heartbeat": (
-                RmExecutionOutcome.REFUSED,
-                RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
-            ),
-        }
-        if cancel_reason is not None and result.outcome == RmExecutionOutcome.SUCCEEDED:
-            # A cancellation/fence-loss/heartbeat-failure marker was already
-            # sent to the remote worker before it reported success; never
-            # publish a success that raced that request (parity with
-            # LocalExecutor's own post-hoc downgrade).
+        A result already flagged cancelled/fenced/heartbeat-failed by the
+        poll loop, or one that reports success against a fence that has
+        since gone stale, is never published as-is (parity with
+        LocalExecutor's own post-hoc downgrade).
+        """
+
+        if result.outcome != RmExecutionOutcome.SUCCEEDED:
+            return result
+        if cancel_reason is not None:
             downgraded_outcome, downgraded_failure = _CANCEL_REASON_OUTCOMES[
                 cancel_reason
             ]
-            result = result.model_copy(
+            return result.model_copy(
                 update={
                     "outcome": downgraded_outcome,
                     "failure_class": downgraded_failure,
                 }
             )
-        elif result.outcome == RmExecutionOutcome.SUCCEEDED and not self._checker_ok(
-            checker
-        ):
-            result = result.model_copy(
+        if not self._checker_ok(checker):
+            return result.model_copy(
                 update={
                     "outcome": RmExecutionOutcome.REFUSED,
                     "failure_class": RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
                 }
             )
+        return result
 
-        if log_sink is not None:
-            self._emit_to_log_sink(log_sink, result)
-
-        if result.outcome == RmExecutionOutcome.SUCCEEDED and publisher is not None:
-            try:
-                decision = publisher.publish(result, fence=fence)
-            except Exception:  # noqa: BLE001 - defensive publication boundary
-                result = result.model_copy(
-                    update={
-                        "outcome": RmExecutionOutcome.FAILED,
-                        "failure_class": RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
-                    }
-                )
-            else:
-                if decision != PublicationDecision.ACCEPTED:
-                    result = result.model_copy(
-                        update={
-                            "outcome": RmExecutionOutcome.REFUSED,
-                            "failure_class": (
-                                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT
-                            ),
-                        }
-                    )
-
+    def _publish_result(
+        self,
+        result: ExecutionResult,
+        publisher: PublicationPort | None,
+        fence: str,
+    ) -> ExecutionResult:
+        if result.outcome != RmExecutionOutcome.SUCCEEDED or publisher is None:
+            return result
+        try:
+            decision = publisher.publish(result, fence=fence)
+        except Exception:  # noqa: BLE001 - defensive publication boundary
+            return result.model_copy(
+                update={
+                    "outcome": RmExecutionOutcome.FAILED,
+                    "failure_class": RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
+                }
+            )
+        if decision != PublicationDecision.ACCEPTED:
+            return result.model_copy(
+                update={
+                    "outcome": RmExecutionOutcome.REFUSED,
+                    "failure_class": RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+                }
+            )
         return result
 
     def _send_cancellation_marker(
@@ -489,29 +579,26 @@ class RemoteWorkerExecutor:
 
     def _refused(
         self,
-        command_id: str,
-        worker_id: str,
-        fence: str,
+        ctx: _RefusalContext,
         outcome: RmExecutionOutcome,
         failure_class: RmFailureClass,
-        started_at: datetime,
-        log_sink: LogSink | None,
         note: str,
     ) -> ExecutionResult:
+        started_at = ctx.started_at
         finished_at = datetime.now(UTC)
         result = ExecutionResult(
-            command_id=command_id,
+            command_id=ctx.command_id,
             outcome=outcome,
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=max(0, int((finished_at - started_at).total_seconds() * 1000)),
-            worker_id=worker_id,
-            fence=fence,
+            worker_id=ctx.worker_id,
+            fence=ctx.fence,
             stderr_tail=note,
             failure_class=failure_class,
         )
-        if log_sink is not None:
-            self._emit_to_log_sink(log_sink, result)
+        if ctx.log_sink is not None:
+            self._emit_to_log_sink(ctx.log_sink, result)
         return result
 
 
