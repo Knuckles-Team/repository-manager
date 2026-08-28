@@ -82,19 +82,31 @@ def _require_digest(value: str) -> str:
     return value
 
 
-def _require_git_ref(value: str) -> str:
+def _require_git_ref_shape(value: str) -> None:
     if not value or value.strip() != value:
         raise ValueError("Git ref must be non-blank and have no surrounding whitespace")
     if _SHA_RE.fullmatch(value):
         raise ValueError("a full Git SHA is not accepted where a named ref is required")
+
+
+def _require_git_ref_syntax(value: str) -> None:
     if value.startswith("-") or value.endswith(".") or value.endswith(".lock"):
         raise ValueError(f"invalid Git ref: {value!r}")
     if ".." in value or "@{" in value or "//" in value:
         raise ValueError(f"invalid Git ref: {value!r}")
     if _REF_FORBIDDEN_RE.search(value):
         raise ValueError(f"invalid Git ref: {value!r}")
+
+
+def _require_git_ref_not_reserved(value: str) -> None:
     if value in {".", "..", "HEAD"}:
         raise ValueError(f"invalid or moving Git ref: {value!r}")
+
+
+def _require_git_ref(value: str) -> str:
+    _require_git_ref_shape(value)
+    _require_git_ref_syntax(value)
+    _require_git_ref_not_reserved(value)
     return value
 
 
@@ -757,46 +769,54 @@ class Generation(ContractModel):
 
     @model_validator(mode="after")
     def validate_generation_state(self) -> Generation:
-        ids = [item.candidate_id for item in self.candidate_versions]
-        if len(set(ids)) != len(ids):
-            raise ValueError("generation candidate IDs must be unique")
-        if self.state != GenerationState.OPEN and self.sealed_at is None:
-            raise ValueError("sealed or terminal generations require sealed_at")
-        if self.state == GenerationState.OPEN and self.sealed_at is not None:
-            raise ValueError("open generation cannot carry a seal time")
-        if (
-            self.state
-            in {
-                GenerationState.CERTIFIED,
-                GenerationState.LANDING,
-                GenerationState.LANDED,
-            }
-            and self.tree_sha is None
-        ):
-            raise ValueError("certified or landing generations require tree_sha")
-        if (
-            self.state
-            in {
-                GenerationState.CERTIFIED,
-                GenerationState.LANDING,
-                GenerationState.LANDED,
-            }
-            and not self.validation_evidence_ids
-        ):
-            raise ValueError(
-                "certified or landing generations require validation evidence"
-            )
-        if self.state in {GenerationState.LANDING, GenerationState.LANDED}:
-            if self.landing_fence is None:
-                raise ValueError("landing generations require a landing fence")
-        if (
-            self.state == GenerationState.LANDED
-            and self.landing_result != LandingOutcome.LANDED
-        ):
-            raise ValueError("landed generation requires a landed result")
-        if self.state == GenerationState.REJECTED and not self.reason:
-            raise ValueError("rejected generation requires a reason")
+        _validate_generation_candidate_ids(self)
+        _validate_generation_seal(self)
+        _validate_generation_certification(self)
+        _validate_generation_landing(self)
         return self
+
+
+_GENERATION_CERTIFIED_STATES = {
+    GenerationState.CERTIFIED,
+    GenerationState.LANDING,
+    GenerationState.LANDED,
+}
+
+
+def _validate_generation_candidate_ids(generation: Generation) -> None:
+    ids = [item.candidate_id for item in generation.candidate_versions]
+    if len(set(ids)) != len(ids):
+        raise ValueError("generation candidate IDs must be unique")
+
+
+def _validate_generation_seal(generation: Generation) -> None:
+    if generation.state != GenerationState.OPEN and generation.sealed_at is None:
+        raise ValueError("sealed or terminal generations require sealed_at")
+    if generation.state == GenerationState.OPEN and generation.sealed_at is not None:
+        raise ValueError("open generation cannot carry a seal time")
+
+
+def _validate_generation_certification(generation: Generation) -> None:
+    if generation.state in _GENERATION_CERTIFIED_STATES and generation.tree_sha is None:
+        raise ValueError("certified or landing generations require tree_sha")
+    if (
+        generation.state in _GENERATION_CERTIFIED_STATES
+        and not generation.validation_evidence_ids
+    ):
+        raise ValueError("certified or landing generations require validation evidence")
+
+
+def _validate_generation_landing(generation: Generation) -> None:
+    if generation.state in {GenerationState.LANDING, GenerationState.LANDED}:
+        if generation.landing_fence is None:
+            raise ValueError("landing generations require a landing fence")
+    if (
+        generation.state == GenerationState.LANDED
+        and generation.landing_result != LandingOutcome.LANDED
+    ):
+        raise ValueError("landed generation requires a landed result")
+    if generation.state == GenerationState.REJECTED and not generation.reason:
+        raise ValueError("rejected generation requires a reason")
 
 
 class LaneReference(ContractModel):
@@ -872,30 +892,46 @@ class DevelopmentRequest(ContractModel):
 
     @model_validator(mode="after")
     def validate_correlations(self) -> DevelopmentRequest:
-        if self.request_id == self.idempotency_key:
-            raise ValueError(
-                "request_id and idempotency_key must remain distinct identifiers"
-            )
-        if (
-            self.operation == OperationKind.LANE_ALLOCATE
-            and self.generation_id is not None
-        ):
-            raise ValueError("lane allocation cannot target an existing generation")
-        if self.operation == OperationKind.CANDIDATE_SUBMIT and not self.lane_id:
-            raise ValueError("candidate submission requires a lane_id")
-        if (
-            self.operation == OperationKind.GENERATION_CERTIFY
-            and not self.generation_id
-        ):
-            raise ValueError("generation certification requires a generation_id")
-        if self.operation == OperationKind.BRANCH_LAND and not self.generation_id:
-            raise ValueError("branch landing requires a generation_id")
-        if (
-            self.operation in {OperationKind.RELEASE, OperationKind.WORKSPACE_PUSH}
-            and not self.consent.allow_push
-        ):
-            raise ValueError("release or workspace push requires explicit push consent")
+        _validate_request_identifiers(self)
+        _validate_request_operation_correlation(self)
         return self
+
+
+def _validate_request_identifiers(request: DevelopmentRequest) -> None:
+    if request.request_id == request.idempotency_key:
+        raise ValueError(
+            "request_id and idempotency_key must remain distinct identifiers"
+        )
+
+
+def _validate_request_lane_and_candidate(request: DevelopmentRequest) -> None:
+    if (
+        request.operation == OperationKind.LANE_ALLOCATE
+        and request.generation_id is not None
+    ):
+        raise ValueError("lane allocation cannot target an existing generation")
+    if request.operation == OperationKind.CANDIDATE_SUBMIT and not request.lane_id:
+        raise ValueError("candidate submission requires a lane_id")
+
+
+def _validate_request_generation_and_push(request: DevelopmentRequest) -> None:
+    if (
+        request.operation == OperationKind.GENERATION_CERTIFY
+        and not request.generation_id
+    ):
+        raise ValueError("generation certification requires a generation_id")
+    if request.operation == OperationKind.BRANCH_LAND and not request.generation_id:
+        raise ValueError("branch landing requires a generation_id")
+    if (
+        request.operation in {OperationKind.RELEASE, OperationKind.WORKSPACE_PUSH}
+        and not request.consent.allow_push
+    ):
+        raise ValueError("release or workspace push requires explicit push consent")
+
+
+def _validate_request_operation_correlation(request: DevelopmentRequest) -> None:
+    _validate_request_lane_and_candidate(request)
+    _validate_request_generation_and_push(request)
 
 
 class RepositoryJobResult(ContractModel):
@@ -925,44 +961,66 @@ class RepositoryJobResult(ContractModel):
 
     @model_validator(mode="after")
     def validate_job_result(self) -> RepositoryJobResult:
-        if self.failure_class is not None and self.refusal_code is not None:
-            raise ValueError("a job result cannot carry both failure and refusal codes")
-        if self.state == JobState.SUCCEEDED:
-            if (
-                self.result is None
-                or self.result.outcome != ExecutionOutcome.SUCCEEDED
-                or self.failure_class
-                or self.refusal_code
-            ):
-                raise ValueError(
-                    "succeeded job requires a result and no failure/refusal"
-                )
-        if self.state in {JobState.LEASED, JobState.RUNNING} and self.lease is None:
-            raise ValueError("leased or running job requires lease/fence evidence")
-        if self.state in {JobState.FAILED, JobState.DEAD_LETTER}:
-            if (
-                self.result is None
-                and self.failure_class is None
-                and self.refusal_code is None
-            ):
-                raise ValueError(
-                    "failed job requires structured result or failure/refusal code"
-                )
-        if self.state in {
-            JobState.SUBMITTED,
-            JobState.READY,
-            JobState.LEASED,
-            JobState.RUNNING,
-        } and (self.result or self.failure_class or self.refusal_code):
-            raise ValueError("non-terminal job cannot carry terminal result fields")
-        if self.state == JobState.CANCELLED and self.refusal_code not in {
-            None,
-            RefusalCode.CANCELLED_DEADLINE,
-        }:
-            raise ValueError(
-                "cancelled job must use the cancellation/deadline refusal code"
-            )
+        _validate_job_result_codes(self)
+        _validate_job_result_succeeded(self)
+        _validate_job_result_lease(self)
+        _validate_job_result_failed(self)
+        _validate_job_result_nonterminal(self)
+        _validate_job_result_cancelled(self)
         return self
+
+
+def _validate_job_result_codes(job: RepositoryJobResult) -> None:
+    if job.failure_class is not None and job.refusal_code is not None:
+        raise ValueError("a job result cannot carry both failure and refusal codes")
+
+
+def _validate_job_result_succeeded(job: RepositoryJobResult) -> None:
+    if job.state == JobState.SUCCEEDED:
+        if (
+            job.result is None
+            or job.result.outcome != ExecutionOutcome.SUCCEEDED
+            or job.failure_class
+            or job.refusal_code
+        ):
+            raise ValueError("succeeded job requires a result and no failure/refusal")
+
+
+def _validate_job_result_lease(job: RepositoryJobResult) -> None:
+    if job.state in {JobState.LEASED, JobState.RUNNING} and job.lease is None:
+        raise ValueError("leased or running job requires lease/fence evidence")
+
+
+def _validate_job_result_failed(job: RepositoryJobResult) -> None:
+    if job.state in {JobState.FAILED, JobState.DEAD_LETTER}:
+        if (
+            job.result is None
+            and job.failure_class is None
+            and job.refusal_code is None
+        ):
+            raise ValueError(
+                "failed job requires structured result or failure/refusal code"
+            )
+
+
+def _validate_job_result_nonterminal(job: RepositoryJobResult) -> None:
+    if job.state in {
+        JobState.SUBMITTED,
+        JobState.READY,
+        JobState.LEASED,
+        JobState.RUNNING,
+    } and (job.result or job.failure_class or job.refusal_code):
+        raise ValueError("non-terminal job cannot carry terminal result fields")
+
+
+def _validate_job_result_cancelled(job: RepositoryJobResult) -> None:
+    if job.state == JobState.CANCELLED and job.refusal_code not in {
+        None,
+        RefusalCode.CANCELLED_DEADLINE,
+    }:
+        raise ValueError(
+            "cancelled job must use the cancellation/deadline refusal code"
+        )
 
 
 class WorkspaceProject(ContractModel):
@@ -1100,71 +1158,108 @@ class WorkspaceReleasePlan(ContractModel):
 
     @model_validator(mode="after")
     def validate_plan(self) -> WorkspaceReleasePlan:
-        selected = set(self.selected_projects)
-        project_ids = [project.project_id for project in self.projects]
-        if len(selected) != len(self.selected_projects):
-            raise ValueError("selected workspace projects must be unique")
-        if len(project_ids) != len(set(project_ids)):
-            raise ValueError("workspace release project IDs must be unique")
-        if selected != set(project_ids):
-            raise ValueError(
-                "selected_projects and projects must describe the same set"
-            )
-
-        graph: dict[str, list[str]] = {project_id: [] for project_id in selected}
-        for edge in self.dependency_edges:
-            if edge.dependent_project_id == edge.dependency_project_id:
-                raise ValueError("workspace dependency graph cannot contain self-edges")
-            if {
-                edge.dependent_project_id,
-                edge.dependency_project_id,
-            } - selected:
-                raise ValueError("dependency edge references an unselected project")
-            graph[edge.dependent_project_id].append(edge.dependency_project_id)
-        _assert_acyclic(graph)
-
-        for rewrite in self.floor_rewrites:
-            if {
-                rewrite.project_id,
-                rewrite.dependency_project_id,
-            } - selected:
-                raise ValueError("floor rewrite references an unselected project")
-
-        grouped: set[str] = set()
-        for group in self.parallel_groups:
-            if set(group) - selected:
-                raise ValueError("parallel group references an unselected project")
-            if grouped.intersection(group):
-                raise ValueError("parallel groups must not repeat a project")
-            grouped.update(group)
-            for project_id in group:
-                if any(dependency in group for dependency in graph[project_id]):
-                    raise ValueError("parallel group contains dependent projects")
-
-        if self.push_job_ids and not self.consent.allow_push:
-            raise ValueError("workspace push jobs require explicit push consent")
-        if (
-            self.state in {ReleasePlanState.FROZEN, ReleasePlanState.APPLIED}
-            and self.frozen_at is None
-        ):
-            raise ValueError("frozen or applied plan requires frozen_at")
-        if self.state == ReleasePlanState.DRAFT and self.frozen_at is not None:
-            raise ValueError("draft plan cannot carry frozen_at")
-        expected_digest = self.derive_digest(
-            workspace_id=self.workspace_id,
-            selected_projects=self.selected_projects,
-            projects=self.projects,
-            dependency_edges=self.dependency_edges,
-            floor_rewrites=self.floor_rewrites,
-            validation_stages=self.validation_stages,
-            build_job_ids=self.build_job_ids,
-            push_job_ids=self.push_job_ids,
-            parallel_groups=self.parallel_groups,
-            consent=self.consent,
-        )
-        if self.plan_digest != expected_digest:
-            raise ValueError("plan_digest does not match the frozen plan contents")
+        selected = _validate_plan_projects(self)
+        graph = _validate_plan_dependency_graph(self, selected)
+        _validate_plan_floor_rewrites(self, selected)
+        _validate_plan_parallel_groups(self, selected, graph)
+        _validate_plan_consent_and_state(self)
+        _validate_plan_digest(self)
         return self
+
+
+def _validate_plan_projects(plan: WorkspaceReleasePlan) -> set[str]:
+    selected = set(plan.selected_projects)
+    project_ids = [project.project_id for project in plan.projects]
+    if len(selected) != len(plan.selected_projects):
+        raise ValueError("selected workspace projects must be unique")
+    if len(project_ids) != len(set(project_ids)):
+        raise ValueError("workspace release project IDs must be unique")
+    if selected != set(project_ids):
+        raise ValueError("selected_projects and projects must describe the same set")
+    return selected
+
+
+def _validate_plan_dependency_graph(
+    plan: WorkspaceReleasePlan, selected: set[str]
+) -> dict[str, list[str]]:
+    graph: dict[str, list[str]] = {project_id: [] for project_id in selected}
+    for edge in plan.dependency_edges:
+        if edge.dependent_project_id == edge.dependency_project_id:
+            raise ValueError("workspace dependency graph cannot contain self-edges")
+        if {
+            edge.dependent_project_id,
+            edge.dependency_project_id,
+        } - selected:
+            raise ValueError("dependency edge references an unselected project")
+        graph[edge.dependent_project_id].append(edge.dependency_project_id)
+    _assert_acyclic(graph)
+    return graph
+
+
+def _validate_plan_floor_rewrites(
+    plan: WorkspaceReleasePlan, selected: set[str]
+) -> None:
+    for rewrite in plan.floor_rewrites:
+        if {
+            rewrite.project_id,
+            rewrite.dependency_project_id,
+        } - selected:
+            raise ValueError("floor rewrite references an unselected project")
+
+
+def _validate_parallel_group(
+    group: tuple[str, ...],
+    selected: set[str],
+    grouped: set[str],
+    graph: dict[str, list[str]],
+) -> None:
+    if set(group) - selected:
+        raise ValueError("parallel group references an unselected project")
+    if grouped.intersection(group):
+        raise ValueError("parallel groups must not repeat a project")
+    for project_id in group:
+        if any(dependency in group for dependency in graph[project_id]):
+            raise ValueError("parallel group contains dependent projects")
+
+
+def _validate_plan_parallel_groups(
+    plan: WorkspaceReleasePlan,
+    selected: set[str],
+    graph: dict[str, list[str]],
+) -> None:
+    grouped: set[str] = set()
+    for group in plan.parallel_groups:
+        _validate_parallel_group(group, selected, grouped, graph)
+        grouped.update(group)
+
+
+def _validate_plan_consent_and_state(plan: WorkspaceReleasePlan) -> None:
+    if plan.push_job_ids and not plan.consent.allow_push:
+        raise ValueError("workspace push jobs require explicit push consent")
+    if (
+        plan.state in {ReleasePlanState.FROZEN, ReleasePlanState.APPLIED}
+        and plan.frozen_at is None
+    ):
+        raise ValueError("frozen or applied plan requires frozen_at")
+    if plan.state == ReleasePlanState.DRAFT and plan.frozen_at is not None:
+        raise ValueError("draft plan cannot carry frozen_at")
+
+
+def _validate_plan_digest(plan: WorkspaceReleasePlan) -> None:
+    expected_digest = plan.derive_digest(
+        workspace_id=plan.workspace_id,
+        selected_projects=plan.selected_projects,
+        projects=plan.projects,
+        dependency_edges=plan.dependency_edges,
+        floor_rewrites=plan.floor_rewrites,
+        validation_stages=plan.validation_stages,
+        build_job_ids=plan.build_job_ids,
+        push_job_ids=plan.push_job_ids,
+        parallel_groups=plan.parallel_groups,
+        consent=plan.consent,
+    )
+    if plan.plan_digest != expected_digest:
+        raise ValueError("plan_digest does not match the frozen plan contents")
 
 
 def _assert_acyclic(graph: dict[str, list[str]]) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from agent_utilities.mcp.action_dispatch import resolve_action
@@ -11,6 +13,131 @@ from pydantic import Field
 
 from repository_manager.mcp_tools.context import McpToolContext, from_server
 from repository_manager.mcp_tools.contracts import RM_WORKTREE_ACTIONS
+
+
+@dataclass
+class _NoRepoRequest:
+    """Bundled params for the actions that don't require repo+branch."""
+
+    repo: str | None
+    base: str
+    stale_days: int
+    prune_merged: bool
+    branch: str | None
+    repos: str | None
+
+
+@dataclass
+class _RepoBranchRequest:
+    """Bundled params for the actions that require repo+branch."""
+
+    repo: str
+    branch: str
+    base: str
+    into: str
+    adopt: bool
+    force: bool
+    delete_branch: bool
+    strategy: str
+
+
+async def _worktree_list(worktree_manager: Any, req: _NoRepoRequest) -> dict[str, Any]:
+    return await run_blocking(worktree_manager.list_worktrees, repo=req.repo)
+
+
+async def _worktree_prune(worktree_manager: Any, req: _NoRepoRequest) -> dict[str, Any]:
+    return await run_blocking(worktree_manager.prune, repo=req.repo)
+
+
+async def _worktree_audit(worktree_manager: Any, req: _NoRepoRequest) -> dict[str, Any]:
+    return await run_blocking(
+        worktree_manager.audit,
+        repo=req.repo,
+        base=req.base,
+        stale_days=req.stale_days,
+        prune_merged=req.prune_merged,
+    )
+
+
+async def _worktree_bulk_add(
+    worktree_manager: Any, req: _NoRepoRequest
+) -> dict[str, Any]:
+    if req.branch is None:
+        return {"ok": False, "error": "action 'bulk_add' requires 'branch'"}
+    repo_list = [item.strip() for item in req.repos.split(",")] if req.repos else None
+    return await run_blocking(
+        worktree_manager.bulk_add, req.branch, repos=repo_list, base=req.base
+    )
+
+
+_NO_REPO_ACTIONS: dict[
+    str, Callable[[Any, _NoRepoRequest], Awaitable[dict[str, Any]]]
+] = {
+    "list": _worktree_list,
+    "prune": _worktree_prune,
+    "audit": _worktree_audit,
+    "bulk_add": _worktree_bulk_add,
+}
+
+
+async def _worktree_add(
+    worktree_manager: Any, req: _RepoBranchRequest
+) -> dict[str, Any]:
+    return await run_blocking(
+        worktree_manager.add, req.repo, req.branch, base=req.base, adopt=req.adopt
+    )
+
+
+async def _worktree_remove(
+    worktree_manager: Any, req: _RepoBranchRequest
+) -> dict[str, Any]:
+    return await run_blocking(
+        worktree_manager.remove,
+        req.repo,
+        req.branch,
+        force=req.force,
+        delete_branch=req.delete_branch,
+        base=req.base,
+    )
+
+
+async def _worktree_merge(
+    worktree_manager: Any, req: _RepoBranchRequest
+) -> dict[str, Any]:
+    return await run_blocking(
+        worktree_manager.merge, req.repo, req.branch, into=req.into
+    )
+
+
+async def _worktree_reset_branch(
+    worktree_manager: Any, req: _RepoBranchRequest
+) -> dict[str, Any]:
+    return await run_blocking(
+        worktree_manager.reset_branch, req.repo, req.branch, target=req.into
+    )
+
+
+async def _worktree_sync(
+    worktree_manager: Any, req: _RepoBranchRequest
+) -> dict[str, Any]:
+    return await run_blocking(
+        worktree_manager.sync,
+        req.repo,
+        req.branch,
+        base=req.base,
+        strategy=req.strategy,
+    )
+
+
+_REPO_BRANCH_ACTIONS: dict[
+    str, Callable[[Any, _RepoBranchRequest], Awaitable[dict[str, Any]]]
+] = {
+    "add": _worktree_add,
+    "remove": _worktree_remove,
+    "merge": _worktree_merge,
+    "reset_branch": _worktree_reset_branch,
+    "sync": _worktree_sync,
+}
 
 
 def register_worktree_tools(
@@ -93,51 +220,36 @@ def register_worktree_tools(
         if isinstance(resolved, dict):
             return resolved
         action = resolved
-        if action == "list":
-            return await run_blocking(worktree_manager.list_worktrees, repo=repo)
-        if action == "prune":
-            return await run_blocking(worktree_manager.prune, repo=repo)
-        if action == "audit":
-            return await run_blocking(
-                worktree_manager.audit,
+
+        no_repo_handler = _NO_REPO_ACTIONS.get(action)
+        if no_repo_handler is not None:
+            no_repo_req = _NoRepoRequest(
                 repo=repo,
                 base=base,
                 stale_days=stale_days,
                 prune_merged=prune_merged,
+                branch=branch,
+                repos=repos,
             )
-        if action == "bulk_add":
-            if branch is None:
-                return {"ok": False, "error": "action 'bulk_add' requires 'branch'"}
-            repo_list = [item.strip() for item in repos.split(",")] if repos else None
-            return await run_blocking(
-                worktree_manager.bulk_add, branch, repos=repo_list, base=base
-            )
+            return await no_repo_handler(worktree_manager, no_repo_req)
+
         if repo is None or branch is None:
             return {
                 "ok": False,
                 "error": f"action '{action}' requires 'repo' and 'branch'",
             }
-        if action == "add":
-            return await run_blocking(
-                worktree_manager.add, repo, branch, base=base, adopt=adopt
-            )
-        if action == "remove":
-            return await run_blocking(
-                worktree_manager.remove,
-                repo,
-                branch,
-                force=force,
-                delete_branch=delete_branch,
-                base=base,
-            )
-        if action == "merge":
-            return await run_blocking(worktree_manager.merge, repo, branch, into=into)
-        if action == "reset_branch":
-            return await run_blocking(
-                worktree_manager.reset_branch, repo, branch, target=into
-            )
-        if action == "sync":
-            return await run_blocking(
-                worktree_manager.sync, repo, branch, base=base, strategy=strategy
-            )
-        return {"ok": False, "error": f"unknown action: {action}"}
+
+        repo_branch_handler = _REPO_BRANCH_ACTIONS.get(action)
+        if repo_branch_handler is None:
+            return {"ok": False, "error": f"unknown action: {action}"}
+        repo_branch_req = _RepoBranchRequest(
+            repo=repo,
+            branch=branch,
+            base=base,
+            into=into,
+            adopt=adopt,
+            force=force,
+            delete_branch=delete_branch,
+            strategy=strategy,
+        )
+        return await repo_branch_handler(worktree_manager, repo_branch_req)

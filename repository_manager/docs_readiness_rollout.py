@@ -461,9 +461,7 @@ def _validate_manifest_finding_list(
     return normalized
 
 
-def _validate_manifest_findings(
-    data: dict[str, Any], seen: set[str]
-) -> SourceFindings:
+def _validate_manifest_findings(data: dict[str, Any], seen: set[str]) -> SourceFindings:
     """Verbatim relocation of ``load_fleet_manifest``'s source_findings
     shape check and the two ``finding_list`` calls (same left-to-right
     keyword-argument evaluation order as the original); no side effect,
@@ -522,47 +520,77 @@ def load_fleet_manifest(path: Path | None = None) -> FleetManifest:
     )
 
 
+def _resolve_wave_selection(
+    manifest: FleetManifest, selected: Sequence[str] | None
+) -> set[str]:
+    """Verbatim relocation of ``plan_waves``'s selection-set resolution; no
+    side effect, order, or condition changed."""
+
+    allowed = {project.identity for project in manifest.projects}
+    if selected is None:
+        return allowed
+    if not selected:
+        raise RolloutError("selection-empty")
+    selected_tuple = tuple(selected)
+    if len(set(selected_tuple)) != len(selected_tuple):
+        raise RolloutError("selection-duplicate")
+    if any(identity not in allowed for identity in selected_tuple):
+        raise RolloutError("selection-not-in-manifest")
+    return set(selected_tuple)
+
+
+def _wave_projects(
+    manifest: FleetManifest, wave: WaveSpec, selected_set: set[str]
+) -> tuple[ProjectSpec, ...]:
+    """Verbatim relocation of ``plan_waves``'s per-wave project filter; no
+    side effect, order, or condition changed."""
+
+    return tuple(
+        project
+        for project in manifest.projects
+        if project.wave == wave.number and project.identity in selected_set
+    )
+
+
+def _build_wave_plans(
+    manifest: FleetManifest, selected_set: set[str], *, full_selection: bool
+) -> list[WavePlan]:
+    """Verbatim relocation of ``plan_waves``'s per-wave build loop; no side
+    effect, order, or condition changed."""
+
+    plans: list[WavePlan] = []
+    for wave in manifest.waves:
+        projects = _wave_projects(manifest, wave, selected_set)
+        if full_selection and len(projects) != wave.expected_count:
+            raise RolloutError("wave-selection-drift")
+        if projects:
+            plans.append(
+                WavePlan(number=wave.number, name=wave.name, projects=projects)
+            )
+    return plans
+
+
 def plan_waves(
     manifest: FleetManifest,
     selected: Sequence[str] | None = None,
 ) -> tuple[WavePlan, ...]:
     """Return stable wave order; reject unknown, duplicate, or partial selection."""
 
-    allowed = {project.identity for project in manifest.projects}
-    if selected is None:
-        selected_set = allowed
-    else:
-        if not selected:
-            raise RolloutError("selection-empty")
-        selected_tuple = tuple(selected)
-        if len(set(selected_tuple)) != len(selected_tuple):
-            raise RolloutError("selection-duplicate")
-        if any(identity not in allowed for identity in selected_tuple):
-            raise RolloutError("selection-not-in-manifest")
-        selected_set = set(selected_tuple)
-    plans: list[WavePlan] = []
-    for wave in manifest.waves:
-        projects = tuple(
-            project
-            for project in manifest.projects
-            if project.wave == wave.number and project.identity in selected_set
-        )
-        if selected is None and len(projects) != wave.expected_count:
-            raise RolloutError("wave-selection-drift")
-        if projects:
-            plans.append(
-                WavePlan(number=wave.number, name=wave.name, projects=projects)
-            )
+    selected_set = _resolve_wave_selection(manifest, selected)
+    full_selection = selected is None
+    plans = _build_wave_plans(manifest, selected_set, full_selection=full_selection)
     if (
-        selected is None
+        full_selection
         and sum(plan.count for plan in plans) != manifest.expected_publishable_count
     ):
         raise RolloutError("fleet-selection-drift")
     return tuple(plans)
 
 
-def _safe_repository_root(workspace_root: Path, identity: str) -> Path:
-    """Resolve one manifest identity while rejecting symlink/path escapes."""
+def _resolve_workspace_root(workspace_root: Path) -> Path:
+    """Verbatim relocation of ``_safe_repository_root``'s workspace-root
+    resolution and validity check; no side effect, order, or condition
+    changed."""
 
     try:
         workspace_metadata = workspace_root.lstat()
@@ -575,6 +603,13 @@ def _safe_repository_root(workspace_root: Path, identity: str) -> Path:
         or not root.is_dir()
     ):
         raise RolloutError("workspace-root-invalid")
+    return root
+
+
+def _reject_symlinked_segments(root: Path, identity: str) -> Path:
+    """Verbatim relocation of ``_safe_repository_root``'s per-segment
+    symlink walk; no side effect, order, or condition changed."""
+
     candidate = root.joinpath(*PurePosixPath(identity).parts)
     cursor = root
     for part in PurePosixPath(identity).parts:
@@ -584,6 +619,14 @@ def _safe_repository_root(workspace_root: Path, identity: str) -> Path:
                 raise RolloutError("repository-path-symlink")
         except OSError as exc:
             raise RolloutError("repository-path-unavailable") from exc
+    return candidate
+
+
+def _resolve_contained_repository(candidate: Path, root: Path) -> Path:
+    """Verbatim relocation of ``_safe_repository_root``'s containment
+    resolve and final repository-shape check; no side effect, order, or
+    condition changed."""
+
     try:
         resolved = candidate.resolve(strict=True)
         resolved.relative_to(root)
@@ -592,6 +635,14 @@ def _safe_repository_root(workspace_root: Path, identity: str) -> Path:
     if not resolved.is_dir() or not (resolved / ".git").exists():
         raise RolloutError("repository-unavailable")
     return resolved
+
+
+def _safe_repository_root(workspace_root: Path, identity: str) -> Path:
+    """Resolve one manifest identity while rejecting symlink/path escapes."""
+
+    root = _resolve_workspace_root(workspace_root)
+    candidate = _reject_symlinked_segments(root, identity)
+    return _resolve_contained_repository(candidate, root)
 
 
 def _git(repository_root: Path, *args: str) -> str:
@@ -685,40 +736,68 @@ def enforce_repository_guard(
         raise RolloutError("repository-linked-worktrees-present")
 
 
+def _validate_output_shape(raw: object) -> None:
+    """Verbatim relocation of ``_safe_output_names``'s per-item shape
+    check; no side effect, order, or condition changed."""
+
+    if (
+        not isinstance(raw, str)
+        or not raw
+        or len(raw) > MAX_GENERATED_OUTPUT_NAME
+        or "\\" in raw
+    ):
+        raise RolloutError("generator-output-invalid")
+
+
+def _validate_output_path_safety(raw: str) -> str:
+    """Verbatim relocation of ``_safe_output_names``'s per-item path-safety
+    check and normalization; no side effect, order, or condition changed."""
+
+    path = PurePosixPath(raw)
+    if (
+        path.is_absolute()
+        or not path.parts
+        or raw != path.as_posix()
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise RolloutError("generator-output-invalid")
+    return path.as_posix()
+
+
+def _validate_output_name(raw: object) -> str:
+    """Verbatim relocation of ``_safe_output_names``'s per-item validation
+    body, now split across the shape and path-safety checks above; no side
+    effect, order, or condition changed."""
+
+    _validate_output_shape(raw)
+    return _validate_output_path_safety(raw)  # type: ignore[arg-type]
+
+
 def _safe_output_names(value: object) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)) or len(value) > MAX_GENERATED_OUTPUTS:
         raise RolloutError("generator-outputs-invalid")
-    names: list[str] = []
-    for raw in value:
-        if (
-            not isinstance(raw, str)
-            or not raw
-            or len(raw) > MAX_GENERATED_OUTPUT_NAME
-            or "\\" in raw
-        ):
-            raise RolloutError("generator-output-invalid")
-        path = PurePosixPath(raw)
-        if (
-            path.is_absolute()
-            or not path.parts
-            or raw != path.as_posix()
-            or any(part in {"", ".", ".."} for part in path.parts)
-        ):
-            raise RolloutError("generator-output-invalid")
-        names.append(path.as_posix())
+    names = [_validate_output_name(raw) for raw in value]
     if len(set(names)) != len(names):
         raise RolloutError("generator-output-duplicate")
     return tuple(sorted(names))
 
 
-def normalize_generator_result(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Keep only bounded generator evidence and reject raw exceptions/paths."""
+def _reject_generator_failure(value: Mapping[str, Any] | object) -> None:
+    """Verbatim relocation of ``normalize_generator_result``'s failure-path
+    error-code extraction and raise; no side effect, order, or condition
+    changed."""
 
-    if not isinstance(value, Mapping) or value.get("ok") is not True:
-        error = value.get("error_code") if isinstance(value, Mapping) else None
-        if not isinstance(error, str) or not _SAFE_ERROR.fullmatch(error):
-            error = "generator-failed"
-        raise RolloutError(error)
+    error = value.get("error_code") if isinstance(value, Mapping) else None
+    if not isinstance(error, str) or not _SAFE_ERROR.fullmatch(error):
+        error = "generator-failed"
+    raise RolloutError(error)
+
+
+def _validate_generator_evidence(value: Mapping[str, Any]) -> tuple[str, str, str]:
+    """Verbatim relocation of ``normalize_generator_result``'s version/
+    schema/digest extraction and validation; no side effect, order, or
+    condition changed."""
+
     version = value.get("generator_version")
     schema = value.get("schema_version")
     digest = value.get("provenance_digest") or value.get("artifact_digest")
@@ -732,6 +811,15 @@ def normalize_generator_result(value: Mapping[str, Any]) -> dict[str, Any]:
         or not _DIGEST.fullmatch(digest)
     ):
         raise RolloutError("generator-evidence-invalid")
+    return version, schema, digest
+
+
+def normalize_generator_result(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep only bounded generator evidence and reject raw exceptions/paths."""
+
+    if not isinstance(value, Mapping) or value.get("ok") is not True:
+        _reject_generator_failure(value)
+    version, schema, digest = _validate_generator_evidence(value)
     outputs = _safe_output_names(value.get("generated_outputs", ()))
     return {
         "generator_version": version,
@@ -754,33 +842,48 @@ def _normalize_adapter_result(
     return result
 
 
-def _safe_record(value: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate journal shape and strip anything not part of durable evidence."""
+_JOURNAL_RECORD_ALLOWED_KEYS = {
+    "operation_key",
+    "transaction_id",
+    "mode",
+    "state",
+    "identity",
+    "manifest_digest",
+    "source_revision",
+    "source_digest",
+    "generator_revision",
+    "generator_schema",
+    "tck_revision",
+    "tck_schema",
+    "generator_version",
+    "artifact_digest",
+    "generated_outputs",
+    "error_code",
+}
 
-    allowed = {
-        "operation_key",
-        "transaction_id",
-        "mode",
-        "state",
-        "identity",
-        "manifest_digest",
-        "source_revision",
-        "source_digest",
-        "generator_revision",
-        "generator_schema",
-        "tck_revision",
-        "tck_schema",
-        "generator_version",
-        "artifact_digest",
-        "generated_outputs",
-        "error_code",
-    }
-    if not isinstance(value, Mapping) or set(value) - allowed:
+
+def _validate_record_shape(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Verbatim relocation of ``_safe_record``'s allowed-key/type check
+    plus the dict copy; no side effect, order, or condition changed."""
+
+    if not isinstance(value, Mapping) or set(value) - _JOURNAL_RECORD_ALLOWED_KEYS:
         raise RolloutError("journal-record-invalid")
-    record = dict(value)
+    return dict(value)
+
+
+def _validate_record_digests(record: dict[str, Any]) -> None:
+    """Verbatim relocation of ``_safe_record``'s digest-field loop; no side
+    effect, order, or condition changed."""
+
     for key in ("operation_key", "manifest_digest", "source_digest"):
         if not isinstance(record.get(key), str) or not _DIGEST.fullmatch(record[key]):
             raise RolloutError("journal-record-invalid")
+
+
+def _validate_record_transaction_and_mode(record: dict[str, Any]) -> None:
+    """Verbatim relocation of ``_safe_record``'s transaction_id/mode/state/
+    identity checks; no side effect, order, or condition changed."""
+
     if not isinstance(
         record.get("transaction_id"), str
     ) or not _TRANSACTION_ID.fullmatch(record["transaction_id"]):
@@ -798,6 +901,13 @@ def _safe_record(value: Mapping[str, Any]) -> dict[str, Any]:
         record["identity"]
     ):
         raise RolloutError("journal-record-invalid")
+
+
+def _validate_record_revisions(record: dict[str, Any]) -> None:
+    """Verbatim relocation of ``_safe_record``'s source/generator/tck
+    revision and schema checks; no side effect, order, or condition
+    changed."""
+
     if not isinstance(record.get("source_revision"), str) or not _REVISION.fullmatch(
         record["source_revision"]
     ):
@@ -814,25 +924,74 @@ def _safe_record(value: Mapping[str, Any]) -> dict[str, Any]:
         raise RolloutError("journal-record-invalid")
     if record.get("tck_schema") != "pages-readiness-tck/v1":
         raise RolloutError("journal-record-invalid")
-    if "generator_version" in record and (
-        not isinstance(record["generator_version"], str)
-        or not _VERSION.fullmatch(record["generator_version"])
+
+
+def _validate_record_generator_version(record: dict[str, Any]) -> None:
+    """Verbatim relocation of ``_safe_record``'s optional generator_version
+    check, rewritten from ``"k" in record and (bad)`` to an equivalent
+    early-return guard; no side effect, order, or condition changed."""
+
+    if "generator_version" not in record:
+        return
+    if not isinstance(record["generator_version"], str) or not _VERSION.fullmatch(
+        record["generator_version"]
     ):
         raise RolloutError("journal-record-invalid")
-    if "artifact_digest" in record and (
-        not isinstance(record["artifact_digest"], str)
-        or not _DIGEST.fullmatch(record["artifact_digest"])
+
+
+def _validate_record_artifact_digest(record: dict[str, Any]) -> None:
+    """Verbatim relocation of ``_safe_record``'s optional artifact_digest
+    check, rewritten from ``"k" in record and (bad)`` to an equivalent
+    early-return guard; no side effect, order, or condition changed."""
+
+    if "artifact_digest" not in record:
+        return
+    if not isinstance(record["artifact_digest"], str) or not _DIGEST.fullmatch(
+        record["artifact_digest"]
     ):
         raise RolloutError("journal-record-invalid")
-    if "generated_outputs" in record:
-        record["generated_outputs"] = list(
-            _safe_output_names(record["generated_outputs"])
-        )
-    if "error_code" in record and (
-        not isinstance(record["error_code"], str)
-        or not _SAFE_ERROR.fullmatch(record["error_code"])
+
+
+def _validate_record_generated_outputs(record: dict[str, Any]) -> None:
+    """Verbatim relocation of ``_safe_record``'s optional generated_outputs
+    normalization; no side effect, order, or condition changed."""
+
+    if "generated_outputs" not in record:
+        return
+    record["generated_outputs"] = list(_safe_output_names(record["generated_outputs"]))
+
+
+def _validate_record_error_code(record: dict[str, Any]) -> None:
+    """Verbatim relocation of ``_safe_record``'s optional error_code check,
+    rewritten from ``"k" in record and (bad)`` to an equivalent early-return
+    guard; no side effect, order, or condition changed."""
+
+    if "error_code" not in record:
+        return
+    if not isinstance(record["error_code"], str) or not _SAFE_ERROR.fullmatch(
+        record["error_code"]
     ):
         raise RolloutError("journal-record-invalid")
+
+
+def _validate_record_optional_fields(record: dict[str, Any]) -> None:
+    """Thin orchestrator over the four optional-field validators above,
+    called in the same order as the original inline statements."""
+
+    _validate_record_generator_version(record)
+    _validate_record_artifact_digest(record)
+    _validate_record_generated_outputs(record)
+    _validate_record_error_code(record)
+
+
+def _safe_record(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate journal shape and strip anything not part of durable evidence."""
+
+    record = _validate_record_shape(value)
+    _validate_record_digests(record)
+    _validate_record_transaction_and_mode(record)
+    _validate_record_revisions(record)
+    _validate_record_optional_fields(record)
     return record
 
 
@@ -1014,6 +1173,157 @@ def preview_project(
     }
 
 
+@dataclass(frozen=True)
+class _ApplyState:
+    """Bundled immutable context threaded through one ``apply_project``
+    transaction, so the extracted helpers below stay under the 7-parameter
+    cap instead of each re-widening to the same six-argument tuple."""
+
+    manifest: FleetManifest
+    project: ProjectSpec
+    dependencies: RolloutDependencies
+    evidence: RepositoryEvidence
+    journal: TransactionJournal
+    key: str
+    transaction: str
+
+
+def _apply_replay_result(
+    matches: Sequence[Mapping[str, Any]], project: ProjectSpec
+) -> dict[str, Any] | None:
+    """Verbatim relocation of ``apply_project``'s matching-record replay/
+    recovery handling; no side effect, order, or condition changed. Returns
+    ``None`` when the caller should continue past this check (empty
+    ``matches``, matching the original's implicit fall-through)."""
+
+    if not matches:
+        return None
+    latest = matches[-1]
+    if latest.get("state") == "prepared":
+        raise RolloutError("rollout-recovery-required")
+    if latest.get("state") == "rollback_failed":
+        raise RolloutError("rollback-recovery-required")
+    if latest.get("state") in {"applied", "rolled_back"}:
+        return {
+            "ok": True,
+            "status": latest["state"],
+            "identity": project.identity,
+            "replayed": True,
+            "transaction_id": latest["transaction_id"],
+            "artifact_digest": latest.get("artifact_digest"),
+            "generator_version": latest.get("generator_version"),
+            "generated_outputs": latest.get("generated_outputs", []),
+        }
+    return None
+
+
+def _apply_success(
+    adapter: RolloutAdapter, repository_root: Path, state: _ApplyState
+) -> dict[str, Any]:
+    """Verbatim relocation of ``apply_project``'s apply+verify success path
+    (the body of its ``try`` block up to the success ``return``); no side
+    effect, order, or condition changed."""
+
+    applied = _normalize_adapter_result(
+        adapter, adapter.apply(repository_root, state.project)
+    )
+    verified = _normalize_adapter_result(
+        adapter, adapter.verify(repository_root, state.project)
+    )
+    if applied["schema_version"] != verified["schema_version"]:
+        raise RolloutError("generator-schema-mismatch")
+    if applied["provenance_digest"] != verified["provenance_digest"]:
+        raise RolloutError("generator-provenance-mismatch")
+    final = _base_record(
+        operation_key=state.key,
+        transaction_id=state.transaction,
+        mode="apply",
+        state="applied",
+        manifest=state.manifest,
+        evidence=state.evidence,
+        dependencies=state.dependencies,
+    )
+    final.update(
+        {
+            "generator_version": verified["generator_version"],
+            "artifact_digest": verified["provenance_digest"],
+            "generated_outputs": verified["generated_outputs"],
+        }
+    )
+    state.journal.append(final)
+    return {
+        "ok": True,
+        "status": "applied",
+        "identity": state.project.identity,
+        "replayed": False,
+        "transaction_id": state.transaction,
+        "artifact_digest": verified["provenance_digest"],
+        "generated_outputs": verified["generated_outputs"],
+    }
+
+
+def _apply_rollback(
+    adapter: RolloutAdapter,
+    repository_root: Path,
+    state: _ApplyState,
+    error_code: str,
+) -> dict[str, Any]:
+    """Verbatim relocation of ``apply_project``'s post-failure rollback
+    attempt and its two terminal journal/return outcomes; no side effect,
+    order, or condition changed."""
+
+    try:
+        rollback = _normalize_adapter_result(
+            adapter,
+            adapter.rollback(
+                repository_root, state.project, {"operation_key": state.key}
+            ),
+        )
+    except Exception:  # noqa: BLE001 - preserve durable failure state
+        state.journal.append(
+            _base_record(
+                operation_key=state.key,
+                transaction_id=state.transaction,
+                mode="apply",
+                state="rollback_failed",
+                manifest=state.manifest,
+                evidence=state.evidence,
+                dependencies=state.dependencies,
+                error_code="rollback-failed",
+            )
+        )
+        return {
+            "ok": False,
+            "status": "blocked",
+            "identity": state.project.identity,
+            "error_code": "rollback-failed",
+        }
+    rolled_back = _base_record(
+        operation_key=state.key,
+        transaction_id=state.transaction,
+        mode="apply",
+        state="rolled_back",
+        manifest=state.manifest,
+        evidence=state.evidence,
+        dependencies=state.dependencies,
+        error_code=error_code,
+    )
+    rolled_back.update(
+        {
+            "generator_version": rollback["generator_version"],
+            "artifact_digest": rollback["provenance_digest"],
+            "generated_outputs": rollback["generated_outputs"],
+        }
+    )
+    state.journal.append(rolled_back)
+    return {
+        "ok": False,
+        "status": "rolled_back",
+        "identity": state.project.identity,
+        "error_code": error_code,
+    }
+
+
 def apply_project(
     workspace_root: Path,
     manifest: FleetManifest,
@@ -1037,23 +1347,9 @@ def apply_project(
     key = _operation_key(manifest, project, evidence, dependencies)
     records = journal.records()
     matches = _matching_records(records, key)
-    if matches:
-        latest = matches[-1]
-        if latest.get("state") == "prepared":
-            raise RolloutError("rollout-recovery-required")
-        if latest.get("state") == "rollback_failed":
-            raise RolloutError("rollback-recovery-required")
-        if latest.get("state") in {"applied", "rolled_back"}:
-            return {
-                "ok": True,
-                "status": latest["state"],
-                "identity": project.identity,
-                "replayed": True,
-                "transaction_id": latest["transaction_id"],
-                "artifact_digest": latest.get("artifact_digest"),
-                "generator_version": latest.get("generator_version"),
-                "generated_outputs": latest.get("generated_outputs", []),
-            }
+    replay = _apply_replay_result(matches, project)
+    if replay is not None:
+        return replay
     if _active_identity_conflict(records, project.identity, key):
         raise RolloutError("rollout-operation-conflict")
     transaction = transaction_id or key[:24]
@@ -1071,115 +1367,30 @@ def apply_project(
         )
     )
     repository_root = _safe_repository_root(workspace_root, project.identity)
+    state = _ApplyState(
+        manifest=manifest,
+        project=project,
+        dependencies=dependencies,
+        evidence=evidence,
+        journal=journal,
+        key=key,
+        transaction=transaction,
+    )
     try:
-        applied = _normalize_adapter_result(
-            adapter, adapter.apply(repository_root, project)
-        )
-        verified = _normalize_adapter_result(
-            adapter, adapter.verify(repository_root, project)
-        )
-        if applied["schema_version"] != verified["schema_version"]:
-            raise RolloutError("generator-schema-mismatch")
-        if applied["provenance_digest"] != verified["provenance_digest"]:
-            raise RolloutError("generator-provenance-mismatch")
-        final = _base_record(
-            operation_key=key,
-            transaction_id=transaction,
-            mode="apply",
-            state="applied",
-            manifest=manifest,
-            evidence=evidence,
-            dependencies=dependencies,
-        )
-        final.update(
-            {
-                "generator_version": verified["generator_version"],
-                "artifact_digest": verified["provenance_digest"],
-                "generated_outputs": verified["generated_outputs"],
-            }
-        )
-        journal.append(final)
-        return {
-            "ok": True,
-            "status": "applied",
-            "identity": project.identity,
-            "replayed": False,
-            "transaction_id": transaction,
-            "artifact_digest": verified["provenance_digest"],
-            "generated_outputs": verified["generated_outputs"],
-        }
+        return _apply_success(adapter, repository_root, state)
     except RolloutError as exc:
         error_code = str(exc) if _SAFE_ERROR.fullmatch(str(exc)) else "generator-failed"
     except Exception:  # noqa: BLE001 - adapter boundary is fail-closed
         error_code = "generator-failed"
-    try:
-        rollback = _normalize_adapter_result(
-            adapter, adapter.rollback(repository_root, project, {"operation_key": key})
-        )
-    except Exception:  # noqa: BLE001 - preserve durable failure state
-        journal.append(
-            _base_record(
-                operation_key=key,
-                transaction_id=transaction,
-                mode="apply",
-                state="rollback_failed",
-                manifest=manifest,
-                evidence=evidence,
-                dependencies=dependencies,
-                error_code="rollback-failed",
-            )
-        )
-        return {
-            "ok": False,
-            "status": "blocked",
-            "identity": project.identity,
-            "error_code": "rollback-failed",
-        }
-    rolled_back = _base_record(
-        operation_key=key,
-        transaction_id=transaction,
-        mode="apply",
-        state="rolled_back",
-        manifest=manifest,
-        evidence=evidence,
-        dependencies=dependencies,
-        error_code=error_code,
-    )
-    rolled_back.update(
-        {
-            "generator_version": rollback["generator_version"],
-            "artifact_digest": rollback["provenance_digest"],
-            "generated_outputs": rollback["generated_outputs"],
-        }
-    )
-    journal.append(rolled_back)
-    return {
-        "ok": False,
-        "status": "rolled_back",
-        "identity": project.identity,
-        "error_code": error_code,
-    }
+    return _apply_rollback(adapter, repository_root, state, error_code)
 
 
-def rollback_project(
-    workspace_root: Path,
-    manifest: FleetManifest,
-    project: ProjectSpec,
-    dependencies: RolloutDependencies,
-    adapter: RolloutAdapter,
-    journal: TransactionJournal,
-    *,
-    confirm: bool = False,
-) -> dict[str, Any]:
-    """Rollback one committed transaction exactly once."""
+def _rollback_candidates(
+    records: Sequence[Mapping[str, Any]], project: ProjectSpec, key: str
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    """Verbatim relocation of ``rollback_project``'s identity/operation-key
+    candidate filtering; no side effect, order, or condition changed."""
 
-    if not confirm:
-        return {"ok": False, "status": "blocked", "error_code": "confirmation-required"}
-    _adapter_revision_guard(adapter, dependencies)
-    evidence = collect_repository_evidence(workspace_root, project)
-    enforce_repository_guard(evidence)
-    key = _operation_key(manifest, project, evidence, dependencies)
-    records = journal.records()
     identity_candidates = [
         record
         for record in records
@@ -1193,24 +1404,35 @@ def rollback_project(
         and record.get("operation_key") == key
         and record.get("state") in {"applied", "rolled_back"}
     ]
+    return identity_candidates, candidates
+
+
+def _rollback_select_latest(
+    records: Sequence[Mapping[str, Any]], project: ProjectSpec, key: str
+) -> Mapping[str, Any]:
+    """Verbatim relocation of ``rollback_project``'s not-candidates checks
+    and latest-candidate selection; no side effect, order, or condition
+    changed."""
+
+    identity_candidates, candidates = _rollback_candidates(records, project, key)
     if not candidates:
         if identity_candidates:
             raise RolloutError("rollback-source-changed")
         raise RolloutError("rollback-target-not-found")
-    latest = candidates[-1]
-    if latest.get("state") == "rolled_back":
-        return {
-            "ok": True,
-            "status": "rolled_back",
-            "identity": project.identity,
-            "replayed": True,
-        }
-    if (
-        latest.get("source_revision") != evidence.head_revision
-        or latest.get("source_digest") != evidence.source_digest
-    ):
-        raise RolloutError("rollback-source-changed")
-    repository_root = _safe_repository_root(workspace_root, project.identity)
+    return candidates[-1]
+
+
+def _rollback_execute(
+    adapter: RolloutAdapter,
+    repository_root: Path,
+    project: ProjectSpec,
+    latest: Mapping[str, Any],
+    journal: TransactionJournal,
+) -> dict[str, Any]:
+    """Verbatim relocation of ``rollback_project``'s adapter-rollback try/
+    except and terminal journal-append/return steps; no side effect,
+    order, or condition changed."""
+
     try:
         result = _normalize_adapter_result(
             adapter, adapter.rollback(repository_root, project, latest)
@@ -1248,26 +1470,75 @@ def rollback_project(
     }
 
 
+def rollback_project(
+    workspace_root: Path,
+    manifest: FleetManifest,
+    project: ProjectSpec,
+    dependencies: RolloutDependencies,
+    adapter: RolloutAdapter,
+    journal: TransactionJournal,
+    *,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    """Rollback one committed transaction exactly once."""
+
+    if not confirm:
+        return {"ok": False, "status": "blocked", "error_code": "confirmation-required"}
+    _adapter_revision_guard(adapter, dependencies)
+    evidence = collect_repository_evidence(workspace_root, project)
+    enforce_repository_guard(evidence)
+    key = _operation_key(manifest, project, evidence, dependencies)
+    records = journal.records()
+    latest = _rollback_select_latest(records, project, key)
+    if latest.get("state") == "rolled_back":
+        return {
+            "ok": True,
+            "status": "rolled_back",
+            "identity": project.identity,
+            "replayed": True,
+        }
+    if (
+        latest.get("source_revision") != evidence.head_revision
+        or latest.get("source_digest") != evidence.source_digest
+    ):
+        raise RolloutError("rollback-source-changed")
+    repository_root = _safe_repository_root(workspace_root, project.identity)
+    return _rollback_execute(adapter, repository_root, project, latest, journal)
+
+
+def _read_workflow_active_lines(workflow: Path) -> list[str]:
+    """Verbatim relocation of ``_has_pages_workflow``'s per-file bounded
+    read, decode, and comment-stripping steps; no side effect, order, or
+    condition changed."""
+
+    payload = _read_bounded(
+        workflow, maximum=MAX_SOURCE_FILE_BYTES, error="workflow-invalid"
+    )
+    try:
+        text = payload.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise RolloutError("workflow-invalid") from exc
+    return [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+
+
+def _workflow_declares_pages(active_lines: Sequence[str]) -> bool:
+    """Verbatim relocation of ``_has_pages_workflow``'s two pages-signal
+    checks; no side effect, order, or condition changed."""
+
+    if any(re.search(r"^\s+pages:\s*$", line) for line in active_lines):
+        return True
+    return any(
+        "pages_pipeline.yml@" in line and "uses:" in line for line in active_lines
+    )
+
+
 def _has_pages_workflow(repository_root: Path) -> bool:
     workflow_dir = repository_root / ".github" / "workflows"
     if not workflow_dir.is_dir() or workflow_dir.is_symlink():
         return False
     for workflow in sorted(workflow_dir.glob("*.y*ml")):
-        payload = _read_bounded(
-            workflow, maximum=MAX_SOURCE_FILE_BYTES, error="workflow-invalid"
-        )
-        try:
-            text = payload.decode("utf-8", errors="strict")
-        except UnicodeDecodeError as exc:
-            raise RolloutError("workflow-invalid") from exc
-        active_lines = [
-            line for line in text.splitlines() if not line.lstrip().startswith("#")
-        ]
-        if any(re.search(r"^\s+pages:\s*$", line) for line in active_lines):
-            return True
-        if any(
-            "pages_pipeline.yml@" in line and "uses:" in line for line in active_lines
-        ):
+        active_lines = _read_workflow_active_lines(workflow)
+        if _workflow_declares_pages(active_lines):
             return True
     return False
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import subprocess  # nosec B404 - fixed-argv git/gate execution is this module's job
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -146,6 +147,43 @@ def _run_gate(
     return result.returncode == 0, _detail(result)
 
 
+@dataclass
+class _AbortDetail:
+    """Fields ``_result`` needs to render one ``_CommitAbort`` as a response.
+
+    Most phases leave ``gate_deferred``/``nothing_left_unstaged`` at
+    ``_result``'s own default of ``False`` rather than the caller's actual
+    ``defer_gate``, mirroring the module's original inline returns verbatim.
+    """
+
+    status: str = "error"
+    staged_paths: list[str] = field(default_factory=list)
+    gate_stage: str = "none"
+    gate_invoked: bool = False
+    gate_deferred: bool = False
+    nothing_left_unstaged: bool = False
+
+
+class _CommitAbort(Exception):
+    """Internal control-flow signal: one phase of ``_safe_commit_run`` failed."""
+
+    def __init__(self, error: str, detail: _AbortDetail | None = None) -> None:
+        super().__init__(error)
+        self.error = error
+        self.detail = detail if detail is not None else _AbortDetail()
+
+
+@dataclass
+class _CommitConfig:
+    """Bundled per-call parameters threaded through the commit phases."""
+
+    allow_empty: bool = False
+    gate: Sequence[str] | Callable[[Path], Any] | None = None
+    defer_gate: bool = False
+    command_env: dict[str, str] = field(default_factory=dict)
+    timeout: int = 1800
+
+
 def _safe_commit_locked(
     path: Path | str,
     message: str,
@@ -191,67 +229,85 @@ def _safe_commit_locked(
     command_env = os.environ.copy()
     if env is not None:
         command_env.update(env)
-    if not tree.is_dir():
+    config = _CommitConfig(
+        allow_empty=allow_empty,
+        gate=gate,
+        defer_gate=defer_gate,
+        command_env=command_env,
+        timeout=timeout,
+    )
+    try:
+        return _safe_commit_run(tree, lane, message, config)
+    except _CommitAbort as exc:
+        d = exc.detail
         return _result(
             path=tree,
             lane=lane,
-            status="error",
-            staged_paths=[],
-            gate_stage="none",
-            gate_invoked=False,
-            error=f"repository path does not exist: {tree}",
+            status=d.status,
+            staged_paths=d.staged_paths,
+            gate_stage=d.gate_stage,
+            gate_invoked=d.gate_invoked,
+            gate_deferred=d.gate_deferred,
+            nothing_left_unstaged=d.nothing_left_unstaged,
+            error=exc.error,
         )
 
+
+def _check_tree_exists(tree: Path) -> None:
+    if not tree.is_dir():
+        raise _CommitAbort(f"repository path does not exist: {tree}")
+
+
+def _initial_status_or_skip(tree: Path, config: _CommitConfig) -> None:
+    """Raise ``skipped`` when the tree is clean, ``error`` when status fails."""
     initial = _run(
-        ["git", "status", "--porcelain", "-z"], tree, env=command_env, timeout=timeout
+        ["git", "status", "--porcelain", "-z"],
+        tree,
+        env=config.command_env,
+        timeout=config.timeout,
     )
     if initial.returncode != 0:
-        return _result(
-            path=tree,
-            lane=lane,
-            status="error",
-            staged_paths=[],
-            gate_stage="none",
-            gate_invoked=False,
-            error=_detail(initial) or "git status failed",
-        )
-    if not initial.stdout and not allow_empty:
-        return _result(
-            path=tree,
-            lane=lane,
-            status="skipped",
-            staged_paths=[],
-            gate_stage="none",
-            gate_invoked=False,
-            nothing_left_unstaged=True,
-            error="no changes to commit",
+        raise _CommitAbort(_detail(initial) or "git status failed")
+    if not initial.stdout and not config.allow_empty:
+        raise _CommitAbort(
+            "no changes to commit",
+            _AbortDetail(status="skipped", nothing_left_unstaged=True),
         )
 
-    staged = _run(["git", "add", "-A"], tree, env=command_env, timeout=timeout)
+
+def _stage_all(tree: Path, config: _CommitConfig) -> None:
+    staged = _run(
+        ["git", "add", "-A"], tree, env=config.command_env, timeout=config.timeout
+    )
     if staged.returncode != 0:
-        return _result(
-            path=tree,
-            lane=lane,
-            status="error",
-            staged_paths=[],
-            gate_stage="none",
-            gate_invoked=False,
-            error=_detail(staged) or "git add -A failed",
-        )
+        raise _CommitAbort(_detail(staged) or "git add -A failed")
 
-    staged_paths = _staged_paths(tree)
+
+def _verify_nothing_unstaged(
+    tree: Path,
+    staged_paths: list[str],
+    *,
+    gate_stage: str,
+    gate_invoked: bool,
+    prefix: str,
+) -> None:
     unstaged = _unstaged_paths(tree)
     if unstaged:
-        return _result(
-            path=tree,
-            lane=lane,
-            status="error",
-            staged_paths=staged_paths,
-            gate_stage="none",
-            gate_invoked=False,
-            error="git add -A left content unstaged: " + ", ".join(unstaged[:20]),
+        raise _CommitAbort(
+            f"{prefix}: " + ", ".join(unstaged[:20]),
+            _AbortDetail(
+                staged_paths=staged_paths,
+                gate_stage=gate_stage,
+                gate_invoked=gate_invoked,
+            ),
         )
 
+
+def _resolve_gate(
+    tree: Path,
+    gate: Sequence[str] | Callable[[Path], Any] | None,
+    defer_gate: bool,
+) -> tuple[str, Sequence[str] | Callable[[Path], Any] | None]:
     gate_stage = "deferred" if defer_gate else "none"
     configured_gate: Sequence[str] | Callable[[Path], Any] | None = (
         None if defer_gate else gate
@@ -265,72 +321,90 @@ def _safe_commit_locked(
         gate_stage = "pre-commit"
     elif configured_gate is not None:
         gate_stage = "configured"
+    return gate_stage, configured_gate
 
-    if configured_gate is not None:
-        passed, detail = _run_gate(
-            configured_gate, tree, env=command_env, timeout=timeout
-        )
-        if not passed:
-            return _result(
-                path=tree,
-                lane=lane,
-                status="error",
+
+def _run_configured_gate(
+    configured_gate: Sequence[str] | Callable[[Path], Any],
+    tree: Path,
+    config: _CommitConfig,
+    staged_paths: list[str],
+    gate_stage: str,
+) -> None:
+    passed, detail = _run_gate(
+        configured_gate, tree, env=config.command_env, timeout=config.timeout
+    )
+    if not passed:
+        raise _CommitAbort(
+            detail or "configured gate failed",
+            _AbortDetail(
                 staged_paths=staged_paths,
                 gate_stage=gate_stage,
                 gate_invoked=True,
                 nothing_left_unstaged=True,
-                error=detail or "configured gate failed",
-            )
-        # A formatter may have changed files during the gate.  Fold that
-        # output into the same snapshot and prove the invariant again.
-        restaged = _run(["git", "add", "-A"], tree, env=command_env, timeout=timeout)
-        if restaged.returncode != 0:
-            return _result(
-                path=tree,
-                lane=lane,
-                status="error",
+            ),
+        )
+
+
+def _stage_all_after_gate(
+    tree: Path,
+    config: _CommitConfig,
+    staged_paths: list[str],
+    gate_stage: str,
+) -> None:
+    # A formatter may have changed files during the gate.  Fold that output
+    # into the same snapshot and prove the invariant again.
+    restaged = _run(
+        ["git", "add", "-A"], tree, env=config.command_env, timeout=config.timeout
+    )
+    if restaged.returncode != 0:
+        raise _CommitAbort(
+            _detail(restaged) or "git add -A after gate failed",
+            _AbortDetail(
                 staged_paths=staged_paths,
                 gate_stage=gate_stage,
                 gate_invoked=True,
                 nothing_left_unstaged=False,
-                error=_detail(restaged) or "git add -A after gate failed",
-            )
-        staged_paths = _staged_paths(tree)
-        unstaged = _unstaged_paths(tree)
-        if unstaged:
-            return _result(
-                path=tree,
-                lane=lane,
-                status="error",
-                staged_paths=staged_paths,
-                gate_stage=gate_stage,
-                gate_invoked=True,
-                error="gate left content unstaged: " + ", ".join(unstaged[:20]),
-            )
+            ),
+        )
 
+
+def _commit(
+    tree: Path,
+    message: str,
+    config: _CommitConfig,
+    staged_paths: list[str],
+    gate_stage: str,
+    gate_invoked: bool,
+) -> str | None:
     commit_argv = ["git", "commit"]
-    if defer_gate:
+    if config.defer_gate:
         commit_argv.append("--no-verify")
-    if allow_empty:
+    if config.allow_empty:
         commit_argv.append("--allow-empty")
     commit_argv.extend(["-m", message])
-    committed = _run(commit_argv, tree, env=command_env, timeout=timeout)
+    committed = _run(commit_argv, tree, env=config.command_env, timeout=config.timeout)
     if committed.returncode != 0:
-        return _result(
-            path=tree,
-            lane=lane,
-            status="error",
-            staged_paths=staged_paths,
-            gate_stage=gate_stage,
-            gate_invoked=configured_gate is not None,
-            gate_deferred=defer_gate,
-            nothing_left_unstaged=True,
-            error=_detail(committed) or "git commit failed",
+        raise _CommitAbort(
+            _detail(committed) or "git commit failed",
+            _AbortDetail(
+                staged_paths=staged_paths,
+                gate_stage=gate_stage,
+                gate_invoked=gate_invoked,
+                gate_deferred=config.defer_gate,
+                nothing_left_unstaged=True,
+            ),
         )
     sha_result = _run(
-        ["git", "rev-parse", "HEAD"], tree, env=command_env, timeout=timeout
+        ["git", "rev-parse", "HEAD"],
+        tree,
+        env=config.command_env,
+        timeout=config.timeout,
     )
-    sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
+    return sha_result.stdout.strip() if sha_result.returncode == 0 else None
+
+
+def _record_baseline(tree: Path) -> tuple[dict[str, Any], bool, str | None]:
     try:
         baseline = tree_repair.record_baseline(tree)
     except Exception as exc:  # pragma: no cover - defensive persistence seam
@@ -350,14 +424,49 @@ def _safe_commit_locked(
             or "baseline persistence was not confirmed"
         )
     )
+    return baseline, baseline_recorded, baseline_error
+
+
+def _safe_commit_run(
+    tree: Path, lane: str, message: str, config: _CommitConfig
+) -> dict[str, Any]:
+    """Run every ``_safe_commit_locked`` phase; raises ``_CommitAbort`` on error."""
+    _check_tree_exists(tree)
+    _initial_status_or_skip(tree, config)
+    _stage_all(tree, config)
+    staged_paths = _staged_paths(tree)
+    _verify_nothing_unstaged(
+        tree,
+        staged_paths,
+        gate_stage="none",
+        gate_invoked=False,
+        prefix="git add -A left content unstaged",
+    )
+
+    gate_stage, configured_gate = _resolve_gate(tree, config.gate, config.defer_gate)
+    if configured_gate is not None:
+        _run_configured_gate(configured_gate, tree, config, staged_paths, gate_stage)
+        _stage_all_after_gate(tree, config, staged_paths, gate_stage)
+        staged_paths = _staged_paths(tree)
+        _verify_nothing_unstaged(
+            tree,
+            staged_paths,
+            gate_stage=gate_stage,
+            gate_invoked=True,
+            prefix="gate left content unstaged",
+        )
+
+    gate_invoked = configured_gate is not None
+    sha = _commit(tree, message, config, staged_paths, gate_stage, gate_invoked)
+    baseline, baseline_recorded, baseline_error = _record_baseline(tree)
     return _result(
         path=tree,
         lane=lane,
         status="success",
         staged_paths=staged_paths,
         gate_stage=gate_stage,
-        gate_invoked=configured_gate is not None,
-        gate_deferred=defer_gate,
+        gate_invoked=gate_invoked,
+        gate_deferred=config.defer_gate,
         commit_sha=sha,
         nothing_left_unstaged=True,
         baseline=baseline,

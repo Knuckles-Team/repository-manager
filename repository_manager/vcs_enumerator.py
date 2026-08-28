@@ -25,6 +25,7 @@ under ``~/workspace/reports/``.
 import json
 import os
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,126 @@ def _github_ref(r: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _ensure_client(
+    client: Any, tls_profile: ResolvedTLSProfile | None, service: str
+) -> tuple[Any, bool, bool, ResolvedTLSProfile | None]:
+    """Build (or pass through) the injected httpx-style client + TLS profile.
+
+    Returns ``(client, owns_client, owns_profile, tls_profile)``. ``client`` is
+    ``None`` only when a live client was needed but ``httpx`` isn't installed —
+    callers must check for that and return early without entering a try/finally.
+    """
+    owns_client = client is None
+    owns_profile = tls_profile is None
+    if owns_client:
+        if not _HTTPX:
+            return None, owns_client, owns_profile, tls_profile
+        tls_profile = tls_profile or resolve_configured_tls_profile(service)
+        client = httpx.Client(timeout=30.0, **tls_profile.httpx_kwargs())
+    return client, owns_client, owns_profile, tls_profile
+
+
+def _cleanup_client(
+    client: Any,
+    owns_client: bool,
+    owns_profile: bool,
+    tls_profile: ResolvedTLSProfile | None,
+) -> None:
+    if owns_client:
+        client.close()
+    if owns_profile and tls_profile is not None:
+        tls_profile.cleanup()
+
+
+@dataclass
+class _GitlabEnumOptions:
+    groups: Sequence[str | int] | None
+    include_subgroups: bool
+    archived: bool
+    updated_after: str | None
+    max_repos: int | None
+
+
+def _gitlab_targets(base: str, groups: Sequence[str | int] | None) -> list[str]:
+    if groups:
+        return [f"{base.rstrip('/')}/api/v4/groups/{g}/projects" for g in groups]
+    return [f"{base.rstrip('/')}/api/v4/projects"]
+
+
+def _gitlab_page_params(id_after: int, opts: _GitlabEnumOptions) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "pagination": "keyset",
+        "per_page": 100,
+        "order_by": "id",
+        "sort": "asc",
+        "id_after": id_after,
+        "simple": "true",
+        "archived": str(opts.archived).lower(),
+    }
+    if opts.groups:
+        params["include_subgroups"] = str(opts.include_subgroups).lower()
+    else:
+        params["membership"] = "true"
+    if opts.updated_after:
+        params["last_activity_after"] = opts.updated_after
+    return params
+
+
+def _gitlab_accumulate_batch(
+    batch: list[dict[str, Any]], opts: _GitlabEnumOptions, out: list[dict[str, Any]]
+) -> bool:
+    """Normalize+filter one page of GitLab projects into ``out``.
+
+    Returns True once ``max_repos`` is hit.
+    """
+    for p in batch:
+        ref = _gitlab_ref(p)
+        if ref["archived"] and not opts.archived:
+            continue
+        out.append(ref)
+        if opts.max_repos is not None and len(out) >= opts.max_repos:
+            return True
+    return False
+
+
+def _gitlab_enumerate_one(
+    client: Any,
+    headers: dict[str, str],
+    url: str,
+    opts: _GitlabEnumOptions,
+    out: list[dict[str, Any]],
+) -> bool:
+    """Paginate one GitLab target URL, appending refs to ``out``.
+
+    Returns True once ``max_repos`` is hit (signal to stop enumerating further
+    targets entirely, matching the original single-function early return).
+    """
+    id_after = 0
+    while True:
+        params = _gitlab_page_params(id_after, opts)
+        resp = client.get(url, headers=headers, params=params)
+        if getattr(resp, "status_code", 0) != 200:
+            return False
+        batch = resp.json()
+        if not isinstance(batch, list) or not batch:
+            return False
+        if _gitlab_accumulate_batch(batch, opts, out):
+            return True
+        id_after = max(int(p.get("id", 0)) for p in batch)
+        if len(batch) < 100:
+            return False
+
+
+def _gitlab_enumerate_targets(
+    client: Any, headers: dict[str, str], targets: list[str], opts: _GitlabEnumOptions
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for url in targets:
+        if _gitlab_enumerate_one(client, headers, url, opts, out):
+            break
+    return out
+
+
 def enumerate_gitlab(
     base_url: str | None = None,
     token: str | None = None,
@@ -111,60 +232,104 @@ def enumerate_gitlab(
     base, tok = _gitlab_creds(base_url, token)
     if not base:
         return []
-    owns_client = client is None
-    owns_profile = tls_profile is None
-    if owns_client:
-        if not _HTTPX:
-            return []
-        tls_profile = tls_profile or resolve_configured_tls_profile("gitlab")
-        client = httpx.Client(timeout=30.0, **tls_profile.httpx_kwargs())
-    headers = {"PRIVATE-TOKEN": tok} if tok else {}
-    targets: list[str] = (
-        [f"{base.rstrip('/')}/api/v4/groups/{g}/projects" for g in groups]
-        if groups
-        else [f"{base.rstrip('/')}/api/v4/projects"]
+    client, owns_client, owns_profile, tls_profile = _ensure_client(
+        client, tls_profile, "gitlab"
     )
-    out: list[dict[str, Any]] = []
+    if client is None:
+        return []
+    headers = {"PRIVATE-TOKEN": tok} if tok else {}
+    targets = _gitlab_targets(base, groups)
+    opts = _GitlabEnumOptions(
+        groups, include_subgroups, archived, updated_after, max_repos
+    )
     try:
-        for url in targets:
-            id_after = 0
-            while True:
-                params: dict[str, Any] = {
-                    "pagination": "keyset",
-                    "per_page": 100,
-                    "order_by": "id",
-                    "sort": "asc",
-                    "id_after": id_after,
-                    "simple": "true",
-                    "archived": str(archived).lower(),
-                }
-                if groups:
-                    params["include_subgroups"] = str(include_subgroups).lower()
-                else:
-                    params["membership"] = "true"
-                if updated_after:
-                    params["last_activity_after"] = updated_after
-                resp = client.get(url, headers=headers, params=params)
-                if getattr(resp, "status_code", 0) != 200:
-                    break
-                batch = resp.json()
-                if not isinstance(batch, list) or not batch:
-                    break
-                for p in batch:
-                    ref = _gitlab_ref(p)
-                    if ref["archived"] and not archived:
-                        continue
-                    out.append(ref)
-                    if max_repos is not None and len(out) >= max_repos:
-                        return out
-                id_after = max(int(p.get("id", 0)) for p in batch)
-                if len(batch) < 100:
-                    break
+        out = _gitlab_enumerate_targets(client, headers, targets, opts)
     finally:
-        if owns_client:
-            client.close()
-        if owns_profile and tls_profile is not None:
-            tls_profile.cleanup()
+        _cleanup_client(client, owns_client, owns_profile, tls_profile)
+    return out
+
+
+@dataclass
+class _GithubEnumOptions:
+    user: bool
+    archived: bool
+    max_repos: int | None
+
+
+def _github_headers(tok: str | None) -> dict[str, str]:
+    headers = {"Accept": "application/vnd.github+json"}
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    return headers
+
+
+def _github_targets(orgs: list[str] | None) -> list[str]:
+    if orgs:
+        return [f"https://api.github.com/orgs/{o}/repos" for o in orgs]
+    return ["https://api.github.com/user/repos"]
+
+
+def _github_page_params(
+    page: int, url: str, opts: _GithubEnumOptions
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"per_page": 100, "page": page}
+    if opts.user and "user/repos" in url:
+        params["affiliation"] = "owner,collaborator,organization_member"
+    return params
+
+
+def _github_accumulate_batch(
+    batch: list[dict[str, Any]], opts: _GithubEnumOptions, out: list[dict[str, Any]]
+) -> bool:
+    """Normalize+filter one page of GitHub repos into ``out``.
+
+    Returns True once ``max_repos`` is hit.
+    """
+    for r in batch:
+        ref = _github_ref(r)
+        if ref["archived"] and not opts.archived:
+            continue
+        out.append(ref)
+        if opts.max_repos is not None and len(out) >= opts.max_repos:
+            return True
+    return False
+
+
+def _github_enumerate_one(
+    client: Any,
+    headers: dict[str, str],
+    url: str,
+    opts: _GithubEnumOptions,
+    out: list[dict[str, Any]],
+) -> bool:
+    """Paginate one GitHub target URL, appending refs to ``out``.
+
+    Returns True once ``max_repos`` is hit (signal to stop enumerating further
+    targets entirely, matching the original single-function early return).
+    """
+    page = 1
+    while True:
+        params = _github_page_params(page, url, opts)
+        resp = client.get(url, headers=headers, params=params)
+        if getattr(resp, "status_code", 0) != 200:
+            return False
+        batch = resp.json()
+        if not isinstance(batch, list) or not batch:
+            return False
+        if _github_accumulate_batch(batch, opts, out):
+            return True
+        if len(batch) < 100:
+            return False
+        page += 1
+
+
+def _github_enumerate_targets(
+    client: Any, headers: dict[str, str], targets: list[str], opts: _GithubEnumOptions
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for url in targets:
+        if _github_enumerate_one(client, headers, url, opts, out):
+            break
     return out
 
 
@@ -180,50 +345,18 @@ def enumerate_github(
 ) -> list[dict[str, Any]]:
     """Enumerate GitHub repos per org (or the authenticated user) via pagination."""
     tok = _github_token(token)
-    owns_client = client is None
-    owns_profile = tls_profile is None
-    if owns_client:
-        if not _HTTPX:
-            return []
-        tls_profile = tls_profile or resolve_configured_tls_profile("github")
-        client = httpx.Client(timeout=30.0, **tls_profile.httpx_kwargs())
-    headers = {"Accept": "application/vnd.github+json"}
-    if tok:
-        headers["Authorization"] = f"Bearer {tok}"
-    targets = (
-        [f"https://api.github.com/orgs/{o}/repos" for o in orgs]
-        if orgs
-        else ["https://api.github.com/user/repos"]
+    client, owns_client, owns_profile, tls_profile = _ensure_client(
+        client, tls_profile, "github"
     )
-    out: list[dict[str, Any]] = []
+    if client is None:
+        return []
+    headers = _github_headers(tok)
+    targets = _github_targets(orgs)
+    opts = _GithubEnumOptions(user, archived, max_repos)
     try:
-        for url in targets:
-            page = 1
-            while True:
-                params: dict[str, Any] = {"per_page": 100, "page": page}
-                if user and "user/repos" in url:
-                    params["affiliation"] = "owner,collaborator,organization_member"
-                resp = client.get(url, headers=headers, params=params)
-                if getattr(resp, "status_code", 0) != 200:
-                    break
-                batch = resp.json()
-                if not isinstance(batch, list) or not batch:
-                    break
-                for r in batch:
-                    ref = _github_ref(r)
-                    if ref["archived"] and not archived:
-                        continue
-                    out.append(ref)
-                    if max_repos is not None and len(out) >= max_repos:
-                        return out
-                if len(batch) < 100:
-                    break
-                page += 1
+        out = _github_enumerate_targets(client, headers, targets, opts)
     finally:
-        if owns_client:
-            client.close()
-        if owns_profile and tls_profile is not None:
-            tls_profile.cleanup()
+        _cleanup_client(client, owns_client, owns_profile, tls_profile)
     return out
 
 

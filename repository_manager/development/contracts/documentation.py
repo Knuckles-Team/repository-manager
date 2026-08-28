@@ -298,6 +298,31 @@ def assess_materiality(
     """Classify a change using only normalized paths and explicit signals."""
 
     normalized_paths = tuple(sorted({_normalize_path(path) for path in paths}))
+    overrides = _resolve_boundary_overrides(normalized_paths, boundary_overrides)
+    boundaries = _classify_boundaries(normalized_paths, overrides)
+    contract = documentation_standard_contract()
+    high_patterns, medium_patterns = _materiality_patterns(contract)
+    explicit_triggers = _explicit_materiality_triggers(
+        public_surface=public_surface,
+        security_or_governance=security_or_governance,
+        runtime_contract=runtime_contract,
+    )
+    level, triggers = _determine_materiality_level(
+        normalized_paths, explicit_triggers, high_patterns, medium_patterns
+    )
+    return MaterialityAssessment(
+        level=level,
+        paths=normalized_paths,
+        boundaries=boundaries,
+        triggers=tuple(sorted(set(triggers))),
+        requires_impact_decisions=level is Materiality.HIGH,
+    )
+
+
+def _resolve_boundary_overrides(
+    normalized_paths: tuple[str, ...],
+    boundary_overrides: Mapping[str, DocumentationBoundary | str] | None,
+) -> dict[str, DocumentationBoundary | str]:
     overrides = {
         _normalize_path(path): value
         for path, value in (boundary_overrides or {}).items()
@@ -308,53 +333,69 @@ def assess_materiality(
             "boundary override is outside the changed paths: "
             + ", ".join(sorted(unknown_overrides))
         )
-    boundaries = tuple(
-        (
-            path,
-            classify_boundary(path, override=overrides.get(path)),
-        )
+    return overrides
+
+
+def _classify_boundaries(
+    normalized_paths: tuple[str, ...],
+    overrides: Mapping[str, DocumentationBoundary | str],
+) -> tuple[tuple[str, DocumentationBoundary], ...]:
+    return tuple(
+        (path, classify_boundary(path, override=overrides.get(path)))
         for path in normalized_paths
     )
-    contract = documentation_standard_contract()
+
+
+def _materiality_patterns(
+    contract: Mapping[str, object],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     materiality = contract["materiality"]
     if not isinstance(materiality, dict):
         raise DocumentationContractError("materiality contract must be an object")
     high_patterns = _string_list(materiality.get("high_path_patterns"))
     medium_patterns = _string_list(materiality.get("medium_path_patterns"))
-    triggers: list[str] = []
+    return high_patterns, medium_patterns
+
+
+def _explicit_materiality_triggers(
+    *,
+    public_surface: bool,
+    security_or_governance: bool,
+    runtime_contract: bool,
+) -> list[str]:
     explicit_signals = (
         ("public_surface", public_surface),
         ("security_or_governance", security_or_governance),
         ("runtime_contract", runtime_contract),
     )
-    triggers.extend(f"explicit:{name}" for name, enabled in explicit_signals if enabled)
-    triggers.extend(
+    return [f"explicit:{name}" for name, enabled in explicit_signals if enabled]
+
+
+def _matching_path_triggers(
+    paths: tuple[str, ...], patterns: tuple[str, ...]
+) -> list[str]:
+    return [
         f"path:{path}"
-        for path in normalized_paths
-        if any(_matches(path, pattern) for pattern in high_patterns)
-    )
+        for path in paths
+        if any(_matches(path, pattern) for pattern in patterns)
+    ]
+
+
+def _determine_materiality_level(
+    normalized_paths: tuple[str, ...],
+    explicit_triggers: list[str],
+    high_patterns: tuple[str, ...],
+    medium_patterns: tuple[str, ...],
+) -> tuple[Materiality, list[str]]:
+    triggers = list(explicit_triggers)
+    triggers.extend(_matching_path_triggers(normalized_paths, high_patterns))
     if triggers:
-        level = Materiality.HIGH
-    elif any(
-        _matches(path, pattern)
-        for path in normalized_paths
-        for pattern in medium_patterns
-    ):
-        level = Materiality.MEDIUM
-        triggers.extend(
-            f"path:{path}"
-            for path in normalized_paths
-            if any(_matches(path, pattern) for pattern in medium_patterns)
-        )
-    else:
-        level = Materiality.LOW
-    return MaterialityAssessment(
-        level=level,
-        paths=normalized_paths,
-        boundaries=boundaries,
-        triggers=tuple(sorted(set(triggers))),
-        requires_impact_decisions=level is Materiality.HIGH,
-    )
+        return Materiality.HIGH, triggers
+    medium_triggers = _matching_path_triggers(normalized_paths, medium_patterns)
+    if medium_triggers:
+        triggers.extend(medium_triggers)
+        return Materiality.MEDIUM, triggers
+    return Materiality.LOW, triggers
 
 
 def reconcile_findings(
@@ -366,12 +407,37 @@ def reconcile_findings(
     """Merge one review into its prior projection without duplicate rows."""
 
     revision = _non_blank(review_revision, "review_revision")
+    prior_by_id = _dedupe_prior_findings(previous)
+    current_by_id = _dedupe_current_candidates(current)
+
+    reconciled: list[DocumentationFinding] = []
+    for finding_id in sorted(set(prior_by_id) | set(current_by_id)):
+        candidate = current_by_id.get(finding_id)
+        prior = prior_by_id.get(finding_id)
+        if candidate is not None:
+            reconciled.append(
+                _merge_candidate_finding(finding_id, candidate, prior, revision)
+            )
+        elif prior is not None:
+            reconciled.append(_carry_forward_finding(prior, revision))
+    return tuple(reconciled)
+
+
+def _dedupe_prior_findings(
+    previous: Iterable[DocumentationFinding],
+) -> dict[str, DocumentationFinding]:
     prior_by_id: dict[str, DocumentationFinding] = {}
     for finding in previous:
         _validate_finding(finding)
         existing = prior_by_id.get(finding.finding_id)
         if existing is None or _finding_sort_key(finding) < _finding_sort_key(existing):
             prior_by_id[finding.finding_id] = finding
+    return prior_by_id
+
+
+def _dedupe_current_candidates(
+    current: Iterable[FindingCandidate],
+) -> dict[str, FindingCandidate]:
     current_by_id: dict[str, FindingCandidate] = {}
     for incoming in current:
         _validate_candidate(incoming)
@@ -381,44 +447,49 @@ def reconcile_findings(
             incoming
         ) < _candidate_sort_key(existing_candidate):
             current_by_id[finding_id] = incoming
+    return current_by_id
 
-    reconciled: list[DocumentationFinding] = []
-    for finding_id in sorted(set(prior_by_id) | set(current_by_id)):
-        candidate = current_by_id.get(finding_id)
-        prior = prior_by_id.get(finding_id)
-        if candidate is not None:
-            lifecycle = (
-                FindingLifecycle.OPEN
-                if prior is not None and prior.lifecycle is FindingLifecycle.RESOLVED
-                else prior.lifecycle
-                if prior is not None
-                else FindingLifecycle.OPEN
-            )
-            reconciled.append(
-                DocumentationFinding(
-                    finding_id=finding_id,
-                    rule=candidate.rule,
-                    path=candidate.path,
-                    subject=candidate.subject,
-                    message=candidate.message,
-                    lifecycle=lifecycle,
-                    first_seen_revision=(
-                        prior.first_seen_revision if prior is not None else revision
-                    ),
-                    last_seen_revision=revision,
-                    occurrences=(prior.occurrences + 1 if prior is not None else 1),
-                )
-            )
-        elif prior is not None:
-            lifecycle = (
-                FindingLifecycle.RESOLVED
-                if prior.lifecycle is FindingLifecycle.OPEN
-                else prior.lifecycle
-            )
-            reconciled.append(
-                replace(prior, lifecycle=lifecycle, last_seen_revision=revision)
-            )
-    return tuple(reconciled)
+
+def _reconciled_lifecycle_for_candidate(
+    prior: DocumentationFinding | None,
+) -> FindingLifecycle:
+    if prior is None:
+        return FindingLifecycle.OPEN
+    if prior.lifecycle is FindingLifecycle.RESOLVED:
+        return FindingLifecycle.OPEN
+    return prior.lifecycle
+
+
+def _merge_candidate_finding(
+    finding_id: str,
+    candidate: FindingCandidate,
+    prior: DocumentationFinding | None,
+    revision: str,
+) -> DocumentationFinding:
+    return DocumentationFinding(
+        finding_id=finding_id,
+        rule=candidate.rule,
+        path=candidate.path,
+        subject=candidate.subject,
+        message=candidate.message,
+        lifecycle=_reconciled_lifecycle_for_candidate(prior),
+        first_seen_revision=(
+            prior.first_seen_revision if prior is not None else revision
+        ),
+        last_seen_revision=revision,
+        occurrences=(prior.occurrences + 1 if prior is not None else 1),
+    )
+
+
+def _carry_forward_finding(
+    prior: DocumentationFinding, revision: str
+) -> DocumentationFinding:
+    lifecycle = (
+        FindingLifecycle.RESOLVED
+        if prior.lifecycle is FindingLifecycle.OPEN
+        else prior.lifecycle
+    )
+    return replace(prior, lifecycle=lifecycle, last_seen_revision=revision)
 
 
 def review_change(
@@ -452,57 +523,14 @@ def review_change(
     normalized_current = {
         _normalize_path(path) for path in current_claims_in_deprecated_paths
     }
-    changed_paths = set(assessment.paths)
-    if not normalized_manual <= changed_paths:
-        raise DocumentationContractError(
-            "manual generated paths must be part of the changed paths"
+    _validate_scoped_paths(normalized_manual, normalized_current, set(assessment.paths))
+    _validate_impact_decisions_present(docs_impact, agents_impact)
+    candidates.extend(
+        _collect_boundary_findings(
+            assessment.boundaries, normalized_manual, normalized_current
         )
-    if not normalized_current <= changed_paths:
-        raise DocumentationContractError(
-            "deprecated current-claim paths must be part of the changed paths"
-        )
-    if docs_impact is not None:
-        _validate_impact_decision(docs_impact, "docs_impact")
-    if agents_impact is not None:
-        _validate_impact_decision(agents_impact, "agents_impact")
-    for path, boundary in assessment.boundaries:
-        if boundary is DocumentationBoundary.GENERATED and path in normalized_manual:
-            candidates.append(
-                FindingCandidate.create(
-                    rule_id="DOC-BOUND-002",
-                    path=path,
-                    subject="generated-source-boundary",
-                    message="generated documentation must be regenerated from its source",
-                )
-            )
-        if boundary is DocumentationBoundary.DEPRECATED and path in normalized_current:
-            candidates.append(
-                FindingCandidate.create(
-                    rule_id="DOC-BOUND-003",
-                    path=path,
-                    subject="deprecated-current-claim",
-                    message="deprecated documentation cannot supply a current claim",
-                )
-            )
-    if assessment.requires_impact_decisions:
-        if docs_impact is None:
-            candidates.append(
-                FindingCandidate.create(
-                    rule_id="DOC-MAT-001",
-                    path=assessment.paths[0] if assessment.paths else "change",
-                    subject="docs-impact-decision",
-                    message="high-materiality change requires an explicit docs impact decision",
-                )
-            )
-        if agents_impact is None:
-            candidates.append(
-                FindingCandidate.create(
-                    rule_id="DOC-MAT-001",
-                    path=assessment.paths[0] if assessment.paths else "change",
-                    subject="agents-impact-decision",
-                    message="high-materiality change requires an explicit AGENTS impact decision",
-                )
-            )
+    )
+    candidates.extend(_impact_decision_findings(assessment, docs_impact, agents_impact))
     return DocumentationReview(
         assessment=assessment,
         findings=reconcile_findings(
@@ -513,6 +541,104 @@ def review_change(
         docs_impact=docs_impact,
         agents_impact=agents_impact,
     )
+
+
+def _validate_scoped_paths(
+    normalized_manual: set[str],
+    normalized_current: set[str],
+    changed_paths: set[str],
+) -> None:
+    if not normalized_manual <= changed_paths:
+        raise DocumentationContractError(
+            "manual generated paths must be part of the changed paths"
+        )
+    if not normalized_current <= changed_paths:
+        raise DocumentationContractError(
+            "deprecated current-claim paths must be part of the changed paths"
+        )
+
+
+def _validate_impact_decisions_present(
+    docs_impact: ImpactDecision | None,
+    agents_impact: ImpactDecision | None,
+) -> None:
+    if docs_impact is not None:
+        _validate_impact_decision(docs_impact, "docs_impact")
+    if agents_impact is not None:
+        _validate_impact_decision(agents_impact, "agents_impact")
+
+
+def _boundary_findings_for_path(
+    path: str,
+    boundary: DocumentationBoundary,
+    normalized_manual: set[str],
+    normalized_current: set[str],
+) -> list[FindingCandidate]:
+    found: list[FindingCandidate] = []
+    if boundary is DocumentationBoundary.GENERATED and path in normalized_manual:
+        found.append(
+            FindingCandidate.create(
+                rule_id="DOC-BOUND-002",
+                path=path,
+                subject="generated-source-boundary",
+                message="generated documentation must be regenerated from its source",
+            )
+        )
+    if boundary is DocumentationBoundary.DEPRECATED and path in normalized_current:
+        found.append(
+            FindingCandidate.create(
+                rule_id="DOC-BOUND-003",
+                path=path,
+                subject="deprecated-current-claim",
+                message="deprecated documentation cannot supply a current claim",
+            )
+        )
+    return found
+
+
+def _collect_boundary_findings(
+    boundaries: tuple[tuple[str, DocumentationBoundary], ...],
+    normalized_manual: set[str],
+    normalized_current: set[str],
+) -> list[FindingCandidate]:
+    collected: list[FindingCandidate] = []
+    for path, boundary in boundaries:
+        collected.extend(
+            _boundary_findings_for_path(
+                path, boundary, normalized_manual, normalized_current
+            )
+        )
+    return collected
+
+
+def _impact_decision_findings(
+    assessment: MaterialityAssessment,
+    docs_impact: ImpactDecision | None,
+    agents_impact: ImpactDecision | None,
+) -> list[FindingCandidate]:
+    if not assessment.requires_impact_decisions:
+        return []
+    findings: list[FindingCandidate] = []
+    fallback_path = assessment.paths[0] if assessment.paths else "change"
+    if docs_impact is None:
+        findings.append(
+            FindingCandidate.create(
+                rule_id="DOC-MAT-001",
+                path=fallback_path,
+                subject="docs-impact-decision",
+                message="high-materiality change requires an explicit docs impact decision",
+            )
+        )
+    if agents_impact is None:
+        findings.append(
+            FindingCandidate.create(
+                rule_id="DOC-MAT-001",
+                path=fallback_path,
+                subject="agents-impact-decision",
+                message="high-materiality change requires an explicit AGENTS impact decision",
+            )
+        )
+    return findings
 
 
 def _validate_contract_identity(contract: Mapping[str, object]) -> None:

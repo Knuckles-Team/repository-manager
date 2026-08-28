@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, date, datetime
 from enum import Enum
 from pathlib import Path
@@ -22,6 +22,62 @@ def _sort_key(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def _canonicalize_model(value: BaseModel) -> Any:
+    return canonicalize(value.model_dump(mode="json", exclude_none=False))
+
+
+def _canonicalize_enum(value: Enum) -> Any:
+    return canonicalize(value.value)
+
+
+def _canonicalize_mapping(value: Mapping[Any, Any]) -> Any:
+    items = ((str(key), canonicalize(item)) for key, item in value.items())
+    return {key: item for key, item in sorted(items, key=lambda pair: pair[0])}
+
+
+def _canonicalize_unordered(value: set[Any] | frozenset[Any]) -> Any:
+    return sorted((canonicalize(item) for item in value), key=_sort_key)
+
+
+def _canonicalize_sequence(value: list[Any] | tuple[Any, ...]) -> Any:
+    return [canonicalize(item) for item in value]
+
+
+def _canonicalize_datetime(value: datetime) -> Any:
+    if value.tzinfo is None:
+        raise ValueError("canonical datetimes must be timezone-aware")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _canonicalize_date(value: date) -> Any:
+    return value.isoformat()
+
+
+def _canonicalize_path(value: Path) -> Any:
+    return str(value)
+
+
+def _canonicalize_bytes(value: bytes) -> Any:
+    return base64.b64encode(value).decode("ascii")
+
+
+# Ordered (type, handler) pairs, checked with isinstance in this exact
+# order. The order is load-bearing: e.g. datetime is a subclass of date and
+# must be matched first, and this mirrors the original if/elif chain
+# precisely so subclass resolution is unchanged.
+_CANONICALIZERS: tuple[tuple[type | tuple[type, ...], Callable[[Any], Any]], ...] = (
+    (BaseModel, _canonicalize_model),
+    (Enum, _canonicalize_enum),
+    (Mapping, _canonicalize_mapping),
+    ((set, frozenset), _canonicalize_unordered),
+    ((list, tuple), _canonicalize_sequence),
+    (datetime, _canonicalize_datetime),
+    (date, _canonicalize_date),
+    (Path, _canonicalize_path),
+    (bytes, _canonicalize_bytes),
+)
+
+
 def canonicalize(value: Any) -> Any:
     """Convert a supported value into deterministic JSON-compatible data.
 
@@ -31,27 +87,9 @@ def canonicalize(value: Any) -> Any:
     insertion order.
     """
 
-    if isinstance(value, BaseModel):
-        return canonicalize(value.model_dump(mode="json", exclude_none=False))
-    if isinstance(value, Enum):
-        return canonicalize(value.value)
-    if isinstance(value, Mapping):
-        items = ((str(key), canonicalize(item)) for key, item in value.items())
-        return {key: item for key, item in sorted(items, key=lambda pair: pair[0])}
-    if isinstance(value, (set, frozenset)):
-        return sorted((canonicalize(item) for item in value), key=_sort_key)
-    if isinstance(value, (list, tuple)):
-        return [canonicalize(item) for item in value]
-    if isinstance(value, datetime):
-        if value.tzinfo is None:
-            raise ValueError("canonical datetimes must be timezone-aware")
-        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, bytes):
-        return base64.b64encode(value).decode("ascii")
+    for types, handler in _CANONICALIZERS:
+        if isinstance(value, types):
+            return handler(value)
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     raise TypeError(f"unsupported value for canonical JSON: {type(value).__name__}")
