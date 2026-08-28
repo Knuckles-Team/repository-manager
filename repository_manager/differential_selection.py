@@ -262,16 +262,7 @@ def _string_literals(tree: ast.AST) -> set[str]:
     }
 
 
-def build_repo_index(
-    repo_root: Path, *, src_roots: tuple[str, ...], test_roots: tuple[str, ...]
-) -> _RepoIndex:
-    """Walk ``src_roots`` + ``test_roots`` once, building the reverse-import graph.
-
-    Static-only, no execution. A file that cannot be parsed is recorded so its
-    callers still fail open per rule 4 without crashing the whole walk.
-    """
-    index = _RepoIndex()
-    roots = tuple(dict.fromkeys((*src_roots, *test_roots)))
+def _collect_repo_python_files(repo_root: Path, roots: tuple[str, ...]) -> list[Path]:
     files: list[Path] = []
     seen_dirs: set[Path] = set()
     for root in roots:
@@ -282,10 +273,18 @@ def build_repo_index(
             continue
         seen_dirs.add(root_dir)
         files.extend(_iter_python_files(root_dir))
+    return files
 
+
+def _parse_repo_files(
+    repo_root: Path,
+    files: list[Path],
+    all_roots: tuple[str, ...],
+    index: _RepoIndex,
+) -> dict[Path, tuple[ast.Module, _ModuleInfo | None]]:
     parsed: dict[Path, tuple[ast.Module, _ModuleInfo | None]] = {}
     for file_path in files:
-        module = _module_info_for(repo_root, file_path, src_roots + test_roots)
+        module = _module_info_for(repo_root, file_path, all_roots)
         try:
             source = file_path.read_text(encoding="utf-8", errors="replace")
             tree = ast.parse(source, filename=str(file_path))
@@ -298,19 +297,42 @@ def build_repo_index(
         if _has_module_level_getattr(tree):
             index.lazy_getattr_files.add(file_path)
             index.lazy_registry_strings[file_path] = _string_literals(tree)
+    return parsed
 
+
+def _import_candidates(node: ast.AST, module: _ModuleInfo) -> set[str]:
+    candidates: set[str] = set()
+    if isinstance(node, ast.Import):
+        candidates.update(alias.name for alias in node.names)
+    elif isinstance(node, ast.ImportFrom):
+        candidates.update(_importfrom_candidates(node, module))
+    return candidates
+
+
+def _index_import_edges(
+    index: _RepoIndex, parsed: dict[Path, tuple[ast.Module, _ModuleInfo | None]]
+) -> None:
     for file_path, (tree, module) in parsed.items():
         if module is None:
             continue
         for node in ast.walk(tree):
-            candidates: set[str] = set()
-            if isinstance(node, ast.Import):
-                candidates.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom):
-                candidates.update(_importfrom_candidates(node, module))
-            for candidate in candidates:
+            for candidate in _import_candidates(node, module):
                 index.importers_of.setdefault(candidate, set()).add(file_path)
 
+
+def build_repo_index(
+    repo_root: Path, *, src_roots: tuple[str, ...], test_roots: tuple[str, ...]
+) -> _RepoIndex:
+    """Walk ``src_roots`` + ``test_roots`` once, building the reverse-import graph.
+
+    Static-only, no execution. A file that cannot be parsed is recorded so its
+    callers still fail open per rule 4 without crashing the whole walk.
+    """
+    index = _RepoIndex()
+    roots = tuple(dict.fromkeys((*src_roots, *test_roots)))
+    files = _collect_repo_python_files(repo_root, roots)
+    parsed = _parse_repo_files(repo_root, files, src_roots + test_roots, index)
+    _index_import_edges(index, parsed)
     return index
 
 
@@ -378,6 +400,59 @@ def _is_suite_wide_conftest(
     return conftest_path.parent.resolve() in {d.resolve() for d in test_root_dirs}
 
 
+@dataclass
+class _ImporterOutcome:
+    is_test: bool = False
+    is_suite_wide_conftest: bool = False
+    is_conftest: bool = False
+    next_module: str | None = None
+
+
+def _classify_importer(
+    importer_file: Path,
+    repo_root: Path,
+    all_roots: tuple[str, ...],
+    test_root_dirs: tuple[Path, ...],
+    visited_modules: set[str],
+) -> _ImporterOutcome:
+    if importer_file.name == "conftest.py":
+        if _is_suite_wide_conftest(importer_file, test_root_dirs):
+            return _ImporterOutcome(is_suite_wide_conftest=True)
+        return _ImporterOutcome(is_conftest=True)
+    outcome = _ImporterOutcome(
+        is_test=any(_is_under(importer_file, d) for d in test_root_dirs)
+        # A test file can itself be imported by another test file (shared
+        # helpers) — keep walking through it too.
+    )
+    importer_module = _module_info_for(repo_root, importer_file, all_roots)
+    if importer_module is not None and importer_module.name not in visited_modules:
+        outcome.next_module = importer_module.name
+    return outcome
+
+
+def _apply_importer_outcome(
+    outcome: _ImporterOutcome,
+    importer_file: Path,
+    reached_tests: set[Path],
+    reached_conftests: set[Path],
+    visited_modules: set[str],
+    queue: deque[str],
+) -> None:
+    """Applies one classified (non-suite-wide-conftest) importer's effect to
+    the BFS state in place. The suite-wide-conftest case is handled by the
+    caller, since it toggles a scalar this function cannot mutate by
+    reference.
+    """
+    if outcome.is_conftest:
+        reached_conftests.add(importer_file)
+        return
+    if outcome.is_test:
+        reached_tests.add(importer_file)
+    if outcome.next_module is not None:
+        visited_modules.add(outcome.next_module)
+        queue.append(outcome.next_module)
+
+
 def _reverse_bfs_test_targets(
     module_name: str,
     index: _RepoIndex,
@@ -404,23 +479,22 @@ def _reverse_bfs_test_targets(
     while queue:
         current = queue.popleft()
         for importer_file in index.importers_of.get(current, ()):
-            if importer_file.name == "conftest.py":
-                if _is_suite_wide_conftest(importer_file, test_root_dirs):
-                    suite_wide = True
-                else:
-                    reached_conftests.add(importer_file)
+            outcome = _classify_importer(
+                importer_file, repo_root, all_roots, test_root_dirs, visited_modules
+            )
+            if outcome.is_suite_wide_conftest:
+                suite_wide = True
                 continue
-            under_test_root = any(_is_under(importer_file, d) for d in test_root_dirs)
-            if under_test_root:
-                reached_tests.add(importer_file)
-                # A test file can itself be imported by another test file
-                # (shared helpers) — keep walking through it too.
-            importer_module = _module_info_for(repo_root, importer_file, all_roots)
-            if importer_module is None or importer_module.name in visited_modules:
-                continue
-            visited_modules.add(importer_module.name)
-            queue.append(importer_module.name)
-            if suite_wide:
+            queued_new_module = outcome.next_module is not None
+            _apply_importer_outcome(
+                outcome,
+                importer_file,
+                reached_tests,
+                reached_conftests,
+                visited_modules,
+                queue,
+            )
+            if queued_new_module and suite_wide:
                 return reached_tests, reached_conftests, suite_wide
 
     return reached_tests, reached_conftests, suite_wide
@@ -434,6 +508,163 @@ def _is_lazily_referenced(module: _ModuleInfo, index: _RepoIndex) -> str:
         if leaf in literals or module.name in literals:
             return f"referenced as a string literal in {registry_file}'s module-level __getattr__ (lazy-import registry)"
     return ""
+
+
+@dataclass(frozen=True)
+class _SelectionContext:
+    repo: Path
+    src_roots: tuple[str, ...]
+    test_roots: tuple[str, ...]
+    test_root_dirs: tuple[Path, ...]
+    index: _RepoIndex
+    fanin_fallback_threshold: int
+
+
+def _classify_conftest_change(
+    rel: str, file_path: Path, ctx: _SelectionContext
+) -> FileVerdict:
+    # Rule 3: a changed conftest.py -> its whole directory (or full suite when
+    # it is the suite-wide root conftest).
+    if not file_path.is_file() or _is_suite_wide_conftest(
+        file_path, ctx.test_root_dirs
+    ):
+        return FileVerdict(rel, True, "suite-wide conftest.py changed/removed")
+    target = _expand_conftest(ctx.repo, file_path)
+    return FileVerdict(
+        rel, False, "conftest.py changed — directory selected", (target,)
+    )
+
+
+def _classify_via_reverse_bfs(
+    rel: str, module: _ModuleInfo, ctx: _SelectionContext
+) -> FileVerdict:
+    reached_tests, reached_conftests, suite_wide = _reverse_bfs_test_targets(
+        module.name,
+        ctx.index,
+        repo_root=ctx.repo,
+        src_roots=ctx.src_roots,
+        test_roots=ctx.test_roots,
+        test_root_dirs=ctx.test_root_dirs,
+    )
+    if suite_wide:
+        return FileVerdict(rel, True, "transitively reaches a suite-wide conftest.py")
+
+    targets = {str(p.relative_to(ctx.repo)) for p in reached_tests}
+    targets |= {_expand_conftest(ctx.repo, c) for c in reached_conftests}
+
+    # Rule 9: zero importers found — the dangerous silent-under-selection case.
+    if not targets:
+        return FileVerdict(
+            rel,
+            True,
+            "no test file imports this module (directly or transitively) by static analysis",
+        )
+
+    return FileVerdict(
+        rel,
+        False,
+        f"{len(targets)} test target(s) reached transitively",
+        tuple(sorted(targets)),
+    )
+
+
+def _classify_source_change(
+    rel: str, file_path: Path, ctx: _SelectionContext
+) -> FileVerdict:
+    # Rule 4: unparsable / missing.
+    if not file_path.is_file():
+        return FileVerdict(rel, True, "changed file no longer exists on this ref")
+    try:
+        source = file_path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(source, filename=str(file_path))
+    except (SyntaxError, ValueError, OSError) as exc:
+        return FileVerdict(rel, True, f"unparsable: {exc}")
+
+    # Rule 5: the changed file itself defines a lazy __getattr__.
+    if _has_module_level_getattr(tree):
+        return FileVerdict(
+            rel, True, "defines a module-level __getattr__ (PEP 562 lazy export)"
+        )
+
+    # Rule 6: known hub basename.
+    if file_path.name in _HUB_BASENAMES:
+        return FileVerdict(rel, True, f"hub basename {file_path.name!r}")
+
+    module = _module_info_for(ctx.repo, file_path, ctx.src_roots + ctx.test_roots)
+    if module is None:
+        return FileVerdict(
+            rel,
+            True,
+            "not resolvable to a module under any configured src/test root",
+        )
+
+    # Rule 7: referenced from someone else's lazy registry.
+    lazy_reason = _is_lazily_referenced(module, ctx.index)
+    if lazy_reason:
+        return FileVerdict(rel, True, lazy_reason)
+
+    # Rule 8: measured fan-in hub.
+    fanin = len(ctx.index.importers_of.get(module.name, ()))
+    if fanin > ctx.fanin_fallback_threshold:
+        return FileVerdict(
+            rel,
+            True,
+            f"fan-in {fanin} exceeds threshold {ctx.fanin_fallback_threshold}",
+        )
+
+    return _classify_via_reverse_bfs(rel, module, ctx)
+
+
+def _classify_changed_file(rel: str, ctx: _SelectionContext) -> FileVerdict:
+    """One changed file -> its FileVerdict, applying rules 1-9 in the SAME
+    order as the original inline cascade.
+    """
+    file_path = (ctx.repo / rel).resolve()
+    if file_path.suffix != ".py":
+        return FileVerdict(
+            rel, False, "not a Python file — ignored for pytest selection"
+        )
+
+    under_test_root = any(_is_under(file_path, d) for d in ctx.test_root_dirs)
+
+    if file_path.name == "conftest.py":
+        return _classify_conftest_change(rel, file_path, ctx)
+
+    # Rule 2: a changed test file selects itself.
+    if under_test_root and _TEST_FILE_RE.match(file_path.name):
+        return FileVerdict(rel, False, "test file changed — selects itself", (rel,))
+
+    return _classify_source_change(rel, file_path, ctx)
+
+
+def _governing_file_verdict(changed: list[str]) -> DifferentialSelection | None:
+    for rel in changed:
+        name = Path(rel).name
+        if name in _GOVERNING_FILENAMES:
+            return DifferentialSelection(
+                changed_files=tuple(changed),
+                selected=(),
+                full_suite=True,
+                reason=f"{rel} governs how tests run/are configured — narrowing it is unsafe",
+                verdicts=(FileVerdict(rel, True, "governing/config file changed"),),
+            )
+    return None
+
+
+def _classify_all_changed_files(
+    changed: list[str], ctx: _SelectionContext
+) -> tuple[list[FileVerdict], set[str], bool]:
+    verdicts: list[FileVerdict] = []
+    selected: set[str] = set()
+    any_fallback = False
+    for rel in changed:
+        verdict = _classify_changed_file(rel, ctx)
+        verdicts.append(verdict)
+        if verdict.fallback:
+            any_fallback = True
+        else:
+            selected |= set(verdict.selected)
+    return verdicts, selected, any_fallback
 
 
 def select_differential_tests(
@@ -465,167 +696,21 @@ def select_differential_tests(
             reason="no changed files relative to the merge-base with the base ref",
         )
 
-    for rel in changed:
-        name = Path(rel).name
-        if name in _GOVERNING_FILENAMES:
-            return DifferentialSelection(
-                changed_files=tuple(changed),
-                selected=(),
-                full_suite=True,
-                reason=f"{rel} governs how tests run/are configured — narrowing it is unsafe",
-                verdicts=(FileVerdict(rel, True, "governing/config file changed"),),
-            )
+    governing = _governing_file_verdict(changed)
+    if governing is not None:
+        return governing
 
     index = build_repo_index(repo, src_roots=src_roots, test_roots=test_roots)
+    ctx = _SelectionContext(
+        repo=repo,
+        src_roots=src_roots,
+        test_roots=test_roots,
+        test_root_dirs=test_root_dirs,
+        index=index,
+        fanin_fallback_threshold=fanin_fallback_threshold,
+    )
 
-    verdicts: list[FileVerdict] = []
-    selected: set[str] = set()
-    any_fallback = False
-
-    for rel in changed:
-        file_path = (repo / rel).resolve()
-        if file_path.suffix != ".py":
-            verdicts.append(
-                FileVerdict(
-                    rel, False, "not a Python file — ignored for pytest selection"
-                )
-            )
-            continue
-
-        under_test_root = any(_is_under(file_path, d) for d in test_root_dirs)
-
-        # Rule 3: a changed conftest.py -> its whole directory (or full suite
-        # when it is the suite-wide root conftest).
-        if file_path.name == "conftest.py":
-            if not file_path.is_file() or _is_suite_wide_conftest(
-                file_path, test_root_dirs
-            ):
-                any_fallback = True
-                verdicts.append(
-                    FileVerdict(rel, True, "suite-wide conftest.py changed/removed")
-                )
-                continue
-            target = _expand_conftest(repo, file_path)
-            selected.add(target)
-            verdicts.append(
-                FileVerdict(
-                    rel, False, "conftest.py changed — directory selected", (target,)
-                )
-            )
-            continue
-
-        # Rule 2: a changed test file selects itself.
-        if under_test_root and _TEST_FILE_RE.match(file_path.name):
-            selected.add(rel)
-            verdicts.append(
-                FileVerdict(rel, False, "test file changed — selects itself", (rel,))
-            )
-            continue
-
-        # Rule 4: unparsable.
-        if not file_path.is_file():
-            any_fallback = True
-            verdicts.append(
-                FileVerdict(rel, True, "changed file no longer exists on this ref")
-            )
-            continue
-        try:
-            source = file_path.read_text(encoding="utf-8", errors="replace")
-            tree = ast.parse(source, filename=str(file_path))
-        except (SyntaxError, ValueError, OSError) as exc:
-            any_fallback = True
-            verdicts.append(FileVerdict(rel, True, f"unparsable: {exc}"))
-            continue
-
-        # Rule 5: the changed file itself defines a lazy __getattr__.
-        if _has_module_level_getattr(tree):
-            any_fallback = True
-            verdicts.append(
-                FileVerdict(
-                    rel,
-                    True,
-                    "defines a module-level __getattr__ (PEP 562 lazy export)",
-                )
-            )
-            continue
-
-        # Rule 6: known hub basename.
-        if file_path.name in _HUB_BASENAMES:
-            any_fallback = True
-            verdicts.append(FileVerdict(rel, True, f"hub basename {file_path.name!r}"))
-            continue
-
-        module = _module_info_for(repo, file_path, src_roots + test_roots)
-        if module is None:
-            any_fallback = True
-            verdicts.append(
-                FileVerdict(
-                    rel,
-                    True,
-                    "not resolvable to a module under any configured src/test root",
-                )
-            )
-            continue
-
-        # Rule 7: referenced from someone else's lazy registry.
-        lazy_reason = _is_lazily_referenced(module, index)
-        if lazy_reason:
-            any_fallback = True
-            verdicts.append(FileVerdict(rel, True, lazy_reason))
-            continue
-
-        # Rule 8: measured fan-in hub.
-        fanin = len(index.importers_of.get(module.name, ()))
-        if fanin > fanin_fallback_threshold:
-            any_fallback = True
-            verdicts.append(
-                FileVerdict(
-                    rel,
-                    True,
-                    f"fan-in {fanin} exceeds threshold {fanin_fallback_threshold}",
-                )
-            )
-            continue
-
-        reached_tests, reached_conftests, suite_wide = _reverse_bfs_test_targets(
-            module.name,
-            index,
-            repo_root=repo,
-            src_roots=src_roots,
-            test_roots=test_roots,
-            test_root_dirs=test_root_dirs,
-        )
-        if suite_wide:
-            any_fallback = True
-            verdicts.append(
-                FileVerdict(rel, True, "transitively reaches a suite-wide conftest.py")
-            )
-            continue
-
-        targets = {str(p.relative_to(repo)) for p in reached_tests}
-        targets |= {_expand_conftest(repo, c) for c in reached_conftests}
-
-        # Rule 9: zero importers found — the dangerous silent-under-selection case.
-        if not targets:
-            any_fallback = True
-            verdicts.append(
-                FileVerdict(
-                    rel,
-                    True,
-                    "no test file imports this module (directly or transitively) by static analysis",
-                )
-            )
-            continue
-
-        selected |= targets
-        verdicts.append(
-            FileVerdict(
-                rel,
-                False,
-                f"{len(targets)} test target(s) reached transitively",
-                tuple(sorted(targets)),
-            )
-        )
+    verdicts, selected, any_fallback = _classify_all_changed_files(changed, ctx)
 
     if any_fallback:
         fallback_files = [v.path for v in verdicts if v.fallback]
