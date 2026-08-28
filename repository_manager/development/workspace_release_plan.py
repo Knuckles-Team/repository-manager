@@ -1565,12 +1565,22 @@ ReleasePlanStage = StagePreview
 ReleaseStage = StageKind
 
 
-def _validate_stage_dag(stages: tuple[StagePreview, ...]) -> None:
+def _stage_identity_map(stages: tuple[StagePreview, ...]) -> dict[str, StagePreview]:
+    """Index stages by identity, rejecting a duplicated stage id."""
+
     stage_map: dict[str, StagePreview] = {}
     for stage in stages:
         if stage.stage_id in stage_map:
             raise _fail(ReleasePlanCode.DUPLICATE, "stage identity is duplicated")
         stage_map[stage.stage_id] = stage
+    return stage_map
+
+
+def _validate_stage_dependency_targets(
+    stages: tuple[StagePreview, ...], stage_map: dict[str, StagePreview]
+) -> None:
+    """Reject self-dependency and dependencies on stages outside the plan."""
+
     for stage in stages:
         if stage.stage_id in stage.depends_on:
             raise _fail(
@@ -1580,6 +1590,11 @@ def _validate_stage_dag(stages: tuple[StagePreview, ...]) -> None:
             raise _fail(
                 ReleasePlanCode.STAGE_DEPENDENCY, "stage depends on an unknown stage"
             )
+
+
+def _assert_stage_graph_acyclic(stage_map: dict[str, StagePreview]) -> None:
+    """Peel dependency-free stages until none remain, or report a cycle."""
+
     remaining = set(stage_map)
     dependencies = {
         stage_id: set(stage_map[stage_id].depends_on) for stage_id in stage_map
@@ -1596,6 +1611,105 @@ def _validate_stage_dag(stages: tuple[StagePreview, ...]) -> None:
             remaining.remove(stage_id)
         for stage_id in remaining:
             dependencies[stage_id].difference_update(ready)
+
+
+def _validate_stage_dag(stages: tuple[StagePreview, ...]) -> None:
+    stage_map = _stage_identity_map(stages)
+    _validate_stage_dependency_targets(stages, stage_map)
+    _assert_stage_graph_acyclic(stage_map)
+
+
+def _stage_project_dependencies(
+    selected: tuple[str, ...],
+    project_edges: tuple[tuple[str, str], ...],
+) -> dict[str, set[str]]:
+    """Index frozen project edges as one dependency set per selected project."""
+
+    project_dependencies: dict[str, set[str]] = {project: set() for project in selected}
+    for dependent, dependency in project_edges:
+        if (
+            dependent not in project_dependencies
+            or dependency not in project_dependencies
+        ):
+            raise _fail(
+                ReleasePlanCode.MISSING, "stage source edge names an unknown project"
+            )
+        project_dependencies[dependent].add(dependency)
+    return project_dependencies
+
+
+def _stage_dependency_ids(
+    kind: StageKind,
+    project_id: str,
+    stage_by_key: dict[tuple[StageKind, str], StagePreview],
+    project_dependencies: dict[str, set[str]],
+) -> tuple[str, ...]:
+    """Return the frozen dependency stage ids for one (kind, project) stage."""
+
+    predecessor_of: dict[StageKind, StageKind] = {
+        StageKind.BUMP: StageKind.VALIDATE,
+        StageKind.LOCAL_LAND: StageKind.BUMP,
+        StageKind.BUILD: StageKind.LOCAL_LAND,
+        StageKind.PACKAGE: StageKind.BUILD,
+        StageKind.PUSH: StageKind.PACKAGE,
+    }
+    peer_of: dict[StageKind, StageKind] = {
+        StageKind.BUMP: StageKind.BUMP,
+        StageKind.PUSH: StageKind.PUSH,
+    }
+    predecessor = predecessor_of.get(kind)
+    if predecessor is None:
+        return ()
+    dependencies = [stage_by_key[(predecessor, project_id)].stage_id]
+    peer = peer_of.get(kind)
+    if peer is not None:
+        dependencies.extend(
+            stage_by_key[(peer, dependency)].stage_id
+            for dependency in sorted(project_dependencies[project_id])
+        )
+    return tuple(sorted(set(dependencies)))
+
+
+def _emit_stage_group(
+    *,
+    kind: StageKind,
+    groups: tuple[tuple[str, ...], ...],
+    project_map: dict[str, ProjectRecord],
+    project_dependencies: dict[str, set[str]],
+    profile_digests: dict[str, tuple[str, str]],
+    stage_by_key: dict[tuple[StageKind, str], StagePreview],
+    stage_fields: dict[str, object],
+) -> None:
+    """Materialize every stage of one kind in dependency-group order."""
+
+    for group in groups:
+        for project_id in group:
+            validation_digest, build_digest = profile_digests[project_id]
+            stage_by_key[(kind, project_id)] = _stage_preview(
+                kind=kind,
+                project=project_map[project_id],
+                validation_profile_digest=validation_digest,
+                build_profile_digest=build_digest,
+                depends_on=_stage_dependency_ids(
+                    kind, project_id, stage_by_key, project_dependencies
+                ),
+                **stage_fields,  # type: ignore[arg-type]
+            )
+
+
+def _ordered_stages(
+    stage_by_key: dict[tuple[StageKind, str], StagePreview],
+    stage_order: tuple[StageKind, ...],
+    groups: tuple[tuple[str, ...], ...],
+) -> tuple[StagePreview, ...]:
+    """Flatten the stage index into the single accepted execution order."""
+
+    return tuple(
+        stage_by_key[(kind, project_id)]
+        for kind in stage_order
+        for group in groups
+        for project_id in group
+    )
 
 
 def _derive_stage_sequence(
@@ -1618,16 +1732,22 @@ def _derive_stage_sequence(
 ) -> tuple[StagePreview, ...]:
     """Derive the only accepted stage composition from frozen source fields."""
 
-    project_dependencies: dict[str, set[str]] = {project: set() for project in selected}
-    for dependent, dependency in project_edges:
-        if (
-            dependent not in project_dependencies
-            or dependency not in project_dependencies
-        ):
-            raise _fail(
-                ReleasePlanCode.MISSING, "stage source edge names an unknown project"
-            )
-        project_dependencies[dependent].add(dependency)
+    project_dependencies = _stage_project_dependencies(selected, project_edges)
+    profile_digests = {
+        project_id: (validation[project_id].digest, build[project_id].digest)
+        for group in groups
+        for project_id in group
+    }
+    stage_fields: dict[str, object] = {
+        "base_sha": base_sha,
+        "generation_id": generation_id,
+        "graph_digest": graph_digest,
+        "selection_digest": selection_digest,
+        "version_plan_digest": version_plan_digest,
+        "version_preview_digests": version_preview_digests,
+        "floor_preview_digests": floor_preview_digests,
+        "decision_context": decision_context,
+    }
     stage_by_key: dict[tuple[StageKind, str], StagePreview] = {}
     stage_order = (
         StageKind.VALIDATE,
@@ -1637,76 +1757,27 @@ def _derive_stage_sequence(
         StageKind.PACKAGE,
     )
     for kind in stage_order:
-        for group in groups:
-            for project_id in group:
-                project = project_map[project_id]
-                dependencies: list[str] = []
-                if kind is StageKind.BUMP:
-                    dependencies.append(
-                        stage_by_key[(StageKind.VALIDATE, project_id)].stage_id
-                    )
-                    dependencies.extend(
-                        stage_by_key[(StageKind.BUMP, dependency)].stage_id
-                        for dependency in sorted(project_dependencies[project_id])
-                    )
-                elif kind is StageKind.LOCAL_LAND:
-                    dependencies.append(
-                        stage_by_key[(StageKind.BUMP, project_id)].stage_id
-                    )
-                elif kind is StageKind.BUILD:
-                    dependencies.append(
-                        stage_by_key[(StageKind.LOCAL_LAND, project_id)].stage_id
-                    )
-                elif kind is StageKind.PACKAGE:
-                    dependencies.append(
-                        stage_by_key[(StageKind.BUILD, project_id)].stage_id
-                    )
-                stage_by_key[(kind, project_id)] = _stage_preview(
-                    kind=kind,
-                    project=project,
-                    base_sha=base_sha,
-                    generation_id=generation_id,
-                    graph_digest=graph_digest,
-                    selection_digest=selection_digest,
-                    version_plan_digest=version_plan_digest,
-                    version_preview_digests=version_preview_digests,
-                    floor_preview_digests=floor_preview_digests,
-                    validation_profile_digest=validation[project_id].digest,
-                    build_profile_digest=build[project_id].digest,
-                    depends_on=tuple(sorted(set(dependencies))),
-                    consent_reference=None,
-                    decision_context=decision_context,
-                )
+        _emit_stage_group(
+            kind=kind,
+            groups=groups,
+            project_map=project_map,
+            project_dependencies=project_dependencies,
+            profile_digests=profile_digests,
+            stage_by_key=stage_by_key,
+            stage_fields={**stage_fields, "consent_reference": None},
+        )
     if consent is not None:
-        for group in groups:
-            for project_id in group:
-                dependencies = [stage_by_key[(StageKind.PACKAGE, project_id)].stage_id]
-                dependencies.extend(
-                    stage_by_key[(StageKind.PUSH, dependency)].stage_id
-                    for dependency in sorted(project_dependencies[project_id])
-                )
-                stage_by_key[(StageKind.PUSH, project_id)] = _stage_preview(
-                    kind=StageKind.PUSH,
-                    project=project_map[project_id],
-                    base_sha=base_sha,
-                    generation_id=generation_id,
-                    graph_digest=graph_digest,
-                    selection_digest=selection_digest,
-                    version_plan_digest=version_plan_digest,
-                    version_preview_digests=version_preview_digests,
-                    floor_preview_digests=floor_preview_digests,
-                    validation_profile_digest=validation[project_id].digest,
-                    build_profile_digest=build[project_id].digest,
-                    depends_on=tuple(sorted(set(dependencies))),
-                    consent_reference=consent,
-                    decision_context=decision_context,
-                )
-    stages = tuple(
-        stage_by_key[(kind, project_id)]
-        for kind in (*stage_order, *((StageKind.PUSH,) if consent is not None else ()))
-        for group in groups
-        for project_id in group
-    )
+        _emit_stage_group(
+            kind=StageKind.PUSH,
+            groups=groups,
+            project_map=project_map,
+            project_dependencies=project_dependencies,
+            profile_digests=profile_digests,
+            stage_by_key=stage_by_key,
+            stage_fields={**stage_fields, "consent_reference": consent},
+        )
+        stage_order = (*stage_order, StageKind.PUSH)
+    stages = _ordered_stages(stage_by_key, stage_order, groups)
     _validate_stage_dag(stages)
     return stages
 
