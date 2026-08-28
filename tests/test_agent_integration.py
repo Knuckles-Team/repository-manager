@@ -121,6 +121,54 @@ def agent_server():
         log_file.close()
 
 
+def _apply_graph_event(ename: str | None, event_data: dict, flags: dict) -> None:
+    if ename == "graph_start":
+        flags["graph_started"] = True
+    elif ename in [
+        "expert_tool_call",
+        "tool_call",
+        "node_start",
+    ]:
+        tname = event_data.get("tool_name") or event_data.get("tool")
+        if tname == "get_workspace_projects":
+            flags["tool_called"] = True
+    elif ename == "synthesis_fallback":
+        reason = event_data.get("reason", "")
+        if "Connection error" in reason or "Connection refused" in reason:
+            pytest.skip("LLM server is unreachable. Skipping integration test.")
+    elif ename == "graph_complete":
+        # final_output_received is handled by final_output type or by completion
+        pass
+
+
+def _process_stream_line(line: str, flags: dict) -> None:
+    """Parse one SSE line and update ``flags`` in place (mutated, not returned,
+    so callers see the same dict identity the original inline code closed over).
+    """
+    if not line or not line.strip():
+        return
+    print(f"STREAM: {line.strip()}")
+
+    if line.startswith("data:"):
+        try:
+            data = json.loads(line[5:].strip())
+            print(f"DEBUG: Received event: {data}")
+            etype = data.get("type")
+            event_data = data.get("data", {})
+            ename = event_data.get("event") if isinstance(event_data, dict) else None
+
+            if etype == "data-graph-event":
+                _apply_graph_event(ename, event_data, flags)
+
+            if etype == "final_output":
+                data.get("content", "")
+                # Even if it just says "planner" (like in the logs), we consider it a success if we reached the end
+                flags["final_output_received"] = True
+        except Exception as e:
+            print(f"DEBUG: Stream line parse failed: {type(e).__name__}")
+            pass
+
+
 @pytest.mark.asyncio
 @pytest.mark.integration
 @pytest.mark.slow
@@ -137,80 +185,36 @@ async def test_get_workspace_projects_via_graph(agent_server):
 
         print(f"Sending query to {url}: {query}")
 
-        graph_started = False
-        tool_called = False
-        final_output_received = False
+        flags = {
+            "graph_started": False,
+            "tool_called": False,
+            "final_output_received": False,
+        }
 
         try:
             async with client.stream("POST", url, json=payload) as response:
                 assert response.status_code == 200
 
                 async for line in response.aiter_lines():
-                    if not line or not line.strip():
-                        continue
-                    print(f"STREAM: {line.strip()}")
-
-                    if line.startswith("data:"):
-                        try:
-                            data = json.loads(line[5:].strip())
-                            print(f"DEBUG: Received event: {data}")
-                            etype = data.get("type")
-                            event_data = data.get("data", {})
-                            ename = (
-                                event_data.get("event")
-                                if isinstance(event_data, dict)
-                                else None
-                            )
-
-                            if etype == "data-graph-event":
-                                if ename == "graph_start":
-                                    graph_started = True
-                                elif ename in [
-                                    "expert_tool_call",
-                                    "tool_call",
-                                    "node_start",
-                                ]:
-                                    tname = event_data.get(
-                                        "tool_name"
-                                    ) or event_data.get("tool")
-                                    if tname == "get_workspace_projects":
-                                        tool_called = True
-                                elif ename == "synthesis_fallback":
-                                    reason = event_data.get("reason", "")
-                                    if (
-                                        "Connection error" in reason
-                                        or "Connection refused" in reason
-                                    ):
-                                        pytest.skip(
-                                            "LLM server is unreachable. Skipping integration test."
-                                        )
-                                elif ename == "graph_complete":
-                                    # final_output_received is handled by final_output type or by completion
-                                    pass
-
-                            if etype == "final_output":
-                                data.get("content", "")
-                                # Even if it just says "planner" (like in the logs), we consider it a success if we reached the end
-                                final_output_received = True
-                        except Exception as e:
-                            print(
-                                f"DEBUG: Stream line parse failed: {type(e).__name__}"
-                            )
-                            pass
+                    _process_stream_line(line, flags)
         except Exception as e:
             pytest.fail(f"SSE request failed: {e}")
 
-    assert graph_started, "The graph orchestrator did not start"
-    assert tool_called, "The graph orchestrator did not call get_workspace_projects"
-    assert final_output_received, (
+    assert flags["graph_started"], "The graph orchestrator did not start"
+    assert flags["tool_called"], (
+        "The graph orchestrator did not call get_workspace_projects"
+    )
+    assert flags["final_output_received"], (
         "The final response did not contain the expected project list"
     )
 
     # Fallback: Check direct MCP execution via another endpoint if ag-ui is purely chat
     # Actually, we want to see if the graph reached the tool.
 
-    assert tool_called, "The graph orchestrator did not call get_workspace_projects"
-    assert final_output_received, (
+    assert flags["tool_called"], (
+        "The graph orchestrator did not call get_workspace_projects"
+    )
+    assert flags["final_output_received"], (
         "The final response did not contain the expected project list"
     )
 
