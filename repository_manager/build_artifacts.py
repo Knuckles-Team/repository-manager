@@ -1118,6 +1118,187 @@ def _staged_artifacts_from_stage_manifest(
     )
 
 
+def _require_valid_stage_request(
+    attempt: int, fence: str, job_id: str, work_item_id: str
+) -> None:
+    if attempt < 1 or not fence.strip():
+        raise ArtifactStoreError(
+            "artifact staging requires a positive attempt and fence"
+        )
+    if not job_id.strip() or not work_item_id.strip():
+        raise ArtifactStoreError(
+            "artifact staging requires exact job and WorkItem identities"
+        )
+
+
+def _resolve_build_tree(build_tree: Path | str) -> tuple[Path, Path]:
+    """Resolve ``build_tree`` through a no-follow symlink guard.
+
+    Returns ``(raw_tree, tree)`` -- the pre-resolve and resolved paths, both
+    needed later to validate the workdir-relative output root.
+    """
+    raw_tree = Path(build_tree).expanduser()
+    _reject_symlink_path(raw_tree)
+    tree = raw_tree.resolve(strict=True)
+    return raw_tree, tree
+
+
+def _resolve_stage_output_root(raw_tree: Path, tree: Path, workdir: str) -> Path:
+    """Validate ``workdir`` and resolve the build tree's output root within it."""
+    if Path(workdir).is_absolute() or ".." in Path(workdir).parts:
+        raise ArtifactStoreError("artifact workdir must stay below the build tree")
+    raw_output_root = raw_tree / workdir
+    _reject_symlink_path(raw_output_root)
+    output_root = raw_output_root.resolve(strict=True)
+    if output_root != tree and tree not in output_root.parents:
+        raise ArtifactStoreError("artifact workdir escapes the build tree")
+    _reject_symlink_components(tree, output_root)
+    return output_root
+
+
+def _require_relative_patterns(patterns: tuple[str, ...]) -> None:
+    for pattern in patterns:
+        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+            raise ArtifactStoreError(
+                "artifact patterns must be relative and stay below workdir"
+            )
+
+
+@dataclass(frozen=True)
+class _StageBudget:
+    """Admitted (caller-requested, capped by the module maximums) stage limits."""
+
+    admitted_max_artifacts: int
+    admitted_max_bytes: int
+
+
+def _admitted_stage_budget(
+    max_artifacts: int | None, max_bytes: int | None
+) -> _StageBudget:
+    admitted_max_artifacts = (
+        _MAX_STAGE_ARTIFACTS
+        if max_artifacts is None
+        else min(max_artifacts, _MAX_STAGE_ARTIFACTS)
+    )
+    admitted_max_bytes = (
+        _MAX_STAGE_BYTES if max_bytes is None else min(max_bytes, _MAX_STAGE_BYTES)
+    )
+    return _StageBudget(
+        admitted_max_artifacts=admitted_max_artifacts,
+        admitted_max_bytes=admitted_max_bytes,
+    )
+
+
+@dataclass(frozen=True)
+class _StagePaths:
+    """Filesystem locations one `stage()` call copies artifacts between."""
+
+    output_root: Path
+    artifact_dir: Path
+    stage_dir: Path
+
+
+class _StageAccumulator:
+    """Mutable running state across every matched artifact one `stage()` copies."""
+
+    __slots__ = ("entries", "seen", "total_bytes")
+
+    def __init__(self) -> None:
+        self.entries: list[dict[str, Any]] = []
+        self.seen: set[str] = set()
+        self.total_bytes = 0
+
+
+def _stage_one_artifact(
+    source: Path,
+    pattern: str,
+    paths: _StagePaths,
+    budget: _StageBudget,
+    accumulator: _StageAccumulator,
+) -> None:
+    """Validate, copy, and record one matched source file into the stage dir."""
+    _reject_symlink_components(paths.output_root, source)
+    if source.is_symlink():
+        raise ArtifactStoreError(f"symlink artifact source is not allowed: {source}")
+    try:
+        source.resolve(strict=True).relative_to(paths.output_root)
+    except (OSError, ValueError) as exc:
+        raise ArtifactStoreError(
+            "artifact source escapes its declared output root"
+        ) from exc
+    relative = source.relative_to(paths.output_root)
+    relative_name = str(relative)
+    if relative_name in accumulator.seen:
+        return
+    accumulator.seen.add(relative_name)
+    remaining_bytes = budget.admitted_max_bytes - accumulator.total_bytes
+    if remaining_bytes < 0:
+        raise ArtifactStoreError(
+            "build artifacts exceed the admitted staging byte bound"
+        )
+    destination = paths.artifact_dir / relative
+    copied_bytes = _copy_file_no_follow(source, destination, max_bytes=remaining_bytes)
+    _fsync_file(destination)
+    accumulator.total_bytes += copied_bytes
+    accumulator.entries.append(
+        {
+            "pattern": pattern,
+            "relative_path": relative_name,
+            "staged_at": str(destination),
+            "sha256": _sha256_file(destination, max_bytes=_MAX_STAGE_BYTES),
+            "bytes": copied_bytes,
+        }
+    )
+
+
+def _stage_pattern_matches(
+    pattern: str,
+    matches: list[Path],
+    paths: _StagePaths,
+    budget: _StageBudget,
+    accumulator: _StageAccumulator,
+) -> None:
+    """Stage every match for one declared pattern; clean up on any failure."""
+    if not matches:
+        shutil.rmtree(paths.stage_dir, ignore_errors=True)
+        raise ArtifactStoreError(
+            f"build declared artifact pattern {pattern!r} but produced no file"
+        )
+    if len(accumulator.seen) + len(matches) > budget.admitted_max_artifacts:
+        shutil.rmtree(paths.stage_dir, ignore_errors=True)
+        raise ArtifactStoreError(
+            "build produced more artifacts than the admitted staging bound"
+        )
+    for source in matches:
+        try:
+            _stage_one_artifact(source, pattern, paths, budget, accumulator)
+        except Exception:
+            shutil.rmtree(paths.stage_dir, ignore_errors=True)
+            raise
+
+
+def _build_stage_manifest(
+    key: str,
+    job_id: str,
+    work_item_id: str,
+    fence: str,
+    attempt: int,
+    generation_id: str | None,
+    entries: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "schema": ARTIFACT_SCHEMA,
+        "key": key,
+        "job_id": job_id,
+        "work_item_id": work_item_id,
+        "fence": fence,
+        "attempt": attempt,
+        "generation_id": generation_id,
+        "publication_state": "staged",
+        "artifacts": entries,
+    }
+
+
 class BuildArtifactStore:
     """Content-addressed artifact storage with explicit recovery states.
 
@@ -1268,33 +1449,14 @@ class BuildArtifactStore:
     ) -> StagedArtifacts:
         """Copy and checksum declared outputs into a private stage directory."""
 
-        if attempt < 1 or not fence.strip():
-            raise ArtifactStoreError(
-                "artifact staging requires a positive attempt and fence"
-            )
-        if not job_id.strip() or not work_item_id.strip():
-            raise ArtifactStoreError(
-                "artifact staging requires exact job and WorkItem identities"
-            )
-        raw_tree = Path(build_tree).expanduser()
-        _reject_symlink_path(raw_tree)
-        tree = raw_tree.resolve(strict=True)
+        _require_valid_stage_request(attempt, fence, job_id, work_item_id)
+        raw_tree, tree = _resolve_build_tree(build_tree)
         patterns = tuple(patterns)
         if not patterns:
             raise ArtifactStoreError("artifact staging requires at least one pattern")
-        if Path(workdir).is_absolute() or ".." in Path(workdir).parts:
-            raise ArtifactStoreError("artifact workdir must stay below the build tree")
-        raw_output_root = raw_tree / workdir
-        _reject_symlink_path(raw_output_root)
-        output_root = raw_output_root.resolve(strict=True)
-        if output_root != tree and tree not in output_root.parents:
-            raise ArtifactStoreError("artifact workdir escapes the build tree")
-        _reject_symlink_components(tree, output_root)
-        for pattern in patterns:
-            if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-                raise ArtifactStoreError(
-                    "artifact patterns must be relative and stay below workdir"
-                )
+        output_root = _resolve_stage_output_root(raw_tree, tree, workdir)
+        _require_relative_patterns(patterns)
+
         key = _key_component(key)
         stage_dir = (
             self.staging_root
@@ -1307,96 +1469,37 @@ class BuildArtifactStore:
         except OSError:
             shutil.rmtree(stage_dir, ignore_errors=True)
             raise
-        entries: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        total_bytes = 0
-        admitted_max_artifacts = (
-            _MAX_STAGE_ARTIFACTS
-            if max_artifacts is None
-            else min(max_artifacts, _MAX_STAGE_ARTIFACTS)
+
+        budget = _admitted_stage_budget(max_artifacts, max_bytes)
+        paths = _StagePaths(
+            output_root=output_root, artifact_dir=artifact_dir, stage_dir=stage_dir
         )
-        admitted_max_bytes = (
-            _MAX_STAGE_BYTES if max_bytes is None else min(max_bytes, _MAX_STAGE_BYTES)
-        )
+        accumulator = _StageAccumulator()
         try:
             matches_by_pattern = _bounded_matching_files(
                 output_root,
                 patterns,
                 max_entries=_MAX_SCAN_ENTRIES,
-                max_files=admitted_max_artifacts,
-                max_bytes=admitted_max_bytes,
+                max_files=budget.admitted_max_artifacts,
+                max_bytes=budget.admitted_max_bytes,
             )
         except Exception:
             shutil.rmtree(stage_dir, ignore_errors=True)
             raise
         for pattern in patterns:
-            matches = matches_by_pattern[pattern]
-            if not matches:
-                shutil.rmtree(stage_dir, ignore_errors=True)
-                raise ArtifactStoreError(
-                    f"build declared artifact pattern {pattern!r} but produced no file"
-                )
-            if len(seen) + len(matches) > admitted_max_artifacts:
-                shutil.rmtree(stage_dir, ignore_errors=True)
-                raise ArtifactStoreError(
-                    "build produced more artifacts than the admitted staging bound"
-                )
-            for source in matches:
-                try:
-                    _reject_symlink_components(output_root, source)
-                    if source.is_symlink():
-                        raise ArtifactStoreError(
-                            f"symlink artifact source is not allowed: {source}"
-                        )
-                    try:
-                        source.resolve(strict=True).relative_to(output_root)
-                    except (OSError, ValueError) as exc:
-                        raise ArtifactStoreError(
-                            "artifact source escapes its declared output root"
-                        ) from exc
-                    relative = source.relative_to(output_root)
-                    relative_name = str(relative)
-                    if relative_name in seen:
-                        continue
-                    seen.add(relative_name)
-                    remaining_bytes = admitted_max_bytes - total_bytes
-                    if remaining_bytes < 0:
-                        raise ArtifactStoreError(
-                            "build artifacts exceed the admitted staging byte bound"
-                        )
-                    destination = artifact_dir / relative
-                    copied_bytes = _copy_file_no_follow(
-                        source,
-                        destination,
-                        max_bytes=remaining_bytes,
-                    )
-                    _fsync_file(destination)
-                    total_bytes += copied_bytes
-                    entries.append(
-                        {
-                            "pattern": pattern,
-                            "relative_path": relative_name,
-                            "staged_at": str(destination),
-                            "sha256": _sha256_file(
-                                destination, max_bytes=_MAX_STAGE_BYTES
-                            ),
-                            "bytes": copied_bytes,
-                        }
-                    )
-                except Exception:
-                    shutil.rmtree(stage_dir, ignore_errors=True)
-                    raise
-        manifest: dict[str, Any] = {
-            "schema": ARTIFACT_SCHEMA,
-            "key": key,
-            "job_id": job_id,
-            "work_item_id": work_item_id,
-            "fence": fence,
-            "attempt": attempt,
-            "generation_id": generation_id,
-            "publication_state": "staged",
-            "artifacts": entries,
-        }
+            _stage_pattern_matches(
+                pattern, matches_by_pattern[pattern], paths, budget, accumulator
+            )
+
+        manifest = _build_stage_manifest(
+            key,
+            job_id,
+            work_item_id,
+            fence,
+            attempt,
+            generation_id,
+            accumulator.entries,
+        )
         try:
             _atomic_write_json(stage_dir / MANIFEST_NAME, manifest)
             _fsync_directory(artifact_dir)
