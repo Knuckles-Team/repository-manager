@@ -83,6 +83,23 @@ class InventoryHost:
     role: str = ""
 
 
+def _hosts_from_group(group_name: str, group: Any) -> list[InventoryHost]:
+    if not isinstance(group, dict):
+        return []
+    group_hosts = group.get("hosts")
+    if not isinstance(group_hosts, dict):
+        return []
+    hosts: list[InventoryHost] = []
+    for alias, attrs in group_hosts.items():
+        if not isinstance(alias, str) or not alias.strip():
+            continue
+        role = ""
+        if isinstance(attrs, dict):
+            role = str(attrs.get("role") or "")
+        hosts.append(InventoryHost(alias=alias, group=str(group_name), role=role))
+    return hosts
+
+
 def parse_inventory_hosts(path: Path | str | None = None) -> tuple[InventoryHost, ...]:
     """Read the ansible-shaped inventory YAML and return its host aliases.
 
@@ -101,23 +118,12 @@ def parse_inventory_hosts(path: Path | str | None = None) -> tuple[InventoryHost
     if not isinstance(data, dict):
         return ()
 
-    hosts: list[InventoryHost] = []
     children = (data.get("all") or {}).get("children") or {}
     if not isinstance(children, dict):
         return ()
+    hosts: list[InventoryHost] = []
     for group_name, group in children.items():
-        if not isinstance(group, dict):
-            continue
-        group_hosts = group.get("hosts")
-        if not isinstance(group_hosts, dict):
-            continue
-        for alias, attrs in group_hosts.items():
-            if not isinstance(alias, str) or not alias.strip():
-                continue
-            role = ""
-            if isinstance(attrs, dict):
-                role = str(attrs.get("role") or "")
-            hosts.append(InventoryHost(alias=alias, group=str(group_name), role=role))
+        hosts.extend(_hosts_from_group(group_name, group))
     return tuple(hosts)
 
 
