@@ -79,66 +79,104 @@ def markdown_files(repository: Path) -> list[Path]:
     return [path for path in files if path.is_file()]
 
 
-def check_repository(repository: Path) -> list[str]:
+def _check_required_files(repository: Path) -> list[str]:
     errors: list[str] = []
-
     for relative in REQUIRED_FILES:
         if not (repository / relative).is_file():
             errors.append(f"missing required documentation: {relative}")
+    return errors
 
+
+def _check_readme_contract(repository: Path) -> list[str]:
     readme = repository / "README.md"
     if (
         readme.is_file()
         and "<!-- GOVERNED-CAPABILITY:START -->"
         not in readme.read_text(encoding="utf-8")
     ):
-        errors.append("README is missing the governed capability contract")
+        return ["README is missing the governed capability contract"]
+    return []
 
+
+REQUIRED_NAV_PAGES = (
+    "index.md",
+    "installation.md",
+    "configuration.md",
+    "deployment.md",
+    "usage.md",
+)
+
+
+def _check_mkdocs_nav(repository: Path) -> list[str]:
     mkdocs = repository / "mkdocs.yml"
-    if mkdocs.is_file():
-        nav_pages: set[str] = set()
-        for line_number, line in enumerate(
-            mkdocs.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            match = NAV_PAGE.match(line)
-            if not match:
-                continue
-            page = match.group(1)
-            nav_pages.add(page)
-            if not (repository / "docs" / page).is_file():
-                errors.append(
-                    f"mkdocs.yml:{line_number}: nav target does not exist: {page}"
-                )
-        for required_page in (
-            "index.md",
-            "installation.md",
-            "configuration.md",
-            "deployment.md",
-            "usage.md",
-        ):
-            if required_page not in nav_pages:
-                errors.append(f"mkdocs nav omits required page: {required_page}")
+    if not mkdocs.is_file():
+        return []
+    errors: list[str] = []
+    nav_pages: set[str] = set()
+    for line_number, line in enumerate(
+        mkdocs.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        match = NAV_PAGE.match(line)
+        if not match:
+            continue
+        page = match.group(1)
+        nav_pages.add(page)
+        if not (repository / "docs" / page).is_file():
+            errors.append(
+                f"mkdocs.yml:{line_number}: nav target does not exist: {page}"
+            )
+    for required_page in REQUIRED_NAV_PAGES:
+        if required_page not in nav_pages:
+            errors.append(f"mkdocs nav omits required page: {required_page}")
+    return errors
 
+
+def _check_unsafe_patterns(relative_document: Path, line_number: int, line: str) -> list[str]:
+    return [
+        f"{relative_document}:{line_number}: {label}"
+        for label, pattern in UNSAFE_PATTERNS
+        if pattern.search(line)
+    ]
+
+
+def _check_markdown_links(
+    document: Path, relative_document: Path, line_number: int, line: str
+) -> list[str]:
+    errors: list[str] = []
+    for raw_target in MARKDOWN_LINK.findall(line):
+        target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
+        if not target or target.startswith(
+            ("http://", "https://", "mailto:", "#", "data:", "/")
+        ):
+            continue
+        local_target = target.split("#", 1)[0].split("?", 1)[0]
+        if local_target and not (document.parent / local_target).exists():
+            errors.append(
+                f"{relative_document}:{line_number}: missing local link: {target}"
+            )
+    return errors
+
+
+def _check_markdown_document(repository: Path, document: Path) -> list[str]:
+    errors: list[str] = []
+    relative_document = document.relative_to(repository)
+    for line_number, line in enumerate(
+        document.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        errors.extend(_check_unsafe_patterns(relative_document, line_number, line))
+        errors.extend(
+            _check_markdown_links(document, relative_document, line_number, line)
+        )
+    return errors
+
+
+def check_repository(repository: Path) -> list[str]:
+    errors: list[str] = []
+    errors.extend(_check_required_files(repository))
+    errors.extend(_check_readme_contract(repository))
+    errors.extend(_check_mkdocs_nav(repository))
     for document in markdown_files(repository):
-        relative_document = document.relative_to(repository)
-        for line_number, line in enumerate(
-            document.read_text(encoding="utf-8").splitlines(), start=1
-        ):
-            for label, pattern in UNSAFE_PATTERNS:
-                if pattern.search(line):
-                    errors.append(f"{relative_document}:{line_number}: {label}")
-
-            for raw_target in MARKDOWN_LINK.findall(line):
-                target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
-                if not target or target.startswith(
-                    ("http://", "https://", "mailto:", "#", "data:", "/")
-                ):
-                    continue
-                local_target = target.split("#", 1)[0].split("?", 1)[0]
-                if local_target and not (document.parent / local_target).exists():
-                    errors.append(
-                        f"{relative_document}:{line_number}: missing local link: {target}"
-                    )
+        errors.extend(_check_markdown_document(repository, document))
     return errors
 
 
