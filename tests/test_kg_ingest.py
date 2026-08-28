@@ -45,6 +45,28 @@ class _FakeClient:
         self.txn = _FakeTxn()
 
 
+def _validate_capture_entities(entities) -> None:
+    if not entities:
+        raise NativeIngestError("native ingest requires at least one entity")
+    if any("type" in entity or not entity.get("node_type") for entity in entities):
+        raise NativeIngestError("native ingest nodes require canonical node_type")
+
+
+def _capture_entity_row(entity, *, source, domain) -> dict:
+    row = {key: value for key, value in entity.items() if value is not None}
+    row.setdefault("source", source)
+    row.setdefault("domain", domain)
+    return row
+
+
+def _capture_edge_tuple(relationship) -> tuple:
+    return (
+        relationship["source"],
+        relationship["target"],
+        {"relationship": relationship["relationship"]},
+    )
+
+
 @pytest.fixture(autouse=True)
 def _capture_repository_mapping(monkeypatch):
     """Keep repository DTO tests at their mapping boundary.
@@ -55,23 +77,12 @@ def _capture_repository_mapping(monkeypatch):
     """
 
     def capture(entities, relationships, *, source, domain, client, graph):
-        if not entities:
-            raise NativeIngestError("native ingest requires at least one entity")
-        if any("type" in entity or not entity.get("node_type") for entity in entities):
-            raise NativeIngestError("native ingest nodes require canonical node_type")
+        _validate_capture_entities(entities)
         for entity in entities:
-            row = {key: value for key, value in entity.items() if value is not None}
-            row.setdefault("source", source)
-            row.setdefault("domain", domain)
+            row = _capture_entity_row(entity, source=source, domain=domain)
             client.txn.nodes[row["id"]] = row
         for relationship in relationships or []:
-            client.txn.edges.append(
-                (
-                    relationship["source"],
-                    relationship["target"],
-                    {"relationship": relationship["relationship"]},
-                )
-            )
+            client.txn.edges.append(_capture_edge_tuple(relationship))
         client.txn.committed = True
         return {"nodes": len(entities), "edges": len(relationships or [])}
 
