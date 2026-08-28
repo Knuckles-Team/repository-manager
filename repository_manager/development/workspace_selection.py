@@ -270,19 +270,9 @@ def _edge_sort_key(edge: DependencyEdge) -> tuple[str, str, str, str, str]:
     )
 
 
-def _graph_inventory(
-    graph: DependencyGraph,
-) -> tuple[
-    tuple[str, ...],
-    dict[str, ProjectRecord],
-    dict[str, PackageRecord],
-    tuple[DependencyEdge, ...],
-    tuple[tuple[str, str], ...],
-]:
-    """Validate and normalize a graph before applying a selection policy."""
-
-    if not isinstance(graph, DependencyGraph):
-        raise SelectionError("selection requires a DependencyGraph")
+def _index_projects(
+    graph: DependencyGraph, diagnostics: list[Diagnostic]
+) -> dict[str, ProjectRecord]:
     projects = _typed_sequence(
         graph.projects,
         "graph projects",
@@ -290,7 +280,6 @@ def _graph_inventory(
         max_items=MAX_PROJECTS,
     )
     project_map: dict[str, ProjectRecord] = {}
-    diagnostics: list[Diagnostic] = []
     for project in projects:
         project_id = project.project_id
         if project_id in project_map:
@@ -305,7 +294,12 @@ def _graph_inventory(
             project_map[project_id] = project
     if len(project_map) > MAX_PROJECTS:
         raise SelectionError("graph project count exceeds the bound")
+    return project_map
 
+
+def _index_packages(
+    project_map: dict[str, ProjectRecord], diagnostics: list[Diagnostic]
+) -> dict[str, PackageRecord]:
     package_map: dict[str, PackageRecord] = {}
     for project in project_map.values():
         for package in project.packages:
@@ -322,6 +316,14 @@ def _graph_inventory(
                 package_map[package_id] = package
     if len(package_map) > MAX_PACKAGES:
         raise SelectionError("graph package count exceeds the bound")
+    return package_map
+
+
+def _cross_check_graph_packages(
+    graph: DependencyGraph,
+    package_map: dict[str, PackageRecord],
+    diagnostics: list[Diagnostic],
+) -> None:
     graph_packages = _typed_sequence(
         graph.packages,
         "graph packages",
@@ -341,6 +343,13 @@ def _graph_inventory(
             )
         )
 
+
+def _index_edges(
+    graph: DependencyGraph,
+    package_map: dict[str, PackageRecord],
+    project_map: dict[str, ProjectRecord],
+    diagnostics: list[Diagnostic],
+) -> dict[tuple[str, str], DependencyEdge]:
     edges = _typed_sequence(
         graph.edges,
         "graph edges",
@@ -392,12 +401,23 @@ def _graph_inventory(
                 )
             )
         edge_map[key] = edge
+    return edge_map
 
+
+def _index_project_edges(
+    graph: DependencyGraph,
+    project_map: dict[str, ProjectRecord],
+    diagnostics: list[Diagnostic],
+) -> set[tuple[str, str]]:
     project_edge_values = _bounded_sequence(
         graph.project_edges,
         "graph project edges",
         max_items=MAX_EDGES,
     )
+    # NOTE (found during CX decomposition, not fixed — out of scope per
+    # WD7-RM-03 brief): `project_edges` (the list, as opposed to
+    # `project_edge_set`) is write-only in the original code too — appended
+    # to but never read. Preserved verbatim rather than dropped.
     project_edges: list[tuple[str, str]] = []
     project_edge_set: set[tuple[str, str]] = set()
     for item in project_edge_values:
@@ -436,6 +456,15 @@ def _graph_inventory(
                     "graph project edge endpoint is not frozen",
                 )
             )
+    return project_edge_set
+
+
+def _cross_check_project_edges(
+    edge_map: dict[tuple[str, str], DependencyEdge],
+    project_map: dict[str, ProjectRecord],
+    project_edge_set: set[tuple[str, str]],
+    diagnostics: list[Diagnostic],
+) -> None:
     expected_project_edges = {
         (edge.dependent_project_id, edge.dependency_project_id)
         for edge in edge_map.values()
@@ -451,7 +480,14 @@ def _graph_inventory(
                 "project edges do not match frozen package edges",
             )
         )
-    ordered_projects = tuple(sorted(project_map))
+
+
+def _validate_parallel_groups(
+    graph: DependencyGraph,
+    ordered_projects: tuple[str, ...],
+    project_edge_set: set[tuple[str, str]],
+    diagnostics: list[Diagnostic],
+) -> tuple[tuple[str, ...], ...]:
     expected_groups, cycle_diagnostics = _topological_groups(
         ordered_projects,
         tuple(sorted(project_edge_set)),
@@ -470,11 +506,24 @@ def _graph_inventory(
                 "graph parallel groups do not match deterministic topology",
             )
         )
-    ordered_edges = tuple(sorted(edge_map.values(), key=_edge_sort_key))
-    ordered_project_edges = tuple(sorted(project_edge_set))
-    ordered_packages = tuple(
-        sorted(package_map.values(), key=lambda item: item.key.value)
-    )
+    return expected_groups
+
+
+@dataclass(frozen=True)
+class _OrderedGraphArtifacts:
+    projects: tuple[str, ...]
+    packages: tuple[PackageRecord, ...]
+    edges: tuple[DependencyEdge, ...]
+    project_edges: tuple[tuple[str, str], ...]
+    groups: tuple[tuple[str, ...], ...]
+
+
+def _validate_digest(
+    graph: DependencyGraph,
+    project_map: dict[str, ProjectRecord],
+    ordered: _OrderedGraphArtifacts,
+    diagnostics: list[Diagnostic],
+) -> None:
     digest_value = graph.digest
     try:
         digest_value = _bounded_text(digest_value, "graph digest", max_length=64)
@@ -491,12 +540,12 @@ def _graph_inventory(
             {
                 "projects": [
                     _project_payload(project_map[project_id])
-                    for project_id in ordered_projects
+                    for project_id in ordered.projects
                 ],
-                "packages": [_package_payload(package) for package in ordered_packages],
-                "edges": [_edge_payload(edge) for edge in ordered_edges],
-                "project_edges": ordered_project_edges,
-                "parallel_groups": expected_groups,
+                "packages": [_package_payload(package) for package in ordered.packages],
+                "edges": [_edge_payload(edge) for edge in ordered.edges],
+                "project_edges": ordered.project_edges,
+                "parallel_groups": ordered.groups,
             }
         ).encode("utf-8")
     ).hexdigest()
@@ -513,6 +562,53 @@ def _graph_inventory(
                 "graph digest does not match canonical graph contents",
             )
         )
+
+
+def _graph_inventory(
+    graph: DependencyGraph,
+) -> tuple[
+    tuple[str, ...],
+    dict[str, ProjectRecord],
+    dict[str, PackageRecord],
+    tuple[DependencyEdge, ...],
+    tuple[tuple[str, str], ...],
+]:
+    """Validate and normalize a graph before applying a selection policy."""
+
+    if not isinstance(graph, DependencyGraph):
+        raise SelectionError("selection requires a DependencyGraph")
+
+    diagnostics: list[Diagnostic] = []
+    project_map = _index_projects(graph, diagnostics)
+    package_map = _index_packages(project_map, diagnostics)
+    _cross_check_graph_packages(graph, package_map, diagnostics)
+    edge_map = _index_edges(graph, package_map, project_map, diagnostics)
+    project_edge_set = _index_project_edges(graph, project_map, diagnostics)
+    _cross_check_project_edges(edge_map, project_map, project_edge_set, diagnostics)
+
+    ordered_projects = tuple(sorted(project_map))
+    expected_groups = _validate_parallel_groups(
+        graph, ordered_projects, project_edge_set, diagnostics
+    )
+    ordered_edges = tuple(sorted(edge_map.values(), key=_edge_sort_key))
+    ordered_project_edges = tuple(sorted(project_edge_set))
+    ordered_packages = tuple(
+        sorted(package_map.values(), key=lambda item: item.key.value)
+    )
+
+    _validate_digest(
+        graph,
+        project_map,
+        _OrderedGraphArtifacts(
+            projects=ordered_projects,
+            packages=ordered_packages,
+            edges=ordered_edges,
+            project_edges=ordered_project_edges,
+            groups=expected_groups,
+        ),
+        diagnostics,
+    )
+
     if diagnostics:
         raise GraphValidationError(diagnostics)
     return (
@@ -522,6 +618,58 @@ def _graph_inventory(
         ordered_edges,
         ordered_project_edges,
     )
+
+
+def _record_direction_edge(
+    target: str,
+    source: str,
+    reason: SelectionReason,
+    included: set[str],
+    reasons: dict[str, set[SelectionReason]],
+    via_projects: dict[str, set[str]],
+) -> None:
+    included.add(target)
+    reasons[target].add(reason)
+    via_projects[target].add(source)
+
+
+def _expand_direct(
+    roots: tuple[str, ...],
+    adjacency: dict[str, tuple[str, ...]],
+    reason: SelectionReason,
+    included: set[str],
+    reasons: dict[str, set[SelectionReason]],
+    via_projects: dict[str, set[str]],
+) -> None:
+    # Keep this loop explicit to make the one-hop boundary auditable.
+    for source in roots:
+        for target in adjacency[source]:
+            _record_direction_edge(
+                target, source, reason, included, reasons, via_projects
+            )
+
+
+def _expand_transitive(
+    roots: tuple[str, ...],
+    adjacency: dict[str, tuple[str, ...]],
+    reason: SelectionReason,
+    included: set[str],
+    reasons: dict[str, set[SelectionReason]],
+    via_projects: dict[str, set[str]],
+) -> None:
+    frontier_set = set(roots)
+    visited = set(roots)
+    while frontier_set:
+        next_nodes: set[str] = set()
+        for source in sorted(frontier_set):
+            for target in adjacency[source]:
+                _record_direction_edge(
+                    target, source, reason, included, reasons, via_projects
+                )
+                if target not in visited:
+                    visited.add(target)
+                    next_nodes.add(target)
+        frontier_set = next_nodes
 
 
 def _expand_direction(
@@ -536,38 +684,14 @@ def _expand_direction(
     if mode == InclusionMode.NONE:
         return
     if mode == InclusionMode.DIRECT:
-        # Keep this loop explicit to make the one-hop boundary auditable.
-        for source in roots:
-            for target in adjacency[source]:
-                included.add(target)
-                reasons[target].add(reason)
-                via_projects[target].add(source)
+        _expand_direct(roots, adjacency, reason, included, reasons, via_projects)
         return
-    frontier_set = set(roots)
-    visited = set(roots)
-    while frontier_set:
-        next_nodes: set[str] = set()
-        for source in sorted(frontier_set):
-            for target in adjacency[source]:
-                included.add(target)
-                reasons[target].add(reason)
-                via_projects[target].add(source)
-                if target not in visited:
-                    visited.add(target)
-                    next_nodes.add(target)
-        frontier_set = next_nodes
+    _expand_transitive(roots, adjacency, reason, included, reasons, via_projects)
 
 
-def _selection_evidence(
-    policy: SelectionPolicy,
-    known: tuple[str, ...],
-    project_edges: tuple[tuple[str, str], ...],
-) -> tuple[set[str], dict[str, set[SelectionReason]], dict[str, set[str]]]:
-    """Recompute closure membership/reasons from frozen policy and edge evidence."""
-
-    known_set = set(known)
-    if not set(policy.roots).issubset(known_set):
-        raise SelectionError("selection policy roots must be known projects")
+def _build_direction_adjacency(
+    known: tuple[str, ...], project_edges: tuple[tuple[str, str], ...]
+) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
     upstream_sets: dict[str, set[str]] = {project_id: set() for project_id in known}
     downstream_sets: dict[str, set[str]] = {project_id: set() for project_id in known}
     for dependent, dependency in project_edges:
@@ -581,16 +705,37 @@ def _selection_evidence(
         project_id: tuple(sorted(values))
         for project_id, values in downstream_sets.items()
     }
-    included = set(policy.roots)
+    return upstream, downstream
+
+
+def _seed_selection_reasons(
+    policy: SelectionPolicy, known: tuple[str, ...]
+) -> dict[str, set[SelectionReason]]:
     reasons: dict[str, set[SelectionReason]] = {
         project_id: set() for project_id in known
     }
-    via_projects: dict[str, set[str]] = {project_id: set() for project_id in known}
     for project_id in policy.changed_projects:
         reasons[project_id].add(SelectionReason.CHANGED)
     if policy.selected_projects:
         for project_id in policy.selected_projects:
             reasons[project_id].add(SelectionReason.EXPLICIT)
+    return reasons
+
+
+def _selection_evidence(
+    policy: SelectionPolicy,
+    known: tuple[str, ...],
+    project_edges: tuple[tuple[str, str], ...],
+) -> tuple[set[str], dict[str, set[SelectionReason]], dict[str, set[str]]]:
+    """Recompute closure membership/reasons from frozen policy and edge evidence."""
+
+    known_set = set(known)
+    if not set(policy.roots).issubset(known_set):
+        raise SelectionError("selection policy roots must be known projects")
+    upstream, downstream = _build_direction_adjacency(known, project_edges)
+    included = set(policy.roots)
+    reasons = _seed_selection_reasons(policy, known)
+    via_projects: dict[str, set[str]] = {project_id: set() for project_id in known}
     _expand_direction(
         policy.roots,
         upstream,
@@ -621,7 +766,6 @@ def _closure_digest(closure: SelectedChangeClosure) -> str:
             ensure_ascii=False,
         ).encode("utf-8")
     ).hexdigest()
-
 
 
 def _verify_closure_policy_and_source(
@@ -690,16 +834,9 @@ def _verify_closure_projects(
         len(project_map) != len(project_values)
         or tuple(sorted(project_map)) != selected
     ):
-        raise SelectionError(
-            "closure projects must exactly match selected project IDs"
-        )
-    expected_projects = tuple(
-        source_project_map[project_id] for project_id in selected
-    )
-    if (
-        tuple(project_map[project_id] for project_id in selected)
-        != expected_projects
-    ):
+        raise SelectionError("closure projects must exactly match selected project IDs")
+    expected_projects = tuple(source_project_map[project_id] for project_id in selected)
+    if tuple(project_map[project_id] for project_id in selected) != expected_projects:
         raise SelectionError(
             "closure projects must exactly match the frozen source graph"
         )
@@ -783,9 +920,7 @@ def _verify_closure_edges(
         and edge.dependency_project_id in selected
     )
     if ordered_edges != expected_selected_edges:
-        raise SelectionError(
-            "closure edges must exactly match the frozen source graph"
-        )
+        raise SelectionError("closure edges must exactly match the frozen source graph")
     ctx["ordered_edges"] = ordered_edges
 
 
@@ -841,9 +976,7 @@ def _verify_closure_project_edges(
         if edge.dependent_project_id != edge.dependency_project_id
     }
     if project_edge_set != expected_project_edges:
-        raise SelectionError(
-            "closure project edges must match selected package edges"
-        )
+        raise SelectionError("closure project edges must match selected package edges")
     ctx["project_edge_set"] = project_edge_set
     ctx["ordered_project_edges"] = tuple(sorted(project_edge_set))
 
@@ -992,13 +1125,16 @@ def _verify_closure_explanations(
             "closure explanations must cover every known project exactly once"
         )
     if any(
-        set(explanation.via_projects) - set(known)
-        for explanation in explanation_values
+        set(explanation.via_projects) - set(known) for explanation in explanation_values
     ):
         raise SelectionError("closure explanation witnesses must be known projects")
     for project_id in known:
         _verify_closure_explanation_matches_evidence(
-            project_id, explanation_map, expected_included, expected_reasons, expected_via
+            project_id,
+            explanation_map,
+            expected_included,
+            expected_reasons,
+            expected_via,
         )
     ctx["explanation_map"] = explanation_map
 
@@ -1085,6 +1221,7 @@ class SelectedChangeClosure:
         for stage in _CLOSURE_VALIDATION_STAGES:
             stage(self, ctx)
         _finalize_closure_state(self, ctx)
+
     @property
     def included_project_ids(self) -> tuple[str, ...]:
         """Alias for the selected canonical project set."""
@@ -1156,16 +1293,9 @@ def derive_phase_view(
     )
 
 
-def derive_selected_closure(
-    graph: DependencyGraph, policy: SelectionPolicy
-) -> SelectedChangeClosure:
-    """Derive a deterministic selected subgraph from a frozen dependency graph."""
-
-    if not isinstance(policy, SelectionPolicy):
-        raise SelectionError("closure policy must be a SelectionPolicy")
-    known, project_map, _, edges, project_edges = _graph_inventory(graph)
-    if not known:
-        raise SelectionError("cannot derive a closure from an empty graph")
+def _reject_unknown_selection_projects(
+    policy: SelectionPolicy, known: tuple[str, ...]
+) -> None:
     unknown = sorted(
         (set(policy.changed_projects) | set(policy.selected_projects)) - set(known)
     )
@@ -1180,9 +1310,15 @@ def derive_selected_closure(
                 for project_id in unknown
             )
         )
-    included, reasons, via_projects = _selection_evidence(policy, known, project_edges)
 
-    explanations = tuple(
+
+def _build_selection_explanations(
+    known: tuple[str, ...],
+    included: set[str],
+    reasons: dict[str, set[SelectionReason]],
+    via_projects: dict[str, set[str]],
+) -> tuple[SelectionExplanation, ...]:
+    return tuple(
         SelectionExplanation(
             project_id=project_id,
             included=project_id in included,
@@ -1195,8 +1331,11 @@ def derive_selected_closure(
         )
         for project_id in known
     )
-    selected = tuple(sorted(included))
-    selected_projects = tuple(project_map[item] for item in selected)
+
+
+def _build_selected_edges(
+    edges: tuple[DependencyEdge, ...], included: set[str]
+) -> tuple[tuple[DependencyEdge, ...], tuple[tuple[str, str], ...]]:
     selected_edges = tuple(
         edge
         for edge in edges
@@ -1212,6 +1351,26 @@ def derive_selected_closure(
             }
         )
     )
+    return selected_edges, selected_project_edges
+
+
+def derive_selected_closure(
+    graph: DependencyGraph, policy: SelectionPolicy
+) -> SelectedChangeClosure:
+    """Derive a deterministic selected subgraph from a frozen dependency graph."""
+
+    if not isinstance(policy, SelectionPolicy):
+        raise SelectionError("closure policy must be a SelectionPolicy")
+    known, project_map, _, edges, project_edges = _graph_inventory(graph)
+    if not known:
+        raise SelectionError("cannot derive a closure from an empty graph")
+    _reject_unknown_selection_projects(policy, known)
+    included, reasons, via_projects = _selection_evidence(policy, known, project_edges)
+
+    explanations = _build_selection_explanations(known, included, reasons, via_projects)
+    selected = tuple(sorted(included))
+    selected_projects = tuple(project_map[item] for item in selected)
+    selected_edges, selected_project_edges = _build_selected_edges(edges, included)
     groups, selected_cycle_diagnostics = _topological_groups(
         selected, selected_project_edges
     )
@@ -1585,34 +1744,35 @@ class PhaseShadowReport:
         return payload
 
 
-def _manual_reference(
-    raw: str,
-    known: tuple[str, ...],
+def _manual_reference_by_canonical_id(
+    value: str, known_set: set[str]
 ) -> tuple[str | None, ShadowDiagnostic | None]:
-    value = _bounded_text(raw, "legacy project reference")
-    known_set = set(known)
-    if value.startswith("repo:") or "/" in value:
-        try:
-            canonical = canonical_repository_id(value)
-        except WorkspaceReleaseError:
-            return (
-                None,
-                ShadowDiagnostic(
-                    ShadowDiagnosticCode.INVALID_REFERENCE,
-                    value,
-                    "legacy project reference is not a canonical repository identity",
-                ),
-            )
-        if canonical not in known_set:
-            return (
-                None,
-                ShadowDiagnostic(
-                    ShadowDiagnosticCode.MISSING_PROJECT,
-                    value,
-                    "legacy project reference is not a known canonical project",
-                ),
-            )
-        return canonical, None
+    try:
+        canonical = canonical_repository_id(value)
+    except WorkspaceReleaseError:
+        return (
+            None,
+            ShadowDiagnostic(
+                ShadowDiagnosticCode.INVALID_REFERENCE,
+                value,
+                "legacy project reference is not a canonical repository identity",
+            ),
+        )
+    if canonical not in known_set:
+        return (
+            None,
+            ShadowDiagnostic(
+                ShadowDiagnosticCode.MISSING_PROJECT,
+                value,
+                "legacy project reference is not a known canonical project",
+            ),
+        )
+    return canonical, None
+
+
+def _manual_reference_by_basename(
+    value: str, known: tuple[str, ...]
+) -> tuple[str | None, ShadowDiagnostic | None]:
     if "\\" in value or ":" in value or value in {".", ".."}:
         return (
             None,
@@ -1652,6 +1812,16 @@ def _manual_reference(
     return candidates[0], None
 
 
+def _manual_reference(
+    raw: str,
+    known: tuple[str, ...],
+) -> tuple[str | None, ShadowDiagnostic | None]:
+    value = _bounded_text(raw, "legacy project reference")
+    if value.startswith("repo:") or "/" in value:
+        return _manual_reference_by_canonical_id(value, set(known))
+    return _manual_reference_by_basename(value, known)
+
+
 def _phase_members_display(project_ids: tuple[str, ...]) -> str:
     """Return bounded count/digest/prefix evidence for phase membership."""
 
@@ -1670,9 +1840,7 @@ def _phase_members_display(project_ids: tuple[str, ...]) -> str:
     return f"count={len(project_ids)};digest={digest};prefix={prefix}"
 
 
-def _validate_legacy_phase(phase: LegacyPhase, index: int) -> tuple[str, ...]:
-    if not isinstance(phase, LegacyPhase):
-        raise SelectionError(f"legacy phase {index} must be a LegacyPhase")
+def _validate_legacy_phase_scalars(phase: LegacyPhase, index: int) -> None:
     _bounded_text(phase.name, f"legacy phase {index} name")
     if (
         isinstance(phase.phase, bool)
@@ -1688,6 +1856,12 @@ def _validate_legacy_phase(phase: LegacyPhase, index: int) -> tuple[str, ...]:
         or phase.wait_minutes < 0
     ):
         raise SelectionError(f"legacy phase {index} wait_minutes must be non-negative")
+
+
+def _validate_legacy_phase(phase: LegacyPhase, index: int) -> tuple[str, ...]:
+    if not isinstance(phase, LegacyPhase):
+        raise SelectionError(f"legacy phase {index} must be a LegacyPhase")
+    _validate_legacy_phase_scalars(phase, index)
     references = _bounded_sequence(
         phase.project_references,
         f"legacy phase {index} project references",
@@ -1699,6 +1873,196 @@ def _validate_legacy_phase(phase: LegacyPhase, index: int) -> tuple[str, ...]:
         _bounded_text(reference, f"legacy phase {index} project reference")
         for reference in references
     )
+
+
+def _normalize_legacy_phases(
+    phase_values: Iterable[LegacyPhase],
+) -> list[tuple[LegacyPhase, tuple[str, ...]]]:
+    normalized_phases: list[tuple[LegacyPhase, tuple[str, ...]]] = []
+    total_project_references = 0
+    for index, phase in enumerate(phase_values):
+        references = _validate_legacy_phase(phase, index)
+        total_project_references += len(references)
+        if total_project_references > MAX_EDGES:
+            raise SelectionError(
+                "legacy phase project references exceed the bounded total"
+            )
+        normalized_phases.append((phase, references))
+    return normalized_phases
+
+
+def _resolve_manual_phase_references(
+    legacy: LegacyPhase,
+    references: tuple[str, ...],
+    known: Any,
+    seen_projects: dict[str, str],
+    diagnostics: _DiagnosticAccumulator,
+) -> list[str]:
+    resolved: list[str] = []
+    for raw in references:
+        reference, diagnostic = _manual_reference(raw, known)
+        if diagnostic is not None:
+            diagnostics.add(diagnostic)
+            continue
+        assert reference is not None
+        if reference in seen_projects:
+            diagnostics.add(
+                ShadowDiagnostic(
+                    ShadowDiagnosticCode.DUPLICATE_PROJECT,
+                    reference,
+                    "legacy phase manifest assigns a project more than once",
+                    (
+                        ("first_phase", seen_projects[reference]),
+                        ("phase", legacy.name),
+                    ),
+                )
+            )
+        else:
+            seen_projects[reference] = legacy.name
+        resolved.append(reference)
+    return resolved
+
+
+def _build_manual_phases(
+    normalized_phases: list[tuple[LegacyPhase, tuple[str, ...]]],
+    known: Any,
+    diagnostics: _DiagnosticAccumulator,
+) -> tuple[DerivedPhase, ...]:
+    manual: list[DerivedPhase] = []
+    seen_projects: dict[str, str] = {}
+    for legacy, references in sorted(
+        normalized_phases, key=lambda item: _phase_sort_key(*item)
+    ):
+        resolved = _resolve_manual_phase_references(
+            legacy, references, known, seen_projects, diagnostics
+        )
+        manual.append(
+            DerivedPhase(
+                phase=legacy.phase,
+                project_ids=tuple(resolved),
+                bulk_bump=legacy.bulk_bump,
+                bulk_push=legacy.bulk_push,
+                wait_minutes=legacy.wait_minutes,
+            )
+        )
+    return tuple(manual)
+
+
+def _compare_phase_pair(
+    index: int,
+    new_phase: DerivedPhase,
+    old_phase: DerivedPhase,
+    diagnostics: _DiagnosticAccumulator,
+) -> None:
+    subject = f"phase-{index + 1}"
+    if new_phase.phase != old_phase.phase:
+        diagnostics.add(
+            ShadowDiagnostic(
+                ShadowDiagnosticCode.PHASE_ORDER_MISMATCH,
+                subject,
+                "derived and legacy phase numbers differ",
+                (
+                    ("derived", str(new_phase.phase)),
+                    ("manual", str(old_phase.phase)),
+                ),
+            )
+        )
+    if new_phase.project_ids != old_phase.project_ids:
+        if set(new_phase.project_ids) != set(old_phase.project_ids):
+            code = ShadowDiagnosticCode.PHASE_MEMBERSHIP_MISMATCH
+            message = "derived and legacy phase membership differs"
+        else:
+            code = ShadowDiagnosticCode.PHASE_ORDER_MISMATCH
+            message = "derived and legacy project order differs"
+        diagnostics.add(
+            ShadowDiagnostic(
+                code,
+                subject,
+                message,
+                (
+                    ("derived", _phase_members_display(new_phase.project_ids)),
+                    ("manual", _phase_members_display(old_phase.project_ids)),
+                ),
+            )
+        )
+    if (
+        new_phase.bulk_bump != old_phase.bulk_bump
+        or new_phase.bulk_push != old_phase.bulk_push
+    ):
+        diagnostics.add(
+            ShadowDiagnostic(
+                ShadowDiagnosticCode.PHASE_BULK_FLAG_MISMATCH,
+                subject,
+                "derived and legacy phase bulk flags differ",
+                (
+                    (
+                        "derived",
+                        f"bump={new_phase.bulk_bump},push={new_phase.bulk_push}",
+                    ),
+                    (
+                        "manual",
+                        f"bump={old_phase.bulk_bump},push={old_phase.bulk_push}",
+                    ),
+                ),
+            )
+        )
+    if new_phase.wait_minutes != old_phase.wait_minutes:
+        diagnostics.add(
+            ShadowDiagnostic(
+                ShadowDiagnosticCode.PHASE_WAIT_MISMATCH,
+                subject,
+                "derived and legacy phase wait times differ",
+                (
+                    ("derived", str(new_phase.wait_minutes)),
+                    ("manual", str(old_phase.wait_minutes)),
+                ),
+            )
+        )
+
+
+def _report_trailing_phase(
+    index: int,
+    phase: DerivedPhase,
+    code: ShadowDiagnosticCode,
+    message: str,
+    diagnostics: _DiagnosticAccumulator,
+) -> None:
+    diagnostics.add(
+        ShadowDiagnostic(
+            code,
+            f"phase-{index + 1}",
+            message,
+            (
+                ("phase", str(phase.phase)),
+                ("membership", _phase_members_display(phase.project_ids)),
+            ),
+        ),
+        mandatory=True,
+    )
+
+
+def _report_trailing_phases(
+    derived: tuple[DerivedPhase, ...],
+    manual_phases: tuple[DerivedPhase, ...],
+    common_count: int,
+    diagnostics: _DiagnosticAccumulator,
+) -> None:
+    for index in range(common_count, len(derived)):
+        _report_trailing_phase(
+            index,
+            derived[index],
+            ShadowDiagnosticCode.PHASE_TRAILING_DERIVED,
+            "derived phase has no matching legacy phase",
+            diagnostics,
+        )
+    for index in range(common_count, len(manual_phases)):
+        _report_trailing_phase(
+            index,
+            manual_phases[index],
+            ShadowDiagnosticCode.PHASE_TRAILING_MANUAL,
+            "legacy phase has no matching derived phase",
+            diagnostics,
+        )
 
 
 def compare_legacy_phases(
@@ -1717,56 +2081,11 @@ def compare_legacy_phases(
         LegacyPhase,
         max_items=MAX_PLAN_STAGES,
     )
-    normalized_phases: list[tuple[LegacyPhase, tuple[str, ...]]] = []
-    total_project_references = 0
-    for index, phase in enumerate(phase_values):
-        references = _validate_legacy_phase(phase, index)
-        total_project_references += len(references)
-        if total_project_references > MAX_EDGES:
-            raise SelectionError(
-                "legacy phase project references exceed the bounded total"
-            )
-        normalized_phases.append((phase, references))
+    normalized_phases = _normalize_legacy_phases(phase_values)
     known = closure.known_project_ids
     derived = derive_phase_view(closure)
     diagnostics = _DiagnosticAccumulator()
-    manual: list[DerivedPhase] = []
-    seen_projects: dict[str, str] = {}
-    for legacy, references in sorted(
-        normalized_phases, key=lambda item: _phase_sort_key(*item)
-    ):
-        resolved: list[str] = []
-        for raw in references:
-            reference, diagnostic = _manual_reference(raw, known)
-            if diagnostic is not None:
-                diagnostics.add(diagnostic)
-                continue
-            assert reference is not None
-            if reference in seen_projects:
-                diagnostics.add(
-                    ShadowDiagnostic(
-                        ShadowDiagnosticCode.DUPLICATE_PROJECT,
-                        reference,
-                        "legacy phase manifest assigns a project more than once",
-                        (
-                            ("first_phase", seen_projects[reference]),
-                            ("phase", legacy.name),
-                        ),
-                    )
-                )
-            else:
-                seen_projects[reference] = legacy.name
-            resolved.append(reference)
-        manual.append(
-            DerivedPhase(
-                phase=legacy.phase,
-                project_ids=tuple(resolved),
-                bulk_bump=legacy.bulk_bump,
-                bulk_push=legacy.bulk_push,
-                wait_minutes=legacy.wait_minutes,
-            )
-        )
-    manual_phases = tuple(manual)
+    manual_phases = _build_manual_phases(normalized_phases, known, diagnostics)
     if len(derived) != len(manual_phases):
         diagnostics.add(
             ShadowDiagnostic(
@@ -1781,104 +2100,8 @@ def compare_legacy_phases(
     for index, (new_phase, old_phase) in enumerate(
         zip(derived[:common_count], manual_phases[:common_count], strict=True)
     ):
-        subject = f"phase-{index + 1}"
-        if new_phase.phase != old_phase.phase:
-            diagnostics.add(
-                ShadowDiagnostic(
-                    ShadowDiagnosticCode.PHASE_ORDER_MISMATCH,
-                    subject,
-                    "derived and legacy phase numbers differ",
-                    (
-                        ("derived", str(new_phase.phase)),
-                        ("manual", str(old_phase.phase)),
-                    ),
-                )
-            )
-        if new_phase.project_ids != old_phase.project_ids:
-            if set(new_phase.project_ids) != set(old_phase.project_ids):
-                code = ShadowDiagnosticCode.PHASE_MEMBERSHIP_MISMATCH
-                message = "derived and legacy phase membership differs"
-            else:
-                code = ShadowDiagnosticCode.PHASE_ORDER_MISMATCH
-                message = "derived and legacy project order differs"
-            diagnostics.add(
-                ShadowDiagnostic(
-                    code,
-                    subject,
-                    message,
-                    (
-                        ("derived", _phase_members_display(new_phase.project_ids)),
-                        ("manual", _phase_members_display(old_phase.project_ids)),
-                    ),
-                )
-            )
-        if (
-            new_phase.bulk_bump != old_phase.bulk_bump
-            or new_phase.bulk_push != old_phase.bulk_push
-        ):
-            diagnostics.add(
-                ShadowDiagnostic(
-                    ShadowDiagnosticCode.PHASE_BULK_FLAG_MISMATCH,
-                    subject,
-                    "derived and legacy phase bulk flags differ",
-                    (
-                        (
-                            "derived",
-                            f"bump={new_phase.bulk_bump},push={new_phase.bulk_push}",
-                        ),
-                        (
-                            "manual",
-                            f"bump={old_phase.bulk_bump},push={old_phase.bulk_push}",
-                        ),
-                    ),
-                )
-            )
-        if new_phase.wait_minutes != old_phase.wait_minutes:
-            diagnostics.add(
-                ShadowDiagnostic(
-                    ShadowDiagnosticCode.PHASE_WAIT_MISMATCH,
-                    subject,
-                    "derived and legacy phase wait times differ",
-                    (
-                        ("derived", str(new_phase.wait_minutes)),
-                        ("manual", str(old_phase.wait_minutes)),
-                    ),
-                )
-            )
-    for index in range(common_count, len(derived)):
-        trailing_phase = derived[index]
-        diagnostics.add(
-            ShadowDiagnostic(
-                ShadowDiagnosticCode.PHASE_TRAILING_DERIVED,
-                f"phase-{index + 1}",
-                "derived phase has no matching legacy phase",
-                (
-                    ("phase", str(trailing_phase.phase)),
-                    (
-                        "membership",
-                        _phase_members_display(trailing_phase.project_ids),
-                    ),
-                ),
-            ),
-            mandatory=True,
-        )
-    for index in range(common_count, len(manual_phases)):
-        trailing_phase = manual_phases[index]
-        diagnostics.add(
-            ShadowDiagnostic(
-                ShadowDiagnosticCode.PHASE_TRAILING_MANUAL,
-                f"phase-{index + 1}",
-                "legacy phase has no matching derived phase",
-                (
-                    ("phase", str(trailing_phase.phase)),
-                    (
-                        "membership",
-                        _phase_members_display(trailing_phase.project_ids),
-                    ),
-                ),
-            ),
-            mandatory=True,
-        )
+        _compare_phase_pair(index, new_phase, old_phase, diagnostics)
+    _report_trailing_phases(derived, manual_phases, common_count, diagnostics)
     finalized_diagnostics = diagnostics.finalize()
     exact_equal = not finalized_diagnostics and derived == manual_phases
     return PhaseShadowReport(
