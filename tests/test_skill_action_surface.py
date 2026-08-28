@@ -99,15 +99,8 @@ _BACKTICK_ACTION = re.compile(r"`([a-z_]+)`")
 _CANONICAL_CELL = re.compile(r"^(?:`[a-z_]+`,?\s*)+$")
 
 
-def find_violations(text: str) -> list[str]:
-    """Return every action reference in ``text`` that disagrees with the live schema.
-
-    Pure over its input -- no filesystem access -- so the exact same function
-    backs both the real-skill sweep and the known-bad-input proof below.
-    """
-
+def _mcp_call_violations(text: str) -> list[str]:
     violations: list[str] = []
-
     for tool, action in _MCP_CALL.findall(text):
         live = LIVE_ACTIONS.get(tool)
         if live is None:
@@ -119,7 +112,11 @@ def find_violations(text: str) -> list[str]:
                 f"{tool}(action={action!r}) is not in the live action set "
                 f"{sorted(live)}"
             )
+    return violations
 
+
+def _cli_flag_action_violations(text: str) -> list[str]:
+    violations: list[str] = []
     for flag, action in _CLI_FLAG_ACTION.findall(text):
         tool = CLI_FLAG_TOOL[flag]
         live = LIVE_ACTIONS[tool]
@@ -129,7 +126,11 @@ def find_violations(text: str) -> list[str]:
             violations.append(
                 f"--{flag} {action} is not in {tool}'s live action set {sorted(live)}"
             )
+    return violations
 
+
+def _cli_flag_choices_violations(text: str) -> list[str]:
+    violations: list[str] = []
     for flag, choices_blob in _CLI_FLAG_CHOICES.findall(text):
         tool = CLI_FLAG_TOOL[flag]
         live = LIVE_ACTIONS[tool]
@@ -144,7 +145,11 @@ def find_violations(text: str) -> list[str]:
             violations.append(
                 f"--{flag} {{...}} choice list is missing live actions {sorted(missing)}"
             )
+    return violations
 
+
+def _tool_table_row_violations(text: str) -> list[str]:
+    violations: list[str] = []
     for tool, cell in _TOOL_TABLE_ROW.findall(text):
         live = LIVE_ACTIONS.get(tool)
         if live is None:
@@ -163,8 +168,22 @@ def find_violations(text: str) -> list[str]:
                     f"'Tools & actions' row for {tool} looks like a complete "
                     f"action list but is missing live actions {sorted(missing)}"
                 )
-
     return violations
+
+
+def find_violations(text: str) -> list[str]:
+    """Return every action reference in ``text`` that disagrees with the live schema.
+
+    Pure over its input -- no filesystem access -- so the exact same function
+    backs both the real-skill sweep and the known-bad-input proof below.
+    """
+
+    return [
+        *_mcp_call_violations(text),
+        *_cli_flag_action_violations(text),
+        *_cli_flag_choices_violations(text),
+        *_tool_table_row_violations(text),
+    ]
 
 
 def _skill_markdown_files() -> list[Path]:
