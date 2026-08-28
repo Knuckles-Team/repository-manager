@@ -1307,6 +1307,109 @@ def _stage_identity(payload: dict[str, object]) -> tuple[str, str]:
     return stage_id, input_digest
 
 
+def _assert_ordered_unique_digests(digests: tuple[str, ...], message: str) -> None:
+    """Reject a digest tuple that is unsorted or repeats an entry."""
+
+    if tuple(sorted(digests)) != digests or len(set(digests)) != len(digests):
+        raise _fail(ReleasePlanCode.DIGEST, message)
+
+
+def _stage_preview_digest_tuples(
+    stage: StagePreview,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Normalize the version and floor preview digest tuples of one stage."""
+
+    raw_version_digests = _bounded_tuple(
+        stage.version_preview_digests,
+        "stage version preview digests",
+        max_items=MAX_PACKAGES,
+    )
+    raw_floor_digests = _bounded_tuple(
+        stage.floor_preview_digests,
+        "stage floor preview digests",
+        max_items=MAX_EDGES,
+    )
+    version_digests: tuple[str, ...] = tuple(
+        _strict_digest(item, "stage version preview digest")
+        for item in raw_version_digests
+    )
+    floor_digests: tuple[str, ...] = tuple(
+        _strict_digest(item, "stage floor preview digest") for item in raw_floor_digests
+    )
+    _assert_ordered_unique_digests(
+        version_digests, "stage version preview digests must be ordered and unique"
+    )
+    _assert_ordered_unique_digests(
+        floor_digests, "stage floor preview digests must be ordered and unique"
+    )
+    return version_digests, floor_digests
+
+
+def _validate_stage_failure_policy(stage: StagePreview) -> None:
+    """Only the single accepted ``block_dependents`` failure policy is valid."""
+
+    if type(stage.failure_policy) is not FailurePolicy:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT, "stage failure policy is unsupported"
+        )
+    if stage.failure_policy is not FailurePolicy.BLOCK_DEPENDENTS:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT, "stage failure policy is unsupported"
+        )
+
+
+def _validate_stage_policy_types(stage: StagePreview) -> None:
+    """The retry and timeout policies must be the exact owned enum members."""
+
+    if type(stage.retry_policy) is not RetryPolicy:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "stage retry policy is unsupported")
+    if type(stage.timeout_policy) is not TimeoutPolicy:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT, "stage timeout policy is unsupported"
+        )
+
+
+def _validate_stage_policy_bounds(stage: StagePreview) -> None:
+    """The retry count and timeout must be exact ints inside their bounds."""
+
+    if type(stage.retry_count) is not int:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "stage retry count is invalid")
+    if not 0 <= stage.retry_count <= 32:
+        raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "stage retry count exceeds bound")
+    if type(stage.timeout_seconds) is not int:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "stage timeout is invalid")
+    if not 0 <= stage.timeout_seconds <= 604800:
+        raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "stage timeout exceeds bound")
+
+
+def _validate_stage_policy_agreement(stage: StagePreview) -> None:
+    """Each policy must agree with the count or duration declared alongside it."""
+
+    if stage.retry_policy is RetryPolicy.NONE and stage.retry_count != 0:
+        raise _fail(ReleasePlanCode.CONFLICT, "stage retry count conflicts with policy")
+    if stage.retry_policy is RetryPolicy.FIXED and stage.retry_count < 1:
+        raise _fail(ReleasePlanCode.CONFLICT, "stage retry policy requires retries")
+    if stage.timeout_policy is TimeoutPolicy.NONE and stage.timeout_seconds != 0:
+        raise _fail(ReleasePlanCode.CONFLICT, "stage timeout conflicts with policy")
+    if stage.timeout_policy is TimeoutPolicy.FAIL and stage.timeout_seconds < 1:
+        raise _fail(ReleasePlanCode.CONFLICT, "stage timeout policy requires seconds")
+
+
+def _validate_stage_retry_and_timeout(stage: StagePreview) -> None:
+    """Validate the retry/timeout policy pair, bounds, and their agreement."""
+
+    _validate_stage_policy_types(stage)
+    _validate_stage_policy_bounds(stage)
+    _validate_stage_policy_agreement(stage)
+
+
+def _apply_frozen_fields(record: object, values: dict[str, object]) -> None:
+    """Write a normalized field set back onto a frozen dataclass instance."""
+
+    for name, value in values.items():
+        object.__setattr__(record, name, value)
+
+
 @dataclass(frozen=True, slots=True)
 class StagePreview:
     """One deterministic, dependency-linked stage declaration."""
@@ -1362,38 +1465,7 @@ class StagePreview:
         version_plan_digest = _strict_digest(
             self.version_plan_digest, "stage version-plan digest"
         )
-        raw_version_digests = _bounded_tuple(
-            self.version_preview_digests,
-            "stage version preview digests",
-            max_items=MAX_PACKAGES,
-        )
-        raw_floor_digests = _bounded_tuple(
-            self.floor_preview_digests,
-            "stage floor preview digests",
-            max_items=MAX_EDGES,
-        )
-        version_digests: tuple[str, ...] = tuple(
-            _strict_digest(item, "stage version preview digest")
-            for item in raw_version_digests
-        )
-        floor_digests: tuple[str, ...] = tuple(
-            _strict_digest(item, "stage floor preview digest")
-            for item in raw_floor_digests
-        )
-        if tuple(sorted(version_digests)) != version_digests or len(
-            set(version_digests)
-        ) != len(version_digests):
-            raise _fail(
-                ReleasePlanCode.DIGEST,
-                "stage version preview digests must be ordered and unique",
-            )
-        if tuple(sorted(floor_digests)) != floor_digests or len(
-            set(floor_digests)
-        ) != len(floor_digests):
-            raise _fail(
-                ReleasePlanCode.DIGEST,
-                "stage floor preview digests must be ordered and unique",
-            )
+        version_digests, floor_digests = _stage_preview_digest_tuples(self)
         validation_digest = _strict_optional_digest(
             self.validation_profile_digest,
             "stage validation profile digest",
@@ -1410,14 +1482,7 @@ class StagePreview:
             raise _fail(
                 ReleasePlanCode.PUSH_CONSENT, "push stage requires immutable consent"
             )
-        if type(self.failure_policy) is not FailurePolicy:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "stage failure policy is unsupported"
-            )
-        if self.failure_policy is not FailurePolicy.BLOCK_DEPENDENTS:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "stage failure policy is unsupported"
-            )
+        _validate_stage_failure_policy(self)
         decision_digest = _strict_digest(self.decision_digest, "stage decision digest")
         if type(self.resource_profile) is not ImmutableDigestReference:
             raise _fail(
@@ -1427,36 +1492,7 @@ class StagePreview:
         resource_profile = ImmutableDigestReference(
             self.resource_profile.name, self.resource_profile.digest
         )
-        if type(self.retry_policy) is not RetryPolicy:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "stage retry policy is unsupported"
-            )
-        if type(self.timeout_policy) is not TimeoutPolicy:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "stage timeout policy is unsupported"
-            )
-        if type(self.retry_count) is not int:
-            raise _fail(ReleasePlanCode.INVALID_INPUT, "stage retry count is invalid")
-        if not 0 <= self.retry_count <= 32:
-            raise _fail(
-                ReleasePlanCode.UNBOUNDED_INPUT, "stage retry count exceeds bound"
-            )
-        if type(self.timeout_seconds) is not int:
-            raise _fail(ReleasePlanCode.INVALID_INPUT, "stage timeout is invalid")
-        if not 0 <= self.timeout_seconds <= 604800:
-            raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "stage timeout exceeds bound")
-        if self.retry_policy is RetryPolicy.NONE and self.retry_count != 0:
-            raise _fail(
-                ReleasePlanCode.CONFLICT, "stage retry count conflicts with policy"
-            )
-        if self.retry_policy is RetryPolicy.FIXED and self.retry_count < 1:
-            raise _fail(ReleasePlanCode.CONFLICT, "stage retry policy requires retries")
-        if self.timeout_policy is TimeoutPolicy.NONE and self.timeout_seconds != 0:
-            raise _fail(ReleasePlanCode.CONFLICT, "stage timeout conflicts with policy")
-        if self.timeout_policy is TimeoutPolicy.FAIL and self.timeout_seconds < 1:
-            raise _fail(
-                ReleasePlanCode.CONFLICT, "stage timeout policy requires seconds"
-            )
+        _validate_stage_retry_and_timeout(self)
         input_digest = _strict_digest(self.input_digest, "stage input digest")
         payload = _stage_payload_without_digests(
             kind=self.kind,
@@ -1486,23 +1522,28 @@ class StagePreview:
                 ReleasePlanCode.DIGEST,
                 "stage identity or input digest does not match frozen contents",
             )
-        object.__setattr__(self, "stage_id", stage_id)
-        object.__setattr__(self, "project_id", project_id)
-        object.__setattr__(self, "base_sha", base_sha)
-        object.__setattr__(self, "tree_sha", tree_sha)
-        object.__setattr__(self, "generation_id", generation_id)
-        object.__setattr__(self, "graph_digest", graph_digest)
-        object.__setattr__(self, "selection_digest", selection_digest)
-        object.__setattr__(self, "version_plan_digest", version_plan_digest)
-        object.__setattr__(self, "version_preview_digests", version_digests)
-        object.__setattr__(self, "floor_preview_digests", floor_digests)
-        object.__setattr__(self, "validation_profile_digest", validation_digest)
-        object.__setattr__(self, "build_profile_digest", build_digest)
-        object.__setattr__(self, "depends_on", dependencies)
-        object.__setattr__(self, "consent_reference", consent_reference)
-        object.__setattr__(self, "input_digest", input_digest)
-        object.__setattr__(self, "decision_digest", decision_digest)
-        object.__setattr__(self, "resource_profile", resource_profile)
+        _apply_frozen_fields(
+            self,
+            {
+                "stage_id": stage_id,
+                "project_id": project_id,
+                "base_sha": base_sha,
+                "tree_sha": tree_sha,
+                "generation_id": generation_id,
+                "graph_digest": graph_digest,
+                "selection_digest": selection_digest,
+                "version_plan_digest": version_plan_digest,
+                "version_preview_digests": version_digests,
+                "floor_preview_digests": floor_digests,
+                "validation_profile_digest": validation_digest,
+                "build_profile_digest": build_digest,
+                "depends_on": dependencies,
+                "consent_reference": consent_reference,
+                "input_digest": input_digest,
+                "decision_digest": decision_digest,
+                "resource_profile": resource_profile,
+            },
+        )
 
     @property
     def stage(self) -> StageKind:
