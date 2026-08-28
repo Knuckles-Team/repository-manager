@@ -808,6 +808,61 @@ class _GCState:
         self.reclaimed = 0
 
 
+def _require_matching_stage_identity(
+    staged: StagedArtifacts, manifest: Mapping[str, Any]
+) -> None:
+    if (
+        manifest.get("schema") != ARTIFACT_SCHEMA
+        or manifest.get("key") != staged.key
+        or manifest.get("fence") != staged.fence
+        or _manifest_attempt(manifest) != staged.attempt
+        or (staged.job_id and manifest.get("job_id") != staged.job_id)
+        or (staged.work_item_id and manifest.get("work_item_id") != staged.work_item_id)
+    ):
+        raise ArtifactStoreError("artifact staging identity does not match the worker")
+
+
+def _validate_stage_entry_path(entry: Mapping[str, Any], stage_root: Path) -> Path:
+    """Validate one manifest artifact entry's declared path; return the resolved Path."""
+    staged_at = entry.get("staged_at")
+    relative_name = entry.get("relative_path")
+    if (
+        not isinstance(staged_at, str)
+        or not isinstance(relative_name, str)
+        or not relative_name
+        or Path(relative_name).is_absolute()
+        or ".." in Path(relative_name).parts
+    ):
+        raise ArtifactStoreError("artifact staging path is invalid")
+    path = Path(staged_at)
+    try:
+        _reject_symlink_components(stage_root, path)
+        path.resolve(strict=True).relative_to(stage_root)
+        expected_path = stage_root / relative_name
+        _reject_symlink_components(stage_root, expected_path)
+        if path.resolve(strict=True) != expected_path.resolve(strict=True):
+            raise ArtifactStoreError(
+                "artifact staging path does not match its relative path"
+            )
+    except (ArtifactStoreError, OSError, ValueError):
+        raise ArtifactStoreError("artifact staging path escapes its stage") from None
+    return path
+
+
+def _validate_stage_entry_checksum(path: Path, entry: Mapping[str, Any]) -> None:
+    try:
+        path_stat = os.stat(path, follow_symlinks=False)
+        valid = (
+            stat.S_ISREG(path_stat.st_mode)
+            and _sha256_file(path, max_bytes=_MAX_STAGE_BYTES) == entry.get("sha256")
+            and int(entry.get("bytes", -1)) == path_stat.st_size
+        )
+    except (ArtifactStoreError, OSError, TypeError, ValueError):
+        valid = False
+    if not valid:
+        raise ArtifactStoreError("artifact staging checksum validation failed")
+
+
 class BuildArtifactStore:
     """Content-addressed artifact storage with explicit recovery states.
 
@@ -1453,20 +1508,7 @@ class BuildArtifactStore:
     def _validate_stage(
         self, staged: StagedArtifacts, manifest: Mapping[str, Any]
     ) -> None:
-        if (
-            manifest.get("schema") != ARTIFACT_SCHEMA
-            or manifest.get("key") != staged.key
-            or manifest.get("fence") != staged.fence
-            or _manifest_attempt(manifest) != staged.attempt
-            or (staged.job_id and manifest.get("job_id") != staged.job_id)
-            or (
-                staged.work_item_id
-                and manifest.get("work_item_id") != staged.work_item_id
-            )
-        ):
-            raise ArtifactStoreError(
-                "artifact staging identity does not match the worker"
-            )
+        _require_matching_stage_identity(staged, manifest)
         _reject_symlink_path(staged.stage_dir)
         stage_root = (staged.stage_dir / "artifacts").resolve(strict=True)
         _bounded_tree_size(
@@ -1482,42 +1524,8 @@ class BuildArtifactStore:
         ):
             raise ArtifactStoreError("artifact staging manifest has no artifacts")
         for entry in artifacts:
-            staged_at = entry.get("staged_at")
-            relative_name = entry.get("relative_path")
-            if (
-                not isinstance(staged_at, str)
-                or not isinstance(relative_name, str)
-                or not relative_name
-                or Path(relative_name).is_absolute()
-                or ".." in Path(relative_name).parts
-            ):
-                raise ArtifactStoreError("artifact staging path is invalid")
-            path = Path(staged_at)
-            try:
-                _reject_symlink_components(stage_root, path)
-                path.resolve(strict=True).relative_to(stage_root)
-                expected_path = stage_root / relative_name
-                _reject_symlink_components(stage_root, expected_path)
-                if path.resolve(strict=True) != expected_path.resolve(strict=True):
-                    raise ArtifactStoreError(
-                        "artifact staging path does not match its relative path"
-                    )
-            except (ArtifactStoreError, OSError, ValueError):
-                raise ArtifactStoreError(
-                    "artifact staging path escapes its stage"
-                ) from None
-            try:
-                path_stat = os.stat(path, follow_symlinks=False)
-                valid = (
-                    stat.S_ISREG(path_stat.st_mode)
-                    and _sha256_file(path, max_bytes=_MAX_STAGE_BYTES)
-                    == entry.get("sha256")
-                    and int(entry.get("bytes", -1)) == path_stat.st_size
-                )
-            except (ArtifactStoreError, OSError, TypeError, ValueError):
-                valid = False
-            if not valid:
-                raise ArtifactStoreError("artifact staging checksum validation failed")
+            path = _validate_stage_entry_path(entry, stage_root)
+            _validate_stage_entry_checksum(path, entry)
 
     @staticmethod
     def _same_publication_identity(
