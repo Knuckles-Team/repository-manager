@@ -444,3 +444,50 @@ def test_twenty_wrapped_operations_have_exact_refusal_count(tmp_path: Path) -> N
     assert sum(result["executed"] for result in results) == 16
     for index in range(4):
         assert (repositories[index] / "must-survive.txt").exists()
+
+
+# --------------------------------------------------------------------------
+# BUG-CX-038 (rm half): _classify_reset's dead second "--hard" check
+# --------------------------------------------------------------------------
+
+
+def test_classify_reset_hard_flags_the_hard_reset_pattern() -> None:
+    result = destructive_guard.classify(["git", "reset", "--hard", "HEAD~1"])
+    assert result["dangerous"] is True
+    assert result["pattern"] == "git reset --hard"
+    assert result["alternative_code"] == "mixed-reset"
+
+
+def test_classify_reset_index_mutation_matches_prior_dead_ternary_output() -> None:
+    """BUG-CX-038 (fixed): `_classify_reset` used to recompute `pattern`/
+    `alternative` via two `"--hard" in args`-conditioned ternaries placed
+    AFTER a branch that already returns on that exact condition -- so by
+    construction execution only reached the ternaries when "--hard" was NOT
+    in args, and both always took their "else" arm. The dead "if" arms were
+    removed; this pins that the one reachable outcome (the "index mutation"
+    dict) is unchanged for a `git reset` call without `--hard`."""
+    result = destructive_guard.classify(["git", "reset", "HEAD~1"])
+    assert result["dangerous"] is True
+    assert result["pattern"] == "git reset (index mutation)"
+    assert (
+        result["safer_alternative"]
+        == "inspect the index and use a reviewed path-specific operation"
+    )
+    assert result["alternative_code"] == "mixed-reset"
+
+
+def test_classify_reset_source_no_longer_rechecks_hard_after_the_early_return() -> None:
+    """Structural guard against reintroducing the dead second check: fails
+    against unmodified main (the ternary re-tests `"--hard" in args` a
+    second time as a live CODE condition, not just in prose), passes once
+    `_classify_reset` only branches on it once. Counts only lines that are
+    an actual condition (`if`/ternary), not comment prose describing it."""
+    import inspect
+
+    source = inspect.getsource(destructive_guard._classify_reset)
+    condition_lines = [
+        line
+        for line in source.splitlines()
+        if '"--hard" in args' in line and not line.strip().startswith("#")
+    ]
+    assert len(condition_lines) == 1

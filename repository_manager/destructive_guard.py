@@ -268,11 +268,13 @@ def classify(argv: Sequence[str]) -> dict[str, Any]:
 
 
 def _classify_reset(args: list[str]) -> dict[str, Any] | None:
-    # NOTE: this first special case and the general reset handling directly
-    # below it always produce the identical dict when "--hard" is present
-    # (both use pattern "git reset --hard" / alternative_code "mixed-reset")
-    # -- preserved verbatim, redundant-but-harmless, from the original
-    # unrefactored function; not a behavior change to fix here.
+    # BUG-CX-038 (rm half): this used to check `"--hard" in args` a second
+    # time in a ternary right after the branch above already returned on
+    # that exact condition -- by construction, execution only reaches here
+    # when "--hard" is NOT in args, so both ternaries always took their
+    # "else" arm. Collapsed to the one reachable outcome; behavior is
+    # unchanged (see test_classify_reset_index_mutation_matches_prior_
+    # dead_ternary_output in tests/test_destructive_guard.py).
     if "--hard" in args:
         return {
             "dangerous": True,
@@ -283,15 +285,13 @@ def _classify_reset(args: list[str]) -> dict[str, Any] | None:
             ),
         }
 
-    pattern = "git reset --hard" if "--hard" in args else "git reset (index mutation)"
-    alternative = (
-        "use `git reset --mixed <target>` and inspect the resulting status"
-        if "--hard" in args
-        else "inspect the index and use a reviewed path-specific operation"
-    )
     return {
         "dangerous": True,
-        **_rule(pattern, alternative, "mixed-reset"),
+        **_rule(
+            "git reset (index mutation)",
+            "inspect the index and use a reviewed path-specific operation",
+            "mixed-reset",
+        ),
     }
 
 
