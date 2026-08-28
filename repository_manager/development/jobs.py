@@ -725,6 +725,77 @@ def _as_mapping(value: object) -> dict[str, Any]:
     raise TypeError("job request must be a mapping or Pydantic model")
 
 
+def _classify_common_authority_message(
+    lowered: str,
+) -> RepositoryJobServiceCode | None:
+    if "typed_execution_payload_required" in lowered:
+        return RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED
+    if "typed_execution_payload_authority_unavailable" in lowered:
+        return RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
+    if "input_conflict" in lowered:
+        return RepositoryJobServiceCode.INPUT_CONFLICT
+    return None
+
+
+def _classify_conflict_message(lowered: str) -> RepositoryJobServiceCode:
+    if "tenant" in lowered or "authenticated" in lowered or "outside" in lowered:
+        return RepositoryJobServiceCode.UNAUTHORIZED
+    if "base moved" in lowered or "target moved" in lowered:
+        return RepositoryJobServiceCode.CONFLICT
+    if (
+        "idempot" in lowered
+        or "immutable" in lowered
+        or "operation" in lowered
+        or "identity" in lowered
+    ):
+        return RepositoryJobServiceCode.DUPLICATE
+    return RepositoryJobServiceCode.CONFLICT
+
+
+def _classify_non_conflict_message_early(
+    lowered: str,
+) -> RepositoryJobServiceCode | None:
+    if "tenant" in lowered or "authenticated" in lowered or "outside" in lowered:
+        return RepositoryJobServiceCode.UNAUTHORIZED
+    if "base moved" in lowered or "target moved" in lowered:
+        return RepositoryJobServiceCode.CONFLICT
+    if "reconciliation" in lowered:
+        return RepositoryJobServiceCode.RECONCILIATION_REQUIRED
+    return None
+
+
+def _classify_non_conflict_message(lowered: str) -> RepositoryJobServiceCode:
+    early = _classify_non_conflict_message_early(lowered)
+    if early is not None:
+        return early
+    if "idempot" in lowered or "immutable" in lowered or "operation" in lowered:
+        return RepositoryJobServiceCode.DUPLICATE
+    if "state" in lowered or "dependency" in lowered:
+        return RepositoryJobServiceCode.INVALID_STATE
+    return RepositoryJobServiceCode.INVALID_REQUEST
+
+
+def _classify_authority_message(
+    lowered: str, *, is_conflict: bool
+) -> RepositoryJobServiceCode:
+    common = _classify_common_authority_message(lowered)
+    if common is not None:
+        return common
+    if is_conflict:
+        return _classify_conflict_message(lowered)
+    return _classify_non_conflict_message(lowered)
+
+
+def _classify_authority_exception(
+    lowered: str, error: Exception, *, is_conflict: bool, is_authority_error: bool
+) -> RepositoryJobServiceCode:
+    if is_conflict or is_authority_error:
+        return _classify_authority_message(lowered, is_conflict=is_conflict)
+    if isinstance(error, (TypeError, ValueError)):
+        return RepositoryJobServiceCode.INVALID_REQUEST
+    return RepositoryJobServiceCode.INTERNAL
+
+
 def _translate_authority_error(
     authority: Any, error: Exception
 ) -> RepositoryJobServiceError:
@@ -737,49 +808,9 @@ def _translate_authority_error(
     error_type = getattr(authority, "RepositoryWorkItemError", ())
     is_conflict = bool(conflict_type) and isinstance(error, conflict_type)
     is_authority_error = bool(error_type) and isinstance(error, error_type)
-    if is_conflict or is_authority_error:
-        if "typed_execution_payload_required" in lowered:
-            code = RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED
-        elif "typed_execution_payload_authority_unavailable" in lowered:
-            code = (
-                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_AUTHORITY_UNAVAILABLE
-            )
-        elif "input_conflict" in lowered:
-            code = RepositoryJobServiceCode.INPUT_CONFLICT
-        elif is_conflict:
-            if (
-                "tenant" in lowered
-                or "authenticated" in lowered
-                or "outside" in lowered
-            ):
-                code = RepositoryJobServiceCode.UNAUTHORIZED
-            elif "base moved" in lowered or "target moved" in lowered:
-                code = RepositoryJobServiceCode.CONFLICT
-            elif (
-                "idempot" in lowered
-                or "immutable" in lowered
-                or "operation" in lowered
-                or "identity" in lowered
-            ):
-                code = RepositoryJobServiceCode.DUPLICATE
-            else:
-                code = RepositoryJobServiceCode.CONFLICT
-        elif "tenant" in lowered or "authenticated" in lowered or "outside" in lowered:
-            code = RepositoryJobServiceCode.UNAUTHORIZED
-        elif "base moved" in lowered or "target moved" in lowered:
-            code = RepositoryJobServiceCode.CONFLICT
-        elif "reconciliation" in lowered:
-            code = RepositoryJobServiceCode.RECONCILIATION_REQUIRED
-        elif "idempot" in lowered or "immutable" in lowered or "operation" in lowered:
-            code = RepositoryJobServiceCode.DUPLICATE
-        elif "state" in lowered or "dependency" in lowered:
-            code = RepositoryJobServiceCode.INVALID_STATE
-        else:
-            code = RepositoryJobServiceCode.INVALID_REQUEST
-    elif isinstance(error, (TypeError, ValueError)):
-        code = RepositoryJobServiceCode.INVALID_REQUEST
-    else:
-        code = RepositoryJobServiceCode.INTERNAL
+    code = _classify_authority_exception(
+        lowered, error, is_conflict=is_conflict, is_authority_error=is_authority_error
+    )
     return RepositoryJobServiceError(code, _SAFE_ERROR_MESSAGES[code])
 
 
@@ -843,6 +874,20 @@ class GraphRepositoryJobPort:
                 RepositoryJobServiceCode.INTERNAL,
                 "native WorkItem submission requires a trusted resource profile registry",
             )
+        raw, resource_input, profile_name = self._normalize_resource_input(request)
+        profile, resolved = self._resolve_profile(
+            profiles, profile_name, resource_input
+        )
+        raw["resources"] = self._build_resolved_resources(profile, resolved)
+        # Keep a transport-visible copy while AU's generated request adapter
+        # learns to persist the nested marker under resource_reservation.
+        raw["resolved_profile_authority"] = _RESOLVED_PROFILE_AUTHORITY
+        return raw
+
+    @staticmethod
+    def _normalize_resource_input(
+        request: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], str]:
         raw = dict(request)
         raw_resources = raw.get("resources")
         if raw_resources is None:
@@ -866,6 +911,14 @@ class GraphRepositoryJobPort:
                 RepositoryJobServiceCode.INVALID_REQUEST,
                 "repository resource profile is invalid",
             )
+        return raw, resource_input, profile_name
+
+    @staticmethod
+    def _resolve_profile(
+        profiles: ResourceProfileRegistry,
+        profile_name: str,
+        resource_input: Mapping[str, Any],
+    ) -> tuple[Any, Any]:
         try:
             profile = profiles.resolve(profile_name)
             public_fields = set(ResourceRequest.model_fields)
@@ -883,6 +936,10 @@ class GraphRepositoryJobPort:
                 RepositoryJobServiceCode.INVALID_REQUEST,
                 "repository resource profile could not be resolved",
             ) from exc
+        return profile, resolved
+
+    @staticmethod
+    def _build_resolved_resources(profile: Any, resolved: Any) -> dict[str, Any]:
         resources = resolved.model_dump(mode="json", exclude_none=False)
         resources.update(
             {
@@ -898,11 +955,7 @@ class GraphRepositoryJobPort:
                 "resolved_profile_authority": _RESOLVED_PROFILE_AUTHORITY,
             }
         )
-        raw["resources"] = resources
-        # Keep a transport-visible copy while AU's generated request adapter
-        # learns to persist the nested marker under resource_reservation.
-        raw["resolved_profile_authority"] = _RESOLVED_PROFILE_AUTHORITY
-        return raw
+        return resources
 
     def submit(
         self,
@@ -1286,7 +1339,7 @@ def _repair_request_mapping(
     return request
 
 
-def _matches_filters(view: DurableJobView, filters: JobFilters) -> bool:
+def _matches_identity_filters(view: DurableJobView, filters: JobFilters) -> bool:
     checks: tuple[bool, ...] = (
         filters.repository_id is None or view.repository_id == filters.repository_id,
         filters.lane_id is None or view.lane_id == filters.lane_id,
@@ -1295,6 +1348,12 @@ def _matches_filters(view: DurableJobView, filters: JobFilters) -> bool:
         filters.correlation_id is None or view.correlation_id == filters.correlation_id,
         filters.kind is None or view.kind == filters.kind,
         filters.owner_id is None or view.owner_id == filters.owner_id,
+    )
+    return all(checks)
+
+
+def _matches_state_filters(view: DurableJobView, filters: JobFilters) -> bool:
+    checks: tuple[bool, ...] = (
         filters.resource_class is None or view.resource_class == filters.resource_class,
         filters.host_alias is None
         or view.target_alias == filters.host_alias
@@ -1307,6 +1366,12 @@ def _matches_filters(view: DurableJobView, filters: JobFilters) -> bool:
         or (view.created_at is not None and view.created_at <= filters.created_before),
     )
     return all(checks)
+
+
+def _matches_filters(view: DurableJobView, filters: JobFilters) -> bool:
+    return _matches_identity_filters(view, filters) and _matches_state_filters(
+        view, filters
+    )
 
 
 def _cursor_from_view(view: DurableJobView) -> tuple[float, str]:
@@ -1439,6 +1504,23 @@ class RepositoryJobService:
         service semantics before the EG native operation exists.
         """
 
+        self._ensure_execution_input_authority_available(job_id)
+        view = self._visible(job_id, auth)
+        try:
+            payload = self._port.get_exact_execution_input(
+                job_id,
+                tenant_id=auth.tenant_id,
+                owner_id=auth.owner_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - exact input is privacy-sensitive
+            raise _safe_exact_input_error(exc, job_id=job_id) from exc
+        if payload is None:
+            return self._missing_execution_input_result(view, job_id)
+        validated = self._validate_execution_payload(payload, job_id)
+        self._ensure_payload_matches_view(view, validated, job_id)
+        return validated
+
+    def _ensure_execution_input_authority_available(self, job_id: str) -> None:
         try:
             available = bool(self._port.execution_input_authority_available())
         except Exception as exc:
@@ -1457,39 +1539,44 @@ class RepositoryJobService:
                 ],
                 job_id=job_id,
             )
-        view = self._visible(job_id, auth)
-        try:
-            payload = self._port.get_exact_execution_input(
-                job_id,
-                tenant_id=auth.tenant_id,
-                owner_id=auth.owner_id,
+
+    @staticmethod
+    def _missing_execution_input_result(
+        view: DurableJobView, job_id: str
+    ) -> BuildExecutionDescriptor | None:
+        if view.operation == "build" and view.operation_payload_digest is None:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED,
+                _SAFE_ERROR_MESSAGES[
+                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED
+                ],
+                job_id=job_id,
             )
-        except Exception as exc:  # noqa: BLE001 - exact input is privacy-sensitive
-            raise _safe_exact_input_error(exc, job_id=job_id) from exc
-        if payload is None:
-            if view.operation == "build" and view.operation_payload_digest is None:
-                raise RepositoryJobServiceError(
-                    RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED,
-                    _SAFE_ERROR_MESSAGES[
-                        RepositoryJobServiceCode.TYPED_EXECUTION_PAYLOAD_REQUIRED
-                    ],
-                    job_id=job_id,
-                )
-            if view.operation_payload_digest is not None:
-                raise RepositoryJobServiceError(
-                    RepositoryJobServiceCode.INPUT_CONFLICT,
-                    _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
-                    job_id=job_id,
-                )
-            return None
+        if view.operation_payload_digest is not None:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INPUT_CONFLICT,
+                _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
+                job_id=job_id,
+            )
+        return None
+
+    @staticmethod
+    def _validate_execution_payload(
+        payload: Any, job_id: str
+    ) -> BuildExecutionDescriptor:
         try:
-            validated = operation_payload_from_mapping(payload)
+            return operation_payload_from_mapping(payload)
         except (TypeError, ValueError) as exc:
             raise RepositoryJobServiceError(
                 RepositoryJobServiceCode.INPUT_CONFLICT,
                 _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
                 job_id=job_id,
             ) from exc
+
+    @staticmethod
+    def _ensure_payload_matches_view(
+        view: DurableJobView, validated: BuildExecutionDescriptor, job_id: str
+    ) -> None:
         if (
             view.operation_payload_digest != validated.payload_digest
             or view.operation_payload_kind != validated.kind
@@ -1503,7 +1590,6 @@ class RepositoryJobService:
                 _SAFE_ERROR_MESSAGES[RepositoryJobServiceCode.INPUT_CONFLICT],
                 job_id=job_id,
             )
-        return validated
 
     def get_execution_input(
         self,
@@ -1705,14 +1791,22 @@ class RepositoryJobService:
         return mismatch
 
 
-def _classify(
-    view: DurableJobView, observation: ReconciliationObservation
-) -> tuple[tuple[ReconciliationClass, ...], dict[str, Any]]:
-    classes: list[ReconciliationClass] = []
-    details: dict[str, Any] = {}
+def _classify_worktree(
+    observation: ReconciliationObservation,
+    classes: list[ReconciliationClass],
+    details: dict[str, Any],
+) -> None:
     if observation.worktree_expected and observation.worktree_present is False:
         classes.append(ReconciliationClass.MISSING_WORKTREE)
         details["worktree"] = "missing"
+
+
+def _classify_process(
+    view: DurableJobView,
+    observation: ReconciliationObservation,
+    classes: list[ReconciliationClass],
+    details: dict[str, Any],
+) -> None:
     if observation.process_present is False and view.state in {
         JobState.LEASED,
         JobState.RUNNING,
@@ -1728,6 +1822,13 @@ def _classify(
         ):
             classes.append(ReconciliationClass.STALE_PROCESS)
             details["process"] = "stale"
+
+
+def _classify_orphan_artifacts(
+    observation: ReconciliationObservation,
+    classes: list[ReconciliationClass],
+    details: dict[str, Any],
+) -> None:
     expected_artifacts = set(observation.expected_artifact_refs)
     orphan_artifacts = sorted(
         set(observation.observed_artifact_refs) - expected_artifacts
@@ -1735,6 +1836,14 @@ def _classify(
     if orphan_artifacts:
         classes.append(ReconciliationClass.ORPHAN_ARTIFACT)
         details["orphan_artifacts"] = orphan_artifacts
+
+
+def _classify_fence(
+    view: DurableJobView,
+    observation: ReconciliationObservation,
+    classes: list[ReconciliationClass],
+    details: dict[str, Any],
+) -> None:
     expected_fence = observation.expected_fence
     if expected_fence is None:
         expected_fence = view.lease_fence
@@ -1746,6 +1855,13 @@ def _classify(
         classes.append(ReconciliationClass.STALE_FENCE)
         details["expected_fence"] = expected_fence
         details["observed_fence"] = observation.observed_fence
+
+
+def _classify_target_drift(
+    observation: ReconciliationObservation,
+    classes: list[ReconciliationClass],
+    details: dict[str, Any],
+) -> None:
     if (
         observation.expected_target_sha is not None
         and observation.observed_target_sha is not None
@@ -1754,9 +1870,29 @@ def _classify(
         classes.append(ReconciliationClass.TARGET_DRIFT)
         details["expected_target_sha"] = observation.expected_target_sha
         details["observed_target_sha"] = observation.observed_target_sha
+
+
+def _classify_completed_effect(
+    observation: ReconciliationObservation,
+    classes: list[ReconciliationClass],
+    details: dict[str, Any],
+) -> None:
     if observation.already_completed_effect:
         classes.append(ReconciliationClass.ALREADY_COMPLETED_EFFECT)
         details["completed_effect"] = True
+
+
+def _classify(
+    view: DurableJobView, observation: ReconciliationObservation
+) -> tuple[tuple[ReconciliationClass, ...], dict[str, Any]]:
+    classes: list[ReconciliationClass] = []
+    details: dict[str, Any] = {}
+    _classify_worktree(observation, classes, details)
+    _classify_process(view, observation, classes, details)
+    _classify_orphan_artifacts(observation, classes, details)
+    _classify_fence(view, observation, classes, details)
+    _classify_target_drift(observation, classes, details)
+    _classify_completed_effect(observation, classes, details)
     if not classes:
         classes.append(ReconciliationClass.CLEAN)
     return tuple(classes), details
@@ -1889,6 +2025,126 @@ class FakeRepositoryJobPort:
             ) from exc
 
     @staticmethod
+    def _validate_operation_payload(
+        payload: Any, *, operation: str, repository_id: str, raw: Mapping[str, Any]
+    ) -> None:
+        if payload is None:
+            return
+        if operation != "build":
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INVALID_REQUEST,
+                "operation payload discriminator does not match the operation",
+            )
+        if payload.repository_id != repository_id:
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INVALID_REQUEST,
+                "operation payload repository does not match the job",
+            )
+        if payload.base_sha != str(raw["base_sha"]):
+            raise RepositoryJobServiceError(
+                RepositoryJobServiceCode.INVALID_REQUEST,
+                "operation payload base does not match the job",
+            )
+
+    @staticmethod
+    def _identity_kwargs(raw: Mapping[str, Any], repository_id: str) -> dict[str, Any]:
+        tenant_id = str(raw.get("tenant_id") or raw.get("tenant") or "")
+        job_id = FakeRepositoryJobPort._job_id(tenant_id, str(raw["idempotency_key"]))
+        state = JobState.READY if not raw.get("dependencies") else JobState.SUBMITTED
+        return {
+            "job_id": job_id,
+            "work_item_id": FakeRepositoryJobPort._work_item_id(job_id),
+            "request_id": str(raw["request_id"]),
+            "repository_id": repository_id,
+            "tenant_id": tenant_id,
+            "owner_id": str(raw.get("owner_id") or ""),
+            "session_id": str(raw.get("session_id") or ""),
+            "base_ref": str(raw["base_ref"]),
+            "base_sha": str(raw["base_sha"]),
+            "state": state,
+        }
+
+    @staticmethod
+    def _resource_capacity_kwargs(
+        raw: Mapping[str, Any], resources: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "resource_class": str(resources.get("resource_class") or "light-check"),
+            "concurrency_key": str(resources.get("concurrency_key") or "light-check"),
+            "fairness_group": str(resources.get("fairness_group") or "default"),
+            "priority": int(raw.get("priority") or resources.get("priority") or 0),
+            "cpu_weight": int(resources.get("cpu_weight", 1)),
+            "memory_mib": int(resources.get("memory_mib", 256)),
+            "disk_mib": int(resources.get("disk_mib", 256)),
+            "process_slots": int(resources.get("process_slots", 1)),
+        }
+
+    @staticmethod
+    def _resource_placement_kwargs(resources: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "host_labels": tuple(
+                str(value) for value in resources.get("host_labels") or ()
+            ),
+            "preferred_target": dict(resources.get("preferred_target") or {}),
+            "required_target": (
+                None
+                if resources.get("required_target") is None
+                else dict(resources["required_target"])
+            ),
+            "anti_affinity": tuple(
+                str(value) for value in resources.get("anti_affinity") or ()
+            ),
+            "queue_deadline": _parse_datetime(resources.get("queue_deadline")),
+            "disk_low_watermark_mib": resources.get("disk_low_watermark_mib"),
+            "disk_high_watermark_mib": resources.get("disk_high_watermark_mib"),
+        }
+
+    @staticmethod
+    def _resource_kwargs(
+        raw: Mapping[str, Any], resources: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            **FakeRepositoryJobPort._resource_capacity_kwargs(raw, resources),
+            **FakeRepositoryJobPort._resource_placement_kwargs(resources),
+        }
+
+    @staticmethod
+    def _payload_view_kwargs(payload: Any) -> dict[str, Any]:
+        return {
+            "operation_payload_kind": None if payload is None else payload.kind,
+            "operation_payload_version": (
+                None if payload is None else payload.schema_version
+            ),
+            "operation_payload_digest": (
+                None if payload is None else payload.payload_digest
+            ),
+        }
+
+    @staticmethod
+    def _misc_kwargs(
+        raw: Mapping[str, Any], target: Mapping[str, Any], operation: str
+    ) -> dict[str, Any]:
+        return {
+            "kind": _OPERATION_KIND.get(operation, "repository.operation"),
+            "target_kind": str(target.get("kind") or "local"),
+            "target_alias": target.get("alias"),
+            "lane_id": raw.get("lane_id"),
+            "candidate_id": raw.get("candidate_id"),
+            "generation_id": raw.get("generation_id"),
+            "dependencies": tuple(str(dep) for dep in raw.get("dependencies") or ()),
+            # AU exposes its complete normalized immutable-request digest in
+            # this projection, not the caller's optional source-input digest.
+            # Always bind the fake row to the whole request as well so a
+            # caller cannot keep ``input_digest`` constant while changing a
+            # different immutable field under the same idempotency key.
+            "input_digest": canonical_digest(raw),
+            "config_digest": raw.get("config_digest"),
+            "correlation_id": raw.get("correlation_id") or raw.get("request_id"),
+            "consent": dict(raw.get("consent") or {}),
+            "retry_class": raw.get("retry_class"),
+        }
+
+    @staticmethod
     def _request_view(
         request: Mapping[str, Any], *, now: datetime, max_attempts: int
     ) -> DurableJobView:
@@ -1900,91 +2156,24 @@ class FakeRepositoryJobPort:
         repository_id = str(
             raw.get("repository_id") or repository.get("repository_id") or ""
         )
-        tenant_id = str(raw.get("tenant_id") or raw.get("tenant") or "")
-        owner_id = str(raw.get("owner_id") or "")
-        session_id = str(raw.get("session_id") or "")
-        job_id = FakeRepositoryJobPort._job_id(tenant_id, str(raw["idempotency_key"]))
         operation = str(raw.get("operation"))
-        if payload is not None:
-            if operation != "build":
-                raise RepositoryJobServiceError(
-                    RepositoryJobServiceCode.INVALID_REQUEST,
-                    "operation payload discriminator does not match the operation",
-                )
-            if payload.repository_id != repository_id:
-                raise RepositoryJobServiceError(
-                    RepositoryJobServiceCode.INVALID_REQUEST,
-                    "operation payload repository does not match the job",
-                )
-            if payload.base_sha != str(raw["base_sha"]):
-                raise RepositoryJobServiceError(
-                    RepositoryJobServiceCode.INVALID_REQUEST,
-                    "operation payload base does not match the job",
-                )
-        state = JobState.READY if not raw.get("dependencies") else JobState.SUBMITTED
+        FakeRepositoryJobPort._validate_operation_payload(
+            payload, operation=operation, repository_id=repository_id, raw=raw
+        )
+        identity = FakeRepositoryJobPort._identity_kwargs(raw, repository_id)
+        resource_kwargs = FakeRepositoryJobPort._resource_kwargs(raw, resources)
+        payload_kwargs = FakeRepositoryJobPort._payload_view_kwargs(payload)
+        misc_kwargs = FakeRepositoryJobPort._misc_kwargs(raw, target, operation)
         return DurableJobView(
-            job_id=job_id,
-            work_item_id=FakeRepositoryJobPort._work_item_id(job_id),
-            request_id=str(raw["request_id"]),
+            **identity,
             operation=operation,
-            kind=_OPERATION_KIND.get(operation, "repository.operation"),
-            state=state,
-            repository_id=repository_id,
-            tenant_id=tenant_id,
-            owner_id=owner_id,
-            session_id=session_id,
-            base_ref=str(raw["base_ref"]),
-            base_sha=str(raw["base_sha"]),
-            target_kind=str(target.get("kind") or "local"),
-            target_alias=target.get("alias"),
-            lane_id=raw.get("lane_id"),
-            candidate_id=raw.get("candidate_id"),
-            generation_id=raw.get("generation_id"),
-            dependencies=tuple(str(dep) for dep in raw.get("dependencies") or ()),
-            # AU exposes its complete normalized immutable-request digest in
-            # this projection, not the caller's optional source-input digest.
-            # Always bind the fake row to the whole request as well so a
-            # caller cannot keep ``input_digest`` constant while changing a
-            # different immutable field under the same idempotency key.
-            input_digest=canonical_digest(raw),
-            config_digest=raw.get("config_digest"),
-            correlation_id=raw.get("correlation_id") or raw.get("request_id"),
-            resource_class=str(resources.get("resource_class") or "light-check"),
-            concurrency_key=str(resources.get("concurrency_key") or "light-check"),
-            fairness_group=str(resources.get("fairness_group") or "default"),
-            priority=int(raw.get("priority") or resources.get("priority") or 0),
-            cpu_weight=int(resources.get("cpu_weight", 1)),
-            memory_mib=int(resources.get("memory_mib", 256)),
-            disk_mib=int(resources.get("disk_mib", 256)),
-            process_slots=int(resources.get("process_slots", 1)),
-            host_labels=tuple(
-                str(value) for value in resources.get("host_labels") or ()
-            ),
-            preferred_target=dict(resources.get("preferred_target") or {}),
-            required_target=(
-                None
-                if resources.get("required_target") is None
-                else dict(resources["required_target"])
-            ),
-            anti_affinity=tuple(
-                str(value) for value in resources.get("anti_affinity") or ()
-            ),
-            queue_deadline=_parse_datetime(resources.get("queue_deadline")),
-            disk_low_watermark_mib=resources.get("disk_low_watermark_mib"),
-            disk_high_watermark_mib=resources.get("disk_high_watermark_mib"),
-            consent=dict(raw.get("consent") or {}),
+            **misc_kwargs,
+            **resource_kwargs,
             attempt=0,
             max_attempts=max_attempts,
-            retry_class=raw.get("retry_class"),
             created_at=now,
             updated_at=now,
-            operation_payload_kind=(None if payload is None else payload.kind),
-            operation_payload_version=(
-                None if payload is None else payload.schema_version
-            ),
-            operation_payload_digest=(
-                None if payload is None else payload.payload_digest
-            ),
+            **payload_kwargs,
         )
 
     def submit(
