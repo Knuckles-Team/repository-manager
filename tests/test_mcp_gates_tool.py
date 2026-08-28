@@ -97,6 +97,143 @@ async def _poll_until_done(rm_gates, job_ids, timeout_s=60.0):
     return done
 
 
+async def _run_and_verify_fast_stage(rm_gates) -> None:
+    """FAST stage: the pre-push-only hook must NOT fire."""
+    fast_submit = await rm_gates.fn(
+        action="run",
+        stage="fast",
+        repos=None,
+        threads=None,
+        timeout=600,
+        job_id=None,
+        repo=None,
+        summary=True,
+        top_n=15,
+        ctx=None,
+    )
+    assert fast_submit["status"] == "submitted"
+    assert fast_submit["queued_count"] == 3
+    fast_jobs = fast_submit["jobs"]
+    fast_results = await _poll_until_done(rm_gates, fast_jobs)
+    for repo_name, status in fast_results.items():
+        assert status["status"] == "completed", (repo_name, status)
+        assert status["outcome"] == "succeeded"
+    # RepoScanResult has no to_markdown/model_dump summary rendering, so
+    # inspect the raw job records directly for the parsed hooks instead.
+    with _jobs_lock:
+        for jid in fast_jobs.values():
+            result = _jobs[jid]["result"]
+            ran = {h.hook_id for h in result.hooks}
+            assert "fast-only" in ran
+            assert "heavy-only" not in ran
+            assert "HEAVY_ONLY_RAN" not in result.raw_output
+            assert result.stage == "fast"
+
+
+async def _run_and_verify_heavy_stage(rm_gates) -> dict:
+    """HEAVY stage: the pre-push-only hook MUST fire, 3 repos run concurrently."""
+    with _jobs_lock:
+        _jobs.clear()
+    started = time.monotonic()
+    heavy_submit = await rm_gates.fn(
+        action="run",
+        stage="heavy",
+        repos=None,
+        threads=None,
+        timeout=600,
+        job_id=None,
+        repo=None,
+        summary=True,
+        top_n=15,
+        ctx=None,
+    )
+    heavy_jobs = heavy_submit["jobs"]
+    heavy_results = await _poll_until_done(rm_gates, heavy_jobs)
+    wall_s = time.monotonic() - started
+
+    for repo_name, status in heavy_results.items():
+        assert status["status"] == "completed", (repo_name, status)
+        assert status["outcome"] == "succeeded"
+    with _jobs_lock:
+        for repo_name, jid in heavy_jobs.items():
+            result = _jobs[jid]["result"]
+            ran = {h.hook_id for h in result.hooks}
+            assert "heavy-only" in ran, f"{repo_name}: pre-push-only hook never fired"
+            assert "HEAVY_ONLY_RAN" in result.raw_output
+            assert "fast-only" not in ran  # default_stages excludes it at pre-push
+            assert result.stage == "heavy"
+
+    # Parallel proof: 3 repos x _HEAVY_HOOK_SLEEP_S serial would be >=3x;
+    # generously bound at 2.5x to absorb scheduling/pre-commit startup
+    # overhead while still clearly separating parallel from serial.
+    assert wall_s < _HEAVY_HOOK_SLEEP_S * 2.5, (
+        f"3 repos took {wall_s:.2f}s wall for a {_HEAVY_HOOK_SLEEP_S}s hook each "
+        "-- looks serial, not parallel"
+    )
+    return heavy_jobs
+
+
+async def _verify_profile(rm_gates) -> None:
+    """profile: real per-hook timings from the real heavy run."""
+    profile = await rm_gates.fn(
+        action="profile",
+        repos=None,
+        stage="fast",
+        threads=None,
+        timeout=600,
+        job_id=None,
+        repo=None,
+        summary=True,
+        top_n=15,
+        ctx=None,
+    )
+    assert profile["measured_gate_jobs"] == 3
+    slow_hooks = {h["hook_id"] for h in profile["slowest_hooks"]}
+    assert "heavy-only" in slow_hooks
+    heavy_entry = next(
+        h for h in profile["slowest_hooks"] if h["hook_id"] == "heavy-only"
+    )
+    assert heavy_entry["duration_s"] is not None
+    assert heavy_entry["duration_s"] >= _HEAVY_HOOK_SLEEP_S * 0.5
+
+
+async def _verify_explain(rm_gates, one_repo: str) -> None:
+    """explain: condensed detail for one repo by name."""
+    explanation = await rm_gates.fn(
+        action="explain",
+        repo=one_repo,
+        repos=None,
+        stage="fast",
+        threads=None,
+        timeout=600,
+        job_id=None,
+        summary=True,
+        top_n=15,
+        ctx=None,
+    )
+    assert explanation["passed"] is True
+    assert "passed" in explanation["explain"]
+
+
+async def _verify_status_rollup(rm_gates) -> None:
+    """status roll-up (no job_id): counts + failed set."""
+    rollup = await rm_gates.fn(
+        action="status",
+        repos=None,
+        stage="fast",
+        threads=None,
+        timeout=600,
+        job_id=None,
+        repo=None,
+        summary=True,
+        top_n=15,
+        ctx=None,
+    )
+    assert rollup["summary"]["total"] == 3
+    assert rollup["summary"]["passed"] == 3
+    assert rollup["failed_projects"] == []
+
+
 @pytest.mark.anyio
 async def test_rm_gates_run_is_parallel_and_stage_scoped(tmp_path):
     """The main proof: heavy fires the pre-push-only hook; N repos run concurrently."""
@@ -115,132 +252,9 @@ async def test_rm_gates_run_is_parallel_and_stage_scoped(tmp_path):
     with patch("repository_manager.mcp_server.get_git_instance", return_value=mock_git):
         rm_gates = await _get_rm_gates_tool()
 
-        # --- 1. FAST stage: the pre-push-only hook must NOT fire. ---
-        fast_submit = await rm_gates.fn(
-            action="run",
-            stage="fast",
-            repos=None,
-            threads=None,
-            timeout=600,
-            job_id=None,
-            repo=None,
-            summary=True,
-            top_n=15,
-            ctx=None,
-        )
-        assert fast_submit["status"] == "submitted"
-        assert fast_submit["queued_count"] == 3
-        fast_jobs = fast_submit["jobs"]
-        fast_results = await _poll_until_done(rm_gates, fast_jobs)
-        for repo_name, status in fast_results.items():
-            assert status["status"] == "completed", (repo_name, status)
-            assert status["outcome"] == "succeeded"
-        # RepoScanResult has no to_markdown/model_dump summary rendering, so
-        # inspect the raw job records directly for the parsed hooks instead.
-        with _jobs_lock:
-            for jid in fast_jobs.values():
-                result = _jobs[jid]["result"]
-                ran = {h.hook_id for h in result.hooks}
-                assert "fast-only" in ran
-                assert "heavy-only" not in ran
-                assert "HEAVY_ONLY_RAN" not in result.raw_output
-                assert result.stage == "fast"
-
-        # --- 2. HEAVY stage: the pre-push-only hook MUST fire, and the 3 ---
-        # ---    repos must run concurrently (~1x sleep, not ~3x). ---
-        with _jobs_lock:
-            _jobs.clear()
-        started = time.monotonic()
-        heavy_submit = await rm_gates.fn(
-            action="run",
-            stage="heavy",
-            repos=None,
-            threads=None,
-            timeout=600,
-            job_id=None,
-            repo=None,
-            summary=True,
-            top_n=15,
-            ctx=None,
-        )
-        heavy_jobs = heavy_submit["jobs"]
-        heavy_results = await _poll_until_done(rm_gates, heavy_jobs)
-        wall_s = time.monotonic() - started
-
-        for repo_name, status in heavy_results.items():
-            assert status["status"] == "completed", (repo_name, status)
-            assert status["outcome"] == "succeeded"
-        with _jobs_lock:
-            for repo_name, jid in heavy_jobs.items():
-                result = _jobs[jid]["result"]
-                ran = {h.hook_id for h in result.hooks}
-                assert "heavy-only" in ran, (
-                    f"{repo_name}: pre-push-only hook never fired"
-                )
-                assert "HEAVY_ONLY_RAN" in result.raw_output
-                assert "fast-only" not in ran  # default_stages excludes it at pre-push
-                assert result.stage == "heavy"
-
-        # Parallel proof: 3 repos x _HEAVY_HOOK_SLEEP_S serial would be >=3x;
-        # generously bound at 2.5x to absorb scheduling/pre-commit startup
-        # overhead while still clearly separating parallel from serial.
-        assert wall_s < _HEAVY_HOOK_SLEEP_S * 2.5, (
-            f"3 repos took {wall_s:.2f}s wall for a {_HEAVY_HOOK_SLEEP_S}s hook each "
-            "-- looks serial, not parallel"
-        )
-
-        # --- 3. profile: real per-hook timings from the real heavy run. ---
-        profile = await rm_gates.fn(
-            action="profile",
-            repos=None,
-            stage="fast",
-            threads=None,
-            timeout=600,
-            job_id=None,
-            repo=None,
-            summary=True,
-            top_n=15,
-            ctx=None,
-        )
-        assert profile["measured_gate_jobs"] == 3
-        slow_hooks = {h["hook_id"] for h in profile["slowest_hooks"]}
-        assert "heavy-only" in slow_hooks
-        heavy_entry = next(
-            h for h in profile["slowest_hooks"] if h["hook_id"] == "heavy-only"
-        )
-        assert heavy_entry["duration_s"] is not None
-        assert heavy_entry["duration_s"] >= _HEAVY_HOOK_SLEEP_S * 0.5
-
-        # --- 4. explain: condensed detail for one repo by name. ---
+        await _run_and_verify_fast_stage(rm_gates)
+        heavy_jobs = await _run_and_verify_heavy_stage(rm_gates)
+        await _verify_profile(rm_gates)
         one_repo = next(iter(heavy_jobs))
-        explanation = await rm_gates.fn(
-            action="explain",
-            repo=one_repo,
-            repos=None,
-            stage="fast",
-            threads=None,
-            timeout=600,
-            job_id=None,
-            summary=True,
-            top_n=15,
-            ctx=None,
-        )
-        assert explanation["passed"] is True
-        assert "passed" in explanation["explain"]
-
-        # --- 5. status roll-up (no job_id): counts + failed set. ---
-        rollup = await rm_gates.fn(
-            action="status",
-            repos=None,
-            stage="fast",
-            threads=None,
-            timeout=600,
-            job_id=None,
-            repo=None,
-            summary=True,
-            top_n=15,
-            ctx=None,
-        )
-        assert rollup["summary"]["total"] == 3
-        assert rollup["summary"]["passed"] == 3
-        assert rollup["failed_projects"] == []
+        await _verify_explain(rm_gates, one_repo)
+        await _verify_status_rollup(rm_gates)

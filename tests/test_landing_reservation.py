@@ -224,6 +224,70 @@ class HarnessResult:
     snapshot: HarnessSnapshot | None = None
 
 
+def _target_refusal(
+    request: LandingReservationRequest,
+    state: LandingStateSnapshot,
+    resolved: ResolvedRepositoryIdentity,
+) -> LandingReservationRefusalCode | None:
+    if state.resolved_repository_digest != resolved.digest():
+        return LandingReservationRefusalCode.REPOSITORY_MISMATCH
+    if state.target.repository_id != request.repository_id:
+        return LandingReservationRefusalCode.TARGET_MISMATCH
+    if state.target.target_ref != request.target_ref:
+        return LandingReservationRefusalCode.TARGET_MISMATCH
+    if state.target.commit_sha != request.expected_target_sha:
+        return LandingReservationRefusalCode.TARGET_MOVED
+    if state.target.tree_sha != request.generation_tree_sha:
+        return LandingReservationRefusalCode.TARGET_TREE_MISMATCH
+    return None
+
+
+def _canonical_refusal(
+    state: LandingStateSnapshot, resolved: ResolvedRepositoryIdentity
+) -> LandingReservationRefusalCode | None:
+    canonical = state.canonical
+    if (
+        canonical.repository_id != resolved.repository_id
+        or canonical.common_dir_id != resolved.common_dir_id
+        or canonical.worktree_id != resolved.worktree_id
+    ):
+        return LandingReservationRefusalCode.CANONICAL_STATE_CHANGED
+    if canonical.state is CanonicalState.UNKNOWN:
+        return LandingReservationRefusalCode.CANONICAL_STATE_INVALID
+    if canonical.state is CanonicalState.DIRTY:
+        return LandingReservationRefusalCode.CANONICAL_DIRTY
+    if canonical.private_wip or not canonical.index_clean:
+        return LandingReservationRefusalCode.PRIVATE_WIP
+    return None
+
+
+def _occupancy_refusal(
+    state: LandingStateSnapshot,
+) -> LandingReservationRefusalCode | None:
+    if state.occupancy.state is OccupancyState.UNKNOWN:
+        return LandingReservationRefusalCode.TARGET_OCCUPANCY_UNKNOWN
+    if state.occupancy.state is OccupancyState.OCCUPIED:
+        return LandingReservationRefusalCode.TARGET_OCCUPIED
+    return None
+
+
+def _certification_refusal(
+    request: LandingReservationRequest, state: LandingStateSnapshot
+) -> LandingReservationRefusalCode | None:
+    cert = state.certification
+    if (
+        not cert.certified
+        or cert.generation_id != request.generation_id
+        or cert.certificate_digest != request.certificate_digest
+        or cert.base_sha != request.expected_base_sha
+        or cert.synthetic_commit_sha != request.synthetic_commit_sha
+        or cert.generation_tree_sha != request.generation_tree_sha
+        or cert.landing_fence != request.landing_fence
+    ):
+        return LandingReservationRefusalCode.CERTIFICATION_INVALID
+    return None
+
+
 class AtomicHarness:
     """A bounded test transcript for the future native transaction.
 
@@ -254,59 +318,40 @@ class AtomicHarness:
     def _state_refusal(
         self, request: LandingReservationRequest, state: LandingStateSnapshot
     ) -> LandingReservationRefusalCode | None:
-        if state.resolved_repository_digest != self.resolved.digest():
-            return LandingReservationRefusalCode.REPOSITORY_MISMATCH
-        if state.target.repository_id != request.repository_id:
-            return LandingReservationRefusalCode.TARGET_MISMATCH
-        if state.target.target_ref != request.target_ref:
-            return LandingReservationRefusalCode.TARGET_MISMATCH
-        if state.target.commit_sha != request.expected_target_sha:
-            return LandingReservationRefusalCode.TARGET_MOVED
-        if state.target.tree_sha != request.generation_tree_sha:
-            return LandingReservationRefusalCode.TARGET_TREE_MISMATCH
-        canonical = state.canonical
-        if (
-            canonical.repository_id != self.resolved.repository_id
-            or canonical.common_dir_id != self.resolved.common_dir_id
-            or canonical.worktree_id != self.resolved.worktree_id
-        ):
-            return LandingReservationRefusalCode.CANONICAL_STATE_CHANGED
-        if canonical.state is CanonicalState.UNKNOWN:
-            return LandingReservationRefusalCode.CANONICAL_STATE_INVALID
-        if canonical.state is CanonicalState.DIRTY:
-            return LandingReservationRefusalCode.CANONICAL_DIRTY
-        if canonical.private_wip or not canonical.index_clean:
-            return LandingReservationRefusalCode.PRIVATE_WIP
-        if state.occupancy.state is OccupancyState.UNKNOWN:
-            return LandingReservationRefusalCode.TARGET_OCCUPANCY_UNKNOWN
-        if state.occupancy.state is OccupancyState.OCCUPIED:
-            return LandingReservationRefusalCode.TARGET_OCCUPIED
-        cert = state.certification
-        if (
-            not cert.certified
-            or cert.generation_id != request.generation_id
-            or cert.certificate_digest != request.certificate_digest
-            or cert.base_sha != request.expected_base_sha
-            or cert.synthetic_commit_sha != request.synthetic_commit_sha
-            or cert.generation_tree_sha != request.generation_tree_sha
-            or cert.landing_fence != request.landing_fence
-        ):
-            return LandingReservationRefusalCode.CERTIFICATION_INVALID
-        if not self.barrier_valid:
-            return LandingReservationRefusalCode.RESERVATION_LOST
+        checks: tuple[Callable[[], LandingReservationRefusalCode | None], ...] = (
+            lambda: _target_refusal(request, state, self.resolved),
+            lambda: _canonical_refusal(state, self.resolved),
+            lambda: _occupancy_refusal(state),
+            lambda: _certification_refusal(request, state),
+            lambda: (
+                LandingReservationRefusalCode.RESERVATION_LOST
+                if not self.barrier_valid
+                else None
+            ),
+        )
+        for check in checks:
+            code = check()
+            if code is not None:
+                return code
         return None
 
-    def reserve(self, request: LandingReservationRequest) -> HarnessResult:
+    def _validate_request(self, request: LandingReservationRequest) -> str | None:
+        """Return the request digest, or None if the request itself is invalid."""
         try:
             if type(request) is not LandingReservationRequest:
                 raise LandingReservationError("request is invalid")
             request.__post_init__()
-            request_digest = request.digest()
+            return request.digest()
         except LandingReservationError:
-            return HarnessResult(False, LandingReservationRefusalCode.REQUEST_INVALID)
+            return None
 
-        key = (request.repository_id, request.target_ref)
-        replay_key = (*key, request.request_id, request.invocation_id)
+    def _claim_slot(
+        self,
+        key: tuple[str, str],
+        replay_key: tuple[str, str, str, str],
+        request_digest: str,
+    ) -> HarnessResult | None:
+        """Return a short-circuiting result for a replay/conflict, else hold the slot."""
         with self._lock:
             prior = self.completed.get(replay_key)
             if prior is not None:
@@ -321,54 +366,64 @@ class AtomicHarness:
                 )
             self.active.add(key)
             self.events.append("hold")
+            return None
+
+    def _capture_and_verify(
+        self, request: LandingReservationRequest, request_digest: str
+    ) -> HarnessResult:
+        if self.on_after_hold is not None:
+            self.on_after_hold()
+        if not self.states or type(self.state_index) is not int:
+            return HarnessResult(
+                False, LandingReservationRefusalCode.SOURCE_UNAVAILABLE
+            )
+        first = self.states[self.state_index]
+        first.__post_init__()
+        # Freeze the payload now, before any hook runs.  ``states``
+        # holds live object references, not copies: an
+        # ``object.__setattr__`` mutation between "first" and
+        # "second" mutates the *same* object, so reading
+        # ``first.immutable_payload()`` after the hooks would just
+        # re-read the already-mutated object and trivially agree
+        # with ``second`` -- the drift this barrier exists to catch
+        # would never be detected.
+        first_payload = json.dumps(first.immutable_payload(), sort_keys=True)
+        self.events.append("capture")
+        if self.on_after_capture is not None:
+            self.on_after_capture()
+        if self.on_before_barrier is not None:
+            self.on_before_barrier()
+        second = self.states[self.state_index]
+        second.__post_init__()
+        if first_payload != json.dumps(second.immutable_payload(), sort_keys=True):
+            return HarnessResult(False, LandingReservationRefusalCode.RESERVATION_LOST)
+        code = self._state_refusal(request, second)
+        if code is not None:
+            return HarnessResult(False, code)
+        return HarnessResult(
+            True,
+            snapshot=HarnessSnapshot(
+                request_digest=request_digest,
+                target_sha=second.target.commit_sha,
+                target_tree_sha=second.target.tree_sha,
+                state_revision=second.snapshot_revision,
+            ),
+        )
+
+    def reserve(self, request: LandingReservationRequest) -> HarnessResult:
+        request_digest = self._validate_request(request)
+        if request_digest is None:
+            return HarnessResult(False, LandingReservationRefusalCode.REQUEST_INVALID)
+
+        key = (request.repository_id, request.target_ref)
+        replay_key = (*key, request.request_id, request.invocation_id)
+        short_circuit = self._claim_slot(key, replay_key, request_digest)
+        if short_circuit is not None:
+            return short_circuit
 
         result: HarnessResult
         try:
-            if self.on_after_hold is not None:
-                self.on_after_hold()
-            if not self.states or type(self.state_index) is not int:
-                result = HarnessResult(
-                    False, LandingReservationRefusalCode.SOURCE_UNAVAILABLE
-                )
-            else:
-                first = self.states[self.state_index]
-                first.__post_init__()
-                # Freeze the payload now, before any hook runs.  ``states``
-                # holds live object references, not copies: an
-                # ``object.__setattr__`` mutation between "first" and
-                # "second" mutates the *same* object, so reading
-                # ``first.immutable_payload()`` after the hooks would just
-                # re-read the already-mutated object and trivially agree
-                # with ``second`` -- the drift this barrier exists to catch
-                # would never be detected.
-                first_payload = json.dumps(first.immutable_payload(), sort_keys=True)
-                self.events.append("capture")
-                if self.on_after_capture is not None:
-                    self.on_after_capture()
-                if self.on_before_barrier is not None:
-                    self.on_before_barrier()
-                second = self.states[self.state_index]
-                second.__post_init__()
-                if first_payload != json.dumps(
-                    second.immutable_payload(), sort_keys=True
-                ):
-                    result = HarnessResult(
-                        False, LandingReservationRefusalCode.RESERVATION_LOST
-                    )
-                else:
-                    code = self._state_refusal(request, second)
-                    if code is not None:
-                        result = HarnessResult(False, code)
-                    else:
-                        result = HarnessResult(
-                            True,
-                            snapshot=HarnessSnapshot(
-                                request_digest=request_digest,
-                                target_sha=second.target.commit_sha,
-                                target_tree_sha=second.target.tree_sha,
-                                state_revision=second.snapshot_revision,
-                            ),
-                        )
+            result = self._capture_and_verify(request, request_digest)
         except LandingReservationError:
             result = HarnessResult(False, LandingReservationRefusalCode.SOURCE_INVALID)
         except RuntimeError:

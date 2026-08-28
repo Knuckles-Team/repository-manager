@@ -44,6 +44,44 @@ from repository_manager.concept_coordination.state import (
 __all__ = ["FakeConceptAuthority"]
 
 
+def _filter_claim_rows(
+    rows: list[ConceptClaimRecord],
+    *,
+    state: ConceptClaimState | None,
+    concept_prefix: str | None,
+) -> list[ConceptClaimRecord]:
+    if state is not None:
+        rows = [r for r in rows if r.state is state]
+    if concept_prefix is not None:
+        rows = [r for r in rows if r.concept_id.startswith(concept_prefix)]
+    return rows
+
+
+def _effective_transition_target(
+    target: ConceptClaimState, requested_visibility: ConceptClaimVisibility
+) -> ConceptClaimState:
+    if (
+        target is not ConceptClaimState.TOMBSTONED
+        and VISIBILITY_RANK[requested_visibility]
+        >= VISIBILITY_RANK[ConceptClaimVisibility.REPOSITORY]
+    ):
+        return ConceptClaimState.TOMBSTONED
+    return target
+
+
+def _is_idempotent_replay(
+    record: ConceptClaimRecord,
+    owner_ref: str,
+    effective_target: ConceptClaimState,
+    expected_fence: int,
+) -> bool:
+    return (
+        record.owner_ref == owner_ref
+        and record.state is effective_target
+        and record.fence == expected_fence + 1
+    )
+
+
 class FakeConceptAuthority:
     """Thread-safe in-memory double; never a production/cross-host authority."""
 
@@ -123,10 +161,7 @@ class FakeConceptAuthority:
         offset = int(cursor) if cursor else 0
         with self._lock:
             rows = [r for r in self._records.values() if r.tenant_ref == tenant_ref]
-            if state is not None:
-                rows = [r for r in rows if r.state is state]
-            if concept_prefix is not None:
-                rows = [r for r in rows if r.concept_id.startswith(concept_prefix)]
+            rows = _filter_claim_rows(rows, state=state, concept_prefix=concept_prefix)
             rows.sort(key=lambda r: r.reservation_id)
             page = rows[offset : offset + limit]
             next_cursor = str(offset + limit) if offset + limit < len(rows) else None
@@ -159,19 +194,13 @@ class FakeConceptAuthority:
                 record.visibility,
                 visibility if visibility is not None else record.visibility,
             )
-            effective_target = target
-            if (
-                target is not ConceptClaimState.TOMBSTONED
-                and VISIBILITY_RANK[requested_visibility]
-                >= VISIBILITY_RANK[ConceptClaimVisibility.REPOSITORY]
-            ):
-                effective_target = ConceptClaimState.TOMBSTONED
+            effective_target = _effective_transition_target(
+                target, requested_visibility
+            )
             # Same-owner idempotent replay: caller presents the fence one
             # past the transition it already caused.
-            if (
-                record.owner_ref == owner_ref
-                and record.state is effective_target
-                and record.fence == expected_fence + 1
+            if _is_idempotent_replay(
+                record, owner_ref, effective_target, expected_fence
             ):
                 return record
             if record.owner_ref != owner_ref or record.fence != expected_fence:
@@ -182,19 +211,30 @@ class FakeConceptAuthority:
                 raise ConceptClaimFenceConflict(
                     f"cannot transition {record.state.value} to {effective_target.value}"
                 )
-            minimum = minimum_visibility_for_target(effective_target)
-            next_visibility = (
-                strongest_visibility(requested_visibility, minimum)
-                if minimum is not None
-                else requested_visibility
+            return self._commit_transition(
+                reservation_id, record, effective_target, requested_visibility
             )
-            updated = record.model_copy(
-                update={
-                    "state": effective_target,
-                    "visibility": next_visibility,
-                    "fence": record.fence + 1,
-                    "transitioned_at": datetime.now(UTC),
-                }
-            )
-            self._records[reservation_id] = updated
-            return updated
+
+    def _commit_transition(
+        self,
+        reservation_id: str,
+        record: ConceptClaimRecord,
+        effective_target: ConceptClaimState,
+        requested_visibility: ConceptClaimVisibility,
+    ) -> ConceptClaimRecord:
+        minimum = minimum_visibility_for_target(effective_target)
+        next_visibility = (
+            strongest_visibility(requested_visibility, minimum)
+            if minimum is not None
+            else requested_visibility
+        )
+        updated = record.model_copy(
+            update={
+                "state": effective_target,
+                "visibility": next_visibility,
+                "fence": record.fence + 1,
+                "transitioned_at": datetime.now(UTC),
+            }
+        )
+        self._records[reservation_id] = updated
+        return updated

@@ -125,10 +125,8 @@ def start_server():
     return process
 
 
-async def compare_tool_results():
-    """Compare direct tool execution with agent chat response."""
-    print("\n--- Comparing Direct Tool Execution vs Agent Chat ---")
-
+async def _direct_tool_projects() -> set[str] | None:
+    """Return the direct tool's project set, or None if it could not run."""
     # 1. Get direct result
     from repository_manager.mcp_server import get_git_instance
 
@@ -136,14 +134,14 @@ async def compare_tool_results():
         git = get_git_instance()
         direct_projects = set(git.project_map.keys())
         print(f"Direct tool found {len(direct_projects)} projects.")
+        return direct_projects
     except Exception as exc:
         print(f"❌ Direct tool execution failed: {type(exc).__name__}")
-        return False
+        return None
 
-    # 2. Get agent result via chat
-    query = "get_workspace_projects"
-    print("Querying agent")
 
+async def _agent_chat_output(query: str) -> str | None:
+    """Query the agent via chat stream; return accumulated text, or None on failure."""
     chat_output = ""
     url = f"{BASE_URL}/ag-ui"
     payload = {
@@ -163,7 +161,7 @@ async def compare_tool_results():
             async with client.stream("POST", url, json=payload) as response:
                 if response.status_code != 200:
                     print(f"❌ Chat request failed with status {response.status_code}")
-                    return False
+                    return None
 
                 async for line in response.aiter_lines():
                     if line:
@@ -176,13 +174,20 @@ async def compare_tool_results():
                             pass
         except Exception as exc:
             print(f"\n❌ Comparison chat failed: {type(exc).__name__}")
-            return False
+            return None
+    return chat_output
 
-    # 3. Compare
-    print("\nAnalyzing agent response...")
-    # The agent might return a bulleted list or prose. We check if the project URLs are mentioned.
+
+def _score_project_mentions(
+    direct_projects: set[str], chat_output: str
+) -> tuple[int, list[str]]:
+    """Return (found_count, missing) for how many direct_projects are mentioned.
+
+    The agent might return a bulleted list or prose -- we check if the
+    project URLs (or, failing that, the bare repo name) are mentioned.
+    """
     found_count = 0
-    missing = []
+    missing: list[str] = []
     for project in direct_projects:
         if project in chat_output:
             found_count += 1
@@ -193,8 +198,11 @@ async def compare_tool_results():
                 found_count += 1
             else:
                 missing.append(project)
+    return found_count, missing
 
-    print(f"Agent mentioned {found_count}/{len(direct_projects)} projects.")
+
+def _print_comparison_verdict(found_count: int, total: int, missing: list[str]) -> bool:
+    print(f"Agent mentioned {found_count}/{total} projects.")
     if found_count > 0:
         print("✅ Agent successfully retrieved and reported projects.")
         if missing:
@@ -203,6 +211,26 @@ async def compare_tool_results():
     else:
         print("❌ Agent failed to report any projects from the tool.")
         return False
+
+
+async def compare_tool_results():
+    """Compare direct tool execution with agent chat response."""
+    print("\n--- Comparing Direct Tool Execution vs Agent Chat ---")
+
+    direct_projects = await _direct_tool_projects()
+    if direct_projects is None:
+        return False
+
+    # 2. Get agent result via chat
+    print("Querying agent")
+    chat_output = await _agent_chat_output("get_workspace_projects")
+    if chat_output is None:
+        return False
+
+    # 3. Compare
+    print("\nAnalyzing agent response...")
+    found_count, missing = _score_project_mentions(direct_projects, chat_output)
+    return _print_comparison_verdict(found_count, len(direct_projects), missing)
 
 
 async def main():

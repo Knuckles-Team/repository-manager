@@ -20,6 +20,24 @@ def _iter_source_files():
     return sorted(p for p in _PACKAGE_ROOT.glob("*.py") if p.name != "fakes.py")
 
 
+def _assert_no_shell_true_in_call(path: Path, node: ast.Call) -> None:
+    for keyword in node.keywords:
+        if keyword.arg == "shell":
+            raise AssertionError(
+                f"{path}: found a 'shell=' keyword argument at "
+                f"line {node.lineno} -- fixed argv only is violated"
+            )
+    func_name = ast.unparse(node.func) if hasattr(ast, "unparse") else ""
+    assert "os.system" not in func_name, f"{path}:{node.lineno} calls os.system"
+
+
+def _assert_no_shell_true_in_file(path: Path) -> None:
+    tree = ast.parse(path.read_text(), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            _assert_no_shell_true_in_call(path, node)
+
+
 def test_no_shell_true_anywhere_in_the_package() -> None:
     """Structural proof of the "fixed argv only" constraint (C-04).
 
@@ -29,19 +47,7 @@ def test_no_shell_true_anywhere_in_the_package() -> None:
     """
 
     for path in _iter_source_files():
-        tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                for keyword in node.keywords:
-                    if keyword.arg == "shell":
-                        raise AssertionError(
-                            f"{path}: found a 'shell=' keyword argument at "
-                            f"line {node.lineno} -- fixed argv only is violated"
-                        )
-                func_name = ast.unparse(node.func) if hasattr(ast, "unparse") else ""
-                assert "os.system" not in func_name, (
-                    f"{path}:{node.lineno} calls os.system"
-                )
+        _assert_no_shell_true_in_file(path)
 
 
 def test_no_controller_local_lock_or_branch_mutation_primitives_are_used() -> None:

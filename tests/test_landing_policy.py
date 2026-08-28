@@ -188,6 +188,42 @@ def _certificate(
     return certificate, (item,)
 
 
+def _resolve_request_expectations(
+    *,
+    certificate: ValidationCertificate | None,
+    generation: Generation | None,
+    expected_certificate_digest: str | None | object,
+    expected_generation_id: str | None | object,
+    expected_synthetic_commit_sha: str | None | object,
+) -> tuple[str | None, str | None, str | None]:
+    if expected_certificate_digest is _UNSET:
+        expected_certificate_digest = (
+            certificate.digest if certificate is not None else None
+        )
+    if expected_generation_id is _UNSET:
+        expected_generation_id = (
+            generation.generation_id if generation is not None else None
+        )
+    if expected_synthetic_commit_sha is _UNSET:
+        expected_synthetic_commit_sha = (
+            generation.synthetic_commit_sha if generation is not None else None
+        )
+    return (
+        cast(str | None, expected_certificate_digest),
+        cast(str | None, expected_generation_id),
+        cast(str | None, expected_synthetic_commit_sha),
+    )
+
+
+def _default_target_policy() -> TargetPolicy:
+    return TargetPolicy(
+        contract_version=CONTRACT_VERSION,
+        kind=TargetKind.LOCAL,
+        alias=None,
+        capability_labels=(),
+    )
+
+
 def _request(
     *,
     generation: Generation | None = None,
@@ -206,28 +242,21 @@ def _request(
     expected_generation_id: str | None | object = _UNSET,
     expected_synthetic_commit_sha: str | None | object = _UNSET,
 ) -> LandingVerificationRequest:
-    if expected_certificate_digest is _UNSET:
-        expected_certificate_digest = (
-            certificate.digest if certificate is not None else None
-        )
-    if expected_generation_id is _UNSET:
-        expected_generation_id = (
-            generation.generation_id if generation is not None else None
-        )
-    if expected_synthetic_commit_sha is _UNSET:
-        expected_synthetic_commit_sha = (
-            generation.synthetic_commit_sha if generation is not None else None
-        )
+    (
+        expected_certificate_digest,
+        expected_generation_id,
+        expected_synthetic_commit_sha,
+    ) = _resolve_request_expectations(
+        certificate=certificate,
+        generation=generation,
+        expected_certificate_digest=expected_certificate_digest,
+        expected_generation_id=expected_generation_id,
+        expected_synthetic_commit_sha=expected_synthetic_commit_sha,
+    )
     return LandingVerificationRequest(
         repository=repository or _repository(),
         target_branch=target_branch,
-        target=target
-        or TargetPolicy(
-            contract_version=CONTRACT_VERSION,
-            kind=TargetKind.LOCAL,
-            alias=None,
-            capability_labels=(),
-        ),
+        target=target or _default_target_policy(),
         expected_base_sha=expected_base_sha,
         observed_target_sha=observed_target_sha,
         expected_landing_fence=expected_landing_fence,
@@ -237,9 +266,9 @@ def _request(
         canonical=canonical or CanonicalCheckoutState(True, True),
         target_occupancy=target_occupancy or TargetOccupancyState(0),
         evidence=evidence,
-        expected_certificate_digest=cast(str | None, expected_certificate_digest),
-        expected_generation_id=cast(str | None, expected_generation_id),
-        expected_synthetic_commit_sha=cast(str | None, expected_synthetic_commit_sha),
+        expected_certificate_digest=expected_certificate_digest,
+        expected_generation_id=expected_generation_id,
+        expected_synthetic_commit_sha=expected_synthetic_commit_sha,
     )
 
 
