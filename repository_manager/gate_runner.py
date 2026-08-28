@@ -393,6 +393,27 @@ def _resolve_target_result(
 # --------------------------------------------------------------------------
 
 
+def _dispatch_audit_fail_fast(kwargs: dict[str, Any]) -> dict[str, Any]:
+    from repository_manager import fail_fast_audit
+
+    return fail_fast_audit.dispatch(
+        "check_fleet" if kwargs.get("fleet") else "check",
+        **_fleet_config_kwargs(kwargs),
+    )
+
+
+def _dispatch_xdist_plan(kwargs: dict[str, Any]) -> dict[str, Any]:
+    from repository_manager import xdist_rollout
+
+    return xdist_rollout.dispatch("plan", **_fleet_config_kwargs(kwargs))
+
+
+def _dispatch_xdist_apply(kwargs: dict[str, Any]) -> dict[str, Any]:
+    from repository_manager import xdist_rollout
+
+    return xdist_rollout.dispatch("apply", **_fleet_config_kwargs(kwargs))
+
+
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     """Resolve and execute one gate action; MCP and CLI share this exactly.
 
@@ -401,6 +422,22 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     refactor of ``rm_gates``' existing action bodies, and preserving their
     exact historical return shape (``{"status": ...}``, ``{"summary": ...}``,
     etc.) is the whole point: behaviour must not drift.
+
+    The fleet-configuration actions (``audit_fail_fast``, ``xdist_plan``,
+    ``xdist_apply``) delegate straight to their own modules' ``dispatch``,
+    which are already the shared CLI/MCP implementation layer -- the same
+    shape ``concept_actions``/``remote_worker_actions`` use. They are routed
+    through ``rm_gates`` rather than given a tool of their own because both
+    answer questions ABOUT the gate configuration, and a reader looking for
+    "why is this gate slow / can it stop early" should not have to know they
+    live somewhere else.
+
+    Unlike the five gate-execution actions, these DO return the ``{"ok":
+    ...}`` envelope their own modules define. That inconsistency is
+    deliberate and preserved rather than smoothed over: the five
+    gate-execution actions are a verbatim port whose historical return shape
+    callers already depend on, and rewrapping either side to match the other
+    would change a contract to win a cosmetic point.
     """
 
     from agent_utilities.mcp.action_dispatch import resolve_action
@@ -411,44 +448,9 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     if isinstance(resolved, dict):
         return resolved
 
-    if resolved == "run":
-        return _dispatch_run(kwargs)
-    if resolved == "status":
-        return _dispatch_status(kwargs)
-    if resolved == "explain":
-        return _dispatch_explain(kwargs)
-    if resolved == "profile":
-        return _dispatch_profile(kwargs)
-    if resolved == "retest":
-        return _dispatch_retest(kwargs)
-    # The fleet-configuration actions delegate straight to their own modules'
-    # `dispatch`, which are already the shared CLI/MCP implementation layer --
-    # the same shape `concept_actions`/`remote_worker_actions` use. They are
-    # routed through `rm_gates` rather than given a tool of their own because
-    # both answer questions ABOUT the gate configuration, and a reader looking
-    # for "why is this gate slow / can it stop early" should not have to know
-    # they live somewhere else.
-    #
-    # Unlike the five actions above, these DO return the `{"ok": ...}` envelope
-    # their own modules define. That inconsistency is deliberate and preserved
-    # rather than smoothed over: the five gate-execution actions are a verbatim
-    # port whose historical return shape callers already depend on, and
-    # rewrapping either side to match the other would change a contract to win
-    # a cosmetic point.
-    if resolved == "audit_fail_fast":
-        from repository_manager import fail_fast_audit
-
-        return fail_fast_audit.dispatch(
-            "check_fleet" if kwargs.get("fleet") else "check",
-            **_fleet_config_kwargs(kwargs),
-        )
-    if resolved in {"xdist_plan", "xdist_apply"}:
-        from repository_manager import xdist_rollout
-
-        return xdist_rollout.dispatch(
-            "plan" if resolved == "xdist_plan" else "apply",
-            **_fleet_config_kwargs(kwargs),
-        )
+    handler = _GATE_DISPATCH_TABLE.get(resolved)
+    if handler is not None:
+        return handler(kwargs)
     raise AssertionError(f"unhandled resolved gate action {resolved!r}")
 
 
@@ -527,6 +529,90 @@ def _dispatch_run(kwargs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _single_job_status(
+    jobs: dict[str, dict[str, Any]],
+    jobs_lock: RLock,
+    get_job_status: Callable[..., dict[str, Any]],
+    job_id: str,
+    summary: bool,
+) -> dict[str, Any]:
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if job is None:
+        return {"status": "error", "message": f"Job '{job_id}' not found."}
+    return get_job_status(job_id, summary=summary)
+
+
+def _record_failure_detail(
+    jid: str,
+    st: str,
+    job: dict[str, Any],
+    result: Any,
+    job_repo_name: str,
+    details: dict[str, Any],
+    summary: bool,
+) -> None:
+    detail: dict[str, Any] = {"job_id": jid, "status": st}
+    if isinstance(result, RepoScanResult):
+        detail["failures"] = [
+            f"Hook '{h.hook_id}' failed" for h in result.hooks if not h.passed
+        ]
+        detail["explain"] = explain_gate_result(result)
+    elif job.get("error"):
+        detail["error"] = job["error"]
+    if not summary:
+        details[job_repo_name] = detail
+    elif summary:
+        details[job_repo_name] = {"job_id": jid}
+
+
+def _process_gate_job(
+    jid: str,
+    job: dict[str, Any],
+    counts: dict[str, int],
+    failed_repos: list[str],
+    running_repos: list[str],
+    details: dict[str, Any],
+    summary: bool,
+) -> None:
+    st = job["status"]
+    job_repo_name = job.get("repo_name")
+    if st in ("running", "queued", "pending"):
+        counts["running"] += 1
+        if job_repo_name:
+            running_repos.append(job_repo_name)
+        return
+    result = job.get("result")
+    passed = isinstance(result, RepoScanResult) and result.success
+    if st == "completed":
+        counts["completed"] += 1
+        counts["passed" if passed else "failed"] += 1
+    elif st == "failed":
+        counts["failed"] += 1
+    if not passed and job_repo_name:
+        failed_repos.append(job_repo_name)
+        _record_failure_detail(jid, st, job, result, job_repo_name, details, summary)
+
+
+def _gate_jobs_summary(
+    gate_jobs: dict[str, dict[str, Any]], summary: bool
+) -> dict[str, Any]:
+    counts = {"completed": 0, "running": 0, "failed": 0, "passed": 0}
+    failed_repos: list[str] = []
+    running_repos: list[str] = []
+    details: dict[str, Any] = {}
+    for jid, job in gate_jobs.items():
+        _process_gate_job(
+            jid, job, counts, failed_repos, running_repos, details, summary
+        )
+    return {
+        "summary": {**counts, "total": len(gate_jobs)},
+        "failed_projects": sorted(failed_repos),
+        "running_projects": sorted(running_repos),
+        "failed_details": details,
+    }
+
+
 def _dispatch_status(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Verbatim port of ``rm_gates``'s ``status`` branch."""
     jobs: dict[str, dict[str, Any]] = kwargs["jobs"]
@@ -536,54 +622,12 @@ def _dispatch_status(kwargs: dict[str, Any]) -> dict[str, Any]:
     summary = kwargs.get("summary", True)
 
     if job_id:
-        with jobs_lock:
-            job = jobs.get(job_id)
-        if job is None:
-            return {"status": "error", "message": f"Job '{job_id}' not found."}
-        return get_job_status(job_id, summary=summary)
+        return _single_job_status(jobs, jobs_lock, get_job_status, job_id, summary)
 
     gate_jobs = _latest_gate_jobs(jobs, jobs_lock)
     if not gate_jobs:
         return {"status": "empty", "message": "No gate jobs found."}
-    counts = {"completed": 0, "running": 0, "failed": 0, "passed": 0}
-    failed_repos: list[str] = []
-    running_repos: list[str] = []
-    details: dict[str, Any] = {}
-    for jid, job in gate_jobs.items():
-        st = job["status"]
-        job_repo_name = job.get("repo_name")
-        if st in ("running", "queued", "pending"):
-            counts["running"] += 1
-            if job_repo_name:
-                running_repos.append(job_repo_name)
-            continue
-        result = job.get("result")
-        passed = isinstance(result, RepoScanResult) and result.success
-        if st == "completed":
-            counts["completed"] += 1
-            counts["passed" if passed else "failed"] += 1
-        elif st == "failed":
-            counts["failed"] += 1
-        if not passed and job_repo_name:
-            failed_repos.append(job_repo_name)
-            detail: dict[str, Any] = {"job_id": jid, "status": st}
-            if isinstance(result, RepoScanResult):
-                detail["failures"] = [
-                    f"Hook '{h.hook_id}' failed" for h in result.hooks if not h.passed
-                ]
-                detail["explain"] = explain_gate_result(result)
-            elif job.get("error"):
-                detail["error"] = job["error"]
-            if not summary:
-                details[job_repo_name] = detail
-            elif summary:
-                details[job_repo_name] = {"job_id": jid}
-    return {
-        "summary": {**counts, "total": len(gate_jobs)},
-        "failed_projects": sorted(failed_repos),
-        "running_projects": sorted(running_repos),
-        "failed_details": details,
-    }
+    return _gate_jobs_summary(gate_jobs, summary)
 
 
 def _dispatch_explain(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -721,6 +765,82 @@ def _retest_plan(
     }
 
 
+def _submit_retest_target(
+    repo_name: str,
+    path: str,
+    *,
+    plans: dict[str, dict[str, Any]],
+    submit_gate: Callable[..., dict[str, Any]],
+    stage: str,
+    escalate: bool,
+    same_node: bool,
+) -> dict[str, Any]:
+    # NOTE: this keyword-only param is named `submit_gate`, not `submit_one`
+    # like its caller's local variable -- `_fan_out`'s OWN second positional
+    # parameter is itself named `submit_one` (the callable to fan out, which
+    # here is this very function), so passing a `submit_one=...` kwarg
+    # through `_fan_out(..., **submit_kwargs)` would collide with that
+    # positional binding (mypy caught this: "gets multiple values for
+    # keyword argument 'submit_one'").
+    plan = plans[repo_name]
+    entry: dict[str, Any] = {
+        "stage": stage,
+        "baseline": plan["baseline"],
+        "retest_hook_ids": plan["hook_ids"],
+        "retest_job_id": None,
+        "escalate": False,
+        "stale": plan["stale"],
+    }
+    if plan["baseline"] == "clean" and not plan["stale"]:
+        # Nothing failing and nothing stale to distrust -- no work to do.
+        return entry
+
+    hook_ids = plan["hook_ids"]  # None => full wave
+    narrowed = hook_ids is not None and len(hook_ids) > 0
+    submitted = submit_gate(
+        repo_name,
+        path,
+        hook_ids=hook_ids,
+        trigger="retest" if narrowed else "retest-full",
+        scope="retest" if narrowed else "full_wave",
+        _escalate_on_pass=(escalate and narrowed),
+        _same_node=same_node,
+    )
+    entry["retest_job_id"] = submitted["job_id"]
+    entry["escalate"] = bool(escalate and narrowed)
+    return entry
+
+
+def _build_retest_plans(
+    targets: list[tuple[str, str]], stage: str, ledger: GateLedger
+) -> dict[str, dict[str, Any]]:
+    return {
+        repo_name: _retest_plan(
+            repo_id=build_queue.stable_repository_id(path),
+            repo_path=path,
+            stage=stage,
+            ledger=ledger,
+        )
+        for repo_name, path in targets
+    }
+
+
+def _retest_summary(per_repo: dict[str, Any]) -> dict[str, Any]:
+    submitted_count = sum(1 for v in per_repo.values() if v["retest_job_id"])
+    stale_count = sum(1 for v in per_repo.values() if v["stale"])
+    missing_count = sum(1 for v in per_repo.values() if v["baseline"] == "missing")
+    return {
+        "status": "submitted" if submitted_count else "clean",
+        "targets": per_repo,
+        "message": (
+            f"{submitted_count} retest job(s) submitted across {len(per_repo)} "
+            f"target(s) ({missing_count} with no prior baseline, {stale_count} "
+            "with a stale baseline degraded to the full wave). Poll "
+            "action='status'."
+        ),
+    }
+
+
 def _dispatch_retest(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Narrow a repo's gate re-run to what the ledger says last failed.
 
@@ -768,56 +888,33 @@ def _dispatch_retest(kwargs: dict[str, Any]) -> dict[str, Any]:
             "message": "No repositories with a .pre-commit-config.yaml matched.",
         }
 
-    plans = {
-        repo_name: _retest_plan(
-            repo_id=build_queue.stable_repository_id(path),
-            repo_path=path,
-            stage=stage,
-            ledger=ledger,
-        )
-        for repo_name, path in targets
-    }
+    plans = _build_retest_plans(targets, stage, ledger)
 
-    def _submit_for_target(repo_name: str, path: str) -> dict[str, Any]:
-        plan = plans[repo_name]
-        entry: dict[str, Any] = {
-            "stage": stage,
-            "baseline": plan["baseline"],
-            "retest_hook_ids": plan["hook_ids"],
-            "retest_job_id": None,
-            "escalate": False,
-            "stale": plan["stale"],
-        }
-        if plan["baseline"] == "clean" and not plan["stale"]:
-            # Nothing failing and nothing stale to distrust -- no work to do.
-            return entry
+    per_repo = _fan_out(
+        targets,
+        _submit_retest_target,
+        max_workers=max_workers,
+        plans=plans,
+        submit_gate=submit_one,
+        stage=stage,
+        escalate=escalate,
+        same_node=same_node,
+    )
+    return _retest_summary(per_repo)
 
-        hook_ids = plan["hook_ids"]  # None => full wave
-        narrowed = hook_ids is not None and len(hook_ids) > 0
-        submitted = submit_one(
-            repo_name,
-            path,
-            hook_ids=hook_ids,
-            trigger="retest" if narrowed else "retest-full",
-            scope="retest" if narrowed else "full_wave",
-            _escalate_on_pass=(escalate and narrowed),
-            _same_node=same_node,
-        )
-        entry["retest_job_id"] = submitted["job_id"]
-        entry["escalate"] = bool(escalate and narrowed)
-        return entry
 
-    per_repo = _fan_out(targets, _submit_for_target, max_workers=max_workers)
-    submitted_count = sum(1 for v in per_repo.values() if v["retest_job_id"])
-    stale_count = sum(1 for v in per_repo.values() if v["stale"])
-    missing_count = sum(1 for v in per_repo.values() if v["baseline"] == "missing")
-    return {
-        "status": "submitted" if submitted_count else "clean",
-        "targets": per_repo,
-        "message": (
-            f"{submitted_count} retest job(s) submitted across {len(per_repo)} "
-            f"target(s) ({missing_count} with no prior baseline, {stale_count} "
-            "with a stale baseline degraded to the full wave). Poll "
-            "action='status'."
-        ),
-    }
+# Built here, after every handler above is defined, and looked up by name
+# (not referenced until `dispatch()` is actually CALLED, well after module
+# import completes) -- see `dispatch()`'s own docstring for why the five
+# gate-execution actions and the three fleet-configuration actions return
+# different shapes.
+_GATE_DISPATCH_TABLE: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "run": _dispatch_run,
+    "status": _dispatch_status,
+    "explain": _dispatch_explain,
+    "profile": _dispatch_profile,
+    "retest": _dispatch_retest,
+    "audit_fail_fast": _dispatch_audit_fail_fast,
+    "xdist_plan": _dispatch_xdist_plan,
+    "xdist_apply": _dispatch_xdist_apply,
+}

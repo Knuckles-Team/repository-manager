@@ -134,58 +134,61 @@ def _split_members(
     return member_ids[:middle], member_ids[middle:]
 
 
-def decide(attempt: AttemptResult) -> BisectionDecision:
-    """Choose accept/retry/split/reject for one immutable attempt."""
-
-    kind = classify_failure(
-        passed=attempt.passed,
-        failure_class=attempt.failure_class,
+def _accept_decision(attempt: AttemptResult) -> BisectionDecision:
+    return BisectionDecision(
+        action=DecisionAction.ACCEPT,
+        kind=FailureKind.NONE,
+        parent_generation_id=attempt.generation_id,
+        member_ids=attempt.member_ids,
+        accepted_member_ids=attempt.member_ids,
+        reused_evidence_ids=attempt.evidence_ids,
+        reason="generation passed; exact evidence is reusable for the same membership",
     )
-    if attempt.passed and kind == FailureKind.NONE:
-        return BisectionDecision(
-            action=DecisionAction.ACCEPT,
-            kind=FailureKind.NONE,
-            parent_generation_id=attempt.generation_id,
-            member_ids=attempt.member_ids,
-            accepted_member_ids=attempt.member_ids,
-            reused_evidence_ids=attempt.evidence_ids,
-            reason="generation passed; exact evidence is reusable for the same membership",
+
+
+def _retry_reason(kind: FailureKind, exhausted: bool) -> str:
+    if kind == FailureKind.OPAQUE:
+        return (
+            "unknown failure code: retry unchanged generation"
+            if not exhausted
+            else "unknown failure code exhausted retry budget: quarantine and reconcile"
         )
-    if kind != FailureKind.CANDIDATE:
-        exhausted = attempt.attempt >= attempt.attempt_budget
-        quarantine = kind == FailureKind.ENVIRONMENT and exhausted
-        if kind == FailureKind.OPAQUE:
-            reason = (
-                "unknown failure code: retry unchanged generation"
-                if not exhausted
-                else "unknown failure code exhausted retry budget: quarantine and reconcile"
-            )
-        elif kind == FailureKind.ENVIRONMENT:
-            reason = (
-                "environment failure: retry the unchanged generation"
-                if not exhausted
-                else "environment failure exhausted retry budget: quarantine and reconcile"
-            )
-        else:
-            reason = "cancellation is not a success; retry or apply group cancellation policy"
-        return BisectionDecision(
-            action=DecisionAction.RETRY,
-            kind=kind,
-            parent_generation_id=attempt.generation_id,
-            member_ids=attempt.member_ids,
-            retry_member_ids=attempt.member_ids,
-            quarantined=quarantine or (kind == FailureKind.OPAQUE and exhausted),
-            reason=reason,
+    if kind == FailureKind.ENVIRONMENT:
+        return (
+            "environment failure: retry the unchanged generation"
+            if not exhausted
+            else "environment failure exhausted retry budget: quarantine and reconcile"
         )
-    if len(attempt.member_ids) == 1:
-        return BisectionDecision(
-            action=DecisionAction.REJECT,
-            kind=kind,
-            parent_generation_id=attempt.generation_id,
-            member_ids=attempt.member_ids,
-            rejected_member_ids=attempt.member_ids,
-            reason=attempt.detail or "single candidate failed generation evaluation",
-        )
+    return "cancellation is not a success; retry or apply group cancellation policy"
+
+
+def _retry_decision(attempt: AttemptResult, kind: FailureKind) -> BisectionDecision:
+    exhausted = attempt.attempt >= attempt.attempt_budget
+    quarantine = kind == FailureKind.ENVIRONMENT and exhausted
+    reason = _retry_reason(kind, exhausted)
+    return BisectionDecision(
+        action=DecisionAction.RETRY,
+        kind=kind,
+        parent_generation_id=attempt.generation_id,
+        member_ids=attempt.member_ids,
+        retry_member_ids=attempt.member_ids,
+        quarantined=quarantine or (kind == FailureKind.OPAQUE and exhausted),
+        reason=reason,
+    )
+
+
+def _reject_decision(attempt: AttemptResult, kind: FailureKind) -> BisectionDecision:
+    return BisectionDecision(
+        action=DecisionAction.REJECT,
+        kind=kind,
+        parent_generation_id=attempt.generation_id,
+        member_ids=attempt.member_ids,
+        rejected_member_ids=attempt.member_ids,
+        reason=attempt.detail or "single candidate failed generation evaluation",
+    )
+
+
+def _split_decision(attempt: AttemptResult, kind: FailureKind) -> BisectionDecision:
     left, right = _split_members(attempt.member_ids)
     return BisectionDecision(
         action=DecisionAction.SPLIT,
@@ -196,6 +199,22 @@ def decide(attempt: AttemptResult) -> BisectionDecision:
         right_member_ids=right,
         reason=attempt.detail or "failure requires deterministic attribution bisection",
     )
+
+
+def decide(attempt: AttemptResult) -> BisectionDecision:
+    """Choose accept/retry/split/reject for one immutable attempt."""
+
+    kind = classify_failure(
+        passed=attempt.passed,
+        failure_class=attempt.failure_class,
+    )
+    if attempt.passed and kind == FailureKind.NONE:
+        return _accept_decision(attempt)
+    if kind != FailureKind.CANDIDATE:
+        return _retry_decision(attempt, kind)
+    if len(attempt.member_ids) == 1:
+        return _reject_decision(attempt, kind)
+    return _split_decision(attempt, kind)
 
 
 def reusable_evidence(

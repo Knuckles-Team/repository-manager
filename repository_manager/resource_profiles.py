@@ -60,17 +60,25 @@ class ResourceProfile:
     default_fairness_group: str = "default"
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
-    def __post_init__(self) -> None:
+    def _validate_name(self) -> None:
         if not self.name or self.name.strip() != self.name:
             raise ResourceProfileError("profile name must be non-blank")
+
+    def _validate_version(self) -> None:
         if self.profile_version < 1:
             raise ResourceProfileError("profile_version must be positive")
+
+    def _validate_positive_integers(self) -> None:
         for field_name in ("cpu_weight", "memory_mib", "disk_mib", "process_slots"):
             value = getattr(self, field_name)
             if isinstance(value, bool) or value < 1:
                 raise ResourceProfileError(f"{field_name} must be a positive integer")
+
+    def _validate_concurrency_limit(self) -> None:
         if self.concurrency_limit is not None and self.concurrency_limit < 1:
             raise ResourceProfileError("concurrency_limit must be positive")
+
+    def _validate_disk_watermarks(self) -> None:
         if self.disk_low_watermark_mib is not None and self.disk_low_watermark_mib < 0:
             raise ResourceProfileError("disk_low_watermark_mib cannot be negative")
         if (
@@ -86,6 +94,8 @@ class ResourceProfile:
             raise ResourceProfileError(
                 "disk_low_watermark_mib must not exceed disk_high_watermark_mib"
             )
+
+    def _normalize_label_fields(self) -> None:
         for field_name in (
             "required_labels",
             "anti_affinity",
@@ -94,10 +104,24 @@ class ResourceProfile:
             if any(not isinstance(value, str) or not value.strip() for value in values):
                 raise ResourceProfileError(f"{field_name} entries must be non-blank")
             object.__setattr__(self, field_name, tuple(sorted(set(values))))
+
+    def _normalize_concurrency_key(self) -> None:
         if not self.concurrency_key:
             object.__setattr__(self, "concurrency_key", self.name)
+
+    def _validate_fairness_group(self) -> None:
         if not self.default_fairness_group.strip():
             raise ResourceProfileError("default_fairness_group must be non-blank")
+
+    def __post_init__(self) -> None:
+        self._validate_name()
+        self._validate_version()
+        self._validate_positive_integers()
+        self._validate_concurrency_limit()
+        self._validate_disk_watermarks()
+        self._normalize_label_fields()
+        self._normalize_concurrency_key()
+        self._validate_fairness_group()
 
     def request_defaults(self) -> ResourceRequest:
         """Return the profile's typed minimum request."""

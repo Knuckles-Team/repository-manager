@@ -157,6 +157,12 @@ class RolloutPlanEntry:
         return asdict(self)
 
 
+def _string_entries(values: Any) -> Iterable[str]:
+    for value in values or []:
+        if isinstance(value, str):
+            yield value
+
+
 def _iter_declared_requirement_strings(data: dict[str, Any]) -> Iterable[str]:
     """Every PEP 508 requirement string a repo's own ``pyproject.toml`` declares.
 
@@ -170,17 +176,11 @@ def _iter_declared_requirement_strings(data: dict[str, Any]) -> Iterable[str]:
     """
 
     project = data.get("project") or {}
-    for value in project.get("dependencies") or []:
-        if isinstance(value, str):
-            yield value
+    yield from _string_entries(project.get("dependencies"))
     for group in (project.get("optional-dependencies") or {}).values():
-        for value in group or []:
-            if isinstance(value, str):
-                yield value
+        yield from _string_entries(group)
     for group in (data.get("dependency-groups") or {}).values():
-        for value in group or []:
-            if isinstance(value, str):
-                yield value
+        yield from _string_entries(group)
 
 
 def _declares_pytest_xdist(pyproject_path: Path) -> bool:
@@ -204,6 +204,17 @@ def _declares_pytest_xdist(pyproject_path: Path) -> bool:
     return False
 
 
+def _find_pytest_hook_entry(repo_blocks: Any) -> tuple[str | None, bool]:
+    for repo_block in repo_blocks or []:
+        if not isinstance(repo_block, dict):
+            continue
+        for hook in repo_block.get("hooks") or []:
+            if isinstance(hook, dict) and hook.get("id") == "pytest":
+                entry = hook.get("entry")
+                return (entry if isinstance(entry, str) else None), True
+    return None, False
+
+
 def _pytest_hook_entry(repo_path: Path) -> tuple[str | None, bool]:
     """``(entry, hook_found)`` for the repo's ``id: pytest`` pre-commit hook.
 
@@ -223,14 +234,7 @@ def _pytest_hook_entry(repo_path: Path) -> tuple[str | None, bool]:
         return None, False
     if not isinstance(data, dict):
         return None, False
-    for repo_block in data.get("repos") or []:
-        if not isinstance(repo_block, dict):
-            continue
-        for hook in repo_block.get("hooks") or []:
-            if isinstance(hook, dict) and hook.get("id") == "pytest":
-                entry = hook.get("entry")
-                return (entry if isinstance(entry, str) else None), True
-    return None, False
+    return _find_pytest_hook_entry(data.get("repos"))
 
 
 def _evaluate(repo_path: Path) -> RolloutPlanEntry:
@@ -332,6 +336,36 @@ def apply(
     return results
 
 
+def _dispatch_plan_or_status(action: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+    repo_paths = kwargs.get("repo_paths") or []
+    if not repo_paths:
+        return {"ok": False, "error": f"{action} requires repo_paths"}
+    entries = plan(repo_paths)
+    return {
+        "ok": True,
+        "repos_checked": len(entries),
+        "eligible": sum(1 for e in entries if e["eligible"]),
+        "entries": entries,
+    }
+
+
+def _dispatch_apply(kwargs: dict[str, Any]) -> dict[str, Any]:
+    repo_paths = kwargs.get("repo_paths") or []
+    if not repo_paths:
+        return {"ok": False, "error": "apply requires repo_paths"}
+    dry_run = bool(kwargs.get("dry_run", True))
+    entries = apply(repo_paths, dry_run=dry_run)
+    errors = [e for e in entries if e["action"] == "error"]
+    return {
+        "ok": not errors,
+        "dry_run": dry_run,
+        "repos_checked": len(entries),
+        "patched": sum(1 for e in entries if e["action"] == "patched"),
+        "would_patch": sum(1 for e in entries if e["action"] == "would_patch"),
+        "entries": entries,
+    }
+
+
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     """One action core for the ``plan``/``apply``/``status`` surface.
 
@@ -344,29 +378,7 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     """
 
     if action in {"plan", "status"}:
-        repo_paths = kwargs.get("repo_paths") or []
-        if not repo_paths:
-            return {"ok": False, "error": f"{action} requires repo_paths"}
-        entries = plan(repo_paths)
-        return {
-            "ok": True,
-            "repos_checked": len(entries),
-            "eligible": sum(1 for e in entries if e["eligible"]),
-            "entries": entries,
-        }
+        return _dispatch_plan_or_status(action, kwargs)
     if action == "apply":
-        repo_paths = kwargs.get("repo_paths") or []
-        if not repo_paths:
-            return {"ok": False, "error": "apply requires repo_paths"}
-        dry_run = bool(kwargs.get("dry_run", True))
-        entries = apply(repo_paths, dry_run=dry_run)
-        errors = [e for e in entries if e["action"] == "error"]
-        return {
-            "ok": not errors,
-            "dry_run": dry_run,
-            "repos_checked": len(entries),
-            "patched": sum(1 for e in entries if e["action"] == "patched"),
-            "would_patch": sum(1 for e in entries if e["action"] == "would_patch"),
-            "entries": entries,
-        }
+        return _dispatch_apply(kwargs)
     return {"ok": False, "error": f"unknown action: {action}"}

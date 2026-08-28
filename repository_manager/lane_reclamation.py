@@ -174,6 +174,49 @@ class ReconciliationFinding:
         }
 
 
+def _probe_claim(
+    probe: Callable[[LaneRecord], Any] | None,
+    lane: LaneRecord,
+    declared_claimed: bool,
+) -> tuple[bool, bool]:
+    """``(claimed, unknown)`` for one claim probe.
+
+    Mirrors the original per-claim inline logic exactly: ``unknown`` starts
+    True only when no probe is configured; a configured probe that raises or
+    returns ``None`` also sets ``unknown`` True (ambiguous claim state refuses
+    cleanup, it never defaults to "not claimed").
+    """
+    claimed = declared_claimed
+    unknown = probe is None
+    if probe is not None:
+        try:
+            probed = probe(lane)
+        except Exception:  # noqa: BLE001 - unknown claim state refuses cleanup
+            probed = None
+        if probed is None:
+            unknown = True
+        else:
+            claimed = bool(probed)
+    return claimed, unknown
+
+
+def _claim_safety_check(
+    name: str,
+    claimed: bool,
+    unknown: bool,
+    reason: ReclamationReason,
+    evidence: dict[str, Any],
+) -> SafetyCheck:
+    allowed = not claimed and not unknown
+    if allowed:
+        detail = ""
+    elif claimed:
+        detail = reason.value
+    else:
+        detail = reason.value + ": claim evidence unavailable"
+    return SafetyCheck(name, allowed, detail, evidence)
+
+
 class LaneReclaimer:
     """Assess expired lanes and execute only guarded cleanup plans."""
 
@@ -328,17 +371,66 @@ class LaneReclaimer:
         )
         return tuple(checks)
 
-    def _check_anchor(self, lane: LaneRecord) -> SafetyCheck:
-        anchors = lane.cleanup_anchors or (
-            "refs/lane-backup/" + lane.branch.replace("/", "-"),
-        )
+    def _resolve_lane_tip(self, lane: LaneRecord) -> tuple[str, bool]:
+        """``(tip_sha, valid)`` — ``tip_sha`` is always the raw stripped
+        value (used as evidence even when invalid); ``valid`` is False unless
+        it resolves to exactly a 40-hex commit sha.
+        """
         tip_ok, tip = self._git(
             "git rev-parse --verify --quiet "
             + shlex.quote("refs/heads/" + lane.branch),
             lane.repository_path,
         )
         tip_sha = tip.strip()
-        if not tip_ok or not re.fullmatch(r"[0-9a-fA-F]{40}", tip_sha):
+        valid = tip_ok and bool(re.fullmatch(r"[0-9a-fA-F]{40}", tip_sha))
+        return tip_sha, valid
+
+    @staticmethod
+    def _is_valid_anchor_form(anchor: Any) -> bool:
+        if (
+            not isinstance(anchor, str)
+            or not anchor.strip()
+            or anchor != anchor.strip()
+        ):
+            return False
+        is_ref = bool(
+            re.fullmatch(
+                r"refs/(?:lane-backup|heads|tags|remotes)/[A-Za-z0-9._/-]+", anchor
+            )
+            and ".." not in anchor
+            and "//" not in anchor
+        )
+        is_sha = bool(re.fullmatch(r"[0-9a-fA-F]{40}", anchor))
+        return is_ref or is_sha
+
+    def _anchor_preserves_tip(
+        self, lane: LaneRecord, anchor: str, tip_sha: str
+    ) -> str | None:
+        """The anchor's resolved commit sha, iff ``tip_sha`` is its ancestor
+        (i.e. the anchor actually preserves the lane's work) — else ``None``.
+        """
+        ok, value = self._git(
+            "git rev-parse --verify --quiet " + shlex.quote(anchor + "^{commit}"),
+            lane.repository_path,
+        )
+        anchor_sha = value.strip()
+        if not ok or not re.fullmatch(r"[0-9a-fA-F]{40}", anchor_sha):
+            return None
+        preserved, _ = self._git(
+            "git merge-base --is-ancestor "
+            + shlex.quote(tip_sha)
+            + " "
+            + shlex.quote(anchor_sha),
+            lane.repository_path,
+        )
+        return anchor_sha if preserved else None
+
+    def _check_anchor(self, lane: LaneRecord) -> SafetyCheck:
+        anchors = lane.cleanup_anchors or (
+            "refs/lane-backup/" + lane.branch.replace("/", "-"),
+        )
+        tip_sha, tip_valid = self._resolve_lane_tip(lane)
+        if not tip_valid:
             return SafetyCheck(
                 "backup_anchor",
                 False,
@@ -347,37 +439,10 @@ class LaneReclaimer:
                 {"anchors": list(anchors), "lane_tip": tip_sha},
             )
         for anchor in anchors:
-            if (
-                not isinstance(anchor, str)
-                or not anchor.strip()
-                or anchor != anchor.strip()
-            ):
+            if not self._is_valid_anchor_form(anchor):
                 continue
-            is_ref = bool(
-                re.fullmatch(
-                    r"refs/(?:lane-backup|heads|tags|remotes)/[A-Za-z0-9._/-]+", anchor
-                )
-                and ".." not in anchor
-                and "//" not in anchor
-            )
-            is_sha = bool(re.fullmatch(r"[0-9a-fA-F]{40}", anchor))
-            if not (is_ref or is_sha):
-                continue
-            ok, value = self._git(
-                "git rev-parse --verify --quiet " + shlex.quote(anchor + "^{commit}"),
-                lane.repository_path,
-            )
-            anchor_sha = value.strip()
-            if not ok or not re.fullmatch(r"[0-9a-fA-F]{40}", anchor_sha):
-                continue
-            preserved, _ = self._git(
-                "git merge-base --is-ancestor "
-                + shlex.quote(tip_sha)
-                + " "
-                + shlex.quote(anchor_sha),
-                lane.repository_path,
-            )
-            if preserved:
+            anchor_sha = self._anchor_preserves_tip(lane, anchor, tip_sha)
+            if anchor_sha is not None:
                 return SafetyCheck(
                     "backup_anchor",
                     True,
@@ -391,83 +456,41 @@ class LaneReclaimer:
         )
 
     def _check_claims(self, lane: LaneRecord) -> tuple[SafetyCheck, ...]:
-        job_claimed = bool(lane.active_job_ids)
-        job_unknown = self.job_probe is None
-        if self.job_probe is not None:
-            try:
-                probed = self.job_probe(lane)
-            except Exception:  # noqa: BLE001 - unknown claim state refuses cleanup
-                probed = None
-            if probed is None:
-                job_unknown = True
-            else:
-                job_claimed = bool(probed)
-        candidate_claimed = bool(lane.active_candidate_id)
-        candidate_unknown = self.candidate_probe is None
-        if self.candidate_probe is not None:
-            try:
-                probed = self.candidate_probe(lane)
-            except Exception:  # noqa: BLE001 - unknown claim state refuses cleanup
-                probed = None
-            if probed is None:
-                candidate_unknown = True
-            else:
-                candidate_claimed = bool(probed)
-        concept_claimed = bool(lane.concept_ids)
-        concept_unknown = self.concept_probe is None
-        if self.concept_probe is not None:
-            try:
-                probed = self.concept_probe(lane)
-            except Exception:  # noqa: BLE001 - unknown claim state refuses cleanup
-                probed = None
-            if probed is None:
-                concept_unknown = True
-            else:
-                concept_claimed = bool(probed)
+        job_claimed, job_unknown = _probe_claim(
+            self.job_probe, lane, bool(lane.active_job_ids)
+        )
+        candidate_claimed, candidate_unknown = _probe_claim(
+            self.candidate_probe, lane, bool(lane.active_candidate_id)
+        )
+        concept_claimed, concept_unknown = _probe_claim(
+            self.concept_probe, lane, bool(lane.concept_ids)
+        )
         return (
-            SafetyCheck(
+            _claim_safety_check(
                 "active_job",
-                not job_claimed and not job_unknown,
-                ""
-                if not job_claimed and not job_unknown
-                else (
-                    ReclamationReason.ACTIVE_JOB.value
-                    if job_claimed
-                    else ReclamationReason.ACTIVE_JOB.value
-                    + ": claim evidence unavailable"
-                ),
+                job_claimed,
+                job_unknown,
+                ReclamationReason.ACTIVE_JOB,
                 {
                     "job_ids": list(lane.active_job_ids),
                     "evidence_available": not job_unknown,
                 },
             ),
-            SafetyCheck(
+            _claim_safety_check(
                 "active_candidate",
-                not candidate_claimed and not candidate_unknown,
-                ""
-                if not candidate_claimed and not candidate_unknown
-                else (
-                    ReclamationReason.ACTIVE_CANDIDATE.value
-                    if candidate_claimed
-                    else ReclamationReason.ACTIVE_CANDIDATE.value
-                    + ": claim evidence unavailable"
-                ),
+                candidate_claimed,
+                candidate_unknown,
+                ReclamationReason.ACTIVE_CANDIDATE,
                 {
                     "candidate_id": lane.active_candidate_id,
                     "evidence_available": not candidate_unknown,
                 },
             ),
-            SafetyCheck(
+            _claim_safety_check(
                 "concept_claim",
-                not concept_claimed and not concept_unknown,
-                ""
-                if not concept_claimed and not concept_unknown
-                else (
-                    ReclamationReason.CONCEPT_CLAIM.value
-                    if concept_claimed
-                    else ReclamationReason.CONCEPT_CLAIM.value
-                    + ": claim evidence unavailable"
-                ),
+                concept_claimed,
+                concept_unknown,
+                ReclamationReason.CONCEPT_CLAIM,
                 {
                     "concept_ids": list(lane.concept_ids),
                     "evidence_available": not concept_unknown,
@@ -545,6 +568,21 @@ class LaneReclaimer:
             assessment=assessment,
         )
 
+    @staticmethod
+    def _extract_submitted_job_identity(submitted: Any) -> tuple[Any, Any]:
+        job_id = getattr(submitted, "job_id", None)
+        job_fence = getattr(submitted, "lease_fence", None) or getattr(
+            submitted, "fence", None
+        )
+        if isinstance(submitted, Mapping):
+            job_id = submitted.get("job_id") or submitted.get("id")
+            job_fence = (
+                submitted.get("lease_fence")
+                or submitted.get("fence")
+                or submitted.get("lease_token")
+            )
+        return job_id, job_fence
+
     def request_cleanup(
         self,
         plan: CleanupPlan,
@@ -562,17 +600,7 @@ class LaneReclaimer:
         if self.cleanup_authority is None:
             raise CleanupRefused(plan)
         submitted = submit(plan)
-        job_id = getattr(submitted, "job_id", None)
-        job_fence = getattr(submitted, "lease_fence", None) or getattr(
-            submitted, "fence", None
-        )
-        if isinstance(submitted, Mapping):
-            job_id = submitted.get("job_id") or submitted.get("id")
-            job_fence = (
-                submitted.get("lease_fence")
-                or submitted.get("fence")
-                or submitted.get("lease_token")
-            )
+        job_id, job_fence = self._extract_submitted_job_identity(submitted)
         if not job_id or not job_fence:
             raise CleanupRefused(plan)
         return CleanupPlan(
@@ -629,30 +657,35 @@ class LaneReclaimer:
             return False
         return bool(result)
 
-    def _cleanup_receipt(self, plan: CleanupPlan, lane: LaneRecord) -> bool:
-        """Return true only for an exact durable removal receipt."""
-
+    def _resolve_cleanup_authority_method(
+        self, name: str, fallback_name: str
+    ) -> Callable[..., Any] | None:
         authority = self.cleanup_authority
-        if (
-            authority is None
-            or not plan.requested_job_id
-            or not plan.requested_job_fence
-        ):
-            return False
-        getter = getattr(authority, "get_removal_receipt", None)
-        if not callable(getter):
-            getter = getattr(authority, "cleanup_receipt", None)
-        if not callable(getter):
-            return False
+        if authority is None:
+            return None
+        method = getattr(authority, name, None)
+        if not callable(method):
+            method = getattr(authority, fallback_name, None)
+        return method if callable(method) else None
+
+    def _fetch_removal_receipt(self, plan: CleanupPlan) -> Any:
+        getter = self._resolve_cleanup_authority_method(
+            "get_removal_receipt", "cleanup_receipt"
+        )
+        if getter is None:
+            return None
         try:
-            receipt = getter(plan.requested_job_id, plan_id=plan.plan_id)
+            return getter(plan.requested_job_id, plan_id=plan.plan_id)
         except TypeError:
             try:
-                receipt = getter(plan.requested_job_id, plan.plan_id)
+                return getter(plan.requested_job_id, plan.plan_id)
             except Exception:  # noqa: BLE001 - unavailable receipt is not completion
-                return False
+                return None
         except Exception:  # noqa: BLE001 - unavailable receipt is not completion
-            return False
+            return None
+
+    @staticmethod
+    def _receipt_matches(receipt: Any, plan: CleanupPlan, lane: LaneRecord) -> bool:
         if not isinstance(receipt, Mapping):
             return False
         return (
@@ -663,6 +696,16 @@ class LaneReclaimer:
             and receipt.get("worktree_path") == lane.worktree_path
             and receipt.get("removed") is True
         )
+
+    def _cleanup_receipt(self, plan: CleanupPlan, lane: LaneRecord) -> bool:
+        """Return true only for an exact durable removal receipt."""
+
+        if not plan.requested_job_id or not plan.requested_job_fence:
+            return False
+        receipt = self._fetch_removal_receipt(plan)
+        if receipt is None:
+            return False
+        return self._receipt_matches(receipt, plan, lane)
 
     def _record_cleanup_complete(
         self,
@@ -741,54 +784,86 @@ class LaneReclaimer:
         checks.append(self._check_occupied(lane))
         return tuple(checks)
 
-    def execute_cleanup(
-        self, plan: CleanupPlan, *, now: datetime | None = None
-    ) -> dict[str, Any]:
-        """Re-check and remove through the existing guarded worktree adapter."""
-
-        if not plan.executable:
-            raise CleanupRefused(plan)
+    def _resolve_current_lane_for_cleanup(self, plan: CleanupPlan) -> LaneRecord:
         current = self.registry.require(plan.lane_id)
         if current.owner_id != plan.owner_id or current.fence != plan.fence:
             raise ValueError(ReclamationReason.FENCE_STALE.value)
-        if self._cleanup_receipt(plan, current):
-            if current.state != LaneLifecycleState.QUARANTINED:
-                try:
-                    current = self.registry.quarantine(
-                        current.lane_id,
-                        owner_id=plan.owner_id,
-                        fence=plan.fence,
-                        reason="durable cleanup receipt reconciled",
-                        now=now,
-                    )
-                except Exception as exc:  # noqa: BLE001 - do not claim completion
-                    return {
-                        "ok": False,
-                        "lane_id": current.lane_id,
-                        "reason": "cleanup receipt exists but quarantine was not durable",
-                        "error": type(exc).__name__,
-                    }
-            return {
-                "ok": True,
-                "idempotent": True,
-                "lane_id": current.lane_id,
-                "receipt": True,
-            }
-        if current.state == LaneLifecycleState.QUARANTINED:
-            if not self._cleanup_job_current(plan, current):
-                raise CleanupRefused(plan)
-            # Quarantine is a lifecycle state, not proof that the guarded
-            # remove completed. A lane may be quarantined after an operator
-            # action or an earlier failed cleanup, so only an exact durable
-            # removal receipt can authorize an idempotent success above.
-            return {
-                "ok": False,
-                "idempotent": False,
-                "lane_id": current.lane_id,
-                "reason": "quarantined lane lacks exact durable removal receipt",
-                "reconciliation_pending": True,
-                "removal_performed": False,
-            }
+        return current
+
+    def _idempotent_receipt_result(
+        self, plan: CleanupPlan, current: LaneRecord, now: datetime | None
+    ) -> dict[str, Any]:
+        """A durable cleanup receipt already exists for this exact plan —
+        quarantine (if not already) and report idempotent success, never a
+        fresh removal.
+        """
+        if current.state != LaneLifecycleState.QUARANTINED:
+            try:
+                self.registry.quarantine(
+                    current.lane_id,
+                    owner_id=plan.owner_id,
+                    fence=plan.fence,
+                    reason="durable cleanup receipt reconciled",
+                    now=now,
+                )
+            except Exception as exc:  # noqa: BLE001 - do not claim completion
+                return {
+                    "ok": False,
+                    "lane_id": current.lane_id,
+                    "reason": "cleanup receipt exists but quarantine was not durable",
+                    "error": type(exc).__name__,
+                }
+        return {
+            "ok": True,
+            "idempotent": True,
+            "lane_id": current.lane_id,
+            "receipt": True,
+        }
+
+    def _handle_quarantined_lane(
+        self, plan: CleanupPlan, current: LaneRecord
+    ) -> dict[str, Any]:
+        if not self._cleanup_job_current(plan, current):
+            raise CleanupRefused(plan)
+        # Quarantine is a lifecycle state, not proof that the guarded remove
+        # completed. A lane may be quarantined after an operator action or an
+        # earlier failed cleanup, so only an exact durable removal receipt
+        # can authorize an idempotent success above.
+        return {
+            "ok": False,
+            "idempotent": False,
+            "lane_id": current.lane_id,
+            "reason": "quarantined lane lacks exact durable removal receipt",
+            "reconciliation_pending": True,
+            "removal_performed": False,
+        }
+
+    @staticmethod
+    def _blocked_cleanup_plan(
+        plan: CleanupPlan, assessment: ExpiryCandidate
+    ) -> CleanupPlan:
+        return CleanupPlan(
+            plan_id=plan.plan_id,
+            lane_id=plan.lane_id,
+            repository_path=plan.repository_path,
+            branch=plan.branch,
+            worktree_path=plan.worktree_path,
+            owner_id=plan.owner_id,
+            fence=plan.fence,
+            created_at=plan.created_at,
+            assessment=assessment,
+            guarded_remove=plan.guarded_remove,
+            requested_job_id=plan.requested_job_id,
+            requested_job_fence=plan.requested_job_fence,
+        )
+
+    def _reexpire_lane(
+        self, plan: CleanupPlan, current: LaneRecord, now: datetime | None
+    ) -> LaneRecord:
+        """Validate state/job-currency, assess freshly, then transition to
+        EXPIRED and re-read + re-verify every destructive guard immediately
+        before delegating to the worktree manager.
+        """
         if current.state not in {
             LaneLifecycleState.ALLOCATING,
             LaneLifecycleState.ACTIVE,
@@ -800,22 +875,8 @@ class LaneReclaimer:
             raise CleanupRefused(plan)
         fresh = self.assess(current, now=now)
         if not fresh.eligible:
-            blocked = CleanupPlan(
-                plan_id=plan.plan_id,
-                lane_id=plan.lane_id,
-                repository_path=plan.repository_path,
-                branch=plan.branch,
-                worktree_path=plan.worktree_path,
-                owner_id=plan.owner_id,
-                fence=plan.fence,
-                created_at=plan.created_at,
-                assessment=fresh,
-                guarded_remove=plan.guarded_remove,
-                requested_job_id=plan.requested_job_id,
-                requested_job_fence=plan.requested_job_fence,
-            )
-            raise CleanupRefused(blocked)
-        expired = self.registry.expire(
+            raise CleanupRefused(self._blocked_cleanup_plan(plan, fresh))
+        self.registry.expire(
             current.lane_id,
             owner_id=plan.owner_id,
             fence=plan.fence,
@@ -832,23 +893,18 @@ class LaneReclaimer:
             or not self._cleanup_job_current(plan, expired)
         ):
             raise CleanupRefused(plan)
+        return expired
+
+    def _finalize_guarded_removal(
+        self, plan: CleanupPlan, expired: LaneRecord, now: datetime | None
+    ) -> dict[str, Any]:
         final_checks = self._before_remove_checks(expired)
         if not all(check.allowed for check in final_checks):
-            blocked = CleanupPlan(
-                plan_id=plan.plan_id,
-                lane_id=plan.lane_id,
-                repository_path=plan.repository_path,
-                branch=plan.branch,
-                worktree_path=plan.worktree_path,
-                owner_id=plan.owner_id,
-                fence=plan.fence,
-                created_at=plan.created_at,
-                assessment=ExpiryCandidate(expired, False, final_checks),
-                guarded_remove=plan.guarded_remove,
-                requested_job_id=plan.requested_job_id,
-                requested_job_fence=plan.requested_job_fence,
+            raise CleanupRefused(
+                self._blocked_cleanup_plan(
+                    plan, ExpiryCandidate(expired, False, final_checks)
+                )
             )
-            raise CleanupRefused(blocked)
         if self.worktree_manager is None:
             return {
                 "ok": False,
@@ -915,60 +971,79 @@ class LaneReclaimer:
             "anchors": sorted(set(anchors)),
         }
 
-    def reconcile(
-        self,
-        observed_worktrees: Iterable[Mapping[str, Any]],
-    ) -> tuple[ReconciliationFinding, ...]:
-        """Compare durable records with a read-only worktree listing."""
+    def execute_cleanup(
+        self, plan: CleanupPlan, *, now: datetime | None = None
+    ) -> dict[str, Any]:
+        """Re-check and remove through the existing guarded worktree adapter."""
 
-        observed = tuple(observed_worktrees)
-        by_path = {str(item.get("path")): item for item in observed if item.get("path")}
-        findings: list[ReconciliationFinding] = []
-        matched: set[str] = set()
-        for lane in self.registry.list_records():
-            if lane.state == LaneLifecycleState.OBSERVED_LEGACY:
-                findings.append(
-                    ReconciliationFinding(
-                        lane.lane_id,
-                        ReconciliationClass.OBSERVED_LEGACY,
-                        {"path": lane.worktree_path},
-                        repair_required=False,
-                    )
-                )
-                continue
-            item = by_path.get(lane.worktree_path)
-            if item is None:
-                findings.append(
-                    ReconciliationFinding(
-                        lane.lane_id,
-                        ReconciliationClass.MISSING_WORKTREE,
-                        {"expected_path": lane.worktree_path},
-                        repair_required=True,
-                    )
-                )
-                continue
-            matched.add(lane.worktree_path)
-            if str(item.get("branch", "")) != lane.branch:
-                classification = ReconciliationClass.BRANCH_MISMATCH
-            elif not Path(lane.worktree_path).exists():
-                classification = ReconciliationClass.PATH_MISMATCH
-            elif lane.state not in {
-                LaneLifecycleState.ALLOCATING,
-                LaneLifecycleState.ACTIVE,
-                LaneLifecycleState.SUBMITTED,
-                LaneLifecycleState.EXPIRED,
-            }:
-                classification = ReconciliationClass.STATE_MISMATCH
-            else:
-                classification = ReconciliationClass.MANAGED
-            findings.append(
-                ReconciliationFinding(
-                    lane.lane_id,
-                    classification,
-                    {"path": lane.worktree_path, "branch": item.get("branch")},
-                    repair_required=classification != ReconciliationClass.MANAGED,
-                )
+        if not plan.executable:
+            raise CleanupRefused(plan)
+        current = self._resolve_current_lane_for_cleanup(plan)
+        if self._cleanup_receipt(plan, current):
+            return self._idempotent_receipt_result(plan, current, now)
+        if current.state == LaneLifecycleState.QUARANTINED:
+            return self._handle_quarantined_lane(plan, current)
+        expired = self._reexpire_lane(plan, current, now)
+        return self._finalize_guarded_removal(plan, expired, now)
+
+    @staticmethod
+    def _classify_matched_lane(
+        item: Mapping[str, Any], lane: LaneRecord
+    ) -> ReconciliationClass:
+        if str(item.get("branch", "")) != lane.branch:
+            return ReconciliationClass.BRANCH_MISMATCH
+        if not Path(lane.worktree_path).exists():
+            return ReconciliationClass.PATH_MISMATCH
+        if lane.state not in {
+            LaneLifecycleState.ALLOCATING,
+            LaneLifecycleState.ACTIVE,
+            LaneLifecycleState.SUBMITTED,
+            LaneLifecycleState.EXPIRED,
+        }:
+            return ReconciliationClass.STATE_MISMATCH
+        return ReconciliationClass.MANAGED
+
+    def _reconcile_lane(
+        self,
+        lane: LaneRecord,
+        by_path: Mapping[str, Mapping[str, Any]],
+        matched: set[str],
+    ) -> ReconciliationFinding:
+        if lane.state == LaneLifecycleState.OBSERVED_LEGACY:
+            return ReconciliationFinding(
+                lane.lane_id,
+                ReconciliationClass.OBSERVED_LEGACY,
+                {"path": lane.worktree_path},
+                repair_required=False,
             )
+        item = by_path.get(lane.worktree_path)
+        if item is None:
+            return ReconciliationFinding(
+                lane.lane_id,
+                ReconciliationClass.MISSING_WORKTREE,
+                {"expected_path": lane.worktree_path},
+                repair_required=True,
+            )
+        matched.add(lane.worktree_path)
+        classification = self._classify_matched_lane(item, lane)
+        return ReconciliationFinding(
+            lane.lane_id,
+            classification,
+            {"path": lane.worktree_path, "branch": item.get("branch")},
+            repair_required=classification != ReconciliationClass.MANAGED,
+        )
+
+    @staticmethod
+    def _append_orphan_findings(
+        observed: tuple[Mapping[str, Any], ...],
+        matched: set[str],
+        findings: list[ReconciliationFinding],
+    ) -> None:
+        # Appends directly into the SAME growing `findings` list the
+        # membership check reads, exactly as the original inline loop did —
+        # a duplicate ``path`` within `observed` must only ever produce one
+        # orphan finding, which requires each check to see prior orphans
+        # already added in this same pass.
         for item in observed:
             path = str(item.get("path", ""))
             if (
@@ -984,6 +1059,20 @@ class LaneReclaimer:
                         repair_required=False,
                     )
                 )
+
+    def reconcile(
+        self,
+        observed_worktrees: Iterable[Mapping[str, Any]],
+    ) -> tuple[ReconciliationFinding, ...]:
+        """Compare durable records with a read-only worktree listing."""
+
+        observed = tuple(observed_worktrees)
+        by_path = {str(item.get("path")): item for item in observed if item.get("path")}
+        findings: list[ReconciliationFinding] = []
+        matched: set[str] = set()
+        for lane in self.registry.list_records():
+            findings.append(self._reconcile_lane(lane, by_path, matched))
+        self._append_orphan_findings(observed, matched, findings)
         return tuple(findings)
 
 

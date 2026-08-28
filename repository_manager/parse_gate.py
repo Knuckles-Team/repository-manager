@@ -184,6 +184,31 @@ def _check_json(paths: Sequence[Path], tree: Path) -> list[ParseFailure]:
     return failures
 
 
+def _rustfmt_detail(stderr: str) -> str:
+    return next(
+        (ln.strip() for ln in stderr.splitlines() if ln.startswith("error")),
+        stderr.strip().splitlines()[0] if stderr.strip() else "parse failed",
+    )
+
+
+def _check_rust_file(rustfmt: str, path: Path, tree: Path) -> ParseFailure | None:
+    try:
+        proc = subprocess.run(  # nosec B603 - fixed argv, no shell
+            [rustfmt, "--edition", "2021", "--emit", "stdout", str(path)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return ParseFailure(str(path.relative_to(tree)), "rust", str(exc))
+    if proc.returncode != 0:
+        return ParseFailure(
+            str(path.relative_to(tree)), "rust", _rustfmt_detail(proc.stderr)
+        )
+    return None
+
+
 def _check_rust(paths: Sequence[Path], tree: Path) -> tuple[list[ParseFailure], bool]:
     """Parse Rust with ``rustfmt``, which is a parser we already have.
 
@@ -202,29 +227,9 @@ def _check_rust(paths: Sequence[Path], tree: Path) -> tuple[list[ParseFailure], 
 
     failures: list[ParseFailure] = []
     for path in paths:
-        try:
-            proc = subprocess.run(  # nosec B603 - fixed argv, no shell
-                [rustfmt, "--edition", "2021", "--emit", "stdout", str(path)],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            failures.append(ParseFailure(str(path.relative_to(tree)), "rust", str(exc)))
-            continue
-        if proc.returncode != 0:
-            detail = next(
-                (
-                    ln.strip()
-                    for ln in proc.stderr.splitlines()
-                    if ln.startswith("error")
-                ),
-                proc.stderr.strip().splitlines()[0]
-                if proc.stderr.strip()
-                else "parse failed",
-            )
-            failures.append(ParseFailure(str(path.relative_to(tree)), "rust", detail))
+        failure = _check_rust_file(rustfmt, path, tree)
+        if failure is not None:
+            failures.append(failure)
     return failures, True
 
 

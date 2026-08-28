@@ -147,6 +147,55 @@ def _reject_symlink_path(path: Path) -> None:
             raise BuildQueueError(f"symlink component is not allowed: {current}")
 
 
+def _copy_bounded_stream(
+    source_handle: Any, destination_handle: Any, max_bytes: int | None
+) -> int:
+    """Stream ``source_handle`` into ``destination_handle`` 1MiB at a time,
+    enforcing ``max_bytes``, then durably flush the destination.
+    """
+    copied = 0
+    while True:
+        chunk = source_handle.read(1 << 20)
+        if not chunk:
+            break
+        copied += len(chunk)
+        if max_bytes is not None and copied > max_bytes:
+            raise BuildQueueError("legacy artifacts exceed the bounded migration size")
+        destination_handle.write(chunk)
+    destination_handle.flush()
+    os.fsync(destination_handle.fileno())
+    return copied
+
+
+def _validate_legacy_source_stat(
+    source: Path, source_stat: Any, max_bytes: int | None
+) -> None:
+    if not stat.S_ISREG(source_stat.st_mode):
+        raise BuildQueueError(f"legacy artifact is not a regular file: {source}")
+    if max_bytes is not None and source_stat.st_size > max_bytes:
+        raise BuildQueueError("legacy artifacts exceed the bounded migration size")
+
+
+def _open_legacy_destination_descriptor(destination: Path) -> int:
+    _reject_symlink_path(destination.parent)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    return os.open(
+        destination,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+
+
+def _verify_legacy_copy_unchanged(source: Path, source_stat: Any, copied: int) -> None:
+    final_source = os.stat(source, follow_symlinks=False)
+    if (
+        final_source.st_dev != source_stat.st_dev
+        or final_source.st_ino != source_stat.st_ino
+        or final_source.st_size != copied
+    ):
+        raise BuildQueueError("legacy artifact changed while it was copied")
+
+
 def _copy_legacy_file_no_follow(
     source: Path,
     destination: Path,
@@ -161,41 +210,16 @@ def _copy_legacy_file_no_follow(
     try:
         source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         source_stat = os.fstat(source_descriptor)
-        if not stat.S_ISREG(source_stat.st_mode):
-            raise BuildQueueError(f"legacy artifact is not a regular file: {source}")
-        if max_bytes is not None and source_stat.st_size > max_bytes:
-            raise BuildQueueError("legacy artifacts exceed the bounded migration size")
-        _reject_symlink_path(destination.parent)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination_descriptor = os.open(
-            destination,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        copied = 0
+        _validate_legacy_source_stat(source, source_stat, max_bytes)
+        destination_descriptor = _open_legacy_destination_descriptor(destination)
         with os.fdopen(source_descriptor, "rb") as source_handle:
             source_descriptor = None
             with os.fdopen(destination_descriptor, "wb") as destination_handle:
                 destination_descriptor = None
-                while True:
-                    chunk = source_handle.read(1 << 20)
-                    if not chunk:
-                        break
-                    copied += len(chunk)
-                    if max_bytes is not None and copied > max_bytes:
-                        raise BuildQueueError(
-                            "legacy artifacts exceed the bounded migration size"
-                        )
-                    destination_handle.write(chunk)
-                destination_handle.flush()
-                os.fsync(destination_handle.fileno())
-        final_source = os.stat(source, follow_symlinks=False)
-        if (
-            final_source.st_dev != source_stat.st_dev
-            or final_source.st_ino != source_stat.st_ino
-            or final_source.st_size != copied
-        ):
-            raise BuildQueueError("legacy artifact changed while it was copied")
+                copied = _copy_bounded_stream(
+                    source_handle, destination_handle, max_bytes
+                )
+        _verify_legacy_copy_unchanged(source, source_stat, copied)
         return copied
     except OSError as exc:
         raise BuildQueueError(f"could not copy legacy artifact {source}") from exc
@@ -208,45 +232,56 @@ def _copy_legacy_file_no_follow(
                     pass
 
 
+@dataclass
+class _LegacyTreeScanState:
+    pending: list[Path]
+    entries: int = 0
+    files: int = 0
+    total: int = 0
+
+
+def _account_legacy_tree_entry(child: Any, state: _LegacyTreeScanState) -> None:
+    state.entries += 1
+    if state.entries > _MAX_LEGACY_SCAN_ENTRIES:
+        raise BuildQueueError("legacy artifact scan exceeds its entry bound")
+    if child.is_symlink():
+        raise BuildQueueError("legacy artifact scan found a symlink")
+    if child.is_dir(follow_symlinks=False):
+        state.pending.append(Path(child.path))
+        return
+    if not child.is_file(follow_symlinks=False):
+        raise BuildQueueError("legacy artifact scan found a non-regular entry")
+    state.files += 1
+    if state.files > _MAX_LEGACY_SCAN_FILES:
+        raise BuildQueueError("legacy artifact scan exceeds its file bound")
+    state.total += child.stat(follow_symlinks=False).st_size
+    if state.total > _MAX_LEGACY_ARTIFACT_BYTES:
+        raise BuildQueueError("legacy artifact scan exceeds its byte bound")
+
+
+def _scan_legacy_tree_dir(current: Path, state: _LegacyTreeScanState) -> None:
+    try:
+        iterator = os.scandir(current)
+    except OSError as exc:
+        raise BuildQueueError(
+            "legacy artifact scan could not read a directory"
+        ) from exc
+    with iterator:
+        for child in iterator:
+            _account_legacy_tree_entry(child, state)
+
+
 def _bounded_legacy_tree_size(path: Path) -> int:
     """Bounded no-follow byte accounting for compatibility GC."""
 
     _reject_symlink_path(path)
     if path.is_symlink() or not path.is_dir():
         raise BuildQueueError("legacy artifact entry is not a directory")
-    pending = [path]
-    entries = files = total = 0
-    while pending:
-        current = pending.pop()
-        try:
-            iterator = os.scandir(current)
-        except OSError as exc:
-            raise BuildQueueError(
-                "legacy artifact scan could not read a directory"
-            ) from exc
-        with iterator:
-            for child in iterator:
-                entries += 1
-                if entries > _MAX_LEGACY_SCAN_ENTRIES:
-                    raise BuildQueueError(
-                        "legacy artifact scan exceeds its entry bound"
-                    )
-                if child.is_symlink():
-                    raise BuildQueueError("legacy artifact scan found a symlink")
-                if child.is_dir(follow_symlinks=False):
-                    pending.append(Path(child.path))
-                    continue
-                if not child.is_file(follow_symlinks=False):
-                    raise BuildQueueError(
-                        "legacy artifact scan found a non-regular entry"
-                    )
-                files += 1
-                if files > _MAX_LEGACY_SCAN_FILES:
-                    raise BuildQueueError("legacy artifact scan exceeds its file bound")
-                total += child.stat(follow_symlinks=False).st_size
-                if total > _MAX_LEGACY_ARTIFACT_BYTES:
-                    raise BuildQueueError("legacy artifact scan exceeds its byte bound")
-    return total
+    state = _LegacyTreeScanState(pending=[path])
+    while state.pending:
+        current = state.pending.pop()
+        _scan_legacy_tree_dir(current, state)
+    return state.total
 
 
 # ---------------------------------------------------------------------------
@@ -509,17 +544,10 @@ def _target_triple(spec: BuildSpec) -> str:
     return f"{platform.system()}-{platform.machine()}".lower()
 
 
-def stable_repository_id(path: Path | str) -> str:
-    """Return the C-01 repository identity, never a display basename.
-
-    Workspace-relative paths are readable and stable across worktree lanes;
-    repositories outside the configured workspace use a deterministic path
-    digest.  Either form keeps two repositories with the same basename
-    distinct without introducing a second identity registry.
+def _resolve_git_identity_root(resolved: Path) -> Path:
+    """The repo's git-common-dir parent (stable across worktree lanes) when
+    ``resolved`` is inside a git checkout, else ``resolved`` itself.
     """
-
-    resolved = Path(path).expanduser().resolve(strict=False)
-    identity_root = resolved
     try:
         top = subprocess.run(
             [_TRUSTED_GIT, "rev-parse", "--show-toplevel"],
@@ -539,14 +567,17 @@ def stable_repository_id(path: Path | str) -> str:
         )
         if top.returncode == 0 and common.returncode == 0:
             common_dir = Path(common.stdout.strip()).resolve(strict=False)
-            identity_root = (
+            return (
                 common_dir.parent
                 if common_dir.name == ".git"
                 else Path(top.stdout.strip()).resolve(strict=False)
             )
     except (OSError, subprocess.SubprocessError):
         pass
-    workspace_root: Path | None = None
+    return resolved
+
+
+def _find_workspace_root(identity_root: Path) -> Path | None:
     configured = os.environ.get("AGENT_UTILITIES_WORKSPACE_ROOT")
     candidates = [Path(configured).expanduser().resolve()] if configured else []
     candidates.extend(
@@ -556,8 +587,22 @@ def stable_repository_id(path: Path | str) -> str:
     )
     for candidate in candidates:
         if candidate.is_dir() and (candidate / "workspace.yml").is_file():
-            workspace_root = candidate
-            break
+            return candidate
+    return None
+
+
+def stable_repository_id(path: Path | str) -> str:
+    """Return the C-01 repository identity, never a display basename.
+
+    Workspace-relative paths are readable and stable across worktree lanes;
+    repositories outside the configured workspace use a deterministic path
+    digest.  Either form keeps two repositories with the same basename
+    distinct without introducing a second identity registry.
+    """
+
+    resolved = Path(path).expanduser().resolve(strict=False)
+    identity_root = _resolve_git_identity_root(resolved)
+    workspace_root = _find_workspace_root(identity_root)
     if workspace_root is not None:
         try:
             relative = identity_root.relative_to(workspace_root)
@@ -707,6 +752,129 @@ def _artifact_path_is_safe(root: Path, candidate: Path) -> bool:
     return True
 
 
+def _manifest_schema_state_ok(manifest: dict[str, Any], expected_key: Any) -> bool:
+    """RMDD-10 manifests are published before terminal WorkItem commit.  A
+    restart must not serve that intermediate state as a cache hit.  Legacy
+    manifests have no schema/state marker and remain readable during the
+    explicit migration window.
+    """
+    if manifest.get("schema") == "build-artifact:v2" and (
+        manifest.get("publication_state") != "committed"
+        or not isinstance(expected_key, str)
+        or manifest.get("key") != expected_key
+    ):
+        return False
+    return True
+
+
+def _resolve_expected_artifact_root(
+    path: Path | str | None, expected_key: Any
+) -> tuple[bool, Path | None]:
+    """``(True, root)`` on success, ``(True, None)`` when no path-scoped check
+    applies, ``(False, None)`` when the manifest must be rejected outright.
+    """
+    if path is None or not isinstance(expected_key, str) or not expected_key:
+        return True, None
+    try:
+        key_dir = _artifact_root(path) / expected_key
+        artifacts_dir = key_dir / "artifacts"
+        if key_dir.is_symlink() or artifacts_dir.is_symlink():
+            return False, None
+        return True, artifacts_dir.resolve(strict=True)
+    except (OSError, ValueError):
+        return False, None
+
+
+@dataclass
+class _ArtifactEntryInfo:
+    path: Path
+    checksum: str
+    declared_bytes: int
+
+
+def _artifact_entry_path(entry: Any, expected_root: Path | None) -> Path | None:
+    """Resolve and confine ``entry["stored_at"]``; ``None`` means reject."""
+    try:
+        artifact_path = Path(entry["stored_at"])
+    except (KeyError, TypeError):
+        return None
+    if expected_root is not None:
+        try:
+            if not _artifact_path_is_safe(expected_root, artifact_path):
+                return None
+            artifact_path.resolve(strict=True).relative_to(expected_root)
+        except (OSError, ValueError):
+            return None
+    return artifact_path
+
+
+def _artifact_entry_stat_info(
+    entry: Any, artifact_path: Path
+) -> tuple[str, int] | None:
+    """``(checksum, declared_bytes)`` on a well-formed regular-file entry,
+    else ``None`` — reject.
+    """
+    try:
+        artifact_stat = os.stat(artifact_path, follow_symlinks=False)
+        if not stat.S_ISREG(artifact_stat.st_mode):
+            return None
+        checksum = entry["sha256"]
+        if not isinstance(checksum, str) or len(checksum) > 256:
+            return None
+        declared_bytes = int(entry.get("bytes", artifact_stat.st_size))
+        if (
+            isinstance(entry.get("bytes"), bool)
+            or declared_bytes < 0
+            or declared_bytes > _MAX_LEGACY_ARTIFACT_BYTES
+            or artifact_stat.st_size != declared_bytes
+        ):
+            return None
+    except (KeyError, OSError, TypeError, ValueError):
+        return None
+    return checksum, declared_bytes
+
+
+def _artifact_entry_shape(
+    entry: Any, expected_root: Path | None
+) -> _ArtifactEntryInfo | None:
+    """Structural/stat validation of one manifest artifact entry.  Returns
+    ``None`` for every condition the original inline loop treated as an
+    immediate ``return False``, short of the running byte-budget and checksum
+    checks (which need cross-entry state and stay in the caller).
+    """
+    if not isinstance(entry, dict):
+        return None
+    artifact_path = _artifact_entry_path(entry, expected_root)
+    if artifact_path is None:
+        return None
+    stat_info = _artifact_entry_stat_info(entry, artifact_path)
+    if stat_info is None:
+        return None
+    checksum, declared_bytes = stat_info
+    return _ArtifactEntryInfo(
+        path=artifact_path, checksum=checksum, declared_bytes=declared_bytes
+    )
+
+
+def _manifest_artifacts_are_valid(
+    artifacts: list[Any], expected_root: Path | None
+) -> bool:
+    total_bytes = 0
+    for entry in artifacts:
+        info = _artifact_entry_shape(entry, expected_root)
+        if info is None:
+            return False
+        total_bytes += info.declared_bytes
+        if total_bytes > _MAX_LEGACY_ARTIFACT_BYTES:
+            return False
+        try:
+            if _sha256_file(info.path, max_bytes=info.declared_bytes) != info.checksum:
+                return False
+        except (BuildQueueError, OSError):
+            return False
+    return True
+
+
 def _manifest_is_valid(
     manifest: dict[str, Any],
     path: Path | str | None = None,
@@ -716,71 +884,16 @@ def _manifest_is_valid(
     the recorded checksum — gc or an out-of-band deletion must degrade to a
     miss, never to serving a dangling reference.
     """
-    # RMDD-10 manifests are published before terminal WorkItem commit.  A
-    # restart must not serve that intermediate state as a cache hit.  Legacy
-    # manifests have no schema/state marker and remain readable during the
-    # explicit migration window.
     expected_key = key_digest or manifest.get("key")
-    if manifest.get("schema") == "build-artifact:v2" and (
-        manifest.get("publication_state") != "committed"
-        or not isinstance(expected_key, str)
-        or manifest.get("key") != expected_key
-    ):
+    if not _manifest_schema_state_ok(manifest, expected_key):
         return False
-    expected_root: Path | None = None
-    if path is not None and isinstance(expected_key, str) and expected_key:
-        try:
-            key_dir = _artifact_root(path) / expected_key
-            artifacts_dir = key_dir / "artifacts"
-            if key_dir.is_symlink() or artifacts_dir.is_symlink():
-                return False
-            expected_root = artifacts_dir.resolve(strict=True)
-        except (OSError, ValueError):
-            return False
+    root_ok, expected_root = _resolve_expected_artifact_root(path, expected_key)
+    if not root_ok:
+        return False
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts or len(artifacts) > 4096:
         return False
-    total_bytes = 0
-    for entry in artifacts:
-        if not isinstance(entry, dict):
-            return False
-        try:
-            artifact_path = Path(entry["stored_at"])
-        except (KeyError, TypeError):
-            return False
-        if expected_root is not None:
-            try:
-                if not _artifact_path_is_safe(expected_root, artifact_path):
-                    return False
-                artifact_path.resolve(strict=True).relative_to(expected_root)
-            except (OSError, ValueError):
-                return False
-        try:
-            artifact_stat = os.stat(artifact_path, follow_symlinks=False)
-            if not stat.S_ISREG(artifact_stat.st_mode):
-                return False
-            checksum = entry["sha256"]
-            if not isinstance(checksum, str) or len(checksum) > 256:
-                return False
-            declared_bytes = int(entry.get("bytes", artifact_stat.st_size))
-            if (
-                isinstance(entry.get("bytes"), bool)
-                or declared_bytes < 0
-                or declared_bytes > _MAX_LEGACY_ARTIFACT_BYTES
-                or artifact_stat.st_size != declared_bytes
-            ):
-                return False
-        except (KeyError, OSError, TypeError, ValueError):
-            return False
-        total_bytes += declared_bytes
-        if total_bytes > _MAX_LEGACY_ARTIFACT_BYTES:
-            return False
-        try:
-            if _sha256_file(artifact_path, max_bytes=declared_bytes) != checksum:
-                return False
-        except (BuildQueueError, OSError):
-            return False
-    return True
+    return _manifest_artifacts_are_valid(artifacts, expected_root)
 
 
 def _migrate_legacy_manifest(
@@ -826,6 +939,38 @@ def _cache_manifest(
     return None, None
 
 
+def _hash_bounded_stream(handle: Any, digest: Any, max_bytes: int | None) -> int:
+    """Feed ``handle`` into ``digest`` 1MiB at a time; raise if the bound is
+    exceeded mid-stream.  Returns the number of bytes actually copied.
+    """
+    copied = 0
+    for chunk in iter(lambda: handle.read(1 << 20), b""):
+        copied += len(chunk)
+        if max_bytes is not None and copied > max_bytes:
+            raise BuildQueueError("artifact exceeds its bounded byte limit")
+        digest.update(chunk)
+    return copied
+
+
+def _checksum_open_file(
+    handle: Any, digest: Any, path: Path, max_bytes: int | None
+) -> None:
+    """Validate + hash an already-open file handle in place (mutates ``digest``)."""
+    initial = os.fstat(handle.fileno())
+    if not stat.S_ISREG(initial.st_mode):
+        raise BuildQueueError(f"artifact is not a regular file: {path}")
+    if max_bytes is not None and initial.st_size > max_bytes:
+        raise BuildQueueError("artifact exceeds its bounded byte limit")
+    copied = _hash_bounded_stream(handle, digest, max_bytes)
+    final = os.fstat(handle.fileno())
+    if (
+        final.st_dev != initial.st_dev
+        or final.st_ino != initial.st_ino
+        or final.st_size != copied
+    ):
+        raise BuildQueueError("artifact changed while it was checksummed")
+
+
 def _sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
     digest = hashlib.sha256()
     descriptor: int | None = None
@@ -833,24 +978,7 @@ def _sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = None
-            initial = os.fstat(handle.fileno())
-            if not stat.S_ISREG(initial.st_mode):
-                raise BuildQueueError(f"artifact is not a regular file: {path}")
-            if max_bytes is not None and initial.st_size > max_bytes:
-                raise BuildQueueError("artifact exceeds its bounded byte limit")
-            copied = 0
-            for chunk in iter(lambda: handle.read(1 << 20), b""):
-                copied += len(chunk)
-                if max_bytes is not None and copied > max_bytes:
-                    raise BuildQueueError("artifact exceeds its bounded byte limit")
-                digest.update(chunk)
-            final = os.fstat(handle.fileno())
-            if (
-                final.st_dev != initial.st_dev
-                or final.st_ino != initial.st_ino
-                or final.st_size != copied
-            ):
-                raise BuildQueueError("artifact changed while it was checksummed")
+            _checksum_open_file(handle, digest, path, max_bytes)
     except OSError as exc:
         raise BuildQueueError(f"could not checksum artifact {path}") from exc
     finally:
@@ -929,6 +1057,123 @@ def _publish_artifacts(
 # ---------------------------------------------------------------------------
 # request() — the one entrypoint: dedup-or-build
 # ---------------------------------------------------------------------------
+@dataclass
+class _ServiceIdentity:
+    tenant_id: str
+    owner_id: str
+    session_id: str
+    owner: dict[str, Any] | None
+
+
+def _request_via_service(
+    build_service: Any | None,
+    job_service: Any | None,
+    repo_path: Path | str | None,
+    spec_name: str,
+    generation_id: str | None,
+    identity: _ServiceIdentity,
+) -> dict[str, Any]:
+    from repository_manager.build_service import BuildService
+
+    service = build_service
+    if service is None:
+        assert job_service is not None, "job_service or build_service must be supplied"
+        service = BuildService(
+            job_service,
+            tenant_id=identity.tenant_id or "repository-manager",
+            owner_id=identity.owner_id
+            or (
+                identity.owner.get("owner_id")
+                if isinstance(identity.owner, dict)
+                else ""
+            )
+            or "repository-manager",
+            session_id=identity.session_id
+            or (
+                identity.owner.get("session")
+                if isinstance(identity.owner, dict)
+                else ""
+            )
+            or "build-request",
+        )
+    return service.submit(
+        repo_path=repo_path,
+        spec_name=spec_name,
+        generation_id=generation_id,
+    )
+
+
+def _cache_hit_response(
+    manifest: dict[str, Any],
+    key: CacheKey,
+    digest: str,
+    *,
+    waited: bool = False,
+    migrated_from: str | None = None,
+) -> dict[str, Any]:
+    response: dict[str, Any] = {
+        "ok": True,
+        "cached": True,
+        "degraded": False,
+        "key": digest,
+        "components": key.components(),
+        "artifacts": manifest["artifacts"],
+        "built_at": manifest.get("built_at"),
+    }
+    if waited:
+        response["waited"] = True
+    if migrated_from:
+        response["migrated_from"] = migrated_from
+    return response
+
+
+def _wait_and_reread_manifest(
+    digest: str, scope: Any, wait_timeout: int
+) -> dict[str, Any] | None:
+    """Wait for the in-flight build; return its manifest iff it produced a
+    valid one before the wait bound expired.
+    """
+    waited = _wait_for_task(digest, scope.tree, timeout=wait_timeout)
+    manifest = _read_manifest(digest, scope.tree) if waited else None
+    if manifest and _manifest_is_valid(manifest, scope.tree, digest):
+        return manifest
+    return None
+
+
+def _await_build_or_claim(
+    digest: str, spec: BuildSpec, key: CacheKey, scope: Any, wait_timeout: int
+) -> tuple[_BuildClaim, dict[str, Any] | None]:
+    """D-CDX-13 bounded two-cycle wait-then-reclaim.
+
+    Returns ``(claim, None)`` when THIS caller now owns the RUNNING task and
+    must build, or ``(claim, cached_response)`` when a valid manifest showed
+    up while waiting on someone else's in-flight build. Raises
+    :class:`BuildQueueError` if neither happens within two wait cycles.
+    """
+    claim = _claim_build_task(digest, spec, key, path=scope.tree)
+    if claim.is_new:
+        return claim, None
+    manifest = _wait_and_reread_manifest(digest, scope, wait_timeout)
+    if manifest is not None:
+        return claim, _cache_hit_response(manifest, key, digest, waited=True)
+    # The in-flight build finished without producing a valid manifest (it
+    # failed) or never finished within wait_timeout. Try to claim it
+    # ourselves now (atomically, same as above) rather than getting stuck OR
+    # blindly re-building without re-checking for a fresher claim.
+    claim = _claim_build_task(digest, spec, key, path=scope.tree)
+    if claim.is_new:
+        return claim, None
+    # Someone else claimed it again in the interim — one more wait, then
+    # give up cleanly rather than looping forever.
+    manifest = _wait_and_reread_manifest(digest, scope, wait_timeout)
+    if manifest is not None:
+        return claim, _cache_hit_response(manifest, key, digest, waited=True)
+    raise BuildQueueError(
+        f"build {digest!r} did not complete after two wait cycles "
+        f"({wait_timeout}s each) and this caller could not claim it"
+    )
+
+
 def request(
     *,
     repo_path: Path | str | None = None,
@@ -961,27 +1206,18 @@ def request(
     through the Task check below, not through the pool.
     """
     if build_service is not None or job_service is not None:
-        from repository_manager.build_service import BuildService
-
-        service = build_service
-        if service is None:
-            assert job_service is not None, (
-                "job_service or build_service must be supplied"
-            )
-            service = BuildService(
-                job_service,
-                tenant_id=tenant_id or "repository-manager",
-                owner_id=owner_id
-                or (owner.get("owner_id") if isinstance(owner, dict) else "")
-                or "repository-manager",
-                session_id=session_id
-                or (owner.get("session") if isinstance(owner, dict) else "")
-                or "build-request",
-            )
-        return service.submit(
-            repo_path=repo_path,
-            spec_name=spec_name,
-            generation_id=generation_id,
+        return _request_via_service(
+            build_service,
+            job_service,
+            repo_path,
+            spec_name,
+            generation_id,
+            _ServiceIdentity(
+                tenant_id=tenant_id,
+                owner_id=owner_id,
+                session_id=session_id,
+                owner=owner,
+            ),
         )
 
     scope = lane_scope(repo_path)
@@ -1009,16 +1245,7 @@ def request(
     if manifest and (
         migrated_from is not None or _manifest_is_valid(manifest, scope.tree, digest)
     ):
-        return {
-            "ok": True,
-            "cached": True,
-            "degraded": False,
-            "key": digest,
-            "components": key.components(),
-            "artifacts": manifest["artifacts"],
-            "built_at": manifest.get("built_at"),
-            **({"migrated_from": migrated_from} if migrated_from else {}),
-        }
+        return _cache_hit_response(manifest, key, digest, migrated_from=migrated_from)
 
     # D-CDX-13 — the check ("is a build for this key already running?") and
     # the enqueue ("mark one running") used to be two separate, unlocked
@@ -1033,47 +1260,9 @@ def request(
     # build's duration, so it never contends with the separate POOL-capacity
     # "build" execution class that still serializes the actual heavy compute
     # step below.
-    claim = _claim_build_task(digest, spec, key, path=scope.tree)
-    if not claim.is_new:
-        waited = _wait_for_task(digest, scope.tree, timeout=wait_timeout)
-        if waited:
-            manifest = _read_manifest(digest, scope.tree)
-            if manifest and _manifest_is_valid(manifest, scope.tree, digest):
-                return {
-                    "ok": True,
-                    "cached": True,
-                    "degraded": False,
-                    "waited": True,
-                    "key": digest,
-                    "components": key.components(),
-                    "artifacts": manifest["artifacts"],
-                    "built_at": manifest.get("built_at"),
-                }
-        # The in-flight build finished without producing a valid manifest
-        # (it failed) or never finished within wait_timeout. Try to claim it
-        # ourselves now (atomically, same as above) rather than getting stuck
-        # OR blindly re-building without re-checking for a fresher claim.
-        claim = _claim_build_task(digest, spec, key, path=scope.tree)
-        if not claim.is_new:
-            # Someone else claimed it again in the interim — one more wait,
-            # then give up cleanly rather than looping forever.
-            waited = _wait_for_task(digest, scope.tree, timeout=wait_timeout)
-            manifest = _read_manifest(digest, scope.tree) if waited else None
-            if manifest and _manifest_is_valid(manifest, scope.tree, digest):
-                return {
-                    "ok": True,
-                    "cached": True,
-                    "degraded": False,
-                    "waited": True,
-                    "key": digest,
-                    "components": key.components(),
-                    "artifacts": manifest["artifacts"],
-                    "built_at": manifest.get("built_at"),
-                }
-            raise BuildQueueError(
-                f"build {digest!r} did not complete after two wait cycles "
-                f"({wait_timeout}s each) and this caller could not claim it"
-            )
+    claim, cached = _await_build_or_claim(digest, spec, key, scope, wait_timeout)
+    if cached is not None:
+        return cached
 
     result = _build(
         scope.tree,
@@ -1171,6 +1360,76 @@ def _wait_for_task(task_id: str, path: Path | str, *, timeout: int) -> bool:
     return False
 
 
+def _ensure_build_task(
+    task: tq.Task | None,
+    spec: BuildSpec,
+    cache_digest: str | None,
+    key: CacheKey,
+    tree: Path,
+) -> tq.Task:
+    """Return ``task`` unchanged when the caller already claimed it (the
+    cacheable path, D-CDX-13); otherwise enqueue+claim a fresh one for the
+    degraded (uncacheable) path, exactly as the inline version did.
+    """
+    if task is not None:
+        return task
+    task_id = cache_digest or f"degraded-{spec.name}-{_now()}"
+    task = tq.enqueue_task(
+        task_id,
+        "build",
+        repo=key.repo,
+        payload={"spec": spec.name, "components": key.components()},
+        path=tree,
+    )
+    return tq.record_state(task, tq.RUNNING, "", path=tree)
+
+
+def _run_degraded_build(tree: Path, spec: BuildSpec) -> list[dict[str, Any]]:
+    """Degraded (dirty tree): build IN the caller's own tree — it is already
+    isolated from the canonical checkout by lane_scope, and a dirty tree
+    cannot be represented as a commit to materialize. Nothing is cached (see
+    request()).
+    """
+    _run_build_command(tree, spec)
+    artifacts: list[dict[str, Any]] = []
+    for pattern in spec.artifacts:
+        matches = sorted(
+            str(p) for p in (tree / spec.workdir).glob(pattern) if p.is_file()
+        )
+        artifacts.extend(
+            {
+                "pattern": pattern,
+                "stored_at": m,
+                "sha256": _sha256_file(Path(m)),
+            }
+            for m in matches
+        )
+    return artifacts
+
+
+def _write_build_manifest(
+    cache_digest: str,
+    key: CacheKey,
+    spec: BuildSpec,
+    seconds: float,
+    artifacts: list[dict[str, Any]],
+    tree: Path,
+) -> None:
+    manifest = {
+        "key": cache_digest,
+        "components": key.components(),
+        "spec": spec.name,
+        "command": list(spec.command),
+        "built_at": _now(),
+        "seconds": seconds,
+        "artifacts": artifacts,
+    }
+    _manifest_path(cache_digest, tree).parent.mkdir(parents=True, exist_ok=True)
+    _manifest_path(cache_digest, tree).write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
+
+
 def _build(
     tree: Path,
     spec: BuildSpec,
@@ -1188,16 +1447,7 @@ def _build(
     The degraded (uncacheable) path has no key to claim against and still
     enqueues its own task here, exactly as before.
     """
-    if task is None:
-        task_id = cache_digest or f"degraded-{spec.name}-{_now()}"
-        task = tq.enqueue_task(
-            task_id,
-            "build",
-            repo=key.repo,
-            payload={"spec": spec.name, "components": key.components()},
-            path=tree,
-        )
-        task = tq.record_state(task, tq.RUNNING, "", path=tree)
+    task = _ensure_build_task(task, spec, cache_digest, key, tree)
     started = time.monotonic()
     try:
         with tq.acquire(
@@ -1224,44 +1474,13 @@ def _build(
                     _run_build_command(build_tree, spec)
                     artifacts = _publish_artifacts(build_tree, spec, cache_digest, tree)
             else:
-                # Degraded (dirty tree): build IN the caller's own tree — it is
-                # already isolated from the canonical checkout by lane_scope,
-                # and a dirty tree cannot be represented as a commit to
-                # materialize. Nothing is cached (see request()).
-                _run_build_command(tree, spec)
-                artifacts = []
-                for pattern in spec.artifacts:
-                    matches = sorted(
-                        str(p)
-                        for p in (tree / spec.workdir).glob(pattern)
-                        if p.is_file()
-                    )
-                    artifacts.extend(
-                        {
-                            "pattern": pattern,
-                            "stored_at": m,
-                            "sha256": _sha256_file(Path(m)),
-                        }
-                        for m in matches
-                    )
+                artifacts = _run_degraded_build(tree, spec)
     except Exception as exc:  # noqa: BLE001 - re-recorded as a FAILED task, then re-raised
         tq.record_state(task, tq.FAILED, str(exc), path=tree)
         raise
     seconds = time.monotonic() - started
     if cache_digest is not None:
-        manifest = {
-            "key": cache_digest,
-            "components": key.components(),
-            "spec": spec.name,
-            "command": list(spec.command),
-            "built_at": _now(),
-            "seconds": seconds,
-            "artifacts": artifacts,
-        }
-        _manifest_path(cache_digest, tree).parent.mkdir(parents=True, exist_ok=True)
-        _manifest_path(cache_digest, tree).write_text(
-            json.dumps(manifest, indent=2), encoding="utf-8"
-        )
+        _write_build_manifest(cache_digest, key, spec, seconds, artifacts, tree)
     tq.record_state(task, tq.DONE, "", path=tree)
     return {
         "ok": True,
@@ -1504,6 +1723,68 @@ def explain(
     }
 
 
+def _scan_cache_manifests(
+    root: Path, scope: Any
+) -> tuple[list[tuple[str, dict[str, Any]]], str | None]:
+    """Every readable manifest under ``root``, and an error string if the
+    scan had to stop early (OS error, or the entry-count bound).  Entries
+    accumulated before an early stop are still returned — the caller reports
+    them as "kept" rather than discarding them.
+    """
+    entries: list[tuple[str, dict[str, Any]]] = []
+    try:
+        iterator = os.scandir(root)
+    except OSError as exc:
+        return entries, str(exc)
+    with iterator:
+        scanned = 0
+        for entry in iterator:
+            scanned += 1
+            if scanned > _MAX_LEGACY_SCAN_ENTRIES:
+                return entries, "legacy cache scan exceeds its entry bound"
+            if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                continue
+            manifest = _read_manifest(entry.name, scope.tree)
+            if manifest:
+                entries.append((entry.name, manifest))
+    return entries, None
+
+
+def _gc_entry_is_protected(
+    digest: str, manifest: dict[str, Any], keep_ids: set[str], cutoff: float, scope: Any
+) -> bool:
+    """True if this cache entry must be kept without even attempting reclamation."""
+    if manifest.get("schema") == "build-artifact:v2":
+        # Durable WorkItems are not represented in the compatibility task
+        # queue.  Without an authority probe this surface must never
+        # reclaim their live or waiting publications.
+        return True
+    task = tq.find_task("build", digest, path=scope.tree)
+    if task is not None and task.state == tq.RUNNING:
+        return True
+    if digest in keep_ids:
+        return True
+    built_at = manifest.get("built_at", "")
+    try:
+        import datetime as _dt
+
+        age_ok = _dt.datetime.fromisoformat(built_at).timestamp() < cutoff
+    except (TypeError, ValueError):
+        age_ok = True  # unparsable timestamp: treat as old enough to reclaim
+    return not age_ok
+
+
+def _gc_reclaim_entry(root: Path, digest: str) -> int | None:
+    """Remove one cache entry's tree; ``None`` means keep (size probe failed)."""
+    entry_dir = root / digest
+    try:
+        total_bytes = _bounded_legacy_tree_size(entry_dir)
+    except BuildQueueError:
+        return None
+    shutil.rmtree(entry_dir, ignore_errors=True)
+    return total_bytes
+
+
 def gc(
     *,
     repo_path: Path | str | None = None,
@@ -1519,26 +1800,7 @@ def gc(
     """
     scope = lane_scope(repo_path)
     root = _artifact_root(scope.tree)
-    entries: list[tuple[str, dict[str, Any]]] = []
-    scan_error: str | None = None
-    try:
-        iterator = os.scandir(root)
-    except OSError as exc:
-        iterator = None
-        scan_error = str(exc)
-    if iterator is not None:
-        with iterator:
-            scanned = 0
-            for entry in iterator:
-                scanned += 1
-                if scanned > _MAX_LEGACY_SCAN_ENTRIES:
-                    scan_error = "legacy cache scan exceeds its entry bound"
-                    break
-                if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
-                    continue
-                manifest = _read_manifest(entry.name, scope.tree)
-                if manifest:
-                    entries.append((entry.name, manifest))
+    entries, scan_error = _scan_cache_manifests(root, scope)
     if scan_error is not None:
         return {
             "repo": stable_repository_id(scope.main_tree),
@@ -1554,38 +1816,15 @@ def gc(
     kept: list[str] = []
     reclaimed_bytes = 0
     for digest, manifest in entries:
-        if manifest.get("schema") == "build-artifact:v2":
-            # Durable WorkItems are not represented in the compatibility task
-            # queue.  Without an authority probe this surface must never
-            # reclaim their live or waiting publications.
+        if _gc_entry_is_protected(digest, manifest, keep_ids, cutoff, scope):
             kept.append(digest)
             continue
-        task = tq.find_task("build", digest, path=scope.tree)
-        if task is not None and task.state == tq.RUNNING:
+        reclaimed = _gc_reclaim_entry(root, digest)
+        if reclaimed is None:
             kept.append(digest)
             continue
-        if digest in keep_ids:
-            kept.append(digest)
-            continue
-        built_at = manifest.get("built_at", "")
-        try:
-            import datetime as _dt
-
-            age_ok = _dt.datetime.fromisoformat(built_at).timestamp() < cutoff
-        except (TypeError, ValueError):
-            age_ok = True  # unparsable timestamp: treat as old enough to reclaim
-        if not age_ok:
-            kept.append(digest)
-            continue
-        entry_dir = root / digest
-        try:
-            total_bytes = _bounded_legacy_tree_size(entry_dir)
-        except BuildQueueError:
-            kept.append(digest)
-            continue
-        shutil.rmtree(entry_dir, ignore_errors=True)
         removed.append(digest)
-        reclaimed_bytes += total_bytes
+        reclaimed_bytes += reclaimed
     return {
         "repo": stable_repository_id(scope.main_tree),
         "removed": removed,

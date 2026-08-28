@@ -292,19 +292,27 @@ def _name(value: Any, *, source: str, path: str) -> str:
     return result
 
 
-def _relative_pattern(value: Any, *, source: str, path: str) -> str:
-    result = _string(value, source=source, path=path)
-    if (
+def _pattern_is_absolute(result: str) -> bool:
+    return (
         result.startswith("/")
         or PurePosixPath(result).is_absolute()
         or PureWindowsPath(result).is_absolute()
-        or PureWindowsPath(result).drive
-    ):
-        raise _error(source, path, "must be relative to the repository root")
-    if any(
+        or bool(PureWindowsPath(result).drive)
+    )
+
+
+def _pattern_has_traversal(result: str) -> bool:
+    return any(
         part == ".."
         for part in (*PurePosixPath(result).parts, *PureWindowsPath(result).parts)
-    ):
+    )
+
+
+def _relative_pattern(value: Any, *, source: str, path: str) -> str:
+    result = _string(value, source=source, path=path)
+    if _pattern_is_absolute(result):
+        raise _error(source, path, "must be relative to the repository root")
+    if _pattern_has_traversal(result):
         raise _error(
             source,
             path,
@@ -597,6 +605,31 @@ def _artifact_dependencies(value: Any, *, source: str, path: str) -> tuple[str, 
     return dependencies
 
 
+def _normalize_regenerate_command_string(
+    value: str, *, source: str, path: str
+) -> list[list[str]]:
+    try:
+        argv = shlex.split(value)
+    except ValueError as exc:
+        raise _error(source, path, f"invalid command quoting: {exc}") from exc
+    if any(token in _SHELL_TOKENS for token in argv):
+        raise _error(source, path, "shell operators are not valid in argv commands")
+    return [list(_argv(argv, source=source, path=path))]
+
+
+def _normalize_regenerate_command_sequence(
+    value: Sequence[Any], *, source: str, path: str
+) -> list[list[str]]:
+    if not value:
+        raise _error(source, path, "must not be empty")
+    if all(isinstance(item, str) for item in value):
+        return [list(_argv(value, source=source, path=path))]
+    commands: list[list[str]] = []
+    for index, command in enumerate(value):
+        commands.append(list(_argv(command, source=source, path=f"{path}[{index}]")))
+    return commands
+
+
 def _normalize_regenerate_command(
     value: Any, *, source: str, path: str
 ) -> list[list[str]]:
@@ -609,23 +642,10 @@ def _normalize_regenerate_command(
     """
 
     if isinstance(value, str):
-        try:
-            argv = shlex.split(value)
-        except ValueError as exc:
-            raise _error(source, path, f"invalid command quoting: {exc}") from exc
-        if any(token in _SHELL_TOKENS for token in argv):
-            raise _error(source, path, "shell operators are not valid in argv commands")
-        return [list(_argv(argv, source=source, path=path))]
+        return _normalize_regenerate_command_string(value, source=source, path=path)
     if not isinstance(value, Sequence) or isinstance(value, bytes):
         raise _error(source, path, "must be an argv list or list of argv lists")
-    if not value:
-        raise _error(source, path, "must not be empty")
-    if all(isinstance(item, str) for item in value):
-        return [list(_argv(value, source=source, path=path))]
-    commands: list[list[str]] = []
-    for index, command in enumerate(value):
-        commands.append(list(_argv(command, source=source, path=f"{path}[{index}]")))
-    return commands
+    return _normalize_regenerate_command_sequence(value, source=source, path=path)
 
 
 def _normalize_build(data: Mapping[str, Any], *, source: str) -> dict[str, Any]:
@@ -730,6 +750,177 @@ def _merge_commands(value: Any, *, source: str, path: str) -> list[list[str]]:
     return _normalize_regenerate_command(value, source=source, path=path)
 
 
+def _resolve_gate_stage(tier: Any, *, source: str, path: str) -> Any:
+    """Resolve the deprecated ``tier`` field to its ``stage`` replacement,
+    warning once. Called only when ``stage`` is absent and ``tier`` is
+    present (mirrors the original nested if exactly).
+    """
+    tier_value = _string(tier, source=source, path=f"{path}.tier")
+    if tier_value not in {"fast", "slow"}:
+        raise _error(source, f"{path}.tier", "must be fast or slow")
+    stage = (
+        ValidationStage.INTEGRATION.value
+        if tier_value == "fast"
+        else ValidationStage.CERTIFICATION.value
+    )
+    # stacklevel bumped 4->7: this warn() used to fire directly from
+    # _normalize_merge's own gate loop (one call frame between the warn()
+    # site and the external caller). Three levels of extraction
+    # (_normalize_merge -> _normalize_one_merge_gate ->
+    # _normalize_gate_stage_and_tier -> this function) add exactly three
+    # more call frames, so stacklevel must grow by 3 to keep pointing at the
+    # SAME external caller frame it did before extraction -- verified
+    # empirically against main with warnings.catch_warnings(record=True)
+    # from an identical call site (see
+    # /var/tmp/l9/WD7-RM-03/probe_config_stacklevel.py). The gate loop was
+    # also changed from a list comprehension to a plain `for` loop for this
+    # reason: a comprehension is its own stack frame in CPython and would
+    # silently add a fourth, easy-to-miss frame.
+    warnings.warn(
+        f"{_where(source, path)}: tier={tier_value!r} is deprecated; "
+        f"use stage={stage!r}",
+        ConfigCompatibilityWarning,
+        stacklevel=7,
+    )
+    return stage
+
+
+def _normalize_gate_stage_and_tier(
+    normalized: dict[str, Any], *, source: str, path: str
+) -> None:
+    stage = normalized.get("stage")
+    tier = normalized.get("tier")
+    if stage is None:
+        stage = (
+            _resolve_gate_stage(tier, source=source, path=path)
+            if tier is not None
+            else ValidationStage.INTEGRATION.value
+        )
+    normalized["stage"] = stage
+    normalized.pop("tier", None)
+
+
+def _normalize_gate_path_selection(normalized: dict[str, Any]) -> None:
+    path_selection = normalized.get("path_selection", normalized.get("paths"))
+    if path_selection is None and "when_changed" in normalized:
+        path_selection = {"include": normalized["when_changed"]}
+    if path_selection is not None:
+        normalized["path_selection"] = path_selection
+    normalized.pop("paths", None)
+    normalized.pop("when_changed", None)
+
+
+def _normalize_one_merge_gate(
+    item: Any,
+    index: int,
+    gate_allowed: frozenset[str],
+    *,
+    source: str,
+    legacy: bool,
+) -> dict[str, Any]:
+    path = f"{MERGE_CONFIG_FILENAME}.gates[{index}]"
+    gate = _mapping(item, source=source, path=path)
+    _check_keys(gate, gate_allowed, source=source, path=path, strict=not legacy)
+    normalized = dict(gate)
+    _normalize_gate_stage_and_tier(normalized, source=source, path=path)
+    if "validation_stage" in normalized:
+        raise _error(source, path, "use stage, not validation_stage")
+    _normalize_gate_path_selection(normalized)
+    if "artifacts" in normalized and "artifact_dependencies" not in normalized:
+        normalized["artifact_dependencies"] = normalized.pop("artifacts")
+    normalized.setdefault("baseline_mode", "differential")
+    return normalized
+
+
+def _initial_merge_files_and_commands(
+    raw: dict[str, Any], *, source: str
+) -> tuple[list[str], list[list[str]]]:
+    files: list[str] = []
+    commands: list[list[str]] = []
+    if raw.get("generated_files") is not None:
+        files = list(
+            _relative_patterns(
+                raw.get("generated_files"),
+                source=source,
+                path=f"{MERGE_CONFIG_FILENAME}.generated_files",
+            )
+        )
+    if raw.get("regenerate") is not None:
+        commands = _merge_commands(
+            raw.get("regenerate"),
+            source=source,
+            path=f"{MERGE_CONFIG_FILENAME}.regenerate",
+        )
+    return files, commands
+
+
+def _merge_drift_regeneration(
+    raw: dict[str, Any],
+    files: list[str],
+    commands: list[list[str]],
+    *,
+    source: str,
+) -> None:
+    """Mutates ``files``/``commands`` in place with the deprecated
+    ``regenerate_on_conflict`` shape, if present.
+    """
+    drift = raw.get("regenerate_on_conflict")
+    if drift is None:
+        return
+    drift_files, drift_commands = _regeneration_parts(
+        drift,
+        source=source,
+        path=f"{MERGE_CONFIG_FILENAME}.regenerate_on_conflict",
+        strict=False,
+    )
+    # stacklevel bumped 4->6: two levels of extraction
+    # (_normalize_merge -> _collect_merge_regeneration -> this function) add
+    # exactly two more call frames vs. the original single-frame call site;
+    # see _resolve_gate_stage's comment for the verification method.
+    warnings.warn(
+        f"{_where(source, MERGE_CONFIG_FILENAME)}: "
+        "regenerate_on_conflict is a deprecated shape; migrated to "
+        "generated_files/regenerate",
+        ConfigCompatibilityWarning,
+        stacklevel=6,
+    )
+    files.extend(item for item in drift_files if item not in files)
+    commands.extend(item for item in drift_commands if item not in commands)
+
+
+def _merge_regeneration_shape(
+    raw: dict[str, Any],
+    files: list[str],
+    commands: list[list[str]],
+    *,
+    source: str,
+    legacy: bool,
+) -> None:
+    """Mutates ``files``/``commands`` in place with the current
+    ``regeneration`` shape, if present.
+    """
+    regeneration = raw.get("regeneration")
+    if regeneration is None:
+        return
+    regen_files, regen_commands = _regeneration_parts(
+        regeneration,
+        source=source,
+        path=f"{MERGE_CONFIG_FILENAME}.regeneration",
+        strict=not legacy,
+    )
+    files.extend(item for item in regen_files if item not in files)
+    commands.extend(item for item in regen_commands if item not in commands)
+
+
+def _collect_merge_regeneration(
+    raw: dict[str, Any], *, source: str, legacy: bool
+) -> tuple[list[str], list[list[str]]]:
+    files, commands = _initial_merge_files_and_commands(raw, source=source)
+    _merge_drift_regeneration(raw, files, commands, source=source)
+    _merge_regeneration_shape(raw, files, commands, source=source, legacy=legacy)
+    return files, commands
+
+
 def _normalize_merge(data: Mapping[str, Any], *, source: str) -> dict[str, Any]:
     raw = copy.deepcopy(dict(data))
     version, legacy = _schema_version(raw, source=source, path=MERGE_CONFIG_FILENAME)
@@ -781,91 +972,19 @@ def _normalize_merge(data: Mapping[str, Any], *, source: str) -> dict[str, Any]:
             "artifacts",
         }
     )
+    # A plain `for` loop, not a list comprehension: a comprehension compiles
+    # to its own code object and therefore its own stack frame in CPython,
+    # which would silently shift every warnings.warn() stacklevel computed
+    # below by one more than the explicit call graph implies.
     normalized_gates: list[dict[str, Any]] = []
     for index, item in enumerate(gates):
-        path = f"{MERGE_CONFIG_FILENAME}.gates[{index}]"
-        gate = _mapping(item, source=source, path=path)
-        _check_keys(gate, gate_allowed, source=source, path=path, strict=not legacy)
-        normalized = dict(gate)
-        stage = normalized.get("stage")
-        tier = normalized.get("tier")
-        if stage is None:
-            if tier is not None:
-                tier_value = _string(tier, source=source, path=f"{path}.tier")
-                if tier_value not in {"fast", "slow"}:
-                    raise _error(source, f"{path}.tier", "must be fast or slow")
-                stage = (
-                    ValidationStage.INTEGRATION.value
-                    if tier_value == "fast"
-                    else ValidationStage.CERTIFICATION.value
-                )
-                warnings.warn(
-                    f"{_where(source, path)}: tier={tier_value!r} is deprecated; "
-                    f"use stage={stage!r}",
-                    ConfigCompatibilityWarning,
-                    stacklevel=4,
-                )
-            else:
-                stage = ValidationStage.INTEGRATION.value
-        normalized["stage"] = stage
-        normalized.pop("tier", None)
-        if "validation_stage" in normalized:
-            raise _error(source, path, "use stage, not validation_stage")
-        path_selection = normalized.get("path_selection", normalized.get("paths"))
-        if path_selection is None and "when_changed" in normalized:
-            path_selection = {"include": normalized["when_changed"]}
-        if path_selection is not None:
-            normalized["path_selection"] = path_selection
-        normalized.pop("paths", None)
-        normalized.pop("when_changed", None)
-        if "artifacts" in normalized and "artifact_dependencies" not in normalized:
-            normalized["artifact_dependencies"] = normalized.pop("artifacts")
-        normalized.setdefault("baseline_mode", "differential")
-        normalized_gates.append(normalized)
-
-    files: list[str] = []
-    commands: list[list[str]] = []
-    if raw.get("generated_files") is not None:
-        files = list(
-            _relative_patterns(
-                raw.get("generated_files"),
-                source=source,
-                path=f"{MERGE_CONFIG_FILENAME}.generated_files",
+        normalized_gates.append(
+            _normalize_one_merge_gate(
+                item, index, gate_allowed, source=source, legacy=legacy
             )
         )
-    if raw.get("regenerate") is not None:
-        commands = _merge_commands(
-            raw.get("regenerate"),
-            source=source,
-            path=f"{MERGE_CONFIG_FILENAME}.regenerate",
-        )
-    drift = raw.get("regenerate_on_conflict")
-    if drift is not None:
-        drift_files, drift_commands = _regeneration_parts(
-            drift,
-            source=source,
-            path=f"{MERGE_CONFIG_FILENAME}.regenerate_on_conflict",
-            strict=False,
-        )
-        warnings.warn(
-            f"{_where(source, MERGE_CONFIG_FILENAME)}: "
-            "regenerate_on_conflict is a deprecated shape; migrated to "
-            "generated_files/regenerate",
-            ConfigCompatibilityWarning,
-            stacklevel=4,
-        )
-        files.extend(item for item in drift_files if item not in files)
-        commands.extend(item for item in drift_commands if item not in commands)
-    regeneration = raw.get("regeneration")
-    if regeneration is not None:
-        regen_files, regen_commands = _regeneration_parts(
-            regeneration,
-            source=source,
-            path=f"{MERGE_CONFIG_FILENAME}.regeneration",
-            strict=not legacy,
-        )
-        files.extend(item for item in regen_files if item not in files)
-        commands.extend(item for item in regen_commands if item not in commands)
+
+    files, commands = _collect_merge_regeneration(raw, source=source, legacy=legacy)
     return {
         "schema_version": SCHEMA_VERSION,
         "base": raw.get("base", "main"),
