@@ -173,36 +173,23 @@ class DifferentialVerdict:
             object.__setattr__(self, field_name, tuple(sorted(set(values))))
 
 
-def compare_failure_signals(
-    *,
-    mode: BaselineMode,
-    baseline: BaselineObservation | None,
-    candidate_exit_code: int | None,
-    candidate_failure_ids: Sequence[str] = (),
+def _absolute_verdict(
+    candidate_exit_code: int | None, candidate: frozenset[str], detail: str
 ) -> DifferentialVerdict:
-    """Compare a gate result without ever treating an unreadable base as green."""
-
-    if len(candidate_failure_ids) > _MAX_FAILURE_IDS:
-        raise EvidenceError("candidate failure IDs exceed the bounded count")
-    candidate = frozenset(
-        _failure_id(item, "candidate failure id") for item in candidate_failure_ids
+    ok = candidate_exit_code == 0
+    return DifferentialVerdict(
+        ok=ok,
+        baseline_readable=True,
+        new_failure_ids=tuple(sorted(candidate)) if not ok else (),
+        detail=detail,
     )
-    if mode is BaselineMode.DISABLED:
-        ok = candidate_exit_code == 0
-        return DifferentialVerdict(
-            ok=ok,
-            baseline_readable=True,
-            new_failure_ids=tuple(sorted(candidate)) if not ok else (),
-            detail="absolute result (baseline comparison disabled)",
-        )
-    if mode is BaselineMode.ABSOLUTE:
-        ok = candidate_exit_code == 0
-        return DifferentialVerdict(
-            ok=ok,
-            baseline_readable=True,
-            new_failure_ids=tuple(sorted(candidate)) if not ok else (),
-            detail="absolute gate result",
-        )
+
+
+def _differential_verdict(
+    baseline: BaselineObservation | None,
+    candidate: frozenset[str],
+    candidate_exit_code: int | None,
+) -> DifferentialVerdict:
     if baseline is None or not baseline.readable:
         return DifferentialVerdict(
             ok=False,
@@ -234,6 +221,31 @@ def compare_failure_signals(
             else "new failure signal(s) are not present on the immutable base"
         ),
     )
+
+
+def compare_failure_signals(
+    *,
+    mode: BaselineMode,
+    baseline: BaselineObservation | None,
+    candidate_exit_code: int | None,
+    candidate_failure_ids: Sequence[str] = (),
+) -> DifferentialVerdict:
+    """Compare a gate result without ever treating an unreadable base as green."""
+
+    if len(candidate_failure_ids) > _MAX_FAILURE_IDS:
+        raise EvidenceError("candidate failure IDs exceed the bounded count")
+    candidate = frozenset(
+        _failure_id(item, "candidate failure id") for item in candidate_failure_ids
+    )
+    if mode is BaselineMode.DISABLED:
+        return _absolute_verdict(
+            candidate_exit_code,
+            candidate,
+            "absolute result (baseline comparison disabled)",
+        )
+    if mode is BaselineMode.ABSOLUTE:
+        return _absolute_verdict(candidate_exit_code, candidate, "absolute gate result")
+    return _differential_verdict(baseline, candidate, candidate_exit_code)
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,7 +284,7 @@ class GateEvidence:
     snapshot_gate_replayed: bool = False
     detail: str = ""
 
-    def __post_init__(self) -> None:
+    def _normalize_identifiers(self) -> None:
         object.__setattr__(
             self, "evidence_id", _opaque(self.evidence_id, "evidence_id")
         )
@@ -282,6 +294,8 @@ class GateEvidence:
             object.__setattr__(
                 self, "generation_id", _opaque(self.generation_id, "generation_id")
             )
+
+    def _normalize_digests(self) -> None:
         object.__setattr__(
             self,
             "gate_config_digest",
@@ -302,6 +316,8 @@ class GateEvidence:
         object.__setattr__(
             self, "profile_digest", _digest(self.profile_digest, "profile_digest")
         )
+
+    def _normalize_timestamps(self) -> None:
         object.__setattr__(
             self, "started_at", _timestamp(self.started_at, "started_at")
         )
@@ -310,6 +326,8 @@ class GateEvidence:
         )
         if self.finished_at < self.started_at:
             raise EvidenceError("finished_at cannot precede started_at")
+
+    def _validate_snapshot_flags(self) -> None:
         if not isinstance(self.snapshot_gate_deferred, bool):
             raise EvidenceError("snapshot_gate_deferred must be a boolean")
         if not isinstance(self.snapshot_gate_replayed, bool):
@@ -318,6 +336,8 @@ class GateEvidence:
             raise EvidenceError(
                 "snapshot_gate_replayed requires a deferred snapshot marker"
             )
+
+    def _normalize_baseline(self) -> None:
         if self.baseline_tree_sha is not None:
             object.__setattr__(
                 self,
@@ -326,6 +346,8 @@ class GateEvidence:
             )
         if self.differential and self.baseline_tree_sha is None:
             raise EvidenceError("differential evidence must identify baseline_tree_sha")
+
+    def _validate_outcome_constraints(self) -> None:
         if self.outcome is EvidenceOutcome.PASSED and self.failure_ids:
             raise EvidenceError("passed evidence cannot carry failure IDs")
         if (
@@ -334,6 +356,13 @@ class GateEvidence:
             and not self.generation_id
         ):
             raise EvidenceError("passed certification evidence requires generation_id")
+
+    def _normalize_sequence_fields(self) -> None:
+        bounded_fields = {
+            "failure_ids",
+            "pre_existing_failure_ids",
+            "fixed_failure_ids",
+        }
         for field_name in (
             "dependency_job_ids",
             "failure_ids",
@@ -343,30 +372,29 @@ class GateEvidence:
             "artifact_refs",
         ):
             raw_values = getattr(self, field_name)
-            if (
-                field_name
-                in {
-                    "failure_ids",
-                    "pre_existing_failure_ids",
-                    "fixed_failure_ids",
-                }
-                and len(raw_values) > _MAX_FAILURE_IDS
-            ):
+            if field_name in bounded_fields and len(raw_values) > _MAX_FAILURE_IDS:
                 raise EvidenceError(f"{field_name} exceed the bounded count")
-            normalizer = (
-                _failure_id
-                if field_name
-                in {"failure_ids", "pre_existing_failure_ids", "fixed_failure_ids"}
-                else _opaque
-            )
+            normalizer = _failure_id if field_name in bounded_fields else _opaque
             values = tuple(normalizer(item, field_name[:-1]) for item in raw_values)
             object.__setattr__(self, field_name, tuple(sorted(set(values))))
+
+    def _normalize_output_tails(self) -> None:
         object.__setattr__(
             self, "stdout_tail", _bounded(self.stdout_tail, "stdout_tail")
         )
         object.__setattr__(
             self, "stderr_tail", _bounded(self.stderr_tail, "stderr_tail")
         )
+
+    def __post_init__(self) -> None:
+        self._normalize_identifiers()
+        self._normalize_digests()
+        self._normalize_timestamps()
+        self._validate_snapshot_flags()
+        self._normalize_baseline()
+        self._validate_outcome_constraints()
+        self._normalize_sequence_fields()
+        self._normalize_output_tails()
 
     def canonical_payload(self) -> dict[str, object]:
         return {
@@ -536,6 +564,106 @@ class ValidationCertificate:
         return certificate
 
 
+def _check_required_fields(
+    certificate: ValidationCertificate, records: tuple[GateEvidence, ...]
+) -> list[str]:
+    reasons: list[str] = []
+    if not records:
+        reasons.append("certificate evidence set is empty")
+    if not certificate.evidence_digests:
+        reasons.append("certificate declares no evidence digests")
+    if not certificate.blocking_gate_names:
+        reasons.append("certificate has no blocking gates")
+    if not certificate.profile_digest:
+        reasons.append("certificate has no profile digest")
+    return reasons
+
+
+def _check_identity_match(
+    item: GateEvidence, certificate: ValidationCertificate
+) -> list[str]:
+    reasons: list[str] = []
+    if item.tree_sha != certificate.tree_sha:
+        reasons.append(f"{item.gate_name} tree SHA does not match certificate")
+    if item.generation_id != certificate.generation_id:
+        reasons.append(f"{item.gate_name} generation does not match certificate")
+    if item.gate_config_digest != certificate.gate_config_digest:
+        reasons.append(f"{item.gate_name} config digest does not match certificate")
+    if item.toolchain_digest != certificate.toolchain_digest:
+        reasons.append(f"{item.gate_name} toolchain digest does not match certificate")
+    if item.target_host != certificate.target_host:
+        reasons.append(f"{item.gate_name} host does not match certificate")
+    if item.resource_digest != certificate.resource_digest:
+        reasons.append(f"{item.gate_name} resource digest does not match certificate")
+    if item.profile_digest != certificate.profile_digest:
+        reasons.append(f"{item.gate_name} profile digest does not match certificate")
+    return reasons
+
+
+def _check_evidence_item(
+    item: GateEvidence,
+    certificate: ValidationCertificate,
+    seen_digests: set[str],
+    by_name: dict[str, GateEvidence],
+) -> list[str]:
+    reasons: list[str] = []
+    if item.digest in seen_digests:
+        reasons.append(f"duplicate evidence digest for {item.gate_name}")
+    seen_digests.add(item.digest)
+    if item.stage is not ValidationStage.CERTIFICATION:
+        reasons.append(f"{item.gate_name} is not certification evidence")
+    reasons.extend(_check_identity_match(item, certificate))
+    if item.gate_name in by_name:
+        reasons.append(f"duplicate evidence gate {item.gate_name}")
+    by_name[item.gate_name] = item
+    return reasons
+
+
+def _check_all_evidence(
+    certificate: ValidationCertificate, records: tuple[GateEvidence, ...]
+) -> tuple[list[str], dict[str, GateEvidence]]:
+    reasons: list[str] = []
+    by_name: dict[str, GateEvidence] = {}
+    seen_digests: set[str] = set()
+    for item in records:
+        reasons.extend(_check_evidence_item(item, certificate, seen_digests, by_name))
+    return reasons, by_name
+
+
+def _check_digest_set_match(
+    certificate: ValidationCertificate, records: tuple[GateEvidence, ...]
+) -> list[str]:
+    actual = {item.digest for item in records}
+    expected = set(certificate.evidence_digests)
+    if actual != expected:
+        return ["certificate evidence digest set does not match supplied evidence"]
+    return []
+
+
+def _check_blocking_gates(
+    certificate: ValidationCertificate, by_name: dict[str, GateEvidence]
+) -> list[str]:
+    reasons: list[str] = []
+    for name in certificate.blocking_gate_names:
+        blocking_item = by_name.get(name)
+        if blocking_item is None:
+            reasons.append(f"missing blocking certification evidence: {name}")
+        elif blocking_item.outcome is not EvidenceOutcome.PASSED:
+            reasons.append(
+                f"blocking gate {name} is {blocking_item.outcome.value}, not passed"
+            )
+    return reasons
+
+
+def _check_snapshot_replay(records: tuple[GateEvidence, ...]) -> list[str]:
+    if any(item.snapshot_gate_deferred for item in records) and not any(
+        item.snapshot_gate_replayed and item.outcome is EvidenceOutcome.PASSED
+        for item in records
+    ):
+        return ["deferred snapshot has no passed selected pre-commit replay evidence"]
+    return []
+
+
 def verify_certificate(
     certificate: ValidationCertificate,
     evidence: Sequence[GateEvidence] | Mapping[str, GateEvidence],
@@ -546,66 +674,12 @@ def verify_certificate(
         tuple(evidence.values()) if isinstance(evidence, Mapping) else tuple(evidence)
     )
     reasons: list[str] = []
-    if not records:
-        reasons.append("certificate evidence set is empty")
-    if not certificate.evidence_digests:
-        reasons.append("certificate declares no evidence digests")
-    if not certificate.blocking_gate_names:
-        reasons.append("certificate has no blocking gates")
-    if not certificate.profile_digest:
-        reasons.append("certificate has no profile digest")
-    by_name: dict[str, GateEvidence] = {}
-    digests: set[str] = set()
-    for item in records:
-        if item.digest in digests:
-            reasons.append(f"duplicate evidence digest for {item.gate_name}")
-        digests.add(item.digest)
-        if item.stage is not ValidationStage.CERTIFICATION:
-            reasons.append(f"{item.gate_name} is not certification evidence")
-        if item.tree_sha != certificate.tree_sha:
-            reasons.append(f"{item.gate_name} tree SHA does not match certificate")
-        if item.generation_id != certificate.generation_id:
-            reasons.append(f"{item.gate_name} generation does not match certificate")
-        if item.gate_config_digest != certificate.gate_config_digest:
-            reasons.append(f"{item.gate_name} config digest does not match certificate")
-        if item.toolchain_digest != certificate.toolchain_digest:
-            reasons.append(
-                f"{item.gate_name} toolchain digest does not match certificate"
-            )
-        if item.target_host != certificate.target_host:
-            reasons.append(f"{item.gate_name} host does not match certificate")
-        if item.resource_digest != certificate.resource_digest:
-            reasons.append(
-                f"{item.gate_name} resource digest does not match certificate"
-            )
-        if item.profile_digest != certificate.profile_digest:
-            reasons.append(
-                f"{item.gate_name} profile digest does not match certificate"
-            )
-        if item.gate_name in by_name:
-            reasons.append(f"duplicate evidence gate {item.gate_name}")
-        by_name[item.gate_name] = item
-    actual = {item.digest for item in records}
-    expected = set(certificate.evidence_digests)
-    if actual != expected:
-        reasons.append(
-            "certificate evidence digest set does not match supplied evidence"
-        )
-    for name in certificate.blocking_gate_names:
-        blocking_item = by_name.get(name)
-        if blocking_item is None:
-            reasons.append(f"missing blocking certification evidence: {name}")
-        elif blocking_item.outcome is not EvidenceOutcome.PASSED:
-            reasons.append(
-                f"blocking gate {name} is {blocking_item.outcome.value}, not passed"
-            )
-    if any(item.snapshot_gate_deferred for item in records) and not any(
-        item.snapshot_gate_replayed and item.outcome is EvidenceOutcome.PASSED
-        for item in records
-    ):
-        reasons.append(
-            "deferred snapshot has no passed selected pre-commit replay evidence"
-        )
+    reasons.extend(_check_required_fields(certificate, records))
+    evidence_reasons, by_name = _check_all_evidence(certificate, records)
+    reasons.extend(evidence_reasons)
+    reasons.extend(_check_digest_set_match(certificate, records))
+    reasons.extend(_check_blocking_gates(certificate, by_name))
+    reasons.extend(_check_snapshot_replay(records))
     return CertificateVerification(
         valid=not reasons,
         reasons=tuple(dict.fromkeys(reasons)),
