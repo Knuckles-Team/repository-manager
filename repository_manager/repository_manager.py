@@ -2862,6 +2862,117 @@ class Git:
             )
             self.threads = self.maximum_threads
 
+    @staticmethod
+    def _precommit_skipped(target_path: str, reason: str) -> GitResult:
+        """A no-op pre-commit outcome for a project there is nothing to run on."""
+        return GitResult(
+            status="skipped",
+            data=reason,
+            error=None,
+            metadata=GitMetadata(
+                command="pre_commit_check",
+                workspace=_project_label(target_path),
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    @staticmethod
+    def _precommit_env() -> dict[str, str]:
+        """Environment for a pre-commit run.
+
+        Skips the branch lock (this helper is used off-branch on purpose) and
+        bounds any pytest hook so a repo's own ``-n auto`` cannot fan out.
+        """
+        env = os.environ.copy()
+        if "SKIP" in env:
+            env["SKIP"] += ",no-commit-to-branch"
+        else:
+            env["SKIP"] = "no-commit-to-branch"
+        env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "4"
+        lane_pytest_options = env.get("PYTEST_ADDOPTS", "").strip()
+        bounded_pytest_options = '-q --tb=short -m "not slow" --timeout=60'
+        env["PYTEST_ADDOPTS"] = " ".join(
+            option for option in (lane_pytest_options, bounded_pytest_options) if option
+        )
+        return env
+
+    def _run_precommit_autoupdate(self, target_path: str, env: dict) -> GitResult:
+        """``pre-commit autoupdate``, then stage whatever it rewrote.
+
+        Returns the first error encountered, or the autoupdate result itself.
+        """
+        result = self.git_action(
+            command="pre-commit autoupdate",
+            path=target_path,
+            env=env,
+            timeout=600,
+        )
+        if result.status == "error":
+            return result
+        staged = self.git_action(command="git add -A", path=target_path)
+        if staged.status == "error":
+            return staged
+        return result
+
+    def _run_precommit_hooks(
+        self, target_path: str, env: dict
+    ) -> tuple[GitResult, bool]:
+        """Stage, run the FAST-tier hooks, and retry once after reformatting.
+
+        Returns ``(result, is_final)``; ``is_final`` marks a *staging* failure,
+        which the caller must surface verbatim without the branch-lock
+        post-processing that applies to hook results.
+        """
+        staged = self.git_action(command="git add -A", path=target_path)
+        if staged.status == "error":
+            return staged, True
+
+        # Explicit, not pre-commit's implicit default: this method is the
+        # FAST tier's interactive stage-and-commit helper (CONCEPT
+        # GOC-59/60 two-tier gate model) -- declare the stage it runs
+        # rather than relying on `pre-commit run` defaulting to it.
+        hook_stage = HOOK_STAGE_BY_GATE_STAGE["fast"]
+        hook_command = f"pre-commit run --hook-stage {hook_stage} --all-files --verbose"
+        result = self.git_action(
+            command=hook_command, path=target_path, env=env, timeout=600
+        )
+        if result.status == "error":
+            # Hooks may have reformatted files. Stage those bounded changes
+            # and run once more, without a shell retry expression.
+            restaged = self.git_action(command="git add -A", path=target_path)
+            if restaged.status == "error":
+                return restaged, True
+            result = self.git_action(
+                command=hook_command, path=target_path, env=env, timeout=600
+            )
+
+        self.git_action(command="git add -A", path=target_path)
+        return result, False
+
+    @staticmethod
+    def _is_branch_lock_only_failure(result: GitResult) -> bool:
+        """True when the ONLY pre-commit failure was the no-commit-to-branch lock."""
+        if result.status != "error" or not result.error:
+            return False
+        msg = result.error.message.lower()
+        if "don't commit to branch" not in msg and "no-commit-to-branch" not in msg:
+            return False
+        lines = (result.error.message + "\n" + result.data).splitlines()
+        return not any(
+            "Failed" in line and "don't commit to branch" not in line.lower()
+            for line in lines
+        )
+
+    @staticmethod
+    def _branch_lock_success(result: GitResult) -> GitResult:
+        """Re-badge a branch-lock-only failure as the success it really was."""
+        return GitResult(
+            status="success",
+            data=result.data or "Skipped branch lock check",
+            metadata=result.metadata,
+        )
+
     @_exclusive_repo_mutation
     def pre_commit(
         self,
@@ -2883,108 +2994,36 @@ class Git:
         self.cleanup_artifacts(target_path)
 
         if not os.path.exists(os.path.join(target_path, ".pre-commit-config.yaml")):
-            return GitResult(
-                status="skipped",
-                data="No .pre-commit-config.yaml found.",
-                error=None,
-                metadata=GitMetadata(
-                    command="pre_commit_check",
-                    workspace=_project_label(target_path),
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
+            return self._precommit_skipped(
+                target_path, "No .pre-commit-config.yaml found."
             )
 
         if not autoupdate and not run:
-            return GitResult(
-                status="skipped",
-                data="No action selected (run=False, autoupdate=False).",
-                error=None,
-                metadata=GitMetadata(
-                    command="pre_commit_check",
-                    workspace=_project_label(target_path),
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
+            return self._precommit_skipped(
+                target_path, "No action selected (run=False, autoupdate=False)."
             )
 
-        env = os.environ.copy()
-        if "SKIP" in env:
-            env["SKIP"] += ",no-commit-to-branch"
-        else:
-            env["SKIP"] = "no-commit-to-branch"
-        env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "4"
-        lane_pytest_options = env.get("PYTEST_ADDOPTS", "").strip()
-        bounded_pytest_options = '-q --tb=short -m "not slow" --timeout=60'
-        env["PYTEST_ADDOPTS"] = " ".join(
-            option for option in (lane_pytest_options, bounded_pytest_options) if option
-        )
+        env = self._precommit_env()
 
         result: GitResult | None = None
         if autoupdate:
-            result = self.git_action(
-                command="pre-commit autoupdate",
-                path=target_path,
-                env=env,
-                timeout=600,
-            )
+            result = self._run_precommit_autoupdate(target_path, env)
             if result.status == "error":
                 return result
-            staged = self.git_action(command="git add -A", path=target_path)
-            if staged.status == "error":
-                return staged
 
         if run:
-            staged = self.git_action(command="git add -A", path=target_path)
-            if staged.status == "error":
-                return staged
-            # Explicit, not pre-commit's implicit default: this method is the
-            # FAST tier's interactive stage-and-commit helper (CONCEPT
-            # GOC-59/60 two-tier gate model) -- declare the stage it runs
-            # rather than relying on `pre-commit run` defaulting to it.
-            hook_stage = HOOK_STAGE_BY_GATE_STAGE["fast"]
-            hook_command = (
-                f"pre-commit run --hook-stage {hook_stage} --all-files --verbose"
-            )
-            result = self.git_action(
-                command=hook_command, path=target_path, env=env, timeout=600
-            )
-            if result.status == "error":
-                # Hooks may have reformatted files. Stage those bounded changes
-                # and run once more, without a shell retry expression.
-                restaged = self.git_action(command="git add -A", path=target_path)
-                if restaged.status == "error":
-                    return restaged
-                result = self.git_action(
-                    command=hook_command, path=target_path, env=env, timeout=600
-                )
-            self.git_action(command="git add -A", path=target_path)
+            result, is_final = self._run_precommit_hooks(target_path, env)
+            if is_final:
+                return result
 
         if result is None:
             raise RuntimeError("pre-commit operation produced no result")
 
-        if result.status == "error" and result.error:
-            msg = result.error.message.lower()
-            if "don't commit to branch" in msg or "no-commit-to-branch" in msg:
-                other_failures = False
-                lines = (result.error.message + "\n" + result.data).splitlines()
-                for line in lines:
-                    if (
-                        "Failed" in line
-                        and "don't commit to branch" not in line.lower()
-                    ):
-                        other_failures = True
-                        break
-
-                if not other_failures:
-                    logger.info(
-                        f"Ignoring safe pre-commit failure (branch lock) in {target_path}"
-                    )
-                    return GitResult(
-                        status="success",
-                        data=result.data or "Skipped branch lock check",
-                        metadata=result.metadata,
-                    )
+        if self._is_branch_lock_only_failure(result):
+            logger.info(
+                f"Ignoring safe pre-commit failure (branch lock) in {target_path}"
+            )
+            return self._branch_lock_success(result)
 
         return result
 
@@ -2995,6 +3034,98 @@ class Git:
         res = self.git_action(cmd, path=path, env=env, timeout=timeout)
         results.append(res)
         return results
+
+    @staticmethod
+    def _find_test_target(path: str) -> str | None:
+        """The pytest target dir for *path* -- unit test dirs preferred."""
+        for candidate in ("tests/unit", "test/unit", "tests", "test"):
+            if os.path.exists(os.path.join(path, candidate)):
+                return candidate
+        return None
+
+    def _project_test_plan(self, path: str) -> tuple[str | None, str | None]:
+        """``(pytest target dir, skip reason)`` for one project.
+
+        Exactly one half is ever set. Order matters: a project with neither a
+        pre-commit config nor a ``pyproject.toml`` is reported as unconfigured
+        even when it happens to carry a tests directory.
+        """
+        has_precommit = os.path.exists(os.path.join(path, ".pre-commit-config.yaml"))
+        has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
+        if not has_precommit and not has_pyproject:
+            return None, "Skipped (No .pre-commit-config.yaml and no pyproject.toml)"
+
+        test_target = self._find_test_target(path)
+        if test_target is None:
+            return None, "No tests directory found"
+        return test_target, None
+
+    @staticmethod
+    def _skipped_test_result(path: str, reason: str) -> GitResult:
+        """The ``skipped`` record for a project that cannot be pytest'd."""
+        return GitResult(
+            status="skipped",
+            data=reason,
+            metadata=GitMetadata(
+                command="pytest",
+                workspace=_project_label(path),
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    @staticmethod
+    def _pytest_command(path: str, test_target: str) -> str:
+        """The pytest invocation for *path*, preferring uv when it is uv-locked."""
+        bounded = '-q --tb=short -m "not slow" --timeout=60'
+        if os.path.exists(os.path.join(path, "uv.lock")):
+            return f"uv run --extra test pytest {test_target} {bounded}"
+        return f"{sys.executable} -m pytest {test_target} {bounded}"
+
+    @staticmethod
+    def _pytest_environment() -> dict[str, str]:
+        """Test env: memory-safe ladybug, validation mode, in-memory graph."""
+        test_env = os.environ.copy()
+        test_env["LADYBUG_MAX_DB_SIZE"] = "1073741824"
+        test_env["VALIDATION_MODE"] = "True"
+        test_env["KNOWLEDGE_GRAPH_SYNC_BACKGROUND"] = "False"
+        test_env["GRAPH_DB_PATH"] = ":memory:"
+        return test_env
+
+    @staticmethod
+    def _mark_repo_progress(
+        progress_dict: dict | None,
+        progress_phase: str | None,
+        repo_name: str,
+        status: str,
+        *,
+        recount_failures: bool = False,
+    ) -> None:
+        """Record one repo's status in the shared live-progress mapping."""
+        if not progress_dict or not progress_phase:
+            return
+        phases = progress_dict.get("phases", {})
+        if progress_phase not in phases:
+            return
+        phase = phases[progress_phase]
+        phase["repos"][repo_name] = status
+        phase["completed"] = len(phase["repos"])
+        if recount_failures:
+            phase["failed"] = sum(1 for s in phase["repos"].values() if s == "error")
+
+    @staticmethod
+    def _collect_project_test_results(
+        future: "concurrent.futures.Future", results: list[GitResult]
+    ) -> str:
+        """Append one project's test results; return its aggregate status."""
+        res_list = future.result()
+        if not isinstance(res_list, list):
+            results.append(res_list)
+            return res_list.status
+        results.extend(res_list)
+        if any(r.status == "error" for r in res_list):
+            return "error"
+        return "success"
 
     def test_projects(
         self,
@@ -3009,7 +3140,7 @@ class Git:
             progress_phase: Phase name for live progress updates.
             progress_dict: Shared mutable dict for live progress reporting.
         """
-        results = []
+        results: list[GitResult] = []
         thread_count = self._cpu_aware_threads()
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=thread_count
@@ -3022,114 +3153,99 @@ class Git:
                 path = target["path"]
                 repo_name = target.get("name", os.path.basename(path))
 
-                has_precommit = os.path.exists(
-                    os.path.join(path, ".pre-commit-config.yaml")
-                )
-                has_pyproject = os.path.exists(os.path.join(path, "pyproject.toml"))
-                if not has_precommit and not has_pyproject:
-                    results.append(
-                        GitResult(
-                            status="skipped",
-                            data="Skipped (No .pre-commit-config.yaml and no pyproject.toml)",
-                            metadata=GitMetadata(
-                                command="pytest",
-                                workspace=_project_label(path),
-                                return_code=0,
-                                timestamp=datetime.datetime.now(
-                                    datetime.UTC
-                                ).isoformat()
-                                + "Z",
-                            ),
-                        )
+                test_target, skip_reason = self._project_test_plan(path)
+                if skip_reason is not None:
+                    results.append(self._skipped_test_result(path, skip_reason))
+                    self._mark_repo_progress(
+                        progress_dict, progress_phase, repo_name, "skipped"
                     )
-                    if progress_dict and progress_phase:
-                        phases = progress_dict.get("phases", {})
-                        if progress_phase in phases:
-                            phases[progress_phase]["repos"][repo_name] = "skipped"
-                            phases[progress_phase]["completed"] = len(
-                                phases[progress_phase]["repos"]
-                            )
                     continue
 
-                # Check for the existence of unit test directories first, then general test directories
-                test_target = None
-                for candidate in ["tests/unit", "test/unit", "tests", "test"]:
-                    if os.path.exists(os.path.join(path, candidate)):
-                        test_target = candidate
-                        break
-
-                if test_target is not None:
-                    # Detect if we should use uv or standard python
-                    if os.path.exists(os.path.join(path, "uv.lock")):
-                        cmd = f'uv run --extra test pytest {test_target} -q --tb=short -m "not slow" --timeout=60'
-                    else:
-                        cmd = f'{sys.executable} -m pytest {test_target} -q --tb=short -m "not slow" --timeout=60'
-
-                    # Ensure memory safety for ladybug and set validation mode
-                    test_env = os.environ.copy()
-                    test_env["LADYBUG_MAX_DB_SIZE"] = "1073741824"
-                    test_env["VALIDATION_MODE"] = "True"
-                    test_env["KNOWLEDGE_GRAPH_SYNC_BACKGROUND"] = "False"
-                    test_env["GRAPH_DB_PATH"] = ":memory:"
-
-                    fut = executor.submit(
-                        self._run_project_test,
-                        cmd,
-                        path,
-                        test_env,
-                        600,  # 10 minute timeout for tests
-                    )
-                    future_to_repo[fut] = repo_name
-                else:
-                    results.append(
-                        GitResult(
-                            status="skipped",
-                            data="No tests directory found",
-                            metadata=GitMetadata(
-                                command="pytest",
-                                workspace=_project_label(path),
-                                return_code=0,
-                                timestamp=datetime.datetime.now(
-                                    datetime.UTC
-                                ).isoformat()
-                                + "Z",
-                            ),
-                        )
-                    )
-                    if progress_dict and progress_phase:
-                        phases = progress_dict.get("phases", {})
-                        if progress_phase in phases:
-                            phases[progress_phase]["repos"][repo_name] = "skipped"
-                            phases[progress_phase]["completed"] = len(
-                                phases[progress_phase]["repos"]
-                            )
+                fut = executor.submit(
+                    self._run_project_test,
+                    self._pytest_command(path, test_target),
+                    path,
+                    self._pytest_environment(),
+                    600,  # 10 minute timeout for tests
+                )
+                future_to_repo[fut] = repo_name
 
             for future in concurrent.futures.as_completed(future_to_repo):
                 repo_name = future_to_repo[future]
-                res_list = future.result()
-                # Determine aggregate status for the repo
-                status = "success"
-                if isinstance(res_list, list):
-                    results.extend(res_list)
-                    if any(r.status == "error" for r in res_list):
-                        status = "error"
-                else:
-                    results.append(res_list)
-                    status = res_list.status
-                # Update live progress
-                if progress_dict and progress_phase:
-                    phases = progress_dict.get("phases", {})
-                    if progress_phase in phases:
-                        phases[progress_phase]["repos"][repo_name] = status
-                        phases[progress_phase]["completed"] = len(
-                            phases[progress_phase]["repos"]
-                        )
-                        phases[progress_phase]["failed"] = sum(
-                            1
-                            for s in phases[progress_phase]["repos"].values()
-                            if s == "error"
-                        )
+                status = self._collect_project_test_results(future, results)
+                self._mark_repo_progress(
+                    progress_dict,
+                    progress_phase,
+                    repo_name,
+                    status,
+                    recount_failures=True,
+                )
         return results
+
+    def _named_precommit_dirs(self, projects: list[str]) -> list[str]:
+        """Resolve an explicit project list to hook-carrying directories."""
+        dirs: list[str] = []
+        for p in projects:
+            if os.path.isabs(p) and os.path.exists(p):
+                p_path: str | None = p
+            else:
+                p_path = self._project_path_for(p)
+            if (
+                p_path
+                and os.path.isdir(p_path)
+                and os.path.exists(os.path.join(p_path, ".pre-commit-config.yaml"))
+            ):
+                dirs.append(p_path)
+        return dirs
+
+    def _precommit_project_dirs(self, projects: list[str] | None) -> list[str]:
+        """Directories carrying a ``.pre-commit-config.yaml`` for the given scope.
+
+        ``projects=None`` means "every mapped project"; an empty project map is
+        warned about and yields nothing to run.
+        """
+        if projects is not None:
+            return self._named_precommit_dirs(projects)
+        if not self.project_map:
+            logger.warning("No projects found in project_map for pre-commit.")
+            return []
+        return [
+            p
+            for p in self.project_map.values()
+            if os.path.exists(os.path.join(p, ".pre-commit-config.yaml"))
+        ]
+
+    def _run_precommit_pool(
+        self, project_dirs: list[str], run: bool, autoupdate: bool
+    ) -> list[GitResult]:
+        """Run pre-commit across *project_dirs* in parallel."""
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self.threads
+        ) as executor:
+            futures = {
+                executor.submit(self.pre_commit, run, autoupdate, d): d
+                for d in project_dirs
+            }
+            return [
+                future.result() for future in concurrent.futures.as_completed(futures)
+            ]
+
+    def _precommit_projects_error(self, exc: Exception) -> GitResult:
+        """The failure record for a parallel pre-commit sweep that blew up."""
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=f"Parallel pre-commit failed: {type(exc).__name__}",
+                code=-1,
+            ),
+            metadata=GitMetadata(
+                command="pre_commit_projects",
+                workspace=_project_label(self.path),
+                return_code=-1,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
 
     def pre_commit_projects(
         self,
@@ -3148,70 +3264,15 @@ class Git:
             if not os.path.exists(expanded_path):
                 return []
 
-            if projects is None:
-                if self.project_map:
-                    project_dirs = [
-                        p
-                        for p in self.project_map.values()
-                        if os.path.exists(os.path.join(p, ".pre-commit-config.yaml"))
-                    ]
-                else:
-                    logger.warning("No projects found in project_map for pre-commit.")
-                    return []
-            else:
-                project_dirs = []
-                for p in projects:
-                    p_path = None
-                    if os.path.isabs(p) and os.path.exists(p):
-                        p_path = p
-                    else:
-                        for url, path in self.project_map.items():
-                            if url.endswith(f"/{p}.git") or url.endswith(f"/{p}"):
-                                p_path = path
-                                break
-                    if (
-                        p_path
-                        and os.path.isdir(p_path)
-                        and os.path.exists(
-                            os.path.join(p_path, ".pre-commit-config.yaml")
-                        )
-                    ):
-                        project_dirs.append(p_path)
-
+            project_dirs = self._precommit_project_dirs(projects)
             if not project_dirs:
                 return []
 
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.threads
-            ) as executor:
-                futures = {
-                    executor.submit(self.pre_commit, run, autoupdate, d): d
-                    for d in project_dirs
-                }
-                results = []
-                for future in concurrent.futures.as_completed(futures):
-                    results.append(future.result())
-
-            return results
+            return self._run_precommit_pool(project_dirs, run, autoupdate)
 
         except Exception as e:
             logger.error("Parallel pre-commit failed: error_type=%s", type(e).__name__)
-            return [
-                GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message=f"Parallel pre-commit failed: {type(e).__name__}",
-                        code=-1,
-                    ),
-                    metadata=GitMetadata(
-                        command="pre_commit_projects",
-                        workspace=_project_label(self.path),
-                        return_code=-1,
-                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                    ),
-                )
-            ]
+            return [self._precommit_projects_error(e)]
 
     def install_project(self, path: str | None = None, extra: str = "all") -> GitResult:
         """
