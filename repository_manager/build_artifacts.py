@@ -863,6 +863,56 @@ def _validate_stage_entry_checksum(path: Path, entry: Mapping[str, Any]) -> None
         raise ArtifactStoreError("artifact staging checksum validation failed")
 
 
+class _PublishState:
+    """Mutable cross-step flag for one `publish()` call's stage cleanup decision."""
+
+    __slots__ = ("cleanup_stage",)
+
+    def __init__(self) -> None:
+        self.cleanup_stage = False
+
+
+def _copy_and_fsync_publish_tree(staged: StagedArtifacts, temporary_dir: Path) -> None:
+    _copy_tree_no_follow(staged.stage_dir / "artifacts", temporary_dir / "artifacts")
+    _bounded_tree_size(
+        temporary_dir / "artifacts",
+        max_files=_MAX_STAGE_ARTIFACTS,
+        max_bytes=_MAX_STAGE_BYTES,
+    )
+    for artifact in (temporary_dir / "artifacts").rglob("*"):
+        if artifact.is_file():
+            _fsync_file(artifact)
+    _fsync_directory(temporary_dir / "artifacts")
+
+
+def _staged_artifacts_at(
+    temporary_dir: Path, artifacts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Rewrite each artifact entry's ``staged_at`` to the temp publish dir."""
+    return [
+        {
+            key: (
+                str(temporary_dir / "artifacts" / entry["relative_path"])
+                if key == "staged_at"
+                else value
+            )
+            for key, value in entry.items()
+            if key != "staged_at"
+        }
+        for entry in artifacts
+    ]
+
+
+def _final_artifacts_at(
+    final_dir: Path, artifacts: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Rewrite each artifact entry's ``stored_at`` to the final publish dir."""
+    return [
+        {**entry, "stored_at": str(final_dir / "artifacts" / entry["relative_path"])}
+        for entry in artifacts
+    ]
+
+
 class BuildArtifactStore:
     """Content-addressed artifact storage with explicit recovery states.
 
@@ -1335,6 +1385,80 @@ class BuildArtifactStore:
                             kept.append(f"{key_entry.name}/{stage_entry.name}")
         return {"removed": removed, "kept": kept, "errors": errors}
 
+    def _reconcile_existing_publication(
+        self, staged: StagedArtifacts, stage_manifest: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Handle a pre-existing manifest at this key.
+
+        Returns it if this call is an exact fenced retry of an
+        already-published/committed manifest; otherwise quarantines a
+        corrupt same-attempt manifest (if any) and returns None so the
+        caller proceeds with a fresh publish.
+        """
+        existing = self.read_manifest(staged.key)
+        if not existing:
+            return None
+        if not self._same_publication_identity(existing, stage_manifest):
+            raise ArtifactStoreError(
+                "artifact key already belongs to another job, WorkItem, "
+                "attempt, or fence"
+            )
+        if self.validate_manifest(
+            existing, require_committed=False, expected_key=staged.key
+        ) and existing.get("publication_state") in {"published", "committed"}:
+            return existing
+        self.quarantine(staged.key, reason="same-attempt-corrupt")
+        return None
+
+    def _quarantine_orphan_final_dir_if_present(
+        self, key: str, final_dir: Path
+    ) -> None:
+        # A crash after the directory rename but before manifest write
+        # leaves an orphan final directory.  Quarantine it before the next
+        # atomic publish so os.replace cannot fail on a non-empty
+        # destination.
+        if not final_dir.exists():
+            return
+        if self.read_manifest(key) is None:
+            self.quarantine(key, reason="orphan-final-directory")
+        else:
+            raise ArtifactStoreError(
+                "artifact key appeared while publication was fenced"
+            )
+
+    def _commit_publish(
+        self,
+        staged: StagedArtifacts,
+        stage_manifest: Mapping[str, Any],
+        final_dir: Path,
+        temporary_dir: Path,
+        fence_check: Callable[[], bool] | None,
+        state: _PublishState,
+    ) -> dict[str, Any]:
+        """Copy the stage tree into place and atomically publish its manifest."""
+        _copy_and_fsync_publish_tree(staged, temporary_dir)
+        published = dict(stage_manifest)
+        published["publication_state"] = "published"
+        published["published_at"] = time.time()
+        published["artifacts"] = _staged_artifacts_at(
+            temporary_dir, stage_manifest["artifacts"]
+        )
+        # The directory move and manifest write are separate filesystem
+        # operations; a manifest is never written until all bytes are
+        # present and checksummed.  A crash leaves an unreferenced temp
+        # directory, not a false hit.
+        os.replace(temporary_dir, final_dir)
+        state.cleanup_stage = True
+        _fsync_directory(self.root)
+        published["artifacts"] = _final_artifacts_at(final_dir, published["artifacts"])
+        _atomic_write_json(final_dir / MANIFEST_NAME, published)
+        # If the lease expires after the manifest becomes durable, surface
+        # the stale publication.  The worker may quarantine it only after
+        # the durable WorkItem authority proves this exact owner/fence is
+        # stale.
+        self._require_fence(fence_check)
+        return published
+
     def publish(
         self,
         staged: StagedArtifacts,
@@ -1353,107 +1477,38 @@ class BuildArtifactStore:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as lock:
             lock_exclusive(lock.fileno())
-            cleanup_stage = False
+            state = _PublishState()
             try:
                 # The key lock may have waited behind another producer.  A
                 # lease that was valid before flock is not authorization for
                 # an exact retry after that wait.
                 self._require_fence(fence_check)
-                existing = self.read_manifest(staged.key)
-                if existing:
-                    if not self._same_publication_identity(existing, stage_manifest):
-                        raise ArtifactStoreError(
-                            "artifact key already belongs to another job, WorkItem, "
-                            "attempt, or fence"
-                        )
-                    if self.validate_manifest(
-                        existing,
-                        require_committed=False,
-                        expected_key=staged.key,
-                    ) and existing.get("publication_state") in {
-                        "published",
-                        "committed",
-                    }:
-                        # This is an exact, fenced retry.  It is not a generic
-                        # cache hit: the caller still has to prove terminal
-                        # WorkItem state before finalize.
-                        cleanup_stage = True
-                        return existing
-                    self.quarantine(staged.key, reason="same-attempt-corrupt")
+                existing = self._reconcile_existing_publication(staged, stage_manifest)
+                if existing is not None:
+                    # This is an exact, fenced retry.  It is not a generic
+                    # cache hit: the caller still has to prove terminal
+                    # WorkItem state before finalize.
+                    state.cleanup_stage = True
+                    return existing
                 self._require_fence(fence_check)
                 final_dir = self.root / staged.key
                 temporary_dir = self.root / (
                     f".{_safe(staged.key)}.publish-{uuid.uuid4().hex}"
                 )
-                if final_dir.exists():
-                    # A crash after the directory rename but before manifest
-                    # write leaves an orphan final directory.  Quarantine it
-                    # before the next atomic publish so os.replace cannot
-                    # fail on a non-empty destination.
-                    if self.read_manifest(staged.key) is None:
-                        self.quarantine(staged.key, reason="orphan-final-directory")
-                    else:
-                        raise ArtifactStoreError(
-                            "artifact key appeared while publication was fenced"
-                        )
+                self._quarantine_orphan_final_dir_if_present(staged.key, final_dir)
                 try:
-                    _copy_tree_no_follow(
-                        staged.stage_dir / "artifacts",
-                        temporary_dir / "artifacts",
+                    return self._commit_publish(
+                        staged,
+                        stage_manifest,
+                        final_dir,
+                        temporary_dir,
+                        fence_check,
+                        state,
                     )
-                    _bounded_tree_size(
-                        temporary_dir / "artifacts",
-                        max_files=_MAX_STAGE_ARTIFACTS,
-                        max_bytes=_MAX_STAGE_BYTES,
-                    )
-                    for artifact in (temporary_dir / "artifacts").rglob("*"):
-                        if artifact.is_file():
-                            _fsync_file(artifact)
-                    _fsync_directory(temporary_dir / "artifacts")
-                    published = dict(stage_manifest)
-                    published["publication_state"] = "published"
-                    published["published_at"] = time.time()
-                    published["artifacts"] = [
-                        {
-                            key: (
-                                str(
-                                    temporary_dir / "artifacts" / entry["relative_path"]
-                                )
-                                if key == "staged_at"
-                                else value
-                            )
-                            for key, value in entry.items()
-                            if key != "staged_at"
-                        }
-                        for entry in stage_manifest["artifacts"]
-                    ]
-                    # The directory move and manifest write are separate
-                    # filesystem operations; a manifest is never written
-                    # until all bytes are present and checksummed.  A crash
-                    # leaves an unreferenced temp directory, not a false hit.
-                    os.replace(temporary_dir, final_dir)
-                    cleanup_stage = True
-                    _fsync_directory(self.root)
-                    published["artifacts"] = [
-                        {
-                            **entry,
-                            "stored_at": str(
-                                final_dir / "artifacts" / entry["relative_path"]
-                            ),
-                        }
-                        for entry in published["artifacts"]
-                    ]
-                    _atomic_write_json(final_dir / MANIFEST_NAME, published)
-                    # If the lease expires after the manifest becomes
-                    # durable, surface the stale publication.  The worker
-                    # may quarantine it only after the durable WorkItem
-                    # authority proves this exact owner/fence is stale.
-                    self._require_fence(fence_check)
-                    return published
                 finally:
                     shutil.rmtree(temporary_dir, ignore_errors=True)
             finally:
-                if cleanup_stage:
+                if state.cleanup_stage:
                     self.discard_stage(staged)
                 unlock(lock.fileno())
 
