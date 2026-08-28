@@ -40,6 +40,7 @@ import os
 import re
 import subprocess  # nosec B404 - git/CLI orchestration is this module's entire job
 import sys
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -304,67 +305,87 @@ def _probe_interpreter(python: Path) -> tuple[str, str]:
     return "ok", proc.stdout.strip()
 
 
-def _check_no_local_venv(tree: Path) -> Check:
-    """A worktree-local ``.venv`` produced ~167 phantom test failures."""
-    venv = tree / ".venv"
-    if not venv.exists():
-        return Check("no-worktree-venv", OK, "no worktree-local .venv")
+def _venv_marker_reason(
+    venv: Path, marker: Path, expected: dict[str, Any]
+) -> tuple[str, Any]:
+    """``(reason, loaded)`` for the marker-content/metadata shape checks only
+    (no interpreter probe — that stays in :func:`_venv_ownership_state`).
+    """
+    try:
+        loaded = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return f"the ownership marker is unreadable or invalid JSON ({marker})", None
+    if loaded != expected:
+        return (
+            "the ownership marker does not identify the canonical all-extras selection",
+            loaded,
+        )
+    if not (venv / "pyvenv.cfg").is_file():
+        return f"the environment metadata is absent ({venv / 'pyvenv.cfg'})", loaded
+    return "", loaded
 
-    launcher = tree / "scripts" / "uv_workspace.py"
-    marker = venv / ".uv-workspace-selection.json"
-    python = venv / "bin" / "python"
-    expected = {"label": "", "selection": ["--all-extras"]}
-    reason = ""
-    unevaluable = ""
-    loaded: Any = None
+
+def _venv_ownership_state(
+    venv: Path, launcher: Path, marker: Path, python: Path, expected: dict[str, Any]
+) -> tuple[str, str, Any]:
+    """``(reason, unevaluable, loaded)`` — mirrors the original chained
+    if/elif/else exactly. A non-empty ``reason`` means FAIL; a non-empty
+    ``unevaluable`` (with ``reason`` empty) means SKIP; both empty means OK.
+    """
     if venv.is_symlink():
-        reason = "the environment directory is a symlink"
-    elif not launcher.is_file():
-        reason = f"the owning launcher is absent ({launcher})"
-    elif marker.is_symlink() or not marker.is_file():
-        reason = f"the ownership marker is absent or not a regular file ({marker})"
-    else:
-        try:
-            loaded = json.loads(marker.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            reason = f"the ownership marker is unreadable or invalid JSON ({marker})"
-        if not reason and loaded != expected:
-            reason = "the ownership marker does not identify the canonical all-extras selection"
-        elif not reason and not (venv / "pyvenv.cfg").is_file():
-            reason = f"the environment metadata is absent ({venv / 'pyvenv.cfg'})"
-        elif not reason:
-            state, detail = _probe_interpreter(python)
-            if state == "unevaluable":
-                unevaluable = detail
-            elif state != "ok":
-                reason = f"the environment interpreter is unusable: {detail}"
-
-    if unevaluable:
-        return Check(
-            "no-worktree-venv",
-            SKIP,
-            f"cannot evaluate {venv} from this process: {unevaluable}",
-            remedy=(
-                "re-run the doctor from inside the lane's own namespace (the "
-                f"local CLI: `lane doctor --path {tree}`) — a check that cannot "
-                "see the lane's filesystem must not rule on it"
-            ),
-            evidence={"venv": str(venv), "marker": str(marker)},
+        return "the environment directory is a symlink", "", None
+    if not launcher.is_file():
+        return f"the owning launcher is absent ({launcher})", "", None
+    if marker.is_symlink() or not marker.is_file():
+        return (
+            f"the ownership marker is absent or not a regular file ({marker})",
+            "",
+            None,
         )
 
-    if not reason:
-        return Check(
-            "no-worktree-venv",
-            OK,
-            f"{venv} is owned by scripts/uv_workspace.py and partitioned for "
-            "the canonical all-extras selection",
-            evidence={
-                "venv": str(venv),
-                "marker": str(marker),
-                "selection": loaded["selection"],
-            },
-        )
+    reason, loaded = _venv_marker_reason(venv, marker, expected)
+    if reason:
+        return reason, "", loaded
 
+    state, detail = _probe_interpreter(python)
+    if state == "unevaluable":
+        return "", detail, loaded
+    if state != "ok":
+        return f"the environment interpreter is unusable: {detail}", "", loaded
+    return "", "", loaded
+
+
+def _skip_check_unevaluable(
+    venv: Path, marker: Path, tree: Path, unevaluable: str
+) -> Check:
+    return Check(
+        "no-worktree-venv",
+        SKIP,
+        f"cannot evaluate {venv} from this process: {unevaluable}",
+        remedy=(
+            "re-run the doctor from inside the lane's own namespace (the "
+            f"local CLI: `lane doctor --path {tree}`) — a check that cannot "
+            "see the lane's filesystem must not rule on it"
+        ),
+        evidence={"venv": str(venv), "marker": str(marker)},
+    )
+
+
+def _ok_check_venv(venv: Path, marker: Path, loaded: Any) -> Check:
+    return Check(
+        "no-worktree-venv",
+        OK,
+        f"{venv} is owned by scripts/uv_workspace.py and partitioned for "
+        "the canonical all-extras selection",
+        evidence={
+            "venv": str(venv),
+            "marker": str(marker),
+            "selection": loaded["selection"],
+        },
+    )
+
+
+def _fail_check_venv(venv: Path, marker: Path, launcher: Path, reason: str) -> Check:
     return Check(
         "no-worktree-venv",
         FAIL,
@@ -379,6 +400,27 @@ def _check_no_local_venv(tree: Path) -> Check:
         ),
         evidence={"venv": str(venv), "marker": str(marker)},
     )
+
+
+def _check_no_local_venv(tree: Path) -> Check:
+    """A worktree-local ``.venv`` produced ~167 phantom test failures."""
+    venv = tree / ".venv"
+    if not venv.exists():
+        return Check("no-worktree-venv", OK, "no worktree-local .venv")
+
+    launcher = tree / "scripts" / "uv_workspace.py"
+    marker = venv / ".uv-workspace-selection.json"
+    python = venv / "bin" / "python"
+    expected = {"label": "", "selection": ["--all-extras"]}
+    reason, unevaluable, loaded = _venv_ownership_state(
+        venv, launcher, marker, python, expected
+    )
+
+    if unevaluable:
+        return _skip_check_unevaluable(venv, marker, tree, unevaluable)
+    if not reason:
+        return _ok_check_venv(venv, marker, loaded)
+    return _fail_check_venv(venv, marker, launcher, reason)
 
 
 #: A real ``uv sync --all-extras`` of any repository in this workspace resolves
@@ -437,6 +479,80 @@ def _norm_pkg(s: str) -> str:
     return re.sub(r"[-_.]+", "-", s.strip().lower())
 
 
+def _no_usable_venv_check(venv: Path, python: Path) -> Check | None:
+    if venv.is_dir() and python.is_file():
+        return None
+    return Check(
+        "venv-package-count",
+        SKIP,
+        "no usable venv to inspect (see no-worktree-venv)",
+    )
+
+
+def _missing_site_packages_check(
+    venv: Path, site_packages: Path | None
+) -> Check | None:
+    if site_packages is not None:
+        return None
+    return Check(
+        "venv-package-count",
+        FAIL,
+        f"{venv} has an interpreter but no lib/python*/site-packages directory at all "
+        "-- an empty or destroyed environment.",
+        remedy=f"rm -rf {venv}; python3 scripts/uv_workspace.py sync --all-extras",
+        evidence={"venv": str(venv)},
+    )
+
+
+def _low_package_count_check(
+    venv: Path, site_packages: Path, count: int, dist_names: list[str]
+) -> Check | None:
+    if count >= _MIN_PLAUSIBLE_PACKAGE_COUNT:
+        return None
+    return Check(
+        "venv-package-count",
+        FAIL,
+        f"{site_packages} resolved only {count} package(s) -- implausibly low for a "
+        "uv-managed workspace sync. D-CIP-19 found this exact shape live: 3-6 packages "
+        "where ~726 were expected, because an unrelated project's environment had "
+        "silently overwritten this worktree's own .venv. A healthy managed venv is "
+        f"never this thin (floor: {_MIN_PLAUSIBLE_PACKAGE_COUNT}).",
+        remedy=f"rm -rf {venv}; python3 scripts/uv_workspace.py sync --all-extras   "
+        "# then print sys.executable and the resolved count before trusting any test run",
+        evidence={
+            "venv": str(venv),
+            "resolved_count": count,
+            "distributions": dist_names,
+        },
+    )
+
+
+def _missing_own_project_check(
+    tree: Path, venv: Path, site_packages: Path, count: int, dist_names: list[str]
+) -> Check | None:
+    project = _project_name(tree)
+    if not project:
+        return None
+    needle = _norm_pkg(project)
+    if any(needle in _norm_pkg(n) for n in dist_names):
+        return None
+    return Check(
+        "venv-package-count",
+        FAIL,
+        f"{site_packages} resolved {count} package(s), but NONE of them is this "
+        f"project's own ({project!r}) -- the D-CIP-19 shape where a DIFFERENT "
+        "project's environment (there: one named 'alpha') silently overwrote this "
+        f"worktree's .venv. Sample of what is actually installed: {dist_names[:5]}",
+        remedy=f"rm -rf {venv}; python3 scripts/uv_workspace.py sync --all-extras",
+        evidence={
+            "venv": str(venv),
+            "resolved_count": count,
+            "expected_project": project,
+            "sample_distributions": dist_names[:10],
+        },
+    )
+
+
 def _check_venv_package_count(tree: Path) -> Check:
     """D-CIP-19: make doctor FAIL on an implausibly low resolved-package count.
 
@@ -448,23 +564,15 @@ def _check_venv_package_count(tree: Path) -> Check:
     """
     venv = tree / ".venv"
     python = venv / "bin" / "python"
-    if not venv.is_dir() or not python.is_file():
-        return Check(
-            "venv-package-count",
-            SKIP,
-            "no usable venv to inspect (see no-worktree-venv)",
-        )
+    no_venv = _no_usable_venv_check(venv, python)
+    if no_venv is not None:
+        return no_venv
 
     site_packages = _venv_site_packages(venv)
-    if site_packages is None:
-        return Check(
-            "venv-package-count",
-            FAIL,
-            f"{venv} has an interpreter but no lib/python*/site-packages directory at all "
-            "-- an empty or destroyed environment.",
-            remedy=f"rm -rf {venv}; python3 scripts/uv_workspace.py sync --all-extras",
-            evidence={"venv": str(venv)},
-        )
+    missing = _missing_site_packages_check(venv, site_packages)
+    if missing is not None:
+        return missing
+    assert site_packages is not None
 
     dist_names = sorted(
         p.name
@@ -474,44 +582,15 @@ def _check_venv_package_count(tree: Path) -> Check:
     )
     count = len(dist_names)
 
-    if count < _MIN_PLAUSIBLE_PACKAGE_COUNT:
-        return Check(
-            "venv-package-count",
-            FAIL,
-            f"{site_packages} resolved only {count} package(s) -- implausibly low for a "
-            "uv-managed workspace sync. D-CIP-19 found this exact shape live: 3-6 packages "
-            "where ~726 were expected, because an unrelated project's environment had "
-            "silently overwritten this worktree's own .venv. A healthy managed venv is "
-            f"never this thin (floor: {_MIN_PLAUSIBLE_PACKAGE_COUNT}).",
-            remedy=f"rm -rf {venv}; python3 scripts/uv_workspace.py sync --all-extras   "
-            "# then print sys.executable and the resolved count before trusting any test run",
-            evidence={
-                "venv": str(venv),
-                "resolved_count": count,
-                "distributions": dist_names,
-            },
-        )
+    low_count = _low_package_count_check(venv, site_packages, count, dist_names)
+    if low_count is not None:
+        return low_count
 
-    project = _project_name(tree)
-    if project:
-        needle = _norm_pkg(project)
-        belongs = any(needle in _norm_pkg(n) for n in dist_names)
-        if not belongs:
-            return Check(
-                "venv-package-count",
-                FAIL,
-                f"{site_packages} resolved {count} package(s), but NONE of them is this "
-                f"project's own ({project!r}) -- the D-CIP-19 shape where a DIFFERENT "
-                "project's environment (there: one named 'alpha') silently overwrote this "
-                f"worktree's .venv. Sample of what is actually installed: {dist_names[:5]}",
-                remedy=f"rm -rf {venv}; python3 scripts/uv_workspace.py sync --all-extras",
-                evidence={
-                    "venv": str(venv),
-                    "resolved_count": count,
-                    "expected_project": project,
-                    "sample_distributions": dist_names[:10],
-                },
-            )
+    missing_own = _missing_own_project_check(
+        tree, venv, site_packages, count, dist_names
+    )
+    if missing_own is not None:
+        return missing_own
 
     return Check(
         "venv-package-count",
@@ -1292,6 +1371,126 @@ def status(
     }
 
 
+def _resolve_managed_lane_submission(
+    registry: Any,
+    tree: Path,
+    branch: str,
+    lane_id: str | None,
+    owner_id: str,
+    fence: str,
+    report: dict[str, Any],
+) -> tuple[Any, Any, dict[str, Any] | None]:
+    """``(managed_record, submitted_lane, error)`` — ``error`` is set (both
+    records left as-resolved-so-far) on any registry-stage failure.
+    """
+    if not owner_id or not fence:
+        return (
+            None,
+            None,
+            {
+                "ok": False,
+                "stage": "registry",
+                "enqueued": False,
+                "reason": "managed lane finish requires explicit owner_id and fence",
+                "preflight": report,
+            },
+        )
+    managed_record = (
+        registry.require(lane_id)
+        if lane_id
+        else _registry_lane_for_path(registry, tree, branch)
+    )
+    if managed_record is None:
+        return (
+            None,
+            None,
+            {
+                "ok": False,
+                "stage": "registry",
+                "enqueued": False,
+                "reason": "managed lane record could not be resolved",
+                "preflight": report,
+            },
+        )
+    try:
+        submitted_lane = registry.submit(
+            managed_record.lane_id,
+            owner_id=owner_id,
+            fence=fence,
+        )
+    except Exception as exc:
+        return (
+            managed_record,
+            None,
+            {
+                "ok": False,
+                "stage": "registry",
+                "enqueued": False,
+                "reason": str(exc),
+                "preflight": report,
+            },
+        )
+    return managed_record, submitted_lane, None
+
+
+def _load_merge_queue_or_error(
+    report: dict[str, Any], force: bool, managed_record: Any
+) -> tuple[Any, dict[str, Any] | None]:
+    try:
+        return _load_merge_queue(), None
+    except ImportError as exc:
+        return None, {
+            "ok": False,
+            "stage": "enqueue",
+            "enqueued": False,
+            "reason": (
+                "the universal merge queue is not available in this build: "
+                f"{exc}. Enqueue through the owning repository's own queue "
+                "instead — do not hand-merge into the shared base."
+            ),
+            "preflight": report,
+            "forced": force,
+            "lane_id": managed_record.lane_id if managed_record else None,
+        }
+
+
+def _enqueue_finish_result(
+    merge_queue: Any,
+    branch: str,
+    base: str,
+    tree: Path,
+    report: dict[str, Any],
+    force: bool,
+    submitted_lane: Any,
+) -> dict[str, Any]:
+    try:
+        result = merge_queue.enqueue(branch or "", base=base or "", path=tree)
+    except merge_queue.MergeQueueError as exc:
+        return {
+            "ok": False,
+            "stage": "enqueue",
+            "enqueued": False,
+            "reason": str(exc),
+            "preflight": report,
+            "forced": force,
+        }
+    return {
+        "ok": bool(result.get("ok", True)),
+        "stage": "enqueue",
+        "enqueued": True,
+        "candidate": result,
+        "preflight": report,
+        "forced": force,
+        "lane_id": submitted_lane.lane_id if submitted_lane else None,
+        "lane_state": submitted_lane.state.value if submitted_lane else None,
+        "note": (
+            "enqueued != landed, but you do not need to do anything: a scheduler "
+            "drains this queue automatically. Watch it with "
+            "`repository-manager --merge-queue status --repo-path .`."
+        ),
+    }
+
+
 def finish(
     path: Path | str | None = None,
     *,
@@ -1326,91 +1525,104 @@ def finish(
         }
 
     managed_record = None
+    submitted_lane = None
     if registry is not None:
-        if not owner_id or not fence:
-            return {
-                "ok": False,
-                "stage": "registry",
-                "enqueued": False,
-                "reason": "managed lane finish requires explicit owner_id and fence",
-                "preflight": report,
-            }
-        managed_record = (
-            registry.require(lane_id)
-            if lane_id
-            else _registry_lane_for_path(registry, tree, branch)
+        managed_record, submitted_lane, error = _resolve_managed_lane_submission(
+            registry, tree, branch, lane_id, owner_id, fence, report
         )
-        if managed_record is None:
-            return {
-                "ok": False,
-                "stage": "registry",
-                "enqueued": False,
-                "reason": "managed lane record could not be resolved",
-                "preflight": report,
-            }
-        try:
-            submitted_lane = registry.submit(
-                managed_record.lane_id,
-                owner_id=owner_id,
-                fence=fence,
-            )
-        except Exception as exc:
-            return {
-                "ok": False,
-                "stage": "registry",
-                "enqueued": False,
-                "reason": str(exc),
-                "preflight": report,
-            }
-    else:
-        submitted_lane = None
+        if error is not None:
+            return error
 
-    try:
-        merge_queue = _load_merge_queue()
-    except ImportError as exc:
-        return {
-            "ok": False,
-            "stage": "enqueue",
-            "enqueued": False,
-            "reason": (
-                "the universal merge queue is not available in this build: "
-                f"{exc}. Enqueue through the owning repository's own queue "
-                "instead — do not hand-merge into the shared base."
-            ),
-            "preflight": report,
-            "forced": force,
-            "lane_id": managed_record.lane_id if managed_record else None,
-        }
+    merge_queue, error = _load_merge_queue_or_error(report, force, managed_record)
+    if error is not None:
+        return error
 
-    try:
-        result = merge_queue.enqueue(branch or "", base=base or "", path=tree)
-    except merge_queue.MergeQueueError as exc:
-        return {
-            "ok": False,
-            "stage": "enqueue",
-            "enqueued": False,
-            "reason": str(exc),
-            "preflight": report,
-            "forced": force,
-        }
-    return {
-        "ok": bool(result.get("ok", True)),
-        "stage": "enqueue",
-        "enqueued": True,
-        "candidate": result,
-        "preflight": report,
-        "forced": force,
-        "lane_id": submitted_lane.lane_id if submitted_lane else None,
-        "lane_state": submitted_lane.state.value if submitted_lane else None,
-        "note": (
-            "enqueued != landed, but you do not need to do anything: a scheduler "
-            "drains this queue automatically. Watch it with "
-            "`repository-manager --merge-queue status --repo-path .`."
-        ),
-    }
+    return _enqueue_finish_result(
+        merge_queue, branch, base, tree, report, force, submitted_lane
+    )
 
 
 ACTIONS = ("doctor", "start", "finish", "env", "heal")
+
+
+def _dispatch_doctor(kwargs: dict[str, Any]) -> dict[str, Any]:
+    # D-CDX-62 — when the caller supplied no ``env``, this process's
+    # environment cannot be attributed to the lane, so the env-derived
+    # checks report SKIP instead of ruling on a foreign environment.
+    # ``env_is_lane`` is overridable for the local CLI, where the caller
+    # IS this process and ``os.environ`` is exactly right.
+    env = kwargs.get("env")
+    return diagnose(
+        kwargs.get("path"),
+        base=kwargs.get("base") or "main",
+        env=env,
+        env_is_lane=bool(kwargs.get("env_is_lane", env is not None)),
+    )
+
+
+def _dispatch_env(kwargs: dict[str, Any]) -> dict[str, Any]:
+    exports = lane_exports(kwargs.get("path"))
+    return {"ok": True, "exports": exports, "shell": _shell_block(exports)}
+
+
+def _dispatch_heal(kwargs: dict[str, Any]) -> dict[str, Any]:
+    return heal(kwargs.get("path"), base=kwargs.get("base") or "main")
+
+
+def _kw(kwargs: dict[str, Any], key: str, default: Any) -> Any:
+    """``kwargs.get(key) or default`` as a call, not an inline ``or`` — each
+    inlined ``or``/``and`` is its own decision point to cccc, so a dispatch
+    handler wiring N optional kwargs through inline defaults reads as N
+    branches for zero real complexity. One call site here instead of one
+    ``or`` per kwarg.
+    """
+    return kwargs.get(key) or default
+
+
+def _dispatch_start(kwargs: dict[str, Any]) -> dict[str, Any]:
+    repo = _kw(kwargs, "repo", "")
+    branch = _kw(kwargs, "branch", "")
+    if not repo or not branch:
+        return {"ok": False, "error": "start requires both repo and branch"}
+    return start(
+        repo,
+        branch,
+        base=_kw(kwargs, "base", "main"),
+        path=kwargs.get("workspace"),
+        registry=kwargs.get("registry"),
+        owner_id=_kw(kwargs, "owner_id", ""),
+        session_id=_kw(kwargs, "session_id", ""),
+        host_id=_kw(kwargs, "host_id", ""),
+        request_id=kwargs.get("request_id"),
+        idempotency_key=kwargs.get("idempotency_key"),
+        predicted_disk_bytes=int(_kw(kwargs, "predicted_disk_bytes", 0)),
+        disk_budget_bytes=kwargs.get("disk_budget_bytes"),
+        ttl_seconds=int(_kw(kwargs, "ttl_seconds", 3600)),
+        adopt=bool(kwargs.get("adopt")),
+        operator_id=_kw(kwargs, "operator_id", ""),
+    )
+
+
+def _dispatch_finish(kwargs: dict[str, Any]) -> dict[str, Any]:
+    return finish(
+        kwargs.get("path"),
+        branch=kwargs.get("branch") or "",
+        base=kwargs.get("base") or "",
+        force=bool(kwargs.get("force")),
+        registry=kwargs.get("registry"),
+        lane_id=kwargs.get("lane_id"),
+        owner_id=kwargs.get("owner_id") or "",
+        fence=kwargs.get("fence") or "",
+    )
+
+
+_DISPATCH_ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "doctor": _dispatch_doctor,
+    "env": _dispatch_env,
+    "heal": _dispatch_heal,
+    "start": _dispatch_start,
+    "finish": _dispatch_finish,
+}
 
 
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
@@ -1432,58 +1644,10 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     that: the MCP tool accepts the caller's declared environment and
     evaluates the checks against it, the same evidence the local doctor uses.
     """
-    if action == "doctor":
-        # D-CDX-62 — when the caller supplied no ``env``, this process's
-        # environment cannot be attributed to the lane, so the env-derived
-        # checks report SKIP instead of ruling on a foreign environment.
-        # ``env_is_lane`` is overridable for the local CLI, where the caller
-        # IS this process and ``os.environ`` is exactly right.
-        env = kwargs.get("env")
-        return diagnose(
-            kwargs.get("path"),
-            base=kwargs.get("base") or "main",
-            env=env,
-            env_is_lane=bool(kwargs.get("env_is_lane", env is not None)),
-        )
-    if action == "env":
-        exports = lane_exports(kwargs.get("path"))
-        return {"ok": True, "exports": exports, "shell": _shell_block(exports)}
-    if action == "heal":
-        return heal(kwargs.get("path"), base=kwargs.get("base") or "main")
-    if action == "start":
-        repo = kwargs.get("repo") or ""
-        branch = kwargs.get("branch") or ""
-        if not repo or not branch:
-            return {"ok": False, "error": "start requires both repo and branch"}
-        return start(
-            repo,
-            branch,
-            base=kwargs.get("base") or "main",
-            path=kwargs.get("workspace"),
-            registry=kwargs.get("registry"),
-            owner_id=kwargs.get("owner_id") or "",
-            session_id=kwargs.get("session_id") or "",
-            host_id=kwargs.get("host_id") or "",
-            request_id=kwargs.get("request_id"),
-            idempotency_key=kwargs.get("idempotency_key"),
-            predicted_disk_bytes=int(kwargs.get("predicted_disk_bytes") or 0),
-            disk_budget_bytes=kwargs.get("disk_budget_bytes"),
-            ttl_seconds=int(kwargs.get("ttl_seconds") or 3600),
-            adopt=bool(kwargs.get("adopt")),
-            operator_id=kwargs.get("operator_id") or "",
-        )
-    if action == "finish":
-        return finish(
-            kwargs.get("path"),
-            branch=kwargs.get("branch") or "",
-            base=kwargs.get("base") or "",
-            force=bool(kwargs.get("force")),
-            registry=kwargs.get("registry"),
-            lane_id=kwargs.get("lane_id"),
-            owner_id=kwargs.get("owner_id") or "",
-            fence=kwargs.get("fence") or "",
-        )
-    return {"ok": False, "error": f"unknown action: {action}"}
+    handler = _DISPATCH_ACTIONS.get(action)
+    if handler is None:
+        return {"ok": False, "error": f"unknown action: {action}"}
+    return handler(kwargs)
 
 
 def main(argv: list[str] | None = None) -> int:
