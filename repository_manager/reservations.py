@@ -87,31 +87,32 @@ class WorkItemClaim:
     def matches_reservation(self, reservation: ReservationRecord) -> bool:
         """Validate caller input against WorkItem-owned admission extension."""
 
-        return (
-            (not self.owner_id or self.owner_id == reservation.owner_id)
-            and (not self.tenant_id or self.tenant_id == reservation.tenant_id)
-            and (not self.profile_name or self.profile_name == reservation.profile_name)
-            and (
-                self.requirement is None or self.requirement == reservation.requirement
-            )
-            and (
+        return self._matches_identity(reservation) and self._matches_policy(reservation)
+
+    def _matches_identity(self, reservation: ReservationRecord) -> bool:
+        return all(
+            (
+                not self.owner_id or self.owner_id == reservation.owner_id,
+                not self.tenant_id or self.tenant_id == reservation.tenant_id,
+                not self.profile_name or self.profile_name == reservation.profile_name,
+                self.requirement is None or self.requirement == reservation.requirement,
                 not self.repository_id
-                or self.repository_id == reservation.repository_id
+                or self.repository_id == reservation.repository_id,
+                not self.branch or self.branch == reservation.branch,
             )
-            and (not self.branch or self.branch == reservation.branch)
-            and (
+        )
+
+    def _matches_policy(self, reservation: ReservationRecord) -> bool:
+        return all(
+            (
                 not self.concurrency_key
-                or self.concurrency_key == reservation.concurrency_key
-            )
-            and (
+                or self.concurrency_key == reservation.concurrency_key,
                 not self.fairness_group
-                or self.fairness_group == reservation.fairness_group
-            )
-            and (not self.host_id or self.host_id == reservation.host_id)
-            and (self.target is None or self.target == reservation.selected_target)
-            and (
+                or self.fairness_group == reservation.fairness_group,
+                not self.host_id or self.host_id == reservation.host_id,
+                self.target is None or self.target == reservation.selected_target,
                 not self.input_fingerprint
-                or self.input_fingerprint == reservation.input_fingerprint
+                or self.input_fingerprint == reservation.input_fingerprint,
             )
         )
 
@@ -163,6 +164,16 @@ class ReservationRecord:
     input_fingerprint: str = ""
 
     def __post_init__(self) -> None:
+        self._validate_identity_fields()
+        self._validate_numeric_fields()
+        object.__setattr__(
+            self, "anti_affinity", tuple(sorted(set(self.anti_affinity)))
+        )
+        object.__setattr__(
+            self, "required_labels", tuple(sorted(set(self.required_labels)))
+        )
+
+    def _validate_identity_fields(self) -> None:
         if not self.reservation_id.strip():
             raise ReservationError("reservation_id must be non-blank")
         if not self.work_item_id.strip() or not self.fence.strip():
@@ -173,10 +184,12 @@ class ReservationRecord:
             raise ReservationError("reservation expiry must be after reservation time")
         if self.revision < 1:
             raise ReservationError("reservation revision must be positive")
-        if self.fairness_cost < 1:
-            raise ReservationError("fairness_cost must be positive")
         if self.input_fingerprint and not self.input_fingerprint.startswith("v1:"):
             raise ReservationError("input_fingerprint must use the v1 namespace")
+
+    def _validate_numeric_fields(self) -> None:
+        if self.fairness_cost < 1:
+            raise ReservationError("fairness_cost must be positive")
         if not self.disk_policy_key.strip():
             raise ReservationError("disk_policy_key must be non-blank")
         if self.concurrency_limit is not None and self.concurrency_limit < 1:
@@ -189,12 +202,6 @@ class ReservationRecord:
             raise ReservationError(
                 "disk_low_watermark_mib must not exceed disk_high_watermark_mib"
             )
-        object.__setattr__(
-            self, "anti_affinity", tuple(sorted(set(self.anti_affinity)))
-        )
-        object.__setattr__(
-            self, "required_labels", tuple(sorted(set(self.required_labels)))
-        )
 
     @property
     def active(self) -> bool:
@@ -509,6 +516,36 @@ class WorkItemReservationPort(Protocol):
         """
 
 
+@dataclass(frozen=True)
+class _ReclaimContext:
+    """Bundled request identity for ``atomic_reclaim``'s helpers.
+
+    Bundled so the extracted helpers stay under the fleet's parameter cap;
+    ``atomic_reclaim`` itself keeps its existing keyword-only signature.
+    """
+
+    work_item_id: str
+    attempt: int
+    fence: str
+    reservation_id: str
+    reservation: ReservationRecord | None
+
+
+@dataclass(frozen=True)
+class _QueryStalenessArgs:
+    """Bundled request identity for ``_query_reservation_staleness``.
+
+    Bundled so the helper stays under the fleet's parameter cap;
+    ``query_reservation`` itself keeps its existing keyword-only signature.
+    """
+
+    work_item_id: str
+    attempt: int
+    fence: str
+    for_lifecycle: bool
+    controller: bool
+
+
 class InMemoryWorkItemReservationPort:
     """Native-transaction test fixture with restart-safe claim semantics.
 
@@ -752,37 +789,124 @@ class InMemoryWorkItemReservationPort:
             if record is None:
                 return FenceDecision.NOT_FOUND
             current_claim = self._claims.get(work_item_id)
-            if current_claim is not None and (
-                current_claim.attempt != attempt or current_claim.fence != fence
-            ):
-                if not (
-                    for_lifecycle
-                    and controller
-                    and not record.active
-                    and current_claim.attempt > record.attempt
-                ):
-                    return FenceDecision.STALE
-            if not for_lifecycle:
-                if not self.is_current(work_item_id, attempt, fence):
-                    return FenceDecision.STALE
-            elif current_claim is None and record.active:
-                # A lifecycle query may repair a retained tombstone after the
-                # claim row is terminal/compacted, but it cannot authorize an
-                # active record with no current WorkItem state.
-                return FenceDecision.STALE
-            if (
-                record.work_item_id,
-                record.attempt,
-                record.fence,
-            ) != (work_item_id, attempt, fence):
-                return FenceDecision.CONFLICT
-            if current_claim is not None and not current_claim.matches_reservation(
-                record
-            ):
-                return FenceDecision.INPUT_CONFLICT
-            if expected is not None and not record.same_immutable_input(expected):
-                return FenceDecision.INPUT_CONFLICT
+            staleness = self._query_reservation_staleness(
+                record,
+                current_claim,
+                _QueryStalenessArgs(
+                    work_item_id=work_item_id,
+                    attempt=attempt,
+                    fence=fence,
+                    for_lifecycle=for_lifecycle,
+                    controller=controller,
+                ),
+            )
+            if staleness is not None:
+                return staleness
+            conflict = self._query_reservation_conflict(
+                record,
+                current_claim,
+                work_item_id=work_item_id,
+                attempt=attempt,
+                fence=fence,
+                expected=expected,
+            )
+            if conflict is not None:
+                return conflict
             return record
+
+    def _query_reservation_staleness(
+        self,
+        record: ReservationRecord,
+        current_claim: WorkItemClaim | None,
+        args: _QueryStalenessArgs,
+    ) -> FenceDecision | None:
+        """Must be called with ``self._lock`` held.  Verbatim relocation of the
+        staleness checks from ``query_reservation``; no side effect, order, or
+        condition changed."""
+
+        if self._claim_attempt_is_stale(
+            record,
+            current_claim,
+            attempt=args.attempt,
+            fence=args.fence,
+            for_lifecycle=args.for_lifecycle,
+            controller=args.controller,
+        ):
+            return FenceDecision.STALE
+        if self._lifecycle_currency_is_stale(
+            current_claim,
+            record,
+            work_item_id=args.work_item_id,
+            attempt=args.attempt,
+            fence=args.fence,
+            for_lifecycle=args.for_lifecycle,
+        ):
+            return FenceDecision.STALE
+        return None
+
+    @staticmethod
+    def _claim_attempt_is_stale(
+        record: ReservationRecord,
+        current_claim: WorkItemClaim | None,
+        *,
+        attempt: int,
+        fence: str,
+        for_lifecycle: bool,
+        controller: bool,
+    ) -> bool:
+        if current_claim is None or (
+            current_claim.attempt == attempt and current_claim.fence == fence
+        ):
+            return False
+        return not (
+            for_lifecycle
+            and controller
+            and not record.active
+            and current_claim.attempt > record.attempt
+        )
+
+    def _lifecycle_currency_is_stale(
+        self,
+        current_claim: WorkItemClaim | None,
+        record: ReservationRecord,
+        *,
+        work_item_id: str,
+        attempt: int,
+        fence: str,
+        for_lifecycle: bool,
+    ) -> bool:
+        if not for_lifecycle:
+            return not self.is_current(work_item_id, attempt, fence)
+        # A lifecycle query may repair a retained tombstone after the claim
+        # row is terminal/compacted, but it cannot authorize an active
+        # record with no current WorkItem state.
+        return current_claim is None and record.active
+
+    @staticmethod
+    def _query_reservation_conflict(
+        record: ReservationRecord,
+        current_claim: WorkItemClaim | None,
+        *,
+        work_item_id: str,
+        attempt: int,
+        fence: str,
+        expected: ReservationRecord | None,
+    ) -> FenceDecision | None:
+        """Must be called with ``self._lock`` held.  Verbatim relocation of the
+        correlation/conflict checks from ``query_reservation``; no side effect,
+        order, or condition changed."""
+
+        if (
+            record.work_item_id,
+            record.attempt,
+            record.fence,
+        ) != (work_item_id, attempt, fence):
+            return FenceDecision.CONFLICT
+        if current_claim is not None and not current_claim.matches_reservation(record):
+            return FenceDecision.INPUT_CONFLICT
+        if expected is not None and not record.same_immutable_input(expected):
+            return FenceDecision.INPUT_CONFLICT
+        return None
 
     def _reserve_check_identity(
         self,
@@ -1127,13 +1251,12 @@ class InMemoryWorkItemReservationPort:
     ) -> FenceDecision:
         with self._lock:
             current_claim = self._claims.get(work_item_id)
-            if current_claim is None or (
-                current_claim.attempt != attempt or current_claim.fence != fence
-            ):
-                return FenceDecision.STALE
             release_at = self._now()
-            if not current_claim.terminal and not current_claim.is_live(release_at):
-                return FenceDecision.STALE
+            claim_blocked = self._release_claim_check(
+                current_claim, release_at, attempt=attempt, fence=fence
+            )
+            if claim_blocked is not None:
+                return claim_blocked
             current = self._records.get(reservation_id)
             if current is None:
                 return FenceDecision.NOT_FOUND
@@ -1142,34 +1265,81 @@ class InMemoryWorkItemReservationPort:
             ):
                 return FenceDecision.INPUT_CONFLICT
             link = self._links.get(reservation_id)
-            expected_link = (work_item_id, attempt, fence)
-            if link is None:
-                if (
-                    link is None
-                    and current.state is ReservationState.RELEASED
-                    and (
-                        current.work_item_id,
-                        current.attempt,
-                        current.fence,
-                    )
-                    == expected_link
-                ):
-                    # Native lifecycle tombstone/revision makes retries safe
-                    # after a local projection update failed.
-                    return FenceDecision.IDEMPOTENT
-                return FenceDecision.CONFLICT
-            if link != expected_link:
-                return FenceDecision.CONFLICT
-            self._links.pop(reservation_id, None)
-            self._records[reservation_id] = current.with_state(
-                ReservationState.RELEASED,
-                reason="native release committed",
-                at=release_at,
+            link_result = self._release_link_check(
+                link, current, work_item_id=work_item_id, attempt=attempt, fence=fence
             )
-            held = current
-            self._attempt_links[(work_item_id, attempt)] = reservation_id
-            self._reserved_capacity.get(held.host_id, {}).pop(reservation_id, None)
+            if link_result is not None:
+                return link_result
+            self._commit_release(
+                current,
+                reservation_id,
+                work_item_id=work_item_id,
+                attempt=attempt,
+                release_at=release_at,
+            )
             return FenceDecision.ACCEPTED
+
+    @staticmethod
+    def _release_claim_check(
+        current_claim: WorkItemClaim | None,
+        release_at: datetime,
+        *,
+        attempt: int,
+        fence: str,
+    ) -> FenceDecision | None:
+        if current_claim is None or (
+            current_claim.attempt != attempt or current_claim.fence != fence
+        ):
+            return FenceDecision.STALE
+        if not current_claim.terminal and not current_claim.is_live(release_at):
+            return FenceDecision.STALE
+        return None
+
+    @staticmethod
+    def _release_link_check(
+        link: tuple[str, int, str] | None,
+        current: ReservationRecord,
+        *,
+        work_item_id: str,
+        attempt: int,
+        fence: str,
+    ) -> FenceDecision | None:
+        expected_link = (work_item_id, attempt, fence)
+        if link is None:
+            if (
+                current.state is ReservationState.RELEASED
+                and (
+                    current.work_item_id,
+                    current.attempt,
+                    current.fence,
+                )
+                == expected_link
+            ):
+                # Native lifecycle tombstone/revision makes retries safe
+                # after a local projection update failed.
+                return FenceDecision.IDEMPOTENT
+            return FenceDecision.CONFLICT
+        if link != expected_link:
+            return FenceDecision.CONFLICT
+        return None
+
+    def _commit_release(
+        self,
+        current: ReservationRecord,
+        reservation_id: str,
+        *,
+        work_item_id: str,
+        attempt: int,
+        release_at: datetime,
+    ) -> None:
+        self._links.pop(reservation_id, None)
+        self._records[reservation_id] = current.with_state(
+            ReservationState.RELEASED,
+            reason="native release committed",
+            at=release_at,
+        )
+        self._attempt_links[(work_item_id, attempt)] = reservation_id
+        self._reserved_capacity.get(current.host_id, {}).pop(reservation_id, None)
 
     def atomic_reclaim_expired(
         self, *, reservation: ReservationRecord, now: datetime
@@ -1180,52 +1350,86 @@ class InMemoryWorkItemReservationPort:
             link = self._links.get(reservation.reservation_id)
             current = self._claims.get(reservation.work_item_id)
             current_record = self._records.get(reservation.reservation_id)
-            if (
-                link is None
-                and current_record is not None
-                and current_record.state is ReservationState.EXPIRED
-                and current_record.same_immutable_input(reservation)
+            if self._reclaim_expired_already_committed(
+                link, current_record, reservation
             ):
                 return FenceDecision.IDEMPOTENT
-            if link is None or current is None:
-                return FenceDecision.CONFLICT
-            if link != (
-                reservation.work_item_id,
-                reservation.attempt,
-                reservation.fence,
-            ):
-                return FenceDecision.CONFLICT
-            # Validate the complete immutable input before touching the link,
-            # record, attempt index, or capacity.  A refused reclaim must be
-            # observationally atomic even when its caller has a stale local
-            # projection with changed repository/policy metadata.
-            if current_record is None:
-                return FenceDecision.CONFLICT
-            if not current_record.same_immutable_input(reservation):
-                return FenceDecision.INPUT_CONFLICT
             check_at = now.astimezone(UTC)
-            same_attempt_expired = (
-                current.attempt == reservation.attempt
-                and current.fence == reservation.fence
-                and current.expires_at <= check_at
+            blocked = self._reclaim_expired_precondition_failure(
+                link, current, current_record, reservation, check_at
             )
-            superseded = current.attempt > reservation.attempt
-            if not same_attempt_expired and not superseded:
-                return FenceDecision.STALE
-            next_record = current_record.with_state(
-                ReservationState.EXPIRED,
-                reason="native expired/superseded reclaim committed",
-                at=now,
-            )
-            self._links.pop(reservation.reservation_id, None)
-            self._records[reservation.reservation_id] = next_record
-            self._attempt_links[(reservation.work_item_id, reservation.attempt)] = (
-                reservation.reservation_id
-            )
-            self._reserved_capacity.get(current_record.host_id, {}).pop(
-                reservation.reservation_id, None
-            )
+            if blocked is not None:
+                return blocked
+            assert current_record is not None
+            self._commit_reclaim_expired(current_record, reservation, now)
             return FenceDecision.ACCEPTED
+
+    @staticmethod
+    def _reclaim_expired_already_committed(
+        link: tuple[str, int, str] | None,
+        current_record: ReservationRecord | None,
+        reservation: ReservationRecord,
+    ) -> bool:
+        return bool(
+            link is None
+            and current_record is not None
+            and current_record.state is ReservationState.EXPIRED
+            and current_record.same_immutable_input(reservation)
+        )
+
+    @staticmethod
+    def _reclaim_expired_precondition_failure(
+        link: tuple[str, int, str] | None,
+        current: WorkItemClaim | None,
+        current_record: ReservationRecord | None,
+        reservation: ReservationRecord,
+        check_at: datetime,
+    ) -> FenceDecision | None:
+        if link is None or current is None:
+            return FenceDecision.CONFLICT
+        if link != (
+            reservation.work_item_id,
+            reservation.attempt,
+            reservation.fence,
+        ):
+            return FenceDecision.CONFLICT
+        # Validate the complete immutable input before touching the link,
+        # record, attempt index, or capacity.  A refused reclaim must be
+        # observationally atomic even when its caller has a stale local
+        # projection with changed repository/policy metadata.
+        if current_record is None:
+            return FenceDecision.CONFLICT
+        if not current_record.same_immutable_input(reservation):
+            return FenceDecision.INPUT_CONFLICT
+        same_attempt_expired = (
+            current.attempt == reservation.attempt
+            and current.fence == reservation.fence
+            and current.expires_at <= check_at
+        )
+        superseded = current.attempt > reservation.attempt
+        if not same_attempt_expired and not superseded:
+            return FenceDecision.STALE
+        return None
+
+    def _commit_reclaim_expired(
+        self,
+        current_record: ReservationRecord,
+        reservation: ReservationRecord,
+        now: datetime,
+    ) -> None:
+        next_record = current_record.with_state(
+            ReservationState.EXPIRED,
+            reason="native expired/superseded reclaim committed",
+            at=now,
+        )
+        self._links.pop(reservation.reservation_id, None)
+        self._records[reservation.reservation_id] = next_record
+        self._attempt_links[(reservation.work_item_id, reservation.attempt)] = (
+            reservation.reservation_id
+        )
+        self._reserved_capacity.get(current_record.host_id, {}).pop(
+            reservation.reservation_id, None
+        )
 
     def atomic_reclaim(
         self,
@@ -1241,46 +1445,81 @@ class InMemoryWorkItemReservationPort:
         # conditional WorkItem transaction.  The old fence is accepted here
         # only when it is still the linked claim AND that exact claim has
         # expired; a newer attempt/fence cannot be reclaimed by a stale worker.
+        ctx = _ReclaimContext(
+            work_item_id=work_item_id,
+            attempt=attempt,
+            fence=fence,
+            reservation_id=reservation_id,
+            reservation=reservation,
+        )
         with self._lock:
             current = self._claims.get(work_item_id)
             current_record = self._records.get(reservation_id)
-            if (
-                self._links.get(reservation_id) is None
-                and current_record is not None
-                and current_record.state is ReservationState.EXPIRED
-                and (
-                    reservation is None
-                    or current_record.same_immutable_input(reservation)
-                )
-            ):
+            if self._reclaim_already_committed(current_record, ctx):
                 return FenceDecision.IDEMPOTENT
-            if current is None or self._links.get(reservation_id) != (
-                work_item_id,
-                attempt,
-                fence,
-            ):
-                return FenceDecision.CONFLICT
             check_at = (now or self._now()).astimezone(UTC)
-            if current.attempt != attempt or current.fence != fence:
-                return FenceDecision.STALE
-            if current.expires_at > check_at:
-                return FenceDecision.STALE
-            if current_record is None or (
-                reservation is not None
-                and not current_record.same_immutable_input(reservation)
-            ):
-                return FenceDecision.INPUT_CONFLICT
-            self._links.pop(reservation_id, None)
-            self._records[reservation_id] = current_record.with_state(
-                ReservationState.EXPIRED,
-                reason="native expired reclaim committed",
-                at=check_at,
+            blocked = self._reclaim_precondition_failure(
+                current, current_record, ctx, check_at
             )
-            self._attempt_links[(work_item_id, attempt)] = reservation_id
-            held = current_record
-            if held is not None:
-                self._reserved_capacity.get(held.host_id, {}).pop(reservation_id, None)
+            if blocked is not None:
+                return blocked
+            self._commit_reclaim(current_record, ctx, check_at)
             return FenceDecision.ACCEPTED
+
+    def _reclaim_already_committed(
+        self, current_record: ReservationRecord | None, ctx: _ReclaimContext
+    ) -> bool:
+        return bool(
+            self._links.get(ctx.reservation_id) is None
+            and current_record is not None
+            and current_record.state is ReservationState.EXPIRED
+            and (
+                ctx.reservation is None
+                or current_record.same_immutable_input(ctx.reservation)
+            )
+        )
+
+    def _reclaim_precondition_failure(
+        self,
+        current: WorkItemClaim | None,
+        current_record: ReservationRecord | None,
+        ctx: _ReclaimContext,
+        check_at: datetime,
+    ) -> FenceDecision | None:
+        if current is None or self._links.get(ctx.reservation_id) != (
+            ctx.work_item_id,
+            ctx.attempt,
+            ctx.fence,
+        ):
+            return FenceDecision.CONFLICT
+        if current.attempt != ctx.attempt or current.fence != ctx.fence:
+            return FenceDecision.STALE
+        if current.expires_at > check_at:
+            return FenceDecision.STALE
+        if current_record is None or (
+            ctx.reservation is not None
+            and not current_record.same_immutable_input(ctx.reservation)
+        ):
+            return FenceDecision.INPUT_CONFLICT
+        return None
+
+    def _commit_reclaim(
+        self,
+        current_record: ReservationRecord | None,
+        ctx: _ReclaimContext,
+        check_at: datetime,
+    ) -> None:
+        self._links.pop(ctx.reservation_id, None)
+        assert current_record is not None
+        self._records[ctx.reservation_id] = current_record.with_state(
+            ReservationState.EXPIRED,
+            reason="native expired reclaim committed",
+            at=check_at,
+        )
+        self._attempt_links[(ctx.work_item_id, ctx.attempt)] = ctx.reservation_id
+        self._reserved_capacity.get(current_record.host_id, {}).pop(
+            ctx.reservation_id, None
+        )
 
     def link(self, reservation_id: str) -> tuple[str, int, str] | None:
         with self._lock:
