@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from agent_utilities.mcp.action_dispatch import resolve_action
@@ -12,6 +13,147 @@ from pydantic import Field
 from repository_manager.mcp_tools.context import McpToolContext, from_server
 from repository_manager.mcp_tools.contracts import RM_WORKSPACE_ACTIONS
 from repository_manager.models import GitError, GitResult, WorkspaceConfig
+
+
+@dataclass(frozen=True)
+class _WorkspaceActionRequest:
+    """Bundled, already-normalized ``rm_workspace`` kwargs.
+
+    Module-level (not nested in ``register_workspace_management_tools``) and
+    defined well away from any ``@mcp.tool`` decorator, per the extraction
+    rule for this file: a new helper placed ABOVE a decorated function
+    silently rebinds the decorator to the helper instead, unregistering the
+    tool while the file still parses and lints clean. Both this dataclass and
+    :func:`_run_workspace_action` live entirely outside
+    ``register_workspace_management_tools``, so there is no decorator
+    anywhere near them to rebind.
+    """
+
+    yml_path: str | None
+    install: bool
+    config_dict: dict[str, Any] | None
+    part: str
+    phase: int
+    auto_start: bool
+    dry_run: bool
+    projects: str | None
+    force: bool
+    use_default: bool
+    job_id: str | None
+    summary: bool
+
+
+async def _setup_workspace_action(
+    git: Any, request: _WorkspaceActionRequest
+) -> GitResult | Any:
+    if not request.yml_path:
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(message="yml_path required for 'setup'", code=1),
+        )
+    return await run_blocking(git.setup_from_yaml, request.yml_path, request.install)
+
+
+async def _template_workspace_action(
+    git: Any, request: _WorkspaceActionRequest
+) -> GitResult | Any:
+    if not request.yml_path:
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(message="yml_path required for 'template'", code=1),
+        )
+    return await run_blocking(
+        git.generate_workspace_template,
+        target_path=request.yml_path,
+        use_default=request.use_default,
+    )
+
+
+async def _save_workspace_action(
+    git: Any, request: _WorkspaceActionRequest
+) -> GitResult | Any:
+    if not request.yml_path or not request.config_dict:
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message="yml_path and config_dict required for 'save'", code=1
+            ),
+        )
+    try:
+        config = WorkspaceConfig(**request.config_dict)
+        return await run_blocking(
+            git.save_workspace_config, yaml_path=request.yml_path, config=config
+        )
+    except Exception:
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(message="Repository operation failed", code=1),
+        )
+
+
+def _maintain_workspace_action(
+    git: Any, adapter_context: McpToolContext, request: _WorkspaceActionRequest
+) -> dict[str, Any]:
+    progress = {
+        "current_phase": "Initializing Bumps",
+        "progress": 0,
+        "phases": {},
+    }
+    return adapter_context.submit_job(
+        "maintain",
+        git.maintain_projects,
+        part=request.part,
+        start_phase=request.phase,
+        auto_start=request.auto_start,
+        dry_run=request.dry_run,
+        project_filter=request.projects or None,
+        force=request.force,
+        progress=progress,
+        _extra_job_data={"progress_detail": progress},
+    )
+
+
+def _maintain_status_workspace_action(
+    adapter_context: McpToolContext, request: _WorkspaceActionRequest
+) -> GitResult | Any:
+    if not request.job_id:
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(message="job_id required for 'maintain_status'", code=1),
+        )
+    return adapter_context.get_job_status(request.job_id, summary=request.summary)
+
+
+async def _run_workspace_action(
+    action: str,
+    git: Any,
+    adapter_context: McpToolContext,
+    request: _WorkspaceActionRequest,
+) -> list[str] | str | GitResult | dict[str, Any]:
+    """The ``rm_workspace`` action body, verbatim, moved out of the decorated
+    tool function so only the thin signature/normalization wrapper stays
+    decorated.
+    """
+    if action == "list":
+        return git.get_workspace_projects()
+    if action == "list_branches":
+        return await run_blocking(git.list_branches)
+    if action == "setup":
+        return await _setup_workspace_action(git, request)
+    if action == "template":
+        return await _template_workspace_action(git, request)
+    if action == "save":
+        return await _save_workspace_action(git, request)
+    if action == "maintain":
+        return _maintain_workspace_action(git, adapter_context, request)
+    if action == "maintain_status":
+        return _maintain_status_workspace_action(adapter_context, request)
+    return f"Error: Unknown action '{action}'"
 
 
 def register_workspace_management_tools(
@@ -120,83 +262,22 @@ def register_workspace_management_tools(
             return resolved
         action = resolved
 
-        if action == "list":
-            return git.get_workspace_projects()
-
-        if action == "list_branches":
-            return await run_blocking(git.list_branches)
-
-        if action == "setup":
-            if not yml_path:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message="yml_path required for 'setup'", code=1),
-                )
-            return await run_blocking(git.setup_from_yaml, yml_path, install)
-
-        if action == "template":
-            if not yml_path:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message="yml_path required for 'template'", code=1),
-                )
-            return await run_blocking(
-                git.generate_workspace_template,
-                target_path=yml_path,
-                use_default=use_default,
-            )
-
-        if action == "save":
-            if not yml_path or not config_dict:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message="yml_path and config_dict required for 'save'", code=1
-                    ),
-                )
-            try:
-                config = WorkspaceConfig(**config_dict)
-                return await run_blocking(
-                    git.save_workspace_config, yaml_path=yml_path, config=config
-                )
-            except Exception:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(message="Repository operation failed", code=1),
-                )
-
-        if action == "maintain":
-            progress = {
-                "current_phase": "Initializing Bumps",
-                "progress": 0,
-                "phases": {},
-            }
-            return adapter_context.submit_job(
-                "maintain",
-                git.maintain_projects,
+        return await _run_workspace_action(
+            action,
+            git,
+            adapter_context,
+            _WorkspaceActionRequest(
+                yml_path=yml_path,
+                install=install,
+                config_dict=config_dict,
                 part=part,
-                start_phase=phase,
+                phase=phase,
                 auto_start=auto_start,
                 dry_run=dry_run,
-                project_filter=projects or None,
+                projects=projects,
                 force=force,
-                progress=progress,
-                _extra_job_data={"progress_detail": progress},
-            )
-
-        if action == "maintain_status":
-            if not job_id:
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message="job_id required for 'maintain_status'", code=1
-                    ),
-                )
-            return adapter_context.get_job_status(job_id, summary=summary)
-
-        return f"Error: Unknown action '{action}'"
+                use_default=use_default,
+                job_id=job_id,
+                summary=summary,
+            ),
+        )
