@@ -226,74 +226,95 @@ class FakeDurableLaneAuthority:
             self._allocation_enabled = bool(enabled)
             return self._allocation_enabled
 
+    def _idempotent_existing(
+        self, index_key: tuple[str, str], digest: str
+    ) -> LaneRecord | None:
+        existing_id = self._request_index.get(index_key)
+        if existing_id is None:
+            return None
+        existing = self._records[existing_id]
+        if existing.input_digest != digest:
+            raise LaneConflictError(
+                "idempotency key was reused with changed immutable lane input"
+            )
+        return existing
+
+    def _check_no_conflict(
+        self, repository_id: str, branch: str, worktree: str
+    ) -> None:
+        if any(
+            self._active(item)
+            and (
+                (item.repository_id, item.branch) == (repository_id, branch)
+                or item.worktree_path == worktree
+            )
+            for item in self._records.values()
+        ):
+            raise LaneConflictError("repository branch or worktree is already reserved")
+
+    def _admit_quota(self, request: Mapping[str, Any], repository_id: str) -> None:
+        decision = self._quota.check(
+            (item for item in self._records.values() if self._active(item)),
+            owner_id=str(request["owner_id"]),
+            session_id=str(request["session_id"]),
+            repository_id=repository_id,
+            host_id=str(request.get("host_id") or "") or None,
+            predicted_disk_bytes=int(request["predicted_disk_bytes"]),
+        )
+        if not decision.admitted:
+            raise LaneQuotaError(decision)
+
+    @staticmethod
+    def _build_allocated_record(
+        request: Mapping[str, Any], now: datetime
+    ) -> LaneRecord:
+        return LaneRecord(
+            lane_id=str(request["lane_id"]),
+            request_key=str(request["request_key"]),
+            input_digest=str(request["input_digest"]),
+            repository_id=str(request["repository_id"]),
+            repository_path=str(request["repository_path"]),
+            repository_origin=request.get("repository_origin"),
+            branch=str(request["branch"]),
+            base_ref=str(request["base_ref"]),
+            base_sha=str(request.get("base_sha") or ""),
+            worktree_path=str(request["worktree_path"]),
+            owner_id=str(request["owner_id"]),
+            session_id=str(request["session_id"]),
+            host_id=str(request.get("host_id") or "") or None,
+            fence=str(request["fence"]),
+            created_at=now,
+            heartbeat_at=now,
+            expires_at=now + timedelta(seconds=int(request["ttl_seconds"])),
+            ttl_seconds=int(request["ttl_seconds"]),
+            predicted_disk_bytes=int(request["predicted_disk_bytes"]),
+            disk_budget_bytes=int(request["disk_budget_bytes"]),
+            concept_ids=tuple(request.get("concept_ids") or ()),
+            active_job_ids=tuple(request.get("active_job_ids") or ()),
+            active_candidate_id=request.get("active_candidate_id"),
+            state=LaneLifecycleState.ALLOCATING,
+            last_transition="allocate",
+        )
+
     def allocate(self, request: Mapping[str, Any], *, now: datetime) -> LaneRecord:
         with self._lock:
             key = str(request["request_key"])
-            digest = str(request["input_digest"])
-            index_key = (str(request["repository_id"]), key)
-            existing_id = self._request_index.get(index_key)
-            if existing_id is not None:
-                existing = self._records[existing_id]
-                if existing.input_digest != digest:
-                    raise LaneConflictError(
-                        "idempotency key was reused with changed immutable lane input"
-                    )
+            repository_id = str(request["repository_id"])
+            index_key = (repository_id, key)
+            existing = self._idempotent_existing(
+                index_key, str(request["input_digest"])
+            )
+            if existing is not None:
                 return existing
             if not self._allocation_enabled:
                 raise LaneAllocationDisabled(
                     "managed lane allocation is disabled; existing records are retained"
                 )
-            repository_id = str(request["repository_id"])
-            branch = str(request["branch"])
-            worktree = str(request["worktree_path"])
-            if any(
-                self._active(item)
-                and (
-                    (item.repository_id, item.branch) == (repository_id, branch)
-                    or item.worktree_path == worktree
-                )
-                for item in self._records.values()
-            ):
-                raise LaneConflictError(
-                    "repository branch or worktree is already reserved"
-                )
-            decision = self._quota.check(
-                (item for item in self._records.values() if self._active(item)),
-                owner_id=str(request["owner_id"]),
-                session_id=str(request["session_id"]),
-                repository_id=repository_id,
-                host_id=str(request.get("host_id") or "") or None,
-                predicted_disk_bytes=int(request["predicted_disk_bytes"]),
+            self._check_no_conflict(
+                repository_id, str(request["branch"]), str(request["worktree_path"])
             )
-            if not decision.admitted:
-                raise LaneQuotaError(decision)
-            record = LaneRecord(
-                lane_id=str(request["lane_id"]),
-                request_key=key,
-                input_digest=digest,
-                repository_id=repository_id,
-                repository_path=str(request["repository_path"]),
-                repository_origin=request.get("repository_origin"),
-                branch=branch,
-                base_ref=str(request["base_ref"]),
-                base_sha=str(request.get("base_sha") or ""),
-                worktree_path=worktree,
-                owner_id=str(request["owner_id"]),
-                session_id=str(request["session_id"]),
-                host_id=str(request.get("host_id") or "") or None,
-                fence=str(request["fence"]),
-                created_at=now,
-                heartbeat_at=now,
-                expires_at=now + timedelta(seconds=int(request["ttl_seconds"])),
-                ttl_seconds=int(request["ttl_seconds"]),
-                predicted_disk_bytes=int(request["predicted_disk_bytes"]),
-                disk_budget_bytes=int(request["disk_budget_bytes"]),
-                concept_ids=tuple(request.get("concept_ids") or ()),
-                active_job_ids=tuple(request.get("active_job_ids") or ()),
-                active_candidate_id=request.get("active_candidate_id"),
-                state=LaneLifecycleState.ALLOCATING,
-                last_transition="allocate",
-            )
+            self._admit_quota(request, repository_id)
+            record = self._build_allocated_record(request, now)
             self._records[record.lane_id] = record
             self._request_index[index_key] = record.lane_id
             self._event(record, "allocate", record.owner_id)
@@ -438,6 +459,41 @@ class FakeDurableLaneAuthority:
             self._event(record, "observe_legacy", None)
             return record
 
+    @staticmethod
+    def _adopted_record(
+        record: LaneRecord,
+        owner_id: str,
+        session_id: str,
+        host_id: str,
+        now: datetime,
+    ) -> LaneRecord:
+        return record.model_copy(
+            update={
+                "owner_id": owner_id,
+                "session_id": session_id,
+                "host_id": host_id or None,
+                "fence": new_fence(),
+                "state": LaneLifecycleState.ACTIVE,
+                "heartbeat_at": now,
+                "expires_at": now + timedelta(seconds=record.ttl_seconds),
+                "version": record.version + 1,
+                "last_transition": "adopt",
+            }
+        )
+
+    def _check_adopt_conflict(self, lane_id: str, record: LaneRecord) -> None:
+        if any(
+            self._active(item)
+            and item.lane_id != lane_id
+            and (
+                (item.repository_id, item.branch)
+                == (record.repository_id, record.branch)
+                or item.worktree_path == record.worktree_path
+            )
+            for item in self._records.values()
+        ):
+            raise LaneConflictError("repository branch or worktree is already reserved")
+
     def adopt(
         self,
         lane_id: str,
@@ -456,32 +512,8 @@ class FakeDurableLaneAuthority:
                 if record.owner_id == owner_id and record.session_id == session_id:
                     return record
                 raise LaneConflictError("only observed legacy lanes may be adopted")
-            updated = record.model_copy(
-                update={
-                    "owner_id": owner_id,
-                    "session_id": session_id,
-                    "host_id": host_id or None,
-                    "fence": new_fence(),
-                    "state": LaneLifecycleState.ACTIVE,
-                    "heartbeat_at": now,
-                    "expires_at": now + timedelta(seconds=record.ttl_seconds),
-                    "version": record.version + 1,
-                    "last_transition": "adopt",
-                }
-            )
-            if any(
-                self._active(item)
-                and item.lane_id != lane_id
-                and (
-                    (item.repository_id, item.branch)
-                    == (record.repository_id, record.branch)
-                    or item.worktree_path == record.worktree_path
-                )
-                for item in self._records.values()
-            ):
-                raise LaneConflictError(
-                    "repository branch or worktree is already reserved"
-                )
+            updated = self._adopted_record(record, owner_id, session_id, host_id, now)
+            self._check_adopt_conflict(lane_id, record)
             self._records[lane_id] = updated
             self._event(updated, "adopt", operator_id)
             return updated
@@ -848,6 +880,55 @@ class LaneRegistry:
         return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
+    def _repository_from_mapping(
+        values: Mapping[str, Any],
+        repository_path: str | Path | None,
+        origin: str | None,
+    ) -> tuple[str, str, str | None]:
+        path_value = (
+            repository_path
+            or values.get("canonical_path")
+            or values.get("repository_path")
+        )
+        if not path_value:
+            raise ValueError("repository identity requires canonical_path")
+        canonical = str(Path(path_value).expanduser().resolve(strict=False))
+        repository_value = values.get("repository_id")
+        origin_value = values.get("origin") if origin is None else origin
+        return (
+            str(repository_value or repository_id_for(canonical, origin=origin_value)),
+            canonical,
+            None if origin_value is None else str(origin_value),
+        )
+
+    @staticmethod
+    def _repository_from_object(
+        repository: Any, origin: str | None
+    ) -> tuple[str, str, str | None]:
+        canonical = str(
+            Path(repository.canonical_path).expanduser().resolve(strict=False)
+        )
+        repository_value = str(getattr(repository, "repository_id", ""))
+        origin_value = (
+            origin if origin is not None else getattr(repository, "origin", None)
+        )
+        return (
+            repository_value or repository_id_for(canonical, origin=origin_value),
+            canonical,
+            None if origin_value is None else str(origin_value),
+        )
+
+    @staticmethod
+    def _repository_from_path(
+        repository: str | Path | Any,
+        repository_path: str | Path | None,
+        origin: str | None,
+    ) -> tuple[str, str, str | None]:
+        canonical_value = repository_path or repository
+        canonical = str(Path(canonical_value).expanduser().resolve(strict=False))
+        return repository_id_for(canonical, origin=origin), canonical, origin
+
+    @staticmethod
     def _repository(
         repository: str | Path | Mapping[str, Any] | Any,
         *,
@@ -855,41 +936,12 @@ class LaneRegistry:
         origin: str | None = None,
     ) -> tuple[str, str, str | None]:
         if isinstance(repository, Mapping):
-            values = repository
-            path_value = (
-                repository_path
-                or values.get("canonical_path")
-                or values.get("repository_path")
-            )
-            if not path_value:
-                raise ValueError("repository identity requires canonical_path")
-            canonical = str(Path(path_value).expanduser().resolve(strict=False))
-            repository_value = values.get("repository_id")
-            origin_value = values.get("origin") if origin is None else origin
-            return (
-                str(
-                    repository_value
-                    or repository_id_for(canonical, origin=origin_value)
-                ),
-                canonical,
-                None if origin_value is None else str(origin_value),
+            return LaneRegistry._repository_from_mapping(
+                repository, repository_path, origin
             )
         if hasattr(repository, "canonical_path"):
-            canonical = str(
-                Path(repository.canonical_path).expanduser().resolve(strict=False)
-            )
-            repository_value = str(getattr(repository, "repository_id", ""))
-            origin_value = (
-                origin if origin is not None else getattr(repository, "origin", None)
-            )
-            return (
-                repository_value or repository_id_for(canonical, origin=origin_value),
-                canonical,
-                None if origin_value is None else str(origin_value),
-            )
-        canonical_value = repository_path or repository
-        canonical = str(Path(canonical_value).expanduser().resolve(strict=False))
-        return repository_id_for(canonical, origin=origin), canonical, origin
+            return LaneRegistry._repository_from_object(repository, origin)
+        return LaneRegistry._repository_from_path(repository, repository_path, origin)
 
     def _row(self, lane_id: str) -> sqlite3.Row | None:
         return self._connection.execute(
@@ -914,32 +966,57 @@ class LaneRegistry:
             raise LaneRegistryError(f"unknown lane: {lane_id}")
         return record
 
-    def list_records(
+    @staticmethod
+    def _filter_records_by_repository(
+        records: list[LaneRecord], repository_id: str | None
+    ) -> list[LaneRecord]:
+        if repository_id is None:
+            return records
+        return [item for item in records if item.repository_id == repository_id]
+
+    @staticmethod
+    def _filter_records_by_owner(
+        records: list[LaneRecord], owner_id: str | None
+    ) -> list[LaneRecord]:
+        if owner_id is None:
+            return records
+        return [item for item in records if item.owner_id == owner_id]
+
+    @staticmethod
+    def _filter_records_by_state(
+        records: list[LaneRecord],
+        states: Iterable[LaneLifecycleState | str] | None,
+        include_terminal: bool,
+    ) -> list[LaneRecord]:
+        normalized_states = tuple(LaneLifecycleState(state) for state in states or ())
+        if normalized_states:
+            return [item for item in records if item.state in normalized_states]
+        if not include_terminal:
+            return [item for item in records if item.state in ACTIVE_STATES]
+        return records
+
+    def _list_records_from_authority(
         self,
         *,
-        repository_id: str | None = None,
-        owner_id: str | None = None,
-        states: Iterable[LaneLifecycleState | str] | None = None,
-        include_terminal: bool = True,
+        repository_id: str | None,
+        owner_id: str | None,
+        states: Iterable[LaneLifecycleState | str] | None,
+        include_terminal: bool,
     ) -> tuple[LaneRecord, ...]:
-        if self.authority is not None:
-            records = list(self._authority_records())
-            if repository_id is not None:
-                records = [
-                    item for item in records if item.repository_id == repository_id
-                ]
-            if owner_id is not None:
-                records = [item for item in records if item.owner_id == owner_id]
-            normalized_states = tuple(
-                LaneLifecycleState(state) for state in states or ()
-            )
-            if normalized_states:
-                records = [item for item in records if item.state in normalized_states]
-            elif not include_terminal:
-                records = [item for item in records if item.state in ACTIVE_STATES]
-            return tuple(
-                sorted(records, key=lambda item: (item.created_at, item.lane_id))
-            )
+        records = list(self._authority_records())
+        records = self._filter_records_by_repository(records, repository_id)
+        records = self._filter_records_by_owner(records, owner_id)
+        records = self._filter_records_by_state(records, states, include_terminal)
+        return tuple(sorted(records, key=lambda item: (item.created_at, item.lane_id)))
+
+    @staticmethod
+    def _list_records_where(
+        *,
+        repository_id: str | None,
+        owner_id: str | None,
+        states: Iterable[LaneLifecycleState | str] | None,
+        include_terminal: bool,
+    ) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         values: list[Any] = []
         if repository_id is not None:
@@ -960,6 +1037,22 @@ class LaneRegistry:
             clauses.append("state IN " + _ACTIVE_SQL)
             values.extend(ACTIVE_SQL_STATES)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        return where, values
+
+    def _list_records_from_sqlite(
+        self,
+        *,
+        repository_id: str | None,
+        owner_id: str | None,
+        states: Iterable[LaneLifecycleState | str] | None,
+        include_terminal: bool,
+    ) -> tuple[LaneRecord, ...]:
+        where, values = self._list_records_where(
+            repository_id=repository_id,
+            owner_id=owner_id,
+            states=states,
+            include_terminal=include_terminal,
+        )
         with self._lock:
             rows = self._connection.execute(
                 # ``created_at`` lives in the immutable JSON payload; rowid
@@ -978,6 +1071,28 @@ class LaneRegistry:
                 values,
             ).fetchall()
         return tuple(LaneRecord.model_validate_json(row["payload"]) for row in rows)
+
+    def list_records(
+        self,
+        *,
+        repository_id: str | None = None,
+        owner_id: str | None = None,
+        states: Iterable[LaneLifecycleState | str] | None = None,
+        include_terminal: bool = True,
+    ) -> tuple[LaneRecord, ...]:
+        if self.authority is not None:
+            return self._list_records_from_authority(
+                repository_id=repository_id,
+                owner_id=owner_id,
+                states=states,
+                include_terminal=include_terminal,
+            )
+        return self._list_records_from_sqlite(
+            repository_id=repository_id,
+            owner_id=owner_id,
+            states=states,
+            include_terminal=include_terminal,
+        )
 
     def status(self, lane_id: str) -> LaneRecord:
         """Read-only status projection used by bounded adapters."""
@@ -1156,6 +1271,54 @@ class LaneRegistry:
             for row in rows
         )
 
+    @staticmethod
+    def _validate_allocate_actors(branch: str, owner_id: str, session_id: str) -> None:
+        if not branch or branch.strip() != branch:
+            raise ValueError("branch must be non-blank")
+        if not owner_id or not session_id:
+            raise ValueError("owner_id and session_id are required")
+
+    @staticmethod
+    def _validate_allocate_limits(ttl_seconds: int, predicted_disk_bytes: int) -> None:
+        if ttl_seconds < 1 or predicted_disk_bytes < 0:
+            raise ValueError("ttl_seconds must be positive and disk bytes non-negative")
+
+    @staticmethod
+    def _resolve_request_key(
+        idempotency_key: str | None, request_id: str | None
+    ) -> str:
+        request_key = idempotency_key or request_id
+        if not request_key:
+            raise ValueError("request_id or idempotency_key is required")
+        return request_key
+
+    @staticmethod
+    def _resolve_worktree(
+        worktree_path: str | Path | None, canonical: str, branch: str
+    ) -> str:
+        if worktree_path is not None:
+            return str(Path(worktree_path).expanduser().resolve(strict=False))
+        return str(
+            (Path(canonical).parent / ".repository-manager-lanes" / branch).resolve()
+        )
+
+    @staticmethod
+    def _normalize_allocate_inputs(
+        concept_ids: Iterable[str],
+        active_job_ids: Iterable[str],
+        predicted_disk_bytes: int,
+        disk_budget_bytes: int | None,
+    ) -> tuple[tuple[str, ...], tuple[str, ...], int]:
+        concept_tuple = tuple(sorted(set(concept_ids)))
+        job_tuple = tuple(sorted(set(active_job_ids)))
+        budget = max(
+            1,
+            disk_budget_bytes
+            if disk_budget_bytes is not None
+            else predicted_disk_bytes,
+        )
+        return concept_tuple, job_tuple, budget
+
     def allocate(
         self,
         repository: str | Path | Mapping[str, Any] | Any,
@@ -1186,34 +1349,15 @@ class LaneRegistry:
         conflict, even when the first row is terminal.
         """
 
-        if not branch or branch.strip() != branch:
-            raise ValueError("branch must be non-blank")
-        if not owner_id or not session_id:
-            raise ValueError("owner_id and session_id are required")
-        if ttl_seconds < 1 or predicted_disk_bytes < 0:
-            raise ValueError("ttl_seconds must be positive and disk bytes non-negative")
-        request_key = idempotency_key or request_id
-        if not request_key:
-            raise ValueError("request_id or idempotency_key is required")
+        self._validate_allocate_actors(branch, owner_id, session_id)
+        self._validate_allocate_limits(ttl_seconds, predicted_disk_bytes)
+        request_key = self._resolve_request_key(idempotency_key, request_id)
         repository_value, canonical, repository_origin = self._repository(
             repository, repository_path=repository_path, origin=origin
         )
-        worktree = (
-            str(Path(worktree_path).expanduser().resolve(strict=False))
-            if worktree_path is not None
-            else str(
-                (
-                    Path(canonical).parent / ".repository-manager-lanes" / branch
-                ).resolve()
-            )
-        )
-        concept_tuple = tuple(sorted(set(concept_ids)))
-        job_tuple = tuple(sorted(set(active_job_ids)))
-        budget = max(
-            1,
-            disk_budget_bytes
-            if disk_budget_bytes is not None
-            else predicted_disk_bytes,
+        worktree = self._resolve_worktree(worktree_path, canonical, branch)
+        concept_tuple, job_tuple, budget = self._normalize_allocate_inputs(
+            concept_ids, active_job_ids, predicted_disk_bytes, disk_budget_bytes
         )
         immutable = self._immutable_payload(
             repository_id=repository_value,
@@ -1248,6 +1392,25 @@ class LaneRegistry:
         self._project(allocated)
         return allocated
 
+    @staticmethod
+    def _job_fence_is_valid(
+        current: Callable[..., Any], record: LaneRecord, job_id: str
+    ) -> bool:
+        try:
+            return bool(current(job_id, record.attempt, record.fence))
+        except TypeError:
+            return bool(current(job_id, record.fence))
+
+    def _check_job_fence_current(self, record: LaneRecord) -> None:
+        if self.job_authority is None:
+            return
+        current = getattr(self.job_authority, "is_current", None)
+        if not callable(current):
+            return
+        for job_id in record.active_job_ids:
+            if not self._job_fence_is_valid(current, record, job_id):
+                raise StaleLaneFence("lane WorkItem fence is no longer current")
+
     def _authorize(
         self,
         record: LaneRecord,
@@ -1266,18 +1429,7 @@ class LaneRegistry:
             raise StaleLaneFence(
                 "lane mutation refused: owner or fencing token is not current"
             )
-        if self.job_authority is None:
-            return
-        current = getattr(self.job_authority, "is_current", None)
-        if not callable(current):
-            return
-        for job_id in record.active_job_ids:
-            try:
-                valid = current(job_id, record.attempt, record.fence)
-            except TypeError:
-                valid = current(job_id, record.fence)
-            if not valid:
-                raise StaleLaneFence("lane WorkItem fence is no longer current")
+        self._check_job_fence_current(record)
 
     @staticmethod
     def _legal(current: LaneLifecycleState, target: LaneLifecycleState) -> bool:
