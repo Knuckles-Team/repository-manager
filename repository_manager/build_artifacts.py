@@ -913,6 +913,124 @@ def _final_artifacts_at(
     ]
 
 
+def _validate_manifest_schema_key(
+    manifest: Mapping[str, Any],
+    schema: object,
+    expected_key: str | None,
+    require_committed: bool,
+) -> bool:
+    """`validate_manifest` stage 1: schema/expected-key/committed compatibility."""
+    if schema == ARTIFACT_SCHEMA:
+        if expected_key is not None and manifest.get("key") != expected_key:
+            return False
+        if require_committed and manifest.get("publication_state") != "committed":
+            return False
+        return True
+    return not (
+        expected_key is not None and manifest.get("key") not in {None, expected_key}
+    )
+
+
+def _validate_manifest_entry_fields(
+    entry: object, schema: object
+) -> tuple[str, str] | None:
+    """Validate one entry's stored_at/sha256/bytes-type fields.
+
+    Returns ``(stored_at, checksum)`` on success.
+    """
+    if not isinstance(entry, Mapping):
+        return None
+    stored_at = entry.get("stored_at")
+    checksum = entry.get("sha256")
+    if not isinstance(stored_at, str) or not isinstance(checksum, str):
+        return None
+    if len(stored_at) > 4096 or len(checksum) > 256:
+        return None
+    if schema == ARTIFACT_SCHEMA and (
+        not isinstance(entry.get("bytes"), int) or isinstance(entry.get("bytes"), bool)
+    ):
+        return None
+    return stored_at, checksum
+
+
+def _validate_artifact_stat(
+    artifact: Path, expected_root: Path | None, entry: Mapping[str, Any]
+) -> int | None:
+    """Validate that ``artifact`` stays under ``expected_root`` (if any) and
+    stats as a regular file whose size matches its declared byte count.
+    """
+    if expected_root is not None:
+        try:
+            _reject_symlink_components(expected_root, artifact)
+            artifact.resolve(strict=True).relative_to(expected_root)
+        except (ArtifactStoreError, OSError, ValueError):
+            return None
+    try:
+        artifact_stat = os.stat(artifact, follow_symlinks=False)
+        if not stat.S_ISREG(artifact_stat.st_mode):
+            return None
+        declared_bytes = int(entry.get("bytes", artifact_stat.st_size))
+        if (
+            declared_bytes < 0
+            or declared_bytes > _MAX_STAGE_BYTES
+            or artifact_stat.st_size != declared_bytes
+        ):
+            return None
+    except (OSError, TypeError, ValueError):
+        return None
+    return declared_bytes
+
+
+def _validate_manifest_entry_metadata(
+    entry: object, schema: object, expected_root: Path | None
+) -> tuple[Path, str, int] | None:
+    """`validate_manifest` stage 3, per entry: bounded metadata + stat check."""
+    fields = _validate_manifest_entry_fields(entry, schema)
+    if fields is None:
+        return None
+    stored_at, checksum = fields
+    artifact = Path(stored_at)
+    declared_bytes = _validate_artifact_stat(artifact, expected_root, entry)
+    if declared_bytes is None:
+        return None
+    return artifact, checksum, declared_bytes
+
+
+def _validate_manifest_entries(
+    artifacts: list[object], schema: object, expected_root: Path | None
+) -> list[tuple[Path, str, int]] | None:
+    """`validate_manifest` stage 3: validate every entry, enforcing the
+    aggregate byte bound. None means the manifest must fail validation.
+    """
+    total_bytes = 0
+    verified: list[tuple[Path, str, int]] = []
+    for entry in artifacts:
+        metadata = _validate_manifest_entry_metadata(entry, schema, expected_root)
+        if metadata is None:
+            return None
+        total_bytes += metadata[2]
+        if total_bytes > _MAX_STAGE_BYTES:
+            return None
+        verified.append(metadata)
+    return verified
+
+
+def _verify_manifest_checksums(verified_metadata: list[tuple[Path, str, int]]) -> bool:
+    """`validate_manifest` stage 4: hash every artifact already metadata-verified.
+
+    Runs only after every manifest entry has passed the bounded
+    metadata/aggregate pass -- a hostile first entry must not consume the
+    full per-file budget before a later entry invalidates the manifest.
+    """
+    for artifact, checksum, declared_bytes in verified_metadata:
+        try:
+            if _sha256_file(artifact, max_bytes=declared_bytes) != checksum:
+                return False
+        except (OSError, ArtifactStoreError):
+            return False
+    return True
+
+
 class BuildArtifactStore:
     """Content-addressed artifact storage with explicit recovery states.
 
@@ -949,6 +1067,27 @@ class BuildArtifactStore:
             return None
         return _read_bounded_json(path)
 
+    def _resolve_expected_artifacts_root(
+        self, manifest: Mapping[str, Any], expected_key: str | None, schema: object
+    ) -> tuple[bool, Path | None]:
+        """`validate_manifest` stage 2: resolve the root manifest entries must
+        stay under. Returns ``(ok, expected_root)``; ``ok=False`` means the
+        manifest must fail validation.
+        """
+        if expected_key is None and schema != ARTIFACT_SCHEMA:
+            return True, None
+        key = expected_key or manifest.get("key")
+        if not isinstance(key, str):
+            return False, None
+        try:
+            key_dir = self._key_dir(key)
+            artifacts_dir = key_dir / "artifacts"
+            if key_dir.is_symlink() or artifacts_dir.is_symlink():
+                return False, None
+            return True, artifacts_dir.resolve(strict=True)
+        except (ArtifactStoreError, OSError):
+            return False, None
+
     def validate_manifest(
         self,
         manifest: Mapping[str, Any] | None,
@@ -961,29 +1100,15 @@ class BuildArtifactStore:
         if not isinstance(manifest, Mapping):
             return False
         schema = manifest.get("schema")
-        if schema == ARTIFACT_SCHEMA:
-            if expected_key is not None and manifest.get("key") != expected_key:
-                return False
-            if require_committed and manifest.get("publication_state") != "committed":
-                return False
-        elif expected_key is not None and manifest.get("key") not in {
-            None,
-            expected_key,
-        }:
+        if not _validate_manifest_schema_key(
+            manifest, schema, expected_key, require_committed
+        ):
             return False
-        expected_root = None
-        if expected_key is not None or schema == ARTIFACT_SCHEMA:
-            key = expected_key or manifest.get("key")
-            if not isinstance(key, str):
-                return False
-            try:
-                key_dir = self._key_dir(key)
-                artifacts_dir = key_dir / "artifacts"
-                if key_dir.is_symlink() or artifacts_dir.is_symlink():
-                    return False
-                expected_root = artifacts_dir.resolve(strict=True)
-            except (ArtifactStoreError, OSError):
-                return False
+        root_ok, expected_root = self._resolve_expected_artifacts_root(
+            manifest, expected_key, schema
+        )
+        if not root_ok:
+            return False
         artifacts = manifest.get("artifacts")
         if (
             not isinstance(artifacts, list)
@@ -991,57 +1116,10 @@ class BuildArtifactStore:
             or len(artifacts) > _MAX_MANIFEST_ARTIFACTS
         ):
             return False
-        total_bytes = 0
-        verified_metadata: list[tuple[Path, str, int]] = []
-        for entry in artifacts:
-            if not isinstance(entry, Mapping):
-                return False
-            stored_at = entry.get("stored_at")
-            checksum = entry.get("sha256")
-            if not isinstance(stored_at, str) or not isinstance(checksum, str):
-                return False
-            if len(stored_at) > 4096 or len(checksum) > 256:
-                return False
-            if schema == ARTIFACT_SCHEMA and (
-                not isinstance(entry.get("bytes"), int)
-                or isinstance(entry.get("bytes"), bool)
-            ):
-                return False
-            artifact = Path(stored_at)
-            if expected_root is not None:
-                try:
-                    _reject_symlink_components(expected_root, artifact)
-                    artifact.resolve(strict=True).relative_to(expected_root)
-                except (ArtifactStoreError, OSError, ValueError):
-                    return False
-            try:
-                artifact_stat = os.stat(artifact, follow_symlinks=False)
-                if not stat.S_ISREG(artifact_stat.st_mode):
-                    return False
-                declared_bytes = int(entry.get("bytes", artifact_stat.st_size))
-                if (
-                    declared_bytes < 0
-                    or declared_bytes > _MAX_STAGE_BYTES
-                    or artifact_stat.st_size != declared_bytes
-                ):
-                    return False
-            except (OSError, TypeError, ValueError):
-                return False
-            total_bytes += declared_bytes
-            if total_bytes > _MAX_STAGE_BYTES:
-                return False
-            verified_metadata.append((artifact, checksum, declared_bytes))
-        # Do not hash any bytes until every manifest entry has passed the
-        # bounded metadata/aggregate pass above.  A hostile first entry must
-        # not consume the full per-file budget before a later entry invalidates
-        # the manifest.
-        for artifact, checksum, declared_bytes in verified_metadata:
-            try:
-                if _sha256_file(artifact, max_bytes=declared_bytes) != checksum:
-                    return False
-            except (OSError, ArtifactStoreError):
-                return False
-        return True
+        verified_metadata = _validate_manifest_entries(artifacts, schema, expected_root)
+        if verified_metadata is None:
+            return False
+        return _verify_manifest_checksums(verified_metadata)
 
     def quarantine(self, key: str, *, reason: str = "invalid-manifest") -> Path | None:
         """Move a corrupt/incomplete entry out of the hit namespace."""
