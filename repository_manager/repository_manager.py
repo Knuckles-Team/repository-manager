@@ -87,6 +87,27 @@ _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", re.DOTALL)
 _SHELL_CONTROL_TOKENS = {"&&", "||", ";", "|", "&", "(", ")"}
 _MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024
 _MutationResult = TypeVar("_MutationResult")
+_CONSOLIDATED_UNIVERSAL_SKILLS = (
+    "agent-package-builder",
+    "mcp-builder",
+    "agent-builder",
+    "skill-builder",
+    "skill-graph-builder",
+    "api-wrapper-builder",
+    "web-search",
+    "web-crawler",
+)
+
+_CONSOLIDATED_SKILL_GRAPHS = (
+    "docker-docs",
+    "fastapi-docs",
+    "fastmcp-docs",
+    "nodejs-docs",
+    "vercel-docs",
+    "python-docs",
+    "pydantic-ai-docs",
+)
+
 _UV_WORKSPACE_SIBLINGS_DIRNAME = ".uv-workspace-siblings"
 _PEP503_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z")
 _PEP503_NAME_SEPARATORS = re.compile(r"[-_.]+")
@@ -755,6 +776,81 @@ class Git:
             return "yarn"
         return "npm"
 
+    def _sync_workspace_repositories(self) -> list[GitResult]:
+        """Create the workspace tree, then clone or pull every declared repo."""
+        logger.info("Creating configured workspace structure")
+        os.makedirs(self.path, exist_ok=True)
+        for project_path in self.project_map.values():
+            os.makedirs(os.path.dirname(project_path), exist_ok=True)
+
+        logger.info("Syncing repositories (Clone/Pull)...")
+        results = []
+        for url, project_path in self.project_map.items():
+            if os.path.exists(project_path):
+                results.append(self.pull_project(project_path))
+            else:
+                results.append(self.clone_repository(url, project_path))
+        return results
+
+    def _setup_metadata(self, failed: bool) -> GitMetadata:
+        """Metadata for a ``setup_workspace`` result."""
+        return GitMetadata(
+            command="setup_workspace",
+            workspace=_project_label(self.path),
+            return_code=1 if failed else 0,
+            timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+        )
+
+    def _clone_only_setup_result(self, failed_clones: list[GitResult]) -> GitResult:
+        """The workspace-setup result when no install step was requested."""
+        return GitResult(
+            status="success" if not failed_clones else "error",
+            data="Workspace setup completed",
+            error=(
+                GitError(
+                    message=f"{len(failed_clones)} repository(ies) failed to clone/pull",
+                    code=1,
+                )
+                if failed_clones
+                else None
+            ),
+            metadata=self._setup_metadata(bool(failed_clones)),
+        )
+
+    def _install_setup_result(
+        self, results: list[GitResult], failed_clones: list[GitResult]
+    ) -> GitResult:
+        """Install every synced project and fold the outcome into one result."""
+        install_results = self.install_projects()
+        failed_installs = [r for r in install_results if r.status != "success"]
+        summary = [
+            f"Cloned/pulled {len(results) - len(failed_clones)}/{len(results)} "
+            "repository(ies).",
+            f"Installed {len(install_results) - len(failed_installs)}/"
+            f"{len(install_results)} project(s).",
+        ]
+        for r in install_results:
+            label = r.metadata.workspace if r.metadata else "unknown"
+            summary.append(f"- {label}: {r.status}")
+
+        failures = failed_clones + failed_installs
+        return GitResult(
+            status="success" if not failures else "error",
+            data="\n".join(summary),
+            error=(
+                GitError(
+                    message=(
+                        f"{len(failed_clones)} clone/pull failure(s), "
+                        f"{len(failed_installs)} install failure(s)"
+                    ),
+                    code=1,
+                )
+                if failures
+                else None
+            ),
+            metadata=self._setup_metadata(bool(failures)),
+        )
+
     def setup_from_yaml(self, yaml_path: str, install: bool = False) -> GitResult:
         """Sets up the workspace structure from a YAML file.
 
@@ -785,76 +881,12 @@ class Git:
                 error=GitError(message="Failed to load YAML", code=1),
             )
 
-        logger.info("Creating configured workspace structure")
-        os.makedirs(self.path, exist_ok=True)
-
-        for _, project_path in self.project_map.items():
-            os.makedirs(os.path.dirname(project_path), exist_ok=True)
-
-        logger.info("Syncing repositories (Clone/Pull)...")
-        results = []
-        for url, project_path in self.project_map.items():
-            if os.path.exists(project_path):
-                results.append(self.pull_project(project_path))
-            else:
-                results.append(self.clone_repository(url, project_path))
-
+        results = self._sync_workspace_repositories()
         failed_clones = [r for r in results if r.status != "success"]
 
         if not install:
-            return GitResult(
-                status="success" if not failed_clones else "error",
-                data="Workspace setup completed",
-                error=(
-                    GitError(
-                        message=f"{len(failed_clones)} repository(ies) failed to clone/pull",
-                        code=1,
-                    )
-                    if failed_clones
-                    else None
-                ),
-                metadata=GitMetadata(
-                    command="setup_workspace",
-                    workspace=_project_label(self.path),
-                    return_code=0 if not failed_clones else 1,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
-            )
-
-        install_results = self.install_projects()
-        failed_installs = [r for r in install_results if r.status != "success"]
-        summary = [
-            f"Cloned/pulled {len(results) - len(failed_clones)}/{len(results)} "
-            "repository(ies).",
-            f"Installed {len(install_results) - len(failed_installs)}/"
-            f"{len(install_results)} project(s).",
-        ]
-        for r in install_results:
-            label = r.metadata.workspace if r.metadata else "unknown"
-            summary.append(f"- {label}: {r.status}")
-
-        failures = failed_clones + failed_installs
-        return GitResult(
-            status="success" if not failures else "error",
-            data="\n".join(summary),
-            error=(
-                GitError(
-                    message=(
-                        f"{len(failed_clones)} clone/pull failure(s), "
-                        f"{len(failed_installs)} install failure(s)"
-                    ),
-                    code=1,
-                )
-                if failures
-                else None
-            ),
-            metadata=GitMetadata(
-                command="setup_workspace",
-                workspace=_project_label(self.path),
-                return_code=0 if not failures else 1,
-                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-            ),
-        )
+            return self._clone_only_setup_result(failed_clones)
+        return self._install_setup_result(results, failed_clones)
 
     def _find_project_path(self, name: str) -> str | None:
         """Return the cloned path for project *name* (by directory basename)."""
@@ -977,6 +1009,42 @@ class Git:
             raise ValueError(f"workspace root is not a directory {root}")
         return root
 
+    @staticmethod
+    def _check_path_components(
+        root: Path,
+        components: tuple[str, ...],
+        *,
+        label: str,
+        allow_leaf_symlink: bool,
+    ) -> None:
+        """Refuse a symlink or non-directory component anywhere along a path."""
+        current = root
+        for index, component in enumerate(components):
+            current /= component
+            if current.is_symlink() and not (
+                allow_leaf_symlink and index == len(components) - 1
+            ):
+                raise ValueError(f"{label} contains symlink component {current}")
+            if (
+                index < len(components) - 1
+                and current.exists()
+                and not current.is_dir()
+            ):
+                raise ValueError(f"{label} contains non-directory component {current}")
+
+    @staticmethod
+    def _check_real_containment(path: Path, root: Path, *, label: str) -> None:
+        """Verify the RESOLVED path is still inside the workspace root.
+
+        Closes the lexical-vs-real containment gap if the filesystem changed
+        during validation.
+        """
+        try:
+            real_path = path.resolve(strict=False)
+            real_path.relative_to(root)
+        except (OSError, ValueError) as exc:
+            raise ValueError(f"{label} escapes workspace root") from exc
+
     def _validate_workspace_path(
         self,
         candidate: str | Path,
@@ -1002,20 +1070,12 @@ class Git:
         except ValueError as exc:
             raise ValueError(f"{label} escapes workspace root") from exc
 
-        current = root
-        components = relative.parts
-        for index, component in enumerate(components):
-            current /= component
-            if current.is_symlink() and not (
-                allow_leaf_symlink and index == len(components) - 1
-            ):
-                raise ValueError(f"{label} contains symlink component {current}")
-            if (
-                index < len(components) - 1
-                and current.exists()
-                and not current.is_dir()
-            ):
-                raise ValueError(f"{label} contains non-directory component {current}")
+        self._check_path_components(
+            root,
+            relative.parts,
+            label=label,
+            allow_leaf_symlink=allow_leaf_symlink,
+        )
 
         if require_directory and (not path.exists() or not path.is_dir()):
             raise ValueError(f"{label} is not a directory {path}")
@@ -1024,11 +1084,7 @@ class Git:
         # still verify the real path to close lexical-vs-real containment gaps
         # if the filesystem changed during validation.
         if not (allow_leaf_symlink and path.is_symlink()):
-            try:
-                real_path = path.resolve(strict=False)
-                real_path.relative_to(root)
-            except (OSError, ValueError) as exc:
-                raise ValueError(f"{label} escapes workspace root") from exc
+            self._check_real_containment(path, root, label=label)
         return path
 
     @staticmethod
@@ -1906,6 +1962,65 @@ class Git:
         logger.info("Validating configured project")
         return run_gate_stage(repo_path, "fast", trigger="validate", colocated=True)
 
+    @staticmethod
+    def _collect_validation_result(
+        future: "concurrent.futures.Future",
+    ) -> tuple[Any, bool]:
+        """One project's validation payload plus whether it counts as a pass.
+
+        A result object with no ``success`` attribute cannot be read as a pass,
+        so it is recorded verbatim and treated as a failure.
+        """
+        try:
+            result = future.result()
+        except Exception as e:
+            logger.error("Operation failed: error_type=%s", type(e).__name__)
+            return {"success": False, "error": "Operation failed"}, False
+
+        entry = result.model_dump() if hasattr(result, "model_dump") else result
+        if not hasattr(result, "success"):
+            return entry, False
+        return entry, bool(result.success)
+
+    def _run_parallel_validation(
+        self, effective_threads: int
+    ) -> tuple[dict[str, Any], bool]:
+        """Validate every mapped project; return per-repo results and the verdict."""
+        validation_results: dict[str, Any] = {}
+        passed = True
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=effective_threads
+        ) as executor:
+            futures = {
+                executor.submit(self.validate_single_project, path): url
+                for url, path in self.project_map.items()
+            }
+            for future in concurrent.futures.as_completed(futures):
+                repo_name = futures[future].split("/")[-1].replace(".git", "")
+                entry, ok = self._collect_validation_result(future)
+                validation_results[repo_name] = entry
+                passed = passed and ok
+        return validation_results, passed
+
+    def _release_after_validation(
+        self, *, passed: bool, auto_bump: bool, auto_push: bool, bump_part: str
+    ) -> dict[str, Any]:
+        """Run the bump/push release steps, but only when validation passed."""
+        if not passed:
+            if auto_bump or auto_push:
+                logger.warning("Validation failed. Skipping bump and push.")
+            return {}
+
+        logger.info("All validations passed.")
+        release_results: dict[str, Any] = {}
+        if auto_bump:
+            logger.info(f"Triggering phased bumpversion ({bump_part})...")
+            release_results["bump"] = self.phased_bumpversion(part=bump_part)
+        if auto_push:
+            logger.info("Triggering phased push...")
+            release_results["push"] = self.phased_push()
+        return release_results
+
     def validate_and_release(
         self,
         threads: int | None = None,
@@ -1923,49 +2038,13 @@ class Git:
             f"Validating {len(self.project_map)} projects in parallel ({effective_threads} threads)..."
         )
 
-        validation_results: dict[str, Any] = {}
-        passed = True
-
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=effective_threads
-        ) as executor:
-            futures = {
-                executor.submit(self.validate_single_project, path): url
-                for url, path in self.project_map.items()
-            }
-            for future in concurrent.futures.as_completed(futures):
-                url = futures[future]
-                repo_name = url.split("/")[-1].replace(".git", "")
-                try:
-                    result = future.result()
-                    validation_results[repo_name] = (
-                        result.model_dump() if hasattr(result, "model_dump") else result
-                    )
-                    if hasattr(result, "success"):
-                        if not result.success:
-                            passed = False
-                    else:
-                        passed = False
-                except Exception as e:
-                    logger.error("Operation failed: error_type=%s", type(e).__name__)
-                    validation_results[repo_name] = {
-                        "success": False,
-                        "error": "Operation failed",
-                    }
-                    passed = False
-
-        release_results = {}
-        if passed:
-            logger.info("All validations passed.")
-            if auto_bump:
-                logger.info(f"Triggering phased bumpversion ({bump_part})...")
-                release_results["bump"] = self.phased_bumpversion(part=bump_part)
-            if auto_push:
-                logger.info("Triggering phased push...")
-                release_results["push"] = self.phased_push()
-        else:
-            if auto_bump or auto_push:
-                logger.warning("Validation failed. Skipping bump and push.")
+        validation_results, passed = self._run_parallel_validation(effective_threads)
+        release_results = self._release_after_validation(
+            passed=passed,
+            auto_bump=auto_bump,
+            auto_push=auto_push,
+            bump_part=bump_part,
+        )
 
         return {
             "passed": passed,
@@ -3011,6 +3090,38 @@ class Git:
         safe_msg = quote(message)
         return self.git_action(command=f"git commit -m {safe_msg}", path=target_path)
 
+    @staticmethod
+    def _commit_code_skip(target_path: str, reason: str) -> GitResult:
+        """A no-op commit_code outcome (missing clone, or nothing to commit)."""
+        return GitResult(
+            status="skipped",
+            data=reason,
+            error=None,
+            metadata=GitMetadata(
+                command="commit_code",
+                workspace=_project_label(target_path),
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    def _stamp_commit_sha(self, result: GitResult, target_path: str) -> GitResult:
+        """Append the resulting commit SHA to a successful commit result.
+
+        D-CDX-60 acceptance: a truthful commit_code result names BOTH the
+        resolved repository/worktree it acted on (already carried by
+        metadata.workspace) AND the resulting commit SHA, so a caller can
+        verify what actually happened rather than trust a bare "success".
+        """
+        sha_res = self.git_action(
+            command="git rev-parse HEAD", path=target_path, quiet=True
+        )
+        if sha_res.status != "success" or not sha_res.data.strip():
+            return result
+        return result.model_copy(
+            update={"data": f"{result.data}\ncommit_sha={sha_res.data.strip()}"}
+        )
+
     @_exclusive_repo_mutation
     def commit_code_project(
         self, message: str, run_precommit: bool = True, path: str | None = None
@@ -3036,33 +3147,15 @@ class Git:
         # ``os.path.exists`` accepts either shape, matching the check at
         # `_resolve_path`'s sibling validation above.
         if not os.path.exists(os.path.join(target_path, ".git")):
-            return GitResult(
-                status="skipped",
-                data="Configured project is not a cloned Git repository",
-                error=None,
-                metadata=GitMetadata(
-                    command="commit_code",
-                    workspace=_project_label(target_path),
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
+            return self._commit_code_skip(
+                target_path, "Configured project is not a cloned Git repository"
             )
 
         status_res = self.git_action(
             command="git status --porcelain", path=target_path, quiet=True
         )
         if status_res.status == "success" and not status_res.data.strip():
-            return GitResult(
-                status="skipped",
-                data="No changes to commit.",
-                error=None,
-                metadata=GitMetadata(
-                    command="commit_code",
-                    workspace=_project_label(target_path),
-                    return_code=0,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
-            )
+            return self._commit_code_skip(target_path, "No changes to commit.")
 
         # The stage, optional gate, re-stage, and commit intentionally happen in
         # this one call.  Callers must use this ordered operation instead of
@@ -3082,21 +3175,10 @@ class Git:
         stage_res = self.add_project(target_path)
         if stage_res.status != "success":
             return stage_res
+
         result = self.commit_project(message, path=target_path)
         if result.status == "success":
-            # D-CDX-60 acceptance: a truthful commit_code result names BOTH the
-            # resolved repository/worktree it acted on (already carried by
-            # metadata.workspace) AND the resulting commit SHA, so a caller can
-            # verify what actually happened rather than trust a bare "success".
-            sha_res = self.git_action(
-                command="git rev-parse HEAD", path=target_path, quiet=True
-            )
-            if sha_res.status == "success" and sha_res.data.strip():
-                result = result.model_copy(
-                    update={
-                        "data": (f"{result.data}\ncommit_sha={sha_res.data.strip()}")
-                    }
-                )
+            result = self._stamp_commit_sha(result, target_path)
         return result
 
     def commit_code_projects(
@@ -5230,6 +5312,27 @@ class Git:
             )
             return False
 
+    @staticmethod
+    def _git_remote_url(repo_path: str) -> str | None:
+        """The configured ``origin`` URL of a repository, or ``None``."""
+        try:
+            git_path = shutil.which("git") or "git"
+            res = subprocess.run(
+                [git_path, "config", "--get", "remote.origin.url"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                return res.stdout.strip()
+        except Exception as exc:
+            logger.debug(
+                "Failed to get a remote URL: error_type=%s",
+                type(exc).__name__,
+            )
+        return None
+
     def discover_projects(self) -> dict[str, str]:
         """
         Scan self.path for immediate subdirectories containing a .git folder.
@@ -5243,34 +5346,12 @@ class Git:
         try:
             for item in os.listdir(expanded_path):
                 full_path = os.path.join(expanded_path, item)
-                if os.path.isdir(full_path) and os.path.exists(
+                if not os.path.isdir(full_path) or not os.path.exists(
                     os.path.join(full_path, ".git")
                 ):
-                    # Get remote URL
-                    remote_url = None
-                    try:
-                        import shutil
-
-                        git_path = shutil.which("git") or "git"
-                        res = subprocess.run(
-                            [git_path, "config", "--get", "remote.origin.url"],
-                            cwd=full_path,
-                            capture_output=True,
-                            text=True,
-                            check=False,
-                        )
-                        if res.returncode == 0 and res.stdout.strip():
-                            remote_url = res.stdout.strip()
-                    except Exception as exc:
-                        logger.debug(
-                            "Failed to get a remote URL: error_type=%s",
-                            type(exc).__name__,
-                        )
-
-                    if not remote_url:
-                        remote_url = f"local://{item}"
-
-                    self.project_map[remote_url] = os.path.abspath(full_path)
+                    continue
+                remote_url = self._git_remote_url(full_path) or f"local://{item}"
+                self.project_map[remote_url] = os.path.abspath(full_path)
 
             logger.info(
                 f"Auto-discovered {len(self.project_map)} git repositories in {expanded_path}"
@@ -5393,69 +5474,52 @@ class Git:
                 error=GitError(message="Failed to save workspace", code=1),
             )
 
+    @staticmethod
+    def _collect_consolidated_skills(
+        paths: list[str],
+        package: str,
+        subdir: str,
+        wanted: tuple[str, ...],
+        fallback: Callable[[], list[str]],
+    ) -> None:
+        """Append the wanted skills packaged under ``<package>/<subdir>``.
+
+        The packaged-resource lookup is preferred; if it fails the caller's own
+        path resolver is filtered by basename instead.
+        """
+        try:
+            base = files(package) / subdir
+            for name in wanted:
+                skill_path = base / name
+                if skill_path.joinpath("SKILL.md").is_file():
+                    paths.append(str(skill_path))
+        except Exception as e:
+            logger.warning("Operation failed: error_type=%s", type(e).__name__)
+            paths.extend(p for p in fallback() if os.path.basename(p) in wanted)
+
     def get_consolidated_skill_paths(self) -> list[str]:
         """
         Returns absolute paths to the 15 specific building and documentation skills.
         """
-        required_universal = [
-            "agent-package-builder",
-            "mcp-builder",
-            "agent-builder",
-            "skill-builder",
-            "skill-graph-builder",
-            "api-wrapper-builder",
-            "web-search",
-            "web-crawler",
-        ]
-        required_graphs = [
-            "docker-docs",
-            "fastapi-docs",
-            "fastmcp-docs",
-            "nodejs-docs",
-            "vercel-docs",
-            "python-docs",
-            "pydantic-ai-docs",
-        ]
-
-        paths = []
+        paths: list[str] = []
 
         if get_universal_skills_path:
-            try:
-                from importlib.resources import files
-
-                base = files("universal_skills") / "skills"
-                for skill in required_universal:
-                    skill_path = base / skill
-                    if skill_path.joinpath("SKILL.md").is_file():
-                        paths.append(str(skill_path))
-            except Exception as e:
-                logger.warning("Operation failed: error_type=%s", type(e).__name__)
-
-                all_universal = get_universal_skills_path()
-                paths.extend(
-                    [
-                        p
-                        for p in all_universal
-                        if os.path.basename(p) in required_universal
-                    ]
-                )
+            self._collect_consolidated_skills(
+                paths,
+                "universal_skills",
+                "skills",
+                _CONSOLIDATED_UNIVERSAL_SKILLS,
+                get_universal_skills_path,
+            )
 
         if get_skill_graphs_path:
-            try:
-                from importlib.resources import files
-
-                base = files("skill_graphs") / "skill_graphs"
-                for graph in required_graphs:
-                    graph_path = base / graph
-                    if graph_path.joinpath("SKILL.md").is_file():
-                        paths.append(str(graph_path))
-            except Exception as e:
-                logger.warning("Operation failed: error_type=%s", type(e).__name__)
-
-                all_graphs = get_skill_graphs_path(default_enabled=True)
-                paths.extend(
-                    [p for p in all_graphs if os.path.basename(p) in required_graphs]
-                )
+            self._collect_consolidated_skills(
+                paths,
+                "skill_graphs",
+                "skill_graphs",
+                _CONSOLIDATED_SKILL_GRAPHS,
+                lambda: get_skill_graphs_path(default_enabled=True),
+            )
 
         return list(set(paths))
 
