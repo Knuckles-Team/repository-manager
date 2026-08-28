@@ -76,6 +76,34 @@ def is_test_suite_command(argv: Sequence[str]) -> bool:
 _LAUNCHERS = frozenset({"uv", "uvx", "poetry", "hatch", "pdm", "nox", "tox"})
 
 
+def _skip_launcher_token(tokens: list[str]) -> list[str] | None:
+    """Strip one leading launcher token (``uv``, ``poetry``, ...), if present."""
+
+    if tokens[0] not in _LAUNCHERS:
+        return None
+    remaining = tokens[1:]
+    # `uv run ...`, `poetry run ...` — step over the subcommand too.
+    if remaining and remaining[0] in {"run", "exec"}:
+        remaining = remaining[1:]
+    while remaining and remaining[0].startswith("-"):
+        remaining = remaining[1:]
+    return remaining
+
+
+def _skip_python_module_invocation(tokens: list[str]) -> list[str] | None:
+    """Strip a leading ``python[3[.N]] ... -m`` prefix, if present."""
+
+    head = tokens[0]
+    if not (head in {"python", "python3"} or head.startswith("python3.")):
+        return None
+    rest = tokens[1:]
+    while rest and rest[0].startswith("-") and rest[0] != "-m":
+        rest = rest[1:]
+    if rest and rest[0] == "-m":
+        return rest[1:]
+    return None
+
+
 def _skip_launchers(argv: Sequence[str]) -> list[str]:
     """Drop wrapper tokens so the real program lands at index 0.
 
@@ -90,22 +118,14 @@ def _skip_launchers(argv: Sequence[str]) -> list[str]:
 
     tokens = list(argv)
     while tokens:
-        head = tokens[0]
-        if head in _LAUNCHERS:
-            tokens = tokens[1:]
-            # `uv run ...`, `poetry run ...` — step over the subcommand too.
-            if tokens and tokens[0] in {"run", "exec"}:
-                tokens = tokens[1:]
-            while tokens and tokens[0].startswith("-"):
-                tokens = tokens[1:]
+        advanced = _skip_launcher_token(tokens)
+        if advanced is not None:
+            tokens = advanced
             continue
-        if head in {"python", "python3"} or head.startswith("python3."):
-            rest = tokens[1:]
-            while rest and rest[0].startswith("-") and rest[0] != "-m":
-                rest = rest[1:]
-            if rest and rest[0] == "-m":
-                tokens = rest[1:]
-                continue
+        advanced = _skip_python_module_invocation(tokens)
+        if advanced is not None:
+            tokens = advanced
+            continue
         break
     return tokens
 
@@ -131,6 +151,58 @@ def is_go_test_command(argv: Sequence[str]) -> bool:
     )
 
 
+def _maxfail_token(arg: str) -> tuple[str | None, bool] | None:
+    """Handle either ``--maxfail`` form; ``None`` if *arg* is neither.
+
+    Two-token form (``--maxfail``): drop the flag and signal that its value
+    must be dropped too. ``--maxfail=N`` form: ``--maxfail=0`` is left alone
+    — pytest reads 0 as "no limit", so it is not a truncation and rewriting
+    it would change nothing but the caller's intent.
+    """
+
+    if arg == "--maxfail":
+        return None, True
+    if arg.startswith("--maxfail="):
+        value = arg.split("=", 1)[1]
+        return (arg if value.strip() == "0" else None), False
+    return None
+
+
+def _bundled_short_without_x(arg: str) -> str | None:
+    """Drop ``x`` from a bundled short-option cluster (e.g. ``-xvs`` ->
+    ``-vs``; a bundle that held only ``-x`` disappears entirely). Returns
+    *arg* unchanged when it is not such a cluster."""
+
+    if not (
+        len(arg) > 1
+        and arg[0] == "-"
+        and not arg.startswith("--")
+        and "x" in arg[1:]
+        and all(character.isalpha() for character in arg[1:])
+    ):
+        return arg
+    remainder = "".join(c for c in arg[1:] if c != "x")
+    return f"-{remainder}" if remainder else None
+
+
+def _pytest_fail_fast_token(arg: str) -> tuple[str | None, bool]:
+    """Classify one pytest argv token.
+
+    Returns ``(token_to_keep, skip_next_token)`` -- ``token_to_keep`` is
+    ``None`` when *arg* is dropped entirely (or replaced with nothing, for a
+    bundled short option that held only ``-x``); ``skip_next_token`` is True
+    only for the two-token ``--maxfail N`` form, whose value must be dropped
+    too.
+    """
+
+    if arg in {"-x", "--exitfirst"}:
+        return None, False
+    maxfail = _maxfail_token(arg)
+    if maxfail is not None:
+        return maxfail
+    return _bundled_short_without_x(arg), False
+
+
 def _strip_pytest_fail_fast(argv: Sequence[str]) -> list[str]:
     """Remove pytest's early-exit flags, including from bundled short options.
 
@@ -147,30 +219,9 @@ def _strip_pytest_fail_fast(argv: Sequence[str]) -> list[str]:
         if skip_next:
             skip_next = False
             continue
-        if arg in {"-x", "--exitfirst"}:
-            continue
-        if arg == "--maxfail":
-            # Two-arg form: drop the flag and only drop its value if that
-            # value is actually a truncating count.
-            skip_next = True
-            continue
-        if arg.startswith("--maxfail="):
-            value = arg.split("=", 1)[1]
-            if value.strip() == "0":
-                result.append(arg)
-            continue
-        if (
-            len(arg) > 1
-            and arg[0] == "-"
-            and not arg.startswith("--")
-            and "x" in arg[1:]
-            and all(character.isalpha() for character in arg[1:])
-        ):
-            remainder = "".join(c for c in arg[1:] if c != "x")
-            if remainder:
-                result.append(f"-{remainder}")
-            continue
-        result.append(arg)
+        token, skip_next = _pytest_fail_fast_token(arg)
+        if token is not None:
+            result.append(token)
     return result
 
 

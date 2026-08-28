@@ -62,28 +62,42 @@ def _import_module_safely(module_name: str):
         return None
 
 
+def _module_is_importable(marker: str) -> bool:
+    """Whether the optional module whose name contains *marker* imports cleanly."""
+    key = next((k for k in OPTIONAL_MODULES if marker in k), None)
+    if key is None:
+        return False
+    return _import_module_safely(key) is not None
+
+
+def _availability_flag(name: str) -> bool | None:
+    """Value for a ``_MCP_AVAILABLE``/``_AGENT_AVAILABLE`` probe, or ``None``
+    if *name* is not one of those flags."""
+    if name == "_MCP_AVAILABLE":
+        return _module_is_importable("mcp_server")
+    if name == "_AGENT_AVAILABLE":
+        return _module_is_importable("agent_server")
+    return None
+
+
+def _load_optional_module(module_name: str) -> Any:
+    """Import and cache one optional module, exposing its members once."""
+    if module_name not in _loaded_optional_modules:
+        module = _import_module_safely(module_name)
+        if module is not None:
+            _loaded_optional_modules[module_name] = module
+            _expose_members(module)
+    return _loaded_optional_modules.get(module_name)
+
+
 def __getattr__(name: str) -> Any:
     # Handle availability flags dynamically without eager imports
-    if name == "_MCP_AVAILABLE":
-        mcp_key = next((k for k in OPTIONAL_MODULES if "mcp_server" in k), None)
-        if mcp_key:
-            return _import_module_safely(mcp_key) is not None
-        return False
-    if name == "_AGENT_AVAILABLE":
-        agent_key = next((k for k in OPTIONAL_MODULES if "agent_server" in k), None)
-        if agent_key:
-            return _import_module_safely(agent_key) is not None
-        return False
+    if name in ("_MCP_AVAILABLE", "_AGENT_AVAILABLE"):
+        return _availability_flag(name)
 
     # Check optional modules
     for module_name in OPTIONAL_MODULES:
-        if module_name not in _loaded_optional_modules:
-            module = _import_module_safely(module_name)
-            if module is not None:
-                _loaded_optional_modules[module_name] = module
-                _expose_members(module)
-
-        module = _loaded_optional_modules.get(module_name)
+        module = _load_optional_module(module_name)
         if module is not None and hasattr(module, name):
             return getattr(module, name)
 

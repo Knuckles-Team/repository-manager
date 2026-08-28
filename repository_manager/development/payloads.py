@@ -221,36 +221,47 @@ def _components(value: object) -> tuple[RepositoryCacheKeyComponent, ...]:
     items = _sequence(value, "cache_key_components")
     if len(items) > MAX_CACHE_KEY_COMPONENTS:
         raise ValueError("cache_key_components exceeds its count bound")
-    parsed: list[RepositoryCacheKeyComponent] = []
-    for item in items:
-        if isinstance(item, RepositoryCacheKeyComponent):
-            parsed.append(item)
-        elif isinstance(item, Mapping):
-            parsed.append(RepositoryCacheKeyComponent.model_validate(item))
-        elif isinstance(item, (tuple, list)) and len(item) == 2:
-            parsed.append(RepositoryCacheKeyComponent(name=item[0], value=item[1]))
-        else:
-            raise ValueError("cache_key_components must contain typed name/value pairs")
+    parsed = [_parse_component_item(item) for item in items]
     names = [item.name for item in parsed]
     if len(set(names)) != len(names):
         raise ValueError("cache_key_components must have unique names")
     return tuple(sorted(parsed, key=lambda item: item.name))
 
 
+def _parse_component_item(item: object) -> RepositoryCacheKeyComponent:
+    if isinstance(item, RepositoryCacheKeyComponent):
+        return item
+    if isinstance(item, Mapping):
+        return RepositoryCacheKeyComponent.model_validate(item)
+    if isinstance(item, (tuple, list)) and len(item) == 2:
+        return RepositoryCacheKeyComponent(name=item[0], value=item[1])
+    raise ValueError("cache_key_components must contain typed name/value pairs")
+
+
 def _relative_path(value: object, field_name: str, *, allow_glob: bool = False) -> str:
     value = _bounded_text(value, field_name, limit=MAX_PATH_BYTES)
+    _validate_relative_path_safety(value, field_name)
+    _validate_relative_path_glob(value, field_name, allow_glob=allow_glob)
+    if _SHELL_RE.search(value):
+        raise ValueError(f"{field_name} contains shell syntax")
+    return value
+
+
+def _validate_relative_path_safety(value: str, field_name: str) -> None:
     if _DRIVE_OR_UNC_RE.match(value) or value.startswith("/") or "\\" in value:
         raise ValueError(f"{field_name} must be repository-relative")
     parts = value.split("/")
     if any(part in {"..", ""} for part in parts):
         raise ValueError(f"{field_name} contains an unsafe path component")
+
+
+def _validate_relative_path_glob(
+    value: str, field_name: str, *, allow_glob: bool
+) -> None:
     if not allow_glob and any(char in value for char in "*?[]{}"):
         raise ValueError(f"{field_name} must not contain glob syntax")
-    if _SHELL_RE.search(value):
-        raise ValueError(f"{field_name} contains shell syntax")
     if allow_glob and any(char in value for char in "{}"):
         raise ValueError(f"{field_name} contains unsupported glob syntax")
-    return value
 
 
 def _argv(value: object) -> tuple[str, ...]:
@@ -428,6 +439,23 @@ class RepositoryBuildExecutionPayloadV1(BaseModel):
     @model_validator(mode="after")
     def validate_digest_and_size(self) -> RepositoryBuildExecutionPayloadV1:
         components = {item.name: item.value for item in self.cache_key_components}
+        self._validate_cache_key_shape(components)
+        if self.cacheable:
+            self._validate_cacheable_cache_key(components)
+        else:
+            self._validate_uncacheable_cache_key(components)
+        computed = payload_digest(self)
+        self._validate_payload_digest(computed)
+        self._enforce_payload_size_bound(computed)
+        if self.payload_digest is None:
+            # Pydantic's frozen model validator cannot return a replacement
+            # instance when called through ``__init__``.  Set the derived
+            # value exactly once after all fields have been normalized; the
+            # public model remains immutable thereafter.
+            object.__setattr__(self, "payload_digest", computed)
+        return self
+
+    def _validate_cache_key_shape(self, components: dict[str, Any]) -> None:
         if set(components) != _CACHE_KEY_COMPONENT_NAMES:
             raise ValueError("cache-key components do not match the C-05 contract")
         if components["key_version"] != "v2":
@@ -436,50 +464,49 @@ class RepositoryBuildExecutionPayloadV1(BaseModel):
             raise ValueError("cache-key repository component disagrees with payload")
         if components["spec"] != self.build_spec_name:
             raise ValueError("cache-key spec component disagrees with payload")
-        if self.cacheable:
-            if self.degraded_reason:
-                raise ValueError("cacheable payload must not carry degraded_reason")
-            if components["tree_sha"] != self.tree_sha:
-                raise ValueError("cache-key tree component disagrees with payload")
-            expected = {
-                "feature_set": self.feature_set,
-                "target_triple": self.target_triple,
-                "config_digest": self.config_digest,
-                "spec_digest": self.spec_digest,
-                "generation_digest": (
-                    hashlib.sha256(self.generation_id.encode("utf-8")).hexdigest()
-                    if self.generation_id
-                    else ""
-                ),
-            }
-            if components["generation_id"] != (self.generation_id or ""):
-                raise ValueError(
-                    "cache-key generation component disagrees with payload"
-                )
-            for name, value in expected.items():
-                if components[name] != value:
-                    raise ValueError(
-                        f"cache-key {name} component disagrees with payload"
-                    )
-            if self.cache_key_digest != cache_key_digest_from_components(components):
-                raise ValueError("cache_key_digest does not match C-05 components")
-        else:
-            # A degraded CacheKey has no address; its optional components stay
-            # empty rather than pretending to identify a reusable result.
-            if self.degraded_reason not in _APPROVED_DEGRADED_REASONS:
-                raise ValueError("uncacheable payload has an unknown degraded reason")
-            if self.cache_key_digest is not None:
-                raise ValueError("uncacheable payload must not carry a cache key")
-            if any(
-                components[name]
-                for name in _CACHE_KEY_COMPONENT_NAMES - {"key_version", "repo", "spec"}
-            ):
-                raise ValueError(
-                    "uncacheable payload must not carry cache-key components"
-                )
-        computed = payload_digest(self)
+
+    def _validate_cacheable_cache_key(self, components: dict[str, Any]) -> None:
+        if self.degraded_reason:
+            raise ValueError("cacheable payload must not carry degraded_reason")
+        if components["tree_sha"] != self.tree_sha:
+            raise ValueError("cache-key tree component disagrees with payload")
+        expected = {
+            "feature_set": self.feature_set,
+            "target_triple": self.target_triple,
+            "config_digest": self.config_digest,
+            "spec_digest": self.spec_digest,
+            "generation_digest": (
+                hashlib.sha256(self.generation_id.encode("utf-8")).hexdigest()
+                if self.generation_id
+                else ""
+            ),
+        }
+        if components["generation_id"] != (self.generation_id or ""):
+            raise ValueError("cache-key generation component disagrees with payload")
+        for name, value in expected.items():
+            if components[name] != value:
+                raise ValueError(f"cache-key {name} component disagrees with payload")
+        if self.cache_key_digest != cache_key_digest_from_components(components):
+            raise ValueError("cache_key_digest does not match C-05 components")
+
+    def _validate_uncacheable_cache_key(self, components: dict[str, Any]) -> None:
+        # A degraded CacheKey has no address; its optional components stay
+        # empty rather than pretending to identify a reusable result.
+        if self.degraded_reason not in _APPROVED_DEGRADED_REASONS:
+            raise ValueError("uncacheable payload has an unknown degraded reason")
+        if self.cache_key_digest is not None:
+            raise ValueError("uncacheable payload must not carry a cache key")
+        if any(
+            components[name]
+            for name in _CACHE_KEY_COMPONENT_NAMES - {"key_version", "repo", "spec"}
+        ):
+            raise ValueError("uncacheable payload must not carry cache-key components")
+
+    def _validate_payload_digest(self, computed: str) -> None:
         if self.payload_digest not in (None, computed):
             raise ValueError("payload_digest does not match the canonical payload")
+
+    def _enforce_payload_size_bound(self, computed: str) -> None:
         sized = self.model_dump(mode="json", exclude_none=False)
         sized["payload_digest"] = computed
         if (
@@ -487,13 +514,6 @@ class RepositoryBuildExecutionPayloadV1(BaseModel):
             > MAX_OPERATION_PAYLOAD_BYTES
         ):
             raise ValueError("operation payload exceeds its encoded size bound")
-        if self.payload_digest is None:
-            # Pydantic's frozen model validator cannot return a replacement
-            # instance when called through ``__init__``.  Set the derived
-            # value exactly once after all fields have been normalized; the
-            # public model remains immutable thereafter.
-            object.__setattr__(self, "payload_digest", computed)
-        return self
 
     def model_copy(
         self,

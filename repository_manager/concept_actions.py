@@ -26,6 +26,7 @@ for the real one in this module.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -169,104 +170,137 @@ def dispatch(
     return {"ok": True, **result}
 
 
+def _action_reserve(
+    actions: ConceptCoordinationActions, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    created_at, expires_at = _default_window(kwargs)
+    request = ConceptClaimRequest(
+        tenant_ref=kwargs.get("tenant_ref") or actions.tenant_ref,
+        concept_id=kwargs["concept_id"],
+        namespace=kwargs["namespace"],
+        repository_ref=kwargs["repository_ref"],
+        lane_ref=kwargs.get("lane_ref") or actions.lane_ref,
+        owner_ref=kwargs["owner_ref"],
+        request_key_ref=kwargs["request_key_ref"],
+        purpose=kwargs["purpose"],
+        design_ref=kwargs.get("design_ref"),
+        branch=kwargs.get("branch"),
+        base_sha=kwargs.get("base_sha"),
+        workitem_ref=kwargs.get("workitem_ref"),
+        run_trace_ref=kwargs.get("run_trace_ref"),
+        created_at=created_at,
+        expires_at=expires_at,
+        provenance_refs=tuple(kwargs.get("provenance_refs") or ()),
+    )
+    return {"record": _record_payload(actions.reserve(request))}
+
+
+def _action_get(
+    actions: ConceptCoordinationActions, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    return {"record": _record_payload(actions.get(kwargs["reservation_id"]))}
+
+
+def _action_list(
+    actions: ConceptCoordinationActions, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    state = ConceptClaimState(kwargs["state"]) if kwargs.get("state") else None
+    rows, cursor = actions.list(
+        namespace=kwargs.get("namespace"),
+        state=state,
+        concept_prefix=kwargs.get("concept_prefix"),
+        limit=kwargs.get("limit", 1000),
+        cursor=kwargs.get("cursor"),
+    )
+    return {
+        "records": [_record_payload(row) for row in rows],
+        "cursor": cursor,
+    }
+
+
+def _action_release(
+    actions: ConceptCoordinationActions, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    record = actions.release(
+        kwargs["reservation_id"],
+        owner_ref=kwargs["owner_ref"],
+        expected_fence=kwargs["expected_fence"],
+    )
+    return {"record": _record_payload(record)}
+
+
+def _action_materialize(
+    actions: ConceptCoordinationActions, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    record = actions.materialize(
+        kwargs["reservation_id"],
+        owner_ref=kwargs["owner_ref"],
+        expected_fence=kwargs["expected_fence"],
+    )
+    return {"record": _record_payload(record)}
+
+
+def _action_verify_candidate(
+    actions: ConceptCoordinationActions, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    from repository_manager.development import Candidate
+
+    candidate = Candidate.model_validate(kwargs["candidate"])
+    outcome = actions.verify_candidate(candidate, repo_path=Path(kwargs["repo_path"]))
+    return {"verification": dataclasses.asdict(outcome) | {"passed": outcome.passed}}
+
+
+def _action_verify_generation(
+    actions: ConceptCoordinationActions, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    from repository_manager.development import Candidate, Generation
+
+    generation = Generation.model_validate(kwargs["generation"])
+    candidates = tuple(Candidate.model_validate(item) for item in kwargs["candidates"])
+    generation_verification = actions.verify_generation(
+        generation, candidates, repo_path=Path(kwargs["repo_path"])
+    )
+    return {
+        "verification": {
+            "generation_id": generation_verification.generation_id,
+            "passed": generation_verification.passed,
+            "per_candidate": {
+                candidate_id: dataclasses.asdict(item) | {"passed": item.passed}
+                for candidate_id, item in generation_verification.per_candidate.items()
+            },
+            "collisions": {
+                key: list(value)
+                for key, value in generation_verification.collisions.items()
+            },
+        }
+    }
+
+
+def _action_reconcile(
+    actions: ConceptCoordinationActions, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    report = actions.reconcile(source_tree_ish=kwargs.get("source_tree_ish", "HEAD"))
+    return {"report": report.to_dict()}
+
+
+_RESOLVED_ACTIONS: dict[
+    str, Callable[[ConceptCoordinationActions, dict[str, Any]], dict[str, Any]]
+] = {
+    "reserve": _action_reserve,
+    "get": _action_get,
+    "list": _action_list,
+    "release": _action_release,
+    "materialize": _action_materialize,
+    "verify_candidate": _action_verify_candidate,
+    "verify_generation": _action_verify_generation,
+    "reconcile": _action_reconcile,
+}
+
+
 def _dispatch_resolved(
     actions: ConceptCoordinationActions, resolved: str, kwargs: dict[str, Any]
 ) -> dict[str, Any]:
-    if resolved == "reserve":
-        created_at, expires_at = _default_window(kwargs)
-        request = ConceptClaimRequest(
-            tenant_ref=kwargs.get("tenant_ref") or actions.tenant_ref,
-            concept_id=kwargs["concept_id"],
-            namespace=kwargs["namespace"],
-            repository_ref=kwargs["repository_ref"],
-            lane_ref=kwargs.get("lane_ref") or actions.lane_ref,
-            owner_ref=kwargs["owner_ref"],
-            request_key_ref=kwargs["request_key_ref"],
-            purpose=kwargs["purpose"],
-            design_ref=kwargs.get("design_ref"),
-            branch=kwargs.get("branch"),
-            base_sha=kwargs.get("base_sha"),
-            workitem_ref=kwargs.get("workitem_ref"),
-            run_trace_ref=kwargs.get("run_trace_ref"),
-            created_at=created_at,
-            expires_at=expires_at,
-            provenance_refs=tuple(kwargs.get("provenance_refs") or ()),
-        )
-        return {"record": _record_payload(actions.reserve(request))}
-
-    if resolved == "get":
-        return {"record": _record_payload(actions.get(kwargs["reservation_id"]))}
-
-    if resolved == "list":
-        state = ConceptClaimState(kwargs["state"]) if kwargs.get("state") else None
-        rows, cursor = actions.list(
-            namespace=kwargs.get("namespace"),
-            state=state,
-            concept_prefix=kwargs.get("concept_prefix"),
-            limit=kwargs.get("limit", 1000),
-            cursor=kwargs.get("cursor"),
-        )
-        return {
-            "records": [_record_payload(row) for row in rows],
-            "cursor": cursor,
-        }
-
-    if resolved == "release":
-        record = actions.release(
-            kwargs["reservation_id"],
-            owner_ref=kwargs["owner_ref"],
-            expected_fence=kwargs["expected_fence"],
-        )
-        return {"record": _record_payload(record)}
-
-    if resolved == "materialize":
-        record = actions.materialize(
-            kwargs["reservation_id"],
-            owner_ref=kwargs["owner_ref"],
-            expected_fence=kwargs["expected_fence"],
-        )
-        return {"record": _record_payload(record)}
-
-    if resolved == "verify_candidate":
-        from repository_manager.development import Candidate
-
-        candidate = Candidate.model_validate(kwargs["candidate"])
-        outcome = actions.verify_candidate(
-            candidate, repo_path=Path(kwargs["repo_path"])
-        )
-        return {
-            "verification": dataclasses.asdict(outcome) | {"passed": outcome.passed}
-        }
-
-    if resolved == "verify_generation":
-        from repository_manager.development import Candidate, Generation
-
-        generation = Generation.model_validate(kwargs["generation"])
-        candidates = tuple(
-            Candidate.model_validate(item) for item in kwargs["candidates"]
-        )
-        generation_verification = actions.verify_generation(
-            generation, candidates, repo_path=Path(kwargs["repo_path"])
-        )
-        return {
-            "verification": {
-                "generation_id": generation_verification.generation_id,
-                "passed": generation_verification.passed,
-                "per_candidate": {
-                    candidate_id: dataclasses.asdict(item) | {"passed": item.passed}
-                    for candidate_id, item in generation_verification.per_candidate.items()
-                },
-                "collisions": {
-                    key: list(value)
-                    for key, value in generation_verification.collisions.items()
-                },
-            }
-        }
-
-    if resolved == "reconcile":
-        report = actions.reconcile(
-            source_tree_ish=kwargs.get("source_tree_ish", "HEAD")
-        )
-        return {"report": report.to_dict()}
-
-    raise AssertionError(f"unhandled resolved concept action {resolved!r}")
+    handler = _RESOLVED_ACTIONS.get(resolved)
+    if handler is None:
+        raise AssertionError(f"unhandled resolved concept action {resolved!r}")
+    return handler(actions, kwargs)

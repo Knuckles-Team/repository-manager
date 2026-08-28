@@ -37,12 +37,39 @@ import os
 import shlex
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from repository_manager import prune_guard, stash_guard
 from repository_manager.canonical_guard import guarded_canonical_mutation
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _AllocateRequest:
+    """Bundled, already-resolved inputs shared by ``allocate``'s helpers.
+
+    Bundled so the extracted helpers stay under the fleet's parameter cap;
+    ``allocate`` itself keeps its existing keyword-only signature
+    (pre-existing debt, not widened here).
+    """
+
+    repo: str
+    canonical: str
+    branch: str
+    worktree: str
+    base: str
+    owner_id: str
+    session_id: str
+    host_id: str
+    key: str
+    predicted_disk_bytes: int
+    disk_budget_bytes: int | None
+    ttl_seconds: int
+    adopt: bool
+    operator_id: str
+    now: Any | None
 
 
 class GitLike(Protocol):
@@ -203,70 +230,29 @@ class WorktreeManager:
         # Best-effort: make sure base is current (ignore failures, e.g. offline).
         self._run(f"git fetch origin {shlex.quote(base)}", canonical, quiet=True)
 
-        stash_ref: str | None = None
-        if adopt:
-            capture = stash_guard.capture_wip(self.git, canonical, label=_slug(branch))
-            if not capture["ok"]:
-                return {
-                    "ok": False,
-                    "error": f"could not adopt WIP: {capture['error']}",
-                }
-            stash_ref = capture["ref"]  # None when the canonical tree was clean
+        stash_ref, error = self._capture_add_wip(canonical, branch, adopt)
+        if error is not None:
+            return error
 
-        def _restore_onto_canonical_and_return(out: dict[str, Any]) -> dict[str, Any]:
-            """Bail out of ``add`` while a captured WIP still needs a home."""
-            if stash_ref is None:
-                return out
-            restore = stash_guard.apply_and_clear(self.git, canonical, stash_ref)
-            if not restore["ok"]:
-                out = {
-                    **out,
-                    "stash_ref": stash_ref,
-                    "stash_recovery_error": restore["error"],
-                }
-            return out
-
-        cur = self._run("git rev-parse --abbrev-ref HEAD", canonical, quiet=True)
-        if self._ok(cur) and cur.data.strip() == branch:
-            with guarded_canonical_mutation(
-                self.git,
-                canonical,
-                repo,
-                "park canonical checkout off requested branch",
-            ) as blocked:
-                if blocked is not None:
-                    return _restore_onto_canonical_and_return(
-                        {**blocked, "branch": branch}
-                    )
-                self._run(f"git checkout {shlex.quote(base)}", canonical)
-
-        exists = self._run(
-            f"git rev-parse --verify --quiet refs/heads/{shlex.quote(branch)}",
-            canonical,
-            quiet=True,
+        blocked_result = self._park_canonical_checkout(
+            canonical, repo, branch, base, stash_ref
         )
-        if self._ok(exists) and exists.data.strip():
-            cmd = f"git worktree add {shlex.quote(wt)} {shlex.quote(branch)}"
-        else:
-            cmd = f"git worktree add {shlex.quote(wt)} -b {shlex.quote(branch)} {shlex.quote(base)}"
-        res = self._run(cmd, canonical)
+        if blocked_result is not None:
+            return blocked_result
+
+        res = self._run_worktree_add(canonical, wt, branch, base)
         if not self._ok(res):
-            return _restore_onto_canonical_and_return(
+            return self._restore_wip_and_return(
+                canonical,
+                stash_ref,
                 {
                     "ok": False,
                     "path": wt,
                     "error": res.error.message if res.error else res.data,
-                }
+                },
             )
 
-        adopted = False
-        out: dict[str, Any] = {}
-        if stash_ref is not None:
-            applied = stash_guard.apply_and_clear(self.git, wt, stash_ref)
-            adopted = applied["ok"]
-            if not applied["ok"]:
-                out["stash_ref"] = stash_ref
-                out["stash_recovery_error"] = applied["error"]
+        adopted, out = self._apply_wip_to_worktree(wt, stash_ref)
         return {
             "ok": True,
             "repo": repo,
@@ -277,6 +263,91 @@ class WorktreeManager:
             "adopted": adopted,
             **out,
         }
+
+    def _capture_add_wip(
+        self, canonical: str, branch: str, adopt: bool
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """Best-effort WIP capture for ``add(..., adopt=True)``.
+
+        Returns ``(stash_ref, error)``; ``stash_ref`` is ``None`` both when
+        ``adopt`` is False and when the canonical tree was already clean.
+        """
+        if not adopt:
+            return None, None
+        capture = stash_guard.capture_wip(self.git, canonical, label=_slug(branch))
+        if not capture["ok"]:
+            return None, {
+                "ok": False,
+                "error": f"could not adopt WIP: {capture['error']}",
+            }
+        return capture["ref"], None  # None when the canonical tree was clean
+
+    def _restore_wip_and_return(
+        self, canonical: str, stash_ref: str | None, out: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Bail out of ``add`` while a captured WIP still needs a home."""
+        if stash_ref is None:
+            return out
+        restore = stash_guard.apply_and_clear(self.git, canonical, stash_ref)
+        if not restore["ok"]:
+            out = {
+                **out,
+                "stash_ref": stash_ref,
+                "stash_recovery_error": restore["error"],
+            }
+        return out
+
+    def _park_canonical_checkout(
+        self, canonical: str, repo: str, branch: str, base: str, stash_ref: str | None
+    ) -> dict[str, Any] | None:
+        """Move the canonical checkout off ``branch`` so it can be worktree'd.
+
+        Returns an error dict if the canonical mutation is refused/blocked
+        (with any captured WIP restored first), else ``None`` to continue.
+        """
+        cur = self._run("git rev-parse --abbrev-ref HEAD", canonical, quiet=True)
+        if not (self._ok(cur) and cur.data.strip() == branch):
+            return None
+        with guarded_canonical_mutation(
+            self.git,
+            canonical,
+            repo,
+            "park canonical checkout off requested branch",
+        ) as blocked:
+            if blocked is not None:
+                return self._restore_wip_and_return(
+                    canonical, stash_ref, {**blocked, "branch": branch}
+                )
+            self._run(f"git checkout {shlex.quote(base)}", canonical)
+        return None
+
+    def _run_worktree_add(self, canonical: str, wt: str, branch: str, base: str) -> Any:
+        exists = self._run(
+            f"git rev-parse --verify --quiet refs/heads/{shlex.quote(branch)}",
+            canonical,
+            quiet=True,
+        )
+        if self._ok(exists) and exists.data.strip():
+            cmd = f"git worktree add {shlex.quote(wt)} {shlex.quote(branch)}"
+        else:
+            cmd = (
+                f"git worktree add {shlex.quote(wt)} -b {shlex.quote(branch)} "
+                f"{shlex.quote(base)}"
+            )
+        return self._run(cmd, canonical)
+
+    def _apply_wip_to_worktree(
+        self, wt: str, stash_ref: str | None
+    ) -> tuple[bool, dict[str, Any]]:
+        if stash_ref is None:
+            return False, {}
+        applied = stash_guard.apply_and_clear(self.git, wt, stash_ref)
+        adopted = applied["ok"]
+        out: dict[str, Any] = {}
+        if not applied["ok"]:
+            out["stash_ref"] = stash_ref
+            out["stash_recovery_error"] = applied["error"]
+        return adopted, out
 
     def allocate(
         self,
@@ -305,6 +376,56 @@ class WorktreeManager:
         a directory.
         """
 
+        authority, error = self._resolve_lane_authority(registry)
+        if error is not None:
+            return error
+        canonical = self.resolve_repo(repo)
+        if not canonical:
+            return {"ok": False, "error": f"repo not found: {repo}"}
+        worktree = self.worktree_path(repo, branch)
+        key = self._allocate_idempotency_key(
+            idempotency_key, request_id, canonical, branch, owner_id, session_id
+        )
+        req = _AllocateRequest(
+            repo=repo,
+            canonical=canonical,
+            branch=branch,
+            worktree=worktree,
+            base=base,
+            owner_id=owner_id,
+            session_id=session_id,
+            host_id=host_id,
+            key=key,
+            predicted_disk_bytes=predicted_disk_bytes,
+            disk_budget_bytes=disk_budget_bytes,
+            ttl_seconds=ttl_seconds,
+            adopt=adopt,
+            operator_id=operator_id,
+            now=now,
+        )
+        record, error = self._allocate_lane_record(authority, req)
+        if error is not None:
+            return error
+        assert record is not None
+        added, error = self._create_allocated_worktree(authority, record, req)
+        if error is not None:
+            return error
+        assert added is not None
+        active, error = self._activate_allocated_lane(authority, record, added, req)
+        if error is not None:
+            return error
+        assert active is not None
+        return {
+            **added,
+            "lane_id": active.lane_id,
+            "fence": active.fence,
+            "record": active.model_dump(mode="json"),
+            "registry": authority,
+        }
+
+    def _resolve_lane_authority(
+        self, registry: Any | None
+    ) -> tuple[Any, dict[str, Any] | None]:
         from repository_manager.lane_registry import LaneRegistry
 
         authority = registry or self.registry
@@ -318,7 +439,7 @@ class WorktreeManager:
             try:
                 authority = self._registry_factory()
             except Exception as exc:
-                return {
+                return None, {
                     "ok": False,
                     "stage": "registry",
                     "error": str(exc),
@@ -326,105 +447,140 @@ class WorktreeManager:
                 }
         if authority is None:
             authority = LaneRegistry()
-        canonical = self.resolve_repo(repo)
-        if not canonical:
-            return {"ok": False, "error": f"repo not found: {repo}"}
-        worktree = self.worktree_path(repo, branch)
+        return authority, None
+
+    @staticmethod
+    def _allocate_idempotency_key(
+        idempotency_key: str | None,
+        request_id: str | None,
+        canonical: str,
+        branch: str,
+        owner_id: str,
+        session_id: str,
+    ) -> str:
         key = idempotency_key or request_id
-        if key is None:
-            # Keep the deterministic material out of the public key itself.
-            # LaneRecord rejects control characters, so forwarding the NUL-
-            # delimited digest input directly made the ordinary no-key path
-            # fail before a worktree could be created.
-            material = f"{canonical}\0{branch}\0{owner_id}\0{session_id}"
-            key = "auto:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+        if key is not None:
+            return key
+        # Keep the deterministic material out of the public key itself.
+        # LaneRecord rejects control characters, so forwarding the NUL-
+        # delimited digest input directly made the ordinary no-key path
+        # fail before a worktree could be created.
+        material = f"{canonical}\0{branch}\0{owner_id}\0{session_id}"
+        return "auto:" + hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _resolve_adoption_candidate(
+        authority: Any, canonical: str, branch: str, worktree: str
+    ) -> tuple[Any | None, dict[str, Any] | None]:
+        candidates = [
+            item
+            for item in authority.list_records()
+            if item.state.value == "observed_legacy"
+            and item.repository_path == canonical
+            and item.branch == branch
+            and item.worktree_path == worktree
+        ]
+        if len(candidates) != 1:
+            return None, {
+                "ok": False,
+                "stage": "registry",
+                "error": "observed legacy lane could not be uniquely resolved",
+            }
+        return candidates[0], None
+
+    def _allocate_lane_record(
+        self, authority: Any, req: _AllocateRequest
+    ) -> tuple[Any | None, dict[str, Any] | None]:
         try:
-            if adopt:
-                if not operator_id:
-                    return {
+            if req.adopt:
+                if not req.operator_id:
+                    return None, {
                         "ok": False,
                         "stage": "registry",
                         "error": "legacy adoption requires explicit operator_id",
                     }
-                candidates = [
-                    item
-                    for item in authority.list_records()
-                    if item.state.value == "observed_legacy"
-                    and item.repository_path == canonical
-                    and item.branch == branch
-                    and item.worktree_path == worktree
-                ]
-                if len(candidates) != 1:
-                    return {
-                        "ok": False,
-                        "stage": "registry",
-                        "error": "observed legacy lane could not be uniquely resolved",
-                    }
+                candidate, error = self._resolve_adoption_candidate(
+                    authority, req.canonical, req.branch, req.worktree
+                )
+                if error is not None:
+                    return None, error
+                assert candidate is not None
                 record = authority.adopt(
-                    candidates[0].lane_id,
-                    owner_id=owner_id,
-                    session_id=session_id,
-                    host_id=host_id,
-                    operator_id=operator_id,
-                    now=now,
+                    candidate.lane_id,
+                    owner_id=req.owner_id,
+                    session_id=req.session_id,
+                    host_id=req.host_id,
+                    operator_id=req.operator_id,
+                    now=req.now,
                 )
             else:
                 record = authority.allocate(
-                    canonical,
-                    branch,
-                    worktree,
-                    owner_id=owner_id,
-                    session_id=session_id,
-                    host_id=host_id,
-                    request_id=key,
-                    base_ref=base,
-                    ttl_seconds=ttl_seconds,
-                    predicted_disk_bytes=predicted_disk_bytes,
-                    disk_budget_bytes=disk_budget_bytes,
-                    now=now,
+                    req.canonical,
+                    req.branch,
+                    req.worktree,
+                    owner_id=req.owner_id,
+                    session_id=req.session_id,
+                    host_id=req.host_id,
+                    request_id=req.key,
+                    base_ref=req.base,
+                    ttl_seconds=req.ttl_seconds,
+                    predicted_disk_bytes=req.predicted_disk_bytes,
+                    disk_budget_bytes=req.disk_budget_bytes,
+                    now=req.now,
                 )
         except Exception as exc:
-            return {
+            return None, {
                 "ok": False,
                 "stage": "registry",
                 "error": str(exc),
                 "error_type": type(exc).__name__,
             }
-        added = self.add(repo, branch, base=base, adopt=adopt)
-        if not added.get("ok"):
-            try:
-                authority.abort(
-                    record.lane_id,
-                    owner_id=owner_id,
-                    fence=record.fence,
-                    reason="worktree creation failed",
-                )
-            except Exception:
-                # The original creation error is the actionable response; the
-                # durable row remains for reconciliation if abort itself fails.
-                logger.debug(
-                    "lane abort after failed worktree creation also failed for %s",
-                    record.lane_id,
-                    exc_info=True,
-                )
-            return {
-                "ok": False,
-                "stage": "worktree",
-                "result": added,
-                "lane_id": record.lane_id,
-            }
+        return record, None
+
+    def _create_allocated_worktree(
+        self, authority: Any, record: Any, req: _AllocateRequest
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        added = self.add(req.repo, req.branch, base=req.base, adopt=req.adopt)
+        if added.get("ok"):
+            return added, None
+        try:
+            authority.abort(
+                record.lane_id,
+                owner_id=req.owner_id,
+                fence=record.fence,
+                reason="worktree creation failed",
+            )
+        except Exception:
+            # The original creation error is the actionable response; the
+            # durable row remains for reconciliation if abort itself fails.
+            logger.debug(
+                "lane abort after failed worktree creation also failed for %s",
+                record.lane_id,
+                exc_info=True,
+            )
+        return None, {
+            "ok": False,
+            "stage": "worktree",
+            "result": added,
+            "lane_id": record.lane_id,
+        }
+
+    @staticmethod
+    def _activate_allocated_lane(
+        authority: Any, record: Any, added: dict[str, Any], req: _AllocateRequest
+    ) -> tuple[Any | None, dict[str, Any] | None]:
         try:
             active = record
-            if not adopt:
+            if not req.adopt:
                 active = authority.activate(
                     record.lane_id,
-                    owner_id=owner_id,
+                    owner_id=req.owner_id,
                     fence=record.fence,
-                    worktree_path=added.get("path") or worktree,
-                    now=now,
+                    worktree_path=added.get("path") or req.worktree,
+                    now=req.now,
                 )
         except Exception as exc:
-            return {
+            return None, {
                 "ok": False,
                 "stage": "registry-activate",
                 "lane_id": record.lane_id,
@@ -432,13 +588,7 @@ class WorktreeManager:
                 "worktree": added,
                 "error": str(exc),
             }
-        return {
-            **added,
-            "lane_id": active.lane_id,
-            "fence": active.fence,
-            "record": active.model_dump(mode="json"),
-            "registry": authority,
-        }
+        return active, None
 
     # Explicit names make the adapter seam discoverable to later consumers
     # while retaining ``allocate`` as the concise worktree API.
@@ -555,28 +705,38 @@ class WorktreeManager:
             res = self._run("git worktree list --porcelain", canonical, quiet=True)
             if not self._ok(res):
                 continue
-            name = os.path.basename(canonical)
-            canonical_norm = os.path.abspath(canonical)
-            cur: dict[str, Any] = {}
-            for line in res.data.splitlines():
-                if line.startswith("worktree "):
-                    if cur:
-                        out.append(cur)
-                    entry_path = line[len("worktree ") :]
-                    cur = {
-                        "repo": name,
-                        "path": entry_path,
-                        "linked": os.path.abspath(entry_path) != canonical_norm,
-                    }
-                elif line.startswith("branch "):
-                    cur["branch"] = line[len("branch ") :].replace("refs/heads/", "")
-                elif line.startswith("HEAD "):
-                    cur["head"] = line[len("HEAD ") :][:10]
-                elif line.startswith("detached"):
-                    cur["branch"] = "(detached)"
-            if cur:
-                out.append(cur)
+            out.extend(
+                self._parse_worktree_porcelain(
+                    res.data, os.path.basename(canonical), os.path.abspath(canonical)
+                )
+            )
         return {"ok": True, "worktrees": out, "count": len(out)}
+
+    @staticmethod
+    def _parse_worktree_porcelain(
+        data: str, name: str, canonical_norm: str
+    ) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        cur: dict[str, Any] = {}
+        for line in data.splitlines():
+            if line.startswith("worktree "):
+                if cur:
+                    entries.append(cur)
+                entry_path = line[len("worktree ") :]
+                cur = {
+                    "repo": name,
+                    "path": entry_path,
+                    "linked": os.path.abspath(entry_path) != canonical_norm,
+                }
+            elif line.startswith("branch "):
+                cur["branch"] = line[len("branch ") :].replace("refs/heads/", "")
+            elif line.startswith("HEAD "):
+                cur["head"] = line[len("HEAD ") :][:10]
+            elif line.startswith("detached"):
+                cur["branch"] = "(detached)"
+        if cur:
+            entries.append(cur)
+        return entries
 
     def remove(
         self,
@@ -902,11 +1062,22 @@ class WorktreeManager:
         }
         porcelain = self._run("git status --porcelain", wt_path, quiet=True)
         state["dirty"] = bool(self._ok(porcelain) and porcelain.data.strip())
+        state.update(self._branch_ahead_behind(wt_path, base))
+        state["last_commit_age_days"] = self._branch_last_commit_age_days(wt_path)
+        return state
+
+    def _branch_ahead_behind(self, wt_path: str, base: str) -> dict[str, Any]:
         # ahead/behind vs base in one shot; this call always exits 0. It is a
         # *classification* input only — it is never what authorises a deletion.
         # `_delete_merged_branch` re-asks `git merge-base --is-ancestor` at the
         # moment of deletion and then lets `git branch -d` re-decide under git's
         # own ref lock, so a count that has gone stale cannot orphan a commit.
+        result: dict[str, Any] = {
+            "ahead": 0,
+            "behind": 0,
+            "at_base": False,
+            "merged": False,
+        }
         counts = self._run(
             f"git rev-list --left-right --count {shlex.quote(base)}...HEAD",
             wt_path,
@@ -915,15 +1086,16 @@ class WorktreeManager:
         if self._ok(counts) and counts.data.strip():
             parts = counts.data.split()
             if len(parts) == 2 and all(p.isdigit() for p in parts):
-                state["behind"], state["ahead"] = int(parts[0]), int(parts[1])
-                state["at_base"] = state["ahead"] == 0 and state["behind"] == 0
-                state["merged"] = state["ahead"] == 0 and state["behind"] > 0
+                result["behind"], result["ahead"] = int(parts[0]), int(parts[1])
+                result["at_base"] = result["ahead"] == 0 and result["behind"] == 0
+                result["merged"] = result["ahead"] == 0 and result["behind"] > 0
+        return result
+
+    def _branch_last_commit_age_days(self, wt_path: str) -> float | None:
         ts = self._run("git log -1 --format=%ct HEAD", wt_path, quiet=True)
         if self._ok(ts) and ts.data.strip().isdigit():
-            state["last_commit_age_days"] = (
-                time.time() - int(ts.data.strip())
-            ) / 86400.0
-        return state
+            return (time.time() - int(ts.data.strip())) / 86400.0
+        return None
 
     @staticmethod
     def _classify(
@@ -971,68 +1143,84 @@ class WorktreeManager:
         canon = (
             [self.resolve_repo(repo)] if repo else list(self.git.project_map.values())
         )
-        out: list[dict[str, Any]] = []
-        for path in filter(None, canon):
-            cur = self._run("git rev-parse --abbrev-ref HEAD", path, quiet=True)
-            branch = cur.data.strip() if self._ok(cur) and cur.data else None
-            porc = self._run("git status --porcelain", path, quiet=True)
-            dirty = bool(self._ok(porc) and porc.data.strip())
-            ahead = behind = None
-            no_upstream = True
-            if branch:
-                up = self._run(
-                    f"git rev-parse --verify --quiet origin/{shlex.quote(branch)}",
-                    path,
-                    quiet=True,
-                )
-                if self._ok(up) and up.data.strip():
-                    no_upstream = False
-                    counts = self._run(
-                        "git rev-list --left-right --count "
-                        f"origin/{shlex.quote(branch)}...HEAD",
-                        path,
-                        quiet=True,
-                    )
-                    if self._ok(counts) and counts.data.strip():
-                        parts = counts.data.split()
-                        if len(parts) == 2 and all(p.isdigit() for p in parts):
-                            behind, ahead = int(parts[0]), int(parts[1])
-            base_unpushed = False
-            ub = self._run(
-                f"git rev-parse --verify --quiet origin/{shlex.quote(base)}",
-                path,
-                quiet=True,
-            )
-            if self._ok(ub) and ub.data.strip():
-                bc = self._run(
-                    f"git rev-list --count origin/{shlex.quote(base)}.."
-                    f"{shlex.quote(base)}",
-                    path,
-                    quiet=True,
-                )
-                if self._ok(bc) and bc.data.strip().isdigit():
-                    base_unpushed = int(bc.data.strip()) > 0
-            if dirty:
-                cls = "dirty"
-            elif (ahead and ahead > 0) or no_upstream:
-                # ahead of origin, or no remote to compare against -> work is
-                # not on a remote.
-                cls = "unpushed"
-            else:
-                cls = "clean"
-            out.append(
-                {
-                    "repo": os.path.basename(path),
-                    "branch": branch,
-                    "dirty": dirty,
-                    "ahead_origin": ahead,
-                    "behind_origin": behind,
-                    "no_upstream": no_upstream,
-                    "base_unpushed": base_unpushed,
-                    "class": cls,
-                }
-            )
-        return out
+        return [self._repo_state_row(path, base) for path in filter(None, canon)]
+
+    def _repo_state_row(self, path: str, base: str) -> dict[str, Any]:
+        branch, dirty = self._branch_and_dirty_state(path)
+        ahead, behind, no_upstream = self._ahead_behind_state(path, branch)
+        base_unpushed = self._base_unpushed_state(path, base)
+        cls = self._classify_repo_state(dirty, ahead, no_upstream)
+        return {
+            "repo": os.path.basename(path),
+            "branch": branch,
+            "dirty": dirty,
+            "ahead_origin": ahead,
+            "behind_origin": behind,
+            "no_upstream": no_upstream,
+            "base_unpushed": base_unpushed,
+            "class": cls,
+        }
+
+    def _branch_and_dirty_state(self, path: str) -> tuple[str | None, bool]:
+        cur = self._run("git rev-parse --abbrev-ref HEAD", path, quiet=True)
+        branch = cur.data.strip() if self._ok(cur) and cur.data else None
+        porc = self._run("git status --porcelain", path, quiet=True)
+        dirty = bool(self._ok(porc) and porc.data.strip())
+        return branch, dirty
+
+    def _ahead_behind_state(
+        self, path: str, branch: str | None
+    ) -> tuple[int | None, int | None, bool]:
+        ahead: int | None = None
+        behind: int | None = None
+        no_upstream = True
+        if not branch:
+            return ahead, behind, no_upstream
+        up = self._run(
+            f"git rev-parse --verify --quiet origin/{shlex.quote(branch)}",
+            path,
+            quiet=True,
+        )
+        if not (self._ok(up) and up.data.strip()):
+            return ahead, behind, no_upstream
+        no_upstream = False
+        counts = self._run(
+            f"git rev-list --left-right --count origin/{shlex.quote(branch)}...HEAD",
+            path,
+            quiet=True,
+        )
+        if self._ok(counts) and counts.data.strip():
+            parts = counts.data.split()
+            if len(parts) == 2 and all(p.isdigit() for p in parts):
+                behind, ahead = int(parts[0]), int(parts[1])
+        return ahead, behind, no_upstream
+
+    def _base_unpushed_state(self, path: str, base: str) -> bool:
+        ub = self._run(
+            f"git rev-parse --verify --quiet origin/{shlex.quote(base)}",
+            path,
+            quiet=True,
+        )
+        if not (self._ok(ub) and ub.data.strip()):
+            return False
+        bc = self._run(
+            f"git rev-list --count origin/{shlex.quote(base)}..{shlex.quote(base)}",
+            path,
+            quiet=True,
+        )
+        if self._ok(bc) and bc.data.strip().isdigit():
+            return int(bc.data.strip()) > 0
+        return False
+
+    @staticmethod
+    def _classify_repo_state(dirty: bool, ahead: int | None, no_upstream: bool) -> str:
+        if dirty:
+            return "dirty"
+        if (ahead and ahead > 0) or no_upstream:
+            # ahead of origin, or no remote to compare against -> work is
+            # not on a remote.
+            return "unpushed"
+        return "clean"
 
     def _orphan_dirs(self, known_paths: set[str]) -> list[dict[str, str]]:
         """Dirs under ``WORKTREE_ROOT`` that look like worktrees but no repo tracks.
@@ -1048,18 +1236,29 @@ class WorktreeManager:
             top_path = os.path.join(WORKTREE_ROOT, top)
             if not os.path.isdir(top_path):
                 continue
-            candidates = [top_path]
-            for sub in sorted(os.listdir(top_path)):
-                sub_path = os.path.join(top_path, sub)
-                if os.path.isdir(sub_path):
-                    candidates.append(sub_path)
-            for cand in candidates:
-                if os.path.abspath(cand) in known_paths:
-                    continue
-                if os.path.exists(os.path.join(cand, ".git")):
-                    orphans.append(
-                        {"path": cand, "reason": "untracked worktree directory"}
-                    )
+            candidates = self._worktree_dir_candidates(top_path)
+            orphans.extend(self._orphan_entries(candidates, known_paths))
+        return orphans
+
+    @staticmethod
+    def _worktree_dir_candidates(top_path: str) -> list[str]:
+        candidates = [top_path]
+        for sub in sorted(os.listdir(top_path)):
+            sub_path = os.path.join(top_path, sub)
+            if os.path.isdir(sub_path):
+                candidates.append(sub_path)
+        return candidates
+
+    @staticmethod
+    def _orphan_entries(
+        candidates: list[str], known_paths: set[str]
+    ) -> list[dict[str, str]]:
+        orphans: list[dict[str, str]] = []
+        for cand in candidates:
+            if os.path.abspath(cand) in known_paths:
+                continue
+            if os.path.exists(os.path.join(cand, ".git")):
+                orphans.append({"path": cand, "reason": "untracked worktree directory"})
         return orphans
 
     def _read_ref(self, canonical: str, ref: str) -> str:
@@ -1192,75 +1391,96 @@ class WorktreeManager:
             canonical = self.resolve_repo(w["repo"])
             path = w.get("path", "")
             if cls == "merged" and canonical and path:
-                entry = {
-                    "repo": w["repo"],
-                    "branch": w["branch"],
-                    "path": path,
-                    "class": cls,
-                }
-                if prune_guard.worktree_is_locked(path):
-                    kept.append({**entry, "reason": "worktree is locked (git)"})
-                    continue
-                with prune_guard.guarded_worktree_prune(
-                    path, operation="prune merged worktree"
-                ) as held:
-                    if held is not None:
-                        kept.append({**entry, "reason": held})
-                        continue
-                    fresh = self._branch_state(path, base)
-                    if fresh["dirty"] or not fresh["merged"]:
-                        kept.append(
-                            {
-                                **entry,
-                                "reason": (
-                                    "state changed since the audit scan "
-                                    f"(dirty={fresh['dirty']}, "
-                                    f"ahead={fresh['ahead']}, "
-                                    f"behind={fresh['behind']}) - a lane is "
-                                    "still working here"
-                                ),
-                            }
-                        )
-                        continue
-                    res = self._run(
-                        f"git worktree remove {shlex.quote(path)}", canonical
-                    )
-                    ok = self._ok(res)
-                    entry["ok"] = ok
-                    if ok and w.get("branch"):
-                        (
-                            entry["branch_deleted"],
-                            reason,
-                            anchor,
-                        ) = self._delete_merged_branch(canonical, w["branch"], base)
-                        if reason:
-                            entry["branch_kept_reason"] = reason
-                        if anchor:
-                            entry["branch_anchor"] = anchor
-                    if not ok:
-                        entry["error"] = res.error.message if res.error else res.data
-                (pruned if entry.get("ok") else kept).append(entry)
+                bucket, entry = self._prune_one_merged(w, canonical, path, base)
+                (pruned if bucket == "pruned" else kept).append(entry)
             elif cls == "dangling" and canonical:
-                self._run("git worktree prune", canonical, quiet=True)
-                pruned.append(
-                    {
-                        "repo": w["repo"],
-                        "branch": w["branch"],
-                        "path": path,
-                        "class": cls,
-                        "ok": True,
-                    }
-                )
+                pruned.append(self._prune_one_dangling(w, canonical, path))
             else:
-                kept.append(
-                    {
-                        "repo": w["repo"],
-                        "branch": w["branch"],
-                        "class": cls,
-                        "reason": "not prunable (active/stale)",
-                    }
-                )
+                kept.append(self._not_prunable_entry(w))
         return pruned, kept
+
+    def _prune_one_merged(
+        self, w: dict[str, Any], canonical: str, path: str, base: str
+    ) -> tuple[str, dict[str, Any]]:
+        """Prune (or explain keeping) one ``merged``-classified worktree.
+
+        Returns ``("pruned"|"kept", entry)``. Every early exit below is a
+        refusal-with-reason, re-checked under the lane lease held by
+        :func:`prune_guard.guarded_worktree_prune` so a classification that
+        went stale since the audit scan is caught rather than acted on.
+        """
+        entry: dict[str, Any] = {
+            "repo": w["repo"],
+            "branch": w["branch"],
+            "path": path,
+            "class": w["class"],
+        }
+        if prune_guard.worktree_is_locked(path):
+            return "kept", {**entry, "reason": "worktree is locked (git)"}
+        with prune_guard.guarded_worktree_prune(
+            path, operation="prune merged worktree"
+        ) as held:
+            if held is not None:
+                return "kept", {**entry, "reason": held}
+            fresh = self._branch_state(path, base)
+            if fresh["dirty"] or not fresh["merged"]:
+                return "kept", {
+                    **entry,
+                    "reason": (
+                        "state changed since the audit scan "
+                        f"(dirty={fresh['dirty']}, "
+                        f"ahead={fresh['ahead']}, "
+                        f"behind={fresh['behind']}) - a lane is "
+                        "still working here"
+                    ),
+                }
+            self._finish_merged_prune(entry, canonical, path, w, base)
+        return ("pruned" if entry.get("ok") else "kept"), entry
+
+    def _finish_merged_prune(
+        self,
+        entry: dict[str, Any],
+        canonical: str,
+        path: str,
+        w: dict[str, Any],
+        base: str,
+    ) -> None:
+        res = self._run(f"git worktree remove {shlex.quote(path)}", canonical)
+        ok = self._ok(res)
+        entry["ok"] = ok
+        if ok and w.get("branch"):
+            (
+                entry["branch_deleted"],
+                reason,
+                anchor,
+            ) = self._delete_merged_branch(canonical, w["branch"], base)
+            if reason:
+                entry["branch_kept_reason"] = reason
+            if anchor:
+                entry["branch_anchor"] = anchor
+        if not ok:
+            entry["error"] = res.error.message if res.error else res.data
+
+    def _prune_one_dangling(
+        self, w: dict[str, Any], canonical: str, path: str
+    ) -> dict[str, Any]:
+        self._run("git worktree prune", canonical, quiet=True)
+        return {
+            "repo": w["repo"],
+            "branch": w["branch"],
+            "path": path,
+            "class": w["class"],
+            "ok": True,
+        }
+
+    @staticmethod
+    def _not_prunable_entry(w: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "repo": w["repo"],
+            "branch": w["branch"],
+            "class": w["class"],
+            "reason": "not prunable (active/stale)",
+        }
 
     def audit(
         self,
@@ -1284,53 +1504,18 @@ class WorktreeManager:
         """
         listing = self.list_worktrees(repo=repo).get("worktrees", [])
         linked = [w for w in listing if w.get("linked")]
-        worktrees: list[dict[str, Any]] = []
-        for w in linked:
-            path = str(w.get("path", ""))
-            branch = w.get("branch")
-            exists = bool(path) and os.path.isdir(path)
-            if exists and branch not in (None, "", "(detached)"):
-                state = self._branch_state(path, base)
-            else:
-                state = {
-                    "dirty": False,
-                    "ahead": 0,
-                    "behind": 0,
-                    "merged": False,
-                    "at_base": False,
-                    "last_commit_age_days": None,
-                }
-            worktrees.append(
-                {
-                    "repo": w.get("repo"),
-                    "branch": branch,
-                    "path": path,
-                    "head": w.get("head"),
-                    **state,
-                    "class": self._classify(state, branch, exists, stale_days),
-                }
-            )
+        worktrees = [self._worktree_audit_row(w, base, stale_days) for w in linked]
 
         repos_report = self._repo_states(repo=repo, base=base)
-        base_unpushed = {r["repo"]: r.get("base_unpushed", False) for r in repos_report}
-        for w in worktrees:
-            w["base_unpushed"] = base_unpushed.get(w["repo"], False)
+        self._apply_base_unpushed(worktrees, repos_report)
 
         known_paths = {os.path.abspath(str(w.get("path", ""))) for w in linked}
         orphans = self._orphan_dirs(known_paths)
 
-        do_not_disturb = [w for w in worktrees if w["class"] == "active"]
-        review = [w for w in worktrees if w["class"] == "stale"]
-        safe = [w for w in worktrees if w["class"] in ("merged", "dangling")]
-        summary = {
-            "worktrees": len(worktrees),
-            "merged": sum(w["class"] == "merged" for w in worktrees),
-            "active": len(do_not_disturb),
-            "stale": len(review),
-            "dangling": sum(w["class"] == "dangling" for w in worktrees),
-            "orphans": len(orphans),
-            "unpushed_repos": sum(r["class"] == "unpushed" for r in repos_report),
-        }
+        do_not_disturb, review, safe = self._bucket_worktrees(worktrees)
+        summary = self._audit_summary(
+            worktrees, do_not_disturb, review, orphans, repos_report
+        )
         result: dict[str, Any] = {
             "ok": True,
             "base": base,
@@ -1351,3 +1536,64 @@ class WorktreeManager:
         if prune_merged:
             result["pruned"], result["kept"] = self._prune_merged(worktrees, base)
         return result
+
+    def _worktree_audit_row(
+        self, w: dict[str, Any], base: str, stale_days: int
+    ) -> dict[str, Any]:
+        path = str(w.get("path", ""))
+        branch = w.get("branch")
+        exists = bool(path) and os.path.isdir(path)
+        if exists and branch not in (None, "", "(detached)"):
+            state = self._branch_state(path, base)
+        else:
+            state = {
+                "dirty": False,
+                "ahead": 0,
+                "behind": 0,
+                "merged": False,
+                "at_base": False,
+                "last_commit_age_days": None,
+            }
+        return {
+            "repo": w.get("repo"),
+            "branch": branch,
+            "path": path,
+            "head": w.get("head"),
+            **state,
+            "class": self._classify(state, branch, exists, stale_days),
+        }
+
+    @staticmethod
+    def _bucket_worktrees(
+        worktrees: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        do_not_disturb = [w for w in worktrees if w["class"] == "active"]
+        review = [w for w in worktrees if w["class"] == "stale"]
+        safe = [w for w in worktrees if w["class"] in ("merged", "dangling")]
+        return do_not_disturb, review, safe
+
+    @staticmethod
+    def _audit_summary(
+        worktrees: list[dict[str, Any]],
+        do_not_disturb: list[dict[str, Any]],
+        review: list[dict[str, Any]],
+        orphans: list[dict[str, Any]],
+        repos_report: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "worktrees": len(worktrees),
+            "merged": sum(w["class"] == "merged" for w in worktrees),
+            "active": len(do_not_disturb),
+            "stale": len(review),
+            "dangling": sum(w["class"] == "dangling" for w in worktrees),
+            "orphans": len(orphans),
+            "unpushed_repos": sum(r["class"] == "unpushed" for r in repos_report),
+        }
+
+    @staticmethod
+    def _apply_base_unpushed(
+        worktrees: list[dict[str, Any]], repos_report: list[dict[str, Any]]
+    ) -> None:
+        base_unpushed = {r["repo"]: r.get("base_unpushed", False) for r in repos_report}
+        for w in worktrees:
+            w["base_unpushed"] = base_unpushed.get(w["repo"], False)

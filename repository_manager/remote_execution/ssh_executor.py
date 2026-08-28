@@ -42,6 +42,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -124,6 +125,21 @@ def _require_tunnel_manager() -> None:
         ) from _TUNNEL_MANAGER_IMPORT_ERROR
 
 
+@dataclass(frozen=True)
+class _RunRequestContext:
+    """Bundled per-call identity shared by ``run``'s helpers.
+
+    Bundled so the helpers stay under the fleet's parameter cap; ``run``
+    itself keeps its existing keyword-only signature.
+    """
+
+    command_id: str
+    effective_worker: str
+    fence: str
+    started_at: datetime
+    log_sink: LogSink | None
+
+
 class TunnelSSHExecutor:
     """Run one C-04 ``ExecutionCommand`` on one SSH-reachable inventory alias.
 
@@ -172,31 +188,17 @@ class TunnelSSHExecutor:
         started_at = datetime.now(UTC)
         token = cancellation or CancellationToken()
         checker = fence_check or (lambda: True)
+        ctx = _RunRequestContext(
+            command_id=command_id,
+            effective_worker=effective_worker,
+            fence=fence,
+            started_at=started_at,
+            log_sink=log_sink,
+        )
 
-        if token.is_cancelled():
-            return self._finish(
-                command_id,
-                effective_worker,
-                fence,
-                RmExecutionOutcome.CANCELLED,
-                RmFailureClass.CANCELLED_DEADLINE,
-                started_at,
-                "",
-                "cancelled before SSH dispatch",
-                log_sink,
-            )
-        if not self._ok(checker):
-            return self._finish(
-                command_id,
-                effective_worker,
-                fence,
-                RmExecutionOutcome.REFUSED,
-                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
-                started_at,
-                "",
-                "fence invalid before SSH dispatch",
-                log_sink,
-            )
+        precheck = self._precheck_refusal(ctx, token, checker)
+        if precheck is not None:
+            return precheck
 
         shell_command = self._shell_command(command)
         tunnel = self._tunnel_factory(self.alias)
@@ -204,17 +206,74 @@ class TunnelSSHExecutor:
             result = tunnel.run_command(shell_command, timeout=command.timeout_seconds)
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
             return self._finish(
-                command_id,
-                effective_worker,
-                fence,
+                ctx.command_id,
+                ctx.effective_worker,
+                ctx.fence,
                 RmExecutionOutcome.FAILED,
                 RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
-                started_at,
+                ctx.started_at,
                 "",
                 f"SSH dispatch to {self.alias!r} raised {type(exc).__name__}: {exc}",
-                log_sink,
+                ctx.log_sink,
             )
 
+        outcome, failure_class, stdout_tail, stderr_tail = self._classify_ssh_result(
+            result, command
+        )
+        outcome, failure_class = self._downgrade_outcome(
+            outcome, failure_class, token, checker
+        )
+
+        exec_result = self._finish(
+            ctx.command_id,
+            ctx.effective_worker,
+            ctx.fence,
+            outcome,
+            failure_class,
+            ctx.started_at,
+            stdout_tail,
+            stderr_tail,
+            ctx.log_sink,
+            # `CommandResult` carries no numeric exit code, only `success`
+            # (already `exit_status == 0` at the source) -- SUCCEEDED means
+            # exactly exit_code=0, never a fabricated number for anything else.
+            exit_code=0 if outcome == RmExecutionOutcome.SUCCEEDED else None,
+        )
+
+        return self._apply_publication(exec_result, fence, publisher)
+
+    def _precheck_refusal(
+        self, ctx: _RunRequestContext, token: CancellationToken, checker: Any
+    ) -> ExecutionResult | None:
+        if token.is_cancelled():
+            return self._finish(
+                ctx.command_id,
+                ctx.effective_worker,
+                ctx.fence,
+                RmExecutionOutcome.CANCELLED,
+                RmFailureClass.CANCELLED_DEADLINE,
+                ctx.started_at,
+                "",
+                "cancelled before SSH dispatch",
+                ctx.log_sink,
+            )
+        if not self._ok(checker):
+            return self._finish(
+                ctx.command_id,
+                ctx.effective_worker,
+                ctx.fence,
+                RmExecutionOutcome.REFUSED,
+                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+                ctx.started_at,
+                "",
+                "fence invalid before SSH dispatch",
+                ctx.log_sink,
+            )
+        return None
+
+    def _classify_ssh_result(
+        self, result: Any, command: ExecutionCommand
+    ) -> tuple[RmExecutionOutcome, RmFailureClass | None, str, str]:
         outcome = (
             RmExecutionOutcome.SUCCEEDED
             if result.success
@@ -228,57 +287,55 @@ class TunnelSSHExecutor:
             result.stderr or (getattr(result, "error_message", "") or ""),
             command.max_stderr_bytes,
         )
+        return outcome, failure_class, stdout_tail, stderr_tail
 
+    @staticmethod
+    def _downgrade_outcome(
+        outcome: RmExecutionOutcome,
+        failure_class: RmFailureClass | None,
+        token: CancellationToken,
+        checker: Any,
+    ) -> tuple[RmExecutionOutcome, RmFailureClass | None]:
         # A cancellation/fence loss observed only AFTER the (already
         # blocking, already-finished) remote call returned still must not
         # be published as a success — same downgrade rule
         # ``RemoteWorkerExecutor``/``LocalExecutor`` both apply.
         if outcome == RmExecutionOutcome.SUCCEEDED and token.is_cancelled():
-            outcome = RmExecutionOutcome.CANCELLED
-            failure_class = RmFailureClass.CANCELLED_DEADLINE
-        elif outcome == RmExecutionOutcome.SUCCEEDED and not self._ok(checker):
-            outcome = RmExecutionOutcome.REFUSED
-            failure_class = RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT
+            return RmExecutionOutcome.CANCELLED, RmFailureClass.CANCELLED_DEADLINE
+        if outcome == RmExecutionOutcome.SUCCEEDED and not TunnelSSHExecutor._ok(
+            checker
+        ):
+            return (
+                RmExecutionOutcome.REFUSED,
+                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+            )
+        return outcome, failure_class
 
-        exec_result = self._finish(
-            command_id,
-            effective_worker,
-            fence,
-            outcome,
-            failure_class,
-            started_at,
-            stdout_tail,
-            stderr_tail,
-            log_sink,
-            # `CommandResult` carries no numeric exit code, only `success`
-            # (already `exit_status == 0` at the source) -- SUCCEEDED means
-            # exactly exit_code=0, never a fabricated number for anything else.
-            exit_code=0 if outcome == RmExecutionOutcome.SUCCEEDED else None,
-        )
-
-        if (
+    @staticmethod
+    def _apply_publication(
+        exec_result: ExecutionResult, fence: str, publisher: Any
+    ) -> ExecutionResult:
+        if not (
             exec_result.outcome == RmExecutionOutcome.SUCCEEDED
             and publisher is not None
         ):
-            try:
-                decision = publisher.publish(exec_result, fence=fence)
-            except Exception:  # noqa: BLE001 - defensive publication boundary
-                exec_result = exec_result.model_copy(
-                    update={
-                        "outcome": RmExecutionOutcome.FAILED,
-                        "failure_class": RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
-                    }
-                )
-            else:
-                if decision != PublicationDecision.ACCEPTED:
-                    exec_result = exec_result.model_copy(
-                        update={
-                            "outcome": RmExecutionOutcome.REFUSED,
-                            "failure_class": (
-                                RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT
-                            ),
-                        }
-                    )
+            return exec_result
+        try:
+            decision = publisher.publish(exec_result, fence=fence)
+        except Exception:  # noqa: BLE001 - defensive publication boundary
+            return exec_result.model_copy(
+                update={
+                    "outcome": RmExecutionOutcome.FAILED,
+                    "failure_class": RmFailureClass.WORKER_ENVIRONMENT_FAILURE,
+                }
+            )
+        if decision != PublicationDecision.ACCEPTED:
+            return exec_result.model_copy(
+                update={
+                    "outcome": RmExecutionOutcome.REFUSED,
+                    "failure_class": RmFailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+                }
+            )
         return exec_result
 
     @staticmethod

@@ -143,15 +143,21 @@ class PathSelection:
             # an explicit include selector therefore has no affected input;
             # an unscoped gate remains the conservative default.
             return not self.include
-        eligible = [
-            path
-            for path in changed_paths
-            if not any(fnmatch.fnmatch(path, pattern) for pattern in self.exclude)
-        ]
+        eligible = self._eligible_paths(changed_paths)
         if not eligible:
             return False
         if not self.include:
             return True
+        return self._any_included(eligible)
+
+    def _eligible_paths(self, changed_paths: Sequence[str]) -> list[str]:
+        return [
+            path
+            for path in changed_paths
+            if not any(fnmatch.fnmatch(path, pattern) for pattern in self.exclude)
+        ]
+
+    def _any_included(self, eligible: Sequence[str]) -> bool:
         for path in eligible:
             if any(fnmatch.fnmatch(path, pattern) for pattern in self.include):
                 return True
@@ -265,11 +271,18 @@ class ValidationProfile:
     source: str = "builtin"
 
     def __post_init__(self) -> None:
+        self._validate_family_and_version()
+        names = self._validate_gate_names_and_order()
+        self._validate_gate_dependencies(names)
+
+    def _validate_family_and_version(self) -> None:
         family = _nonblank(self.family, "profile family")
         if not _SAFE_NAME.fullmatch(family):
             raise ValidationPolicyError(f"profile family is unsafe: {family!r}")
         if self.profile_version < 1:
             raise ValidationPolicyError("profile_version must be positive")
+
+    def _validate_gate_names_and_order(self) -> list[str]:
         names = [gate.name for gate in self.gates]
         if len(names) != len(set(names)):
             raise ValidationPolicyError("profile gate names must be unique")
@@ -280,6 +293,10 @@ class ValidationProfile:
             if index
         ):
             raise ValidationPolicyError("profile gates must be in stage order")
+        return names
+
+    def _validate_gate_dependencies(self, names: list[str]) -> None:
+        by_stage = {stage: index for index, stage in enumerate(ValidationStage)}
         known = set(names)
         gate_by_name = {gate.name: gate for gate in self.gates}
         for gate in self.gates:
@@ -292,7 +309,8 @@ class ValidationProfile:
             for dependency in gate.artifact_dependencies:
                 if by_stage[gate_by_name[dependency].stage] >= by_stage[gate.stage]:
                     raise ValidationPolicyError(
-                        f"gate {gate.name!r} dependency {dependency!r} must be an earlier stage"
+                        f"gate {gate.name!r} dependency {dependency!r} must be "
+                        "an earlier stage"
                     )
 
     @property
@@ -668,6 +686,30 @@ def _gate_from_schema(
     )
 
 
+def _extract_gate_modes(
+    raw_gates: Sequence[Any],
+) -> tuple[list[dict[str, Any]], dict[str, GateMode]]:
+    modes: dict[str, GateMode] = {}
+    copied_gates: list[dict[str, Any]] = []
+    for index, raw_gate in enumerate(raw_gates):
+        if not isinstance(raw_gate, Mapping):
+            copied_gates.append(raw_gate)  # parser reports the precise shape error
+            continue
+        copied = dict(raw_gate)
+        raw_mode = copied.pop("mode", GateMode.BLOCKING.value)
+        try:
+            mode = GateMode(raw_mode)
+        except ValueError as exc:
+            raise ValidationPolicyError(
+                f"gates[{index}].mode must be blocking, advisory, or deferred"
+            ) from exc
+        raw_name = copied.get("name")
+        if isinstance(raw_name, str):
+            modes[raw_name] = mode
+        copied_gates.append(copied)
+    return copied_gates, modes
+
+
 def profile_from_merge_config(
     data: Mapping[str, Any], *, family: str = "repository", source: str = ""
 ) -> ValidationProfile:
@@ -681,24 +723,7 @@ def profile_from_merge_config(
     raw_gates = normalized.get("gates", [])
     modes: dict[str, GateMode] = {}
     if isinstance(raw_gates, Sequence) and not isinstance(raw_gates, (str, bytes)):
-        copied_gates: list[dict[str, Any]] = []
-        for index, raw_gate in enumerate(raw_gates):
-            if not isinstance(raw_gate, Mapping):
-                copied_gates.append(raw_gate)  # parser reports the precise shape error
-                continue
-            copied = dict(raw_gate)
-            raw_mode = copied.pop("mode", GateMode.BLOCKING.value)
-            try:
-                mode = GateMode(raw_mode)
-            except ValueError as exc:
-                raise ValidationPolicyError(
-                    f"gates[{index}].mode must be blocking, advisory, or deferred"
-                ) from exc
-            raw_name = copied.get("name")
-            if isinstance(raw_name, str):
-                modes[raw_name] = mode
-            copied_gates.append(copied)
-        normalized["gates"] = copied_gates
+        normalized["gates"], modes = _extract_gate_modes(raw_gates)
     try:
         schema = parse_merge_config(normalized, source=source)
     except (ConfigSchemaError, TypeError, ValueError) as exc:
