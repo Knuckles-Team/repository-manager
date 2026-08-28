@@ -39,6 +39,7 @@ optional ``tunnel-manager`` dependency is absent -- see
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -218,182 +219,266 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     return {"ok": True, **result}
 
 
-def _dispatch_resolved(resolved: str, kwargs: dict[str, Any]) -> dict[str, Any]:
-    if resolved == "register_worker":
-        host = HostCapacity(
-            host_id=kwargs["host_id"],
-            total=ResourceVector(
-                cpu_weight=kwargs.get("cpu_weight", 1),
-                memory_mib=kwargs.get("memory_mib", 1),
-                disk_mib=kwargs.get("disk_mib", 1),
-                process_slots=kwargs.get("process_slots", 1),
-            ),
-            labels=tuple(kwargs.get("labels") or ()),
-            target_kind="remote",
+def _dispatch_register_worker(kwargs: dict[str, Any]) -> dict[str, Any]:
+    host = HostCapacity(
+        host_id=kwargs["host_id"],
+        total=ResourceVector(
+            cpu_weight=kwargs.get("cpu_weight", 1),
+            memory_mib=kwargs.get("memory_mib", 1),
+            disk_mib=kwargs.get("disk_mib", 1),
+            process_slots=kwargs.get("process_slots", 1),
+        ),
+        labels=tuple(kwargs.get("labels") or ()),
+        target_kind="remote",
+    )
+    registered = capacity_inventory().register(host)
+    if registered:
+        # Persist AFTER the in-memory ledger accepted it, mirroring the
+        # exact ordering `LaneRegistry._project` uses: the durable
+        # projection follows acceptance, it never gates it, so a
+        # projection outage cannot turn one legitimate registration into
+        # a refusal.
+        _capacity_store().save(host)
+    profile = RemoteWorkerProfile(
+        host_id=kwargs["host_id"],
+        inventory_alias=kwargs["inventory_alias"],
+        repository_roots=dict(kwargs.get("repository_roots") or {}),
+        toolchains=tuple(kwargs.get("toolchains") or ()),
+    )
+    remote_worker_registry().register_profile(profile)
+    return {
+        "host_id": host.host_id,
+        "capacity_registered": registered,
+        "profile_registered": True,
+    }
+
+
+def _dispatch_seed_from_inventory(kwargs: dict[str, Any]) -> dict[str, Any]:
+    seed_result = seed_capacity(capacity_inventory(), path=kwargs.get("path"))
+    for host_id in seed_result.seeded:
+        _capacity_store().save(capacity_inventory().require(host_id))
+    return {
+        "seeded": list(seed_result.seeded),
+        "already_registered": list(seed_result.already_registered),
+        "inventory_path": seed_result.inventory_path,
+        "inventory_host_count": seed_result.inventory_host_count,
+        "note": (
+            "seeded hosts carry PLACEHOLDER capacity and a heartbeat "
+            "deliberately dated in the past -- they read as stale until "
+            "a real 'register_worker' (with measured resources) or a "
+            "future heartbeat action confirms them; they will not be "
+            "admitted for real work until then"
+        ),
+    }
+
+
+def _dispatch_profile_action(kwargs: dict[str, Any]) -> dict[str, Any]:
+    profile = remote_worker_registry().profile(kwargs["host_id"])
+    return {
+        "host_id": profile.host_id,
+        "inventory_alias": profile.inventory_alias,
+        "repository_roots": dict(profile.repository_roots),
+        "toolchains": list(profile.toolchains),
+    }
+
+
+def _dispatch_recheck(kwargs: dict[str, Any]) -> dict[str, Any]:
+    target = remote_worker_registry().recheck_at_claim(
+        kwargs["host_id"],
+        actor=kwargs.get("actor", "repository-manager"),
+        repository_id=kwargs["repository_id"],
+        required_toolchain=kwargs.get("required_toolchain"),
+    )
+    return {"host_id": kwargs["host_id"], "authorized_target": repr(target)}
+
+
+def _execute_staged_source_commands(
+    executor: LocalExecutor, worktree_name: str, clone: Any, fetch: Any, checkout: Any
+) -> None:
+    for index, command in enumerate((clone, fetch, checkout)):
+        result = executor.run(
+            command,
+            command_id=f"command:stage-source:{index}",
+            worker_id="worker:stage-source",
+            fence=f"fence:stage-source:{worktree_name}",
         )
-        registered = capacity_inventory().register(host)
-        if registered:
-            # Persist AFTER the in-memory ledger accepted it, mirroring the
-            # exact ordering `LaneRegistry._project` uses: the durable
-            # projection follows acceptance, it never gates it, so a
-            # projection outage cannot turn one legitimate registration into
-            # a refusal.
-            _capacity_store().save(host)
-        profile = RemoteWorkerProfile(
-            host_id=kwargs["host_id"],
-            inventory_alias=kwargs["inventory_alias"],
-            repository_roots=dict(kwargs.get("repository_roots") or {}),
-            toolchains=tuple(kwargs.get("toolchains") or ()),
-        )
-        remote_worker_registry().register_profile(profile)
-        return {
-            "host_id": host.host_id,
-            "capacity_registered": registered,
-            "profile_registered": True,
-        }
-
-    if resolved == "seed_from_inventory":
-        seed_result = seed_capacity(capacity_inventory(), path=kwargs.get("path"))
-        for host_id in seed_result.seeded:
-            _capacity_store().save(capacity_inventory().require(host_id))
-        return {
-            "seeded": list(seed_result.seeded),
-            "already_registered": list(seed_result.already_registered),
-            "inventory_path": seed_result.inventory_path,
-            "inventory_host_count": seed_result.inventory_host_count,
-            "note": (
-                "seeded hosts carry PLACEHOLDER capacity and a heartbeat "
-                "deliberately dated in the past -- they read as stale until "
-                "a real 'register_worker' (with measured resources) or a "
-                "future heartbeat action confirms them; they will not be "
-                "admitted for real work until then"
-            ),
-        }
-
-    if resolved == "profile":
-        profile = remote_worker_registry().profile(kwargs["host_id"])
-        return {
-            "host_id": profile.host_id,
-            "inventory_alias": profile.inventory_alias,
-            "repository_roots": dict(profile.repository_roots),
-            "toolchains": list(profile.toolchains),
-        }
-
-    if resolved == "recheck":
-        target = remote_worker_registry().recheck_at_claim(
-            kwargs["host_id"],
-            actor=kwargs.get("actor", "repository-manager"),
-            repository_id=kwargs["repository_id"],
-            required_toolchain=kwargs.get("required_toolchain"),
-        )
-        return {"host_id": kwargs["host_id"], "authorized_target": repr(target)}
-
-    if resolved == "stage_source":
-        staging = ImmutableSourceStaging()
-        clone, fetch, checkout = staging.stage_commands(
-            origin=kwargs["origin"],
-            tree_sha=kwargs["tree_sha"],
-            parent_root=kwargs["parent_root"],
-            worktree_name=kwargs["worktree_name"],
-            timeout_seconds=kwargs.get("timeout_seconds", 1800),
-        )
-        commands = {
-            "clone": clone.canonical_payload(),
-            "fetch": fetch.canonical_payload(),
-            "checkout": checkout.canonical_payload(),
-        }
-        if not kwargs.get("execute_locally", False):
-            return {"commands": commands, "executed": False}
-
-        executor = LocalExecutor(authorized_roots=kwargs["parent_root"])
-        for index, command in enumerate((clone, fetch, checkout)):
-            result = executor.run(
-                command,
-                command_id=f"command:stage-source:{index}",
-                worker_id="worker:stage-source",
-                fence=f"fence:stage-source:{kwargs['worktree_name']}",
+        if result.outcome.value != "succeeded":
+            raise SourceVerificationError(
+                f"source staging step {index} did not succeed: {result.outcome.value}"
             )
-            if result.outcome.value != "succeeded":
-                raise SourceVerificationError(
-                    f"source staging step {index} did not succeed: "
-                    f"{result.outcome.value}"
-                )
-        destination = f"{kwargs['parent_root'].rstrip('/')}/{kwargs['worktree_name']}"
-        staged = staging.verify_staged_sha(
-            executor,
-            destination=destination,
-            expected_sha=kwargs["tree_sha"],
-            repository_id=kwargs.get("repository_id", kwargs["worktree_name"]),
-        )
-        return {
-            "commands": commands,
-            "executed": True,
-            "staged": {
-                "repository_id": staged.repository_id,
-                "tree_sha": staged.tree_sha,
-                "destination": staged.destination,
-                "verified_at": staged.verified_at.isoformat(),
-            },
-        }
 
-    if resolved == "verify_source":
-        destination = kwargs["destination"]
-        parent_root = str(Path(destination).parent)
-        executor = LocalExecutor(authorized_roots=parent_root)
-        staging = ImmutableSourceStaging()
-        staged = staging.verify_staged_sha(
-            executor,
-            destination=destination,
-            expected_sha=kwargs["expected_sha"],
-            repository_id=kwargs["repository_id"],
-        )
-        return {
+
+def _dispatch_stage_source(kwargs: dict[str, Any]) -> dict[str, Any]:
+    staging = ImmutableSourceStaging()
+    clone, fetch, checkout = staging.stage_commands(
+        origin=kwargs["origin"],
+        tree_sha=kwargs["tree_sha"],
+        parent_root=kwargs["parent_root"],
+        worktree_name=kwargs["worktree_name"],
+        timeout_seconds=kwargs.get("timeout_seconds", 1800),
+    )
+    commands = {
+        "clone": clone.canonical_payload(),
+        "fetch": fetch.canonical_payload(),
+        "checkout": checkout.canonical_payload(),
+    }
+    if not kwargs.get("execute_locally", False):
+        return {"commands": commands, "executed": False}
+
+    executor = LocalExecutor(authorized_roots=kwargs["parent_root"])
+    _execute_staged_source_commands(
+        executor, kwargs["worktree_name"], clone, fetch, checkout
+    )
+    destination = f"{kwargs['parent_root'].rstrip('/')}/{kwargs['worktree_name']}"
+    staged = staging.verify_staged_sha(
+        executor,
+        destination=destination,
+        expected_sha=kwargs["tree_sha"],
+        repository_id=kwargs.get("repository_id", kwargs["worktree_name"]),
+    )
+    return {
+        "commands": commands,
+        "executed": True,
+        "staged": {
             "repository_id": staged.repository_id,
             "tree_sha": staged.tree_sha,
             "destination": staged.destination,
             "verified_at": staged.verified_at.isoformat(),
-        }
+        },
+    }
 
-    if resolved == "receive_artifact":
-        receiver = ArtifactStagingReceiver(kwargs["root"])
-        content = base64.b64decode(kwargs["content_base64"])
-        method = (
-            receiver.receive_log if kwargs.get("kind") == "log" else receiver.receive
-        )
-        receipt = method(
-            kwargs["relative_path"],
-            [content],
-            declared_size=len(content),
-            host_id=kwargs["host_id"],
-            source_description=kwargs["source_description"],
-            declared_digest=kwargs.get("declared_digest"),
-            media_type=kwargs.get(
-                "media_type",
-                "text/plain"
-                if kwargs.get("kind") == "log"
-                else "application/octet-stream",
-            ),
-        )
-        return {
-            "reference": receipt.reference.canonical_payload(),
-            "host_id": receipt.host_id,
-            "outcome": receipt.outcome.value,
-        }
 
-    if resolved == "dispatch_build":
-        return _dispatch_build(kwargs)
+def _dispatch_verify_source(kwargs: dict[str, Any]) -> dict[str, Any]:
+    destination = kwargs["destination"]
+    parent_root = str(Path(destination).parent)
+    executor = LocalExecutor(authorized_roots=parent_root)
+    staging = ImmutableSourceStaging()
+    staged = staging.verify_staged_sha(
+        executor,
+        destination=destination,
+        expected_sha=kwargs["expected_sha"],
+        repository_id=kwargs["repository_id"],
+    )
+    return {
+        "repository_id": staged.repository_id,
+        "tree_sha": staged.tree_sha,
+        "destination": staged.destination,
+        "verified_at": staged.verified_at.isoformat(),
+    }
 
-    if resolved == "host_loss_reconcile":
+
+def _dispatch_receive_artifact(kwargs: dict[str, Any]) -> dict[str, Any]:
+    receiver = ArtifactStagingReceiver(kwargs["root"])
+    content = base64.b64decode(kwargs["content_base64"])
+    method = receiver.receive_log if kwargs.get("kind") == "log" else receiver.receive
+    receipt = method(
+        kwargs["relative_path"],
+        [content],
+        declared_size=len(content),
+        host_id=kwargs["host_id"],
+        source_description=kwargs["source_description"],
+        declared_digest=kwargs.get("declared_digest"),
+        media_type=kwargs.get(
+            "media_type",
+            "text/plain" if kwargs.get("kind") == "log" else "application/octet-stream",
+        ),
+    )
+    return {
+        "reference": receipt.reference.canonical_payload(),
+        "host_id": receipt.host_id,
+        "outcome": receipt.outcome.value,
+    }
+
+
+def _dispatch_host_loss_reconcile(kwargs: dict[str, Any]) -> dict[str, Any]:
+    raise RemoteExecutionUnavailableError(
+        "host-loss reconciliation requires a live WorkItem-authoritative "
+        "ResourceScheduler.release (repository_manager.native_reservations."
+        "NativeWorkItemReservationPort, bound to a connected graph-os "
+        "engine client); no such live scheduler is wired into this "
+        "MCP/CLI entrypoint yet, and this module never substitutes a "
+        "local in-memory reservation ledger for that authority"
+    )
+
+
+def _dispatch_resolved(resolved: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+    handler = _REMOTE_WORKER_DISPATCH_TABLE.get(resolved)
+    if handler is None:
+        raise AssertionError(f"unhandled resolved remote-worker action {resolved!r}")
+    return handler(kwargs)
+
+
+def _remote_build_resources(kwargs: dict[str, Any]) -> ResourceVector:
+    return ResourceVector(
+        cpu_weight=int(kwargs.get("cpu_weight") or 1),
+        memory_mib=int(kwargs.get("memory_mib") or 0),
+        disk_mib=int(kwargs.get("disk_mib") or 0),
+        process_slots=int(kwargs.get("process_slots") or 1),
+    )
+
+
+def _admit_remote_build(
+    host_id: str, repository_id: str, resources: ResourceVector
+) -> tuple[Any, str]:
+    """``(profile, authorized_root)`` — refuses (raises) if the host is
+    unregistered, unauthorized for ``repository_id``, or does not currently
+    admit the requested weighted resources.
+    """
+    registry = remote_worker_registry()
+    profile = registry.profile(host_id)  # refuses if unregistered
+    authorized_root = registry.authorized_root(host_id, repository_id)
+    fits, reason = capacity_inventory().can_fit(host_id, resources)
+    if not fits:
         raise RemoteExecutionUnavailableError(
-            "host-loss reconciliation requires a live WorkItem-authoritative "
-            "ResourceScheduler.release (repository_manager.native_reservations."
-            "NativeWorkItemReservationPort, bound to a connected graph-os "
-            "engine client); no such live scheduler is wired into this "
-            "MCP/CLI entrypoint yet, and this module never substitutes a "
-            "local in-memory reservation ledger for that authority"
+            f"host {host_id!r} does not currently admit this build: {reason}"
         )
+    return profile, authorized_root
 
-    raise AssertionError(f"unhandled resolved remote-worker action {resolved!r}")
+
+def _stage_remote_build_source(
+    executor: Any,
+    host_id: str,
+    worktree_name: str,
+    clone: Any,
+    fetch: Any,
+    checkout: Any,
+) -> None:
+    for index, staging_command in enumerate((clone, fetch, checkout)):
+        result = executor.run(
+            staging_command,
+            command_id=f"command:dispatch-build:stage:{index}",
+            worker_id=f"worker:{host_id}",
+            fence=f"fence:dispatch-build:{worktree_name}",
+        )
+        if result.outcome.value != "succeeded":
+            raise SourceVerificationError(
+                f"remote staging step {index} on host {host_id!r} did not "
+                f"succeed: {result.outcome.value} — {result.stderr_tail}"
+            )
+
+
+def _run_remote_build(
+    executor: Any,
+    host_id: str,
+    worktree_name: str,
+    command: tuple[str, ...],
+    destination: str,
+    workdir_rel: str,
+    timeout_seconds: int,
+) -> Any:
+    from repository_manager.development import ExecutionCommand
+
+    build_command = ExecutionCommand(
+        argv=command,
+        workdir=f"{destination}/{workdir_rel}".rstrip("/"),
+        timeout_seconds=timeout_seconds,
+    )
+    return executor.run(
+        build_command,
+        command_id="command:dispatch-build:build",
+        worker_id=f"worker:{host_id}",
+        fence=f"fence:dispatch-build:{worktree_name}",
+    )
 
 
 def _dispatch_build(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -428,7 +513,6 @@ def _dispatch_build(kwargs: dict[str, Any]) -> dict[str, Any]:
     mutually exclusive here.
     """
 
-    from repository_manager.development import ExecutionCommand
     from repository_manager.remote_execution.ssh_executor import TunnelSSHExecutor
 
     host_id = kwargs["host_id"]
@@ -438,21 +522,9 @@ def _dispatch_build(kwargs: dict[str, Any]) -> dict[str, Any]:
     command = tuple(kwargs["command"])
     workdir_rel = kwargs.get("workdir") or "."
     timeout_seconds = int(kwargs.get("timeout_seconds") or 3600)
-    resources = ResourceVector(
-        cpu_weight=int(kwargs.get("cpu_weight") or 1),
-        memory_mib=int(kwargs.get("memory_mib") or 0),
-        disk_mib=int(kwargs.get("disk_mib") or 0),
-        process_slots=int(kwargs.get("process_slots") or 1),
-    )
+    resources = _remote_build_resources(kwargs)
 
-    registry = remote_worker_registry()
-    profile = registry.profile(host_id)  # refuses if unregistered
-    authorized_root = registry.authorized_root(host_id, repository_id)
-    fits, reason = capacity_inventory().can_fit(host_id, resources)
-    if not fits:
-        raise RemoteExecutionUnavailableError(
-            f"host {host_id!r} does not currently admit this build: {reason}"
-        )
+    profile, authorized_root = _admit_remote_build(host_id, repository_id, resources)
 
     executor = TunnelSSHExecutor(profile.inventory_alias)
     staging = ImmutableSourceStaging()
@@ -467,20 +539,7 @@ def _dispatch_build(kwargs: dict[str, Any]) -> dict[str, Any]:
         worktree_name=worktree_name,
         timeout_seconds=timeout_seconds,
     )
-    stage_results = []
-    for index, staging_command in enumerate((clone, fetch, checkout)):
-        result = executor.run(
-            staging_command,
-            command_id=f"command:dispatch-build:stage:{index}",
-            worker_id=f"worker:{host_id}",
-            fence=f"fence:dispatch-build:{worktree_name}",
-        )
-        stage_results.append(result)
-        if result.outcome.value != "succeeded":
-            raise SourceVerificationError(
-                f"remote staging step {index} on host {host_id!r} did not "
-                f"succeed: {result.outcome.value} — {result.stderr_tail}"
-            )
+    _stage_remote_build_source(executor, host_id, worktree_name, clone, fetch, checkout)
     destination = f"{authorized_root.rstrip('/')}/{worktree_name}"
     staged = staging.verify_staged_sha(
         executor,
@@ -489,16 +548,14 @@ def _dispatch_build(kwargs: dict[str, Any]) -> dict[str, Any]:
         repository_id=repository_id,
     )
 
-    build_command = ExecutionCommand(
-        argv=command,
-        workdir=f"{destination}/{workdir_rel}".rstrip("/"),
-        timeout_seconds=timeout_seconds,
-    )
-    build_result = executor.run(
-        build_command,
-        command_id="command:dispatch-build:build",
-        worker_id=f"worker:{host_id}",
-        fence=f"fence:dispatch-build:{worktree_name}",
+    build_result = _run_remote_build(
+        executor,
+        host_id,
+        worktree_name,
+        command,
+        destination,
+        workdir_rel,
+        timeout_seconds,
     )
     return {
         "host_id": host_id,
@@ -525,3 +582,19 @@ def _dispatch_build(kwargs: dict[str, Any]) -> dict[str, Any]:
             "rather than claiming a full round trip"
         ),
     }
+
+
+# Built here, after every handler above is defined, and looked up by name
+# (not referenced until `_dispatch_resolved()` is actually CALLED, well
+# after module import completes).
+_REMOTE_WORKER_DISPATCH_TABLE: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "register_worker": _dispatch_register_worker,
+    "seed_from_inventory": _dispatch_seed_from_inventory,
+    "profile": _dispatch_profile_action,
+    "recheck": _dispatch_recheck,
+    "stage_source": _dispatch_stage_source,
+    "verify_source": _dispatch_verify_source,
+    "receive_artifact": _dispatch_receive_artifact,
+    "dispatch_build": _dispatch_build,
+    "host_loss_reconcile": _dispatch_host_loss_reconcile,
+}
