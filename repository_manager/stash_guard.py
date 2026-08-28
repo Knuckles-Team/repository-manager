@@ -296,222 +296,230 @@ def park(
     ref = _ref or _lane_ref(tree, lane)
     lease = _hold_stash_lease(tree) if _lease else contextlib.nullcontext()
     with lease:
-        status = git.git_action(command="git status --porcelain", path=tree, quiet=True)
-        if not _ok(status):
-            return {"ok": False, "parked": False, "ref": ref, "error": _err(status)}
-
-        existing = git.git_action(
-            command=f"git rev-parse --verify --quiet {shlex.quote(ref)}",
-            path=tree,
-            quiet=True,
-        )
-        if _ok(existing) and str(existing.data or "").strip():
-            return {
-                "ok": False,
-                "parked": False,
-                "ref": ref,
-                "error": f"private lane stash ref already exists: {ref}",
-            }
-
-        untracked = git.git_action(
-            command="git ls-files --others --exclude-standard -z",
-            path=tree,
-            quiet=True,
-        )
-        if not _ok(untracked):
-            return {
-                "ok": False,
-                "parked": False,
-                "ref": ref,
-                "error": _err(untracked),
-            }
-        untracked_paths = [
-            item for item in str(untracked.data or "").split("\0") if item
-        ]
-        temp_fd, temp_name = tempfile.mkstemp(prefix="rmdd26-index-")
-        os.close(temp_fd)
-        os.unlink(temp_name)
-        temp_env = os.environ.copy()
-        temp_env["GIT_INDEX_FILE"] = temp_name
         try:
-            for command in ("git read-tree HEAD",):
-                staged = git.git_action(
-                    command=command, path=tree, env=temp_env, quiet=True
-                )
-                if not _ok(staged):
-                    return {
-                        "ok": False,
-                        "parked": False,
-                        "ref": ref,
-                        "error": f"{command} failed: {_err(staged)}",
-                    }
-            indexed = git.git_action(
-                command="git ls-files -z", path=tree, env=temp_env, quiet=True
-            )
-            if not _ok(indexed):
-                return {
-                    "ok": False,
-                    "parked": False,
-                    "ref": ref,
-                    "error": f"git ls-files failed: {_err(indexed)}",
-                }
-            tracked_paths = [
-                item for item in str(indexed.data or "").split("\0") if item
-            ]
-            if tracked_paths:
-                quoted_paths = " ".join(shlex.quote(item) for item in tracked_paths)
-                for clear_flags in (
-                    f"git update-index --no-assume-unchanged {quoted_paths}",
-                    f"git update-index --no-skip-worktree {quoted_paths}",
-                ):
-                    cleared = git.git_action(
-                        command=clear_flags, path=tree, env=temp_env, quiet=True
-                    )
-                    if not _ok(cleared):
-                        return {
-                            "ok": False,
-                            "parked": False,
-                            "ref": ref,
-                            "error": f"{clear_flags} failed: {_err(cleared)}",
-                        }
-            staged = git.git_action(
-                command="git add -A", path=tree, env=temp_env, quiet=True
-            )
-            if not _ok(staged):
-                return {
-                    "ok": False,
-                    "parked": False,
-                    "ref": ref,
-                    "error": f"git add -A failed: {_err(staged)}",
-                }
-            tree_obj = git.git_action(
-                command="git write-tree", path=tree, env=temp_env, quiet=True
-            )
-            if not _ok(tree_obj) or not str(tree_obj.data or "").strip():
-                return {
-                    "ok": False,
-                    "parked": False,
-                    "ref": ref,
-                    "error": f"git write-tree failed: {_err(tree_obj)}",
-                }
-            head = git.git_action(command="git rev-parse HEAD", path=tree, quiet=True)
-            if not _ok(head) or not str(head.data or "").strip():
-                return {
-                    "ok": False,
-                    "parked": False,
-                    "ref": ref,
-                    "error": "cannot create a private WIP commit without HEAD",
-                }
-            head_tree = git.git_action(
-                command="git rev-parse HEAD^{tree}", path=tree, quiet=True
-            )
-            if not _ok(head_tree) or not str(head_tree.data or "").strip():
-                return {
-                    "ok": False,
-                    "parked": False,
-                    "ref": ref,
-                    "error": "cannot compare the working tree with HEAD",
-                }
-            if (
-                str(tree_obj.data).strip() == str(head_tree.data).strip()
-                and not untracked_paths
-            ):
-                return {
-                    "ok": True,
-                    "parked": False,
-                    "ref": ref,
-                    "commit": None,
-                    "error": None,
-                }
-            commit = git.git_action(
-                command=(
-                    f"git commit-tree {shlex.quote(str(tree_obj.data).strip())} "
-                    f"-p {shlex.quote(str(head.data).strip())} -m {shlex.quote(message)}"
-                ),
-                path=tree,
-                quiet=True,
-            )
-            sha = str(commit.data or "").strip() if _ok(commit) else ""
-            if not sha:
-                return {
-                    "ok": False,
-                    "parked": False,
-                    "ref": ref,
-                    "error": f"git commit-tree failed: {_err(commit)}",
-                }
-            stored = git.git_action(
-                command=f"git update-ref {shlex.quote(ref)} {shlex.quote(sha)}",
-                path=tree,
-                quiet=True,
-            )
-            if not _ok(stored):
-                return {
-                    "ok": False,
-                    "parked": False,
-                    "ref": ref,
-                    "error": f"could not create private lane stash ref {ref}: {_err(stored)}",
-                }
-        finally:
-            try:
-                os.unlink(temp_name)
-            except FileNotFoundError:
-                pass
-
-        # Clear hidden-index bits in the real index before resetting the
-        # working tree; read-tree otherwise honors skip-worktree and leaves
-        # the captured bytes in place.
-        if tracked_paths:
-            quoted_paths = " ".join(shlex.quote(item) for item in tracked_paths)
-            for clear_real in (
-                f"git update-index --no-assume-unchanged {quoted_paths}",
-                f"git update-index --no-skip-worktree {quoted_paths}",
-            ):
-                cleared_real = git.git_action(command=clear_real, path=tree, quiet=True)
-                if not _ok(cleared_real):
-                    return {
-                        "ok": False,
-                        "parked": False,
-                        "ref": ref,
-                        "commit": sha,
-                        "error": f"{clear_real} failed: {_err(cleared_real)}",
-                    }
-        reset = git.git_action(
-            command="git read-tree -u --reset HEAD", path=tree, quiet=True
-        )
-        if not _ok(reset):
-            return {
+            return _park_locked(git, tree, ref, message)
+        except _ParkFailed as exc:
+            result: dict[str, Any] = {
                 "ok": False,
                 "parked": False,
                 "ref": ref,
-                "commit": sha,
-                "error": f"private ref is safe but tree cleanup failed: {_err(reset)}",
+                "error": str(exc),
             }
-        for relative in untracked_paths:
-            root = Path(tree).resolve()
-            candidate = root / relative
-            lexical = candidate.absolute()
-            if lexical != root and root not in lexical.parents:
-                return {
-                    "ok": False,
-                    "parked": False,
-                    "ref": ref,
-                    "commit": sha,
-                    "error": f"refused to remove untracked path outside tree: {relative}",
-                }
-            try:
-                if candidate.is_symlink() or candidate.is_file():
-                    candidate.unlink()
-                elif candidate.is_dir():
-                    candidate.rmdir()
-            except OSError as exc:
-                return {
-                    "ok": False,
-                    "parked": False,
-                    "ref": ref,
-                    "commit": sha,
-                    "error": f"private ref is safe but untracked cleanup failed: {exc}",
-                }
-        return {"ok": True, "parked": True, "ref": ref, "commit": sha, "error": None}
+            if exc.commit is not None:
+                result["commit"] = exc.commit
+            return result
+
+
+class _ParkFailed(Exception):
+    """Internal control-flow signal: one phase of ``park()`` failed.
+
+    Carries the exact error text (and, once the private ref is durable, the
+    commit sha so callers still learn "the ref is safe but cleanup failed"
+    rather than losing that detail) up to :func:`park`'s single catch site.
+    """
+
+    def __init__(self, message: str, *, commit: str | None = None) -> None:
+        super().__init__(message)
+        self.commit = commit
+
+
+def _park_locked(git: _GitLike, tree: str, ref: str, message: str) -> dict[str, Any]:
+    """Run every ``park()`` phase in order; raises :class:`_ParkFailed` on error."""
+    _park_preflight(git, tree, ref)
+    untracked_paths = _park_list_untracked(git, tree)
+    temp_env, temp_name = _park_make_temp_index()
+    try:
+        tracked_paths = _park_stage_temp_index(git, tree, temp_env)
+        tree_sha = _park_write_tree(git, tree, temp_env)
+        head_sha, head_tree_sha = _park_resolve_head(git, tree)
+        if tree_sha == head_tree_sha and not untracked_paths:
+            return {
+                "ok": True,
+                "parked": False,
+                "ref": ref,
+                "commit": None,
+                "error": None,
+            }
+        sha = _park_create_commit(git, tree, tree_sha, head_sha, message)
+        _park_store_ref(git, tree, ref, sha)
+    finally:
+        _park_remove_temp_index(temp_name)
+    _park_reset_working_tree(git, tree, tracked_paths, sha)
+    _park_remove_untracked(tree, untracked_paths, sha)
+    return {"ok": True, "parked": True, "ref": ref, "commit": sha, "error": None}
+
+
+def _park_preflight(git: _GitLike, tree: str, ref: str) -> None:
+    """Refuse when status cannot be read, or a prior park already owns ``ref``."""
+    status = git.git_action(command="git status --porcelain", path=tree, quiet=True)
+    if not _ok(status):
+        raise _ParkFailed(_err(status))
+    existing = git.git_action(
+        command=f"git rev-parse --verify --quiet {shlex.quote(ref)}",
+        path=tree,
+        quiet=True,
+    )
+    if _ok(existing) and str(existing.data or "").strip():
+        raise _ParkFailed(f"private lane stash ref already exists: {ref}")
+
+
+def _park_list_untracked(git: _GitLike, tree: str) -> list[str]:
+    untracked = git.git_action(
+        command="git ls-files --others --exclude-standard -z",
+        path=tree,
+        quiet=True,
+    )
+    if not _ok(untracked):
+        raise _ParkFailed(_err(untracked))
+    return [item for item in str(untracked.data or "").split("\0") if item]
+
+
+def _park_make_temp_index() -> tuple[dict[str, str], str]:
+    """Allocate a throwaway index file path and an env pointing git at it."""
+    temp_fd, temp_name = tempfile.mkstemp(prefix="rmdd26-index-")
+    os.close(temp_fd)
+    os.unlink(temp_name)
+    temp_env = os.environ.copy()
+    temp_env["GIT_INDEX_FILE"] = temp_name
+    return temp_env, temp_name
+
+
+def _park_remove_temp_index(temp_name: str) -> None:
+    try:
+        os.unlink(temp_name)
+    except FileNotFoundError:
+        pass
+
+
+def _run_or_fail(
+    git: _GitLike,
+    tree: str,
+    command: str,
+    env: dict[str, str] | None,
+    error: str,
+) -> Any:
+    """Run one ``git_action`` against the given env; raise on non-success."""
+    result = git.git_action(command=command, path=tree, env=env, quiet=True)
+    if not _ok(result):
+        raise _ParkFailed(f"{error} failed: {_err(result)}")
+    return result
+
+
+def _park_stage_temp_index(git: _GitLike, tree: str, env: dict[str, str]) -> list[str]:
+    """Stage tracked HEAD content plus untracked WIP into the temp index."""
+    _run_or_fail(git, tree, "git read-tree HEAD", env, "git read-tree HEAD")
+    indexed = _run_or_fail(git, tree, "git ls-files -z", env, "git ls-files")
+    tracked_paths = [item for item in str(indexed.data or "").split("\0") if item]
+    if tracked_paths:
+        quoted_paths = " ".join(shlex.quote(item) for item in tracked_paths)
+        for clear_flags in (
+            f"git update-index --no-assume-unchanged {quoted_paths}",
+            f"git update-index --no-skip-worktree {quoted_paths}",
+        ):
+            _run_or_fail(git, tree, clear_flags, env, clear_flags)
+    _run_or_fail(git, tree, "git add -A", env, "git add -A")
+    return tracked_paths
+
+
+def _park_write_tree(git: _GitLike, tree: str, env: dict[str, str]) -> str:
+    tree_obj = git.git_action(command="git write-tree", path=tree, env=env, quiet=True)
+    value = str(tree_obj.data or "").strip()
+    if not _ok(tree_obj) or not value:
+        raise _ParkFailed(f"git write-tree failed: {_err(tree_obj)}")
+    return value
+
+
+def _park_resolve_head(git: _GitLike, tree: str) -> tuple[str, str]:
+    head = git.git_action(command="git rev-parse HEAD", path=tree, quiet=True)
+    if not _ok(head) or not str(head.data or "").strip():
+        raise _ParkFailed("cannot create a private WIP commit without HEAD")
+    head_tree = git.git_action(
+        command="git rev-parse HEAD^{tree}", path=tree, quiet=True
+    )
+    if not _ok(head_tree) or not str(head_tree.data or "").strip():
+        raise _ParkFailed("cannot compare the working tree with HEAD")
+    return str(head.data).strip(), str(head_tree.data).strip()
+
+
+def _park_create_commit(
+    git: _GitLike, tree: str, tree_sha: str, head_sha: str, message: str
+) -> str:
+    commit = git.git_action(
+        command=(
+            f"git commit-tree {shlex.quote(tree_sha)} "
+            f"-p {shlex.quote(head_sha)} -m {shlex.quote(message)}"
+        ),
+        path=tree,
+        quiet=True,
+    )
+    sha = str(commit.data or "").strip() if _ok(commit) else ""
+    if not sha:
+        raise _ParkFailed(f"git commit-tree failed: {_err(commit)}")
+    return sha
+
+
+def _park_store_ref(git: _GitLike, tree: str, ref: str, sha: str) -> None:
+    stored = git.git_action(
+        command=f"git update-ref {shlex.quote(ref)} {shlex.quote(sha)}",
+        path=tree,
+        quiet=True,
+    )
+    if not _ok(stored):
+        raise _ParkFailed(
+            f"could not create private lane stash ref {ref}: {_err(stored)}"
+        )
+
+
+def _park_reset_working_tree(
+    git: _GitLike, tree: str, tracked_paths: list[str], sha: str
+) -> None:
+    """Clear hidden-index bits in the real index, then reset the tree to HEAD.
+
+    ``read-tree`` otherwise honors skip-worktree and leaves the captured bytes
+    in place, so the real index's assume-unchanged/skip-worktree bits must be
+    cleared before the reset. Failures past this point still carry ``sha`` —
+    the private ref is already durable, only working-tree cleanup failed.
+    """
+    if tracked_paths:
+        quoted_paths = " ".join(shlex.quote(item) for item in tracked_paths)
+        for clear_real in (
+            f"git update-index --no-assume-unchanged {quoted_paths}",
+            f"git update-index --no-skip-worktree {quoted_paths}",
+        ):
+            cleared_real = git.git_action(command=clear_real, path=tree, quiet=True)
+            if not _ok(cleared_real):
+                raise _ParkFailed(
+                    f"{clear_real} failed: {_err(cleared_real)}", commit=sha
+                )
+    reset = git.git_action(
+        command="git read-tree -u --reset HEAD", path=tree, quiet=True
+    )
+    if not _ok(reset):
+        raise _ParkFailed(
+            f"private ref is safe but tree cleanup failed: {_err(reset)}", commit=sha
+        )
+
+
+def _park_remove_untracked(tree: str, untracked_paths: list[str], sha: str) -> None:
+    root = Path(tree).resolve()
+    for relative in untracked_paths:
+        candidate = root / relative
+        lexical = candidate.absolute()
+        if lexical != root and root not in lexical.parents:
+            raise _ParkFailed(
+                f"refused to remove untracked path outside tree: {relative}",
+                commit=sha,
+            )
+        try:
+            if candidate.is_symlink() or candidate.is_file():
+                candidate.unlink()
+            elif candidate.is_dir():
+                candidate.rmdir()
+        except OSError as exc:
+            raise _ParkFailed(
+                f"private ref is safe but untracked cleanup failed: {exc}",
+                commit=sha,
+            ) from exc
 
 
 def unpark(
@@ -524,20 +532,22 @@ def unpark(
 ) -> dict[str, Any]:
     """Restore a temporary-index WIP ref and clear it only after success."""
     target_ref = ref or _lane_ref(tree, lane)
-    if _lease:
-        try:
-            with hold_tree_mutation_lease(tree, note="private WIP unpark"):
-                return unpark(
-                    git,
-                    tree,
-                    lane=lane,
-                    ref=target_ref,
-                    _lease=False,
-                )
-        except BlockedByLease as exc:
-            return {"ok": False, "ref": target_ref, "error": str(exc)}
-        except (OSError, RuntimeError) as exc:
-            return {"ok": False, "ref": target_ref, "error": str(exc)}
+    if not _lease:
+        return _unpark_restore(git, tree, target_ref)
+    try:
+        with hold_tree_mutation_lease(tree, note="private WIP unpark"):
+            return unpark(
+                git,
+                tree,
+                lane=lane,
+                ref=target_ref,
+                _lease=False,
+            )
+    except (BlockedByLease, OSError, RuntimeError) as exc:
+        return {"ok": False, "ref": target_ref, "error": str(exc)}
+
+
+def _unpark_restore(git: _GitLike, tree: str, target_ref: str) -> dict[str, Any]:
     status = git.git_action(command="git status --porcelain", path=tree, quiet=True)
     if not _ok(status):
         return {"ok": False, "ref": target_ref, "error": _err(status)}
@@ -558,6 +568,12 @@ def unpark(
             "ref": target_ref,
             "error": "nothing parked at private ref",
         }
+    return _unpark_apply(git, tree, target_ref, str(commit.data).strip())
+
+
+def _unpark_apply(
+    git: _GitLike, tree: str, target_ref: str, commit_sha: str
+) -> dict[str, Any]:
     restored = git.git_action(
         command=f"git read-tree -u --reset {shlex.quote(target_ref)}",
         path=tree,
@@ -578,6 +594,6 @@ def unpark(
     return {
         "ok": True,
         "ref": target_ref,
-        "commit": str(commit.data).strip(),
+        "commit": commit_sha,
         "error": None,
     }
