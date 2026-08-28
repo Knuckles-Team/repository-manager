@@ -1142,6 +1142,24 @@ _RESULT_CATEGORY_PREDICATES: tuple[tuple[str, "Callable[[GitResult], bool]"], ..
 )
 
 
+def _bucket_results_by_predicates(
+    results: list["GitResult"],
+    predicates: tuple[tuple[str, "Callable[[GitResult], bool]"], ...],
+) -> dict[str, list["GitResult"]]:
+    """Apply each ``(category_name, predicate)`` pair to bucket ``results``."""
+    return {
+        cat_name: [r for r in results if predicate(r)]
+        for cat_name, predicate in predicates
+    }
+
+
+def _known_result_ids(categories_map: dict[str, list["GitResult"]]) -> set[int]:
+    """Collect ``id()`` of every already-categorized result that has metadata."""
+    return {
+        id(r) for cat_list in categories_map.values() for r in cat_list if r.metadata
+    }
+
+
 def _categorize_results_by_command(
     results: list["GitResult"],
 ) -> dict[str, list["GitResult"]]:
@@ -1154,16 +1172,9 @@ def _categorize_results_by_command(
     predicates (now named, one per category), same declaration order, same
     id()-based dedup to find the uncategorized set.
     """
-    categories_map: dict[str, list[GitResult]] = {
-        cat_name: [r for r in results if predicate(r)]
-        for cat_name, predicate in _RESULT_CATEGORY_PREDICATES
-    }
+    categories_map = _bucket_results_by_predicates(results, _RESULT_CATEGORY_PREDICATES)
 
-    known_ids = set()
-    for cat_list in categories_map.values():
-        for r in cat_list:
-            if r.metadata:
-                known_ids.add(id(r))
+    known_ids = _known_result_ids(categories_map)
 
     uncategorized = [r for r in results if id(r) not in known_ids]
     if uncategorized:
@@ -1232,6 +1243,36 @@ def _build_validation_category(
     return cat
 
 
+def _render_report_category_section(cat: "ValidationCategory") -> list[str]:
+    """Render one category's '## <name>' block for ValidationReport.to_markdown."""
+    md = [
+        f"## {cat.name}",
+        f"**Success:** {cat.success_count} ✅ | **Failure:** {cat.failure_count} ❌ | **Skipped:** {cat.skipped_count} ⏭️\n",
+    ]
+
+    if cat.successes:
+        md.append("#### Successes ✅")
+        for r in cat.successes:
+            md.append(f"- **{r.project}**: {r.message}")
+        md.append("")
+
+    if cat.failures:
+        md.append("#### Failures ❌")
+        for r in cat.failures:
+            md.append(f"- **{r.project}**: {r.message}")
+            if r.output:
+                md.append(f"```text\n{r.output}\n```")
+        md.append("")
+
+    if cat.skipped:
+        md.append("#### Skipped ⏭️")
+        for r in cat.skipped:
+            md.append(f"- **{r.project}**: {r.message}")
+        md.append("")
+
+    return md
+
+
 class ValidationReport(BaseModel):
     timestamp: str
     total: int = 0
@@ -1272,30 +1313,7 @@ class ValidationReport(BaseModel):
         ]
 
         for cat in self.categories:
-            md.append(f"## {cat.name}")
-            md.append(
-                f"**Success:** {cat.success_count} ✅ | **Failure:** {cat.failure_count} ❌ | **Skipped:** {cat.skipped_count} ⏭️\n"
-            )
-
-            if cat.successes:
-                md.append("#### Successes ✅")
-                for r in cat.successes:
-                    md.append(f"- **{r.project}**: {r.message}")
-                md.append("")
-
-            if cat.failures:
-                md.append("#### Failures ❌")
-                for r in cat.failures:
-                    md.append(f"- **{r.project}**: {r.message}")
-                    if r.output:
-                        md.append(f"```text\n{r.output}\n```")
-                md.append("")
-
-            if cat.skipped:
-                md.append("#### Skipped ⏭️")
-                for r in cat.skipped:
-                    md.append(f"- **{r.project}**: {r.message}")
-                md.append("")
+            md.extend(_render_report_category_section(cat))
 
         return "\n".join(md)
 
