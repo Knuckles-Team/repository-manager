@@ -2458,6 +2458,100 @@ class Git:
         _run_post_hydration_mount_checks(self.path)
         return results
 
+    @staticmethod
+    def _checkout_guard_skip(repo_label: str, blocked: dict) -> GitResult:
+        """The ``skipped`` record for a checkout the canonical guard refused."""
+        return GitResult(
+            status="skipped",
+            data=blocked.get("detail", ""),
+            error=GitError(message=blocked["error"], code=0),
+            metadata=GitMetadata(
+                command="checkout-guard",
+                workspace=repo_label,
+                return_code=0,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    def _guarded_default_branch_checkout(
+        self, target_path: str, default_branch: str, results: list[GitResult]
+    ) -> None:
+        """Check out *default_branch*, never on a dirty canonical tree.
+
+        WT-3 (CONCEPT:RM-WORKTREE, CONCEPT:RM-CANON-GUARD) --
+        non-destructive / worktree-aware. Never switch branches on a
+        dirty canonical tree: a concurrent session may have
+        uncommitted work here, and a forced checkout would disrupt
+        it. guarded_canonical_mutation skips the checkout (loudly,
+        with the repo named) instead. Session work belongs in a
+        worktree under WORKTREE_ROOT anyway, which this never
+        touches.
+        """
+        repo_label = _project_label(target_path)
+        with guarded_canonical_mutation(
+            self, target_path, repo_label, "check out default branch"
+        ) as blocked:
+            if blocked is not None:
+                results.append(self._checkout_guard_skip(repo_label, blocked))
+                return
+            checkout_result = self.git_action(
+                f'git checkout "{default_branch}"',
+                path=target_path,
+            )
+            results.append(checkout_result)
+            logger.info("Checked out configured default branch")
+
+    def _checkout_default_branch(
+        self, target_path: str, results: list[GitResult]
+    ) -> None:
+        """Resolve the project's default branch and switch to it if needed."""
+        default_branch_result = self.git_action(
+            "git symbolic-ref refs/remotes/origin/HEAD",
+            path=target_path,
+        )
+        if default_branch_result.status != "success":
+            results.append(default_branch_result)
+            logger.error("Failed to resolve the configured default branch")
+            return
+
+        default_branch = re.sub(
+            "refs/remotes/origin/", "", default_branch_result.data
+        ).strip()
+        current_branch = self.git_action(
+            "git rev-parse --abbrev-ref HEAD", path=target_path, quiet=True
+        ).data.strip()
+        if current_branch == default_branch:
+            logger.info("Configured project is already on its default branch")
+            return
+
+        self._guarded_default_branch_checkout(target_path, default_branch, results)
+
+    @staticmethod
+    def _combine_pull_results(target_path: str, results: list[GitResult]) -> GitResult:
+        """Fold the pull (and optional checkout) results into one result."""
+        combined_status = (
+            "success" if all(r.status == "success" for r in results) else "error"
+        )
+        combined_data = "\n".join(
+            [
+                f"[{r.metadata.command if r.metadata else 'unknown'}]: {r.data}"
+                for r in results
+            ]
+        )
+        combined_error = next((r.error for r in results if r.error), None)
+        metadata = GitMetadata(
+            command="pull_project",
+            workspace=_project_label(target_path),
+            return_code=0 if combined_status == "success" else 1,
+            timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+        )
+        return GitResult(
+            status=combined_status,
+            data=combined_data,
+            error=combined_error,
+            metadata=metadata,
+        )
+
     @_exclusive_repo_mutation
     def pull_project(self, path: str | None = None) -> GitResult:
         """
@@ -2470,94 +2564,14 @@ class Git:
             GitResult: The result of the pull operation.
         """
         target_path = self._resolve_path(path)
-        results = []
-
-        pull_result = self.git_action(command="git pull", path=target_path)
-        results.append(pull_result)
+        results = [self.git_action(command="git pull", path=target_path)]
 
         logger.info("Repository pull completed")
 
         if self.set_to_default_branch:
-            default_branch_result = self.git_action(
-                "git symbolic-ref refs/remotes/origin/HEAD",
-                path=target_path,
-            )
-            if default_branch_result.status == "success":
-                default_branch = re.sub(
-                    "refs/remotes/origin/", "", default_branch_result.data
-                ).strip()
-                # WT-3 (CONCEPT:RM-WORKTREE, CONCEPT:RM-CANON-GUARD) —
-                # non-destructive / worktree-aware. Never switch branches on a
-                # dirty canonical tree: a concurrent session may have
-                # uncommitted work here, and a forced checkout would disrupt
-                # it. guarded_canonical_mutation skips the checkout (loudly,
-                # with the repo named) instead. Session work belongs in a
-                # worktree under WORKTREE_ROOT anyway, which this never
-                # touches.
-                current_branch = self.git_action(
-                    "git rev-parse --abbrev-ref HEAD", path=target_path, quiet=True
-                ).data.strip()
-                if current_branch == default_branch:
-                    logger.info("Configured project is already on its default branch")
-                else:
-                    repo_label = _project_label(target_path)
-                    with guarded_canonical_mutation(
-                        self, target_path, repo_label, "check out default branch"
-                    ) as blocked:
-                        if blocked is not None:
-                            results.append(
-                                GitResult(
-                                    status="skipped",
-                                    data=blocked.get("detail", ""),
-                                    error=GitError(message=blocked["error"], code=0),
-                                    metadata=GitMetadata(
-                                        command="checkout-guard",
-                                        workspace=repo_label,
-                                        return_code=0,
-                                        timestamp=datetime.datetime.now(
-                                            datetime.UTC
-                                        ).isoformat()
-                                        + "Z",
-                                    ),
-                                )
-                            )
-                        else:
-                            checkout_result = self.git_action(
-                                f'git checkout "{default_branch}"',
-                                path=target_path,
-                            )
-                            results.append(checkout_result)
-                            logger.info("Checked out configured default branch")
-            else:
-                results.append(default_branch_result)
-                logger.error("Failed to resolve the configured default branch")
+            self._checkout_default_branch(target_path, results)
 
-        combined_status = (
-            "success" if all(r.status == "success" for r in results) else "error"
-        )
-
-        combined_data = "\n".join(
-            [
-                f"[{r.metadata.command if r.metadata else 'unknown'}]: {r.data}"
-                for r in results
-            ]
-        )
-
-        combined_error = next((r.error for r in results if r.error), None)
-
-        metadata = GitMetadata(
-            command="pull_project",
-            workspace=_project_label(target_path),
-            return_code=0 if combined_status == "success" else 1,
-            timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-        )
-
-        return GitResult(
-            status=combined_status,
-            data=combined_data,
-            error=combined_error,
-            metadata=metadata,
-        )
+        return self._combine_pull_results(target_path, results)
 
     def push_projects(self, project_dirs: list[str] | None = None) -> list[GitResult]:
         """
@@ -2612,6 +2626,82 @@ class Git:
             return []
         return [line.strip() for line in res.data.splitlines() if line.strip()]
 
+    @staticmethod
+    def _gate_incomplete_result(error: object) -> GitResult:
+        """The refusal for a pre-push gate that never reached a verdict.
+
+        No hook reported a verdict -- the gate did not complete (timeout,
+        tooling error). Reporting that as "Pre-push gate failed (pre-push
+        gate)" made a 600s HEAVY-tier timeout look identical to a real
+        hook failure, which is how agent-utilities appeared to be blocked
+        on merit when it had simply run out of clock. Surface the harness
+        error verbatim instead of inventing a hook name.
+        """
+        logger.error("Pre-push gate did not complete: %s", error)
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=f"Pre-push gate did not complete; push aborted. {error}",
+                code=1,
+            ),
+        )
+
+    @staticmethod
+    def _gate_unrunnable_result(unrunnable: list[str]) -> GitResult:
+        """The refusal for a gate whose every failing hook is simply missing.
+
+        A gate that could not RUN is not a gate that found a defect. Saying
+        "fix the gate" would send the reader hunting for a defect that does
+        not exist. The push is still refused -- an ungated push is worse --
+        but the reason is reported truthfully so it can be acted on.
+        """
+        missing = ", ".join(unrunnable)
+        logger.error("Pre-push gate cannot run in this environment: %s", missing)
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=(
+                    f"Pre-push gate CANNOT RUN here; push aborted. Every failing "
+                    f"hook ({missing}) failed because its executable is missing "
+                    f"from this environment, not because it found a defect. This "
+                    f"is an environment gap, not a code verdict -- install the "
+                    f"toolchain these hooks need, or run the gate and the push "
+                    f"from a host that has it."
+                ),
+                code=1,
+            ),
+        )
+
+    @staticmethod
+    def _gate_failed_result(failed: list[str]) -> GitResult:
+        """The refusal for a gate that genuinely found a defect."""
+        names = ", ".join(failed) or "pre-push gate"
+        logger.error("Pre-push gate failed: %s", names)
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=(
+                    f"Pre-push gate failed ({names}); push aborted. "
+                    "Fix the gate, or set RM_GATE_BEFORE_PUSH=false to bypass."
+                ),
+                code=1,
+            ),
+        )
+
+    @staticmethod
+    def _pre_push_gate_refusal(result: Any) -> GitResult:
+        """Explain WHY the pre-push gate refused this push."""
+        failed = [h.hook_id for h in result.hooks if not h.passed]
+        if not failed and result.error:
+            return Git._gate_incomplete_result(result.error)
+        unrunnable = [h.hook_id for h in result.hooks if not h.passed and h.unrunnable]
+        if unrunnable and len(unrunnable) == len(failed):
+            return Git._gate_unrunnable_result(unrunnable)
+        return Git._gate_failed_result(failed)
+
     def _gate_before_push(self, target_path: str) -> GitResult | None:
         """Run the repo's declared HEAVY (pre-push-stage) gates before pushing.
 
@@ -2655,66 +2745,132 @@ class Git:
         except Exception as e:  # pragma: no cover - tooling/env failure
             logger.warning("Operation failed: error_type=%s", type(e).__name__)
             return None
+
         if result.success:
             return None
-        failed = [h.hook_id for h in result.hooks if not h.passed]
-        if not failed and result.error:
-            # No hook reported a verdict -- the gate did not complete (timeout,
-            # tooling error). Reporting that as "Pre-push gate failed (pre-push
-            # gate)" made a 600s HEAVY-tier timeout look identical to a real
-            # hook failure, which is how agent-utilities appeared to be blocked
-            # on merit when it had simply run out of clock. Surface the harness
-            # error verbatim instead of inventing a hook name.
-            logger.error("Pre-push gate did not complete: %s", result.error)
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=(
-                        f"Pre-push gate did not complete; push aborted. {result.error}"
-                    ),
-                    code=1,
-                ),
-            )
-        # A gate that could not RUN is not a gate that found a defect.
-        #
-        # If every failing hook failed because its executable is absent, this
-        # environment cannot gate this repository at all, and saying "fix the
-        # gate" sends the reader hunting for a defect that does not exist. The
-        # push is still refused -- an ungated push is worse -- but the reason is
-        # reported truthfully so it can be acted on.
-        unrunnable = [h.hook_id for h in result.hooks if not h.passed and h.unrunnable]
-        if unrunnable and len(unrunnable) == len(failed):
-            missing = ", ".join(unrunnable)
-            logger.error("Pre-push gate cannot run in this environment: %s", missing)
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=(
-                        f"Pre-push gate CANNOT RUN here; push aborted. Every failing "
-                        f"hook ({missing}) failed because its executable is missing "
-                        f"from this environment, not because it found a defect. This "
-                        f"is an environment gap, not a code verdict -- install the "
-                        f"toolchain these hooks need, or run the gate and the push "
-                        f"from a host that has it."
-                    ),
-                    code=1,
-                ),
-            )
-        names = ", ".join(failed) or "pre-push gate"
-        logger.error("Pre-push gate failed: %s", names)
+        return self._pre_push_gate_refusal(result)
+
+    @staticmethod
+    def _dirty_push_refusal(target_path: str) -> GitResult:
+        """Refuse to push a repository with uncommitted changes."""
         return GitResult(
             status="error",
             data="",
             error=GitError(
                 message=(
-                    f"Pre-push gate failed ({names}); push aborted. "
-                    "Fix the gate, or set RM_GATE_BEFORE_PUSH=false to bypass."
+                    "Push refused: the repository has uncommitted changes. "
+                    "Review and commit them explicitly before pushing."
                 ),
-                code=1,
+                code=409,
+            ),
+            metadata=GitMetadata(
+                command="git push",
+                workspace=_project_label(target_path),
+                return_code=409,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
             ),
         )
+
+    @staticmethod
+    def _secret_scanning_refusal(target_path: str) -> GitResult:
+        """GitHub push protection (GH013) -- unrecoverable without manual action."""
+        return GitResult(
+            status="error",
+            data="GitHub push protection blocked the push",
+            error=GitError(
+                message="GitHub secret scanning (GH013) blocked the push. "
+                "A file in the commit history contains a detected secret. "
+                "Use git-filter-repo to expunge it or allow the secret via GitHub settings.",
+                code=1,
+            ),
+            metadata=GitMetadata(
+                command="git push --follow-tags",
+                workspace=_project_label(target_path),
+                return_code=1,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    @staticmethod
+    def _diverged_push_refusal(result: GitResult) -> GitResult:
+        """A divergent remote requires an explicit reviewed sync.
+
+        Never rewrite remote history or mutate the local branch as a fallback.
+        """
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=(
+                    "Push refused: the remote branch has diverged. "
+                    "Fetch and perform an explicit reviewed merge or rebase; "
+                    "automatic force-push is permanently disabled."
+                ),
+                code=409,
+            ),
+            metadata=result.metadata,
+        )
+
+    @staticmethod
+    def _push_error_text(result: GitResult) -> str:
+        """The combined error message and output of a failed push."""
+        error_text = ""
+        if result.error:
+            error_text = (
+                str(result.error.message)
+                if hasattr(result.error, "message")
+                else str(result.error)
+            )
+        if result.data:
+            error_text += " " + result.data
+        return error_text
+
+    def _push_release_tag(self, target_path: str) -> None:
+        """Push the CURRENT release tag explicitly after a successful branch push.
+
+        ``--follow-tags`` only pushes ANNOTATED tags. bump2version can emit
+        LIGHTWEIGHT tags (objecttype=commit), which would silently never
+        reach the remote — so no tag-triggered CI / image build. Pushing the
+        current release tag (v<current_version> from .bumpversion.cfg) covers
+        both annotated and lightweight, WITHOUT also dumping stale
+        never-pushed historical tags onto the remote (which would trigger CI
+        for old versions).
+        (CONCEPT:RM-BUMP tag-publish correctness)
+        """
+        rel_tag = self._current_release_tag(target_path)
+        if not rel_tag:
+            return
+        tag_res = self.git_action(
+            command=f"git push origin {rel_tag}", path=target_path
+        )
+        if tag_res.status != "success":
+            logger.warning("Branch pushed but the release-tag push failed")
+
+    def _handle_push_failure(self, target_path: str, result: GitResult) -> GitResult:
+        """Translate a failed ``git push`` into an actionable result."""
+        error_text = self._push_error_text(result)
+
+        # GitHub secret scanning block (GH013) — unrecoverable without manual action
+        if "GH013" in error_text or "GITHUB PUSH PROTECTION" in error_text:
+            logger.error(
+                "GitHub secret scanning blocked the push; remove the secret from history"
+            )
+            return self._secret_scanning_refusal(target_path)
+
+        if (
+            "non-fast-forward" in error_text
+            or "tip of your current branch is behind" in error_text
+        ):
+            logger.warning("Push refused because the remote branch has diverged")
+            return self._diverged_push_refusal(result)
+
+        # Tag already exists on remote — retry without tags
+        if "tag already exists" in error_text:
+            logger.warning("Tag conflict detected; retrying without follow-tags")
+            return self.git_action(command="git push origin main", path=target_path)
+
+        # Unknown error — return as-is
+        return result
 
     @_exclusive_repo_mutation
     def push_project(self, path: str | None = None) -> GitResult:
@@ -2734,23 +2890,7 @@ class Git:
         )
         if status_check.status == "success" and status_check.data.strip():
             logger.warning("Push refused because the configured project is dirty")
-            return GitResult(
-                status="error",
-                data="",
-                error=GitError(
-                    message=(
-                        "Push refused: the repository has uncommitted changes. "
-                        "Review and commit them explicitly before pushing."
-                    ),
-                    code=409,
-                ),
-                metadata=GitMetadata(
-                    command="git push",
-                    workspace=_project_label(target_path),
-                    return_code=409,
-                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                ),
-            )
+            return self._dirty_push_refusal(target_path)
 
         # Fast pre-push gate: run the repo's own pre-commit gates (minus the
         # slow full pytest suite) so a push can't ship a commit the repo's CI
@@ -2764,85 +2904,10 @@ class Git:
         max_attempts = 1
         for _attempt in range(1, max_attempts + 1):
             result = self.git_action(command="git push --follow-tags", path=target_path)
-
             if result.status == "success":
-                # --follow-tags only pushes ANNOTATED tags. bump2version can emit
-                # LIGHTWEIGHT tags (objecttype=commit), which would silently never
-                # reach the remote — so no tag-triggered CI / image build. Push the
-                # CURRENT release tag explicitly (v<current_version> from
-                # .bumpversion.cfg) to cover both annotated and lightweight, WITHOUT
-                # also dumping stale never-pushed historical tags onto the remote
-                # (which would trigger CI for old versions).
-                # (CONCEPT:RM-BUMP tag-publish correctness)
-                rel_tag = self._current_release_tag(target_path)
-                if rel_tag:
-                    tag_res = self.git_action(
-                        command=f"git push origin {rel_tag}", path=target_path
-                    )
-                    if tag_res.status != "success":
-                        logger.warning("Branch pushed but the release-tag push failed")
+                self._push_release_tag(target_path)
                 return result
-
-            error_text = ""
-            if result.error:
-                error_text = (
-                    str(result.error.message)
-                    if hasattr(result.error, "message")
-                    else str(result.error)
-                )
-            if result.data:
-                error_text += " " + result.data
-
-            # GitHub secret scanning block (GH013) — unrecoverable without manual action
-            if "GH013" in error_text or "GITHUB PUSH PROTECTION" in error_text:
-                logger.error(
-                    "GitHub secret scanning blocked the push; remove the secret from history"
-                )
-                return GitResult(
-                    status="error",
-                    data="GitHub push protection blocked the push",
-                    error=GitError(
-                        message="GitHub secret scanning (GH013) blocked the push. "
-                        "A file in the commit history contains a detected secret. "
-                        "Use git-filter-repo to expunge it or allow the secret via GitHub settings.",
-                        code=1,
-                    ),
-                    metadata=GitMetadata(
-                        command="git push --follow-tags",
-                        workspace=_project_label(target_path),
-                        return_code=1,
-                        timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
-                    ),
-                )
-
-            # A divergent remote requires an explicit reviewed sync. Never
-            # rewrite remote history or mutate the local branch as a fallback.
-            if (
-                "non-fast-forward" in error_text
-                or "tip of your current branch is behind" in error_text
-            ):
-                logger.warning("Push refused because the remote branch has diverged")
-                return GitResult(
-                    status="error",
-                    data="",
-                    error=GitError(
-                        message=(
-                            "Push refused: the remote branch has diverged. "
-                            "Fetch and perform an explicit reviewed merge or rebase; "
-                            "automatic force-push is permanently disabled."
-                        ),
-                        code=409,
-                    ),
-                    metadata=result.metadata,
-                )
-
-            # Tag already exists on remote — retry without tags
-            if "tag already exists" in error_text:
-                logger.warning("Tag conflict detected; retrying without follow-tags")
-                return self.git_action(command="git push origin main", path=target_path)
-
-            # Unknown error — return as-is
-            return result
+            return self._handle_push_failure(target_path, result)
 
         return result
 
