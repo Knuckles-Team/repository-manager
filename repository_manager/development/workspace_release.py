@@ -176,11 +176,7 @@ def _bounded_bool(value: object, field_name: str) -> bool:
     return value
 
 
-def _bounded_sequence(
-    value: object, field_name: str, *, max_items: int
-) -> tuple[object, ...]:
-    """Copy one collection with bounded iteration and privacy-safe failures."""
-
+def _reject_unbounded_sequence_type(value: object, field_name: str) -> None:
     if isinstance(value, (str, bytes, bytearray, Mapping)) or not isinstance(
         value, Iterable
     ):
@@ -188,28 +184,39 @@ def _bounded_sequence(
     if isinstance(value, MutableSequence) and type(value) not in (list, tuple):
         raise WorkspaceReleaseError(f"{field_name} must be a sequence")
 
+
+def _safe_next(iterator: object, field_name: str) -> tuple[object, bool]:
+    """Read one item with privacy-safe failures; returns ``(item, exhausted)``."""
+
     try:
-        iterator = iter(value)
+        return next(iterator), False  # type: ignore[call-overload]
+    except StopIteration:
+        return None, True
+    except Exception:
+        raise WorkspaceReleaseError(f"{field_name} items could not be read") from None
+
+
+def _bounded_sequence(
+    value: object, field_name: str, *, max_items: int
+) -> tuple[object, ...]:
+    """Copy one collection with bounded iteration and privacy-safe failures."""
+
+    _reject_unbounded_sequence_type(value, field_name)
+    try:
+        iterator = iter(value)  # type: ignore[call-overload]
     except Exception:
         raise WorkspaceReleaseError(f"{field_name} items could not be read") from None
 
     result: list[object] = []
     for _ in range(max_items):
-        try:
-            result.append(next(iterator))
-        except StopIteration:
+        item, exhausted = _safe_next(iterator, field_name)
+        if exhausted:
             return tuple(result)
-        except Exception:
-            raise WorkspaceReleaseError(
-                f"{field_name} items could not be read"
-            ) from None
+        result.append(item)
 
-    try:
-        next(iterator)
-    except StopIteration:
+    _, exhausted = _safe_next(iterator, field_name)
+    if exhausted:
         return tuple(result)
-    except Exception:
-        raise WorkspaceReleaseError(f"{field_name} items could not be read") from None
     raise WorkspaceReleaseError(f"{field_name} exceeds the bounded item count")
 
 
@@ -228,6 +235,20 @@ def _typed_sequence(
     return cast(tuple[_T, ...], values)
 
 
+def _reject_url_like_identity(text: str) -> None:
+    if not text or "://" in text or "\\" in text or ":" in text:
+        raise WorkspaceReleaseError(
+            "repository identity must be a workspace-relative path, not a URL"
+        )
+
+
+def _reject_traversal_parts(parts: Iterable[str]) -> None:
+    if any(part in {"", ".", ".."} for part in parts):
+        raise WorkspaceReleaseError(
+            "repository identity must be a canonical workspace-relative path"
+        )
+
+
 def canonical_repository_id(value: str) -> str:
     """Return the canonical ``repo:<workspace-relative-path>`` identity.
 
@@ -239,20 +260,14 @@ def canonical_repository_id(value: str) -> str:
     text = _bounded_text(value, "repository identity", max_length=MAX_STRING_LENGTH)
     if text.startswith("repo:"):
         text = text[5:]
-    if not text or "://" in text or "\\" in text or ":" in text:
-        raise WorkspaceReleaseError(
-            "repository identity must be a workspace-relative path, not a URL"
-        )
-    raw_parts = text.split("/")
-    if any(part in {"", ".", ".."} for part in raw_parts):
-        raise WorkspaceReleaseError(
-            "repository identity must be a canonical workspace-relative path"
-        )
+    _reject_url_like_identity(text)
+    _reject_traversal_parts(text.split("/"))
     path = PurePosixPath(text)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+    if path.is_absolute():
         raise WorkspaceReleaseError(
             "repository identity must be a canonical workspace-relative path"
         )
+    _reject_traversal_parts(path.parts)
     return f"repo:{path.as_posix()}"
 
 
@@ -1062,6 +1077,100 @@ class DependencyGraph:
     parallel_groups: tuple[tuple[str, ...], ...]
     digest: str
 
+    def _normalize_graph_project_edge(
+        self,
+        raw_pair: object,
+        index: int,
+        seen: set[tuple[str, str]],
+    ) -> tuple[str, str]:
+        """Verbatim relocation of the per-item body of ``__post_init__``'s
+        project-edge normalization loop; no side effect, order, or
+        condition changed."""
+
+        pair = _bounded_sequence(
+            raw_pair,
+            f"graph project edge {index}",
+            max_items=2,
+        )
+        if len(pair) != 2 or any(not isinstance(item, str) for item in pair):
+            raise WorkspaceReleaseError(
+                "graph project edges must contain two string endpoints"
+            )
+        dependent, dependency = cast(tuple[str, str], pair)
+        canonical_pair = (
+            canonical_repository_id(dependent),
+            canonical_repository_id(dependency),
+        )
+        if canonical_pair[0] == canonical_pair[1]:
+            raise WorkspaceReleaseError(
+                "graph project edges must not contain self edges"
+            )
+        if canonical_pair in seen:
+            raise WorkspaceReleaseError("graph project edges must not duplicate")
+        return canonical_pair
+
+    def _normalize_graph_project_edges(
+        self, project_edge_values: tuple[object, ...]
+    ) -> tuple[tuple[str, str], ...]:
+        """Verbatim relocation of ``__post_init__``'s project-edge
+        normalization loop; no side effect, order, or condition changed."""
+
+        project_edges: list[tuple[str, str]] = []
+        project_edge_set: set[tuple[str, str]] = set()
+        for index, raw_pair in enumerate(project_edge_values):
+            canonical_pair = self._normalize_graph_project_edge(
+                raw_pair, index, project_edge_set
+            )
+            project_edge_set.add(canonical_pair)
+            project_edges.append(canonical_pair)
+        return tuple(project_edges)
+
+    def _normalize_graph_parallel_group(
+        self,
+        raw_group: object,
+        index: int,
+        grouped_projects: set[str],
+    ) -> tuple[str, ...]:
+        """Verbatim relocation of the per-item body of ``__post_init__``'s
+        parallel-group normalization loop; no side effect, order, or
+        condition changed."""
+
+        group = _bounded_sequence(
+            raw_group,
+            f"graph parallel group {index}",
+            max_items=MAX_PROJECTS,
+        )
+        if not group or any(not isinstance(item, str) for item in group):
+            raise WorkspaceReleaseError(
+                "graph parallel groups must contain non-empty string groups"
+            )
+        members = tuple(canonical_repository_id(cast(str, item)) for item in group)
+        if members != tuple(sorted(members)):
+            raise WorkspaceReleaseError(
+                "graph parallel group members must be canonical and ordered"
+            )
+        if len(members) != len(set(members)) or set(members) & grouped_projects:
+            raise WorkspaceReleaseError(
+                "graph parallel groups must not duplicate projects"
+            )
+        return members
+
+    def _normalize_graph_parallel_groups(
+        self, group_values: tuple[object, ...]
+    ) -> tuple[tuple[str, ...], ...]:
+        """Verbatim relocation of ``__post_init__``'s parallel-group
+        normalization loop; no side effect, order, or condition changed."""
+
+        groups: list[tuple[str, ...]] = []
+        grouped_projects: set[str] = set()
+        for index, raw_group in enumerate(group_values):
+            members = self._normalize_graph_parallel_group(
+                raw_group, index, grouped_projects
+            )
+            grouped_projects.update(members)
+            groups.append(members)
+        return tuple(groups)
+
     def __post_init__(self) -> None:
         projects = _typed_sequence(
             self.projects,
@@ -1086,60 +1195,14 @@ class DependencyGraph:
             "graph project edges",
             max_items=MAX_EDGES,
         )
-        project_edges: list[tuple[str, str]] = []
-        project_edge_set: set[tuple[str, str]] = set()
-        for index, raw_pair in enumerate(project_edge_values):
-            pair = _bounded_sequence(
-                raw_pair,
-                f"graph project edge {index}",
-                max_items=2,
-            )
-            if len(pair) != 2 or any(not isinstance(item, str) for item in pair):
-                raise WorkspaceReleaseError(
-                    "graph project edges must contain two string endpoints"
-                )
-            dependent, dependency = cast(tuple[str, str], pair)
-            canonical_pair = (
-                canonical_repository_id(dependent),
-                canonical_repository_id(dependency),
-            )
-            if canonical_pair[0] == canonical_pair[1]:
-                raise WorkspaceReleaseError(
-                    "graph project edges must not contain self edges"
-                )
-            if canonical_pair in project_edge_set:
-                raise WorkspaceReleaseError("graph project edges must not duplicate")
-            project_edge_set.add(canonical_pair)
-            project_edges.append(canonical_pair)
+        project_edges = self._normalize_graph_project_edges(project_edge_values)
 
         group_values = _bounded_sequence(
             self.parallel_groups,
             "graph parallel groups",
             max_items=MAX_PROJECTS,
         )
-        groups: list[tuple[str, ...]] = []
-        grouped_projects: set[str] = set()
-        for index, raw_group in enumerate(group_values):
-            group = _bounded_sequence(
-                raw_group,
-                f"graph parallel group {index}",
-                max_items=MAX_PROJECTS,
-            )
-            if not group or any(not isinstance(item, str) for item in group):
-                raise WorkspaceReleaseError(
-                    "graph parallel groups must contain non-empty string groups"
-                )
-            members = tuple(canonical_repository_id(cast(str, item)) for item in group)
-            if members != tuple(sorted(members)):
-                raise WorkspaceReleaseError(
-                    "graph parallel group members must be canonical and ordered"
-                )
-            if len(members) != len(set(members)) or set(members) & grouped_projects:
-                raise WorkspaceReleaseError(
-                    "graph parallel groups must not duplicate projects"
-                )
-            grouped_projects.update(members)
-            groups.append(members)
+        groups = self._normalize_graph_parallel_groups(group_values)
 
         digest = _bounded_text(self.digest, "graph digest", max_length=64)
         if re.fullmatch(r"[0-9a-fA-F]{64}", digest) is None:
@@ -1176,14 +1239,22 @@ class LegacyPhase:
     bulk_push: bool = False
     wait_minutes: int = 0
 
-    def __post_init__(self) -> None:
-        name = _bounded_text(self.name, "phase name")
+    def _validate_phase_number(self) -> None:
+        """Verbatim relocation of ``__post_init__``'s ``phase`` check; no
+        side effect, order, or condition changed."""
+
         if (
             isinstance(self.phase, bool)
             or not isinstance(self.phase, int)
             or self.phase < 1
         ):
             raise WorkspaceReleaseError("phase number must be positive")
+
+    def _normalize_phase_project_references(self) -> tuple[str, ...]:
+        """Verbatim relocation of ``__post_init__``'s
+        ``project_references`` normalization; no side effect, order, or
+        condition changed."""
+
         references = _bounded_sequence(
             self.project_references,
             "phase project references",
@@ -1197,6 +1268,13 @@ class LegacyPhase:
         )
         if len(normalized_references) != len(set(normalized_references)):
             raise WorkspaceReleaseError("phase project references must be unique")
+        return normalized_references
+
+    def _validate_phase_flags(self) -> None:
+        """Verbatim relocation of ``__post_init__``'s bulk-flag and
+        ``wait_minutes`` checks; no side effect, order, or condition
+        changed."""
+
         if not isinstance(self.bulk_bump, bool) or not isinstance(self.bulk_push, bool):
             raise WorkspaceReleaseError("phase bulk flags must be booleans")
         if (
@@ -1205,6 +1283,12 @@ class LegacyPhase:
             or self.wait_minutes < 0
         ):
             raise WorkspaceReleaseError("phase wait_minutes must be non-negative")
+
+    def __post_init__(self) -> None:
+        name = _bounded_text(self.name, "phase name")
+        self._validate_phase_number()
+        normalized_references = self._normalize_phase_project_references()
+        self._validate_phase_flags()
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "project_references", normalized_references)
 
@@ -1312,6 +1396,34 @@ def _edge_sort_key(edge: DependencyEdge) -> tuple[str, str, str, str, str]:
     )
 
 
+def _duplicate_edge_diagnostic(
+    endpoint: tuple[str, str], candidates: list[DependencyEdge]
+) -> Diagnostic:
+    """Verbatim relocation of the per-endpoint diagnostic body of
+    ``_normalize_plan_edges``'s duplicate-detection loop; no side effect,
+    order, or condition changed."""
+
+    details = tuple(
+        (
+            f"edge_{index}",
+            f"{edge.floor.value if edge.floor else ''}|{edge.source}|{edge.confidence.value}",
+        )
+        for index, edge in enumerate(candidates)
+    )
+    floor_values = {edge.floor.value if edge.floor else "" for edge in candidates}
+    code = (
+        GraphDiagnosticCode.CONFLICTING_FLOOR
+        if len(floor_values) > 1
+        else GraphDiagnosticCode.DUPLICATE_EDGE
+    )
+    return Diagnostic(
+        code,
+        f"{endpoint[0]}->{endpoint[1]}",
+        "frozen plan declares duplicate dependency endpoints",
+        details,
+    )
+
+
 def _normalize_plan_edges(
     values: Iterable[DependencyEdge],
 ) -> tuple[DependencyEdge, ...]:
@@ -1323,31 +1435,11 @@ def _normalize_plan_edges(
         grouped.setdefault((edge.dependent.value, edge.dependency.value), []).append(
             edge
         )
-    diagnostics: list[Diagnostic] = []
-    for endpoint in sorted(grouped):
-        candidates = grouped[endpoint]
-        if len(candidates) <= 1:
-            continue
-        details = tuple(
-            (
-                f"edge_{index}",
-                f"{edge.floor.value if edge.floor else ''}|{edge.source}|{edge.confidence.value}",
-            )
-            for index, edge in enumerate(candidates)
-        )
-        code = (
-            GraphDiagnosticCode.CONFLICTING_FLOOR
-            if len({edge.floor.value if edge.floor else "" for edge in candidates}) > 1
-            else GraphDiagnosticCode.DUPLICATE_EDGE
-        )
-        diagnostics.append(
-            Diagnostic(
-                code,
-                f"{endpoint[0]}->{endpoint[1]}",
-                "frozen plan declares duplicate dependency endpoints",
-                details,
-            )
-        )
+    diagnostics = [
+        _duplicate_edge_diagnostic(endpoint, grouped[endpoint])
+        for endpoint in sorted(grouped)
+        if len(grouped[endpoint]) > 1
+    ]
     if diagnostics:
         raise GraphValidationError(diagnostics)
     return ordered
@@ -1447,17 +1539,12 @@ def _sorted_diagnostics(diagnostics: Iterable[Diagnostic]) -> tuple[Diagnostic, 
     )
 
 
-def build_dependency_graph(
+def _normalize_graph_projects(
     projects: Iterable[ProjectRecord],
-    *,
-    overlay_edges: Iterable[DependencyEdge] = (),
-) -> DependencyGraph:
-    """Resolve package owners and return a stable project/package DAG.
-
-    All input collections are copied and sorted.  Diagnostics are accumulated
-    and raised together, so callers can show every missing or ambiguous edge in
-    one refusal before any later mutation path is considered.
-    """
+) -> tuple[ProjectRecord, ...]:
+    """Verbatim relocation of ``build_dependency_graph``'s project-input
+    normalization (bounded copy, type check, deterministic sort, and
+    cardinality bound); no side effect, order, or condition changed."""
 
     project_values = cast(
         tuple[ProjectRecord, ...],
@@ -1491,6 +1578,16 @@ def build_dependency_graph(
     )
     if len(project_values) > MAX_PROJECTS:
         raise WorkspaceReleaseError("workspace project count exceeds the bound")
+    return project_values
+
+
+def _normalize_graph_overlay_edges(
+    overlay_edges: Iterable[DependencyEdge],
+) -> tuple[DependencyEdge, ...]:
+    """Verbatim relocation of ``build_dependency_graph``'s overlay-edge
+    input normalization (bounded copy, type check, deterministic sort, and
+    cardinality bound); no side effect, order, or condition changed."""
+
     overlay_values = cast(
         tuple[DependencyEdge, ...],
         _bounded_sequence(
@@ -1506,6 +1603,16 @@ def build_dependency_graph(
     overlay_values = tuple(sorted(overlay_values, key=_edge_sort_key))
     if len(overlay_values) > MAX_EDGES:
         raise WorkspaceReleaseError("workspace overlay edge count exceeds the bound")
+    return overlay_values
+
+
+def _build_graph_project_map(
+    project_values: tuple[ProjectRecord, ...],
+) -> tuple[dict[str, ProjectRecord], list[Diagnostic]]:
+    """Verbatim relocation of ``build_dependency_graph``'s project-map
+    construction and duplicate-project detection loop; no side effect,
+    order, or condition changed."""
+
     diagnostics: list[Diagnostic] = []
     project_map: dict[str, ProjectRecord] = {}
     for project in project_values:
@@ -1519,7 +1626,22 @@ def build_dependency_graph(
             )
         else:
             project_map[project.project_id] = project
+    return project_map, diagnostics
 
+
+def _build_graph_package_map_and_owners(
+    project_map: dict[str, ProjectRecord],
+) -> tuple[
+    dict[str, PackageRecord],
+    dict[tuple[Ecosystem, str], list[PackageKey]],
+    list[Diagnostic],
+]:
+    """Verbatim relocation of ``build_dependency_graph``'s package-map and
+    owner-index construction (including the duplicate-package detection and
+    the cardinality bound), and the owners sort pass; no side effect,
+    order, or condition changed."""
+
+    diagnostics: list[Diagnostic] = []
     package_map: dict[str, PackageRecord] = {}
     owners: dict[tuple[Ecosystem, str], list[PackageKey]] = {}
     for project in sorted(project_map.values(), key=lambda item: item.project_id):
@@ -1542,9 +1664,16 @@ def build_dependency_graph(
         raise WorkspaceReleaseError("workspace package count exceeds the bound")
     for owner_key in owners:
         owners[owner_key].sort(key=lambda item: item.value)
+    return package_map, owners, diagnostics
 
-    edges: list[DependencyEdge] = []
-    seen_edges: dict[tuple[str, str], DependencyEdge] = {}
+
+def _index_overlay_edges_by_reference(
+    overlay_values: tuple[DependencyEdge, ...],
+) -> dict[tuple[str, Ecosystem, str], list[DependencyEdge]]:
+    """Verbatim relocation of ``build_dependency_graph``'s
+    ``overlay_by_reference`` index construction loop; no side effect,
+    order, or condition changed."""
+
     overlay_by_reference: dict[tuple[str, Ecosystem, str], list[DependencyEdge]] = {}
     for edge in overlay_values:
         overlay_by_reference.setdefault(
@@ -1555,157 +1684,264 @@ def build_dependency_graph(
             ),
             [],
         ).append(edge)
-    consumed_overlay_edges: set[DependencyEdge] = set()
-    for package in sorted(package_map.values(), key=lambda item: item.key.value):
-        for spec in package.dependencies:
-            target = spec.target
-            explicit_overlays = tuple(
-                overlay_by_reference.get(
-                    (package.key.value, target.ecosystem, target.name), []
-                )
-            )
-            if explicit_overlays:
-                if target.repository_id is None:
-                    overlay_owners = tuple(
-                        sorted({edge.dependency.value for edge in explicit_overlays})
-                    )
-                    if len(overlay_owners) > 1:
-                        diagnostics.append(
-                            Diagnostic(
-                                GraphDiagnosticCode.AMBIGUOUS_PACKAGE_OWNER,
-                                f"{package.key.value}->{target.ecosystem.value}:{target.name}",
-                                "overlay dependency has more than one possible owner",
-                                tuple(
-                                    (f"owner_{index}", owner)
-                                    for index, owner in enumerate(overlay_owners)
-                                ),
-                            )
-                        )
-                        consumed_overlay_edges.update(explicit_overlays)
-                        continue
-                if target.repository_id is not None:
-                    mismatched = tuple(
-                        edge
-                        for edge in explicit_overlays
-                        if edge.dependency.repository_id != target.repository_id
-                    )
-                    if mismatched:
-                        diagnostics.append(
-                            Diagnostic(
-                                GraphDiagnosticCode.INVALID_METADATA,
-                                f"{package.key.value}->{target.ecosystem.value}:{target.name}",
-                                "overlay edge owner conflicts with explicit metadata owner",
-                            )
-                        )
-                        continue
-                for edge in explicit_overlays:
-                    _append_edge(edge, edges, seen_edges, diagnostics)
-                    consumed_overlay_edges.add(edge)
-                continue
-            candidates = owners.get((target.ecosystem, target.name), [])
-            if target.repository_id is not None:
-                candidate_id = PackageKey(
-                    target.repository_id, target.ecosystem, target.name
-                ).value
-                candidate_record = package_map.get(candidate_id)
-                candidates = [candidate_record.key] if candidate_record else []
-                if target.repository_id not in project_map:
-                    diagnostics.append(
-                        Diagnostic(
-                            GraphDiagnosticCode.MISSING_PROJECT,
-                            target.repository_id,
-                            "explicit dependency edge names an unknown project",
-                            (("dependent", package.key.repository_id),),
-                        )
-                    )
-            if not candidates:
-                diagnostics.append(
-                    Diagnostic(
-                        GraphDiagnosticCode.MISSING_PACKAGE,
-                        f"{package.key.value}->{target.ecosystem.value}:{target.name}",
-                        "dependency package has no known owner",
-                    )
-                )
-                continue
-            if len(candidates) > 1:
-                diagnostics.append(
-                    Diagnostic(
-                        GraphDiagnosticCode.AMBIGUOUS_PACKAGE_OWNER,
-                        f"{package.key.value}->{target.ecosystem.value}:{target.name}",
-                        "dependency package has more than one possible owner; use an explicit repository identity",
-                        tuple(
-                            (f"owner_{index}", item.value)
-                            for index, item in enumerate(candidates)
-                        ),
-                    )
-                )
-                continue
-            edge = DependencyEdge(
-                dependent=package.key,
-                dependency=candidates[0],
-                floor=spec.floor,
-                source=spec.source,
-                confidence=(
-                    EdgeConfidence.EXPLICIT
-                    if target.repository_id is not None
-                    else EdgeConfidence.INFERRED
-                ),
-            )
-            _append_edge(edge, edges, seen_edges, diagnostics)
+    return overlay_by_reference
 
-    for edge in overlay_values:
-        if edge not in consumed_overlay_edges:
-            _append_edge(edge, edges, seen_edges, diagnostics)
-        if edge.dependent.repository_id not in project_map:
-            diagnostics.append(
-                Diagnostic(
-                    GraphDiagnosticCode.MISSING_PROJECT,
-                    edge.dependent.repository_id,
-                    "overlay edge dependent project is not selected",
-                )
-            )
-        if edge.dependency.repository_id not in project_map:
-            diagnostics.append(
-                Diagnostic(
-                    GraphDiagnosticCode.MISSING_PROJECT,
-                    edge.dependency.repository_id,
-                    "overlay edge dependency project is not selected",
-                )
-            )
-        if edge.dependent.value not in package_map:
-            diagnostics.append(
-                Diagnostic(
-                    GraphDiagnosticCode.MISSING_PACKAGE,
-                    edge.dependent.value,
-                    "overlay edge dependent package is not declared",
-                )
-            )
-        if edge.dependency.value not in package_map:
-            diagnostics.append(
-                Diagnostic(
-                    GraphDiagnosticCode.MISSING_PACKAGE,
-                    edge.dependency.value,
-                    "overlay edge dependency package is not declared",
-                )
-            )
 
-    if len(edges) > MAX_EDGES:
-        raise WorkspaceReleaseError("workspace dependency edge count exceeds the bound")
-    project_edges = tuple(
-        sorted(
-            {
-                (edge.dependent_project_id, edge.dependency_project_id)
-                for edge in edges
-                if edge.dependent_project_id != edge.dependency_project_id
-            }
+@dataclass(slots=True)
+class _GraphBuildState:
+    """Mutable working state threaded through dependency-edge resolution.
+
+    This is internal builder scratch space, not a public frozen record; it
+    intentionally has no ``__post_init__`` validation of its own.
+    """
+
+    project_map: dict[str, ProjectRecord]
+    package_map: dict[str, PackageRecord]
+    owners: dict[tuple[Ecosystem, str], list[PackageKey]]
+    overlay_by_reference: dict[tuple[str, Ecosystem, str], list[DependencyEdge]]
+    edges: list[DependencyEdge]
+    seen_edges: dict[tuple[str, str], DependencyEdge]
+    consumed_overlay_edges: set[DependencyEdge]
+    diagnostics: list[Diagnostic]
+
+
+def _reject_ambiguous_overlay_owner(
+    package: PackageRecord,
+    target: PackageReference,
+    explicit_overlays: tuple[DependencyEdge, ...],
+    state: _GraphBuildState,
+) -> bool:
+    """Verbatim relocation of the ``target.repository_id is None`` guard of
+    ``_resolve_dependency_via_overlay``; no side effect, order, or
+    condition changed. Returns ``True`` when a diagnostic was raised and
+    the caller must stop (equivalent to the original branch's ``return``)."""
+
+    if target.repository_id is not None:
+        return False
+    overlay_owners = tuple(
+        sorted({edge.dependency.value for edge in explicit_overlays})
+    )
+    if len(overlay_owners) <= 1:
+        return False
+    state.diagnostics.append(
+        Diagnostic(
+            GraphDiagnosticCode.AMBIGUOUS_PACKAGE_OWNER,
+            f"{package.key.value}->{target.ecosystem.value}:{target.name}",
+            "overlay dependency has more than one possible owner",
+            tuple(
+                (f"owner_{index}", owner) for index, owner in enumerate(overlay_owners)
+            ),
         )
     )
-    groups, cycle_diagnostics = _topological_groups(
-        tuple(sorted(project_map)), project_edges
+    state.consumed_overlay_edges.update(explicit_overlays)
+    return True
+
+
+def _reject_mismatched_overlay_owner(
+    package: PackageRecord,
+    target: PackageReference,
+    explicit_overlays: tuple[DependencyEdge, ...],
+    state: _GraphBuildState,
+) -> bool:
+    """Verbatim relocation of the ``target.repository_id is not None``
+    guard of ``_resolve_dependency_via_overlay``; no side effect, order, or
+    condition changed. Returns ``True`` when a diagnostic was raised and
+    the caller must stop (equivalent to the original branch's ``return``)."""
+
+    if target.repository_id is None:
+        return False
+    mismatched = tuple(
+        edge
+        for edge in explicit_overlays
+        if edge.dependency.repository_id != target.repository_id
     )
-    diagnostics.extend(cycle_diagnostics)
-    if diagnostics:
-        raise GraphValidationError(_sorted_diagnostics(diagnostics))
+    if not mismatched:
+        return False
+    state.diagnostics.append(
+        Diagnostic(
+            GraphDiagnosticCode.INVALID_METADATA,
+            f"{package.key.value}->{target.ecosystem.value}:{target.name}",
+            "overlay edge owner conflicts with explicit metadata owner",
+        )
+    )
+    return True
+
+
+def _resolve_dependency_via_overlay(
+    package: PackageRecord,
+    target: PackageReference,
+    explicit_overlays: tuple[DependencyEdge, ...],
+    state: _GraphBuildState,
+) -> None:
+    """Verbatim relocation of the ``if explicit_overlays:`` branch body of
+    ``build_dependency_graph``'s per-dependency resolution loop; no side
+    effect, order, or condition changed. Every original sub-branch ended in
+    ``continue``, so the caller always continues after calling this."""
+
+    if _reject_ambiguous_overlay_owner(package, target, explicit_overlays, state):
+        return
+    if _reject_mismatched_overlay_owner(package, target, explicit_overlays, state):
+        return
+    for edge in explicit_overlays:
+        _append_edge(edge, state.edges, state.seen_edges, state.diagnostics)
+        state.consumed_overlay_edges.add(edge)
+
+
+def _resolve_dependency_via_owners(
+    package: PackageRecord,
+    spec: DependencySpec,
+    target: PackageReference,
+    state: _GraphBuildState,
+) -> None:
+    """Verbatim relocation of the implicit-owner-resolution branch body of
+    ``build_dependency_graph``'s per-dependency resolution loop (the code
+    path taken when there is no explicit overlay); no side effect, order,
+    or condition changed."""
+
+    candidates = state.owners.get((target.ecosystem, target.name), [])
+    if target.repository_id is not None:
+        candidate_id = PackageKey(
+            target.repository_id, target.ecosystem, target.name
+        ).value
+        candidate_record = state.package_map.get(candidate_id)
+        candidates = [candidate_record.key] if candidate_record else []
+        if target.repository_id not in state.project_map:
+            state.diagnostics.append(
+                Diagnostic(
+                    GraphDiagnosticCode.MISSING_PROJECT,
+                    target.repository_id,
+                    "explicit dependency edge names an unknown project",
+                    (("dependent", package.key.repository_id),),
+                )
+            )
+    if not candidates:
+        state.diagnostics.append(
+            Diagnostic(
+                GraphDiagnosticCode.MISSING_PACKAGE,
+                f"{package.key.value}->{target.ecosystem.value}:{target.name}",
+                "dependency package has no known owner",
+            )
+        )
+        return
+    if len(candidates) > 1:
+        state.diagnostics.append(
+            Diagnostic(
+                GraphDiagnosticCode.AMBIGUOUS_PACKAGE_OWNER,
+                f"{package.key.value}->{target.ecosystem.value}:{target.name}",
+                "dependency package has more than one possible owner; use an explicit repository identity",
+                tuple(
+                    (f"owner_{index}", item.value)
+                    for index, item in enumerate(candidates)
+                ),
+            )
+        )
+        return
+    edge = DependencyEdge(
+        dependent=package.key,
+        dependency=candidates[0],
+        floor=spec.floor,
+        source=spec.source,
+        confidence=(
+            EdgeConfidence.EXPLICIT
+            if target.repository_id is not None
+            else EdgeConfidence.INFERRED
+        ),
+    )
+    _append_edge(edge, state.edges, state.seen_edges, state.diagnostics)
+
+
+def _resolve_package_dependency(
+    package: PackageRecord, spec: DependencySpec, state: _GraphBuildState
+) -> None:
+    """Verbatim relocation of the per-spec dispatch of
+    ``build_dependency_graph``'s per-dependency resolution loop; no side
+    effect, order, or condition changed."""
+
+    target = spec.target
+    explicit_overlays = tuple(
+        state.overlay_by_reference.get(
+            (package.key.value, target.ecosystem, target.name), []
+        )
+    )
+    if explicit_overlays:
+        _resolve_dependency_via_overlay(package, target, explicit_overlays, state)
+        return
+    _resolve_dependency_via_owners(package, spec, target, state)
+
+
+def _resolve_all_package_dependencies(state: _GraphBuildState) -> None:
+    """Verbatim relocation of ``build_dependency_graph``'s outer
+    package/spec iteration; no side effect, order, or condition changed."""
+
+    for package in sorted(state.package_map.values(), key=lambda item: item.key.value):
+        for spec in package.dependencies:
+            _resolve_package_dependency(package, spec, state)
+
+
+def _validate_overlay_edge_membership(
+    edge: DependencyEdge, state: _GraphBuildState
+) -> None:
+    """Verbatim relocation of the per-edge membership checks in
+    ``build_dependency_graph``'s unconsumed-overlay-edge loop; no side
+    effect, order, or condition changed."""
+
+    if edge.dependent.repository_id not in state.project_map:
+        state.diagnostics.append(
+            Diagnostic(
+                GraphDiagnosticCode.MISSING_PROJECT,
+                edge.dependent.repository_id,
+                "overlay edge dependent project is not selected",
+            )
+        )
+    if edge.dependency.repository_id not in state.project_map:
+        state.diagnostics.append(
+            Diagnostic(
+                GraphDiagnosticCode.MISSING_PROJECT,
+                edge.dependency.repository_id,
+                "overlay edge dependency project is not selected",
+            )
+        )
+    if edge.dependent.value not in state.package_map:
+        state.diagnostics.append(
+            Diagnostic(
+                GraphDiagnosticCode.MISSING_PACKAGE,
+                edge.dependent.value,
+                "overlay edge dependent package is not declared",
+            )
+        )
+    if edge.dependency.value not in state.package_map:
+        state.diagnostics.append(
+            Diagnostic(
+                GraphDiagnosticCode.MISSING_PACKAGE,
+                edge.dependency.value,
+                "overlay edge dependency package is not declared",
+            )
+        )
+
+
+def _append_unconsumed_overlay_edges(
+    overlay_values: tuple[DependencyEdge, ...], state: _GraphBuildState
+) -> None:
+    """Verbatim relocation of ``build_dependency_graph``'s final overlay
+    pass (append-if-unconsumed plus membership checks); no side effect,
+    order, or condition changed."""
+
+    for edge in overlay_values:
+        if edge not in state.consumed_overlay_edges:
+            _append_edge(edge, state.edges, state.seen_edges, state.diagnostics)
+        _validate_overlay_edge_membership(edge, state)
+
+
+def _assemble_dependency_graph(
+    project_map: dict[str, ProjectRecord],
+    package_map: dict[str, PackageRecord],
+    edges: list[DependencyEdge],
+    project_edges: tuple[tuple[str, str], ...],
+    groups: tuple[tuple[str, ...], ...],
+) -> DependencyGraph:
+    """Verbatim relocation of ``build_dependency_graph``'s final ordering,
+    digest computation, and ``DependencyGraph`` construction; no side
+    effect, order, or condition changed."""
 
     ordered_projects = tuple(project_map[key] for key in sorted(project_map))
     ordered_packages = tuple(package_map[key] for key in sorted(package_map))
@@ -1725,6 +1961,64 @@ def build_dependency_graph(
         project_edges=project_edges,
         parallel_groups=groups,
         digest=digest,
+    )
+
+
+def build_dependency_graph(
+    projects: Iterable[ProjectRecord],
+    *,
+    overlay_edges: Iterable[DependencyEdge] = (),
+) -> DependencyGraph:
+    """Resolve package owners and return a stable project/package DAG.
+
+    All input collections are copied and sorted.  Diagnostics are accumulated
+    and raised together, so callers can show every missing or ambiguous edge in
+    one refusal before any later mutation path is considered.
+    """
+
+    project_values = _normalize_graph_projects(projects)
+    overlay_values = _normalize_graph_overlay_edges(overlay_edges)
+    project_map, diagnostics = _build_graph_project_map(project_values)
+    package_map, owners, package_diagnostics = _build_graph_package_map_and_owners(
+        project_map
+    )
+    diagnostics.extend(package_diagnostics)
+    overlay_by_reference = _index_overlay_edges_by_reference(overlay_values)
+    state = _GraphBuildState(
+        project_map=project_map,
+        package_map=package_map,
+        owners=owners,
+        overlay_by_reference=overlay_by_reference,
+        edges=[],
+        seen_edges={},
+        consumed_overlay_edges=set(),
+        diagnostics=diagnostics,
+    )
+    _resolve_all_package_dependencies(state)
+    _append_unconsumed_overlay_edges(overlay_values, state)
+
+    edges = state.edges
+    diagnostics = state.diagnostics
+    if len(edges) > MAX_EDGES:
+        raise WorkspaceReleaseError("workspace dependency edge count exceeds the bound")
+    project_edges = tuple(
+        sorted(
+            {
+                (edge.dependent_project_id, edge.dependency_project_id)
+                for edge in edges
+                if edge.dependent_project_id != edge.dependency_project_id
+            }
+        )
+    )
+    groups, cycle_diagnostics = _topological_groups(
+        tuple(sorted(project_map)), project_edges
+    )
+    diagnostics.extend(cycle_diagnostics)
+    if diagnostics:
+        raise GraphValidationError(_sorted_diagnostics(diagnostics))
+
+    return _assemble_dependency_graph(
+        project_map, package_map, edges, project_edges, groups
     )
 
 
@@ -1762,9 +2056,12 @@ def _append_edge(
         )
 
 
-def _topological_groups(
+def _build_project_dependency_maps(
     projects: tuple[str, ...], project_edges: tuple[tuple[str, str], ...]
-) -> tuple[tuple[tuple[str, ...], ...], tuple[Diagnostic, ...]]:
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Verbatim relocation of ``_topological_groups``'s dependency/dependent
+    map construction loop; no side effect, order, or condition changed."""
+
     dependencies: dict[str, set[str]] = {project: set() for project in projects}
     dependents: dict[str, set[str]] = {project: set() for project in projects}
     for dependent, dependency in project_edges:
@@ -1774,6 +2071,43 @@ def _topological_groups(
             continue
         dependencies[dependent].add(dependency)
         dependents[dependency].add(dependent)
+    return dependencies, dependents
+
+
+def _cycle_diagnostic(
+    remaining: set[str], dependencies: dict[str, set[str]]
+) -> Diagnostic:
+    """Verbatim relocation of ``_topological_groups``'s cycle-diagnostic
+    construction; no side effect, order, or condition changed."""
+
+    cycle = _cycle_path(remaining, dependencies)
+    return Diagnostic(
+        GraphDiagnosticCode.CYCLE,
+        "workspace dependency graph",
+        "dependency graph contains a cycle",
+        (("path", " -> ".join(cycle)),),
+    )
+
+
+def _advance_topological_frontier(
+    ready: tuple[str, ...],
+    remaining: set[str],
+    dependencies: dict[str, set[str]],
+    dependents: dict[str, set[str]],
+) -> None:
+    """Verbatim relocation of ``_topological_groups``'s frontier-advance
+    loop; no side effect, order, or condition changed."""
+
+    for project in ready:
+        remaining.remove(project)
+        for dependent in dependents[project]:
+            dependencies[dependent].discard(project)
+
+
+def _topological_groups(
+    projects: tuple[str, ...], project_edges: tuple[tuple[str, str], ...]
+) -> tuple[tuple[tuple[str, ...], ...], tuple[Diagnostic, ...]]:
+    dependencies, dependents = _build_project_dependency_maps(projects, project_edges)
     remaining = set(projects)
     groups: list[tuple[str, ...]] = []
     while remaining:
@@ -1781,20 +2115,9 @@ def _topological_groups(
             sorted(project for project in remaining if not dependencies[project])
         )
         if not ready:
-            cycle = _cycle_path(remaining, dependencies)
-            return tuple(groups), (
-                Diagnostic(
-                    GraphDiagnosticCode.CYCLE,
-                    "workspace dependency graph",
-                    "dependency graph contains a cycle",
-                    (("path", " -> ".join(cycle)),),
-                ),
-            )
+            return tuple(groups), (_cycle_diagnostic(remaining, dependencies),)
         groups.append(ready)
-        for project in ready:
-            remaining.remove(project)
-            for dependent in dependents[project]:
-                dependencies[dependent].discard(project)
+        _advance_topological_frontier(ready, remaining, dependencies, dependents)
     return tuple(groups), ()
 
 
@@ -1829,6 +2152,24 @@ def _cycle_path(
     return tuple(sorted(remaining))
 
 
+def _validate_bounded_mapping_key(
+    key: object, field_name: str, keys: list[str]
+) -> None:
+    """Verbatim relocation of the per-key body of ``_bounded_mapping_keys``'s
+    iteration loop; no side effect, order, or condition changed."""
+
+    if (
+        type(key) is not str
+        or not key
+        or key.strip() != key
+        or len(key) > MAX_STRING_LENGTH
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in key)
+    ):
+        raise WorkspaceReleaseError(f"{field_name} keys must be bounded strings")
+    if key in keys:
+        raise WorkspaceReleaseError(f"{field_name} contains duplicate keys")
+
+
 def _bounded_mapping_keys(
     value: Mapping[str, object],
     field_name: str,
@@ -1842,19 +2183,8 @@ def _bounded_mapping_keys(
         for index, key in enumerate(iterator):
             if index >= len(allowed):
                 raise WorkspaceReleaseError(f"{field_name} has too many keys")
-            if (
-                type(key) is not str
-                or not key
-                or key.strip() != key
-                or len(key) > MAX_STRING_LENGTH
-                or any(ord(char) < 0x20 or ord(char) == 0x7F for char in key)
-            ):
-                raise WorkspaceReleaseError(
-                    f"{field_name} keys must be bounded strings"
-                )
-            if key in keys:
-                raise WorkspaceReleaseError(f"{field_name} contains duplicate keys")
-            keys.append(key)
+            _validate_bounded_mapping_key(key, field_name, keys)
+            keys.append(cast(str, key))
     except WorkspaceReleaseError:
         raise
     except Exception:
@@ -1876,6 +2206,106 @@ def _safe_mapping_get(
         return value.get(key, default)
     except Exception:
         raise WorkspaceReleaseError(f"{field_name} values could not be read") from None
+
+
+_LEGACY_PHASE_KEYS = frozenset(
+    {
+        "name",
+        "phase",
+        "project",
+        "projects",
+        "bulk_bump",
+        "bulk_push",
+        "wait_minutes",
+        "updates",
+        "exclude",
+    }
+)
+
+
+def _legacy_phase_references(
+    raw: Mapping[str, object], index: int, total_project_references: int
+) -> tuple[list[str], int]:
+    """Verbatim relocation of ``phase_manifest_from_mapping``'s per-phase
+    project-reference construction and the running-total bound check; no
+    side effect, order, or condition changed. Returns
+    ``(refs, updated_total_project_references)``."""
+
+    project = _safe_mapping_get(raw, "project", None, f"phase {index}")
+    projects = _safe_mapping_get(raw, "projects", (), f"phase {index}")
+    refs: list[str] = []
+    if project is not None:
+        refs.append(_bounded_text(project, f"phase {index} project"))
+    if type(projects) not in (list, tuple):
+        raise WorkspaceReleaseError(f"phase {index} projects must be a sequence")
+    project_values = _bounded_sequence(
+        projects,
+        f"phase {index} projects",
+        max_items=MAX_PROJECTS,
+    )
+    refs.extend(
+        _bounded_text(item, f"phase {index} project") for item in project_values
+    )
+    if len(refs) > MAX_PROJECTS:
+        raise WorkspaceReleaseError(f"phase {index} projects exceed the project bound")
+    total_project_references += len(refs)
+    if total_project_references > MAX_EDGES:
+        raise WorkspaceReleaseError(
+            "phase manifest project references exceed the bounded total"
+        )
+    if len(refs) != len(set(refs)):
+        raise WorkspaceReleaseError(f"phase {index} project references must be unique")
+    return refs, total_project_references
+
+
+def _legacy_phase_flags(
+    raw: Mapping[str, object], index: int
+) -> tuple[int, bool, bool]:
+    """Verbatim relocation of ``phase_manifest_from_mapping``'s
+    ``wait_minutes``/bulk-flag reads and checks; no side effect, order, or
+    condition changed. Returns ``(wait, bulk_bump, bulk_push)``."""
+
+    wait = _safe_mapping_get(raw, "wait_minutes", 0, f"phase {index}")
+    if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0:
+        raise WorkspaceReleaseError(f"phase {index} wait_minutes must be non-negative")
+    bulk_bump = _safe_mapping_get(raw, "bulk_bump", False, f"phase {index}")
+    bulk_push = _safe_mapping_get(raw, "bulk_push", False, f"phase {index}")
+    if not isinstance(bulk_bump, bool) or not isinstance(bulk_push, bool):
+        raise WorkspaceReleaseError(f"phase {index} bulk flags must be booleans")
+    return cast(int, wait), cast(bool, bulk_bump), cast(bool, bulk_push)
+
+
+def _legacy_phase_from_mapping(
+    raw: object, index: int, total_project_references: int
+) -> tuple[LegacyPhase, int]:
+    """Verbatim relocation of the per-item body of
+    ``phase_manifest_from_mapping``'s phase-construction loop; no side
+    effect, order, or condition changed. Returns
+    ``(phase, updated_total_project_references)``."""
+
+    if not isinstance(raw, Mapping):
+        raise WorkspaceReleaseError(f"phase {index} must be a mapping")
+    _bounded_mapping_keys(raw, f"phase {index}", _LEGACY_PHASE_KEYS)
+    name = _bounded_text(
+        _safe_mapping_get(raw, "name", f"phase-{index + 1}", f"phase {index}"),
+        "phase name",
+    )
+    phase = _safe_mapping_get(raw, "phase", index + 1, f"phase {index}")
+    if isinstance(phase, bool) or not isinstance(phase, int) or phase < 1:
+        raise WorkspaceReleaseError(f"phase {index} number must be positive")
+    refs, total_project_references = _legacy_phase_references(
+        raw, index, total_project_references
+    )
+    wait, bulk_bump, bulk_push = _legacy_phase_flags(raw, index)
+    phase_record = LegacyPhase(
+        name=name,
+        phase=phase,
+        project_references=tuple(refs),
+        bulk_bump=bulk_bump,
+        bulk_push=bulk_push,
+        wait_minutes=wait,
+    )
+    return phase_record, total_project_references
 
 
 def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManifest:
@@ -1900,77 +2330,11 @@ def phase_manifest_from_mapping(value: Mapping[str, object]) -> LegacyPhaseManif
     )
     phases: list[LegacyPhase] = []
     total_project_references = 0
-    phase_keys = frozenset(
-        {
-            "name",
-            "phase",
-            "project",
-            "projects",
-            "bulk_bump",
-            "bulk_push",
-            "wait_minutes",
-            "updates",
-            "exclude",
-        }
-    )
     for index, raw in enumerate(phase_values):
-        if not isinstance(raw, Mapping):
-            raise WorkspaceReleaseError(f"phase {index} must be a mapping")
-        _bounded_mapping_keys(raw, f"phase {index}", phase_keys)
-        name = _bounded_text(
-            _safe_mapping_get(raw, "name", f"phase-{index + 1}", f"phase {index}"),
-            "phase name",
+        phase_record, total_project_references = _legacy_phase_from_mapping(
+            raw, index, total_project_references
         )
-        phase = _safe_mapping_get(raw, "phase", index + 1, f"phase {index}")
-        if isinstance(phase, bool) or not isinstance(phase, int) or phase < 1:
-            raise WorkspaceReleaseError(f"phase {index} number must be positive")
-        project = _safe_mapping_get(raw, "project", None, f"phase {index}")
-        projects = _safe_mapping_get(raw, "projects", (), f"phase {index}")
-        refs: list[str] = []
-        if project is not None:
-            refs.append(_bounded_text(project, f"phase {index} project"))
-        if type(projects) not in (list, tuple):
-            raise WorkspaceReleaseError(f"phase {index} projects must be a sequence")
-        project_values = _bounded_sequence(
-            projects,
-            f"phase {index} projects",
-            max_items=MAX_PROJECTS,
-        )
-        refs.extend(
-            _bounded_text(item, f"phase {index} project") for item in project_values
-        )
-        if len(refs) > MAX_PROJECTS:
-            raise WorkspaceReleaseError(
-                f"phase {index} projects exceed the project bound"
-            )
-        total_project_references += len(refs)
-        if total_project_references > MAX_EDGES:
-            raise WorkspaceReleaseError(
-                "phase manifest project references exceed the bounded total"
-            )
-        if len(refs) != len(set(refs)):
-            raise WorkspaceReleaseError(
-                f"phase {index} project references must be unique"
-            )
-        wait = _safe_mapping_get(raw, "wait_minutes", 0, f"phase {index}")
-        if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0:
-            raise WorkspaceReleaseError(
-                f"phase {index} wait_minutes must be non-negative"
-            )
-        bulk_bump = _safe_mapping_get(raw, "bulk_bump", False, f"phase {index}")
-        bulk_push = _safe_mapping_get(raw, "bulk_push", False, f"phase {index}")
-        if not isinstance(bulk_bump, bool) or not isinstance(bulk_push, bool):
-            raise WorkspaceReleaseError(f"phase {index} bulk flags must be booleans")
-        phases.append(
-            LegacyPhase(
-                name=name,
-                phase=phase,
-                project_references=tuple(refs),
-                bulk_bump=bulk_bump,
-                bulk_push=bulk_push,
-                wait_minutes=wait,
-            )
-        )
+        phases.append(phase_record)
     return LegacyPhaseManifest(
         phases=tuple(sorted(phases, key=lambda item: (item.phase, item.name)))
     )
