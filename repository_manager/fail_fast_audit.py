@@ -73,7 +73,7 @@ from __future__ import annotations
 
 import shlex
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -242,6 +242,39 @@ def _message(tool: str, flags: tuple[str, ...]) -> str:
     )
 
 
+def _cargo_statement_result(
+    suffix: list[str],
+) -> tuple[str, tuple[str, ...], str] | None:
+    fixed = ensure_no_fail_fast(suffix)
+    if fixed == suffix:
+        return None
+    return "cargo", ("--no-fail-fast",), _snippet(suffix)
+
+
+def _pytest_statement_result(
+    suffix: list[str],
+) -> tuple[str, tuple[str, ...], str] | None:
+    fixed = ensure_no_fail_fast(suffix)
+    if fixed == suffix:
+        return None
+    removed = tuple(_merge_maxfail_pair(_removed_tokens(suffix, fixed)))
+    if not removed:
+        return None
+    return "pytest", removed, _snippet(suffix)
+
+
+def _go_statement_result(
+    suffix: list[str],
+) -> tuple[str, tuple[str, ...], str] | None:
+    fixed = ensure_no_fail_fast(suffix)
+    if fixed == suffix:
+        return None
+    removed = tuple(_removed_tokens(suffix, fixed))
+    if not removed:
+        return None
+    return "go", removed, _snippet(suffix)
+
+
 def _scan_statement(
     statement: Sequence[str],
 ) -> tuple[str, tuple[str, ...], str] | None:
@@ -261,27 +294,59 @@ def _scan_statement(
     for start in range(len(statement)):
         suffix = list(statement[start:])
         if is_test_suite_command(suffix):
-            fixed = ensure_no_fail_fast(suffix)
-            if fixed == suffix:
-                return None
-            return "cargo", ("--no-fail-fast",), _snippet(suffix)
+            return _cargo_statement_result(suffix)
         if is_pytest_command(suffix):
-            fixed = ensure_no_fail_fast(suffix)
-            if fixed == suffix:
-                return None
-            removed = tuple(_merge_maxfail_pair(_removed_tokens(suffix, fixed)))
-            if not removed:
-                return None
-            return "pytest", removed, _snippet(suffix)
+            return _pytest_statement_result(suffix)
         if is_go_test_command(suffix):
-            fixed = ensure_no_fail_fast(suffix)
-            if fixed == suffix:
-                return None
-            removed = tuple(_removed_tokens(suffix, fixed))
-            if not removed:
-                return None
-            return "go", removed, _snippet(suffix)
+            return _go_statement_result(suffix)
     return None
+
+
+def _load_precommit_config(config_path: Path) -> dict[str, Any] | None:
+    if not config_path.is_file():
+        return None
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _hook_violations(root: Path, hook: dict[str, Any]) -> list[Violation]:
+    entry = hook.get("entry")
+    if not isinstance(entry, str) or not entry.strip():
+        return []
+    hook_id = str(hook.get("id") or "")
+    violations: list[Violation] = []
+    for statement in _entry_statements(entry):
+        if not statement:
+            continue
+        found = _scan_statement(statement)
+        if found is None:
+            continue
+        tool, flags, command = found
+        violations.append(
+            Violation(
+                repo=str(root),
+                hook_id=hook_id,
+                tool=tool,
+                flags=flags,
+                command=command,
+                message=_message(tool, flags),
+            )
+        )
+    return violations
+
+
+def _repo_block_violations(root: Path, repo_block: dict[str, Any]) -> list[Violation]:
+    violations: list[Violation] = []
+    for hook in repo_block.get("hooks") or []:
+        if not isinstance(hook, dict):
+            continue
+        violations.extend(_hook_violations(root, hook))
+    return violations
 
 
 def check_repo(repo_path: str | Path) -> list[Violation]:
@@ -295,44 +360,14 @@ def check_repo(repo_path: str | Path) -> list[Violation]:
     """
 
     root = Path(repo_path)
-    config_path = root / ".pre-commit-config.yaml"
-    if not config_path.is_file():
+    data = _load_precommit_config(root / ".pre-commit-config.yaml")
+    if data is None:
         return []
-    try:
-        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError, UnicodeDecodeError):
-        return []
-    if not isinstance(data, dict):
-        return []
-
     violations: list[Violation] = []
     for repo_block in data.get("repos") or []:
         if not isinstance(repo_block, dict):
             continue
-        for hook in repo_block.get("hooks") or []:
-            if not isinstance(hook, dict):
-                continue
-            entry = hook.get("entry")
-            if not isinstance(entry, str) or not entry.strip():
-                continue
-            hook_id = str(hook.get("id") or "")
-            for statement in _entry_statements(entry):
-                if not statement:
-                    continue
-                found = _scan_statement(statement)
-                if found is None:
-                    continue
-                tool, flags, command = found
-                violations.append(
-                    Violation(
-                        repo=str(root),
-                        hook_id=hook_id,
-                        tool=tool,
-                        flags=flags,
-                        command=command,
-                        message=_message(tool, flags),
-                    )
-                )
+        violations.extend(_repo_block_violations(root, repo_block))
     return violations
 
 
@@ -342,6 +377,46 @@ def check_fleet(
     """:func:`check_repo` for every path in *repo_paths*, keyed by repo path."""
 
     return {str(Path(repo_path)): check_repo(repo_path) for repo_path in repo_paths}
+
+
+def _dispatch_check(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    repo_path = kwargs.get("repo_path")
+    if not repo_path:
+        return {"ok": False, "error": "check requires repo_path"}
+    violations = check_repo(repo_path)
+    return {
+        "ok": not violations,
+        "repo_path": str(repo_path),
+        "violations": [violation.as_dict() for violation in violations],
+    }
+
+
+def _dispatch_check_fleet(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    repo_paths = kwargs.get("repo_paths") or []
+    if not repo_paths:
+        return {"ok": False, "error": "check_fleet requires repo_paths"}
+    by_repo = check_fleet(repo_paths)
+    flattened = [
+        violation.as_dict()
+        for violations in by_repo.values()
+        for violation in violations
+    ]
+    return {
+        "ok": not flattened,
+        "repos_checked": len(repo_paths),
+        "repos_with_violations": sum(1 for v in by_repo.values() if v),
+        "violations": flattened,
+        "by_repo": {
+            repo: [violation.as_dict() for violation in violations]
+            for repo, violations in by_repo.items()
+        },
+    }
+
+
+_DISPATCH_ACTIONS: Mapping[str, Callable[[Mapping[str, Any]], dict[str, Any]]] = {
+    "check": _dispatch_check,
+    "check_fleet": _dispatch_check_fleet,
+}
 
 
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
@@ -354,34 +429,7 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     an ``"error"`` key.
     """
 
-    if action == "check":
-        repo_path = kwargs.get("repo_path")
-        if not repo_path:
-            return {"ok": False, "error": "check requires repo_path"}
-        violations = check_repo(repo_path)
-        return {
-            "ok": not violations,
-            "repo_path": str(repo_path),
-            "violations": [violation.as_dict() for violation in violations],
-        }
-    if action == "check_fleet":
-        repo_paths = kwargs.get("repo_paths") or []
-        if not repo_paths:
-            return {"ok": False, "error": "check_fleet requires repo_paths"}
-        by_repo = check_fleet(repo_paths)
-        flattened = [
-            violation.as_dict()
-            for violations in by_repo.values()
-            for violation in violations
-        ]
-        return {
-            "ok": not flattened,
-            "repos_checked": len(repo_paths),
-            "repos_with_violations": sum(1 for v in by_repo.values() if v),
-            "violations": flattened,
-            "by_repo": {
-                repo: [violation.as_dict() for violation in violations]
-                for repo, violations in by_repo.items()
-            },
-        }
-    return {"ok": False, "error": f"unknown action: {action}"}
+    handler = _DISPATCH_ACTIONS.get(action)
+    if handler is None:
+        return {"ok": False, "error": f"unknown action: {action}"}
+    return handler(kwargs)
