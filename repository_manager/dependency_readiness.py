@@ -349,6 +349,98 @@ def _version_file_summary(data: dict[str, Any]) -> dict[str, _VersionFiles]:
     return per_version
 
 
+def _fetch_simple_json(
+    package: str, index_url: str, url: str, timeout: float
+) -> dict[str, Any]:
+    try:
+        resp = requests.get(
+            url, timeout=timeout, headers={"Accept": _SIMPLE_JSON_ACCEPT}
+        )
+    except requests.RequestException as exc:
+        raise IndexUnreachableError(
+            f"could not reach index {index_url!r} for package {package!r}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+    if resp.status_code == 404:
+        raise PackageUnknownError(
+            f"index {index_url!r} has no record of package {package!r} "
+            f"(HTTP 404 at {url})"
+        )
+    if resp.status_code == 429 or resp.status_code >= 500:
+        raise IndexUnreachableError(
+            f"index {index_url!r} returned HTTP {resp.status_code} for "
+            f"{package!r} (server/rate-limit error, not a version-absent verdict)"
+        )
+    if resp.status_code != 200:
+        raise IndexUnreachableError(
+            f"index {index_url!r} returned unexpected HTTP {resp.status_code} "
+            f"for {package!r}"
+        )
+
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise IndexUnreachableError(
+            f"index {index_url!r} returned a non-JSON Simple-API response "
+            f"for {package!r}: {exc}"
+        ) from exc
+
+
+def _available_versions_from_fallback(
+    data: dict[str, Any], package: str, index_url: str
+) -> AvailableVersions:
+    # No `files` to parse (e.g. a minimal PEP 691 response) -- fall back to
+    # the top-level `versions` field, same as the function this replaced
+    # always did. Wheel/sdist completeness cannot be determined from this
+    # field alone, so every listed version is treated as fully installable
+    # rather than silently reported as empty -- a working index must never
+    # look like a dead one.
+    fallback: list[Version] = []
+    for raw in data.get("versions") or []:
+        try:
+            fallback.append(Version(raw))
+        except InvalidVersion:
+            continue
+    fallback.sort()
+    return AvailableVersions(
+        package=package,
+        index_url=index_url,
+        versions=[str(v) for v in fallback],
+        latest=str(fallback[-1]) if fallback else None,
+    )
+
+
+def _available_versions_from_summary(
+    summary: dict[str, _VersionFiles], package: str, index_url: str
+) -> AvailableVersions:
+    full: list[Version] = []
+    partial: list[Version] = []
+    yanked: list[Version] = []
+    for raw, info in summary.items():
+        try:
+            parsed_version = Version(raw)
+        except InvalidVersion:
+            continue
+        if info.fully_installable:
+            full.append(parsed_version)
+        elif info.partial:
+            partial.append(parsed_version)
+        elif info.all_yanked:
+            yanked.append(parsed_version)
+    full.sort()
+    partial.sort()
+    yanked.sort()
+    return AvailableVersions(
+        package=package,
+        index_url=index_url,
+        versions=[str(v) for v in full],
+        latest=str(full[-1]) if full else None,
+        partial_versions=[str(v) for v in partial],
+        yanked_versions=[str(v) for v in yanked],
+    )
+
+
 class PyPISimpleIndexBackend:
     """Default :class:`IndexBackend` — the PEP 503/691 Simple Repository API.
 
@@ -364,93 +456,55 @@ class PyPISimpleIndexBackend:
     ) -> AvailableVersions:
         name = canonicalize_name(package)
         url = f"{index_url.rstrip('/')}/{name}/"
-        try:
-            resp = requests.get(
-                url, timeout=timeout, headers={"Accept": _SIMPLE_JSON_ACCEPT}
-            )
-        except requests.RequestException as exc:
-            raise IndexUnreachableError(
-                f"could not reach index {index_url!r} for package {package!r}: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-
-        if resp.status_code == 404:
-            raise PackageUnknownError(
-                f"index {index_url!r} has no record of package {package!r} "
-                f"(HTTP 404 at {url})"
-            )
-        if resp.status_code == 429 or resp.status_code >= 500:
-            raise IndexUnreachableError(
-                f"index {index_url!r} returned HTTP {resp.status_code} for "
-                f"{package!r} (server/rate-limit error, not a version-absent verdict)"
-            )
-        if resp.status_code != 200:
-            raise IndexUnreachableError(
-                f"index {index_url!r} returned unexpected HTTP {resp.status_code} "
-                f"for {package!r}"
-            )
-
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            raise IndexUnreachableError(
-                f"index {index_url!r} returned a non-JSON Simple-API response "
-                f"for {package!r}: {exc}"
-            ) from exc
-
+        data = _fetch_simple_json(package, index_url, url, timeout)
         summary = _version_file_summary(data)
         if not summary:
-            # No `files` to parse (e.g. a minimal PEP 691 response) -- fall
-            # back to the top-level `versions` field, same as the function
-            # this replaced always did. Wheel/sdist completeness cannot be
-            # determined from this field alone, so every listed version is
-            # treated as fully installable rather than silently reported as
-            # empty -- a working index must never look like a dead one.
-            fallback: list[Version] = []
-            for raw in data.get("versions") or []:
-                try:
-                    fallback.append(Version(raw))
-                except InvalidVersion:
-                    continue
-            fallback.sort()
-            return AvailableVersions(
-                package=package,
-                index_url=index_url,
-                versions=[str(v) for v in fallback],
-                latest=str(fallback[-1]) if fallback else None,
-            )
-
-        full: list[Version] = []
-        partial: list[Version] = []
-        yanked: list[Version] = []
-        for raw, info in summary.items():
-            try:
-                parsed_version = Version(raw)
-            except InvalidVersion:
-                continue
-            if info.fully_installable:
-                full.append(parsed_version)
-            elif info.partial:
-                partial.append(parsed_version)
-            elif info.all_yanked:
-                yanked.append(parsed_version)
-        full.sort()
-        partial.sort()
-        yanked.sort()
-        return AvailableVersions(
-            package=package,
-            index_url=index_url,
-            versions=[str(v) for v in full],
-            latest=str(full[-1]) if full else None,
-            partial_versions=[str(v) for v in partial],
-            yanked_versions=[str(v) for v in yanked],
-        )
+            return _available_versions_from_fallback(data, package, index_url)
+        return _available_versions_from_summary(summary, package, index_url)
 
 
 # --------------------------------------------------------------------------- #
 # Index resolution — honor the index the repo actually resolves against,
 # never a hardcoded pypi.org.
 # --------------------------------------------------------------------------- #
+
+
+def _add_index_url(urls: list[str], value: str | None) -> None:
+    if value and value not in urls:
+        urls.append(value)
+
+
+def _collect_env_index_urls(urls: list[str]) -> None:
+    _add_index_url(urls, os.environ.get("UV_INDEX_URL"))
+    for extra in (os.environ.get("UV_EXTRA_INDEX_URL") or "").split():
+        _add_index_url(urls, extra)
+    _add_index_url(urls, os.environ.get("PIP_INDEX_URL"))
+    for extra in (os.environ.get("PIP_EXTRA_INDEX_URL") or "").split():
+        _add_index_url(urls, extra)
+
+
+def _load_pyproject_uv_config(repo_path: str | Path) -> dict[str, Any]:
+    pyproject = Path(repo_path) / _PYPROJECT_NAME
+    if not pyproject.exists():
+        return {}
+    try:
+        with pyproject.open("rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    return (data.get("tool") or {}).get("uv") or {}
+
+
+def _collect_pyproject_index_urls(urls: list[str], repo_path: str | Path) -> None:
+    uv_cfg = _load_pyproject_uv_config(repo_path)
+    index_entries = uv_cfg.get("index") or []
+    default_entries = [e for e in index_entries if e.get("default")]
+    other_entries = [e for e in index_entries if not e.get("default")]
+    for entry in (*default_entries, *other_entries):
+        _add_index_url(urls, entry.get("url"))
+    _add_index_url(urls, uv_cfg.get("index-url"))
+    for extra in uv_cfg.get("extra-index-url") or []:
+        _add_index_url(urls, extra)
 
 
 def resolve_index_urls(repo_path: str | Path) -> list[str]:
@@ -471,36 +525,9 @@ def resolve_index_urls(repo_path: str | Path) -> list[str]:
     callers should stop at the first index reporting the package known.
     """
     urls: list[str] = []
-
-    def _add(value: str | None) -> None:
-        if value and value not in urls:
-            urls.append(value)
-
-    _add(os.environ.get("UV_INDEX_URL"))
-    for extra in (os.environ.get("UV_EXTRA_INDEX_URL") or "").split():
-        _add(extra)
-    _add(os.environ.get("PIP_INDEX_URL"))
-    for extra in (os.environ.get("PIP_EXTRA_INDEX_URL") or "").split():
-        _add(extra)
-
-    pyproject = Path(repo_path) / _PYPROJECT_NAME
-    if pyproject.exists():
-        try:
-            with pyproject.open("rb") as handle:
-                data = tomllib.load(handle)
-        except (OSError, tomllib.TOMLDecodeError):
-            data = {}
-        uv_cfg = (data.get("tool") or {}).get("uv") or {}
-        index_entries = uv_cfg.get("index") or []
-        default_entries = [e for e in index_entries if e.get("default")]
-        other_entries = [e for e in index_entries if not e.get("default")]
-        for entry in (*default_entries, *other_entries):
-            _add(entry.get("url"))
-        _add(uv_cfg.get("index-url"))
-        for extra in uv_cfg.get("extra-index-url") or []:
-            _add(extra)
-
-    _add(DEFAULT_INDEX_URL)
+    _collect_env_index_urls(urls)
+    _collect_pyproject_index_urls(urls, repo_path)
+    _add_index_url(urls, DEFAULT_INDEX_URL)
     return urls
 
 
@@ -531,20 +558,29 @@ def resolve_index_urls(repo_path: str | Path) -> list[str]:
 NON_PACKAGE_SUBDIRECTORY_KEYS = frozenset({"images", "services"})
 
 
+def _repo_name_from_url(url: str) -> str | None:
+    name = url.rstrip("/").split("/")[-1]
+    if name.endswith(".git"):
+        name = name[: -len(".git")]
+    return name or None
+
+
+def _collect_manifest_repo_names(node: dict[str, Any], names: set[str]) -> None:
+    for repo in node.get("repositories", []) or []:
+        url = repo.get("url") if isinstance(repo, dict) else None
+        if not url:
+            continue
+        name = _repo_name_from_url(url)
+        if name:
+            names.add(canonicalize_name(name))
+
+
 def _walk_manifest_repo_names(
     node: Any, names: set[str], *, skip_keys: frozenset[str] = frozenset()
 ) -> None:
     if not isinstance(node, dict):
         return
-    for repo in node.get("repositories", []) or []:
-        url = repo.get("url") if isinstance(repo, dict) else None
-        if not url:
-            continue
-        name = url.rstrip("/").split("/")[-1]
-        if name.endswith(".git"):
-            name = name[: -len(".git")]
-        if name:
-            names.add(canonicalize_name(name))
+    _collect_manifest_repo_names(node, names)
     for key, sub in (node.get("subdirectories") or {}).items():
         if key in skip_keys:
             continue
@@ -602,6 +638,60 @@ class DeclaredConstraint:
     declared_by: str  # path to the pyproject.toml that declared it
 
 
+def _resolve_fleet_packages(
+    repo: Path, fleet_packages: set[str] | None, workspace_yml_path: str | Path | None
+) -> set[str]:
+    if fleet_packages is not None:
+        return fleet_packages
+    manifest = (
+        Path(workspace_yml_path)
+        if workspace_yml_path is not None
+        else _find_workspace_manifest(repo)
+    )
+    return fleet_package_names(manifest) if manifest else set()
+
+
+def _load_pyproject_toml(pyproject_path: Path) -> dict[str, Any] | None:
+    try:
+        with pyproject_path.open("rb") as handle:
+            return tomllib.load(handle)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+
+def _constraint_from_requirement(
+    raw: str,
+    fleet_packages: set[str],
+    own_name: str,
+    pyproject_path: Path,
+    seen: set[tuple[str, str]],
+) -> DeclaredConstraint | None:
+    try:
+        req = Requirement(raw)
+    except InvalidRequirement:
+        return None
+    name = canonicalize_name(req.name)
+    if name not in fleet_packages or name == own_name:
+        return None  # not a fleet package, or a repo gating on its own name
+    specifier = str(req.specifier)
+    # The same requirement (e.g. "agent-utilities[mcp]>=2.0.0,<3.0.0")
+    # routinely repeats verbatim across `dependencies` and several
+    # `optional-dependencies` groups -- dedupe on (package, specifier) so
+    # one real gap is reported once, not once per group it happens to
+    # appear in.
+    dedup_key = (name, specifier)
+    if dedup_key in seen:
+        return None
+    seen.add(dedup_key)
+    return DeclaredConstraint(
+        package=name,
+        raw_requirement=raw,
+        specifier=specifier,
+        extras=tuple(sorted(req.extras)),
+        declared_by=str(pyproject_path),
+    )
+
+
 def declared_fleet_constraints(
     repo_path: str | Path,
     *,
@@ -621,56 +711,25 @@ def declared_fleet_constraints(
     reachable manifest has no known fleet scope to check, not a failure.
     """
     repo = Path(repo_path)
-    if fleet_packages is None:
-        manifest = (
-            Path(workspace_yml_path)
-            if workspace_yml_path is not None
-            else _find_workspace_manifest(repo)
-        )
-        fleet_packages = fleet_package_names(manifest) if manifest else set()
+    fleet_packages = _resolve_fleet_packages(repo, fleet_packages, workspace_yml_path)
 
     pyproject_path = repo / _PYPROJECT_NAME
     if not pyproject_path.exists() or not fleet_packages:
         return []
 
-    try:
-        with pyproject_path.open("rb") as handle:
-            data = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
+    data = _load_pyproject_toml(pyproject_path)
+    if data is None:
         return []
 
     own_name = canonicalize_name(repo.name)
     out: list[DeclaredConstraint] = []
     seen: set[tuple[str, str]] = set()
     for raw in _iter_pyproject_requirements(data):
-        try:
-            req = Requirement(raw)
-        except InvalidRequirement:
-            continue
-        name = canonicalize_name(req.name)
-        if name not in fleet_packages:
-            continue
-        if name == own_name:
-            continue  # a repo never gates on its own package name
-        specifier = str(req.specifier)
-        # The same requirement (e.g. "agent-utilities[mcp]>=2.0.0,<3.0.0")
-        # routinely repeats verbatim across `dependencies` and several
-        # `optional-dependencies` groups -- dedupe on (package, specifier) so
-        # one real gap is reported once, not once per group it happens to
-        # appear in.
-        dedup_key = (name, specifier)
-        if dedup_key in seen:
-            continue
-        seen.add(dedup_key)
-        out.append(
-            DeclaredConstraint(
-                package=name,
-                raw_requirement=raw,
-                specifier=specifier,
-                extras=tuple(sorted(req.extras)),
-                declared_by=str(pyproject_path),
-            )
+        constraint = _constraint_from_requirement(
+            raw, fleet_packages, own_name, pyproject_path, seen
         )
+        if constraint is not None:
+            out.append(constraint)
     return out
 
 
@@ -772,6 +831,224 @@ class ConstraintCheck:
         return asdict(self)
 
 
+@dataclass
+class _ConstraintCheckState:
+    """Accumulated state across the index scan in :func:`check_constraint`."""
+
+    checked: list[str] = field(default_factory=list)
+    best_latest: str | None = None
+    saw_reachable_index: bool = False
+    unreachable_errors: list[str] = field(default_factory=list)
+    best_partial: tuple[str, str] | None = None  # (version, index_url)
+    yanked_but_would_match: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _IndexFetchOptions:
+    timeout: float
+    retries: int
+    retry_delay_s: float
+
+
+def _fetch_available_versions(
+    backend: IndexBackend,
+    constraint: DeclaredConstraint,
+    index_url: str,
+    options: _IndexFetchOptions,
+) -> tuple[AvailableVersions | None, Exception | None]:
+    """One index, with the publish-propagation retry.
+
+    Returns ``(available, last_error)``. ``last_error`` is set only when
+    every attempt hit an unreachable index; ``available`` is ``None`` with no
+    error when the index was reached but does not know this package.
+    """
+    last_error: Exception | None = None
+    for attempt in range(options.retries):
+        try:
+            return (
+                backend.available_versions(
+                    constraint.package, index_url=index_url, timeout=options.timeout
+                ),
+                None,
+            )
+        except PackageUnknownError:
+            return None, None  # reached the index; it just doesn't know this package
+        except IndexUnreachableError as exc:
+            last_error = exc
+            if attempt + 1 < options.retries:
+                time.sleep(options.retry_delay_s)
+    return None, last_error
+
+
+def _record_satisfied_match(
+    constraint: DeclaredConstraint,
+    index_url: str,
+    state: _ConstraintCheckState,
+    available: AvailableVersions,
+    specifier: SpecifierSet,
+) -> ConstraintCheck | None:
+    matches = [
+        v for v in available.versions if specifier.contains(v, prereleases=False)
+    ]
+    if not matches:
+        return None
+    best_match = str(max(Version(v) for v in matches))
+    return ConstraintCheck(
+        package=constraint.package,
+        raw_requirement=constraint.raw_requirement,
+        specifier=constraint.specifier,
+        declared_by=constraint.declared_by,
+        status="satisfied",
+        index_urls_checked=state.checked,
+        matching_version=best_match,
+        latest_available=available.latest,
+        detail=(
+            f"{constraint.package} {constraint.specifier or '(any)'}: "
+            f"{best_match} satisfies it, available from {index_url}"
+        ),
+    )
+
+
+def _accumulate_partial_and_yanked(
+    state: _ConstraintCheckState,
+    available: AvailableVersions,
+    specifier: SpecifierSet,
+    index_url: str,
+) -> None:
+    if state.best_partial is None:
+        partial_matches = [
+            v
+            for v in available.partial_versions
+            if specifier.contains(v, prereleases=False)
+        ]
+        if partial_matches:
+            state.best_partial = (
+                str(max(Version(v) for v in partial_matches)),
+                index_url,
+            )
+
+    yanked_matches = [
+        v
+        for v in available.yanked_versions
+        if specifier.contains(v, prereleases=False)
+        and v not in state.yanked_but_would_match
+    ]
+    state.yanked_but_would_match.extend(yanked_matches)
+
+
+def _check_index_for_constraint(
+    constraint: DeclaredConstraint,
+    index_url: str,
+    backend: IndexBackend,
+    options: _IndexFetchOptions,
+    specifier: SpecifierSet,
+    state: _ConstraintCheckState,
+) -> ConstraintCheck | None:
+    """Check one index; updates ``state`` in place.
+
+    Returns a SATISFIED :class:`ConstraintCheck` to short-circuit the caller,
+    or ``None`` to keep scanning the remaining indexes.
+    """
+    state.checked.append(index_url)
+    available, last_error = _fetch_available_versions(
+        backend, constraint, index_url, options
+    )
+    if available is None and last_error is not None:
+        state.unreachable_errors.append(f"{index_url}: {last_error}")
+        return None  # this index never answered; try the next configured one
+
+    state.saw_reachable_index = True
+    if available is None:
+        return None  # reached, package unknown to this index; try the next
+
+    if available.latest and (
+        state.best_latest is None
+        or Version(available.latest) > Version(state.best_latest)
+    ):
+        state.best_latest = available.latest
+
+    satisfied = _record_satisfied_match(
+        constraint, index_url, state, available, specifier
+    )
+    if satisfied is not None:
+        return satisfied
+
+    _accumulate_partial_and_yanked(state, available, specifier, index_url)
+    return None
+
+
+def _index_unreachable_result(
+    constraint: DeclaredConstraint, state: _ConstraintCheckState
+) -> ConstraintCheck:
+    return ConstraintCheck(
+        package=constraint.package,
+        raw_requirement=constraint.raw_requirement,
+        specifier=constraint.specifier,
+        declared_by=constraint.declared_by,
+        status="index_unreachable",
+        index_urls_checked=state.checked,
+        detail=(
+            f"could not reach any configured index to check {constraint.package} "
+            f"{constraint.specifier}: " + "; ".join(state.unreachable_errors)
+        ),
+    )
+
+
+def _partial_publish_result(
+    constraint: DeclaredConstraint, state: _ConstraintCheckState
+) -> ConstraintCheck:
+    assert state.best_partial is not None
+    partial_version, partial_index_url = state.best_partial
+    return ConstraintCheck(
+        package=constraint.package,
+        raw_requirement=constraint.raw_requirement,
+        specifier=constraint.specifier,
+        declared_by=constraint.declared_by,
+        status="partial_publish",
+        index_urls_checked=state.checked,
+        latest_available=state.best_latest,
+        partial_publish_version=partial_version,
+        yanked_but_would_match=sorted(state.yanked_but_would_match, key=Version),
+        detail=(
+            f"{constraint.package} {constraint.specifier or '(any)'}: "
+            f"{partial_version} would satisfy it, but only a wheel OR an "
+            f"sdist has been uploaded to {partial_index_url} so far (not "
+            "both) — this is a publish still in flight, not an "
+            "unsatisfiable constraint; retry rather than treating it as "
+            "a hard failure."
+        ),
+    )
+
+
+def _unsatisfied_result(
+    constraint: DeclaredConstraint, state: _ConstraintCheckState
+) -> ConstraintCheck:
+    yanked_note = (
+        f" (note: {', '.join(sorted(state.yanked_but_would_match, key=Version))} would "
+        "satisfy this constraint but every file for that release has been "
+        "yanked)"
+        if state.yanked_but_would_match
+        else ""
+    )
+    return ConstraintCheck(
+        package=constraint.package,
+        raw_requirement=constraint.raw_requirement,
+        specifier=constraint.specifier,
+        declared_by=constraint.declared_by,
+        status="unsatisfied",
+        index_urls_checked=state.checked,
+        latest_available=state.best_latest,
+        yanked_but_would_match=sorted(state.yanked_but_would_match, key=Version),
+        detail=(
+            f"{constraint.package} declares {constraint.specifier or '(any)'} "
+            f"(from {constraint.declared_by}) but the configured index "
+            f"({', '.join(state.checked)}) currently offers at most "
+            f"{state.best_latest or 'no published version'} — unsatisfiable right now."
+            f"{yanked_note}"
+        ),
+    )
+
+
 def check_constraint(
     constraint: DeclaredConstraint,
     *,
@@ -802,147 +1079,22 @@ def check_constraint(
         SpecifierSet(constraint.specifier) if constraint.specifier else SpecifierSet()
     )
 
-    checked: list[str] = []
-    best_latest: str | None = None
-    saw_reachable_index = False
-    unreachable_errors: list[str] = []
-    best_partial: tuple[str, str] | None = None  # (version, index_url)
-    yanked_but_would_match: list[str] = []
-
+    options = _IndexFetchOptions(
+        timeout=timeout, retries=retries, retry_delay_s=retry_delay_s
+    )
+    state = _ConstraintCheckState()
     for index_url in index_urls:
-        checked.append(index_url)
-        available: AvailableVersions | None = None
-        last_error: Exception | None = None
-        for attempt in range(retries):
-            try:
-                available = backend.available_versions(
-                    constraint.package, index_url=index_url, timeout=timeout
-                )
-                break
-            except PackageUnknownError:
-                available = None
-                last_error = None
-                break  # reached the index; it just doesn't know this package
-            except IndexUnreachableError as exc:
-                last_error = exc
-                if attempt + 1 < retries:
-                    time.sleep(retry_delay_s)
-        else:
-            available = None
-
-        if available is None and last_error is not None:
-            unreachable_errors.append(f"{index_url}: {last_error}")
-            continue  # this index never answered; try the next configured one
-
-        saw_reachable_index = True
-        if available is None:
-            continue  # reached, package unknown to this index; try the next
-
-        if available.latest and (
-            best_latest is None or Version(available.latest) > Version(best_latest)
-        ):
-            best_latest = available.latest
-
-        matches = [
-            v for v in available.versions if specifier.contains(v, prereleases=False)
-        ]
-        if matches:
-            best_match = str(max(Version(v) for v in matches))
-            return ConstraintCheck(
-                package=constraint.package,
-                raw_requirement=constraint.raw_requirement,
-                specifier=constraint.specifier,
-                declared_by=constraint.declared_by,
-                status="satisfied",
-                index_urls_checked=checked,
-                matching_version=best_match,
-                latest_available=available.latest,
-                detail=(
-                    f"{constraint.package} {constraint.specifier or '(any)'}: "
-                    f"{best_match} satisfies it, available from {index_url}"
-                ),
-            )
-
-        if best_partial is None:
-            partial_matches = [
-                v
-                for v in available.partial_versions
-                if specifier.contains(v, prereleases=False)
-            ]
-            if partial_matches:
-                best_partial = (
-                    str(max(Version(v) for v in partial_matches)),
-                    index_url,
-                )
-
-        yanked_matches = [
-            v
-            for v in available.yanked_versions
-            if specifier.contains(v, prereleases=False)
-            and v not in yanked_but_would_match
-        ]
-        yanked_but_would_match.extend(yanked_matches)
-
-    if not saw_reachable_index:
-        return ConstraintCheck(
-            package=constraint.package,
-            raw_requirement=constraint.raw_requirement,
-            specifier=constraint.specifier,
-            declared_by=constraint.declared_by,
-            status="index_unreachable",
-            index_urls_checked=checked,
-            detail=(
-                f"could not reach any configured index to check {constraint.package} "
-                f"{constraint.specifier}: " + "; ".join(unreachable_errors)
-            ),
+        result = _check_index_for_constraint(
+            constraint, index_url, backend, options, specifier, state
         )
+        if result is not None:
+            return result
 
-    if best_partial is not None:
-        partial_version, partial_index_url = best_partial
-        return ConstraintCheck(
-            package=constraint.package,
-            raw_requirement=constraint.raw_requirement,
-            specifier=constraint.specifier,
-            declared_by=constraint.declared_by,
-            status="partial_publish",
-            index_urls_checked=checked,
-            latest_available=best_latest,
-            partial_publish_version=partial_version,
-            yanked_but_would_match=sorted(yanked_but_would_match, key=Version),
-            detail=(
-                f"{constraint.package} {constraint.specifier or '(any)'}: "
-                f"{partial_version} would satisfy it, but only a wheel OR an "
-                f"sdist has been uploaded to {partial_index_url} so far (not "
-                "both) — this is a publish still in flight, not an "
-                "unsatisfiable constraint; retry rather than treating it as "
-                "a hard failure."
-            ),
-        )
-
-    yanked_note = (
-        f" (note: {', '.join(sorted(yanked_but_would_match, key=Version))} would "
-        "satisfy this constraint but every file for that release has been "
-        "yanked)"
-        if yanked_but_would_match
-        else ""
-    )
-    return ConstraintCheck(
-        package=constraint.package,
-        raw_requirement=constraint.raw_requirement,
-        specifier=constraint.specifier,
-        declared_by=constraint.declared_by,
-        status="unsatisfied",
-        index_urls_checked=checked,
-        latest_available=best_latest,
-        yanked_but_would_match=sorted(yanked_but_would_match, key=Version),
-        detail=(
-            f"{constraint.package} declares {constraint.specifier or '(any)'} "
-            f"(from {constraint.declared_by}) but the configured index "
-            f"({', '.join(checked)}) currently offers at most "
-            f"{best_latest or 'no published version'} — unsatisfiable right now."
-            f"{yanked_note}"
-        ),
-    )
+    if not state.saw_reachable_index:
+        return _index_unreachable_result(constraint, state)
+    if state.best_partial is not None:
+        return _partial_publish_result(constraint, state)
+    return _unsatisfied_result(constraint, state)
 
 
 # --------------------------------------------------------------------------- #
@@ -1144,6 +1296,13 @@ def _default_run_gate(repo_path: str) -> Any:
     return run_gate_stage(repo_path, "heavy", hook_ids=[HOOK_ID])
 
 
+def _hook_failure_lines(hook_failures: list[Any]) -> str:
+    lines = [
+        ln.strip() for h in hook_failures for ln in h.output.splitlines() if ln.strip()
+    ]
+    return "; ".join(lines) if lines else f"{HOOK_ID} hook failed (no captured output)"
+
+
 def _gate_failure_detail(repo_name: str, result: Any) -> str | None:
     """``None`` when ``result`` shows the hook passed; otherwise the most
     actionable one-line detail available: the failing hook's own captured
@@ -1156,15 +1315,11 @@ def _gate_failure_detail(repo_name: str, result: Any) -> str | None:
     if not hook_failures and result.success:
         return None
     if hook_failures:
-        lines = [
-            ln.strip()
-            for h in hook_failures
-            for ln in h.output.splitlines()
-            if ln.strip()
-        ]
-        return (
-            "; ".join(lines) if lines else f"{HOOK_ID} hook failed (no captured output)"
-        )
+        return _hook_failure_lines(hook_failures)
+    # NOTE (found during CX decomposition, not fixed — out of scope per
+    # WD7-RM-03 brief): this branch is unreachable. If hook_failures is
+    # empty and reached this point, the first `if` above already proved
+    # `result.success` is False, so `result.success` can never be True here.
     if result.success:
         return None
     return (
@@ -1216,6 +1371,189 @@ def cross_check_targets(
             missing.append((name, path))
             seen_paths.add(norm_path)
     return missing
+
+
+@dataclass(frozen=True)
+class _GateReadinessConfig:
+    poll_interval_s: float
+    max_interval_s: float
+    sleep: Any
+    now: Any
+
+
+@dataclass(frozen=True)
+class _ForgeRunTarget:
+    backend: forge_status.ForgeBackend | None
+    owner: str | None
+    repo: str | None
+    ref: str | None
+
+
+def _cross_check_failure(
+    targets: Sequence[tuple[str, str]],
+    targets_checked: list[str],
+    published_packages: set[str] | None,
+    candidate_repos: Sequence[tuple[str, str]] | None,
+) -> GateReadinessOutcome | None:
+    if not (published_packages and candidate_repos is not None):
+        return None
+    missing = cross_check_targets(
+        targets,
+        published_packages=published_packages,
+        candidate_repos=candidate_repos,
+    )
+    if not missing:
+        return None
+    return GateReadinessOutcome(
+        ok=False,
+        waited_s=0.0,
+        attempts=0,
+        targets_checked=targets_checked,
+        failures=[
+            GateCheckFailure(
+                repo_name=name,
+                repo_path=path,
+                reason="TARGETS_INCOMPLETE",
+                detail=(
+                    f"TARGETS_INCOMPLETE: {name} ({path}) declares a "
+                    f"constraint on {sorted(published_packages)} but was "
+                    "excluded from the computed downstream target set -- "
+                    "aborting rather than silently advancing past a repo "
+                    "that actually depends on what was just published."
+                ),
+            )
+            for name, path in missing
+        ],
+    )
+
+
+def _ci_run_failed_outcome(
+    forge: _ForgeRunTarget, run_status: Any, targets_checked: list[str], waited_s: float
+) -> GateReadinessOutcome:
+    # Guaranteed by _await_ci_run's own guard before it ever calls this
+    # helper (it returns None early otherwise); asserted here so mypy can
+    # narrow the Optional dataclass fields, matching the narrowing the
+    # inline version got for free from the caller's own `if` in main.
+    assert forge.owner and forge.repo and forge.ref
+    ci_failure_detail = (
+        f"CI_RUN_FAILED: the publish run for "
+        f"{forge.owner}/{forge.repo}@{forge.ref} concluded "
+        f"{run_status.conclusion!r}"
+        + (f" ({run_status.url})" if run_status.url else "")
+        + " -- aborting immediately instead of burning the "
+        "retry ceiling polling an index for an artifact that "
+        "is never coming."
+    )
+    return GateReadinessOutcome(
+        ok=False,
+        waited_s=waited_s,
+        attempts=0,
+        targets_checked=targets_checked,
+        failures=[
+            GateCheckFailure(
+                repo_name=forge.repo,
+                repo_path=f"{forge.owner}/{forge.repo}",
+                reason="CI_RUN_FAILED",
+                detail=ci_failure_detail,
+            )
+        ],
+    )
+
+
+def _await_ci_run(
+    forge: _ForgeRunTarget,
+    config: _GateReadinessConfig,
+    deadline: float,
+    started: float,
+    targets_checked: list[str],
+) -> GateReadinessOutcome | None:
+    """Wait for the publish tag's CI run to conclude, sharing the caller's
+    deadline/sleep/now. Returns an early-abort outcome on CI_RUN_FAILED, or
+    ``None`` to fall through to index-polling (unknown status, concluded
+    success, or ran out of budget waiting on CI -- the main loop below also
+    sees ``remaining<=0`` and reports a normal timeout).
+    """
+    if forge.backend is None or not (forge.owner and forge.repo and forge.ref):
+        return None
+    ci_attempt = 0
+    while True:
+        ci_attempt += 1
+        run_status = forge.backend.latest_run_for_ref(
+            forge.owner, forge.repo, forge.ref
+        )
+        if run_status.state == "unknown":
+            return None  # forge status unavailable -- degrade to index-polling
+        if run_status.state == "completed":
+            if run_status.conclusion not in (None, "success"):
+                return _ci_run_failed_outcome(
+                    forge, run_status, targets_checked, config.now() - started
+                )
+            return None  # concluded success -- fall through to index-polling
+        remaining = deadline - config.now()
+        if remaining <= 0:
+            return None
+        backoff = min(
+            config.poll_interval_s * (2 ** (ci_attempt - 1)),
+            config.max_interval_s,
+            remaining,
+        )
+        config.sleep(backoff)
+
+
+def _check_all_targets(
+    targets: Sequence[tuple[str, str]], run_gate: Any
+) -> list[GateCheckFailure]:
+    failures: list[GateCheckFailure] = []
+    for repo_name, repo_path in targets:
+        if not hook_declared(repo_path):
+            failures.append(
+                GateCheckFailure(
+                    repo_name=repo_name,
+                    repo_path=repo_path,
+                    detail=(
+                        f"{repo_name} has not adopted the {HOOK_ID!r} pre-push "
+                        "hook yet, so its readiness cannot be gate-verified "
+                        "(run scripts/sweep_dependency_readiness_hook.py --apply "
+                        "for it)"
+                    ),
+                )
+            )
+            continue
+        result = run_gate(repo_path)
+        detail = _gate_failure_detail(repo_name, result)
+        if detail is not None:
+            failures.append(
+                GateCheckFailure(
+                    repo_name=repo_name, repo_path=repo_path, detail=detail
+                )
+            )
+    return failures
+
+
+def _apply_override_if_set(
+    audit_repo_path: str | Path,
+    failures: list[GateCheckFailure],
+    targets_checked: list[str],
+    attempt: int,
+    waited_s: float,
+) -> GateReadinessOutcome | None:
+    override_reason = os.environ.get(OVERRIDE_ENV_VAR, "").strip()
+    if not override_reason:
+        return None
+    log_path = _record_override(
+        reason=override_reason, repo_path=audit_repo_path, failures=failures
+    )
+    _print_override_banner(reason=override_reason, failures=failures, log_path=log_path)
+    return GateReadinessOutcome(
+        ok=True,
+        waited_s=waited_s,
+        attempts=attempt,
+        targets_checked=targets_checked,
+        failures=failures,
+        overridden=True,
+        override_reason=override_reason,
+        override_log=str(log_path),
+    )
 
 
 def await_gate_readiness(
@@ -1288,114 +1626,42 @@ def await_gate_readiness(
     """
     targets_checked = [name for name, _ in targets]
 
-    if published_packages and candidate_repos is not None:
-        missing = cross_check_targets(
-            targets,
-            published_packages=published_packages,
-            candidate_repos=candidate_repos,
-        )
-        if missing:
-            return GateReadinessOutcome(
-                ok=False,
-                waited_s=0.0,
-                attempts=0,
-                targets_checked=targets_checked,
-                failures=[
-                    GateCheckFailure(
-                        repo_name=name,
-                        repo_path=path,
-                        reason="TARGETS_INCOMPLETE",
-                        detail=(
-                            f"TARGETS_INCOMPLETE: {name} ({path}) declares a "
-                            f"constraint on {sorted(published_packages)} but was "
-                            "excluded from the computed downstream target set -- "
-                            "aborting rather than silently advancing past a repo "
-                            "that actually depends on what was just published."
-                        ),
-                    )
-                    for name, path in missing
-                ],
-            )
+    cross_check_outcome = _cross_check_failure(
+        targets, targets_checked, published_packages, candidate_repos
+    )
+    if cross_check_outcome is not None:
+        return cross_check_outcome
 
     if not targets:
         return GateReadinessOutcome(ok=True, waited_s=0.0, attempts=0)
 
     run_gate = run_gate or _default_run_gate
+    config = _GateReadinessConfig(
+        poll_interval_s=poll_interval_s,
+        max_interval_s=max_interval_s,
+        sleep=sleep,
+        now=now,
+    )
     deadline = now() + wait_minutes * 60
     started = now()
     attempt = 0
     failures: list[GateCheckFailure] = []
 
-    if forge_backend is not None and forge_owner and forge_repo and forge_ref:
-        ci_attempt = 0
-        while True:
-            ci_attempt += 1
-            run_status = forge_backend.latest_run_for_ref(
-                forge_owner, forge_repo, forge_ref
-            )
-            if run_status.state == "unknown":
-                break  # forge status unavailable -- degrade to index-polling
-            if run_status.state == "completed":
-                if run_status.conclusion not in (None, "success"):
-                    ci_failure_detail = (
-                        f"CI_RUN_FAILED: the publish run for "
-                        f"{forge_owner}/{forge_repo}@{forge_ref} concluded "
-                        f"{run_status.conclusion!r}"
-                        + (f" ({run_status.url})" if run_status.url else "")
-                        + " -- aborting immediately instead of burning the "
-                        "retry ceiling polling an index for an artifact that "
-                        "is never coming."
-                    )
-                    return GateReadinessOutcome(
-                        ok=False,
-                        waited_s=now() - started,
-                        attempts=0,
-                        targets_checked=targets_checked,
-                        failures=[
-                            GateCheckFailure(
-                                repo_name=forge_repo,
-                                repo_path=f"{forge_owner}/{forge_repo}",
-                                reason="CI_RUN_FAILED",
-                                detail=ci_failure_detail,
-                            )
-                        ],
-                    )
-                break  # concluded success -- fall through to index-polling
-            remaining = deadline - now()
-            if remaining <= 0:
-                break  # out of budget waiting on CI; the main loop below will
-                # also see remaining<=0 and report a normal timeout
-            backoff = min(
-                poll_interval_s * (2 ** (ci_attempt - 1)), max_interval_s, remaining
-            )
-            sleep(backoff)
+    ci_outcome = _await_ci_run(
+        _ForgeRunTarget(
+            backend=forge_backend, owner=forge_owner, repo=forge_repo, ref=forge_ref
+        ),
+        config,
+        deadline,
+        started,
+        targets_checked,
+    )
+    if ci_outcome is not None:
+        return ci_outcome
 
     while True:
         attempt += 1
-        failures = []
-        for repo_name, repo_path in targets:
-            if not hook_declared(repo_path):
-                failures.append(
-                    GateCheckFailure(
-                        repo_name=repo_name,
-                        repo_path=repo_path,
-                        detail=(
-                            f"{repo_name} has not adopted the {HOOK_ID!r} pre-push "
-                            "hook yet, so its readiness cannot be gate-verified "
-                            "(run scripts/sweep_dependency_readiness_hook.py --apply "
-                            "for it)"
-                        ),
-                    )
-                )
-                continue
-            result = run_gate(repo_path)
-            detail = _gate_failure_detail(repo_name, result)
-            if detail is not None:
-                failures.append(
-                    GateCheckFailure(
-                        repo_name=repo_name, repo_path=repo_path, detail=detail
-                    )
-                )
+        failures = _check_all_targets(targets, run_gate)
 
         if not failures:
             return GateReadinessOutcome(
@@ -1411,24 +1677,11 @@ def await_gate_readiness(
         backoff = min(poll_interval_s * (2 ** (attempt - 1)), max_interval_s, remaining)
         sleep(backoff)
 
-    override_reason = os.environ.get(OVERRIDE_ENV_VAR, "").strip()
-    if override_reason:
-        log_path = _record_override(
-            reason=override_reason, repo_path=audit_repo_path, failures=failures
-        )
-        _print_override_banner(
-            reason=override_reason, failures=failures, log_path=log_path
-        )
-        return GateReadinessOutcome(
-            ok=True,
-            waited_s=now() - started,
-            attempts=attempt,
-            targets_checked=targets_checked,
-            failures=failures,
-            overridden=True,
-            override_reason=override_reason,
-            override_log=str(log_path),
-        )
+    override_outcome = _apply_override_if_set(
+        audit_repo_path, failures, targets_checked, attempt, now() - started
+    )
+    if override_outcome is not None:
+        return override_outcome
 
     return GateReadinessOutcome(
         ok=False,
@@ -1453,6 +1706,19 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     return {"ok": False, "error": f"unknown action: {action}"}
 
 
+def _print_human_report(report: Any) -> None:
+    if not report.checks:
+        print("dependency-readiness: no intra-fleet constraints declared here")
+    for c in report.checks:
+        mark = "OK" if c.satisfied else c.status.upper()
+        print(f"  [{mark}] {c.detail}")
+    print(
+        "OK"
+        if report.ok and not report.overridden
+        else ("OVERRIDDEN" if report.overridden else "FAILED")
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     """``python -m repository_manager.dependency_readiness [path]`` — the
     ``[pre-push, manual]`` local hook entry. Exit 1 on any unsatisfiable
@@ -1468,16 +1734,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(report.as_dict(), indent=2))
     else:
-        if not report.checks:
-            print("dependency-readiness: no intra-fleet constraints declared here")
-        for c in report.checks:
-            mark = "OK" if c.satisfied else c.status.upper()
-            print(f"  [{mark}] {c.detail}")
-        print(
-            "OK"
-            if report.ok and not report.overridden
-            else ("OVERRIDDEN" if report.overridden else "FAILED")
-        )
+        _print_human_report(report)
     return 0 if report.ok else 1
 
 
