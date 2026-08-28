@@ -702,6 +702,48 @@ def _default_reference(name: str) -> ImmutableDigestReference:
     )
 
 
+_BRANCH_FORBIDDEN_CHARS = (":", "~", "^", "?", "*", "[", "]", "\\")
+_BRANCH_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+\-]*")
+
+
+def _branch_suffix_has_bad_edges(suffix: str) -> bool:
+    """Whether the ref suffix is empty or starts/ends with a separator or dot."""
+
+    return (
+        not suffix
+        or suffix.startswith("/")
+        or suffix.endswith("/")
+        or suffix.startswith(".")
+        or suffix.endswith(".")
+    )
+
+
+def _branch_suffix_has_bad_sequence(suffix: str) -> bool:
+    """Whether the ref suffix contains a forbidden sequence or control byte."""
+
+    return (
+        "//" in suffix
+        or ".." in suffix
+        or "@{" in suffix
+        or "://" in suffix
+        or any(char in suffix for char in _BRANCH_FORBIDDEN_CHARS)
+        or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in suffix)
+    )
+
+
+def _branch_component_is_malformed(component: str) -> bool:
+    """Whether one slash-separated ref component is not a canonical name."""
+
+    return (
+        not component
+        or component in {".", ".."}
+        or component.startswith(".")
+        or component.endswith(".")
+        or component.endswith(".lock")
+        or not _BRANCH_COMPONENT.fullmatch(component)
+    )
+
+
 def _normalize_target_branch(value: object) -> str:
     text = _strict_text(
         value,
@@ -717,31 +759,10 @@ def _normalize_target_branch(value: object) -> str:
         suffix = text
     if text.startswith("refs/") and not text.startswith("refs/heads/"):
         raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
-    if (
-        not suffix
-        or suffix.startswith("/")
-        or suffix.endswith("/")
-        or suffix.startswith(".")
-        or suffix.endswith(".")
-        or "//" in suffix
-        or ".." in suffix
-        or "@{" in suffix
-        or any(char in suffix for char in (":", "~", "^", "?", "*", "[", "]", "\\"))
-        or "://" in suffix
-        or suffix.startswith("/")
-        or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in suffix)
-    ):
+    if _branch_suffix_has_bad_edges(suffix) or _branch_suffix_has_bad_sequence(suffix):
         raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
     components = suffix.split("/")
-    if any(
-        not component
-        or component in {".", ".."}
-        or component.startswith(".")
-        or component.endswith(".")
-        or component.endswith(".lock")
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.+\-]*", component)
-        for component in components
-    ):
+    if any(_branch_component_is_malformed(component) for component in components):
         raise _fail(ReleasePlanCode.IDENTITY, "target branch is not canonical")
     return "refs/heads/" + "/".join(components)
 
@@ -791,7 +812,9 @@ class ReleaseDecisionContext:
                 "decision profile evidence could not be validated",
             ) from None
 
-    def _validate_decision_context(self) -> None:
+    def _validate_decision_references(self) -> None:
+        """Re-materialize every immutable name/digest reference field."""
+
         fields = (
             ("release profile", "release_profile", self.release_profile),
             ("candidate reference", "candidate", self.candidate),
@@ -815,9 +838,10 @@ class ReleaseDecisionContext:
             # Re-materialize even exact-type forged dataclass shells.
             normalized = ImmutableDigestReference(value.name, value.digest)
             object.__setattr__(self, attribute, normalized)
-        object.__setattr__(
-            self, "target_branch", _normalize_target_branch(self.target_branch)
-        )
+
+    def _validate_decision_policy_bounds(self) -> None:
+        """The retry/timeout policies and their counters must be exact and bounded."""
+
         if type(self.retry_policy) is not RetryPolicy:
             raise _fail(ReleasePlanCode.INVALID_INPUT, "retry policy is unsupported")
         if type(self.timeout_policy) is not TimeoutPolicy:
@@ -834,6 +858,10 @@ class ReleaseDecisionContext:
             raise _fail(ReleasePlanCode.INVALID_INPUT, "timeout must be an integer")
         if not 0 <= self.timeout_seconds <= 604800:
             raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "timeout exceeds the bound")
+
+    def _validate_decision_policy_agreement(self) -> None:
+        """Each policy must agree with the counter declared alongside it."""
+
         if self.retry_policy is RetryPolicy.NONE and self.retry_count != 0:
             raise _fail(
                 ReleasePlanCode.CONFLICT, "retry count conflicts with retry policy"
@@ -848,6 +876,14 @@ class ReleaseDecisionContext:
             raise _fail(
                 ReleasePlanCode.CONFLICT, "timeout policy requires timeout seconds"
             )
+
+    def _validate_decision_context(self) -> None:
+        self._validate_decision_references()
+        object.__setattr__(
+            self, "target_branch", _normalize_target_branch(self.target_branch)
+        )
+        self._validate_decision_policy_bounds()
+        self._validate_decision_policy_agreement()
 
     def canonical_payload(self) -> dict[str, object]:
         return {
@@ -893,70 +929,45 @@ def _normalize_decision_context(
     timeout_policy: object | None = None,
     timeout_seconds: object | None = None,
 ) -> ReleaseDecisionContext:
-    aliases = (
-        release_profile,
-        target_branch,
-        candidate,
-        certificate,
-        config,
-        toolchain,
-        command,
-        artifact_contract,
-        resource_profile,
-        retry_policy,
-        retry_count,
-        timeout_policy,
-        timeout_seconds,
-    )
+    overrides: dict[str, object | None] = {
+        "release_profile": release_profile,
+        "target_branch": target_branch,
+        "candidate": candidate,
+        "certificate": certificate,
+        "config": config,
+        "toolchain": toolchain,
+        "command": command,
+        "artifact_contract": artifact_contract,
+        "resource_profile": resource_profile,
+        "retry_policy": retry_policy,
+        "retry_count": retry_count,
+        "timeout_policy": timeout_policy,
+        "timeout_seconds": timeout_seconds,
+    }
     if context is not None and type(context) is not ReleaseDecisionContext:
         raise _fail(ReleasePlanCode.PROFILE, "decision context is unsupported")
-    if context is not None and any(item is not None for item in aliases):
+    if context is not None and any(item is not None for item in overrides.values()):
         raise _fail(ReleasePlanCode.CONFLICT, "decision context aliases conflict")
     if context is not None:
-        return ReleaseDecisionContext(
-            release_profile=context.release_profile,
-            target_branch=context.target_branch,
-            candidate=context.candidate,
-            certificate=context.certificate,
-            config=context.config,
-            toolchain=context.toolchain,
-            command=context.command,
-            artifact_contract=context.artifact_contract,
-            resource_profile=context.resource_profile,
-            retry_policy=context.retry_policy,
-            retry_count=context.retry_count,
-            timeout_policy=context.timeout_policy,
-            timeout_seconds=context.timeout_seconds,
-        )
+        carried = {name: getattr(context, name) for name in overrides}
+        return ReleaseDecisionContext(**carried)  # type: ignore[arg-type]
     defaults = ReleaseDecisionContext()
     values = {
-        "release_profile": defaults.release_profile
-        if release_profile is None
-        else release_profile,
-        "target_branch": defaults.target_branch
-        if target_branch is None
-        else target_branch,
-        "candidate": defaults.candidate if candidate is None else candidate,
-        "certificate": defaults.certificate if certificate is None else certificate,
-        "config": defaults.config if config is None else config,
-        "toolchain": defaults.toolchain if toolchain is None else toolchain,
-        "command": defaults.command if command is None else command,
-        "artifact_contract": defaults.artifact_contract
-        if artifact_contract is None
-        else artifact_contract,
-        "resource_profile": defaults.resource_profile
-        if resource_profile is None
-        else resource_profile,
-        "retry_policy": defaults.retry_policy if retry_policy is None else retry_policy,
-        "retry_count": defaults.retry_count if retry_count is None else retry_count,
-        "timeout_policy": defaults.timeout_policy
-        if timeout_policy is None
-        else timeout_policy,
-        "timeout_seconds": defaults.timeout_seconds
-        if timeout_seconds is None
-        else timeout_seconds,
+        name: getattr(defaults, name) if value is None else value
+        for name, value in overrides.items()
     }
     return ReleaseDecisionContext(**values)  # type: ignore[arg-type]
+
+
+def _strict_profile_name(value: object) -> str:
+    """Validate a profile name scalar: bounded text that is not a path or URL."""
+
+    name = _strict_text(
+        value, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
+    )
+    if "/" in name or "\\" in name or "://" in name:
+        raise _fail(ReleasePlanCode.PROFILE, "profile name must not be a path or URL")
+    return name
 
 
 def _profile_digest_from_object_unchecked(
@@ -968,32 +979,18 @@ def _profile_digest_from_object_unchecked(
         if value.kind is not kind:
             raise _fail(ReleasePlanCode.PROFILE, "profile kind does not match binding")
         project = _canonical_repository_exact(value.project_id, "profile project")
-        name = _strict_text(
-            value.name, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
-        )
-        if "/" in name or "\\" in name or "://" in name:
-            raise _fail(
-                ReleasePlanCode.PROFILE, "profile name must not be a path or URL"
-            )
+        name = _strict_profile_name(value.name)
         digest = _strict_digest(
             value.digest, "profile digest", code=ReleasePlanCode.PROFILE
         )
         normalized = ProfileBinding(project, name, digest, kind)
         return normalized.name, normalized.digest
 
-    descriptor_type: type[ValidationProfile] | type[BuildProfile]
-    if kind is ProfileKind.VALIDATION:
-        descriptor_type = ValidationProfile
-    else:
-        descriptor_type = BuildProfile
+    descriptor_type: type[ValidationProfile] | type[BuildProfile] = (
+        ValidationProfile if kind is ProfileKind.VALIDATION else BuildProfile
+    )
     if type(value) is descriptor_type:
-        name = _strict_text(
-            value.name, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
-        )
-        if "/" in name or "\\" in name or "://" in name:
-            raise _fail(
-                ReleasePlanCode.PROFILE, "profile name must not be a path or URL"
-            )
+        name = _strict_profile_name(value.name)
         digest = _strict_digest(
             value.digest, "profile digest", code=ReleasePlanCode.PROFILE
         )
@@ -1001,13 +998,7 @@ def _profile_digest_from_object_unchecked(
         return normalized_profile.name, normalized_profile.digest
 
     if type(value) is str:
-        name = _strict_text(
-            value, "profile name", max_length=256, code=ReleasePlanCode.PROFILE
-        )
-        if "/" in name or "\\" in name or "://" in name:
-            raise _fail(
-                ReleasePlanCode.PROFILE, "profile name must not be a path or URL"
-            )
+        name = _strict_profile_name(value)
         if _DIGEST.fullmatch(name):
             return "declared", name.lower()
         return name, _digest_payload({"profile_kind": kind.value, "profile_name": name})
@@ -1025,60 +1016,89 @@ def _profile_digest_from_object(value: object, kind: ProfileKind) -> tuple[str, 
         ) from None
 
 
-def _normalize_profiles_unchecked(
+def _profile_entries_from_mapping(
+    value: object, kind: ProfileKind
+) -> dict[str, object]:
+    """Collect per-project profile declarations from an exact mapping."""
+
+    entries: dict[str, object] = {}
+    raw = _strict_mapping(value, f"{kind.value} profiles")
+    for key, item in raw.items():
+        project = _canonical_repository(key)
+        if project in entries:
+            raise _fail(ReleasePlanCode.DUPLICATE, "profile project appears twice")
+        entries[project] = item
+    return entries
+
+
+def _profile_entry_from_pair(pair: object, kind: ProfileKind) -> tuple[str, object]:
+    """Normalize one binding declaration into a (project, descriptor) pair."""
+
+    if type(pair) is ProfileBinding:
+        if pair.kind is not kind:
+            raise _fail(
+                ReleasePlanCode.PROFILE,
+                "profile binding kind does not match declaration",
+            )
+        return _canonical_repository(pair.project_id), pair
+    if type(pair) not in (tuple, list):
+        raise _fail(ReleasePlanCode.PROFILE, "profile bindings must contain pairs")
+    pair_values = cast(tuple[object, ...] | list[object], pair)
+    if len(pair_values) != 2:
+        raise _fail(ReleasePlanCode.PROFILE, "profile bindings must contain pairs")
+    return _canonical_repository(pair_values[0]), pair_values[1]
+
+
+def _profile_entries_from_sequence(
+    value: object, kind: ProfileKind
+) -> dict[str, object]:
+    """Collect per-project profile declarations from an exact sequence."""
+
+    entries: dict[str, object] = {}
+    pairs = _bounded_tuple(
+        value, f"{kind.value} profile bindings", max_items=MAX_PROFILE_BINDINGS
+    )
+    for pair in pairs:
+        project, item = _profile_entry_from_pair(pair, kind)
+        if project in entries:
+            raise _fail(ReleasePlanCode.DUPLICATE, "profile project appears twice")
+        entries[project] = item
+    return entries
+
+
+def _default_profile_entries(
+    selected: tuple[str, ...], kind: ProfileKind
+) -> dict[str, object]:
+    """Synthesize the built-in default descriptor for every selected project."""
+
+    default_name = (
+        "default-validation" if kind is ProfileKind.VALIDATION else "default-build"
+    )
+    default_digest = _digest_payload(
+        {"profile_kind": kind.value, "profile_name": default_name}
+    )
+    descriptor_type: type[ValidationProfile] | type[BuildProfile] = (
+        ValidationProfile if kind is ProfileKind.VALIDATION else BuildProfile
+    )
+    return {
+        project: descriptor_type(default_name, default_digest) for project in selected
+    }
+
+
+def _profile_entries_from_declaration(
     value: object,
     selected: tuple[str, ...],
     kind: ProfileKind,
-    *,
-    global_value: object | None = None,
-) -> tuple[ProfileBinding, ...]:
-    """Expand global or per-project declarations into canonical bindings."""
+    global_value: object | None,
+) -> dict[str, object]:
+    """Resolve per-project, global, and default declarations into one mapping."""
 
-    selected_set = set(selected)
     entries: dict[str, object] = {}
     if value is not None:
         if type(value) is dict:
-            raw = _strict_mapping(value, f"{kind.value} profiles")
-            for key, item in raw.items():
-                project = _canonical_repository(key)
-                if project in entries:
-                    raise _fail(
-                        ReleasePlanCode.DUPLICATE, "profile project appears twice"
-                    )
-                entries[project] = item
+            entries = _profile_entries_from_mapping(value, kind)
         elif type(value) in (tuple, list):
-            pairs = _bounded_tuple(
-                value, f"{kind.value} profile bindings", max_items=MAX_PROFILE_BINDINGS
-            )
-            for pair in pairs:
-                if type(pair) is ProfileBinding:
-                    if pair.kind is not kind:
-                        raise _fail(
-                            ReleasePlanCode.PROFILE,
-                            "profile binding kind does not match declaration",
-                        )
-                    project = _canonical_repository(pair.project_id)
-                    if project in entries:
-                        raise _fail(
-                            ReleasePlanCode.DUPLICATE, "profile project appears twice"
-                        )
-                    entries[project] = pair
-                    continue
-                if type(pair) not in (tuple, list):
-                    raise _fail(
-                        ReleasePlanCode.PROFILE, "profile bindings must contain pairs"
-                    )
-                pair_values = cast(tuple[object, ...] | list[object], pair)
-                if len(pair_values) != 2:
-                    raise _fail(
-                        ReleasePlanCode.PROFILE, "profile bindings must contain pairs"
-                    )
-                project = _canonical_repository(pair_values[0])
-                if project in entries:
-                    raise _fail(
-                        ReleasePlanCode.DUPLICATE, "profile project appears twice"
-                    )
-                entries[project] = pair_values[1]
+            entries = _profile_entries_from_sequence(value, kind)
         else:
             global_value = value
     if global_value is not None:
@@ -1088,19 +1108,21 @@ def _normalize_profiles_unchecked(
             )
         entries = {project: global_value for project in selected}
     if not entries:
-        default_name = (
-            "default-validation" if kind is ProfileKind.VALIDATION else "default-build"
-        )
-        default_digest = _digest_payload(
-            {"profile_kind": kind.value, "profile_name": default_name}
-        )
-        entries = {
-            project: ValidationProfile(default_name, default_digest)
-            if kind is ProfileKind.VALIDATION
-            else BuildProfile(default_name, default_digest)
-            for project in selected
-        }
-    if set(entries) != selected_set:
+        entries = _default_profile_entries(selected, kind)
+    return entries
+
+
+def _normalize_profiles_unchecked(
+    value: object,
+    selected: tuple[str, ...],
+    kind: ProfileKind,
+    *,
+    global_value: object | None = None,
+) -> tuple[ProfileBinding, ...]:
+    """Expand global or per-project declarations into canonical bindings."""
+
+    entries = _profile_entries_from_declaration(value, selected, kind, global_value)
+    if set(entries) != set(selected):
         raise _fail(
             ReleasePlanCode.IDENTITY,
             "profiles must cover exactly the selected projects",
@@ -1187,16 +1209,16 @@ def _project_edges(edges: tuple[DependencyEdge, ...]) -> tuple[tuple[str, str], 
     return tuple(sorted(values))
 
 
-def _topological_groups(
+def _project_dependency_index(
     projects: tuple[str, ...],
     edges: tuple[tuple[str, str], ...],
-) -> tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]:
-    """Return dependency-first project groups or a stable cycle witness."""
+) -> dict[str, set[str]]:
+    """Index project edges as a dependency set, rejecting unknown ids and loops."""
 
-    remaining = set(projects)
+    known = set(projects)
     dependencies: dict[str, set[str]] = {project: set() for project in projects}
     for dependent, dependency in edges:
-        if dependent not in remaining or dependency not in remaining:
+        if dependent not in known or dependency not in known:
             raise _fail(
                 ReleasePlanCode.MISSING, "project edge names an unknown project"
             )
@@ -1205,6 +1227,17 @@ def _topological_groups(
                 ReleasePlanCode.CYCLE, "project dependency graph contains a cycle"
             )
         dependencies[dependent].add(dependency)
+    return dependencies
+
+
+def _topological_groups(
+    projects: tuple[str, ...],
+    edges: tuple[tuple[str, str], ...],
+) -> tuple[tuple[tuple[str, ...], ...], tuple[str, ...]]:
+    """Return dependency-first project groups or a stable cycle witness."""
+
+    dependencies = _project_dependency_index(projects, edges)
+    remaining = set(projects)
     groups: list[tuple[str, ...]] = []
     while remaining:
         ready = tuple(
@@ -1285,6 +1318,109 @@ def _stage_identity(payload: dict[str, object]) -> tuple[str, str]:
     return stage_id, input_digest
 
 
+def _assert_ordered_unique_digests(digests: tuple[str, ...], message: str) -> None:
+    """Reject a digest tuple that is unsorted or repeats an entry."""
+
+    if tuple(sorted(digests)) != digests or len(set(digests)) != len(digests):
+        raise _fail(ReleasePlanCode.DIGEST, message)
+
+
+def _stage_preview_digest_tuples(
+    stage: StagePreview,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Normalize the version and floor preview digest tuples of one stage."""
+
+    raw_version_digests = _bounded_tuple(
+        stage.version_preview_digests,
+        "stage version preview digests",
+        max_items=MAX_PACKAGES,
+    )
+    raw_floor_digests = _bounded_tuple(
+        stage.floor_preview_digests,
+        "stage floor preview digests",
+        max_items=MAX_EDGES,
+    )
+    version_digests: tuple[str, ...] = tuple(
+        _strict_digest(item, "stage version preview digest")
+        for item in raw_version_digests
+    )
+    floor_digests: tuple[str, ...] = tuple(
+        _strict_digest(item, "stage floor preview digest") for item in raw_floor_digests
+    )
+    _assert_ordered_unique_digests(
+        version_digests, "stage version preview digests must be ordered and unique"
+    )
+    _assert_ordered_unique_digests(
+        floor_digests, "stage floor preview digests must be ordered and unique"
+    )
+    return version_digests, floor_digests
+
+
+def _validate_stage_failure_policy(stage: StagePreview) -> None:
+    """Only the single accepted ``block_dependents`` failure policy is valid."""
+
+    if type(stage.failure_policy) is not FailurePolicy:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT, "stage failure policy is unsupported"
+        )
+    if stage.failure_policy is not FailurePolicy.BLOCK_DEPENDENTS:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT, "stage failure policy is unsupported"
+        )
+
+
+def _validate_stage_policy_types(stage: StagePreview) -> None:
+    """The retry and timeout policies must be the exact owned enum members."""
+
+    if type(stage.retry_policy) is not RetryPolicy:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "stage retry policy is unsupported")
+    if type(stage.timeout_policy) is not TimeoutPolicy:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT, "stage timeout policy is unsupported"
+        )
+
+
+def _validate_stage_policy_bounds(stage: StagePreview) -> None:
+    """The retry count and timeout must be exact ints inside their bounds."""
+
+    if type(stage.retry_count) is not int:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "stage retry count is invalid")
+    if not 0 <= stage.retry_count <= 32:
+        raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "stage retry count exceeds bound")
+    if type(stage.timeout_seconds) is not int:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "stage timeout is invalid")
+    if not 0 <= stage.timeout_seconds <= 604800:
+        raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "stage timeout exceeds bound")
+
+
+def _validate_stage_policy_agreement(stage: StagePreview) -> None:
+    """Each policy must agree with the count or duration declared alongside it."""
+
+    if stage.retry_policy is RetryPolicy.NONE and stage.retry_count != 0:
+        raise _fail(ReleasePlanCode.CONFLICT, "stage retry count conflicts with policy")
+    if stage.retry_policy is RetryPolicy.FIXED and stage.retry_count < 1:
+        raise _fail(ReleasePlanCode.CONFLICT, "stage retry policy requires retries")
+    if stage.timeout_policy is TimeoutPolicy.NONE and stage.timeout_seconds != 0:
+        raise _fail(ReleasePlanCode.CONFLICT, "stage timeout conflicts with policy")
+    if stage.timeout_policy is TimeoutPolicy.FAIL and stage.timeout_seconds < 1:
+        raise _fail(ReleasePlanCode.CONFLICT, "stage timeout policy requires seconds")
+
+
+def _validate_stage_retry_and_timeout(stage: StagePreview) -> None:
+    """Validate the retry/timeout policy pair, bounds, and their agreement."""
+
+    _validate_stage_policy_types(stage)
+    _validate_stage_policy_bounds(stage)
+    _validate_stage_policy_agreement(stage)
+
+
+def _apply_frozen_fields(record: object, values: dict[str, object]) -> None:
+    """Write a normalized field set back onto a frozen dataclass instance."""
+
+    for name, value in values.items():
+        object.__setattr__(record, name, value)
+
+
 @dataclass(frozen=True, slots=True)
 class StagePreview:
     """One deterministic, dependency-linked stage declaration."""
@@ -1340,38 +1476,7 @@ class StagePreview:
         version_plan_digest = _strict_digest(
             self.version_plan_digest, "stage version-plan digest"
         )
-        raw_version_digests = _bounded_tuple(
-            self.version_preview_digests,
-            "stage version preview digests",
-            max_items=MAX_PACKAGES,
-        )
-        raw_floor_digests = _bounded_tuple(
-            self.floor_preview_digests,
-            "stage floor preview digests",
-            max_items=MAX_EDGES,
-        )
-        version_digests: tuple[str, ...] = tuple(
-            _strict_digest(item, "stage version preview digest")
-            for item in raw_version_digests
-        )
-        floor_digests: tuple[str, ...] = tuple(
-            _strict_digest(item, "stage floor preview digest")
-            for item in raw_floor_digests
-        )
-        if tuple(sorted(version_digests)) != version_digests or len(
-            set(version_digests)
-        ) != len(version_digests):
-            raise _fail(
-                ReleasePlanCode.DIGEST,
-                "stage version preview digests must be ordered and unique",
-            )
-        if tuple(sorted(floor_digests)) != floor_digests or len(
-            set(floor_digests)
-        ) != len(floor_digests):
-            raise _fail(
-                ReleasePlanCode.DIGEST,
-                "stage floor preview digests must be ordered and unique",
-            )
+        version_digests, floor_digests = _stage_preview_digest_tuples(self)
         validation_digest = _strict_optional_digest(
             self.validation_profile_digest,
             "stage validation profile digest",
@@ -1388,14 +1493,7 @@ class StagePreview:
             raise _fail(
                 ReleasePlanCode.PUSH_CONSENT, "push stage requires immutable consent"
             )
-        if type(self.failure_policy) is not FailurePolicy:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "stage failure policy is unsupported"
-            )
-        if self.failure_policy is not FailurePolicy.BLOCK_DEPENDENTS:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "stage failure policy is unsupported"
-            )
+        _validate_stage_failure_policy(self)
         decision_digest = _strict_digest(self.decision_digest, "stage decision digest")
         if type(self.resource_profile) is not ImmutableDigestReference:
             raise _fail(
@@ -1405,36 +1503,7 @@ class StagePreview:
         resource_profile = ImmutableDigestReference(
             self.resource_profile.name, self.resource_profile.digest
         )
-        if type(self.retry_policy) is not RetryPolicy:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "stage retry policy is unsupported"
-            )
-        if type(self.timeout_policy) is not TimeoutPolicy:
-            raise _fail(
-                ReleasePlanCode.INVALID_INPUT, "stage timeout policy is unsupported"
-            )
-        if type(self.retry_count) is not int:
-            raise _fail(ReleasePlanCode.INVALID_INPUT, "stage retry count is invalid")
-        if not 0 <= self.retry_count <= 32:
-            raise _fail(
-                ReleasePlanCode.UNBOUNDED_INPUT, "stage retry count exceeds bound"
-            )
-        if type(self.timeout_seconds) is not int:
-            raise _fail(ReleasePlanCode.INVALID_INPUT, "stage timeout is invalid")
-        if not 0 <= self.timeout_seconds <= 604800:
-            raise _fail(ReleasePlanCode.UNBOUNDED_INPUT, "stage timeout exceeds bound")
-        if self.retry_policy is RetryPolicy.NONE and self.retry_count != 0:
-            raise _fail(
-                ReleasePlanCode.CONFLICT, "stage retry count conflicts with policy"
-            )
-        if self.retry_policy is RetryPolicy.FIXED and self.retry_count < 1:
-            raise _fail(ReleasePlanCode.CONFLICT, "stage retry policy requires retries")
-        if self.timeout_policy is TimeoutPolicy.NONE and self.timeout_seconds != 0:
-            raise _fail(ReleasePlanCode.CONFLICT, "stage timeout conflicts with policy")
-        if self.timeout_policy is TimeoutPolicy.FAIL and self.timeout_seconds < 1:
-            raise _fail(
-                ReleasePlanCode.CONFLICT, "stage timeout policy requires seconds"
-            )
+        _validate_stage_retry_and_timeout(self)
         input_digest = _strict_digest(self.input_digest, "stage input digest")
         payload = _stage_payload_without_digests(
             kind=self.kind,
@@ -1464,23 +1533,28 @@ class StagePreview:
                 ReleasePlanCode.DIGEST,
                 "stage identity or input digest does not match frozen contents",
             )
-        object.__setattr__(self, "stage_id", stage_id)
-        object.__setattr__(self, "project_id", project_id)
-        object.__setattr__(self, "base_sha", base_sha)
-        object.__setattr__(self, "tree_sha", tree_sha)
-        object.__setattr__(self, "generation_id", generation_id)
-        object.__setattr__(self, "graph_digest", graph_digest)
-        object.__setattr__(self, "selection_digest", selection_digest)
-        object.__setattr__(self, "version_plan_digest", version_plan_digest)
-        object.__setattr__(self, "version_preview_digests", version_digests)
-        object.__setattr__(self, "floor_preview_digests", floor_digests)
-        object.__setattr__(self, "validation_profile_digest", validation_digest)
-        object.__setattr__(self, "build_profile_digest", build_digest)
-        object.__setattr__(self, "depends_on", dependencies)
-        object.__setattr__(self, "consent_reference", consent_reference)
-        object.__setattr__(self, "input_digest", input_digest)
-        object.__setattr__(self, "decision_digest", decision_digest)
-        object.__setattr__(self, "resource_profile", resource_profile)
+        _apply_frozen_fields(
+            self,
+            {
+                "stage_id": stage_id,
+                "project_id": project_id,
+                "base_sha": base_sha,
+                "tree_sha": tree_sha,
+                "generation_id": generation_id,
+                "graph_digest": graph_digest,
+                "selection_digest": selection_digest,
+                "version_plan_digest": version_plan_digest,
+                "version_preview_digests": version_digests,
+                "floor_preview_digests": floor_digests,
+                "validation_profile_digest": validation_digest,
+                "build_profile_digest": build_digest,
+                "depends_on": dependencies,
+                "consent_reference": consent_reference,
+                "input_digest": input_digest,
+                "decision_digest": decision_digest,
+                "resource_profile": resource_profile,
+            },
+        )
 
     @property
     def stage(self) -> StageKind:
@@ -1543,12 +1617,22 @@ ReleasePlanStage = StagePreview
 ReleaseStage = StageKind
 
 
-def _validate_stage_dag(stages: tuple[StagePreview, ...]) -> None:
+def _stage_identity_map(stages: tuple[StagePreview, ...]) -> dict[str, StagePreview]:
+    """Index stages by identity, rejecting a duplicated stage id."""
+
     stage_map: dict[str, StagePreview] = {}
     for stage in stages:
         if stage.stage_id in stage_map:
             raise _fail(ReleasePlanCode.DUPLICATE, "stage identity is duplicated")
         stage_map[stage.stage_id] = stage
+    return stage_map
+
+
+def _validate_stage_dependency_targets(
+    stages: tuple[StagePreview, ...], stage_map: dict[str, StagePreview]
+) -> None:
+    """Reject self-dependency and dependencies on stages outside the plan."""
+
     for stage in stages:
         if stage.stage_id in stage.depends_on:
             raise _fail(
@@ -1558,6 +1642,11 @@ def _validate_stage_dag(stages: tuple[StagePreview, ...]) -> None:
             raise _fail(
                 ReleasePlanCode.STAGE_DEPENDENCY, "stage depends on an unknown stage"
             )
+
+
+def _assert_stage_graph_acyclic(stage_map: dict[str, StagePreview]) -> None:
+    """Peel dependency-free stages until none remain, or report a cycle."""
+
     remaining = set(stage_map)
     dependencies = {
         stage_id: set(stage_map[stage_id].depends_on) for stage_id in stage_map
@@ -1574,6 +1663,105 @@ def _validate_stage_dag(stages: tuple[StagePreview, ...]) -> None:
             remaining.remove(stage_id)
         for stage_id in remaining:
             dependencies[stage_id].difference_update(ready)
+
+
+def _validate_stage_dag(stages: tuple[StagePreview, ...]) -> None:
+    stage_map = _stage_identity_map(stages)
+    _validate_stage_dependency_targets(stages, stage_map)
+    _assert_stage_graph_acyclic(stage_map)
+
+
+def _stage_project_dependencies(
+    selected: tuple[str, ...],
+    project_edges: tuple[tuple[str, str], ...],
+) -> dict[str, set[str]]:
+    """Index frozen project edges as one dependency set per selected project."""
+
+    project_dependencies: dict[str, set[str]] = {project: set() for project in selected}
+    for dependent, dependency in project_edges:
+        if (
+            dependent not in project_dependencies
+            or dependency not in project_dependencies
+        ):
+            raise _fail(
+                ReleasePlanCode.MISSING, "stage source edge names an unknown project"
+            )
+        project_dependencies[dependent].add(dependency)
+    return project_dependencies
+
+
+def _stage_dependency_ids(
+    kind: StageKind,
+    project_id: str,
+    stage_by_key: dict[tuple[StageKind, str], StagePreview],
+    project_dependencies: dict[str, set[str]],
+) -> tuple[str, ...]:
+    """Return the frozen dependency stage ids for one (kind, project) stage."""
+
+    predecessor_of: dict[StageKind, StageKind] = {
+        StageKind.BUMP: StageKind.VALIDATE,
+        StageKind.LOCAL_LAND: StageKind.BUMP,
+        StageKind.BUILD: StageKind.LOCAL_LAND,
+        StageKind.PACKAGE: StageKind.BUILD,
+        StageKind.PUSH: StageKind.PACKAGE,
+    }
+    peer_of: dict[StageKind, StageKind] = {
+        StageKind.BUMP: StageKind.BUMP,
+        StageKind.PUSH: StageKind.PUSH,
+    }
+    predecessor = predecessor_of.get(kind)
+    if predecessor is None:
+        return ()
+    dependencies = [stage_by_key[(predecessor, project_id)].stage_id]
+    peer = peer_of.get(kind)
+    if peer is not None:
+        dependencies.extend(
+            stage_by_key[(peer, dependency)].stage_id
+            for dependency in sorted(project_dependencies[project_id])
+        )
+    return tuple(sorted(set(dependencies)))
+
+
+def _emit_stage_group(
+    *,
+    kind: StageKind,
+    groups: tuple[tuple[str, ...], ...],
+    project_map: dict[str, ProjectRecord],
+    project_dependencies: dict[str, set[str]],
+    profile_digests: dict[str, tuple[str, str]],
+    stage_by_key: dict[tuple[StageKind, str], StagePreview],
+    stage_fields: dict[str, object],
+) -> None:
+    """Materialize every stage of one kind in dependency-group order."""
+
+    for group in groups:
+        for project_id in group:
+            validation_digest, build_digest = profile_digests[project_id]
+            stage_by_key[(kind, project_id)] = _stage_preview(
+                kind=kind,
+                project=project_map[project_id],
+                validation_profile_digest=validation_digest,
+                build_profile_digest=build_digest,
+                depends_on=_stage_dependency_ids(
+                    kind, project_id, stage_by_key, project_dependencies
+                ),
+                **stage_fields,  # type: ignore[arg-type]
+            )
+
+
+def _ordered_stages(
+    stage_by_key: dict[tuple[StageKind, str], StagePreview],
+    stage_order: tuple[StageKind, ...],
+    groups: tuple[tuple[str, ...], ...],
+) -> tuple[StagePreview, ...]:
+    """Flatten the stage index into the single accepted execution order."""
+
+    return tuple(
+        stage_by_key[(kind, project_id)]
+        for kind in stage_order
+        for group in groups
+        for project_id in group
+    )
 
 
 def _derive_stage_sequence(
@@ -1596,16 +1784,22 @@ def _derive_stage_sequence(
 ) -> tuple[StagePreview, ...]:
     """Derive the only accepted stage composition from frozen source fields."""
 
-    project_dependencies: dict[str, set[str]] = {project: set() for project in selected}
-    for dependent, dependency in project_edges:
-        if (
-            dependent not in project_dependencies
-            or dependency not in project_dependencies
-        ):
-            raise _fail(
-                ReleasePlanCode.MISSING, "stage source edge names an unknown project"
-            )
-        project_dependencies[dependent].add(dependency)
+    project_dependencies = _stage_project_dependencies(selected, project_edges)
+    profile_digests = {
+        project_id: (validation[project_id].digest, build[project_id].digest)
+        for group in groups
+        for project_id in group
+    }
+    stage_fields: dict[str, object] = {
+        "base_sha": base_sha,
+        "generation_id": generation_id,
+        "graph_digest": graph_digest,
+        "selection_digest": selection_digest,
+        "version_plan_digest": version_plan_digest,
+        "version_preview_digests": version_preview_digests,
+        "floor_preview_digests": floor_preview_digests,
+        "decision_context": decision_context,
+    }
     stage_by_key: dict[tuple[StageKind, str], StagePreview] = {}
     stage_order = (
         StageKind.VALIDATE,
@@ -1615,76 +1809,27 @@ def _derive_stage_sequence(
         StageKind.PACKAGE,
     )
     for kind in stage_order:
-        for group in groups:
-            for project_id in group:
-                project = project_map[project_id]
-                dependencies: list[str] = []
-                if kind is StageKind.BUMP:
-                    dependencies.append(
-                        stage_by_key[(StageKind.VALIDATE, project_id)].stage_id
-                    )
-                    dependencies.extend(
-                        stage_by_key[(StageKind.BUMP, dependency)].stage_id
-                        for dependency in sorted(project_dependencies[project_id])
-                    )
-                elif kind is StageKind.LOCAL_LAND:
-                    dependencies.append(
-                        stage_by_key[(StageKind.BUMP, project_id)].stage_id
-                    )
-                elif kind is StageKind.BUILD:
-                    dependencies.append(
-                        stage_by_key[(StageKind.LOCAL_LAND, project_id)].stage_id
-                    )
-                elif kind is StageKind.PACKAGE:
-                    dependencies.append(
-                        stage_by_key[(StageKind.BUILD, project_id)].stage_id
-                    )
-                stage_by_key[(kind, project_id)] = _stage_preview(
-                    kind=kind,
-                    project=project,
-                    base_sha=base_sha,
-                    generation_id=generation_id,
-                    graph_digest=graph_digest,
-                    selection_digest=selection_digest,
-                    version_plan_digest=version_plan_digest,
-                    version_preview_digests=version_preview_digests,
-                    floor_preview_digests=floor_preview_digests,
-                    validation_profile_digest=validation[project_id].digest,
-                    build_profile_digest=build[project_id].digest,
-                    depends_on=tuple(sorted(set(dependencies))),
-                    consent_reference=None,
-                    decision_context=decision_context,
-                )
+        _emit_stage_group(
+            kind=kind,
+            groups=groups,
+            project_map=project_map,
+            project_dependencies=project_dependencies,
+            profile_digests=profile_digests,
+            stage_by_key=stage_by_key,
+            stage_fields={**stage_fields, "consent_reference": None},
+        )
     if consent is not None:
-        for group in groups:
-            for project_id in group:
-                dependencies = [stage_by_key[(StageKind.PACKAGE, project_id)].stage_id]
-                dependencies.extend(
-                    stage_by_key[(StageKind.PUSH, dependency)].stage_id
-                    for dependency in sorted(project_dependencies[project_id])
-                )
-                stage_by_key[(StageKind.PUSH, project_id)] = _stage_preview(
-                    kind=StageKind.PUSH,
-                    project=project_map[project_id],
-                    base_sha=base_sha,
-                    generation_id=generation_id,
-                    graph_digest=graph_digest,
-                    selection_digest=selection_digest,
-                    version_plan_digest=version_plan_digest,
-                    version_preview_digests=version_preview_digests,
-                    floor_preview_digests=floor_preview_digests,
-                    validation_profile_digest=validation[project_id].digest,
-                    build_profile_digest=build[project_id].digest,
-                    depends_on=tuple(sorted(set(dependencies))),
-                    consent_reference=consent,
-                    decision_context=decision_context,
-                )
-    stages = tuple(
-        stage_by_key[(kind, project_id)]
-        for kind in (*stage_order, *((StageKind.PUSH,) if consent is not None else ()))
-        for group in groups
-        for project_id in group
-    )
+        _emit_stage_group(
+            kind=StageKind.PUSH,
+            groups=groups,
+            project_map=project_map,
+            project_dependencies=project_dependencies,
+            profile_digests=profile_digests,
+            stage_by_key=stage_by_key,
+            stage_fields={**stage_fields, "consent_reference": consent},
+        )
+        stage_order = (*stage_order, StageKind.PUSH)
+    stages = _ordered_stages(stage_by_key, stage_order, groups)
     _validate_stage_dag(stages)
     return stages
 
@@ -1880,6 +2025,70 @@ class FrozenReleasePlan:
 
         _validate_frozen_plan_fields(self, require_digest=True)
 
+    def _validate_against_unchecked(
+        self,
+        graph: DependencyGraph,
+        selection: SelectedChangeClosure,
+        version_plan: VersionPlan | None,
+    ) -> None:
+        """Recompute the plan from current evidence and compare it to the frozen one."""
+
+        # Validate and deep-reconstruct every frozen stage before any
+        # comparison or canonicalization can touch caller-controlled data.
+        _validate_frozen_plan_fields(self, require_digest=True)
+        graph = _snapshot_graph(graph)
+        selection = _snapshot_selection(selection)
+        if graph.digest != self.graph_digest:
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT,
+                "current graph does not match frozen plan",
+            )
+        if selection.digest != self.selection_digest:
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT,
+                "current selection does not match frozen plan",
+            )
+        if graph.canonical_payload() != selection.source_graph.canonical_payload():
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT,
+                "current graph evidence does not match frozen selection",
+            )
+        current_version_plan = (
+            self.version_plan if version_plan is None else version_plan
+        )
+        if type(current_version_plan) is not VersionPlan:
+            raise _fail(
+                ReleasePlanCode.VERSION_PLAN_DRIFT,
+                "current version plan is unsupported",
+            )
+        current_version_plan = _revalidate_version_plan(current_version_plan)
+        if current_version_plan.plan_digest != self.version_plan_digest:
+            raise _fail(
+                ReleasePlanCode.VERSION_PLAN_DRIFT,
+                "current version plan does not match frozen plan",
+            )
+        current_version_plan.validate_against(graph, selection)
+        expected = freeze_release_plan(
+            graph,
+            selection,
+            current_version_plan,
+            workspace_id=self.workspace_id,
+            source_sha=self.source_sha,
+            base_sha=self.base_sha,
+            generation_id=self.generation_id,
+            validation_profiles=self.validation_profiles,
+            build_profiles=self.build_profiles,
+            push_consent=self.push_consent,
+            decision_context=self.decision_context,
+        )
+        if expected.canonical_payload(include_digest=True) != self.canonical_payload(
+            include_digest=True
+        ):
+            raise _fail(
+                ReleasePlanCode.DIGEST,
+                "frozen release plan evidence does not match recomputed contents",
+            )
+
     def validate_against(
         self,
         graph: DependencyGraph,
@@ -1890,61 +2099,7 @@ class FrozenReleasePlan:
         """Refuse reuse when graph, closure, tree, preview, or profile evidence drifts."""
 
         try:
-            # Validate and deep-reconstruct every frozen stage before any
-            # comparison or canonicalization can touch caller-controlled data.
-            _validate_frozen_plan_fields(self, require_digest=True)
-            graph = _snapshot_graph(graph)
-            selection = _snapshot_selection(selection)
-            if graph.digest != self.graph_digest:
-                raise _fail(
-                    ReleasePlanCode.GRAPH_DRIFT,
-                    "current graph does not match frozen plan",
-                )
-            if selection.digest != self.selection_digest:
-                raise _fail(
-                    ReleasePlanCode.SELECTION_DRIFT,
-                    "current selection does not match frozen plan",
-                )
-            if graph.canonical_payload() != selection.source_graph.canonical_payload():
-                raise _fail(
-                    ReleasePlanCode.GRAPH_DRIFT,
-                    "current graph evidence does not match frozen selection",
-                )
-            current_version_plan = (
-                self.version_plan if version_plan is None else version_plan
-            )
-            if type(current_version_plan) is not VersionPlan:
-                raise _fail(
-                    ReleasePlanCode.VERSION_PLAN_DRIFT,
-                    "current version plan is unsupported",
-                )
-            current_version_plan = _revalidate_version_plan(current_version_plan)
-            if current_version_plan.plan_digest != self.version_plan_digest:
-                raise _fail(
-                    ReleasePlanCode.VERSION_PLAN_DRIFT,
-                    "current version plan does not match frozen plan",
-                )
-            current_version_plan.validate_against(graph, selection)
-            expected = freeze_release_plan(
-                graph,
-                selection,
-                current_version_plan,
-                workspace_id=self.workspace_id,
-                source_sha=self.source_sha,
-                base_sha=self.base_sha,
-                generation_id=self.generation_id,
-                validation_profiles=self.validation_profiles,
-                build_profiles=self.build_profiles,
-                push_consent=self.push_consent,
-                decision_context=self.decision_context,
-            )
-            if expected.canonical_payload(
-                include_digest=True
-            ) != self.canonical_payload(include_digest=True):
-                raise _fail(
-                    ReleasePlanCode.DIGEST,
-                    "frozen release plan evidence does not match recomputed contents",
-                )
+            self._validate_against_unchecked(graph, selection, version_plan)
         except ReleasePlanError:
             raise
         except VersionPlanningError:
@@ -2029,11 +2184,9 @@ def _revalidate_floor(value: object, field_name: str) -> VersionFloor:
     )
 
 
-def _revalidate_package(package: PackageRecord) -> PackageRecord:
-    if type(package) is not PackageRecord:
-        raise _fail(ReleasePlanCode.INVALID_INPUT, "plan package is not a C-11 record")
-    key = _revalidate_package_key(package.key, "package key")
-    version = _revalidate_version(package.version, "package version")
+def _revalidate_version_sources(package: PackageRecord) -> tuple[VersionSource, ...]:
+    """Re-materialize the declared version-source sites of one package."""
+
     raw_sources = _exact_nested_tuple(
         package.version_sources, "package version sources", max_items=MAX_STRING_LENGTH
     )
@@ -2049,49 +2202,57 @@ def _revalidate_package(package: PackageRecord) -> PackageRecord:
                 _revalidate_version(source.version, "version source version"),
             )
         )
+    return tuple(sources)
+
+
+def _revalidate_dependency_spec(dependency: object) -> DependencySpec:
+    """Re-materialize one declared dependency spec and its package reference."""
+
+    if type(dependency) is not DependencySpec:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "package dependency is invalid")
+    target = dependency.target
+    if type(target) is not PackageReference or type(target.ecosystem) is not Ecosystem:
+        raise _fail(ReleasePlanCode.IDENTITY, "package dependency target is invalid")
+    repository_id = target.repository_id
+    if repository_id is not None:
+        repository_id = _canonical_repository_exact(
+            repository_id, "dependency target repository"
+        )
+    floor = (
+        None
+        if dependency.floor is None
+        else _revalidate_floor(dependency.floor, "dependency floor")
+    )
+    return DependencySpec(
+        PackageReference(
+            target.ecosystem,
+            _strict_text(target.name, "dependency target name", max_length=256),
+            repository_id,
+        ),
+        floor,
+        _strict_text(dependency.source, "dependency source"),
+    )
+
+
+def _revalidate_package(package: PackageRecord) -> PackageRecord:
+    if type(package) is not PackageRecord:
+        raise _fail(ReleasePlanCode.INVALID_INPUT, "plan package is not a C-11 record")
+    key = _revalidate_package_key(package.key, "package key")
+    version = _revalidate_version(package.version, "package version")
+    sources = _revalidate_version_sources(package)
     raw_dependencies = _exact_nested_tuple(
         package.dependencies, "package dependencies", max_items=MAX_EDGES
     )
-    dependencies: list[DependencySpec] = []
-    for dependency in raw_dependencies:
-        if type(dependency) is not DependencySpec:
-            raise _fail(ReleasePlanCode.INVALID_INPUT, "package dependency is invalid")
-        target = dependency.target
-        if (
-            type(target) is not PackageReference
-            or type(target.ecosystem) is not Ecosystem
-        ):
-            raise _fail(
-                ReleasePlanCode.IDENTITY, "package dependency target is invalid"
-            )
-        repository_id = target.repository_id
-        if repository_id is not None:
-            repository_id = _canonical_repository_exact(
-                repository_id, "dependency target repository"
-            )
-        floor = (
-            None
-            if dependency.floor is None
-            else _revalidate_floor(dependency.floor, "dependency floor")
-        )
-        dependencies.append(
-            DependencySpec(
-                PackageReference(
-                    target.ecosystem,
-                    _strict_text(target.name, "dependency target name", max_length=256),
-                    repository_id,
-                ),
-                floor,
-                _strict_text(dependency.source, "dependency source"),
-            )
-        )
+    dependencies = tuple(
+        _revalidate_dependency_spec(dependency) for dependency in raw_dependencies
+    )
     raw_metadata = _exact_nested_tuple(
         package.metadata_files, "package metadata files", max_items=MAX_STRING_LENGTH
     )
     metadata = tuple(
         _strict_text(item, "package metadata file") for item in raw_metadata
     )
-    return PackageRecord(key, version, tuple(sources), tuple(dependencies), metadata)
+    return PackageRecord(key, version, sources, dependencies, metadata)
 
 
 def _revalidate_project(project: ProjectRecord) -> ProjectRecord:
@@ -2361,6 +2522,73 @@ def _revalidate_floor_preview(preview: FloorPreview) -> FloorPreview:
     )
 
 
+def _package_owner_counts(
+    packages: tuple[PackageRecord, ...],
+) -> dict[tuple[Ecosystem, str], int]:
+    """Count how many packages claim each (ecosystem, name) owner key."""
+
+    owner_counts: dict[tuple[Ecosystem, str], int] = {}
+    for package in packages:
+        owner_key = (package.key.ecosystem, package.key.name)
+        owner_counts[owner_key] = owner_counts.get(owner_key, 0) + 1
+    return owner_counts
+
+
+def _edge_dependency_specs(
+    dependent: PackageRecord, edge: DependencyEdge
+) -> tuple[DependencySpec, ...]:
+    """Select the declared dependency specs an edge could have come from."""
+
+    return tuple(
+        spec
+        for spec in dependent.dependencies
+        if spec.target.ecosystem is edge.dependency.ecosystem
+        and spec.target.name == edge.dependency.name
+        and (
+            spec.target.repository_id is None
+            or spec.target.repository_id == edge.dependency.repository_id
+        )
+    )
+
+
+def _validate_edge_source_binding(
+    edge: DependencyEdge,
+    package_map: dict[str, PackageRecord],
+    owner_counts: dict[tuple[Ecosystem, str], int],
+) -> None:
+    """Bind one graph edge to the package declaration that evidences it."""
+
+    dependent = package_map.get(edge.dependent.value)
+    if dependent is None or edge.dependency.value not in package_map:
+        raise _fail(
+            ReleasePlanCode.MISSING,
+            "graph edge names an unknown package",
+        )
+    candidates = _edge_dependency_specs(dependent, edge)
+    if not candidates:
+        raise _fail(
+            ReleasePlanCode.GRAPH_DRIFT,
+            "graph edge is not supported by package dependency evidence",
+        )
+    target = candidates[0].target
+    owner_count = owner_counts.get(
+        (target.ecosystem, target.name),
+        0,
+    )
+    # A uniquely resolved target with a declared floor has a complete
+    # source declaration. Overlay-only edges are permitted to resolve an
+    # explicit owner or fill a missing floor.
+    if candidates[0].floor is not None and (
+        target.repository_id is not None or owner_count == 1
+    ):
+        spec = candidates[0]
+        if spec.floor != edge.floor or spec.source != edge.source:
+            raise _fail(
+                ReleasePlanCode.GRAPH_DRIFT,
+                "graph edge provenance does not match package evidence",
+            )
+
+
 def _validate_edge_source_evidence(
     projects: tuple[ProjectRecord, ...], edges: tuple[DependencyEdge, ...]
 ) -> None:
@@ -2375,141 +2603,162 @@ def _validate_edge_source_evidence(
 
     packages = tuple(package for project in projects for package in project.packages)
     package_map = {package.key.value: package for package in packages}
-    owner_counts: dict[tuple[Ecosystem, str], int] = {}
-    for package in packages:
-        owner_key = (package.key.ecosystem, package.key.name)
-        owner_counts[owner_key] = owner_counts.get(owner_key, 0) + 1
+    owner_counts = _package_owner_counts(packages)
     for edge in edges:
-        dependent = package_map.get(edge.dependent.value)
-        if dependent is None or edge.dependency.value not in package_map:
-            raise _fail(
-                ReleasePlanCode.MISSING,
-                "graph edge names an unknown package",
-            )
-        candidates = tuple(
-            spec
-            for spec in dependent.dependencies
-            if spec.target.ecosystem is edge.dependency.ecosystem
-            and spec.target.name == edge.dependency.name
-            and (
-                spec.target.repository_id is None
-                or spec.target.repository_id == edge.dependency.repository_id
-            )
-        )
-        if not candidates:
-            raise _fail(
-                ReleasePlanCode.GRAPH_DRIFT,
-                "graph edge is not supported by package dependency evidence",
-            )
-        target = candidates[0].target
-        owner_count = owner_counts.get(
-            (target.ecosystem, target.name),
-            0,
-        )
-        # A uniquely resolved target with a declared floor has a complete
-        # source declaration. Overlay-only edges are permitted to resolve an
-        # explicit owner or fill a missing floor.
-        if candidates[0].floor is not None and (
-            target.repository_id is not None or owner_count == 1
+        _validate_edge_source_binding(edge, package_map, owner_counts)
+
+
+def _graph_project_edge_pairs(
+    raw_project_edges: tuple[object, ...],
+) -> tuple[tuple[str, str], ...]:
+    """Canonicalize the endpoint pairs of the frozen graph project edges."""
+
+    project_edges: list[tuple[str, str]] = []
+    for pair in raw_project_edges:
+        if (
+            type(pair) not in (tuple, list)
+            or len(cast(tuple[object, ...] | list[object], pair)) != 2
         ):
-            spec = candidates[0]
-            if spec.floor != edge.floor or spec.source != edge.source:
-                raise _fail(
-                    ReleasePlanCode.GRAPH_DRIFT,
-                    "graph edge provenance does not match package evidence",
-                )
+            raise _fail(ReleasePlanCode.INVALID_INPUT, "graph project edge is invalid")
+        left, right = cast(tuple[object, ...] | list[object], pair)
+        project_edges.append(
+            (
+                _canonical_repository_exact(left, "graph project edge endpoint"),
+                _canonical_repository_exact(right, "graph project edge endpoint"),
+            )
+        )
+    return tuple(project_edges)
+
+
+def _graph_inventory_keys(
+    projects: tuple[ProjectRecord, ...],
+    packages: tuple[PackageRecord, ...],
+    edges: tuple[DependencyEdge, ...],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Project the identity keys used to compare two graph inventories."""
+
+    return (
+        tuple(project.project_id for project in projects),
+        tuple(package.key.value for package in packages),
+        tuple(edge.value for edge in edges),
+    )
+
+
+def _assert_graph_matches_derived(
+    *,
+    projects: tuple[ProjectRecord, ...],
+    packages: tuple[PackageRecord, ...],
+    edges: tuple[DependencyEdge, ...],
+    project_edges: tuple[tuple[str, str], ...],
+    groups: tuple[tuple[str, ...], ...],
+    digest: str,
+    derived: DependencyGraph,
+) -> None:
+    """The frozen inventory and digest must equal the recomputed graph."""
+
+    if (
+        _graph_inventory_keys(projects, packages, edges)
+        != _graph_inventory_keys(derived.projects, derived.packages, derived.edges)
+        or project_edges != derived.project_edges
+        or groups != derived.parallel_groups
+    ):
+        raise _fail(
+            ReleasePlanCode.GRAPH_DRIFT,
+            "graph inventory does not match package evidence",
+        )
+    if derived.digest != digest:
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph digest does not match sources")
+
+
+def _assert_graph_candidate_canonical(
+    *,
+    candidate: DependencyGraph,
+    projects: tuple[ProjectRecord, ...],
+    packages: tuple[PackageRecord, ...],
+    edges: tuple[DependencyEdge, ...],
+    project_edges: tuple[tuple[str, str], ...],
+    groups: tuple[tuple[str, ...], ...],
+) -> None:
+    """The reconstructed graph must be byte-identical to its own canonical form."""
+
+    if candidate.projects != projects or candidate.packages != packages:
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph records are not canonical")
+    if candidate.digest != _digest_payload(candidate.canonical_payload()):
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph digest does not match contents")
+    if (
+        project_edges != candidate.project_edges
+        or groups != candidate.parallel_groups
+        or candidate.edges != edges
+    ):
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph topology is not canonical")
+
+
+def _snapshot_graph_unchecked(graph: DependencyGraph) -> DependencyGraph:
+    """Rebuild the graph from its own evidence and prove it did not drift."""
+
+    if type(graph) is not DependencyGraph:
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph is not a C-11 record")
+    raw_projects = _exact_nested_tuple(
+        graph.projects, "graph projects", max_items=MAX_PROJECTS
+    )
+    raw_packages = _exact_nested_tuple(
+        graph.packages, "graph packages", max_items=MAX_PACKAGES
+    )
+    raw_edges = _exact_nested_tuple(graph.edges, "graph edges", max_items=MAX_EDGES)
+    raw_project_edges = _exact_nested_tuple(
+        graph.project_edges, "graph project edges", max_items=MAX_EDGES
+    )
+    raw_groups = _exact_nested_tuple(
+        graph.parallel_groups, "graph parallel groups", max_items=MAX_PROJECTS
+    )
+    projects = tuple(
+        _revalidate_project(cast(ProjectRecord, item)) for item in raw_projects
+    )
+    packages = tuple(
+        _revalidate_package(cast(PackageRecord, item)) for item in raw_packages
+    )
+    edges = tuple(_revalidate_edge(cast(DependencyEdge, item)) for item in raw_edges)
+    _validate_edge_source_evidence(projects, edges)
+    project_edges = _graph_project_edge_pairs(raw_project_edges)
+    groups = tuple(
+        _canonical_project_ids(raw_group, "graph parallel group")
+        for raw_group in raw_groups
+    )
+    digest = _strict_digest(graph.digest, "graph digest")
+    derived = build_dependency_graph(projects, overlay_edges=edges)
+    candidate = DependencyGraph(
+        projects=projects,
+        packages=packages,
+        edges=edges,
+        project_edges=project_edges,
+        parallel_groups=groups,
+        digest=digest,
+    )
+    _assert_graph_matches_derived(
+        projects=projects,
+        packages=packages,
+        edges=edges,
+        project_edges=project_edges,
+        groups=groups,
+        digest=digest,
+        derived=derived,
+    )
+    _assert_graph_candidate_canonical(
+        candidate=candidate,
+        projects=projects,
+        packages=packages,
+        edges=edges,
+        project_edges=project_edges,
+        groups=groups,
+    )
+    return candidate
 
 
 def _snapshot_graph(graph: DependencyGraph) -> DependencyGraph:
     """Copy a graph only after proving every container is bounded and builtin."""
 
     try:
-        if type(graph) is not DependencyGraph:
-            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph is not a C-11 record")
-        raw_projects = _exact_nested_tuple(
-            graph.projects, "graph projects", max_items=MAX_PROJECTS
-        )
-        raw_packages = _exact_nested_tuple(
-            graph.packages, "graph packages", max_items=MAX_PACKAGES
-        )
-        raw_edges = _exact_nested_tuple(graph.edges, "graph edges", max_items=MAX_EDGES)
-        raw_project_edges = _exact_nested_tuple(
-            graph.project_edges, "graph project edges", max_items=MAX_EDGES
-        )
-        raw_groups = _exact_nested_tuple(
-            graph.parallel_groups, "graph parallel groups", max_items=MAX_PROJECTS
-        )
-        projects = tuple(
-            _revalidate_project(cast(ProjectRecord, item)) for item in raw_projects
-        )
-        packages = tuple(
-            _revalidate_package(cast(PackageRecord, item)) for item in raw_packages
-        )
-        edges = tuple(
-            _revalidate_edge(cast(DependencyEdge, item)) for item in raw_edges
-        )
-        _validate_edge_source_evidence(projects, edges)
-        project_edges: list[tuple[str, str]] = []
-        for pair in raw_project_edges:
-            if (
-                type(pair) not in (tuple, list)
-                or len(cast(tuple[object, ...] | list[object], pair)) != 2
-            ):
-                raise _fail(
-                    ReleasePlanCode.INVALID_INPUT, "graph project edge is invalid"
-                )
-            left, right = cast(tuple[object, ...] | list[object], pair)
-            project_edges.append(
-                (
-                    _canonical_repository_exact(left, "graph project edge endpoint"),
-                    _canonical_repository_exact(right, "graph project edge endpoint"),
-                )
-            )
-        groups: list[tuple[str, ...]] = []
-        for raw_group in raw_groups:
-            group = _canonical_project_ids(raw_group, "graph parallel group")
-            groups.append(group)
-        digest = _strict_digest(graph.digest, "graph digest")
-        derived = build_dependency_graph(projects, overlay_edges=edges)
-        candidate = DependencyGraph(
-            projects=projects,
-            packages=packages,
-            edges=edges,
-            project_edges=tuple(project_edges),
-            parallel_groups=tuple(groups),
-            digest=digest,
-        )
-        if (
-            tuple(project.project_id for project in projects)
-            != tuple(project.project_id for project in derived.projects)
-            or tuple(package.key.value for package in packages)
-            != tuple(package.key.value for package in derived.packages)
-            or tuple(edge.value for edge in edges)
-            != tuple(edge.value for edge in derived.edges)
-            or tuple(project_edges) != derived.project_edges
-            or tuple(groups) != derived.parallel_groups
-        ):
-            raise _fail(
-                ReleasePlanCode.GRAPH_DRIFT,
-                "graph inventory does not match package evidence",
-            )
-        if derived.digest != digest:
-            raise _fail(
-                ReleasePlanCode.GRAPH_DRIFT, "graph digest does not match sources"
-            )
-        if candidate.projects != projects or candidate.packages != packages:
-            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph records are not canonical")
-        if candidate.digest != _digest_payload(candidate.canonical_payload()):
-            raise _fail(
-                ReleasePlanCode.GRAPH_DRIFT, "graph digest does not match contents"
-            )
-        if (
-            tuple(project_edges) != candidate.project_edges
-            or tuple(groups) != candidate.parallel_groups
-            or candidate.edges != edges
-        ):
-            raise _fail(ReleasePlanCode.GRAPH_DRIFT, "graph topology is not canonical")
-        return candidate
+        return _snapshot_graph_unchecked(graph)
     except ReleasePlanError:
         raise
     except _UNTRUSTED_DATA_ERRORS:
@@ -2518,91 +2767,105 @@ def _snapshot_graph(graph: DependencyGraph) -> DependencyGraph:
         ) from None
 
 
+def _closure_project_edge_pairs(
+    selection: SelectedChangeClosure,
+) -> tuple[tuple[str, str], ...]:
+    """Canonicalize the endpoint pairs of the closure project edges."""
+
+    raw_project_edges = _exact_nested_tuple(
+        selection.project_edges, "closure project edges", max_items=MAX_EDGES
+    )
+    project_edges: list[tuple[str, str]] = []
+    for pair in raw_project_edges:
+        if (
+            type(pair) not in (tuple, list)
+            or len(cast(tuple[object, ...] | list[object], pair)) != 2
+        ):
+            raise _fail(
+                ReleasePlanCode.SELECTION_DRIFT, "closure project edge is invalid"
+            )
+        project_edges.append(
+            (
+                _canonical_repository_exact(
+                    cast(tuple[object, ...] | list[object], pair)[0],
+                    "closure project edge endpoint",
+                ),
+                _canonical_repository_exact(
+                    cast(tuple[object, ...] | list[object], pair)[1],
+                    "closure project edge endpoint",
+                ),
+            )
+        )
+    return tuple(project_edges)
+
+
+def _snapshot_selection_unchecked(
+    selection: SelectedChangeClosure,
+) -> SelectedChangeClosure:
+    """Rebuild a selected closure from its own evidence and check its digest."""
+
+    if type(selection) is not SelectedChangeClosure:
+        raise _fail(ReleasePlanCode.SELECTION_DRIFT, "selection is not a C-11 record")
+    source = _snapshot_graph(selection.source_graph)
+    policy = _strict_selection_policy(selection.policy)
+    known = _canonical_project_ids(
+        selection.known_project_ids, "known project IDs", allow_empty=False
+    )
+    selected = _canonical_project_ids(
+        selection.selected_project_ids, "selected project IDs", allow_empty=False
+    )
+    projects = tuple(
+        _revalidate_project(cast(ProjectRecord, item))
+        for item in _exact_nested_tuple(
+            selection.projects, "closure projects", max_items=MAX_PROJECTS
+        )
+    )
+    edges = tuple(
+        _revalidate_edge(cast(DependencyEdge, item))
+        for item in _exact_nested_tuple(
+            selection.edges, "closure edges", max_items=MAX_EDGES
+        )
+    )
+    project_edges = _closure_project_edge_pairs(selection)
+    raw_groups = _exact_nested_tuple(
+        selection.parallel_groups, "closure parallel groups", max_items=MAX_PROJECTS
+    )
+    groups = tuple(
+        _canonical_project_ids(group, "closure parallel group") for group in raw_groups
+    )
+    raw_explanations = _exact_nested_tuple(
+        selection.explanations, "closure explanations", max_items=MAX_PROJECTS
+    )
+    explanations = tuple(
+        _strict_selection_explanation(cast(SelectionExplanation, item))
+        for item in raw_explanations
+    )
+    digest = _strict_digest(selection.digest, "selection digest")
+    candidate = SelectedChangeClosure(
+        policy=policy,
+        known_project_ids=known,
+        selected_project_ids=selected,
+        projects=projects,
+        edges=edges,
+        project_edges=project_edges,
+        parallel_groups=groups,
+        explanations=explanations,
+        source_graph=source,
+        digest=digest,
+    )
+    if candidate.digest != digest:
+        raise _fail(
+            ReleasePlanCode.SELECTION_DRIFT,
+            "selection digest does not match contents",
+        )
+    return candidate
+
+
 def _snapshot_selection(selection: SelectedChangeClosure) -> SelectedChangeClosure:
     """Copy a selected closure without walking lazy/hostile containers."""
 
     try:
-        if type(selection) is not SelectedChangeClosure:
-            raise _fail(
-                ReleasePlanCode.SELECTION_DRIFT, "selection is not a C-11 record"
-            )
-        source = _snapshot_graph(selection.source_graph)
-        policy = _strict_selection_policy(selection.policy)
-        known = _canonical_project_ids(
-            selection.known_project_ids, "known project IDs", allow_empty=False
-        )
-        selected = _canonical_project_ids(
-            selection.selected_project_ids, "selected project IDs", allow_empty=False
-        )
-        projects = tuple(
-            _revalidate_project(cast(ProjectRecord, item))
-            for item in _exact_nested_tuple(
-                selection.projects, "closure projects", max_items=MAX_PROJECTS
-            )
-        )
-        edges = tuple(
-            _revalidate_edge(cast(DependencyEdge, item))
-            for item in _exact_nested_tuple(
-                selection.edges, "closure edges", max_items=MAX_EDGES
-            )
-        )
-        raw_project_edges = _exact_nested_tuple(
-            selection.project_edges, "closure project edges", max_items=MAX_EDGES
-        )
-        project_edges: list[tuple[str, str]] = []
-        for pair in raw_project_edges:
-            if (
-                type(pair) not in (tuple, list)
-                or len(cast(tuple[object, ...] | list[object], pair)) != 2
-            ):
-                raise _fail(
-                    ReleasePlanCode.SELECTION_DRIFT, "closure project edge is invalid"
-                )
-            project_edges.append(
-                (
-                    _canonical_repository_exact(
-                        cast(tuple[object, ...] | list[object], pair)[0],
-                        "closure project edge endpoint",
-                    ),
-                    _canonical_repository_exact(
-                        cast(tuple[object, ...] | list[object], pair)[1],
-                        "closure project edge endpoint",
-                    ),
-                )
-            )
-        raw_groups = _exact_nested_tuple(
-            selection.parallel_groups, "closure parallel groups", max_items=MAX_PROJECTS
-        )
-        groups = tuple(
-            _canonical_project_ids(group, "closure parallel group")
-            for group in raw_groups
-        )
-        raw_explanations = _exact_nested_tuple(
-            selection.explanations, "closure explanations", max_items=MAX_PROJECTS
-        )
-        explanations = [
-            _strict_selection_explanation(cast(SelectionExplanation, item))
-            for item in raw_explanations
-        ]
-        digest = _strict_digest(selection.digest, "selection digest")
-        candidate = SelectedChangeClosure(
-            policy=policy,
-            known_project_ids=known,
-            selected_project_ids=selected,
-            projects=projects,
-            edges=edges,
-            project_edges=tuple(project_edges),
-            parallel_groups=groups,
-            explanations=tuple(explanations),
-            source_graph=source,
-            digest=digest,
-        )
-        if candidate.digest != digest:
-            raise _fail(
-                ReleasePlanCode.SELECTION_DRIFT,
-                "selection digest does not match contents",
-            )
-        return candidate
+        return _snapshot_selection_unchecked(selection)
     except ReleasePlanError:
         raise
     except _UNTRUSTED_DATA_ERRORS:
@@ -2611,97 +2874,126 @@ def _snapshot_selection(selection: SelectedChangeClosure) -> SelectedChangeClosu
         ) from None
 
 
+def _revalidate_next_versions(
+    version_plan: VersionPlan,
+) -> tuple[tuple[str, Version], ...]:
+    """Re-materialize the (package identity, next version) pairs of a plan."""
+
+    raw_next = _exact_nested_tuple(
+        version_plan.next_versions,
+        "version plan next versions",
+        max_items=MAX_PACKAGES,
+    )
+    next_versions: list[tuple[str, Version]] = []
+    for pair in raw_next:
+        if (
+            type(pair) not in (tuple, list)
+            or len(cast(tuple[object, ...] | list[object], pair)) != 2
+        ):
+            raise _fail(
+                ReleasePlanCode.VERSION_PLAN_DRIFT,
+                "version plan next version pair is invalid",
+            )
+        pair_values = cast(tuple[object, ...] | list[object], pair)
+        next_versions.append(
+            (
+                _strict_text(pair_values[0], "version plan package identity"),
+                _revalidate_version(pair_values[1], "version plan next version"),
+            )
+        )
+    return tuple(next_versions)
+
+
+def _revalidate_package_batches(
+    version_plan: VersionPlan,
+) -> tuple[tuple[str, ...], ...]:
+    """Re-materialize the bounded package batches of a version plan."""
+
+    raw_batches = _exact_nested_tuple(
+        version_plan.package_batches,
+        "version plan package batches",
+        max_items=MAX_PACKAGES,
+    )
+    return tuple(
+        tuple(
+            _strict_text(item, "version plan package identity")
+            for item in _exact_nested_tuple(
+                batch, "version plan package batch", max_items=MAX_PACKAGES
+            )
+        )
+        for batch in raw_batches
+    )
+
+
+def _revalidate_version_plan_previews(
+    version_plan: VersionPlan,
+) -> tuple[tuple[VersionPreview, ...], tuple[FloorPreview, ...]]:
+    """Re-materialize the version and floor preview tuples of a plan."""
+
+    raw_versions = _exact_nested_tuple(
+        version_plan.version_previews,
+        "version plan version previews",
+        max_items=MAX_PACKAGES,
+    )
+    raw_floors = _exact_nested_tuple(
+        version_plan.floor_previews,
+        "version plan floor previews",
+        max_items=MAX_EDGES,
+    )
+    versions = tuple(
+        _revalidate_version_preview(cast(VersionPreview, item)) for item in raw_versions
+    )
+    floors = tuple(
+        _revalidate_floor_preview(cast(FloorPreview, item)) for item in raw_floors
+    )
+    return versions, floors
+
+
+def _revalidate_version_plan_unchecked(version_plan: VersionPlan) -> VersionPlan:
+    """Rebuild a version plan from its own evidence and prove it is canonical."""
+
+    if type(version_plan) is not VersionPlan:
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT, "version plan is not a C-11 record"
+        )
+    graph_digest = _strict_digest(
+        version_plan.graph_digest, "version plan graph digest"
+    )
+    selection_digest = _strict_digest(
+        version_plan.selection_digest, "version plan selection digest"
+    )
+    plan_digest = _strict_digest(version_plan.plan_digest, "version plan digest")
+    next_versions = _revalidate_next_versions(version_plan)
+    package_batches = _revalidate_package_batches(version_plan)
+    versions, floors = _revalidate_version_plan_previews(version_plan)
+    candidate = VersionPlan(
+        graph_digest=graph_digest,
+        selection_digest=selection_digest,
+        next_versions=next_versions,
+        package_batches=package_batches,
+        version_previews=versions,
+        floor_previews=floors,
+        plan_digest=plan_digest,
+    )
+    if (
+        candidate.next_versions != next_versions
+        or candidate.package_batches != package_batches
+        or candidate.version_previews != versions
+        or candidate.floor_previews != floors
+        or candidate.plan_digest != plan_digest
+    ):
+        raise _fail(
+            ReleasePlanCode.VERSION_PLAN_DRIFT,
+            "version plan evidence is not canonical",
+        )
+    return candidate
+
+
 def _revalidate_version_plan(version_plan: VersionPlan) -> VersionPlan:
     """Reconstruct CP3 evidence instead of trusting a forged dataclass shell."""
 
     try:
-        if type(version_plan) is not VersionPlan:
-            raise _fail(
-                ReleasePlanCode.VERSION_PLAN_DRIFT, "version plan is not a C-11 record"
-            )
-        graph_digest = _strict_digest(
-            version_plan.graph_digest, "version plan graph digest"
-        )
-        selection_digest = _strict_digest(
-            version_plan.selection_digest, "version plan selection digest"
-        )
-        plan_digest = _strict_digest(version_plan.plan_digest, "version plan digest")
-        raw_next = _exact_nested_tuple(
-            version_plan.next_versions,
-            "version plan next versions",
-            max_items=MAX_PACKAGES,
-        )
-        next_versions: list[tuple[str, Version]] = []
-        for pair in raw_next:
-            if (
-                type(pair) not in (tuple, list)
-                or len(cast(tuple[object, ...] | list[object], pair)) != 2
-            ):
-                raise _fail(
-                    ReleasePlanCode.VERSION_PLAN_DRIFT,
-                    "version plan next version pair is invalid",
-                )
-            pair_values = cast(tuple[object, ...] | list[object], pair)
-            next_versions.append(
-                (
-                    _strict_text(pair_values[0], "version plan package identity"),
-                    _revalidate_version(pair_values[1], "version plan next version"),
-                )
-            )
-        raw_batches = _exact_nested_tuple(
-            version_plan.package_batches,
-            "version plan package batches",
-            max_items=MAX_PACKAGES,
-        )
-        package_batches: list[tuple[str, ...]] = []
-        for batch in raw_batches:
-            raw_batch = _exact_nested_tuple(
-                batch, "version plan package batch", max_items=MAX_PACKAGES
-            )
-            package_batches.append(
-                tuple(
-                    _strict_text(item, "version plan package identity")
-                    for item in raw_batch
-                )
-            )
-        raw_versions = _exact_nested_tuple(
-            version_plan.version_previews,
-            "version plan version previews",
-            max_items=MAX_PACKAGES,
-        )
-        raw_floors = _exact_nested_tuple(
-            version_plan.floor_previews,
-            "version plan floor previews",
-            max_items=MAX_EDGES,
-        )
-        versions = tuple(
-            _revalidate_version_preview(cast(VersionPreview, item))
-            for item in raw_versions
-        )
-        floors = tuple(
-            _revalidate_floor_preview(cast(FloorPreview, item)) for item in raw_floors
-        )
-        candidate = VersionPlan(
-            graph_digest=graph_digest,
-            selection_digest=selection_digest,
-            next_versions=tuple(next_versions),
-            package_batches=tuple(package_batches),
-            version_previews=versions,
-            floor_previews=floors,
-            plan_digest=plan_digest,
-        )
-        if (
-            candidate.next_versions != tuple(next_versions)
-            or candidate.package_batches != tuple(package_batches)
-            or candidate.version_previews != versions
-            or candidate.floor_previews != floors
-            or candidate.plan_digest != plan_digest
-        ):
-            raise _fail(
-                ReleasePlanCode.VERSION_PLAN_DRIFT,
-                "version plan evidence is not canonical",
-            )
-        return candidate
+        return _revalidate_version_plan_unchecked(version_plan)
     except ReleasePlanError:
         raise
     except VersionPlanningError:
@@ -3047,7 +3339,9 @@ def _validate_frozen_plan_edges(
     selected: tuple[str, ...],
     project_values: tuple[ProjectRecord, ...],
     source_selection: SelectedChangeClosure,
-) -> tuple[dict[str, PackageKey], tuple[DependencyEdge, ...], tuple[tuple[str, str], ...]]:
+) -> tuple[
+    dict[str, PackageKey], tuple[DependencyEdge, ...], tuple[tuple[str, str], ...]
+]:
     packages = _package_map(project_values)
     edge_values = _bounded_tuple(plan.edges, "plan edges", max_items=MAX_EDGES)
     if any(type(edge) is not DependencyEdge for edge in edge_values):
@@ -3078,7 +3372,10 @@ def _validate_frozen_plan_edges_reference_known_selected_packages(
     selected: tuple[str, ...],
 ) -> None:
     for edge in edge_tuple:
-        if edge.dependent.value not in packages or edge.dependency.value not in packages:
+        if (
+            edge.dependent.value not in packages
+            or edge.dependency.value not in packages
+        ):
             raise _fail(ReleasePlanCode.MISSING, "frozen edge names an unknown package")
         if {edge.dependent_project_id, edge.dependency_project_id} - set(selected):
             raise _fail(
@@ -3529,7 +3826,9 @@ class FrozenReleasePlanInput:
     allow_push: bool | None = None
     decision_context: ReleaseDecisionContext | None = None
 
-    def __post_init__(self) -> None:
+    def _snapshot_input_models(self) -> VersionPlan:
+        """Re-materialize the three C-11 evidence models and bind graph to selection."""
+
         if type(self.graph) is not DependencyGraph:
             raise _fail(
                 ReleasePlanCode.GRAPH_DRIFT,
@@ -3557,6 +3856,11 @@ class FrozenReleasePlanInput:
             )
         object.__setattr__(self, "graph", graph)
         object.__setattr__(self, "selection", selection)
+        return frozen_version_plan
+
+    def _normalize_input_identity(self) -> None:
+        """Normalize the workspace, source/base SHA and generation identities."""
+
         workspace = _strict_opaque(
             self.workspace_id, "workspace ID", max_length=MAX_STRING_LENGTH
         )
@@ -3577,6 +3881,10 @@ class FrozenReleasePlanInput:
             max_length=MAX_GENERATION_LENGTH,
         )
         object.__setattr__(self, "generation_id", generation)
+
+    def _normalize_input_push_and_decisions(self) -> None:
+        """Normalize the push flags, the consent reference and the decisions."""
+
         if self.include_push is not None:
             _strict_bool(self.include_push, "push inclusion flag")
         if self.allow_push is not None:
@@ -3589,10 +3897,14 @@ class FrozenReleasePlanInput:
             else _revalidate_decision_context(self.decision_context)
         )
         object.__setattr__(self, "decision_context", decisions)
-        object.__setattr__(self, "version_plan", frozen_version_plan)
-        # Materialize the two profile collections now, rather than retaining a
-        # caller-owned dict/list.  This also makes missing profiles explicit via
-        # deterministic defaults.
+
+    def _materialize_input_profiles(self) -> None:
+        """Materialize the two profile collections now.
+
+        This keeps no caller-owned dict/list, and makes missing profiles
+        explicit via deterministic defaults.
+        """
+
         selected = _canonical_project_ids(
             self.selection.selected_project_ids, "selected project IDs"
         )
@@ -3608,6 +3920,13 @@ class FrozenReleasePlanInput:
         )
         object.__setattr__(self, "validation_profiles", validation)
         object.__setattr__(self, "build_profiles", build)
+
+    def __post_init__(self) -> None:
+        frozen_version_plan = self._snapshot_input_models()
+        self._normalize_input_identity()
+        self._normalize_input_push_and_decisions()
+        object.__setattr__(self, "version_plan", frozen_version_plan)
+        self._materialize_input_profiles()
 
     def canonical_payload(self) -> dict[str, object]:
         return {
@@ -3809,7 +4128,10 @@ def _freeze_validate_graph_selection_version(
             ReleasePlanCode.INVALID_INPUT,
             "graph, selection, and version plan are required",
         )
-    if type(graph) is not DependencyGraph or type(selection) is not SelectedChangeClosure:
+    if (
+        type(graph) is not DependencyGraph
+        or type(selection) is not SelectedChangeClosure
+    ):
         raise _fail(
             ReleasePlanCode.INVALID_INPUT,
             "graph and selection must be frozen C-11 models",
@@ -3873,7 +4195,10 @@ def _freeze_selected_projects_and_groups(
     edges = tuple(sorted(selection.edges, key=lambda edge: edge.value))
     packages = _package_map(projects)
     for edge in edges:
-        if edge.dependent.value not in packages or edge.dependency.value not in packages:
+        if (
+            edge.dependent.value not in packages
+            or edge.dependency.value not in packages
+        ):
             raise _fail(
                 ReleasePlanCode.MISSING, "selection edge names an unknown package"
             )
@@ -3916,9 +4241,7 @@ def _freeze_resolve_profiles(
         if validation_profile is not None
         else validation_profile_digest
     )
-    build_profile = (
-        build_profile if build_profile is not None else build_profile_digest
-    )
+    build_profile = build_profile if build_profile is not None else build_profile_digest
     validation = _normalize_profiles(
         validation_profiles,
         selected,
@@ -3941,9 +4264,7 @@ def _freeze_resolve_consent(
     consent_aliases = (push_consent, consent_reference, consent_ref)
     consent_candidates = tuple(item for item in consent_aliases if item is not None)
     if any(type(item) is not PushConsentReference for item in consent_candidates):
-        raise _fail(
-            ReleasePlanCode.CONSENT, "push consent must be immutable evidence"
-        )
+        raise _fail(ReleasePlanCode.CONSENT, "push consent must be immutable evidence")
     # Rebuild every exact-type consent before comparing aliases.  A forged
     # dataclass shell may carry hostile scalar fields whose hash/equality
     # methods must never run during alias conflict detection.
@@ -3993,9 +4314,7 @@ def _freeze_validate_push_flag_types_and_agreement(
     include_push: bool | None, allow_push: bool | None
 ) -> None:
     if include_push is not None and type(include_push) is not bool:
-        raise _fail(
-            ReleasePlanCode.PUSH_CONSENT, "push inclusion flag must be boolean"
-        )
+        raise _fail(ReleasePlanCode.PUSH_CONSENT, "push inclusion flag must be boolean")
     if allow_push is not None and type(allow_push) is not bool:
         raise _fail(
             ReleasePlanCode.PUSH_CONSENT, "push authorization flag must be boolean"
@@ -4130,6 +4449,7 @@ def _freeze_build_plan(
         push_consent=accepted_consent,
         plan_digest=digest,
     )
+
 
 def build_frozen_release_plan(*args: object, **kwargs: object) -> FrozenReleasePlan:
     """Compatibility factory alias for :func:`freeze_release_plan`."""
