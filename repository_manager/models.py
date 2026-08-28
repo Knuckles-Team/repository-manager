@@ -3,6 +3,7 @@ import glob
 import logging
 import os
 import re
+from collections.abc import Callable
 
 from agent_utilities.security.persistence_privacy import sanitize_for_persistence
 from pydantic import BaseModel, Field, model_validator
@@ -36,6 +37,10 @@ CATEGORY_SLUG_MAP: dict[str, str] = {
     "Additional Operational Checks": "additional-checks",
     "Pytest Suite": "pytest-suite",
 }
+
+# The only categories that get a per-scan detail file written for each project;
+# everything else only contributes to the aggregate counts.
+_DETAIL_CATEGORIES = ("Ecosystem Installation", "Pre-commit Standard Compliance")
 
 
 def _sanitize_filename(name: str) -> str:
@@ -463,6 +468,95 @@ _NOISE_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
+class _PytestFailureState:
+    """Mutable accumulation state for one `_extract_pytest_failures` pass."""
+
+    __slots__ = (
+        "result",
+        "current_test_block",
+        "in_failures_section",
+        "in_short_summary",
+    )
+
+    def __init__(self) -> None:
+        self.result: list[str] = []
+        self.current_test_block: list[str] = []
+        self.in_failures_section = False
+        self.in_short_summary = False
+
+
+def _flush_pytest_test_block(state: _PytestFailureState) -> None:
+    """Format and truncate the individual test traceback block if too long."""
+    if not state.current_test_block:
+        return
+    block_len = len(state.current_test_block)
+    if block_len > 15:
+        state.result.extend(state.current_test_block[:15])
+        state.result.append(f"  > ℹ️ ... and {block_len - 15} more lines of traceback.")
+    else:
+        state.result.extend(state.current_test_block)
+    state.current_test_block.clear()
+
+
+def _handle_pytest_section_boundary(line: str, state: _PytestFailureState) -> bool:
+    """Handle a pytest `===`-bordered section header line.
+
+    Returns True when ``line`` was such a header (and was fully handled).
+    """
+    if not line.startswith("==="):
+        return False
+    if "FAILURES" in line:
+        state.in_failures_section = True
+        state.in_short_summary = False
+        state.result.append("- **pytest Failures**")
+    elif "short test summary" in line:
+        _flush_pytest_test_block(state)
+        state.in_failures_section = False
+        state.in_short_summary = True
+        state.result.append("- **pytest Short Summary**")
+    elif _PYTEST_RESULT_LINE_RE.match(line):
+        _flush_pytest_test_block(state)
+        state.in_failures_section = False
+        state.in_short_summary = False
+        clean = line.strip("= ").strip()
+        state.result.append(f"  **Result:** {clean}")
+    else:
+        # Any other major section (like warnings, etc.) turns off our capture
+        _flush_pytest_test_block(state)
+        state.in_failures_section = False
+        state.in_short_summary = False
+    return True
+
+
+def _handle_pytest_content_line(
+    line: str, stripped: str, state: _PytestFailureState
+) -> None:
+    """Accumulate one non-header line into the current section, if any."""
+    if state.in_failures_section:
+        # A new test failure traceback block starts with '___ '
+        if line.startswith("___"):
+            _flush_pytest_test_block(state)
+            state.current_test_block.append(f"  **{stripped.strip('_ ')}**")
+        else:
+            # Add to current test block, indent slightly for readability
+            state.current_test_block.append(f"  {line}")
+    elif state.in_short_summary:
+        # In short summary, keep FAILED or ERROR lines
+        if stripped.startswith("FAILED") or stripped.startswith("ERROR"):
+            state.result.append(f"  {stripped}")
+
+
+def _pytest_failure_fallback(lines: list[str]) -> list[str]:
+    """Best-effort summary when structured parsing found nothing."""
+    result: list[str] = []
+    for line in lines[:20]:
+        if "error" in line.lower() or "failed" in line.lower():
+            result.append(f"  {line.strip()}")
+    if not result:
+        result.append("  pytest check failed (check full logs).")
+    return result
+
+
 def _extract_pytest_failures(output: str) -> list[str]:
     """Parse standard pytest output, isolating test failure tracebacks and short summaries.
 
@@ -472,84 +566,94 @@ def _extract_pytest_failures(output: str) -> list[str]:
         return []
 
     lines = output.split("\n")
-    result: list[str] = []
-
-    in_failures_section = False
-    in_short_summary = False
-
-    current_test_block: list[str] = []
-
-    def flush_test_block():
-        if current_test_block:
-            # Format and truncate the individual test traceback block if it's too long
-            block_len = len(current_test_block)
-            if block_len > 15:
-                result.extend(current_test_block[:15])
-                result.append(
-                    f"  > ℹ️ ... and {block_len - 15} more lines of traceback."
-                )
-            else:
-                result.extend(current_test_block)
-            current_test_block.clear()
+    state = _PytestFailureState()
 
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-
-        # Section boundary check
-        if line.startswith("===") and "FAILURES" in line:
-            in_failures_section = True
-            in_short_summary = False
-            result.append("- **pytest Failures**")
+        if _handle_pytest_section_boundary(line, state):
             continue
-        elif line.startswith("===") and "short test summary" in line:
-            flush_test_block()
-            in_failures_section = False
-            in_short_summary = True
-            result.append("- **pytest Short Summary**")
-            continue
-        elif line.startswith("===") and _PYTEST_RESULT_LINE_RE.match(line):
-            flush_test_block()
-            in_failures_section = False
-            in_short_summary = False
-            # Clean up the '=' borders
-            clean = line.strip("= ").strip()
-            result.append(f"  **Result:** {clean}")
-            continue
-        elif line.startswith("==="):
-            flush_test_block()
-            # Any other major section (like warnings, etc.) turns off our capture
-            in_failures_section = False
-            in_short_summary = False
-            continue
+        _handle_pytest_content_line(line, stripped, state)
 
-        if in_failures_section:
-            # We are inside the FAILURES section.
-            # A new test failure traceback block starts with '___ '
-            if line.startswith("___"):
-                flush_test_block()
-                current_test_block.append(f"  **{stripped.strip('_ ')}**")
-            else:
-                # Add to current test block, indent slightly for readability
-                current_test_block.append(f"  {line}")
-
-        elif in_short_summary:
-            # In short summary, keep FAILED or ERROR lines
-            if stripped.startswith("FAILED") or stripped.startswith("ERROR"):
-                result.append(f"  {stripped}")
-
-    flush_test_block()
+    _flush_pytest_test_block(state)
 
     # If we found nothing (e.g. pytest failed to run or crashed), return a fallback
-    if not result:
-        for line in lines[:20]:
-            if "error" in line.lower() or "failed" in line.lower():
-                result.append(f"  {line.strip()}")
-        if not result:
-            result.append("  pytest check failed (check full logs).")
+    if not state.result:
+        return _pytest_failure_fallback(lines)
 
-    return result
+    return state.result
+
+
+def _flush_fixing_files(fixing_files: list[str], result: list[str]) -> None:
+    """Collapse accumulated 'Fixing ...' lines into a compact summary."""
+    if not fixing_files:
+        return
+    if len(fixing_files) <= 3:
+        for ff in fixing_files:
+            result.append(f"  Fixing {ff}")
+    else:
+        result.append(
+            f"  Fixing {len(fixing_files)} files: "
+            f"{fixing_files[0]}, {fixing_files[1]}, ... {fixing_files[-1]}"
+        )
+    fixing_files.clear()
+
+
+def _handle_error_hook_boundary(hook_match: re.Match[str], result: list[str]) -> bool:
+    """Handle a hook-status header line; return the new in-failed-block state."""
+    status = hook_match.group(2)
+    if status != "Failed":
+        return False
+    hook_name = hook_match.group(1).strip().rstrip(".")
+    result.append(f"- **{hook_name}** — Failed")
+    return True
+
+
+def _matches_any(stripped: str, checks: tuple) -> bool:
+    return any(check(stripped) for check in checks)
+
+
+# Patterns kept verbatim (as "  {stripped}"), grouped by where they sit relative
+# to the special-cased "Fixing <file>" / pytest-result / pytest-short-summary
+# checks in the original scan order. Combining same-action checks into one
+# `any(...)` preserves behaviour because the *result* of a match in each group
+# is identical regardless of which member matched.
+_ERROR_KEEP_BEFORE_FIXING = (_EXIT_CODE_RE.match, _FILES_MODIFIED_RE.match)
+_ERROR_KEEP_AFTER_FIXING = (
+    _ERROR_LINE_RE.search,
+    _RUFF_DIAG_RE.match,
+    _FOUND_ERRORS_RE.match,
+    _PYTEST_FAILED_RE.match,
+)
+_ERROR_KEEP_TAIL = (
+    lambda s: s.startswith("-->"),
+    _BANDIT_ISSUE_RE.match,
+    _BANDIT_LOCATION_RE.match,
+    _BANDIT_SEVERITY_RE.match,
+    _VULTURE_UNUSED_RE.search,
+)
+
+
+def _extract_error_content_line(stripped: str, fixing_files: list[str]) -> str | None:
+    """Classify one line inside a Failed hook block. None means drop it."""
+    if any(pat.search(stripped) for pat in _NOISE_PATTERNS):
+        return None
+    if _matches_any(stripped, _ERROR_KEEP_BEFORE_FIXING):
+        return f"  {stripped}"
+    if _FIXING_RE.match(stripped):
+        fixing_files.append(stripped.replace("Fixing ", "").strip())
+        return None
+    if _matches_any(stripped, _ERROR_KEEP_AFTER_FIXING):
+        return f"  {stripped}"
+    if _PYTEST_RESULT_LINE_RE.match(stripped):
+        # Clean up the '=' borders
+        return f"  {stripped.strip('= ').strip()}"
+    if _PYTEST_SHORT_SUMMARY_RE.match(stripped):
+        return None  # Skip the header itself, FAILED lines follow
+    if _matches_any(stripped, _ERROR_KEEP_TAIL):
+        return f"  {stripped}"
+    return None
 
 
 def _extract_error_lines(output: str, is_pytest: bool = False) -> list[str]:
@@ -580,119 +684,26 @@ def _extract_error_lines(output: str, is_pytest: bool = False) -> list[str]:
     in_failed_block = False
     fixing_files: list[str] = []
 
-    def _flush_fixing() -> None:
-        """Collapse accumulated 'Fixing ...' lines into a compact summary."""
-        if not fixing_files:
-            return
-        if len(fixing_files) <= 3:
-            for ff in fixing_files:
-                result.append(f"  Fixing {ff}")
-        else:
-            result.append(
-                f"  Fixing {len(fixing_files)} files: "
-                f"{fixing_files[0]}, {fixing_files[1]}, ... {fixing_files[-1]}"
-            )
-        fixing_files.clear()
-
     for line in raw_lines:
         stripped = line.strip()
         if not stripped:
             continue
 
-        # --- Hook boundary detection ---
         hook_match = _HOOK_STATUS_RE.match(stripped)
         if hook_match:
-            _flush_fixing()
-            status = hook_match.group(2)
-            if status == "Failed":
-                in_failed_block = True
-                hook_name = hook_match.group(1).strip().rstrip(".")
-                result.append(f"- **{hook_name}** — Failed")
-            else:
-                in_failed_block = False
+            _flush_fixing_files(fixing_files, result)
+            in_failed_block = _handle_error_hook_boundary(hook_match, result)
             continue
 
         # Only process lines inside a Failed block
         if not in_failed_block:
             continue
 
-        # --- Drop noise lines ---
-        if any(pat.search(stripped) for pat in _NOISE_PATTERNS):
-            continue
+        kept = _extract_error_content_line(stripped, fixing_files)
+        if kept is not None:
+            result.append(kept)
 
-        # --- Keep: exit code ---
-        if _EXIT_CODE_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: files were modified ---
-        if _FILES_MODIFIED_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: Fixing <file> (accumulate) ---
-        fix_match = _FIXING_RE.match(stripped)
-        if fix_match:
-            # Extract just the filename
-            fname = stripped.replace("Fixing ", "").strip()
-            fixing_files.append(fname)
-            continue
-
-        # --- Keep: error lines (mypy, ruff, general) ---
-        if _ERROR_LINE_RE.search(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: ruff diagnostic header (e.g. "B904 Within an...") ---
-        if _RUFF_DIAG_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: "Found N errors" summary ---
-        if _FOUND_ERRORS_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: FAILED test names ---
-        if _PYTEST_FAILED_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: pytest result summary line (e.g. "= 6 failed, 2287 passed =") ---
-        if _PYTEST_RESULT_LINE_RE.match(stripped):
-            # Clean up the '=' borders
-            clean = stripped.strip("= ").strip()
-            result.append(f"  {clean}")
-            continue
-
-        # --- Keep: pytest short test summary header ---
-        if _PYTEST_SHORT_SUMMARY_RE.match(stripped):
-            continue  # Skip the header itself, FAILED lines follow
-
-        # --- Keep: ruff arrow lines (e.g. "--> arr_mcp/mcp_server.py:84:9") ---
-        if stripped.startswith("-->"):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: bandit issue lines (e.g. ">> Issue: [B311:blacklist]") ---
-        if _BANDIT_ISSUE_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: bandit Location and Severity ---
-        if _BANDIT_LOCATION_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-        if _BANDIT_SEVERITY_RE.match(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-        # --- Keep: vulture unused variable/function/etc. ---
-        if _VULTURE_UNUSED_RE.search(stripped):
-            result.append(f"  {stripped}")
-            continue
-
-    _flush_fixing()
+    _flush_fixing_files(fixing_files, result)
     return result
 
 
@@ -734,6 +745,44 @@ def _clean_and_truncate_error_lines(
     return formatted
 
 
+_EXCEPTION_LINE_RE = re.compile(
+    r"^(?:[a-zA-Z_]\w*Error|Exception|ImportError|SyntaxError):\s+.+$"
+)
+
+
+def _first_matching_line(
+    lines: list[str], predicate: Callable[[str], bool]
+) -> str | None:
+    """Search ``lines`` bottom-up for the first one matching ``predicate``."""
+    for line in reversed(lines):
+        if predicate(line):
+            return line
+    return None
+
+
+def _is_error_tagged_line(line: str) -> bool:
+    return line.startswith("ERROR:") or "error:" in line.lower()
+
+
+def _is_failed_tagged_line(line: str) -> bool:
+    return "failed:" in line.lower() or "failed" in line.lower()
+
+
+def _extracted_error_fallback_line(content: str, command: str | None) -> str | None:
+    """Return the first actionable line from `_extract_error_lines`, if any."""
+    is_pytest = bool(command and "pytest" in command.lower())
+    extracted = _extract_error_lines(content, is_pytest=is_pytest)
+    if not extracted:
+        return None
+    # Filter out headers and keep the first real line of error details
+    for line in extracted:
+        stripped_line = line.strip()
+        if not (stripped_line.startswith("- **") or stripped_line.startswith("##")):
+            return stripped_line
+    # Fallback to the first extracted line
+    return extracted[0].strip()
+
+
 def _get_single_error_line(
     output: str | None,
     message: str | None = None,
@@ -751,45 +800,64 @@ def _get_single_error_line(
 
     lines = [line.strip() for line in content.split("\n") if line.strip()]
 
-    # Bottom-up search for Python exception or error
-    exception_pattern = re.compile(
-        r"^(?:[a-zA-Z_]\w*Error|Exception|ImportError|SyntaxError):\s+.+$"
+    strategies: tuple[Callable[[], str | None], ...] = (
+        lambda: _first_matching_line(lines, _EXCEPTION_LINE_RE.match),
+        lambda: _first_matching_line(lines, _is_error_tagged_line),
+        lambda: _first_matching_line(lines, _is_failed_tagged_line),
+        lambda: _extracted_error_fallback_line(content, command),
     )
-    for line in reversed(lines):
-        if exception_pattern.match(line):
-            return line
-
-    # Look for ERROR: or ERROR tags
-    for line in reversed(lines):
-        if line.startswith("ERROR:") or "error:" in line.lower():
-            return line
-
-    # Look for failed / failed: tags
-    for line in reversed(lines):
-        if "failed:" in line.lower() or "failed" in line.lower():
-            return line
-
-    # Use first error line found by _extract_error_lines if available
-    is_pytest = False
-    if command:
-        cmd_str = command.lower()
-        if "pytest" in cmd_str:
-            is_pytest = True
-    extracted = _extract_error_lines(content, is_pytest=is_pytest)
-    if extracted:
-        # Filter out headers and keep the first real line of error details
-        for line in extracted:
-            stripped_line = line.strip()
-            if not (stripped_line.startswith("- **") or stripped_line.startswith("##")):
-                return stripped_line
-        # Fallback to the first extracted line
-        return extracted[0].strip()
+    for strategy in strategies:
+        found = strategy()
+        if found:
+            return found
 
     # Fallback to the very last line, or first line
     if lines:
         return lines[-1]
 
     return "Unknown error occurred."
+
+
+def _filter_categories_for_project_summary(
+    project: str,
+    categories: list["ValidationCategory"],
+    allowed_categories: tuple[str, ...],
+) -> tuple[list["ValidationCategory"], int, int, int, int]:
+    """Filter ``categories`` to one project's allowed-category results, with totals."""
+    filtered_cats: list[ValidationCategory] = []
+    total = success_count = failure_count = skipped_count = 0
+    for cat in categories:
+        if cat.name not in allowed_categories:
+            continue
+        filtered = cat.for_project(project)
+        if filtered.total == 0:
+            continue
+        filtered_cats.append(filtered)
+        total += filtered.total
+        success_count += filtered.success_count
+        failure_count += filtered.failure_count
+        skipped_count += filtered.skipped_count
+    return filtered_cats, total, success_count, failure_count, skipped_count
+
+
+def _render_project_summary_failures(
+    filtered_cats: list["ValidationCategory"],
+) -> list[str]:
+    """Render the '## ❌ Failures' body for a project summary, one line per failure."""
+    md: list[str] = []
+    for cat in filtered_cats:
+        if cat.failure_count == 0:
+            continue
+        md.append(f"### {cat.name}")
+        for failure in cat.failures:
+            error_line = _get_single_error_line(
+                output=failure.output,
+                message=failure.message,
+                command=failure.command,
+            )
+            md.append(f"- ❌ **Error:** `{error_line}`")
+        md.append("")
+    return md
 
 
 def _build_project_summary_md(
@@ -804,21 +872,9 @@ def _build_project_summary_md(
     """
     allowed_categories = ("Ecosystem Installation", "Pre-commit Standard Compliance")
 
-    filtered_cats = []
-    total = 0
-    success_count = 0
-    failure_count = 0
-    skipped_count = 0
-
-    for cat in categories:
-        if cat.name in allowed_categories:
-            filtered = cat.for_project(project)
-            if filtered.total > 0:
-                filtered_cats.append(filtered)
-                total += filtered.total
-                success_count += filtered.success_count
-                failure_count += filtered.failure_count
-                skipped_count += filtered.skipped_count
+    filtered_cats, total, success_count, failure_count, skipped_count = (
+        _filter_categories_for_project_summary(project, categories, allowed_categories)
+    )
 
     md = [
         f"# 📋 {project} Validation Summary",
@@ -831,22 +887,131 @@ def _build_project_summary_md(
     if failure_count > 0:
         md.append("## ❌ Failures")
         md.append("")
-        for cat in filtered_cats:
-            if cat.failure_count > 0:
-                md.append(f"### {cat.name}")
-                for failure in cat.failures:
-                    error_line = _get_single_error_line(
-                        output=failure.output,
-                        message=failure.message,
-                        command=failure.command,
-                    )
-                    md.append(f"- ❌ **Error:** `{error_line}`")
-                md.append("")
+        md.extend(_render_project_summary_failures(filtered_cats))
     else:
         md.append("🎉 All checks passed successfully!")
         md.append("")
 
     return md
+
+
+def _is_pytest_failure_result(failure: "ProjectResult", cat_name: str) -> bool:
+    cmd_str = (failure.command or "").lower()
+    return "pytest" in cmd_str or cat_name == "Pytest Suite"
+
+
+def _render_message_only_failure(failure: "ProjectResult") -> tuple[list[str], int]:
+    """Render one failure's raw message when structured error lines are absent."""
+    # No structured output — just show the message, but truncated cleanly if it is multiline
+    msg_lines = (failure.message or "").strip().split("\n")
+    lines = [f"- {msg_lines[0]}"]
+    if len(msg_lines) > 15:
+        lines.extend(f"  {mline}" for mline in msg_lines[1:15])
+        lines.append(f"  > ℹ️ ... and {len(msg_lines) - 15} more lines of output.")
+    else:
+        lines.extend(f"  {mline}" for mline in msg_lines[1:])
+    return lines, min(len(msg_lines), 16)
+
+
+def _render_extracted_error_lines(
+    error_lines: list[str],
+    *,
+    cat_name: str,
+    repo_dir: str,
+    repo_line_count: int,
+    max_lines_per_repo: int,
+) -> tuple[list[str], int, bool]:
+    """Clean/truncate structured error lines to the per-repository line budget."""
+    # Add error lines with per-hook truncation and overall repository limit
+    cleaned_lines = _clean_and_truncate_error_lines(error_lines, max_lines_per_block=15)
+    remaining = max_lines_per_repo - repo_line_count
+    truncated = len(cleaned_lines) > remaining
+    if truncated:
+        cleaned_lines = cleaned_lines[:remaining]
+
+    lines = list(cleaned_lines)
+    if truncated:
+        _slug = CATEGORY_SLUG_MAP.get(cat_name, cat_name.lower().replace(" ", "-"))
+        lines.append(
+            f"> ℹ️ ...truncated at {max_lines_per_repo} lines. "
+            f"See full output: [{repo_dir}/]({repo_dir}/)"
+        )
+    return lines, len(cleaned_lines), truncated
+
+
+def _render_repo_failure_entry(
+    failure: "ProjectResult",
+    cat_name: str,
+    *,
+    repo_dir: str,
+    repo_line_count: int,
+    max_lines_per_repo: int,
+) -> tuple[list[str], int, bool]:
+    """Render one repository failure entry. Returns (lines, lines_added, truncated)."""
+    # Extract actionable error lines from output.
+    # When r.error is None, the entire raw stdout ends up in
+    # failure.message (not failure.output) because
+    # output = None when message == data.  Always try both —
+    # _extract_error_lines handles content without hooks
+    # gracefully (returns []).
+    raw = failure.output or failure.message or ""
+    error_lines = _extract_error_lines(
+        raw, is_pytest=_is_pytest_failure_result(failure, cat_name)
+    )
+    if not error_lines:
+        lines, added = _render_message_only_failure(failure)
+        return lines, added, False
+    return _render_extracted_error_lines(
+        error_lines,
+        cat_name=cat_name,
+        repo_dir=repo_dir,
+        repo_line_count=repo_line_count,
+        max_lines_per_repo=max_lines_per_repo,
+    )
+
+
+def _render_repo_failures_block(
+    project: str,
+    categories: list["ValidationCategory"],
+    max_lines_per_repo: int,
+) -> list[str]:
+    """Render the '### ❌ <project>' failures block for one failed repository."""
+    safe_project = _sanitize_filename(project)
+    repo_dir = f"{safe_project}-results"
+    summary_md = [
+        f"### ❌ {project}",
+        f"> 📂 Full logs: [{repo_dir}/]({repo_dir}/)",
+        "",
+    ]
+
+    repo_line_count = 0
+    truncated = False
+
+    for cat in categories:
+        if truncated:
+            break
+        filtered = cat.for_project(project)
+        if filtered.failure_count == 0:
+            continue
+
+        summary_md.append(f"**{cat.name}**")
+        repo_line_count += 1
+
+        for failure in filtered.failures:
+            if truncated:
+                break
+            entry_lines, added, truncated = _render_repo_failure_entry(
+                failure,
+                cat.name,
+                repo_dir=repo_dir,
+                repo_line_count=repo_line_count,
+                max_lines_per_repo=max_lines_per_repo,
+            )
+            summary_md.extend(entry_lines)
+            repo_line_count += added
+
+    summary_md.append("")
+    return summary_md
 
 
 def _build_summary_md(
@@ -901,81 +1066,9 @@ def _build_summary_md(
 
     if failed_projects:
         for project in failed_projects:
-            safe_project = _sanitize_filename(project)
-            repo_dir = f"{safe_project}-results"
-            summary_md.append(f"### ❌ {project}")
-            summary_md.append(f"> 📂 Full logs: [{repo_dir}/]({repo_dir}/)")
-            summary_md.append("")
-
-            repo_line_count = 0
-            truncated = False
-
-            for cat in categories:
-                if truncated:
-                    break
-                filtered = cat.for_project(project)
-                if filtered.failure_count == 0:
-                    continue
-
-                summary_md.append(f"**{cat.name}**")
-                repo_line_count += 1
-
-                for failure in filtered.failures:
-                    if truncated:
-                        break
-
-                    # Extract actionable error lines from output.
-                    # When r.error is None, the entire raw stdout ends up in
-                    # failure.message (not failure.output) because
-                    # output = None when message == data.  Always try both —
-                    # _extract_error_lines handles content without hooks
-                    # gracefully (returns []).
-                    raw = failure.output or failure.message or ""
-                    is_pytest = False
-                    cmd_str = (failure.command or "").lower()
-                    if "pytest" in cmd_str or cat.name == "Pytest Suite":
-                        is_pytest = True
-                    error_lines = _extract_error_lines(raw, is_pytest=is_pytest)
-
-                    if not error_lines:
-                        # No structured output — just show the message, but truncated cleanly if it is multiline
-                        msg_lines = (failure.message or "").strip().split("\n")
-                        if len(msg_lines) > 15:
-                            summary_md.append(f"- {msg_lines[0]}")
-                            for mline in msg_lines[1:15]:
-                                summary_md.append(f"  {mline}")
-                            summary_md.append(
-                                f"  > ℹ️ ... and {len(msg_lines) - 15} more lines of output."
-                            )
-                        else:
-                            summary_md.append(f"- {msg_lines[0]}")
-                            for mline in msg_lines[1:]:
-                                summary_md.append(f"  {mline}")
-                        repo_line_count += min(len(msg_lines), 16)
-                    else:
-                        # Add error lines with per-hook truncation and overall repository limit
-                        cleaned_lines = _clean_and_truncate_error_lines(
-                            error_lines, max_lines_per_block=15
-                        )
-                        remaining = MAX_LINES_PER_REPO - repo_line_count
-                        if len(cleaned_lines) > remaining:
-                            cleaned_lines = cleaned_lines[:remaining]
-                            truncated = True
-
-                        for eline in cleaned_lines:
-                            summary_md.append(eline)
-                            repo_line_count += 1
-
-                        if truncated:
-                            _slug = CATEGORY_SLUG_MAP.get(
-                                cat.name, cat.name.lower().replace(" ", "-")
-                            )
-                            summary_md.append(
-                                f"> ℹ️ ...truncated at {MAX_LINES_PER_REPO} lines. "
-                                f"See full output: [{repo_dir}/]({repo_dir}/)"
-                            )
-
-            summary_md.append("")
+            summary_md.extend(
+                _render_repo_failures_block(project, categories, MAX_LINES_PER_REPO)
+            )
     else:
         summary_md.append("🎉 No failures found across any repository!")
         summary_md.append("")
@@ -984,7 +1077,9 @@ def _build_summary_md(
 
 
 def _is_ecosystem_installation_result(r: "GitResult") -> bool:
-    return bool(r.metadata and r.metadata.command and "pip install" in r.metadata.command)
+    return bool(
+        r.metadata and r.metadata.command and "pip install" in r.metadata.command
+    )
 
 
 def _is_version_metadata_sync_result(r: "GitResult") -> bool:
@@ -1022,9 +1117,7 @@ def _is_agent_runtime_web_ui_result(r: "GitResult") -> bool:
     return bool(
         r.metadata
         and r.metadata.command
-        and (
-            "runtime_check" in r.metadata.command or "--web" in r.metadata.command
-        )
+        and ("runtime_check" in r.metadata.command or "--web" in r.metadata.command)
     )
 
 
@@ -1041,9 +1134,7 @@ def _is_pytest_suite_result(r: "GitResult") -> bool:
 # Declaration order matters: it is the category order in the final report
 # (before the 'Additional Operational Checks' catch-all, which is always
 # appended last, not interleaved here).
-_RESULT_CATEGORY_PREDICATES: tuple[
-    tuple[str, "Callable[[GitResult], bool]"], ...
-] = (
+_RESULT_CATEGORY_PREDICATES: tuple[tuple[str, "Callable[[GitResult], bool]"], ...] = (
     ("Ecosystem Installation", _is_ecosystem_installation_result),
     ("Version Metadata Sync (Dry Run)", _is_version_metadata_sync_result),
     ("Agent Standards Compliance", _is_agent_standards_compliance_result),
@@ -1053,6 +1144,24 @@ _RESULT_CATEGORY_PREDICATES: tuple[
     ("Pre-commit Standard Compliance", _is_pre_commit_standard_compliance_result),
     ("Pytest Suite", _is_pytest_suite_result),
 )
+
+
+def _bucket_results_by_predicates(
+    results: list["GitResult"],
+    predicates: tuple[tuple[str, "Callable[[GitResult], bool]"], ...],
+) -> dict[str, list["GitResult"]]:
+    """Apply each ``(category_name, predicate)`` pair to bucket ``results``."""
+    return {
+        cat_name: [r for r in results if predicate(r)]
+        for cat_name, predicate in predicates
+    }
+
+
+def _known_result_ids(categories_map: dict[str, list["GitResult"]]) -> set[int]:
+    """Collect ``id()`` of every already-categorized result that has metadata."""
+    return {
+        id(r) for cat_list in categories_map.values() for r in cat_list if r.metadata
+    }
 
 
 def _categorize_results_by_command(
@@ -1067,16 +1176,9 @@ def _categorize_results_by_command(
     predicates (now named, one per category), same declaration order, same
     id()-based dedup to find the uncategorized set.
     """
-    categories_map: dict[str, list[GitResult]] = {
-        cat_name: [r for r in results if predicate(r)]
-        for cat_name, predicate in _RESULT_CATEGORY_PREDICATES
-    }
+    categories_map = _bucket_results_by_predicates(results, _RESULT_CATEGORY_PREDICATES)
 
-    known_ids = set()
-    for cat_list in categories_map.values():
-        for r in cat_list:
-            if r.metadata:
-                known_ids.add(id(r))
+    known_ids = _known_result_ids(categories_map)
 
     uncategorized = [r for r in results if id(r) not in known_ids]
     if uncategorized:
@@ -1145,6 +1247,156 @@ def _build_validation_category(
     return cat
 
 
+def _render_report_category_section(cat: "ValidationCategory") -> list[str]:
+    """Render one category's '## <name>' block for ValidationReport.to_markdown."""
+    md = [
+        f"## {cat.name}",
+        f"**Success:** {cat.success_count} ✅ | **Failure:** {cat.failure_count} ❌ | **Skipped:** {cat.skipped_count} ⏭️\n",
+    ]
+
+    if cat.successes:
+        md.append("#### Successes ✅")
+        for r in cat.successes:
+            md.append(f"- **{r.project}**: {r.message}")
+        md.append("")
+
+    if cat.failures:
+        md.append("#### Failures ❌")
+        for r in cat.failures:
+            md.append(f"- **{r.project}**: {r.message}")
+            if r.output:
+                md.append(f"```text\n{r.output}\n```")
+        md.append("")
+
+    if cat.skipped:
+        md.append("#### Skipped ⏭️")
+        for r in cat.skipped:
+            md.append(f"- **{r.project}**: {r.message}")
+        md.append("")
+
+    return md
+
+
+def _write_report_text_file(path: str, lines: list[str], *, error_message: str) -> bool:
+    """Write joined markdown ``lines`` to ``path``. Logs (never raises) on failure."""
+    try:
+        with open(path, "w") as f:
+            f.write("\n".join(lines))
+        return True
+    except Exception as e:
+        logger.error(error_message, type(e).__name__)
+        return False
+
+
+def _scan_report_filename(
+    cat_name: str, filtered: "ValidationCategory", ts: str
+) -> str:
+    slug = CATEGORY_SLUG_MAP.get(cat_name, cat_name.lower().replace(" ", "-"))
+    safe_slug = _sanitize_filename(slug)
+    errors = filtered.failure_count
+    warnings = filtered.skipped_count
+    return f"{safe_slug}-{errors}-error(s)-{warnings}-warning(s)-{ts}.md"
+
+
+def _render_scan_markdown(
+    project: str, cat_name: str, filtered: "ValidationCategory", timestamp: str
+) -> list[str]:
+    """Render one project/category per-scan markdown file's contents."""
+    scan_md = [
+        f"# {project} — {cat_name}",
+        f"**Time:** {timestamp}  ",
+        f"**Success:** {filtered.success_count} ✅ | **Failure:** {filtered.failure_count} ❌ | **Skipped:** {filtered.skipped_count} ⏭️",
+        "",
+    ]
+
+    if filtered.successes:
+        scan_md.append("## Successes ✅")
+        for r in filtered.successes:
+            scan_md.append(f"- **{r.project}**: {r.message}")
+        scan_md.append("")
+
+    if filtered.failures:
+        scan_md.append("## Failures ❌")
+        for r in filtered.failures:
+            scan_md.append(f"- **{r.project}**: {r.message}")
+            if r.output:
+                scan_md.append(f"```text\n{r.output}\n```")
+        scan_md.append("")
+
+    if filtered.skipped:
+        scan_md.append("## Skipped ⏭️")
+        for r in filtered.skipped:
+            scan_md.append(f"- **{r.project}**: {r.message}")
+        scan_md.append("")
+
+    return scan_md
+
+
+def _scan_file_sort_key(fpath: str) -> tuple[int, str]:
+    fname = os.path.basename(fpath)
+    if fname.startswith("summary_"):
+        return (1, fname)
+    return (0, fname)
+
+
+def _build_index_category_table(categories: list["ValidationCategory"]) -> list[str]:
+    lines = [
+        "## Category Summary",
+        "",
+        "| Category | ✅ Pass | ❌ Fail | ⏭️ Skip |",
+        "|---|---|---|---|",
+    ]
+    for cat in categories:
+        lines.append(
+            f"| {cat.name} | {cat.success_count} | {cat.failure_count} | {cat.skipped_count} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _build_index_repository_table(
+    all_projects: list[str], project_stats: dict[str, dict[str, int]]
+) -> list[str]:
+    lines = [
+        "## Repository Results",
+        "",
+        "| Repository | ✅ Pass | ❌ Fail | ⏭️ Skip | Details |",
+        "|---|---|---|---|---|",
+    ]
+    for project in all_projects:
+        stats = project_stats.get(project, {"success": 0, "failure": 0, "skipped": 0})
+        safe_project = _sanitize_filename(project)
+        repo_dir_name = f"{safe_project}-results"
+        details_link = f"[📂 {project}-results]({repo_dir_name}/)"
+        status_icon = "🔴" if stats["failure"] > 0 else "🟢"
+        lines.append(
+            f"| {status_icon} {project} | {stats['success']} | {stats['failure']} | "
+            f"{stats['skipped']} | {details_link} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _build_index_detailed_file_section(
+    all_projects: list[str],
+    project_stats: dict[str, dict[str, int]],
+    project_files: dict[str, list[str]],
+) -> list[str]:
+    lines = ["---", "", "## Detailed File Index", ""]
+    for project in all_projects:
+        files_list = project_files.get(project, [])
+        if not files_list:
+            continue
+        stats = project_stats.get(project, {"success": 0, "failure": 0, "skipped": 0})
+        status_icon = "🔴" if stats["failure"] > 0 else "🟢"
+        lines.append(f"### {status_icon} {project}")
+        for fpath in sorted(files_list, key=_scan_file_sort_key):
+            fname = os.path.basename(fpath)
+            lines.append(f"- [{fname}]({fpath})")
+        lines.append("")
+    return lines
+
+
 class ValidationReport(BaseModel):
     timestamp: str
     total: int = 0
@@ -1185,30 +1437,7 @@ class ValidationReport(BaseModel):
         ]
 
         for cat in self.categories:
-            md.append(f"## {cat.name}")
-            md.append(
-                f"**Success:** {cat.success_count} ✅ | **Failure:** {cat.failure_count} ❌ | **Skipped:** {cat.skipped_count} ⏭️\n"
-            )
-
-            if cat.successes:
-                md.append("#### Successes ✅")
-                for r in cat.successes:
-                    md.append(f"- **{r.project}**: {r.message}")
-                md.append("")
-
-            if cat.failures:
-                md.append("#### Failures ❌")
-                for r in cat.failures:
-                    md.append(f"- **{r.project}**: {r.message}")
-                    if r.output:
-                        md.append(f"```text\n{r.output}\n```")
-                md.append("")
-
-            if cat.skipped:
-                md.append("#### Skipped ⏭️")
-                for r in cat.skipped:
-                    md.append(f"- **{r.project}**: {r.message}")
-                md.append("")
+            md.extend(_render_report_category_section(cat))
 
         return "\n".join(md)
 
@@ -1232,6 +1461,96 @@ class ValidationReport(BaseModel):
         except ValueError:
             # Fallback: use current time if parsing fails
             return datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+    def _write_project_scan_file(
+        self,
+        project: str,
+        cat_name: str,
+        filtered: "ValidationCategory",
+        repo_dir: str,
+        repo_dir_name: str,
+        ts: str,
+    ) -> str | None:
+        """Write one project/category per-scan markdown file; return its rel path."""
+        filename = _scan_report_filename(cat_name, filtered, ts)
+        filepath = os.path.join(repo_dir, filename)
+        scan_md = _render_scan_markdown(project, cat_name, filtered, self.timestamp)
+        if not _write_report_text_file(
+            filepath,
+            scan_md,
+            error_message="Failed to write a validation report: error_type=%s",
+        ):
+            return None
+        return os.path.join(repo_dir_name, filename)
+
+    def _write_project_category_files(
+        self, project: str, repo_dir: str, repo_dir_name: str, ts: str
+    ) -> tuple[dict[str, int], list[str]]:
+        """Accumulate per-project stats and write a per-scan file for each
+        report-worthy category (Ecosystem Installation / Pre-commit Compliance).
+        """
+        stats = {"success": 0, "failure": 0, "skipped": 0}
+        files: list[str] = []
+
+        for cat in self.categories:
+            filtered = cat.for_project(project)
+            if filtered.total == 0:
+                continue
+
+            stats["success"] += filtered.success_count
+            stats["failure"] += filtered.failure_count
+            stats["skipped"] += filtered.skipped_count
+
+            if cat.name not in _DETAIL_CATEGORIES:
+                continue
+
+            rel_path = self._write_project_scan_file(
+                project, cat.name, filtered, repo_dir, repo_dir_name, ts
+            )
+            if rel_path:
+                files.append(rel_path)
+
+        return stats, files
+
+    def _write_project_summary_file(
+        self, project: str, repo_dir: str, repo_dir_name: str, ts: str
+    ) -> str | None:
+        """Write the single project-specific summary file; return its rel path."""
+        project_categories = [cat.for_project(project) for cat in self.categories]
+        summary_md = _build_project_summary_md(
+            project=project,
+            timestamp=self.timestamp,
+            categories=project_categories,
+        )
+        safe_project_underscores = _sanitize_filename(project).replace("-", "_")
+        summary_filename = f"summary_{safe_project_underscores}_{ts}.md"
+        summary_filepath = os.path.join(repo_dir, summary_filename)
+        if not _write_report_text_file(
+            summary_filepath,
+            summary_md,
+            error_message="Failed to write project summary report: error_type=%s",
+        ):
+            return None
+        return os.path.join(repo_dir_name, summary_filename)
+
+    def _write_project_report(
+        self, project: str, report_root: str, ts: str
+    ) -> tuple[dict[str, int], list[str]]:
+        """Write every per-repo report file for one project; return (stats, files)."""
+        safe_project = _sanitize_filename(project)
+        repo_dir_name = f"{safe_project}-results"
+        repo_dir = os.path.join(report_root, repo_dir_name)
+        os.makedirs(repo_dir, exist_ok=True)
+
+        stats, files = self._write_project_category_files(
+            project, repo_dir, repo_dir_name, ts
+        )
+        summary_rel_path = self._write_project_summary_file(
+            project, repo_dir, repo_dir_name, ts
+        )
+        if summary_rel_path:
+            files.append(summary_rel_path)
+        return stats, files
 
     def to_directory_report(
         self,
@@ -1267,109 +1586,13 @@ class ValidationReport(BaseModel):
 
         # --- Per-repo, per-scan files ---
         # Track per-project stats for the index
-        project_stats: dict[
-            str, dict[str, int]
-        ] = {}  # project -> {success, failure, skipped}
-        project_files: dict[
-            str, list[str]
-        ] = {}  # project -> list of relative file paths
+        project_stats: dict[str, dict[str, int]] = {}
+        project_files: dict[str, list[str]] = {}
 
         for project in all_projects:
-            safe_project = _sanitize_filename(project)
-            repo_dir_name = f"{safe_project}-results"
-            repo_dir = os.path.join(report_root, repo_dir_name)
-            os.makedirs(repo_dir, exist_ok=True)
-
-            project_stats[project] = {"success": 0, "failure": 0, "skipped": 0}
-            project_files[project] = []
-
-            for cat in self.categories:
-                filtered = cat.for_project(project)
-                if filtered.total == 0:
-                    continue
-
-                # Accumulate per-project stats
-                project_stats[project]["success"] += filtered.success_count
-                project_stats[project]["failure"] += filtered.failure_count
-                project_stats[project]["skipped"] += filtered.skipped_count
-
-                if cat.name not in (
-                    "Ecosystem Installation",
-                    "Pre-commit Standard Compliance",
-                ):
-                    continue
-
-                # Build filename
-                slug = CATEGORY_SLUG_MAP.get(
-                    cat.name, cat.name.lower().replace(" ", "-")
-                )
-                safe_slug = _sanitize_filename(slug)
-                errors = filtered.failure_count
-                warnings = filtered.skipped_count
-                filename = (
-                    f"{safe_slug}-{errors}-error(s)-{warnings}-warning(s)-{ts}.md"
-                )
-                filepath = os.path.join(repo_dir, filename)
-
-                # Write the per-scan file
-                scan_md = [
-                    f"# {project} — {cat.name}",
-                    f"**Time:** {self.timestamp}  ",
-                    f"**Success:** {filtered.success_count} ✅ | **Failure:** {filtered.failure_count} ❌ | **Skipped:** {filtered.skipped_count} ⏭️",
-                    "",
-                ]
-
-                if filtered.successes:
-                    scan_md.append("## Successes ✅")
-                    for r in filtered.successes:
-                        scan_md.append(f"- **{r.project}**: {r.message}")
-                    scan_md.append("")
-
-                if filtered.failures:
-                    scan_md.append("## Failures ❌")
-                    for r in filtered.failures:
-                        scan_md.append(f"- **{r.project}**: {r.message}")
-                        if r.output:
-                            scan_md.append(f"```text\n{r.output}\n```")
-                    scan_md.append("")
-
-                if filtered.skipped:
-                    scan_md.append("## Skipped ⏭️")
-                    for r in filtered.skipped:
-                        scan_md.append(f"- **{r.project}**: {r.message}")
-                    scan_md.append("")
-
-                try:
-                    with open(filepath, "w") as f:
-                        f.write("\n".join(scan_md))
-                    rel_path = os.path.join(repo_dir_name, filename)
-                    project_files[project].append(rel_path)
-                except Exception as e:
-                    logger.error(
-                        "Failed to write a validation report: error_type=%s",
-                        type(e).__name__,
-                    )
-
-            # Write the single project-specific summary file
-            project_categories = [cat.for_project(project) for cat in self.categories]
-            summary_md = _build_project_summary_md(
-                project=project,
-                timestamp=self.timestamp,
-                categories=project_categories,
+            project_stats[project], project_files[project] = self._write_project_report(
+                project, report_root, ts
             )
-            safe_project_underscores = safe_project.replace("-", "_")
-            summary_filename = f"summary_{safe_project_underscores}_{ts}.md"
-            summary_filepath = os.path.join(repo_dir, summary_filename)
-            try:
-                with open(summary_filepath, "w") as f:
-                    f.write("\n".join(summary_md))
-                rel_summary_path = os.path.join(repo_dir_name, summary_filename)
-                project_files[project].append(rel_summary_path)
-            except Exception as e:
-                logger.error(
-                    "Failed to write project summary report: error_type=%s",
-                    type(e).__name__,
-                )
 
         # Identify failed projects for the next-command block
         failed_projects = sorted(
@@ -1383,79 +1606,24 @@ class ValidationReport(BaseModel):
             f"**Total Checks:** {self.total} | **Success:** {self.success_count} ✅ | **Failure:** {self.failure_count} ❌ | **Skipped:** {self.skipped_count} ⏭️",
             "",
         ]
-
-        # --- Next Validation Command block ---
         index_md.extend(
             _build_next_command_block(
                 failed_projects=failed_projects,
                 validated_repositories=validated_repositories,
             )
         )
-
-        index_md.append("## Category Summary")
-        index_md.append("")
-        index_md.append("| Category | ✅ Pass | ❌ Fail | ⏭️ Skip |")
-        index_md.append("|---|---|---|---|")
-
-        for cat in self.categories:
-            index_md.append(
-                f"| {cat.name} | {cat.success_count} | {cat.failure_count} | {cat.skipped_count} |"
+        index_md.extend(_build_index_category_table(self.categories))
+        index_md.extend(_build_index_repository_table(all_projects, project_stats))
+        index_md.extend(
+            _build_index_detailed_file_section(
+                all_projects, project_stats, project_files
             )
-
-        index_md.append("")
-        index_md.append("## Repository Results")
-        index_md.append("")
-        index_md.append("| Repository | ✅ Pass | ❌ Fail | ⏭️ Skip | Details |")
-        index_md.append("|---|---|---|---|---|")
-
-        for project in all_projects:
-            stats = project_stats.get(
-                project, {"success": 0, "failure": 0, "skipped": 0}
-            )
-            files_list = project_files.get(project, [])
-            safe_project = _sanitize_filename(project)
-            repo_dir_name = f"{safe_project}-results"
-            details_link = f"[📂 {project}-results]({repo_dir_name}/)"
-            status_icon = "🔴" if stats["failure"] > 0 else "🟢"
-            index_md.append(
-                f"| {status_icon} {project} | {stats['success']} | {stats['failure']} | {stats['skipped']} | {details_link} |"
-            )
-
-        index_md.append("")
-
-        # Detailed per-repo sections with file links
-        index_md.append("---")
-        index_md.append("")
-        index_md.append("## Detailed File Index")
-        index_md.append("")
-
-        for project in all_projects:
-            files_list = project_files.get(project, [])
-            if not files_list:
-                continue
-            stats = project_stats.get(
-                project, {"success": 0, "failure": 0, "skipped": 0}
-            )
-            status_icon = "🔴" if stats["failure"] > 0 else "🟢"
-            index_md.append(f"### {status_icon} {project}")
-
-            def _sort_key(fpath: str) -> tuple[int, str]:
-                fname = os.path.basename(fpath)
-                if fname.startswith("summary_"):
-                    return (1, fname)
-                return (0, fname)
-
-            for fpath in sorted(files_list, key=_sort_key):
-                fname = os.path.basename(fpath)
-                index_md.append(f"- [{fname}]({fpath})")
-            index_md.append("")
+        )
 
         index_path = os.path.join(report_root, "index.md")
-        try:
-            with open(index_path, "w") as f:
-                f.write("\n".join(index_md))
-        except Exception as e:
-            logger.error("Operation failed: error_type=%s", type(e).__name__)
+        _write_report_text_file(
+            index_path, index_md, error_message="Operation failed: error_type=%s"
+        )
 
         # --- Summary file ---
         summary_md = _build_summary_md(
@@ -1469,17 +1637,99 @@ class ValidationReport(BaseModel):
             skipped_count=self.skipped_count,
         )
         summary_path = os.path.join(report_root, "summary.md")
-        try:
-            with open(summary_path, "w") as f:
-                f.write("\n".join(summary_md))
-        except Exception as e:
-            logger.error(
-                "Failed to write the validation summary: error_type=%s",
-                type(e).__name__,
-            )
+        _write_report_text_file(
+            summary_path,
+            summary_md,
+            error_message="Failed to write the validation summary: error_type=%s",
+        )
 
         logger.info("Validation report written")
         return report_root
+
+
+def _project_lacks_scan_config(workspace_path: str | None) -> bool:
+    """True when ``workspace_path`` exists but has neither a pre-commit config
+    nor a ``pyproject.toml`` -- i.e. this project does not need ecosystem
+    validation and its scan/summary files should be skipped or stubbed.
+    """
+    if not workspace_path or not os.path.isdir(workspace_path):
+        return False
+    has_pc = os.path.exists(os.path.join(workspace_path, ".pre-commit-config.yaml"))
+    has_py = os.path.exists(os.path.join(workspace_path, "pyproject.toml"))
+    return not has_pc and not has_py
+
+
+def _remove_stale_scan_files(
+    repo_dir: str, safe_slug: str, ts_path: str, filepath: str
+) -> None:
+    """Remove earlier same-slug/timestamp scan files whose counts have changed."""
+    stale_pattern = os.path.join(
+        repo_dir, f"{safe_slug}-*-error(s)-*-warning(s)-{ts_path}.md"
+    )
+    for stale in glob.glob(stale_pattern):  # noqa: PTH207
+        if stale != filepath:
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+
+
+def _remove_stale_summary_files(repo_dir: str) -> None:
+    """Remove any prior summary.md / summaries_* / summary_* files in repo_dir."""
+    for fname in os.listdir(repo_dir):
+        if fname == "summary.md" or fname.startswith(("summaries_", "summary_")):
+            try:
+                os.remove(os.path.join(repo_dir, fname))
+            except Exception:  # nosec B110
+                pass
+
+
+def _no_scan_config_summary_md(project: str, timestamp: str) -> list[str]:
+    return [
+        f"# 📋 {project} Validation Summary",
+        f"**Time:** {timestamp}  ",
+        "",
+        "> No pre-commit configuration (`.pre-commit-config.yaml`) or `pyproject.toml` "
+        "file found in the repository. This repository does not require ecosystem "
+        "validation.",
+        "",
+    ]
+
+
+def _collect_result_projects(
+    result_lists: tuple[list["ProjectResult"], ...],
+) -> set[str]:
+    projects: set[str] = set()
+    for results in result_lists:
+        for r in results:
+            projects.add(r.project)
+    return projects
+
+
+def _apply_incremental_result(
+    cat: "ValidationCategory", result: "GitResult", pkg: str, cmd: str | None
+) -> None:
+    """Append one result to ``cat`` and bump its running success/failure/skipped counts.
+
+    Unlike `_append_result_to_category` (used where a category's totals are
+    already fixed via ``len()``), this ALSO increments the running counts --
+    `IncrementalReportWriter` builds a category one result at a time.
+    """
+    if result.status == "success":
+        cat.success_count += 1
+        cat.successes.append(
+            ProjectResult(
+                project=pkg, message="Success", output=result.data, command=cmd
+            )
+        )
+    elif result.status == "error":
+        cat.failure_count += 1
+        cat.failures.append(_build_error_project_result(pkg, cmd, result))
+    elif result.status == "skipped":
+        cat.skipped_count += 1
+        cat.skipped.append(
+            ProjectResult(project=pkg, message=result.data or "Skipped", command=cmd)
+        )
 
 
 class IncrementalReportWriter:
@@ -1526,6 +1776,14 @@ class IncrementalReportWriter:
         self.project_files: dict[str, list[str]] = {}
         self.project_paths: dict[str, str] = {}
 
+    def _record_project_path(self, metadata: "GitMetadata | None") -> None:
+        """Remember the first-seen workspace path for a project's basename."""
+        if not metadata or not metadata.workspace:
+            return
+        pkg = metadata.workspace.split("/")[-1]
+        if pkg != "unknown" and pkg not in self.project_paths:
+            self.project_paths[pkg] = metadata.workspace
+
     def write_phase(
         self, category_name: str, results: list[GitResult]
     ) -> ValidationCategory:
@@ -1538,54 +1796,18 @@ class IncrementalReportWriter:
         Returns:
             The constructed ValidationCategory.
         """
-        cat = ValidationCategory(
-            name=category_name,
-            total=len(results),
-            success_count=len([r for r in results if r.status == "success"]),
-            failure_count=len([r for r in results if r.status == "error"]),
-            skipped_count=len([r for r in results if r.status == "skipped"]),
-        )
-
         for r in results:
-            pkg = r.metadata.workspace.split("/")[-1] if r.metadata else "unknown"
-            if (
-                pkg != "unknown"
-                and pkg not in self.project_paths
-                and r.metadata
-                and r.metadata.workspace
-            ):
-                self.project_paths[pkg] = r.metadata.workspace
-            cmd = r.metadata.command if r.metadata else None
+            self._record_project_path(r.metadata)
 
-            if r.status == "success":
-                cat.successes.append(
-                    ProjectResult(
-                        project=pkg, message="Success", output=r.data, command=cmd
-                    )
-                )
-            elif r.status == "error":
-                error_msg = r.error.message if r.error else (r.data or "Unknown error")
-                output = r.data if r.data and r.data != error_msg else None
-                if output and cmd and ("pre_commit" in cmd or "pre-commit" in cmd):
-                    output = _filter_pre_commit_output(output)
-                cat.failures.append(
-                    ProjectResult(
-                        project=pkg, message=error_msg, output=output, command=cmd
-                    )
-                )
-            elif r.status == "skipped":
-                cat.skipped.append(
-                    ProjectResult(project=pkg, message=r.data or "Skipped", command=cmd)
-                )
+        cat = _build_validation_category(category_name, results)
 
         self.categories.append(cat)
         self._write_category_files(cat)
         return cat
 
-    def write_incremental_result(self, category_name: str, result: GitResult) -> None:
-        """Add a single result to a category and immediately write/update its report file."""
+    def _get_or_create_category(self, category_name: str) -> ValidationCategory:
         cat = next((c for c in self.categories if c.name == category_name), None)
-        if not cat:
+        if cat is None:
             cat = ValidationCategory(
                 name=category_name,
                 total=0,
@@ -1594,261 +1816,155 @@ class IncrementalReportWriter:
                 skipped_count=0,
             )
             self.categories.append(cat)
+        return cat
 
-        cat.total += 1
-        pkg = result.metadata.workspace.split("/")[-1] if result.metadata else "unknown"
-        if (
-            pkg != "unknown"
-            and pkg not in self.project_paths
-            and result.metadata
-            and result.metadata.workspace
-        ):
-            self.project_paths[pkg] = result.metadata.workspace
-        cmd = result.metadata.command if result.metadata else None
+    def _ensure_project_tracking(self, project: str) -> None:
+        """Make sure ``project_stats``/``project_files`` entries exist for ``project``."""
+        if project not in self.project_stats:
+            self.project_stats[project] = {"success": 0, "failure": 0, "skipped": 0}
+        if project not in self.project_files:
+            self.project_files[project] = []
 
-        if result.status == "success":
-            cat.success_count += 1
-            cat.successes.append(
-                ProjectResult(
-                    project=pkg, message="Success", output=result.data, command=cmd
-                )
-            )
-        elif result.status == "error":
-            cat.failure_count += 1
-            error_msg = (
-                result.error.message
-                if result.error
-                else (result.data or "Unknown error")
-            )
-            output = result.data if result.data and result.data != error_msg else None
-            if output and cmd and ("pre_commit" in cmd or "pre-commit" in cmd):
-                output = _filter_pre_commit_output(output)
-            cat.failures.append(
-                ProjectResult(
-                    project=pkg, message=error_msg, output=output, command=cmd
-                )
-            )
-        elif result.status == "skipped":
-            cat.skipped_count += 1
-            cat.skipped.append(
-                ProjectResult(
-                    project=pkg, message=result.data or "Skipped", command=cmd
-                )
-            )
-
-        # Update global project stats
-        if pkg not in self.project_stats:
-            self.project_stats[pkg] = {
-                "success": 0,
-                "failure": 0,
-                "skipped": 0,
-            }
-        if pkg not in self.project_files:
-            self.project_files[pkg] = []
-
-        if result.status == "success":
+    def _bump_project_stat(self, pkg: str, status: str) -> None:
+        if status == "success":
             self.project_stats[pkg]["success"] += 1
-        elif result.status == "error":
+        elif status == "error":
             self.project_stats[pkg]["failure"] += 1
-        elif result.status == "skipped":
+        elif status == "skipped":
             self.project_stats[pkg]["skipped"] += 1
 
-        if cat.name not in ("Ecosystem Installation", "Pre-commit Standard Compliance"):
-            return
-
-        # Check if project should be skipped (has neither .pre-commit-config.yaml nor pyproject.toml)
-        workspace_path = self.project_paths.get(pkg)
-        if workspace_path and os.path.isdir(workspace_path):
-            has_pc = os.path.exists(
-                os.path.join(workspace_path, ".pre-commit-config.yaml")
-            )
-            has_py = os.path.exists(os.path.join(workspace_path, "pyproject.toml"))
-            if not has_pc and not has_py:
-                return
-
-        # Write the per-scan file for this project
-        filtered = cat.for_project(pkg)
-        if filtered.total == 0:
-            return
-
+    def _write_incremental_scan_file(
+        self, pkg: str, cat: "ValidationCategory", filtered: "ValidationCategory"
+    ) -> None:
+        """Write (or refresh) the per-scan file for one incremental result's project."""
         safe_project = _sanitize_filename(pkg)
         repo_dir_name = f"{safe_project}-results"
         repo_dir = os.path.join(self.report_root, repo_dir_name)
         os.makedirs(repo_dir, exist_ok=True)
 
+        filename = _scan_report_filename(cat.name, filtered, self.ts_path)
+        filepath = os.path.join(repo_dir, filename)
         slug = CATEGORY_SLUG_MAP.get(cat.name, cat.name.lower().replace(" ", "-"))
         safe_slug = _sanitize_filename(slug)
-        errors = filtered.failure_count
-        warnings = filtered.skipped_count
-        filename = (
-            f"{safe_slug}-{errors}-error(s)-{warnings}-warning(s)-{self.ts_path}.md"
-        )
+        _remove_stale_scan_files(repo_dir, safe_slug, self.ts_path, filepath)
+
+        scan_md = _render_scan_markdown(pkg, cat.name, filtered, self.timestamp)
+        if not _write_report_text_file(
+            filepath,
+            scan_md,
+            error_message="Failed to write a validation report: error_type=%s",
+        ):
+            return
+        rel_path = os.path.join(repo_dir_name, filename)
+        if rel_path not in self.project_files[pkg]:
+            self.project_files[pkg].append(rel_path)
+
+    def write_incremental_result(self, category_name: str, result: GitResult) -> None:
+        """Add a single result to a category and immediately write/update its report file."""
+        cat = self._get_or_create_category(category_name)
+        cat.total += 1
+        self._record_project_path(result.metadata)
+
+        pkg = result.metadata.workspace.split("/")[-1] if result.metadata else "unknown"
+        cmd = result.metadata.command if result.metadata else None
+        _apply_incremental_result(cat, result, pkg, cmd)
+
+        self._ensure_project_tracking(pkg)
+        self._bump_project_stat(pkg, result.status)
+
+        if cat.name not in _DETAIL_CATEGORIES:
+            return
+        if _project_lacks_scan_config(self.project_paths.get(pkg)):
+            return
+
+        filtered = cat.for_project(pkg)
+        if filtered.total == 0:
+            return
+
+        self._write_incremental_scan_file(pkg, cat, filtered)
+
+    def _write_category_file_for_project(
+        self, project: str, cat: "ValidationCategory", filtered: "ValidationCategory"
+    ) -> None:
+        """Write (or refresh) the per-scan file for one project/category pair."""
+        safe_project = _sanitize_filename(project)
+        repo_dir_name = f"{safe_project}-results"
+        repo_dir = os.path.join(self.report_root, repo_dir_name)
+        os.makedirs(repo_dir, exist_ok=True)
+
+        filename = _scan_report_filename(cat.name, filtered, self.ts_path)
         filepath = os.path.join(repo_dir, filename)
+        slug = CATEGORY_SLUG_MAP.get(cat.name, cat.name.lower().replace(" ", "-"))
+        safe_slug = _sanitize_filename(slug)
+        _remove_stale_scan_files(repo_dir, safe_slug, self.ts_path, filepath)
 
-        # Clean up stale files for the same slug/timestamp with different counts
-
-        stale_pattern = os.path.join(
-            repo_dir, f"{safe_slug}-*-error(s)-*-warning(s)-{self.ts_path}.md"
-        )
-        for stale in glob.glob(stale_pattern):  # noqa: PTH207
-            if stale != filepath:
-                try:
-                    os.remove(stale)
-                except OSError:
-                    pass
-
-        scan_md = [
-            f"# {pkg} — {cat.name}",
-            f"**Time:** {self.timestamp}  ",
-            f"**Success:** {filtered.success_count} ✅ | **Failure:** {filtered.failure_count} ❌ | **Skipped:** {filtered.skipped_count} ⏭️",
-            "",
-        ]
-
-        if filtered.successes:
-            scan_md.append("## Successes ✅")
-            for r in filtered.successes:
-                scan_md.append(f"- **{r.project}**: {r.message}")
-            scan_md.append("")
-
-        if filtered.failures:
-            scan_md.append("## Failures ❌")
-            for r in filtered.failures:
-                scan_md.append(f"- **{r.project}**: {r.message}")
-                if r.output:
-                    scan_md.append(f"```text\n{r.output}\n```")
-            scan_md.append("")
-
-        if filtered.skipped:
-            scan_md.append("## Skipped ⏭️")
-            for r in filtered.skipped:
-                scan_md.append(f"- **{r.project}**: {r.message}")
-            scan_md.append("")
-
-        try:
-            with open(filepath, "w") as f:
-                f.write("\n".join(scan_md))
+        scan_md = _render_scan_markdown(project, cat.name, filtered, self.timestamp)
+        if _write_report_text_file(
+            filepath,
+            scan_md,
+            error_message="Failed to write a validation report: error_type=%s",
+        ):
             rel_path = os.path.join(repo_dir_name, filename)
-            if rel_path not in self.project_files[pkg]:
-                self.project_files[pkg].append(rel_path)
-        except Exception as e:
-            logger.error(
-                "Failed to write a validation report: error_type=%s",
-                type(e).__name__,
-            )
+            self.project_files[project].append(rel_path)
+            logger.info("Validation scan report written")
 
     def _write_category_files(self, cat: ValidationCategory) -> None:
         """Write per-repo files for a single category immediately."""
-        all_projects_in_cat: set[str] = set()
-        for r in cat.successes:
-            all_projects_in_cat.add(r.project)
-        for r in cat.failures:
-            all_projects_in_cat.add(r.project)
-        for r in cat.skipped:
-            all_projects_in_cat.add(r.project)
+        projects_in_cat = _collect_result_projects(
+            (cat.successes, cat.failures, cat.skipped)
+        )
 
-        for project in sorted(all_projects_in_cat):
+        for project in sorted(projects_in_cat):
             filtered = cat.for_project(project)
             if filtered.total == 0:
                 continue
 
-            # Ensure project tracking dicts exist
-            if project not in self.project_stats:
-                self.project_stats[project] = {
-                    "success": 0,
-                    "failure": 0,
-                    "skipped": 0,
-                }
-            if project not in self.project_files:
-                self.project_files[project] = []
-
-            # Accumulate stats
+            self._ensure_project_tracking(project)
             self.project_stats[project]["success"] += filtered.success_count
             self.project_stats[project]["failure"] += filtered.failure_count
             self.project_stats[project]["skipped"] += filtered.skipped_count
 
-            # We must restrict file-writing to permitted categories!
-            if cat.name not in (
-                "Ecosystem Installation",
-                "Pre-commit Standard Compliance",
-            ):
+            if cat.name not in _DETAIL_CATEGORIES:
+                continue
+            if _project_lacks_scan_config(self.project_paths.get(project)):
                 continue
 
-            # Check if project should be skipped (has neither .pre-commit-config.yaml nor pyproject.toml)
-            workspace_path = self.project_paths.get(project)
-            if workspace_path and os.path.isdir(workspace_path):
-                has_pc = os.path.exists(
-                    os.path.join(workspace_path, ".pre-commit-config.yaml")
-                )
-                has_py = os.path.exists(os.path.join(workspace_path, "pyproject.toml"))
-                if not has_pc and not has_py:
-                    continue
+            self._write_category_file_for_project(project, cat, filtered)
 
-            # Build filename & directory
-            safe_project = _sanitize_filename(project)
-            repo_dir_name = f"{safe_project}-results"
-            repo_dir = os.path.join(self.report_root, repo_dir_name)
-            os.makedirs(repo_dir, exist_ok=True)
+    def _aggregate_category_totals(self) -> tuple[int, int, int, int]:
+        total = sum(c.total for c in self.categories)
+        success_total = sum(c.success_count for c in self.categories)
+        failure_total = sum(c.failure_count for c in self.categories)
+        skipped_total = sum(c.skipped_count for c in self.categories)
+        return total, success_total, failure_total, skipped_total
 
-            slug = CATEGORY_SLUG_MAP.get(cat.name, cat.name.lower().replace(" ", "-"))
-            safe_slug = _sanitize_filename(slug)
-            errors = filtered.failure_count
-            warnings = filtered.skipped_count
-            filename = (
-                f"{safe_slug}-{errors}-error(s)-{warnings}-warning(s)-{self.ts_path}.md"
+    def _build_finalize_index_md(
+        self,
+        all_projects: list[str],
+        failed_projects: list[str],
+        totals: tuple[int, int, int, int],
+    ) -> list[str]:
+        total, success_total, failure_total, skipped_total = totals
+        index_md = [
+            "# 📋 Validation Report",
+            f"**Time:** {self.timestamp}  ",
+            f"**Total Checks:** {total} | **Success:** {success_total} ✅ | **Failure:** {failure_total} ❌ | **Skipped:** {skipped_total} ⏭️",
+            "",
+        ]
+        index_md.extend(
+            _build_next_command_block(
+                failed_projects=failed_projects,
+                validated_repositories=self.validated_repositories,
             )
-            filepath = os.path.join(repo_dir, filename)
-
-            # Clean up stale files for the same slug/timestamp with different counts
-
-            stale_pattern = os.path.join(
-                repo_dir, f"{safe_slug}-*-error(s)-*-warning(s)-{self.ts_path}.md"
+        )
+        index_md.extend(_build_index_category_table(self.categories))
+        index_md.extend(_build_index_repository_table(all_projects, self.project_stats))
+        index_md.extend(
+            _build_index_detailed_file_section(
+                all_projects, self.project_stats, self.project_files
             )
-            for stale in glob.glob(stale_pattern):  # noqa: PTH207
-                if stale != filepath:
-                    try:
-                        os.remove(stale)
-                    except OSError:
-                        pass
-
-            # Write the per-scan file
-            scan_md = [
-                f"# {project} — {cat.name}",
-                f"**Time:** {self.timestamp}  ",
-                f"**Success:** {filtered.success_count} ✅ | **Failure:** {filtered.failure_count} ❌ | **Skipped:** {filtered.skipped_count} ⏭️",
-                "",
-            ]
-
-            if filtered.successes:
-                scan_md.append("## Successes ✅")
-                for r in filtered.successes:
-                    scan_md.append(f"- **{r.project}**: {r.message}")
-                scan_md.append("")
-
-            if filtered.failures:
-                scan_md.append("## Failures ❌")
-                for r in filtered.failures:
-                    scan_md.append(f"- **{r.project}**: {r.message}")
-                    if r.output:
-                        scan_md.append(f"```text\n{r.output}\n```")
-                scan_md.append("")
-
-            if filtered.skipped:
-                scan_md.append("## Skipped ⏭️")
-                for r in filtered.skipped:
-                    scan_md.append(f"- **{r.project}**: {r.message}")
-                scan_md.append("")
-
-            try:
-                with open(filepath, "w") as f:
-                    f.write("\n".join(scan_md))
-                rel_path = os.path.join(repo_dir_name, filename)
-                self.project_files[project].append(rel_path)
-                logger.info("Validation scan report written")
-            except Exception as e:
-                logger.error(
-                    "Failed to write a validation report: error_type=%s",
-                    type(e).__name__,
-                )
+        )
+        return index_md
 
     def finalize(self) -> str:
         """Write the index.md with aggregate stats and return the report directory path."""
@@ -1857,103 +1973,21 @@ class IncrementalReportWriter:
         for project in all_projects:
             self._write_project_summary(project)
 
-        total = sum(c.total for c in self.categories)
-        success_total = sum(c.success_count for c in self.categories)
-        failure_total = sum(c.failure_count for c in self.categories)
-        skipped_total = sum(c.skipped_count for c in self.categories)
-
-        all_projects = sorted(self.project_stats.keys())
+        totals = self._aggregate_category_totals()
+        total, success_total, failure_total, skipped_total = totals
 
         # Identify failed projects for the next-command block
         failed_projects = sorted(
             p for p, s in self.project_stats.items() if s["failure"] > 0
         )
 
-        index_md = [
-            "# 📋 Validation Report",
-            f"**Time:** {self.timestamp}  ",
-            f"**Total Checks:** {total} | **Success:** {success_total} ✅ | **Failure:** {failure_total} ❌ | **Skipped:** {skipped_total} ⏭️",
-            "",
-        ]
-
-        # --- Next Validation Command block ---
-        index_md.extend(
-            _build_next_command_block(
-                failed_projects=failed_projects,
-                validated_repositories=self.validated_repositories,
-            )
+        index_md = self._build_finalize_index_md(all_projects, failed_projects, totals)
+        index_path = os.path.join(self.report_root, "index.md")
+        _write_report_text_file(
+            index_path, index_md, error_message="Operation failed: error_type=%s"
         )
 
-        index_md.append("## Category Summary")
-        index_md.append("")
-        index_md.append("| Category | ✅ Pass | ❌ Fail | ⏭️ Skip |")
-        index_md.append("|---|---|---|---|")
-
-        for cat in self.categories:
-            index_md.append(
-                f"| {cat.name} | {cat.success_count} | {cat.failure_count} | {cat.skipped_count} |"
-            )
-
-        index_md.append("")
-        index_md.append("## Repository Results")
-        index_md.append("")
-        index_md.append("| Repository | ✅ Pass | ❌ Fail | ⏭️ Skip | Details |")
-        index_md.append("|---|---|---|---|---|")
-
-        for project in all_projects:
-            stats = self.project_stats.get(
-                project, {"success": 0, "failure": 0, "skipped": 0}
-            )
-            safe_project = _sanitize_filename(project)
-            repo_dir_name = f"{safe_project}-results"
-            details_link = f"[📂 {project}-results]({repo_dir_name}/)"
-            status_icon = "🔴" if stats["failure"] > 0 else "🟢"
-            index_md.append(
-                f"| {status_icon} {project} | {stats['success']} | {stats['failure']} | {stats['skipped']} | {details_link} |"
-            )
-
-        index_md.append("")
-
-        # Detailed per-repo sections with file links
-        index_md.append("---")
-        index_md.append("")
-        index_md.append("## Detailed File Index")
-        index_md.append("")
-
-        for project in all_projects:
-            files_list = self.project_files.get(project, [])
-            if not files_list:
-                continue
-            stats = self.project_stats.get(
-                project, {"success": 0, "failure": 0, "skipped": 0}
-            )
-            status_icon = "🔴" if stats["failure"] > 0 else "🟢"
-            index_md.append(f"### {status_icon} {project}")
-
-            def _sort_key(fpath: str) -> tuple[int, str]:
-                fname = os.path.basename(fpath)
-                if fname.startswith("summary_"):
-                    return (1, fname)
-                return (0, fname)
-
-            for fpath in sorted(files_list, key=_sort_key):
-                fname = os.path.basename(fpath)
-                index_md.append(f"- [{fname}]({fpath})")
-            index_md.append("")
-
-        index_path = os.path.join(self.report_root, "index.md")
-        try:
-            with open(index_path, "w") as f:
-                f.write("\n".join(index_md))
-        except Exception as e:
-            logger.error("Operation failed: error_type=%s", type(e).__name__)
-
         # --- Summary file ---
-        total = sum(c.total for c in self.categories)
-        success_total = sum(c.success_count for c in self.categories)
-        failure_total = sum(c.failure_count for c in self.categories)
-        skipped_total = sum(c.skipped_count for c in self.categories)
-
         summary_md = _build_summary_md(
             timestamp=self.timestamp,
             total=total,
@@ -1965,17 +1999,26 @@ class IncrementalReportWriter:
             skipped_count=skipped_total,
         )
         summary_path = os.path.join(self.report_root, "summary.md")
-        try:
-            with open(summary_path, "w") as f:
-                f.write("\n".join(summary_md))
-        except Exception as e:
-            logger.error(
-                "Failed to write the validation summary: error_type=%s",
-                type(e).__name__,
-            )
+        _write_report_text_file(
+            summary_path,
+            summary_md,
+            error_message="Failed to write the validation summary: error_type=%s",
+        )
 
         logger.info("Validation report finalized")
         return self.report_root
+
+    def _build_project_summary_content(self, project: str) -> list[str]:
+        """Render this project's summary body: a stub, or the real category summary."""
+        workspace_path = self.project_paths.get(project)
+        if _project_lacks_scan_config(workspace_path):
+            return _no_scan_config_summary_md(project, self.timestamp)
+        project_categories = [cat.for_project(project) for cat in self.categories]
+        return _build_project_summary_md(
+            project=project,
+            timestamp=self.timestamp,
+            categories=project_categories,
+        )
 
     def _write_project_summary(self, project: str) -> None:
         """Generate/update the single project summary_repo_timestamp.md for a specific project dynamically during validation."""
@@ -1985,60 +2028,19 @@ class IncrementalReportWriter:
         repo_dir = os.path.join(self.report_root, repo_dir_name)
         os.makedirs(repo_dir, exist_ok=True)
 
-        # 1. Clean up any stale summary files inside repo_dir (like summary.md or summaries_... or summary_...)
-        for fname in os.listdir(repo_dir):
-            if (
-                fname == "summary.md"
-                or fname.startswith("summaries_")
-                or fname.startswith("summary_")
-            ):
-                try:
-                    os.remove(os.path.join(repo_dir, fname))
-                except Exception:  # nosec B110
-                    pass
+        _remove_stale_summary_files(repo_dir)
 
-        # Check if project should be skipped (has neither .pre-commit-config.yaml nor pyproject.toml)
-        workspace_path = self.project_paths.get(project)
-        has_pc = False
-        has_py = False
-        if workspace_path and os.path.isdir(workspace_path):
-            has_pc = os.path.exists(
-                os.path.join(workspace_path, ".pre-commit-config.yaml")
-            )
-            has_py = os.path.exists(os.path.join(workspace_path, "pyproject.toml"))
+        summary_md = self._build_project_summary_content(project)
 
-        if (
-            workspace_path
-            and os.path.isdir(workspace_path)
-            and not has_pc
-            and not has_py
-        ):
-            summary_md = [
-                f"# 📋 {project} Validation Summary",
-                f"**Time:** {self.timestamp}  ",
-                "",
-                "> No pre-commit configuration (`.pre-commit-config.yaml`) or `pyproject.toml` file found in the repository. This repository does not require ecosystem validation.",
-                "",
-            ]
-        else:
-            # Collect categories for this project
-            project_categories = [cat.for_project(project) for cat in self.categories]
-            summary_md = _build_project_summary_md(
-                project=project,
-                timestamp=self.timestamp,
-                categories=project_categories,
-            )
         summary_filename = f"summary_{safe_project_underscores}_{self.ts_path}.md"
         summary_filepath = os.path.join(repo_dir, summary_filename)
 
-        try:
-            with open(summary_filepath, "w") as f:
-                f.write("\n".join(summary_md))
-            rel_summary_path = os.path.join(repo_dir_name, summary_filename)
-            if rel_summary_path not in self.project_files[project]:
-                self.project_files[project].append(rel_summary_path)
-        except Exception as e:
-            logger.error(
-                "Failed to write project summary: error_type=%s",
-                type(e).__name__,
-            )
+        if not _write_report_text_file(
+            summary_filepath,
+            summary_md,
+            error_message="Failed to write project summary: error_type=%s",
+        ):
+            return
+        rel_summary_path = os.path.join(repo_dir_name, summary_filename)
+        if rel_summary_path not in self.project_files[project]:
+            self.project_files[project].append(rel_summary_path)
