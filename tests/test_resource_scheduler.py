@@ -299,6 +299,17 @@ def test_insufficient_capacity_is_refused_before_any_executor_boundary():
     assert scheduler.capacity.reserved_for("local") == ResourceVector()
 
 
+def test_eligible_host_always_carries_a_disk_decision():
+    scheduler, port = _scheduler(_host("local"))
+    port.claim("wi", fence="f")
+
+    decision = scheduler.admit(_request("wi", "f"), now=NOW)
+
+    assert decision.admitted
+    assert decision.disk is not None
+    assert decision.disk.code == DiskDecisionCode.ADMIT
+
+
 def test_frontend_concurrency_limit_spans_repositories():
     scheduler, port = _scheduler(
         _host("local", cpu=64, memory=100_000, disk=100_000, processes=32)

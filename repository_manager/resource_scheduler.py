@@ -289,9 +289,7 @@ class ResourceScheduler:
         # remaining eligible hosts.  Fairness for queued jobs is handled by
         # ``select``; a single admission must not mutate queue counters.
         eligible.sort(key=lambda item: self._host_sort_key(resources, item[0]))
-        for view, disk_or_none, _ in eligible:
-            if disk_or_none is None:
-                continue
+        for view, disk, _ in eligible:
             decision = self._attempt_reservation_on_host(
                 request,
                 profile,
@@ -301,7 +299,7 @@ class ResourceScheduler:
                 input_fingerprint,
                 disk_policy_key,
                 view,
-                disk_or_none,
+                disk,
                 now,
                 explain_only,
                 native_query,
@@ -325,8 +323,8 @@ class ResourceScheduler:
 
     @staticmethod
     def _filter_eligible_hosts(
-        host_results: list[tuple[CapacityView, DiskDecision | None, str]],
-    ) -> list[tuple[CapacityView, DiskDecision | None, str]]:
+        host_results: list[tuple[CapacityView, DiskDecision, str]],
+    ) -> list[tuple[CapacityView, DiskDecision, str]]:
         return [item for item in host_results if item[2] == "eligible"]
 
     def _resolve_profile_and_deadline(
@@ -578,7 +576,7 @@ class ResourceScheduler:
         *,
         now: datetime,
         explain_only: bool,
-    ) -> tuple[list[tuple[CapacityView, DiskDecision | None, str]], list[str]]:
+    ) -> tuple[list[tuple[CapacityView, DiskDecision, str]], list[str]]:
         """Classify each candidate host, in order, exactly as ``admit`` did.
 
         This still calls ``self.disk_policy.evaluate(...)`` once per host in
@@ -587,7 +585,7 @@ class ResourceScheduler:
         so the per-host iteration order and count are preserved exactly.
         """
 
-        host_results: list[tuple[CapacityView, DiskDecision | None, str]] = []
+        host_results: list[tuple[CapacityView, DiskDecision, str]] = []
         reasons: list[str] = []
         for view in hosts:
             if view.state in {HostState.DRAINED, HostState.DRAINING}:
@@ -638,7 +636,7 @@ class ResourceScheduler:
     def _deferred_decision_for_no_eligible_host(
         self,
         request: AdmissionRequest,
-        host_results: list[tuple[CapacityView, DiskDecision | None, str]],
+        host_results: list[tuple[CapacityView, DiskDecision, str]],
         reasons: list[str],
         hosts: list[CapacityView],
     ) -> AdmissionDecision:
@@ -646,13 +644,12 @@ class ResourceScheduler:
             (
                 item
                 for item in host_results
-                if item[1] and item[1].code == DiskDecisionCode.HIGH_WATERMARK
+                if item[1].code == DiskDecisionCode.HIGH_WATERMARK
             ),
             None,
         )
         if disk_failure:
             disk_failure_decision = disk_failure[1]
-            assert disk_failure_decision is not None
             return self._decision(
                 request,
                 AdmissionStatus.DEFERRED,
@@ -676,7 +673,7 @@ class ResourceScheduler:
 
     @staticmethod
     def _no_host_reason_code(
-        host_results: list[tuple[CapacityView, DiskDecision | None, str]],
+        host_results: list[tuple[CapacityView, DiskDecision, str]],
         reasons: list[str],
     ) -> AdmissionReason:
         """Same elif cascade as the original inline code, as sequential ifs.
@@ -688,8 +685,7 @@ class ResourceScheduler:
         """
 
         if host_results and any(
-            item[1] and item[1].code == DiskDecisionCode.INSUFFICIENT_FREE
-            for item in host_results
+            item[1].code == DiskDecisionCode.INSUFFICIENT_FREE for item in host_results
         ):
             return AdmissionReason.DISK_INSUFFICIENT
         if any("concurrency" in reason for reason in reasons):
@@ -792,7 +788,7 @@ class ResourceScheduler:
         native_query: Any,
         disk: DiskDecision,
         reasons: list[str],
-        eligible: list[tuple[CapacityView, DiskDecision | None, str]],
+        eligible: list[tuple[CapacityView, DiskDecision, str]],
     ) -> tuple[ReservationRecord, AdmissionDecision | None]:
         """Handle an ``atomic_reserve`` IDEMPOTENT result, verbatim.
 
@@ -864,11 +860,11 @@ class ResourceScheduler:
         explain_only: bool,
         native_query: Any,
         reasons: list[str],
-        eligible: list[tuple[CapacityView, DiskDecision | None, str]],
+        eligible: list[tuple[CapacityView, DiskDecision, str]],
     ) -> AdmissionDecision | None:
         """Try to admit onto one already-eligible host, verbatim.
 
-        Extracted from the body of the original ``for view, disk_or_none, _
+        Extracted from the body of the original ``for view, disk, _
         in eligible:`` loop.  Returns ``None`` only where the original had a
         bare ``continue`` (capacity changed during ``try_reserve``) so the
         caller's loop moves on to the next host in the same order; every
