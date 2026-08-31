@@ -50,12 +50,12 @@ def test_install_projects_no_project_map(tmp_path):
     assert git.install_projects(report=False) == []
 
 
-@patch("repository_manager.repository_manager.shutil.which", return_value=None)
-def test_install_projects_uv_missing_short_circuits_au_step(
-    mock_which, git_with_projects
-):
+def test_install_projects_uv_missing_short_circuits_au_step(git_with_projects):
     git, au_dir, proj_dir = git_with_projects
-    with patch.object(Git, "git_action") as mock_git_action:
+    with (
+        patch("repository_manager.repository_manager.shutil.which", return_value=None),
+        patch.object(Git, "git_action") as mock_git_action,
+    ):
         results = git.install_projects(report=False)
     # uv missing => step 1 never calls git_action at all; step 2 finds no
     # marker files in either project dir, so it produces two "skipped"
@@ -64,22 +64,32 @@ def test_install_projects_uv_missing_short_circuits_au_step(
     assert [r.status for r in results] == ["skipped", "skipped"]
 
 
-@patch("repository_manager.repository_manager.shutil.which", return_value="/usr/bin/uv")
-def test_install_projects_au_path_missing(mock_which, tmp_path):
+def test_install_projects_au_path_missing(tmp_path):
     git = Git(path=str(tmp_path))
     proj_dir = tmp_path / "proj-a"
     proj_dir.mkdir()
     git.project_map = {"https://example.invalid/proj-a.git": str(proj_dir)}
-    with patch.object(Git, "git_action") as mock_git_action:
+    with (
+        patch(
+            "repository_manager.repository_manager.shutil.which",
+            return_value="/usr/bin/uv",
+        ),
+        patch.object(Git, "git_action") as mock_git_action,
+    ):
         results = git.install_projects(report=False)
     mock_git_action.assert_not_called()
     assert [r.status for r in results] == ["skipped"]
 
 
-@patch("repository_manager.repository_manager.shutil.which", return_value="/usr/bin/uv")
-def test_install_projects_launcher_missing(mock_which, git_with_projects):
+def test_install_projects_launcher_missing(git_with_projects):
     git, au_dir, proj_dir = git_with_projects
-    with patch.object(Git, "git_action") as mock_git_action:
+    with (
+        patch(
+            "repository_manager.repository_manager.shutil.which",
+            return_value="/usr/bin/uv",
+        ),
+        patch.object(Git, "git_action") as mock_git_action,
+    ):
         results = git.install_projects(report=False)
     mock_git_action.assert_not_called()
     # step 1: error result (missing scripts/uv_workspace.py); step 2: both
@@ -88,21 +98,24 @@ def test_install_projects_launcher_missing(mock_which, git_with_projects):
     assert "uv_workspace.py" in results[0].error.message
 
 
-@patch("repository_manager.repository_manager.shutil.which", return_value="/usr/bin/uv")
-def test_install_projects_au_success_syncs_declared_sibling(
-    mock_which, git_with_projects
-):
+def test_install_projects_au_success_syncs_declared_sibling(git_with_projects):
     git, au_dir, proj_dir = git_with_projects
     (au_dir / "scripts").mkdir()
     (au_dir / "scripts" / "uv_workspace.py").write_text("# launcher\n")
 
     calls = []
+    timeouts = []
 
     def fake_git_action(command, path, **kwargs):
         calls.append((command, path))
+        timeouts.append(kwargs["timeout"])
         return GitResult(status="success", data="ok", metadata=_meta(command))
 
     with (
+        patch(
+            "repository_manager.repository_manager.shutil.which",
+            return_value="/usr/bin/uv",
+        ),
         patch.object(Git, "git_action", side_effect=fake_git_action),
         patch.object(
             Git, "_materialize_uv_siblings", return_value=("agent-utilities",)
@@ -116,20 +129,22 @@ def test_install_projects_au_success_syncs_declared_sibling(
     # Second call must be the sibling's own `uv sync --all-extras`, in proj_dir
     # (the only non-au, existing project_map path).
     assert calls[1] == ("uv sync --all-extras", str(proj_dir))
+    assert timeouts == [300, 300]
     # Both results from step 1 report success; step 2 finds no marker files
     # in either directory and appends two more "skipped" results.
     assert [r.status for r in results] == ["success", "success", "skipped", "skipped"]
 
 
-@patch("repository_manager.repository_manager.shutil.which", return_value="/usr/bin/uv")
-def test_install_projects_sibling_materialize_error_is_captured(
-    mock_which, git_with_projects
-):
+def test_install_projects_sibling_materialize_error_is_captured(git_with_projects):
     git, au_dir, proj_dir = git_with_projects
     (au_dir / "scripts").mkdir()
     (au_dir / "scripts" / "uv_workspace.py").write_text("# launcher\n")
 
     with (
+        patch(
+            "repository_manager.repository_manager.shutil.which",
+            return_value="/usr/bin/uv",
+        ),
         patch.object(
             Git,
             "git_action",
@@ -149,9 +164,8 @@ def test_install_projects_sibling_materialize_error_is_captured(
     assert "bad sibling map" in results[1].error.message
 
 
-@patch("repository_manager.repository_manager.shutil.which", return_value=None)
 def test_install_projects_step2_node_pnpm_ignored_build_scripts_becomes_error(
-    mock_which, tmp_path
+    tmp_path,
 ):
     git = Git(path=str(tmp_path))
     proj_dir = tmp_path / "proj-a"
@@ -161,13 +175,16 @@ def test_install_projects_step2_node_pnpm_ignored_build_scripts_becomes_error(
     (proj_dir / "pnpm-lock.yaml").write_text("")
     git.project_map = {"https://example.invalid/proj-a.git": str(proj_dir)}
 
-    with patch.object(
-        Git,
-        "git_action",
-        return_value=GitResult(
-            status="success", data="Ignored build scripts: foo", metadata=_meta()
-        ),
-    ) as mock_git_action:
+    with (
+        patch("repository_manager.repository_manager.shutil.which", return_value=None),
+        patch.object(
+            Git,
+            "git_action",
+            return_value=GitResult(
+                status="success", data="Ignored build scripts: foo", metadata=_meta()
+            ),
+        ) as mock_git_action,
+    ):
         results = git.install_projects(report=False)
 
     mock_git_action.assert_called_once_with("pnpm install", path=str(proj_dir))
@@ -176,10 +193,7 @@ def test_install_projects_step2_node_pnpm_ignored_build_scripts_becomes_error(
     assert "Ignored build scripts" in results[0].data
 
 
-@patch("repository_manager.repository_manager.shutil.which", return_value=None)
-def test_install_projects_step2_python_only_project_produces_no_result(
-    mock_which, tmp_path
-):
+def test_install_projects_step2_python_only_project_produces_no_result(tmp_path):
     """A pyproject-only (non-Node) project is handled by the uv-sync step,
     not step 2 -- step 2 must neither call git_action nor append a result
     for it."""
@@ -189,21 +203,26 @@ def test_install_projects_step2_python_only_project_produces_no_result(
     (proj_dir / "pyproject.toml").write_text("[project]\nname='x'\n")
     git.project_map = {"https://example.invalid/proj-a.git": str(proj_dir)}
 
-    with patch.object(Git, "git_action") as mock_git_action:
+    with (
+        patch("repository_manager.repository_manager.shutil.which", return_value=None),
+        patch.object(Git, "git_action") as mock_git_action,
+    ):
         results = git.install_projects(report=False)
 
     mock_git_action.assert_not_called()
     assert results == []
 
 
-@patch("repository_manager.repository_manager.shutil.which", return_value=None)
-def test_install_projects_report_exported_when_enabled(mock_which, tmp_path):
+def test_install_projects_report_exported_when_enabled(tmp_path):
     git = Git(path=str(tmp_path), report_path=str(tmp_path / "report.md"))
     proj_dir = tmp_path / "proj-a"
     proj_dir.mkdir()
     git.project_map = {"https://example.invalid/proj-a.git": str(proj_dir)}
 
-    with patch.object(Git, "_export_report") as mock_export:
+    with (
+        patch("repository_manager.repository_manager.shutil.which", return_value=None),
+        patch.object(Git, "_export_report") as mock_export,
+    ):
         git.install_projects(report=True)
     mock_export.assert_called_once()
     args, _ = mock_export.call_args
@@ -211,13 +230,15 @@ def test_install_projects_report_exported_when_enabled(mock_which, tmp_path):
     assert "INSTALLATION SUMMARY" in args[0]
 
 
-@patch("repository_manager.repository_manager.shutil.which", return_value=None)
-def test_install_projects_report_not_exported_when_disabled(mock_which, tmp_path):
+def test_install_projects_report_not_exported_when_disabled(tmp_path):
     git = Git(path=str(tmp_path), report_path=str(tmp_path / "report.md"))
     proj_dir = tmp_path / "proj-a"
     proj_dir.mkdir()
     git.project_map = {"https://example.invalid/proj-a.git": str(proj_dir)}
 
-    with patch.object(Git, "_export_report") as mock_export:
+    with (
+        patch("repository_manager.repository_manager.shutil.which", return_value=None),
+        patch.object(Git, "_export_report") as mock_export,
+    ):
         git.install_projects(report=False)
     mock_export.assert_not_called()

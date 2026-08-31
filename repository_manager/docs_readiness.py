@@ -40,7 +40,7 @@ MAX_REPOSITORIES = 512
 MAX_OUTPUTS = 256
 MAX_OUTPUT_BYTES = 8_000_000
 MAX_GIT_STATUS_BYTES = 1_000_000
-EXPECTED_AGENT_FLEET_COUNT = 76
+EXPECTED_AGENT_FLEET_COUNT = 78
 _AGENT_PACKAGES_PREFIX = "agent-packages/"
 _ERROR_PREFIXES = frozenset(
     {
@@ -369,7 +369,13 @@ def _select_repositories(
 def _git_toplevel(path: Path) -> tuple[Path | None, str]:
     try:
         probe = subprocess.run(
-            [_GIT_EXECUTABLE, "-C", str(path), "rev-parse", "--show-toplevel"],
+            [
+                cast(str, _GIT_EXECUTABLE),
+                "-C",
+                str(path),
+                "rev-parse",
+                "--show-toplevel",
+            ],
             capture_output=True,
             check=False,
             text=True,
@@ -391,7 +397,7 @@ def _git_status_stdout(path: Path) -> tuple[str | None, str]:
     try:
         status = subprocess.run(
             [
-                _GIT_EXECUTABLE,
+                cast(str, _GIT_EXECUTABLE),
                 "-C",
                 str(path),
                 "status",
@@ -1000,11 +1006,12 @@ def _dispatch_one(
     if not result.get("ok"):
         return _dispatch_failure_result(identity, action, before_artifacts, result)
     if action == "apply":
-        result, error = _dispatch_apply_verify(
+        verified_result, error = _dispatch_apply_verify(
             generator, identity, before_artifacts, result
         )
         if error is not None:
             return error
+        result = cast(dict[str, Any], verified_result)
     return _dispatch_success_result(action, identity, result)
 
 
@@ -1094,7 +1101,10 @@ def dispatch(action: str = "preview", **kwargs: Any) -> dict[str, Any]:
     if error is not None:
         return error
 
-    results = [_dispatch_one(action, identity, generator) for identity in selected]
+    results = [
+        _dispatch_one(action, identity, cast(Generator, generator))
+        for identity in cast(tuple[RepositoryIdentity, ...], selected)
+    ]
     failures = [item for item in results if item.get("status") == "blocked"]
     return {
         "ok": not failures,

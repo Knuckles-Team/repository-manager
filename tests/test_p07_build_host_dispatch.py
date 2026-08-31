@@ -156,10 +156,23 @@ def test_dispatch_request_with_host_refuses_a_dirty_tree(
 
 def test_local_request_default_is_unaffected_by_the_host_parameter_being_absent(
     repo_with_origin: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`host` omitted (the default) must still take the ORIGINAL, unchanged
     local `colocated=True` path — proving the new branch is additive.
     """
+
+    gib = 1024**3
+    monkeypatch.setattr(bq, "_DISK_POLICY", None)
+    monkeypatch.setattr(
+        bq.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(
+            total=100 * gib,
+            used=10 * gib,
+            free=90 * gib,
+        ),
+    )
 
     result = bq.dispatch("request", path=str(repo_with_origin), colocated=True)
     assert result["ok"] is True
