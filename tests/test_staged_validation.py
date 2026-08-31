@@ -62,6 +62,8 @@ def _repo(tmp_path: Path) -> tuple[Path, str]:
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.name", "RMDD test")
+    _git(repo, "config", "user.email", "rmdd@example.invalid")
     (repo / "tracked.txt").write_text("tracked\n", encoding="utf-8")
     (repo / "removed.txt").write_text("remove me\n", encoding="utf-8")
     _git(repo, "add", "-A")

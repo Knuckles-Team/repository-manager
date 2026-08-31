@@ -96,7 +96,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from agent_utilities.governance.lanes import (
     FragmentStore,
@@ -660,9 +660,13 @@ def _append_domain_record(
     )
     try:
         if kind == CANDIDATE_SNAPSHOT_KIND:
-            should_append = _append_candidate_snapshot(record, raw, existing_raw)
+            should_append = _append_candidate_snapshot(
+                cast(CandidateSnapshot, record), raw, existing_raw
+            )
         else:
-            should_append = _append_generation_record(record, raw, existing_raw)
+            should_append = _append_generation_record(
+                cast(GenerationRecord, record), raw, existing_raw
+            )
     except CandidateGenerationError as exc:
         raise MergeQueueError(str(exc)) from exc
     if not should_append:
@@ -1274,7 +1278,7 @@ def _canonicalize_snapshots(
 
 def _load_folded_records(
     repo: Path,
-) -> tuple[list[CandidateSnapshot], list[GenerationRecord]]:
+) -> tuple[tuple[CandidateSnapshot, ...], tuple[GenerationRecord, ...]]:
     try:
         return (
             fold_candidate_records(_queue_raw_records(repo)),
@@ -1474,11 +1478,35 @@ def materialized(repo: Path, commit: str, *, scope: LaneScope) -> Iterator[Path]
         shutil.rmtree(target, ignore_errors=True)
     _require_git(["worktree", "add", "--detach", str(target), commit], repo)
     try:
+        _attach_repo_venv(scope.main_tree, target)
         yield target
     finally:
         _run_git(["worktree", "remove", "--force", str(target)], repo)
         shutil.rmtree(target, ignore_errors=True)
         _run_git(["worktree", "prune"], repo)
+
+
+def _attach_repo_venv(canonical: Path, snapshot: Path) -> None:
+    """Expose the repository's ignored venv inside a detached snapshot.
+
+    Git worktrees intentionally omit ignored ``.venv`` directories, while a
+    declared gate such as ``.venv/bin/python -m pytest`` intentionally refuses
+    ambient Python. Reuse the canonical checkout's already-versioned environment
+    at the same relative path; the process still runs with ``snapshot`` as its
+    cwd, so imports and files come from the exact merged commit under test.
+
+    A missing environment remains missing and therefore fails closed at process
+    launch. A repository that does not ignore ``.venv`` is also left untouched:
+    adding an untracked runtime path would make the supposedly clean snapshot
+    dirty and invalidate the isolation claim.
+    """
+    source = canonical / ".venv"
+    target = snapshot / ".venv"
+    if target.exists() or target.is_symlink() or not source.is_dir():
+        return
+    if not _run_git(["check-ignore", "-q", ".venv"], snapshot).ok:
+        return
+    target.symlink_to(source.resolve(), target_is_directory=True)
 
 
 # ---------------------------------------------------------------------------
@@ -2994,7 +3022,9 @@ def run_queue(
     )
     if early is not None:
         return early
-    return _run_queue_summary(repo, config, outcomes, started)
+    return _run_queue_summary(
+        repo, config, cast(list[dict[str, Any]], outcomes), started
+    )
 
 
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:

@@ -14,6 +14,7 @@ does not know what a gate IS — and it is checked, not asserted.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -605,6 +606,51 @@ def test_a_gate_that_cannot_be_executed_is_refused_not_assumed_clean(
     result = mq.run_queue(path=repo, prune=False, git=git)
     assert result["outcomes"][0]["landed"] is False
     assert "could not execute" in result["outcomes"][0]["gate"]["checks"][0]["detail"]
+
+
+def test_materialized_gate_reuses_versioned_repo_venv_without_ambient_python(
+    tmp_path: Path,
+) -> None:
+    """Ignored repo environments remain available inside clean snapshots."""
+    repo = _init_repo(tmp_path / "repo-venv")
+    (repo / ".gitignore").write_text(".venv\n")
+    _write_config(
+        repo,
+        """
+        base: main
+        environment_signature: [".venv/bin/python", "--signature"]
+        gates:
+          - name: repo-python
+            command: [".venv/bin/python", "--gate"]
+            tier: fast
+            compare: exit
+        """,
+    )
+    _commit(repo, "init")
+    _branch_with(repo, "feat/x", {"candidate.txt": "candidate bytes\n"}, "candidate")
+
+    interpreter = repo / ".venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --signature ]; then printf 'repo-python-v1\\n'; exit 0; fi\n"
+        "test -f candidate.txt || { echo wrong-source-tree; exit 9; }\n"
+        'test -z "$(git status --porcelain --untracked-files=all)" || exit 10\n'
+    )
+    interpreter.chmod(0o755)
+
+    git = FakeGit(str(tmp_path), {repo.name: str(repo)})
+    mq.enqueue("feat/x", path=repo)
+    result = mq.run_queue(path=repo, prune=False, git=git)
+
+    outcome = result["outcomes"][0]
+    assert outcome["landed"] is True, outcome
+    assert (
+        outcome["gate"]["environment"]
+        == hashlib.sha256(b"repo-python-v1\n").hexdigest()[:16]
+    )
+    assert (repo / "candidate.txt").read_text() == "candidate bytes\n"
+    assert _run("git status --porcelain --untracked-files=all", repo) == ""
 
 
 def test_dropping_a_declared_gate_is_a_refusal(shell_repo: Path) -> None:
