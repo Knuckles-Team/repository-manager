@@ -2640,7 +2640,7 @@ def prune_landed(
     wrongly-pruned one loses work, and the second is never an acceptable trade
     for the first.
     """
-    from repository_manager import prune_guard
+    import repository_manager.prune_guard as prune_guard
     from repository_manager.worktree import WorktreeManager
 
     result: dict[str, Any] = {"branch": candidate.branch, "pruned": False}

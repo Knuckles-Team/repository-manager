@@ -6,6 +6,8 @@ repositories:
   description: GitHub Actions pipelines for the agent ecosystem.
 - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/pipelines/gitlab-pipelines.git
   description: GitLab CI pipelines for the agent ecosystem.
+- url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/plans.git
+  description: Versioned planning and evidence record for the agent-packages ecosystem.
 subdirectories:
   agent-packages:
     description: Core utility packages, shared libraries, and agent implementations.
@@ -173,7 +175,8 @@ subdirectories:
         - url: https://github.com/Knuckles-Team/onetrust-api.git
           description: OneTrust API Wrapper + MCP Server + A2A Agent (100% API coverage)
         - url: https://github.com/Knuckles-Team/spark-mcp.git
-          description: Spark Connect (gRPC) API + MCP Server + A2A Server for Agentic AI!
+          description: Spark Connect (gRPC) API + MCP Server + A2A Server for Agentic
+            AI!
         - url: https://github.com/Knuckles-Team/sql-mcp.git
           description: Generic SQL MCP Server for Agentic AI! Postgres, MySQL/MariaDB,
             MSSQL, Oracle, and SQLite.
@@ -306,6 +309,9 @@ subdirectories:
       description: Proxy server to bypass Cloudflare protection.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/images/elasticsearch.git
       description: Elasticsearch distributed search and analytics engine.
+    - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/images/opensearch.git
+      description: OpenSearch distributed search and analytics engine (Apache-2.0
+        search tier, CA-50).
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/images/docker-registry-webui.git
       description: Web browser user interface for private Docker registries.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/images/debian-dind.git

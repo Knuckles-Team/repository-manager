@@ -1,4 +1,6 @@
-import os
+import subprocess
+from pathlib import Path
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,28 +10,70 @@ from repository_manager.repository_manager import Git, GitResult
 from repository_manager.scan_models import HookResult, RepoScanResult
 
 
+def _run_git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _make_real_repo(root: Path, name: str) -> Path:
+    """Create a tiny worktree with a real bare upstream for phase target checks."""
+    root.mkdir(parents=True, exist_ok=True)
+    remote = root / f"{name}.git"
+    local = root / name
+    _run_git(root, "init", "--bare", "--initial-branch=main", str(remote))
+    _run_git(root, "init", "--initial-branch=main", str(local))
+    _run_git(local, "config", "user.email", "tests@example.invalid")
+    _run_git(local, "config", "user.name", "Repository Manager Tests")
+    (local / "README.md").write_text(f"{name}\n")
+    _run_git(local, "add", "README.md")
+    _run_git(local, "commit", "-m", "initial")
+    _run_git(local, "remote", "add", "origin", str(remote))
+    _run_git(local, "push", "-u", "origin", "main")
+    return local
+
+
+def _real_repo_map(root: Path) -> dict[str, Path]:
+    return {name: _make_real_repo(root, name) for name in ("repo1", "repo2", "repo3")}
+
+
+def _project_map(repo_paths: dict[str, Path]) -> dict[str, str]:
+    return {
+        f"https://github.com/Knuckles-Team/{name}.git": str(path)
+        for name, path in repo_paths.items()
+    }
+
+
+def _called_path(call: Any) -> str:
+    """Read a path from either phased_push's keyword or push_projects' arg."""
+    path = call.kwargs.get("path") or (call.args[0] if call.args else None)
+    assert path is not None
+    return path
+
+
+def _pushed_paths(manager: Git) -> list[str]:
+    mock = cast(MagicMock, manager.push_project)
+    return [_called_path(call) for call in mock.call_args_list]
+
+
 @pytest.fixture
 def mock_repo_manager(tmp_path):
     manager = Git(path=str(tmp_path))
-    manager.project_map = {
-        "https://github.com/Knuckles-Team/repo1.git": str(tmp_path / "repo1"),
-        "https://github.com/Knuckles-Team/repo2.git": str(tmp_path / "repo2"),
-        "https://github.com/Knuckles-Team/repo3.git": str(tmp_path / "repo3"),
-    }
-    # The phased push/bump loops skip projects whose local clone is absent
-    # (os.path.isdir guard); create the mapped dirs so the mocked git_action runs.
-    for name in ("repo1", "repo2", "repo3"):
-        (tmp_path / name).mkdir(exist_ok=True)
+    manager.project_map = _project_map(_real_repo_map(tmp_path))
 
-    def git_action_side_effect(*args, **kwargs):
-        command = kwargs.get("command", "")
-        if not command and args:
-            command = args[0]
-        if "status --porcelain" in command:
-            return GitResult(status="success", data="", error=None, metadata=None)
-        return GitResult(status="success", data="Pushed", error=None, metadata=None)
-
-    manager.git_action = MagicMock(side_effect=git_action_side_effect)  # type: ignore[method-assign]
+    # The phased workflow is responsible for ordering and barriers.  Patch the
+    # transaction boundary so these tests do not bypass the fail-closed
+    # status/upstream/gate/push protocol by mocking individual git commands.
+    manager.push_project = MagicMock(  # type: ignore[method-assign]
+        return_value=GitResult(
+            status="success", data="Pushed", error=None, metadata=None
+        )
+    )
     return manager
 
 
@@ -53,11 +97,15 @@ def test_phased_push(mock_sleep, mock_repo_manager):
     )
 
     assert len(results) == 3  # 3 pushes
-    # 3 status checks + 3 pushes = 6 calls
-    assert mock_repo_manager.git_action.call_count == 6
+    pushed_paths = _pushed_paths(mock_repo_manager)
+    assert pushed_paths[0] == str(mock_repo_manager.path) + "/repo1"
+    assert set(pushed_paths[1:]) == {
+        str(mock_repo_manager.path) + "/repo2",
+        str(mock_repo_manager.path) + "/repo3",
+    }
 
     # CONCEPT:RM-DEP-READY: the old blind `time.sleep(wait_minutes * 60)` is
-    # gone. The mocked repos here have no `pyproject.toml`, so
+    # gone. The fixture repos have no `pyproject.toml`, so
     # `_phase_published_packages` finds nothing published and the
     # poll-until-satisfied-or-abort barrier returns immediately (nothing to
     # wait FOR) instead of always sleeping the full budget regardless of
@@ -83,10 +131,9 @@ def test_phased_push_single_project(mock_sleep, mock_repo_manager):
     )
 
     assert len(results) == 1
-    # 1 status check + 1 push = 2 calls
-    assert mock_repo_manager.git_action.call_count == 2
+    assert _pushed_paths(mock_repo_manager) == [str(mock_repo_manager.path) + "/repo1"]
 
-    # No `pyproject.toml` in the mocked repo -> nothing published -> the
+    # No `pyproject.toml` in the fixture repo -> nothing published -> the
     # dependency-readiness barrier has nothing to wait for (CONCEPT:RM-DEP-READY).
     assert mock_sleep.call_count == 0
 
@@ -143,8 +190,8 @@ def test_phased_push_aborts_wave_when_barrier_times_out_unsatisfied(
         start_phase=1, config=config, auto_start=False
     )
 
-    # Phase 1 pushed (status-check + push = 2 calls); phase 2 must NEVER run.
-    assert mock_repo_manager.git_action.call_count == 2
+    # Phase 1 pushed; phase 2 must NEVER run.
+    assert _pushed_paths(mock_repo_manager) == [str(mock_repo_manager.path) + "/repo1"]
     assert any(
         r.status == "error"
         and r.error
@@ -198,8 +245,10 @@ def test_phased_push_proceeds_immediately_when_barrier_satisfied(
             start_phase=1, config=config, auto_start=False
         )
 
-    # Both phases ran (2 status checks + 2 pushes = 4 calls); no blind sleep.
-    assert mock_repo_manager.git_action.call_count == 4
+    # Both phases ran; no blind sleep.
+    pushed_paths = _pushed_paths(mock_repo_manager)
+    assert pushed_paths[0] == str(mock_repo_manager.path) + "/repo1"
+    assert pushed_paths[1] == str(mock_repo_manager.path) + "/repo2"
     assert all(r.status == "success" for r in results)
     assert mock_sleep.call_count == 0
 
@@ -285,7 +334,11 @@ def test_phased_push_advances_the_instant_the_downstream_gate_passes(
         )
 
     assert len(fake_run_gate_stage.calls) == 2  # blocked once, then passed
-    assert mock_repo_manager.git_action.call_count == 4  # 2 status + 2 pushes
+    pushed_paths = _pushed_paths(mock_repo_manager)
+    assert pushed_paths == [
+        str(mock_repo_manager.path) + "/repo1",
+        str(mock_repo_manager.path) + "/repo2",
+    ]
     assert all(r.status == "success" for r in results)
 
 
@@ -326,7 +379,12 @@ def test_phased_push_blocks_the_wave_when_the_downstream_gate_keeps_failing(
     # while still genuinely exercising the deadline path.
     config = {
         "phases": [
-            {"phase": 1, "name": "Phase 1", "projects": ["repo1"], "wait_minutes": 0.001},
+            {
+                "phase": 1,
+                "name": "Phase 1",
+                "projects": ["repo1"],
+                "wait_minutes": 0.001,
+            },
             {"phase": 2, "name": "Phase 2", "projects": ["repo2"], "wait_minutes": 0},
         ]
     }
@@ -336,7 +394,7 @@ def test_phased_push_blocks_the_wave_when_the_downstream_gate_keeps_failing(
     )
 
     # Phase 1 pushed; phase 2 (repo2) must NEVER be attempted.
-    assert mock_repo_manager.git_action.call_count == 2
+    assert _pushed_paths(mock_repo_manager) == [str(mock_repo_manager.path) + "/repo1"]
     assert len(fake_run_gate_stage.calls) >= 1
     assert any(
         r.status == "error"
@@ -358,16 +416,15 @@ def test_phased_push_bulk_push_includes_images_and_services(mock_repo_manager):
     out via a ``_bulk_push_excluded`` guard; that narrowed the push below its
     designed scope and was removed. Use the declarative ``exclude`` field
     (see the next test) to carve out a specific repo."""
-    root = mock_repo_manager.path
+    root = Path(mock_repo_manager.path)
+    repo1 = _make_real_repo(root / "agent-packages" / "agents", "repo1")
+    image = _make_real_repo(root / "images", "foo")
+    service = _make_real_repo(root / "services", "bar")
     mock_repo_manager.project_map = {
-        "https://gitlab.arpa/agent-packages/agents/repo1.git": os.path.join(
-            root, "agent-packages", "agents", "repo1"
-        ),
-        "https://gitlab.arpa/images/foo.git": os.path.join(root, "images", "foo"),
-        "https://gitlab.arpa/services/bar.git": os.path.join(root, "services", "bar"),
+        "https://gitlab.arpa/agent-packages/agents/repo1.git": str(repo1),
+        "https://gitlab.arpa/images/foo.git": str(image),
+        "https://gitlab.arpa/services/bar.git": str(service),
     }
-    for rel in ("agent-packages/agents/repo1", "images/foo", "services/bar"):
-        os.makedirs(os.path.join(root, rel), exist_ok=True)
 
     config = {
         "phases": [
@@ -386,7 +443,11 @@ def test_phased_push_bulk_push_includes_images_and_services(mock_repo_manager):
     # All three pushed: agent-packages/repo1, images/foo AND services/bar.
     assert len(results) == 3
     assert all(r.status == "success" for r in results)
-    assert mock_repo_manager.git_action.call_count == 6  # 3 x (status + push)
+    assert set(_pushed_paths(mock_repo_manager)) == {
+        str(repo1),
+        str(image),
+        str(service),
+    }
 
 
 def test_phased_push_honors_declarative_exclude_pattern(mock_repo_manager):
@@ -408,20 +469,15 @@ def test_phased_push_honors_declarative_exclude_pattern(mock_repo_manager):
         start_phase=1, config=config, auto_start=False
     )
     assert len(results) == 1
-    assert mock_repo_manager.git_action.call_count == 2  # 1 status + 1 push
+    assert _pushed_paths(mock_repo_manager) == [str(mock_repo_manager.path) + "/repo1"]
 
 
 def test_push_projects(mock_repo_manager):
-    results = mock_repo_manager.push_projects(["/fake/path/repo1", "/fake/path/repo2"])
+    project_dirs = [
+        str(mock_repo_manager.path) + "/repo1",
+        str(mock_repo_manager.path) + "/repo2",
+    ]
+    results = mock_repo_manager.push_projects(project_dirs)
 
     assert len(results) == 2
-    # 2 status checks + 2 pushes = 4 calls
-    assert mock_repo_manager.git_action.call_count == 4
-    # Verify the push commands called were git push --follow-tags
-    push_calls = [
-        call
-        for call in mock_repo_manager.git_action.call_args_list
-        if "git push --follow-tags"
-        in (call.kwargs.get("command") or (call.args[0] if call.args else ""))
-    ]
-    assert len(push_calls) == 2
+    assert set(_pushed_paths(mock_repo_manager)) == set(project_dirs)

@@ -564,6 +564,57 @@ def test_prune_removes_a_clean_worktree_and_anchors_the_branch(
     )
 
 
+def test_prune_path_does_not_probe_optional_agent_or_mcp_modules(
+    tmp_path: Path,
+) -> None:
+    """A fresh prune import must not activate package-level optional loading."""
+    script = textwrap.dedent(
+        """
+        import sys
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        import repository_manager
+        import repository_manager.merge_queue as mq
+
+        def fail_optional_load(name):
+            raise AssertionError(f"unexpected optional load: {name}")
+
+        repository_manager._load_optional_module = fail_optional_load
+
+        class FakeGit:
+            path = sys.argv[1]
+            project_map = {}
+
+            def git_action(self, **kwargs):
+                return SimpleNamespace(status="error", data="", error=None)
+
+        result = mq.prune_landed(
+            mq.Candidate(branch="missing", lane="test"),
+            repo=Path(sys.argv[1]),
+            base="main",
+            git=FakeGit(),
+        )
+        assert result["pruned"] is False
+        assert "repository_manager.agent_server" not in sys.modules
+        assert "repository_manager.mcp_server" not in sys.modules
+        """
+    )
+    environment = os.environ.copy()
+    source_root = str(Path(__file__).resolve().parents[1])
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (source_root, environment.get("PYTHONPATH")) if value
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
 # ---------------------------------------------------------------------------
 # Behaviour 5 — honest degradation; and the batching/bisection contract
 # ---------------------------------------------------------------------------

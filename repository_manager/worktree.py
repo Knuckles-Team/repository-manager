@@ -40,7 +40,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from repository_manager import prune_guard, stash_guard
+import repository_manager.prune_guard as prune_guard
+import repository_manager.stash_guard as stash_guard
 from repository_manager.canonical_guard import guarded_canonical_mutation
 
 logger = logging.getLogger(__name__)

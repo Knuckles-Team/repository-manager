@@ -22,7 +22,7 @@ import tomllib
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 __version__ = "3.4.0"
 
@@ -43,6 +43,7 @@ import signal
 
 import yaml  # type: ignore[import-untyped]
 from agent_utilities.base_utilities import get_library_file_path, to_boolean
+from agent_utilities.governance.lanes import hold_lease
 
 try:
     from skill_graphs.skill_graph_utilities import get_skill_graphs_path
@@ -57,7 +58,11 @@ from agent_utilities.base_utilities import get_logger
 
 from repository_manager import dependency_readiness
 from repository_manager.canonical_guard import guarded_canonical_mutation
-from repository_manager.gates import HOOK_STAGE_BY_GATE_STAGE, run_gate_stage
+from repository_manager.gates import (
+    HOOK_STAGE_BY_GATE_STAGE,
+    default_gate_timeout,
+    run_gate_stage,
+)
 from repository_manager.models import (
     GitError,
     GitMetadata,
@@ -111,6 +116,33 @@ _CONSOLIDATED_SKILL_GRAPHS = (
 _UV_WORKSPACE_SIBLINGS_DIRNAME = ".uv-workspace-siblings"
 _PEP503_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z")
 _PEP503_NAME_SEPARATORS = re.compile(r"[-_.]+")
+_GIT_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_PUSH_TRANSACTION_LEASE = "pre-push-transaction"
+# One default Git timeout before the gate (snapshot), one after it (push), plus
+# five minutes for status/config/validation calls around those bounded steps.
+_PUSH_LEASE_MARGIN_SECONDS = (2 * 1800) + 300
+
+
+@dataclasses.dataclass(frozen=True)
+class _UpstreamRefresh:
+    """One immutable upstream snapshot used for every pre-push comparison."""
+
+    status: str
+    branch: str | None = None
+    head_oid: str | None = None
+    upstream_oid: str | None = None
+    push_remote: str | None = None
+    push_target: str | None = None
+    destination_ref: str | None = None
+    error: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class _PushDestination:
+    remote: str
+    snapshot_source: str
+    ref: str
+
 
 # Keep this list in sync with uv's documented ``tool.uv.sources`` table
 # fields.  Parsing source tables structurally, rather than looking only for
@@ -226,6 +258,13 @@ def _privacy_safe_diagnostic(value: object) -> str:
         return "repository operation output withheld"
     clean = _DIAGNOSTIC_ENDPOINT.sub("[REDACTED_ENDPOINT]", str(clean))
     return _DIAGNOSTIC_SECRET.sub("[REDACTED_SECRET]", clean)
+
+
+def _safe_diagnostic_or_default(value: object, default: str) -> str:
+    """Return a sanitized diagnostic, never an empty message."""
+
+    safe = _privacy_safe_diagnostic(value).strip()
+    return safe or default
 
 
 #: (executable-basename, subcommand) -> label. Both positions are STRUCTURAL
@@ -2675,35 +2714,528 @@ class Git:
         ) as executor:
             return list(executor.map(self.push_project, project_dirs))
 
-    def _has_unpushed_commits(self, target_path: str) -> bool:
-        """True when the local branch has commits the remote lacks.
+    @staticmethod
+    def _upstream_refresh_error(error: object) -> _UpstreamRefresh:
+        safe_error = _privacy_safe_diagnostic(error).strip() or "unknown refresh error"
+        return _UpstreamRefresh(status="error", error=safe_error)
 
-        Used to skip the pre-push gate on no-op repos (nothing to validate).
-        On any uncertainty (no upstream, error) returns True so the gate runs.
-        """
-        res = self.git_action(
-            command="git rev-list --count @{u}..HEAD", path=target_path, quiet=True
+    @staticmethod
+    def _git_result_diagnostic(result: GitResult) -> str:
+        detail = result.error.message if result.error else result.data
+        return _privacy_safe_diagnostic(detail).strip() or "git operation failed"
+
+    def _git_config_values(
+        self, target_path: str, key: str
+    ) -> tuple[list[str], str | None]:
+        result = self.git_action(
+            command=f"git config --get-all {shlex.quote(key)}",
+            path=target_path,
+            quiet=True,
         )
-        if res.status != "success" or not res.data:
+        if result.status == "success":
+            return [
+                line.strip() for line in result.data.splitlines() if line.strip()
+            ], None
+        if result.error is not None and result.error.code == 1:
+            return [], None
+        return [], self._git_result_diagnostic(result)
+
+    def _single_config_value(
+        self, target_path: str, key: str
+    ) -> tuple[str | None, str | None]:
+        values, error = self._git_config_values(target_path, key)
+        if error is not None:
+            return None, error
+        if len(values) > 1:
+            return None, f"ambiguous multiple values for {key}"
+        return (values[0] if values else None), None
+
+    def _validated_destination_ref(
+        self, target_path: str, value: str
+    ) -> tuple[str | None, str | None]:
+        destination = value if value.startswith("refs/") else f"refs/heads/{value}"
+        if not destination.startswith("refs/heads/"):
+            return None, "push destination is not a branch ref"
+        checked = self.git_action(
+            command=f"git check-ref-format {shlex.quote(destination)}",
+            path=target_path,
+            quiet=True,
+        )
+        if checked.status != "success":
+            return None, "push destination branch ref is invalid"
+        return destination, None
+
+    def _destination_from_push_refspec(
+        self, target_path: str, branch: str, refspec: str
+    ) -> tuple[str | None, str | None]:
+        if refspec.startswith("+"):
+            return None, "force-enabled remote push refspec is not permitted"
+        if refspec.startswith("^") or "*" in refspec:
+            return None, "negative or wildcard remote push refspec is ambiguous"
+        if refspec.count(":") > 1:
+            return None, "remote push refspec is invalid"
+        if ":" in refspec:
+            source, destination = refspec.split(":", 1)
+        else:
+            source = refspec
+            destination = branch
+        if source not in {"HEAD", branch, f"refs/heads/{branch}"}:
+            return None, "remote push refspec does not select the current branch"
+        if not destination:
+            return None, "deleting a remote ref is not permitted"
+        return self._validated_destination_ref(target_path, destination)
+
+    def _resolve_push_remote(
+        self, target_path: str, branch: str, upstream_remote: str
+    ) -> tuple[str | None, str | None]:
+        push_remote, error = self._single_config_value(
+            target_path, f"branch.{branch}.pushRemote"
+        )
+        if error is not None:
+            return None, error
+        if push_remote is None:
+            push_remote, error = self._single_config_value(
+                target_path, "remote.pushDefault"
+            )
+        if error is not None:
+            return None, error
+        remote = push_remote or upstream_remote
+        if not remote:
+            return None, "push remote could not be resolved"
+        return remote, None
+
+    def _configured_push_refspec(
+        self, target_path: str, remote: str
+    ) -> tuple[str | None, str | None]:
+        push_refspecs: list[str] = []
+        if remote != ".":
+            push_refspecs, error = self._git_config_values(
+                target_path, f"remote.{remote}.push"
+            )
+            if error is not None:
+                return None, error
+        if len(push_refspecs) > 1:
+            return None, "multiple remote push refspecs are ambiguous"
+        return (push_refspecs[0] if push_refspecs else None), None
+
+    @staticmethod
+    def _simple_push_destination(
+        branch: str, remote: str, upstream_remote: str, upstream_ref: str
+    ) -> tuple[str | None, str | None]:
+        if remote != upstream_remote:
+            return f"refs/heads/{branch}", None
+        expected = f"refs/heads/{branch}"
+        if upstream_ref != expected:
+            return None, (
+                "push.default=simple refuses an upstream branch with a different name"
+            )
+        return upstream_ref, None
+
+    def _push_default_destination(
+        self,
+        branch: str,
+        remote: str,
+        upstream_remote: str,
+        upstream_ref: str,
+        mode: str,
+    ) -> tuple[str | None, str | None]:
+        if mode in {"nothing", "matching"}:
+            return None, f"push.default={mode} does not select one exact branch"
+        if mode == "current":
+            return f"refs/heads/{branch}", None
+        if mode == "upstream":
+            if remote != upstream_remote:
+                return None, "push.default=upstream targets a different remote"
+            return upstream_ref, None
+        if mode == "simple":
+            return self._simple_push_destination(
+                branch, remote, upstream_remote, upstream_ref
+            )
+        return None, f"unsupported push.default mode: {mode}"
+
+    def _resolve_destination_ref(
+        self,
+        target_path: str,
+        branch: str,
+        remote: str,
+        upstream_remote: str,
+        upstream_ref: str,
+    ) -> tuple[str | None, str | None]:
+        refspec, error = self._configured_push_refspec(target_path, remote)
+        if error is not None:
+            return None, error
+        if refspec is not None:
+            return self._destination_from_push_refspec(target_path, branch, refspec)
+
+        push_default, error = self._single_config_value(target_path, "push.default")
+        if error is not None:
+            return None, error
+        destination, error = self._push_default_destination(
+            branch,
+            remote,
+            upstream_remote,
+            upstream_ref,
+            push_default or "simple",
+        )
+        if error is not None or destination is None:
+            return None, error or "push destination branch could not be resolved"
+        return self._validated_destination_ref(target_path, destination)
+
+    def _resolve_push_target(
+        self, target_path: str, remote: str
+    ) -> tuple[str | None, str | None]:
+        if remote == ".":
+            return ".", None
+        push_url = self.git_action(
+            command=(f"git remote get-url --push --all -- {shlex.quote(remote)}"),
+            path=target_path,
+            quiet=True,
+            raw_output=True,
+        )
+        push_urls = [
+            line.strip() for line in push_url.data.splitlines() if line.strip()
+        ]
+        if push_url.status != "success" or not push_urls:
+            return None, "push remote URL could not be resolved"
+        if len(push_urls) != 1:
+            return None, "multiple push remote URLs are ambiguous"
+        return push_urls[0], None
+
+    def _resolve_push_destination(
+        self,
+        target_path: str,
+        branch: str,
+        upstream_remote: str,
+        upstream_ref: str,
+    ) -> tuple[_PushDestination | None, str | None]:
+        remote, error = self._resolve_push_remote(target_path, branch, upstream_remote)
+        if error is not None or remote is None:
+            return None, error or "push remote could not be resolved"
+        destination_ref, error = self._resolve_destination_ref(
+            target_path, branch, remote, upstream_remote, upstream_ref
+        )
+        if error is not None or destination_ref is None:
+            return None, error or "push destination branch could not be resolved"
+        snapshot_source, error = self._resolve_push_target(target_path, remote)
+        if error is not None or snapshot_source is None:
+            return None, error or "push remote URL could not be resolved"
+        return (
+            _PushDestination(
+                remote=remote,
+                snapshot_source=snapshot_source,
+                ref=destination_ref,
+            ),
+            None,
+        )
+
+    def _resolve_commit_oid(self, target_path: str, ref: str) -> str | None:
+        result = self.git_action(
+            command=f"git rev-parse --verify {shlex.quote(ref + '^{commit}')}",
+            path=target_path,
+            quiet=True,
+        )
+        oid = result.data.strip() if result.status == "success" else ""
+        return oid if _GIT_OID.fullmatch(oid) else None
+
+    def _fetch_remote_upstream_oid(
+        self, target_path: str, remote: str, merge_ref: str
+    ) -> tuple[str | None, str | None]:
+        """Fetch one remote ref privately and always clean its temporary ref."""
+        temporary_ref = f"refs/repository-manager/push-upstream/{uuid.uuid4().hex}"
+        refspec = f"+{merge_ref}:{temporary_ref}"
+        upstream_oid: str | None = None
+        failure: str | None = None
+        try:
+            fetched = self.git_action(
+                command=(
+                    "git fetch --quiet --no-tags --no-recurse-submodules "
+                    "--no-auto-maintenance --no-write-fetch-head "
+                    "--no-write-commit-graph --refmap= -- "
+                    f"{shlex.quote(remote)} {shlex.quote(refspec)}"
+                ),
+                path=target_path,
+                quiet=True,
+            )
+            if fetched.status == "success":
+                upstream_oid = self._resolve_commit_oid(target_path, temporary_ref)
+                if upstream_oid is None:
+                    failure = "upstream commit could not be resolved"
+            else:
+                failure = (
+                    "actual upstream fetch failed: "
+                    f"{self._git_result_diagnostic(fetched)}"
+                )
+        except Exception as error:  # pragma: no cover - subprocess boundary
+            failure = (
+                "actual upstream fetch failed: "
+                f"{_privacy_safe_diagnostic(error).strip() or type(error).__name__}"
+            )
+
+        delete_command = f"git update-ref -d {shlex.quote(temporary_ref)}"
+        if upstream_oid is not None:
+            delete_command += f" {shlex.quote(upstream_oid)}"
+        try:
+            cleaned = self.git_action(
+                command=delete_command,
+                path=target_path,
+                quiet=True,
+            )
+        except Exception as error:  # pragma: no cover - subprocess boundary
+            return None, (
+                "temporary upstream ref cleanup failed: "
+                f"{_privacy_safe_diagnostic(error).strip() or type(error).__name__}"
+            )
+        if cleaned.status != "success":
+            return None, (
+                "temporary upstream ref cleanup failed: "
+                f"{self._git_result_diagnostic(cleaned)}"
+            )
+        return upstream_oid, failure
+
+    def _refresh_upstream(self, target_path: str) -> _UpstreamRefresh:
+        """Capture the exact push destination as one immutable commit OID.
+
+        Remote fetches write only a UUID-namespaced temporary ref: no tags,
+        submodules, remote-tracking refs, maintenance, or shared ``FETCH_HEAD``
+        are touched. The caller holds the repository-wide push transaction
+        lease. Both the ahead count, changed-file scope, and atomic push consume
+        this same destination/OID snapshot.
+        """
+        try:
+            return self._refresh_upstream_locked(target_path)
+        except (OSError, RuntimeError) as error:
+            return self._upstream_refresh_error(error)
+        except Exception as error:  # pragma: no cover - subprocess boundary
+            logger.warning(
+                "Unable to refresh upstream before push gate: error_type=%s",
+                type(error).__name__,
+            )
+            return self._upstream_refresh_error(type(error).__name__)
+
+    def _branch_head_snapshot(
+        self, target_path: str
+    ) -> tuple[str | None, str | None, str | None]:
+        branch_result = self.git_action(
+            command="git symbolic-ref --quiet --short HEAD",
+            path=target_path,
+            quiet=True,
+        )
+        branch = branch_result.data.strip() if branch_result.status == "success" else ""
+        head_oid = self._resolve_commit_oid(target_path, "HEAD")
+        if not branch or head_oid is None:
+            return None, None, "detached or unreadable HEAD"
+        return branch, head_oid, None
+
+    def _configured_upstream(
+        self, target_path: str, branch: str
+    ) -> tuple[str | None, str | None, str | None]:
+        upstream_remote, remote_error = self._single_config_value(
+            target_path, f"branch.{branch}.remote"
+        )
+        upstream_ref, ref_error = self._single_config_value(
+            target_path, f"branch.{branch}.merge"
+        )
+        if remote_error is not None or ref_error is not None:
+            return (
+                None,
+                None,
+                remote_error or ref_error or "upstream configuration failed",
+            )
+        if not upstream_remote or not upstream_ref:
+            return None, None, "configured upstream is unavailable"
+        return upstream_remote, upstream_ref, None
+
+    def _snapshot_upstream_oid(
+        self, target_path: str, destination: _PushDestination
+    ) -> tuple[str | None, str | None, str]:
+        if destination.snapshot_source == ".":
+            return self._resolve_commit_oid(target_path, destination.ref), None, "noop"
+        upstream_oid, fetch_error = self._fetch_remote_upstream_oid(
+            target_path, destination.snapshot_source, destination.ref
+        )
+        return upstream_oid, fetch_error, "success"
+
+    def _snapshot_identity_matches(
+        self, target_path: str, branch: str, head_oid: str
+    ) -> bool:
+        final_branch = self.git_action(
+            command="git symbolic-ref --quiet --short HEAD",
+            path=target_path,
+            quiet=True,
+        )
+        final_head_oid = self._resolve_commit_oid(target_path, "HEAD")
+        return (
+            final_branch.status == "success"
+            and final_branch.data.strip() == branch
+            and final_head_oid == head_oid
+        )
+
+    def _upstream_destination_snapshot(
+        self,
+        target_path: str,
+        branch: str,
+        upstream_remote: str,
+        upstream_ref: str,
+    ) -> tuple[_PushDestination | None, str | None, str | None, str]:
+        destination, error = self._resolve_push_destination(
+            target_path, branch, upstream_remote, upstream_ref
+        )
+        if error is not None or destination is None:
+            return None, None, error or "push destination is unavailable", ""
+        upstream_oid, fetch_error, status = self._snapshot_upstream_oid(
+            target_path, destination
+        )
+        if fetch_error is not None:
+            return destination, None, fetch_error, status
+        if upstream_oid is None:
+            return destination, None, "upstream commit could not be resolved", status
+        return destination, upstream_oid, None, status
+
+    def _refresh_upstream_locked(self, target_path: str) -> _UpstreamRefresh:
+        branch, head_oid, error = self._branch_head_snapshot(target_path)
+        if error is not None:
+            return self._upstream_refresh_error(error)
+        branch = cast(str, branch)
+        head_oid = cast(str, head_oid)
+
+        upstream_remote, upstream_ref, error = self._configured_upstream(
+            target_path, branch
+        )
+        if error is not None:
+            return self._upstream_refresh_error(error)
+        upstream_remote = cast(str, upstream_remote)
+        upstream_ref = cast(str, upstream_ref)
+
+        destination, upstream_oid, error, status = self._upstream_destination_snapshot(
+            target_path,
+            branch,
+            upstream_remote,
+            upstream_ref,
+        )
+        if error is not None:
+            return self._upstream_refresh_error(error)
+        destination = cast(_PushDestination, destination)
+        upstream_oid = cast(str, upstream_oid)
+
+        if not self._snapshot_identity_matches(target_path, branch, head_oid):
+            return self._upstream_refresh_error(
+                "HEAD or branch changed while upstream was refreshed"
+            )
+        return _UpstreamRefresh(
+            status=status,
+            branch=branch,
+            head_oid=head_oid,
+            upstream_oid=upstream_oid,
+            push_remote=destination.remote,
+            push_target=destination.snapshot_source,
+            destination_ref=destination.ref,
+        )
+
+    def _upstream_snapshot_is_current(
+        self, target_path: str, refresh: _UpstreamRefresh
+    ) -> bool:
+        try:
+            branch = self.git_action(
+                command="git symbolic-ref --quiet --short HEAD",
+                path=target_path,
+                quiet=True,
+            )
+            return (
+                branch.status == "success"
+                and branch.data.strip() == refresh.branch
+                and self._resolve_commit_oid(target_path, "HEAD") == refresh.head_oid
+            )
+        except Exception as error:  # pragma: no cover - subprocess boundary
+            logger.warning(
+                "Unable to validate pre-push snapshot: error_type=%s",
+                type(error).__name__,
+            )
+            return False
+
+    @staticmethod
+    def _snapshot_has_oids(refresh: _UpstreamRefresh) -> bool:
+        return refresh.upstream_oid is not None and refresh.head_oid is not None
+
+    @staticmethod
+    def _ahead_count_is_positive(result: GitResult) -> bool:
+        if result.status != "success" or not result.data:
             return True
         try:
-            return int(res.data.strip()) > 0
+            return int(result.data.strip()) > 0
         except (ValueError, AttributeError):
             return True
 
-    def _unpushed_changed_files(self, target_path: str) -> list[str]:
-        """Files touched by the commits about to be pushed (``@{u}..HEAD``).
+    def _has_unpushed_commits(
+        self, target_path: str, refresh: _UpstreamRefresh
+    ) -> bool:
+        """Whether the immutable upstream snapshot lacks commits in local HEAD."""
+        if not self._snapshot_has_oids(refresh):
+            return True
+        upstream_oid = cast(str, refresh.upstream_oid)
+        head_oid = cast(str, refresh.head_oid)
+        try:
+            res = self.git_action(
+                command=(
+                    "git rev-list --count "
+                    f"{shlex.quote(upstream_oid + '..' + head_oid)}"
+                ),
+                path=target_path,
+                quiet=True,
+            )
+        except Exception:  # pragma: no cover - subprocess boundary
+            return True
+        return self._ahead_count_is_positive(res)
 
-        Lets the pre-push gate scope per-file hooks to just the diff being
-        pushed. Returns ``[]`` when the diff can't be computed (no upstream,
-        error) — the caller then falls back to an ``--all-files`` run.
-        """
-        res = self.git_action(
-            command="git diff --name-only @{u}..HEAD", path=target_path, quiet=True
-        )
-        if res.status != "success" or not res.data:
+    @staticmethod
+    def _snapshot_revision_range(refresh: _UpstreamRefresh) -> str | None:
+        if not Git._snapshot_has_oids(refresh):
+            return None
+        upstream_oid = cast(str, refresh.upstream_oid)
+        head_oid = cast(str, refresh.head_oid)
+        return upstream_oid + ".." + head_oid
+
+    @staticmethod
+    def _result_lines(result: GitResult) -> list[str]:
+        if result.status != "success" or not result.data:
             return []
-        return [line.strip() for line in res.data.splitlines() if line.strip()]
+        return [line.strip() for line in result.data.splitlines() if line.strip()]
+
+    def _unpushed_changed_files(
+        self, target_path: str, refresh: _UpstreamRefresh
+    ) -> list[str]:
+        """Files in the same immutable upstream-to-HEAD snapshot as the count."""
+        revision_range = self._snapshot_revision_range(refresh)
+        if revision_range is None:
+            return []
+        try:
+            res = self.git_action(
+                command=f"git diff --name-only {shlex.quote(revision_range)}",
+                path=target_path,
+                quiet=True,
+            )
+        except Exception:  # pragma: no cover - subprocess boundary
+            return []
+        return self._result_lines(res)
+
+    def _snapshot_is_fast_forward(
+        self, target_path: str, refresh: _UpstreamRefresh
+    ) -> bool:
+        """Prove the proposed branch update preserves remote history."""
+        if refresh.upstream_oid is None or refresh.head_oid is None:
+            return False
+        try:
+            result = self.git_action(
+                command=(
+                    "git merge-base --is-ancestor "
+                    f"{shlex.quote(refresh.upstream_oid)} "
+                    f"{shlex.quote(refresh.head_oid)}"
+                ),
+                path=target_path,
+                quiet=True,
+            )
+        except Exception:  # pragma: no cover - subprocess boundary
+            return False
+        return result.status == "success"
 
     @staticmethod
     def _gate_incomplete_result(error: object) -> GitResult:
@@ -2713,15 +3245,33 @@ class Git:
         tooling error). Reporting that as "Pre-push gate failed (pre-push
         gate)" made a 600s HEAVY-tier timeout look identical to a real
         hook failure, which is how agent-utilities appeared to be blocked
-        on merit when it had simply run out of clock. Surface the harness
-        error verbatim instead of inventing a hook name.
+        on merit when it had simply run out of clock. Surface the sanitized
+        harness error instead of inventing a hook name.
         """
-        logger.error("Pre-push gate did not complete: %s", error)
+        safe_error = _safe_diagnostic_or_default(error, "unknown gate error")
+        logger.error("Pre-push gate did not complete: %s", safe_error)
         return GitResult(
             status="error",
             data="",
             error=GitError(
-                message=f"Pre-push gate did not complete; push aborted. {error}",
+                message=(f"Pre-push gate did not complete; push aborted. {safe_error}"),
+                code=1,
+            ),
+        )
+
+    @staticmethod
+    def _upstream_refresh_refusal(error: object) -> GitResult:
+        """Refuse a push whose actual upstream could not be snapshotted."""
+        safe_error = _privacy_safe_diagnostic(error).strip() or "unknown refresh error"
+        logger.error("Actual upstream refresh did not complete: %s", safe_error)
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=(
+                    "Actual upstream refresh did not complete; push aborted. "
+                    f"{safe_error}"
+                ),
                 code=1,
             ),
         )
@@ -2781,15 +3331,68 @@ class Git:
             return Git._gate_unrunnable_result(unrunnable)
         return Git._gate_failed_result(failed)
 
-    def _gate_before_push(self, target_path: str) -> GitResult | None:
+    def _validate_gate_snapshot(
+        self, target_path: str, refresh: _UpstreamRefresh
+    ) -> GitResult | None:
+        if refresh.status == "error":
+            return self._upstream_refresh_refusal(refresh.error)
+        if not self._upstream_snapshot_is_current(target_path, refresh):
+            return self._upstream_refresh_refusal(
+                "HEAD or branch changed after upstream refresh"
+            )
+        if not self._snapshot_is_fast_forward(target_path, refresh):
+            return self._upstream_refresh_refusal(
+                "proposed push is not a proven fast-forward"
+            )
+        return None
+
+    def _gate_result_after_run(
+        self, target_path: str, refresh: _UpstreamRefresh, result: Any
+    ) -> GitResult | None:
+        if not result.success:
+            return self._pre_push_gate_refusal(result)
+        if self._upstream_snapshot_is_current(target_path, refresh):
+            return None
+        return self._upstream_refresh_refusal(
+            "HEAD or branch changed while the pre-push gate ran"
+        )
+
+    def _run_pre_push_gate(
+        self, target_path: str, refresh: _UpstreamRefresh
+    ) -> GitResult | None:
+        if not self._has_unpushed_commits(target_path, refresh):
+            return None
+        changed = self._unpushed_changed_files(target_path, refresh)
+        if not self._upstream_snapshot_is_current(target_path, refresh):
+            return self._upstream_refresh_refusal(
+                "HEAD or branch changed while the gate scope was prepared"
+            )
+        scope = f"{len(changed)} changed file(s)" if changed else "all files"
+        logger.info("Running pre-push (HEAVY) gate over %s", scope)
+        try:
+            result = run_gate_stage(
+                target_path,
+                "heavy",
+                files=changed or None,
+                trigger="pre-push",
+                colocated=True,
+            )
+        except Exception as error:  # pragma: no cover - tooling/env failure
+            logger.warning("Operation failed: error_type=%s", type(error).__name__)
+            return self._gate_incomplete_result(error)
+        return self._gate_result_after_run(target_path, refresh, result)
+
+    def _gate_before_push(
+        self, target_path: str, refresh: _UpstreamRefresh | None = None
+    ) -> GitResult | None:
         """Run the repo's declared HEAVY (pre-push-stage) gates before pushing.
 
         Mirrors the repo's CI gates locally so a push can't ship a commit the CI
         would reject. Returns a failed ``GitResult`` (caller aborts the push) or
         ``None`` to proceed. No-op when disabled, when the repo has no
         ``.pre-commit-config.yaml``, or when there is nothing to push. The
-        gate-harness failing (tooling/env) never blocks a push — only a real
-        hook failure does.
+        gate-harness failing (tooling/env) blocks the push because no gate
+        verdict was produced.
 
         Runs ``stage="heavy"`` (``--hook-stage pre-push``) via
         :func:`repository_manager.gates.run_gate_stage` — the fix for the
@@ -2805,29 +3408,11 @@ class Git:
             return None
         if not os.path.exists(os.path.join(target_path, ".pre-commit-config.yaml")):
             return None
-        if not self._has_unpushed_commits(target_path):
-            return None
-
-        # Scope per-file hooks to the diff being pushed; always_run guardrail
-        # gates still run fully. Falls back to --all-files if the diff is empty.
-        changed = self._unpushed_changed_files(target_path)
-        scope = f"{len(changed)} changed file(s)" if changed else "all files"
-        logger.info("Running pre-push (HEAVY) gate over %s", scope)
-        try:
-            result = run_gate_stage(
-                target_path,
-                "heavy",
-                files=changed or None,
-                trigger="pre-push",
-                colocated=True,
-            )
-        except Exception as e:  # pragma: no cover - tooling/env failure
-            logger.warning("Operation failed: error_type=%s", type(e).__name__)
-            return None
-
-        if result.success:
-            return None
-        return self._pre_push_gate_refusal(result)
+        refresh = refresh or self._refresh_upstream(target_path)
+        refusal = self._validate_gate_snapshot(target_path, refresh)
+        if refusal is not None:
+            return refusal
+        return self._run_pre_push_gate(target_path, refresh)
 
     @staticmethod
     def _dirty_push_refusal(target_path: str) -> GitResult:
@@ -2863,7 +3448,7 @@ class Git:
                 code=1,
             ),
             metadata=GitMetadata(
-                command="git push --follow-tags",
+                command="git push --atomic",
                 workspace=_project_label(target_path),
                 return_code=1,
                 timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
@@ -2904,26 +3489,35 @@ class Git:
             error_text += " " + result.data
         return error_text
 
-    def _push_release_tag(self, target_path: str) -> None:
-        """Push the CURRENT release tag explicitly after a successful branch push.
+    @staticmethod
+    def _is_divergence_error(error_text: str) -> bool:
+        return any(
+            marker in error_text
+            for marker in (
+                "non-fast-forward",
+                "tip of your current branch is behind",
+                "stale info",
+                "stale lease",
+            )
+        )
 
-        ``--follow-tags`` only pushes ANNOTATED tags. bump2version can emit
-        LIGHTWEIGHT tags (objecttype=commit), which would silently never
-        reach the remote — so no tag-triggered CI / image build. Pushing the
-        current release tag (v<current_version> from .bumpversion.cfg) covers
-        both annotated and lightweight, WITHOUT also dumping stale
-        never-pushed historical tags onto the remote (which would trigger CI
-        for old versions).
-        (CONCEPT:RM-BUMP tag-publish correctness)
-        """
+    def _release_tag_refspec(self, target_path: str) -> tuple[str | None, str | None]:
+        """Return the current release tag refspec, or an explicit refusal reason."""
         rel_tag = self._current_release_tag(target_path)
         if not rel_tag:
-            return
-        tag_res = self.git_action(
-            command=f"git push origin {rel_tag}", path=target_path
+            return None, None
+        tag_ref = f"refs/tags/{rel_tag}"
+        checked = self.git_action(
+            command=f"git check-ref-format {shlex.quote(tag_ref)}",
+            path=target_path,
+            quiet=True,
         )
-        if tag_res.status != "success":
-            logger.warning("Branch pushed but the release-tag push failed")
+        if (
+            checked.status != "success"
+            or self._resolve_commit_oid(target_path, tag_ref) is None
+        ):
+            return None, "current release tag is invalid or unresolved"
+        return f"{tag_ref}:{tag_ref}", None
 
     def _handle_push_failure(self, target_path: str, result: GitResult) -> GitResult:
         """Translate a failed ``git push`` into an actionable result."""
@@ -2936,59 +3530,120 @@ class Git:
             )
             return self._secret_scanning_refusal(target_path)
 
-        if (
-            "non-fast-forward" in error_text
-            or "tip of your current branch is behind" in error_text
-        ):
+        if self._is_divergence_error(error_text):
             logger.warning("Push refused because the remote branch has diverged")
             return self._diverged_push_refusal(result)
 
-        # Tag already exists on remote — retry without tags
-        if "tag already exists" in error_text:
-            logger.warning("Tag conflict detected; retrying without follow-tags")
-            return self.git_action(command="git push origin main", path=target_path)
-
         # Unknown error — return as-is
         return result
+
+    @staticmethod
+    def _snapshot_is_complete(refresh: _UpstreamRefresh) -> bool:
+        return all(
+            value is not None
+            for value in (
+                refresh.push_remote,
+                refresh.push_target,
+                refresh.destination_ref,
+                refresh.upstream_oid,
+                refresh.head_oid,
+            )
+        )
+
+    def _push_snapshot_command(
+        self, target_path: str, refresh: _UpstreamRefresh
+    ) -> GitResult:
+        """Build and execute the atomic push for a complete snapshot."""
+        assert refresh.push_remote is not None
+        assert refresh.push_target is not None
+        assert refresh.destination_ref is not None
+        assert refresh.upstream_oid is not None
+        assert refresh.head_oid is not None
+        lease = f"--force-with-lease={refresh.destination_ref}:{refresh.upstream_oid}"
+        branch_refspec = f"{refresh.head_oid}:{refresh.destination_ref}"
+        parts = [
+            "git",
+            "push",
+            "--follow-tags",
+            "--atomic",
+            lease,
+            "--",
+            refresh.push_target,
+            branch_refspec,
+        ]
+        release_tag, release_tag_error = self._release_tag_refspec(target_path)
+        if release_tag_error is not None:
+            return self._upstream_refresh_refusal(release_tag_error)
+        if release_tag is not None:
+            parts.append(release_tag)
+        command = " ".join(shlex.quote(part) for part in parts)
+        return self.git_action(command=command, path=target_path)
+
+    def _push_snapshot(self, target_path: str, refresh: _UpstreamRefresh) -> GitResult:
+        """Atomically push exactly the branch destination that was snapshotted."""
+        if not self._snapshot_is_complete(refresh):
+            return self._upstream_refresh_refusal("push snapshot is incomplete")
+        if not self._upstream_snapshot_is_current(target_path, refresh):
+            return self._upstream_refresh_refusal(
+                "HEAD or branch changed immediately before push"
+            )
+        if not self._snapshot_is_fast_forward(target_path, refresh):
+            return self._upstream_refresh_refusal(
+                "proposed push is not a proven fast-forward"
+            )
+        return self._push_snapshot_command(target_path, refresh)
 
     @_exclusive_repo_mutation
     def push_project(self, path: str | None = None) -> GitResult:
         """
         Push committed updates and tags for a single clean Git project.
 
-        Handles common failure modes:
-        - Non-fast-forward: fails closed for an explicit reviewed sync
-        - GitHub secret scanning (GH013): returns actionable error with unblock URL
-        - Tag conflicts: falls back to pushing without --follow-tags
+        One repository-scoped cross-process lease covers dirty status, remote
+        snapshot, gate, final validation, and the atomic expected-old push.
         """
         target_path = self._resolve_path(path)
+        lease_ttl = default_gate_timeout("heavy") + _PUSH_LEASE_MARGIN_SECONDS
+        try:
+            with hold_lease(
+                _PUSH_TRANSACTION_LEASE,
+                operation="status, gate, and atomic push",
+                ttl_seconds=lease_ttl,
+                path=target_path,
+            ):
+                return self._push_project_locked(target_path)
+        except (OSError, RuntimeError) as error:
+            return self._upstream_refresh_refusal(error)
+
+    def _push_project_locked(self, target_path: str) -> GitResult:
+        """Execute the complete push transaction while its repo lease is held."""
         logger.info("Checking configured project for uncommitted changes")
 
         status_check = self.git_action(
             command="git status --porcelain", path=target_path, quiet=True
         )
+        if status_check.status != "success":
+            return self._upstream_refresh_refusal(
+                "repository status could not be established"
+            )
         if status_check.status == "success" and status_check.data.strip():
             logger.warning("Push refused because the configured project is dirty")
             return self._dirty_push_refusal(target_path)
 
-        # Fast pre-push gate: run the repo's own pre-commit gates (minus the
-        # slow full pytest suite) so a push can't ship a commit the repo's CI
-        # would reject. Aborts this repo's push on a real gate failure.
-        gate = self._gate_before_push(target_path)
+        refresh = self._refresh_upstream(target_path)
+        if refresh.status == "error":
+            return self._upstream_refresh_refusal(refresh.error)
+
+        gate = self._gate_before_push(target_path, refresh)
         if gate is not None:
             return gate
 
-        logger.info("Pushing latest changes and tags for configured project")
-
-        max_attempts = 1
-        for _attempt in range(1, max_attempts + 1):
-            result = self.git_action(command="git push --follow-tags", path=target_path)
-            if result.status == "success":
-                self._push_release_tag(target_path)
-                return result
-            return self._handle_push_failure(target_path, result)
-
-        return result
+        logger.info("Pushing the validated snapshot to its exact destination")
+        result = self._push_snapshot(target_path, refresh)
+        return (
+            result
+            if result.status == "success"
+            else self._handle_push_failure(target_path, result)
+        )
 
     def add_projects(self, project_dirs: list[str] | None = None) -> list[GitResult]:
         """
@@ -3559,6 +4214,7 @@ class Git:
                     )
                     continue
 
+                test_target = cast(str, test_target)
                 fut = executor.submit(
                     self._run_project_test,
                     self._pytest_command(path, test_target),

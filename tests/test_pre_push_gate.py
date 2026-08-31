@@ -7,44 +7,139 @@ hooks). These tests assert the fixed call shape; ``tests/test_gates.py`` proves
 the live ``--hook-stage`` firing behavior end to end against real ``pre-commit``.
 """
 
+import contextlib
 import subprocess
+from functools import partial
+from typing import Any
 from unittest.mock import MagicMock, patch
+
+from agent_utilities.governance.lanes import hold_lease
 
 from repository_manager.models import GitError
 from repository_manager.repository_manager import Git, GitResult
 
+_HEAD_OID = "b" * 40
+_UPSTREAM_OID = "a" * 40
+
+
+def _git_success(data: str = "") -> GitResult:
+    return GitResult(status="success", data=data, error=None, metadata=None)
+
+
+def _git_failure(message: str = "not configured") -> GitResult:
+    return GitResult(
+        status="error",
+        data="",
+        error=GitError(message=message, code=1),
+        metadata=None,
+    )
+
+
+def _call_command(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str:
+    command = kwargs.get("command", "")
+    if isinstance(command, str) and command:
+        return command
+    first = args[0] if args else ""
+    return first if isinstance(first, str) else ""
+
+
+def _mock_git_action(ahead: str, *args: Any, **kwargs: Any) -> GitResult:
+    """Return deterministic Git results for the gate's mocked manager."""
+    command = _call_command(args, kwargs)
+    if "rev-parse --verify" in command:
+        oid = _UPSTREAM_OID if "refs/repository-manager/" in command else _HEAD_OID
+        return _git_success(oid)
+    if "rev-list --count" in command:
+        return _git_success(ahead)
+    for marker, result in (
+        ("symbolic-ref --quiet --short HEAD", _git_success("main")),
+        ("config --get-all branch.main.remote", _git_success("origin")),
+        ("config --get-all branch.main.merge", _git_success("refs/heads/main")),
+        ("git config --get-all", _git_failure()),
+        ("remote get-url --push", _git_success("configured-push-url")),
+        ("check-ref-format", _git_success()),
+        ("merge-base --is-ancestor", _git_success()),
+        ("git fetch", _git_success()),
+        ("git update-ref -d", _git_success()),
+        ("diff --name-only", _git_success("pyproject.toml\nfoo.py\n")),
+        ("status --porcelain", _git_success()),
+    ):
+        if marker in command:
+            return result
+    return _git_success("Pushed")
+
+
+def _ensure_test_repo(tmp_path):
+    if not (tmp_path / ".git").exists():
+        _run_git(tmp_path, "init", "--initial-branch=main")
+
 
 def _git(tmp_path, ahead="1"):
     """A Git manager whose git_action is mocked; rev-list reports `ahead` commits."""
+    _ensure_test_repo(tmp_path)
     m = Git(path=str(tmp_path))
     (tmp_path / ".pre-commit-config.yaml").write_text("repos: []\n")
-
-    def side_effect(*args, **kwargs):
-        cmd = kwargs.get("command", "") or (args[0] if args else "")
-        if "rev-list --count" in cmd:
-            return GitResult(status="success", data=ahead, error=None, metadata=None)
-        if "diff --name-only" in cmd:
-            return GitResult(
-                status="success",
-                data="pyproject.toml\nfoo.py\n",
-                error=None,
-                metadata=None,
-            )
-        if "status --porcelain" in cmd:
-            return GitResult(status="success", data="", error=None, metadata=None)
-        return GitResult(status="success", data="Pushed", error=None, metadata=None)
-
-    m.git_action = MagicMock(side_effect=side_effect)  # type: ignore[method-assign]
+    m.git_action = MagicMock(  # type: ignore[method-assign]
+        side_effect=partial(_mock_git_action, ahead)
+    )
     return m
 
 
 def _completed(returncode, stdout=""):
     return subprocess.CompletedProcess(
-        args=["pre-commit", "run", "--hook-stage", "pre-push", "--all-files", "--verbose"],
+        args=[
+            "pre-commit",
+            "run",
+            "--hook-stage",
+            "pre-push",
+            "--all-files",
+            "--verbose",
+        ],
         returncode=returncode,
         stdout=stdout,
         stderr="",
     )
+
+
+def _run_git(path, *args):
+    return subprocess.run(
+        ["git", *args],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _remote_candidate(tmp_path, *, remote_commits=1):
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    candidate = tmp_path / "candidate"
+    _run_git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    seed.mkdir()
+    _run_git(seed, "init", "--initial-branch=main")
+    _run_git(seed, "config", "user.email", "tests@example.invalid")
+    _run_git(seed, "config", "user.name", "Repository Manager Tests")
+    (seed / "base.txt").write_text("base\n")
+    _run_git(seed, "add", "base.txt")
+    _run_git(seed, "commit", "-m", "base")
+    base_oid = _run_git(seed, "rev-parse", "HEAD")
+    _run_git(seed, "remote", "add", "origin", str(remote))
+    _run_git(seed, "push", "-u", "origin", "main")
+    if remote_commits > 1:
+        (seed / "second.txt").write_text("second\n")
+        _run_git(seed, "add", "second.txt")
+        _run_git(seed, "commit", "-m", "second")
+        _run_git(seed, "push", "origin", "main")
+    snapshotted_oid = _run_git(seed, "rev-parse", "HEAD")
+
+    _run_git(tmp_path, "clone", str(remote), str(candidate))
+    _run_git(candidate, "config", "user.email", "tests@example.invalid")
+    _run_git(candidate, "config", "user.name", "Repository Manager Tests")
+    (candidate / "candidate.txt").write_text("candidate\n")
+    _run_git(candidate, "add", "candidate.txt")
+    _run_git(candidate, "commit", "-m", "candidate")
+    return remote, seed, candidate, base_oid, snapshotted_oid
 
 
 def test_gate_disabled_is_noop(tmp_path):
@@ -59,6 +154,445 @@ def test_gate_skips_when_nothing_to_push(tmp_path):
     with patch("repository_manager.gates._run_pre_commit") as rpc:
         assert m._gate_before_push(str(tmp_path)) is None
         rpc.assert_not_called()  # never even runs the gate on a no-op repo
+
+
+def test_unpushed_check_refreshes_stale_tracking_ref_from_actual_upstream(tmp_path):
+    """A bundle-carried ``origin/main`` must not make a real push look empty.
+
+    A transported checkout can carry a remote-tracking ref that already points
+    at its local candidate even though the actual remote is still at the base
+    commit.  Counting ``@{u}..HEAD`` without contacting the remote then returns
+    zero and used to skip the complete pre-push gate.
+    """
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    candidate = tmp_path / "candidate"
+
+    _run_git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    seed.mkdir()
+    _run_git(seed, "init", "--initial-branch=main")
+    _run_git(seed, "config", "user.email", "tests@example.invalid")
+    _run_git(seed, "config", "user.name", "Repository Manager Tests")
+    (seed / "base.txt").write_text("base\n")
+    _run_git(seed, "add", "base.txt")
+    _run_git(seed, "commit", "-m", "base")
+    _run_git(seed, "remote", "add", "origin", str(remote))
+    _run_git(seed, "push", "-u", "origin", "main")
+    _run_git(seed, "tag", "remote-only-tag")
+    _run_git(seed, "push", "origin", "remote-only-tag")
+
+    _run_git(tmp_path, "clone", str(remote), str(candidate))
+    _run_git(candidate, "tag", "-d", "remote-only-tag")
+    _run_git(candidate, "config", "user.email", "tests@example.invalid")
+    _run_git(candidate, "config", "user.name", "Repository Manager Tests")
+    (candidate / "candidate.txt").write_text("candidate\n")
+    _run_git(candidate, "add", "candidate.txt")
+    _run_git(candidate, "commit", "-m", "candidate")
+
+    # Reproduce the bundle case: the tracking ref says the candidate is
+    # published, but the remote itself still has only the base commit.
+    _run_git(candidate, "update-ref", "refs/remotes/origin/main", "HEAD")
+    assert _run_git(candidate, "rev-list", "--count", "@{u}..HEAD") == "0"
+    assert _run_git(candidate, "rev-parse", "HEAD") != _run_git(
+        remote, "rev-parse", "main"
+    )
+
+    manager = Git(path=str(candidate))
+    original_action = manager.git_action
+    commands = []
+    fetch_head = candidate / ".git" / "FETCH_HEAD"
+    local_head = _run_git(candidate, "rev-parse", "HEAD")
+
+    def race_fetch_head(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        commands.append(command)
+        result = original_action(*args, **kwargs)
+        if "git fetch" in command:
+            # Simulate another fetch overwriting the shared pseudoref after
+            # ours. The snapshot must use its private ref/OID, never this file.
+            fetch_head.write_text(f"{local_head}\t\tbranch 'racer'\n")
+        return result
+
+    manager.git_action = MagicMock(  # type: ignore[method-assign]
+        side_effect=race_fetch_head
+    )
+    refresh = manager._refresh_upstream(str(candidate))
+
+    assert refresh.status == "success", refresh
+    assert refresh.upstream_oid == _run_git(remote, "rev-parse", "main")
+    assert manager._has_unpushed_commits(str(candidate), refresh) is True
+    assert manager._unpushed_changed_files(str(candidate), refresh) == ["candidate.txt"]
+    assert fetch_head.read_text().startswith(local_head)
+    assert _run_git(candidate, "rev-parse", "refs/remotes/origin/main") == local_head
+    assert _run_git(candidate, "tag", "--list", "remote-only-tag") == ""
+    assert (
+        _run_git(
+            candidate,
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/repository-manager/push-upstream",
+        )
+        == ""
+    )
+    fetch_command = next(command for command in commands if "git fetch" in command)
+    for flag in (
+        "--no-tags",
+        "--no-recurse-submodules",
+        "--no-auto-maintenance",
+        "--no-write-fetch-head",
+        "--no-write-commit-graph",
+        "--refmap=",
+    ):
+        assert flag in fetch_command
+
+    (candidate / ".pre-commit-config.yaml").write_text("repos: []\n")
+    with patch(
+        "repository_manager.repository_manager.run_gate_stage",
+        return_value=MagicMock(success=True),
+    ) as run_gate:
+        assert manager._gate_before_push(str(candidate)) is None
+    assert run_gate.call_args.kwargs["files"] == ["candidate.txt"]
+
+
+def test_refresh_uses_configured_remote_with_nonstandard_fetch_refspec(tmp_path):
+    actual = tmp_path / "actual.git"
+    wrong = tmp_path / "wrong.git"
+    seed = tmp_path / "seed"
+    candidate = tmp_path / "candidate"
+
+    _run_git(tmp_path, "init", "--bare", "--initial-branch=main", str(actual))
+    _run_git(tmp_path, "init", "--bare", "--initial-branch=main", str(wrong))
+    seed.mkdir()
+    _run_git(seed, "init", "--initial-branch=main")
+    _run_git(seed, "config", "user.email", "tests@example.invalid")
+    _run_git(seed, "config", "user.name", "Repository Manager Tests")
+    (seed / "base.txt").write_text("base\n")
+    _run_git(seed, "add", "base.txt")
+    _run_git(seed, "commit", "-m", "base")
+    _run_git(seed, "remote", "add", "origin", str(actual))
+    _run_git(seed, "push", "origin", "main")
+
+    _run_git(tmp_path, "clone", str(actual), str(candidate))
+    _run_git(candidate, "remote", "rename", "origin", "upstream")
+    _run_git(candidate, "remote", "add", "origin", str(wrong))
+    _run_git(candidate, "config", "user.email", "tests@example.invalid")
+    _run_git(candidate, "config", "user.name", "Repository Manager Tests")
+    (candidate / "candidate.txt").write_text("candidate\n")
+    _run_git(candidate, "add", "candidate.txt")
+    _run_git(candidate, "commit", "-m", "candidate")
+    _run_git(candidate, "config", "--unset-all", "remote.upstream.fetch")
+    _run_git(
+        candidate,
+        "config",
+        "--add",
+        "remote.upstream.fetch",
+        "+refs/heads/other:refs/remotes/upstream/not-main",
+    )
+    _run_git(candidate, "config", "branch.main.remote", "upstream")
+    _run_git(candidate, "config", "branch.main.merge", "refs/heads/main")
+
+    manager = Git(path=str(candidate))
+    original_action = manager.git_action
+    manager.git_action = MagicMock(  # type: ignore[method-assign]
+        wraps=original_action
+    )
+    refresh = manager._refresh_upstream(str(candidate))
+
+    assert refresh.status == "success", refresh
+    assert refresh.upstream_oid == _run_git(actual, "rev-parse", "main")
+    fetch_command = next(
+        call.kwargs["command"]
+        for call in manager.git_action.call_args_list
+        if "git fetch" in call.kwargs.get("command", "")
+    )
+    assert refresh.push_remote == "upstream"
+    assert str(actual) in fetch_command
+    assert str(wrong) not in fetch_command
+
+
+def test_push_remote_and_exact_refspec_override_other_defaults(tmp_path):
+    manager = _git(tmp_path)
+    original_action = manager.git_action
+
+    def action(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if "config --get-all branch.main.pushRemote" in command:
+            return GitResult(status="success", data="publish", error=None)
+        if "config --get-all remote.pushDefault" in command:
+            return GitResult(status="success", data="mirror", error=None)
+        if "config --get-all remote.publish.push" in command:
+            return GitResult(
+                status="success",
+                data="HEAD:refs/heads/release",
+                error=None,
+            )
+        if "remote get-url --push --all -- publish" in command:
+            return GitResult(status="success", data="publish-url", error=None)
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    refresh = manager._refresh_upstream(str(tmp_path))
+
+    assert refresh.status == "success"
+    assert refresh.push_remote == "publish"
+    assert refresh.push_target == "publish-url"
+    assert refresh.destination_ref == "refs/heads/release"
+    fetch_command = next(
+        call.kwargs["command"]
+        for call in manager.git_action.call_args_list
+        if "git fetch" in call.kwargs.get("command", "")
+    )
+    assert "publish-url" in fetch_command
+    assert "+refs/heads/release:refs/repository-manager/" in fetch_command
+
+
+def test_multiple_push_refspecs_are_refused_as_ambiguous(tmp_path):
+    manager = _git(tmp_path)
+    original_action = manager.git_action
+
+    def action(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if "config --get-all remote.origin.push" in command:
+            return GitResult(
+                status="success",
+                data="main:main\nmain:release\n",
+                error=None,
+            )
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    refresh = manager._refresh_upstream(str(tmp_path))
+
+    assert refresh.status == "error"
+    assert "multiple remote push refspecs" in (refresh.error or "")
+    assert not any(
+        "git fetch" in call.kwargs.get("command", "")
+        for call in manager.git_action.call_args_list
+    )
+
+
+def test_push_default_matching_is_refused_as_ambiguous(tmp_path):
+    manager = _git(tmp_path)
+    original_action = manager.git_action
+
+    def action(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if "config --get-all push.default" in command:
+            return GitResult(status="success", data="matching", error=None)
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    refresh = manager._refresh_upstream(str(tmp_path))
+
+    assert refresh.status == "error"
+    assert "does not select one exact branch" in (refresh.error or "")
+
+
+def test_multiple_push_urls_are_refused_as_ambiguous(tmp_path):
+    manager = _git(tmp_path)
+    original_action = manager.git_action
+
+    def action(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if "remote get-url --push --all -- origin" in command:
+            return GitResult(
+                status="success", data="first-url\nsecond-url\n", error=None
+            )
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    refresh = manager._refresh_upstream(str(tmp_path))
+
+    assert refresh.status == "error"
+    assert "multiple push remote URLs" in (refresh.error or "")
+
+
+def test_local_upstream_is_snapshotted_without_fetch(tmp_path):
+    _run_git(tmp_path, "init", "--initial-branch=main")
+    _run_git(tmp_path, "config", "user.email", "tests@example.invalid")
+    _run_git(tmp_path, "config", "user.name", "Repository Manager Tests")
+    (tmp_path / "base.txt").write_text("base\n")
+    _run_git(tmp_path, "add", "base.txt")
+    _run_git(tmp_path, "commit", "-m", "base")
+    _run_git(tmp_path, "switch", "-c", "feature")
+    (tmp_path / "feature.txt").write_text("feature\n")
+    _run_git(tmp_path, "add", "feature.txt")
+    _run_git(tmp_path, "commit", "-m", "feature")
+    _run_git(tmp_path, "config", "branch.feature.remote", ".")
+    _run_git(tmp_path, "config", "branch.feature.merge", "refs/heads/main")
+    _run_git(tmp_path, "config", "push.default", "upstream")
+
+    manager = Git(path=str(tmp_path))
+    original_action = manager.git_action
+    manager.git_action = MagicMock(  # type: ignore[method-assign]
+        wraps=original_action
+    )
+    refresh = manager._refresh_upstream(str(tmp_path))
+
+    assert refresh.status == "noop"
+    assert refresh.upstream_oid == _run_git(tmp_path, "rev-parse", "main")
+    assert manager._has_unpushed_commits(str(tmp_path), refresh) is True
+    assert manager._unpushed_changed_files(str(tmp_path), refresh) == ["feature.txt"]
+    assert not any(
+        "git fetch" in call.kwargs.get("command", "")
+        for call in manager.git_action.call_args_list
+    )
+
+
+def test_refresh_rejects_head_or_branch_change_during_snapshot(tmp_path):
+    manager = _git(tmp_path)
+    original_action = manager.git_action
+    branch_queries = 0
+
+    def action(*args, **kwargs):
+        nonlocal branch_queries
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if "symbolic-ref --quiet --short HEAD" in command:
+            branch_queries += 1
+            if branch_queries > 1:
+                return GitResult(status="success", data="other", error=None)
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    refresh = manager._refresh_upstream(str(tmp_path))
+
+    assert refresh.status == "error"
+    assert "HEAD or branch changed" in (refresh.error or "")
+
+
+def test_refresh_exception_cleans_private_ref_and_redacts_secret(tmp_path):
+    manager = _git(tmp_path)
+    original_action = manager.git_action
+    sensitive_value = "refresh-token-value"
+
+    def action(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if "rev-parse --verify" in command and "refs/repository-manager/" in command:
+            raise RuntimeError(f"access_token={sensitive_value}")
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    refresh = manager._refresh_upstream(str(tmp_path))
+
+    assert refresh.status == "error"
+    assert sensitive_value not in (refresh.error or "")
+    assert any(
+        "git update-ref -d refs/repository-manager/push-upstream/"
+        in call.kwargs.get("command", "")
+        for call in manager.git_action.call_args_list
+    )
+
+
+def test_upstream_refresh_failure_aborts_push(tmp_path):
+    manager = _git(tmp_path, ahead="0")
+    original_action = manager.git_action
+
+    def action(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if "git fetch" in command:
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(message="remote unavailable", code=1),
+            )
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    with patch("repository_manager.repository_manager.run_gate_stage") as run_gate:
+        result = manager.push_project(str(tmp_path))
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert "Actual upstream refresh did not complete" in result.error.message
+    run_gate.assert_not_called()
+    assert not any(
+        command.startswith("git push")
+        for command in (
+            call.kwargs.get("command", "") for call in manager.git_action.call_args_list
+        )
+    )
+
+
+def test_busy_cross_process_lease_aborts_push(tmp_path):
+    manager = _git(tmp_path)
+
+    with hold_lease(
+        "pre-push-transaction",
+        operation="competing operation",
+        path=tmp_path,
+    ):
+        result = manager.push_project(str(tmp_path))
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert "Actual upstream refresh did not complete" in result.error.message
+    assert not any(
+        "git fetch" in call.kwargs.get("command", "")
+        or call.kwargs.get("command", "").startswith("git push")
+        for call in manager.git_action.call_args_list
+    )
+
+
+def test_one_repo_lease_spans_gate_and_atomic_push(tmp_path, monkeypatch):
+    manager = _git(tmp_path)
+    original_action = manager.git_action
+    active = False
+    lease_kwargs = {}
+
+    @contextlib.contextmanager
+    def transaction_lease(name, **kwargs):
+        nonlocal active
+        assert name == "pre-push-transaction"
+        lease_kwargs.update(kwargs)
+        active = True
+        try:
+            yield {}
+        finally:
+            active = False
+
+    def action(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if command.startswith("git push"):
+            assert active
+        return original_action(*args, **kwargs)
+
+    def gate_result(*args, **kwargs):
+        assert active
+        return MagicMock(success=True)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+    monkeypatch.setenv("RM_GATE_TIMEOUT_SECONDS", "1200")
+    with (
+        patch(
+            "repository_manager.repository_manager.hold_lease",
+            side_effect=transaction_lease,
+        ),
+        patch(
+            "repository_manager.repository_manager.run_gate_stage",
+            side_effect=gate_result,
+        ),
+    ):
+        result = manager.push_project(str(tmp_path))
+
+    assert result.status == "success"
+    assert active is False
+    assert lease_kwargs["ttl_seconds"] >= 5100
+    push_command = next(
+        call.kwargs["command"]
+        for call in manager.git_action.call_args_list
+        if call.kwargs.get("command", "").startswith("git push")
+    )
+    assert "--atomic" in push_command
+    assert f"--force-with-lease=refs/heads/main:{_UPSTREAM_OID}" in push_command
+    assert f"{_HEAD_OID}:refs/heads/main" in push_command
+    assert "configured-push-url" in push_command
 
 
 def test_gate_passes_lets_push_proceed(tmp_path):
@@ -127,6 +661,28 @@ def test_gate_failure_aborts_push(tmp_path):
     assert not pushed
 
 
+def test_gate_exception_aborts_push_and_redacts_secret(tmp_path, caplog):
+    manager = _git(tmp_path)
+    manager.gate_before_push = True
+    sensitive_value = "gate-token-value"
+
+    with patch(
+        "repository_manager.repository_manager.run_gate_stage",
+        side_effect=RuntimeError(f"access_token={sensitive_value}"),
+    ):
+        result = manager.push_project(str(tmp_path))
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert "Pre-push gate did not complete" in result.error.message
+    assert sensitive_value not in result.error.message
+    assert sensitive_value not in caplog.text
+    assert not any(
+        "git push" in (call.kwargs.get("command", "") or "")
+        for call in manager.git_action.call_args_list
+    )
+
+
 def test_gate_skipped_without_precommit_config(tmp_path):
     m = _git(tmp_path)
     (tmp_path / ".pre-commit-config.yaml").unlink()
@@ -135,6 +691,7 @@ def test_gate_skipped_without_precommit_config(tmp_path):
 
 
 def test_push_refuses_dirty_repository_without_implicit_commit(tmp_path):
+    _run_git(tmp_path, "init", "--initial-branch=main")
     manager = Git(path=str(tmp_path))
     manager.git_action = MagicMock(  # type: ignore[method-assign]
         return_value=GitResult(status="success", data=" M changed.py", error=None)
@@ -153,19 +710,20 @@ def test_push_refuses_dirty_repository_without_implicit_commit(tmp_path):
     assert not any("git push" in command for command in commands)
 
 
-def test_diverged_push_never_rebases_or_force_pushes(tmp_path):
-    manager = Git(path=str(tmp_path))
+def test_diverged_push_never_rebases_or_unconditionally_forces(tmp_path):
+    manager = _git(tmp_path)
     manager.gate_before_push = False
+    original_action = manager.git_action
 
     def action(*args, **kwargs):
         command = kwargs.get("command", "") or (args[0] if args else "")
-        if "status --porcelain" in command:
-            return GitResult(status="success", data="", error=None)
-        return GitResult(
-            status="error",
-            data="",
-            error=GitError(message="non-fast-forward", code=1),
-        )
+        if command.startswith("git push"):
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(message="non-fast-forward", code=1),
+            )
+        return original_action(*args, **kwargs)
 
     manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
     result = manager.push_project(str(tmp_path))
@@ -175,7 +733,135 @@ def test_diverged_push_never_rebases_or_force_pushes(tmp_path):
     commands = [
         call.kwargs.get("command", "") for call in manager.git_action.call_args_list
     ]
-    assert not any("rebase" in command or "--force" in command for command in commands)
+    push_command = next(
+        command for command in commands if command.startswith("git push")
+    )
+    assert "--force-with-lease=refs/heads/main:" in push_command
+    assert " --force " not in f" {push_command} "
+    assert not any("rebase" in command for command in commands)
+
+
+def test_remote_advance_after_gate_fails_expected_old_push(tmp_path):
+    remote, seed, candidate, _base_oid, snapshotted_oid = _remote_candidate(tmp_path)
+    manager = Git(path=str(candidate))
+    manager.gate_before_push = False
+    original_action = manager.git_action
+    advanced_oid = None
+
+    def action(*args, **kwargs):
+        nonlocal advanced_oid
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if command.startswith("git push") and advanced_oid is None:
+            (seed / "advance.txt").write_text("advance\n")
+            _run_git(seed, "add", "advance.txt")
+            _run_git(seed, "commit", "-m", "advance")
+            _run_git(seed, "push", "origin", "main")
+            advanced_oid = _run_git(seed, "rev-parse", "HEAD")
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    result = manager.push_project(str(candidate))
+
+    assert result.status == "error"
+    assert advanced_oid is not None and advanced_oid != snapshotted_oid
+    assert _run_git(remote, "rev-parse", "main") == advanced_oid
+
+
+def test_remote_rewind_after_gate_fails_expected_old_push(tmp_path):
+    remote, seed, candidate, base_oid, snapshotted_oid = _remote_candidate(
+        tmp_path, remote_commits=2
+    )
+    manager = Git(path=str(candidate))
+    manager.gate_before_push = False
+    original_action = manager.git_action
+    rewound = False
+
+    def action(*args, **kwargs):
+        nonlocal rewound
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if command.startswith("git push") and not rewound:
+            _run_git(seed, "reset", "--hard", base_oid)
+            _run_git(seed, "push", "--force", "origin", "main")
+            rewound = True
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    result = manager.push_project(str(candidate))
+
+    assert result.status == "error"
+    assert snapshotted_oid != base_oid
+    assert _run_git(remote, "rev-parse", "main") == base_oid
+
+
+def test_release_tag_is_in_same_atomic_push_and_never_retried_without_tags(tmp_path):
+    manager = _git(tmp_path)
+    manager.gate_before_push = False
+    (tmp_path / ".bumpversion.cfg").write_text(
+        "[bumpversion]\ncurrent_version = 1.2.3\n"
+    )
+    original_action = manager.git_action
+
+    def action(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if "git tag -l v1.2.3" in command:
+            return GitResult(status="success", data="v1.2.3", error=None)
+        if "rev-parse --verify" in command and "refs/tags/v1.2.3" in command:
+            return GitResult(status="success", data=_HEAD_OID, error=None)
+        if command.startswith("git push"):
+            return GitResult(
+                status="error",
+                data="tag already exists",
+                error=GitError(message="tag already exists", code=1),
+            )
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    result = manager.push_project(str(tmp_path))
+
+    assert result.status == "error"
+    push_commands = [
+        call.kwargs["command"]
+        for call in manager.git_action.call_args_list
+        if call.kwargs.get("command", "").startswith("git push")
+    ]
+    assert len(push_commands) == 1
+    assert "--atomic" in push_commands[0]
+    assert "refs/tags/v1.2.3:refs/tags/v1.2.3" in push_commands[0]
+
+
+def test_unresolved_current_release_tag_refuses_branch_push(tmp_path):
+    manager = _git(tmp_path)
+    manager.gate_before_push = False
+    (tmp_path / ".bumpversion.cfg").write_text(
+        "[bumpversion]\ncurrent_version = 1.2.3\n"
+    )
+    original_action = manager.git_action
+
+    def action(*args, **kwargs):
+        command = kwargs.get("command", "") or (args[0] if args else "")
+        if "git tag -l v1.2.3" in command:
+            return GitResult(status="success", data="v1.2.3", error=None)
+        if "rev-parse --verify" in command and "refs/tags/v1.2.3" in command:
+            return GitResult(
+                status="error",
+                data="",
+                error=GitError(message="tag disappeared", code=1),
+            )
+        return original_action(*args, **kwargs)
+
+    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
+
+    result = manager.push_project(str(tmp_path))
+
+    assert result.status == "error"
+    assert "release tag is invalid or unresolved" in result.error.message
+    assert not any(
+        call.kwargs.get("command", "").startswith("git push")
+        for call in manager.git_action.call_args_list
+    )
 
 
 def test_missing_toolchain_is_reported_as_unrunnable_not_as_a_defect(tmp_path):
