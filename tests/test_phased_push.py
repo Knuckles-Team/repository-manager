@@ -205,6 +205,94 @@ def test_phased_push_proceeds_immediately_when_barrier_satisfied(
     assert mock_sleep.call_count == 0
 
 
+def test_phase_readiness_cross_checks_the_independent_later_phase_universe(
+    mock_repo_manager, monkeypatch
+):
+    """A narrowed constraint target cannot bypass the independent cross-check."""
+    repo2 = Path(mock_repo_manager.path) / "repo2"
+    (repo2 / "pyproject.toml").write_text(
+        """\
+[project]
+name = "repo2"
+dependencies = ["epistemic-graph>=2.0.0"]
+"""
+    )
+    monkeypatch.setattr(
+        Git,
+        "_phase_published_packages",
+        lambda self, projects_to_push: {"epistemic-graph": "unused"},
+    )
+    calls = {"n": 0}
+
+    def narrowed_then_independent(path, *, fleet_packages):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Simulate the planner's narrowed scan missing the real dependent.
+            return []
+        return [
+            dep_ready.DeclaredConstraint(
+                package="epistemic-graph",
+                raw_requirement="epistemic-graph>=2.0.0",
+                specifier=">=2.0.0",
+                extras=(),
+                declared_by=str(Path(path) / "pyproject.toml"),
+            )
+        ]
+
+    monkeypatch.setattr(
+        dep_ready, "declared_fleet_constraints", narrowed_then_independent
+    )
+    outcome = mock_repo_manager._await_phase_dependency_readiness(
+        phase_num=1,
+        phase_name="Phase 1",
+        projects_to_push=[("repo1", str(Path(mock_repo_manager.path) / "repo1"))],
+        later_phases=[
+            {
+                "name": "Phase 2",
+                "projects_to_push": [("repo2", str(repo2))],
+            }
+        ],
+        wait_minutes=1,
+    )
+
+    assert outcome.ok is False
+    assert outcome.attempts == 0
+    assert outcome.waited_s == 0.0
+    assert outcome.failures[0].reason == "TARGETS_INCOMPLETE"
+    assert calls["n"] == 2
+
+
+def test_phased_push_aborts_before_mutation_when_frozen_plan_drifts(
+    mock_repo_manager, monkeypatch
+):
+    """Legacy phased push binds execution to the frozen input/target digest."""
+    config = {"phases": [{"phase": 1, "name": "Phase 1", "projects": ["repo1"]}]}
+    original_execute = mock_repo_manager._execute_push_phase
+    url = "https://github.com/Knuckles-Team/repo1.git"
+
+    def drift_before_execute(**kwargs):
+        mock_repo_manager.project_map[url] = str(
+            Path(mock_repo_manager.path) / "repo1-renamed"
+        )
+        return original_execute(**kwargs)
+
+    monkeypatch.setattr(mock_repo_manager, "_execute_push_phase", drift_before_execute)
+    results = mock_repo_manager.phased_push(
+        config=config,
+        start_phase=1,
+        auto_start=False,
+    )
+
+    assert any(
+        result.status == "error"
+        and result.error
+        and "release plan changed" in result.error.message
+        for result in results
+    )
+    assert mock_repo_manager.git_action.call_count == 0
+    assert len(mock_repo_manager.progress["release_plan_digest"]) == 64
+
+
 def _fake_run_gate_stage_factory(script):
     """Returns a ``gates.run_gate_stage``-shaped callable that pops one
     ``RepoScanResult`` off ``script`` per call (repeating the last entry once

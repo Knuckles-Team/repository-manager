@@ -11,7 +11,9 @@ import dataclasses
 import datetime
 import fnmatch
 import functools
+import hashlib
 import inspect
+import json
 import os
 import re
 import shlex
@@ -21,8 +23,9 @@ import threading
 import tomllib
 import uuid
 from collections.abc import Callable, Iterator
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypeVar
+from urllib.parse import urlsplit, urlunsplit
 
 __version__ = "3.4.0"
 
@@ -135,11 +138,72 @@ class _UnsafeMutationTarget(ValueError):
         self.candidate = candidate
 
 
+class _ReleasePlanDrift(ValueError):
+    """Signal that a frozen legacy release plan no longer matches its inputs."""
+
+    def __init__(self, operation: str, expected_digest: str) -> None:
+        super().__init__(operation)
+        self.operation = operation
+        self.expected_digest = expected_digest
+
+
+@dataclasses.dataclass(frozen=True)
+class _ReleasePlanProvenance:
+    """Immutable provenance for one legacy phased bump/push invocation.
+
+    The older phased APIs predate the typed workspace release-plan contracts.
+    They still need the same safety property: the exact input registry and
+    ordered ``(phase, name, path)`` membership used for planning must be the
+    input used at every mutation boundary.  The payload itself stays local;
+    only bounded SHA-256 digests are exposed to progress/results.
+    """
+
+    operation: Literal["bump", "push"]
+    input_digest: str
+    plan_digest: str
+
+
+_CASE_INSENSITIVE_ORIGIN_HOSTS = frozenset({"github.com"})
+
+
 def _reject_lexical_parent(path: Path, *, label: str) -> Path:
     """Reject traversal syntax before any path normalization can erase it."""
     if ".." in path.parts:
         raise ValueError(f"{label} contains a lexical parent segment")
     return path
+
+
+def _release_plan_digest(payload: object) -> str:
+    """Return a deterministic digest for a bounded release-plan payload."""
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _release_phase_payload(phase_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Serialize only the ordered, exact release targets in a phase list."""
+    return [
+        {
+            "phase_num": phase["phase_num"],
+            "name": phase["name"],
+            "targets": [
+                [name, path]
+                for name, path in phase.get(
+                    "targets", phase.get("projects_to_push", [])
+                )
+            ],
+            **(
+                {"wait_minutes": phase["wait_minutes"]}
+                if "wait_minutes" in phase
+                else {}
+            ),
+        }
+        for phase in phase_list
+    ]
 
 
 # Keep this list in sync with uv's documented ``tool.uv.sources`` table
@@ -830,12 +894,44 @@ class Git:
         """Create the workspace tree, then clone or pull every declared repo."""
         logger.info("Creating configured workspace structure")
         os.makedirs(self.path, exist_ok=True)
-        for project_path in self.project_map.values():
+
+        sync_targets = self._validated_workspace_sync_targets()
+        if isinstance(sync_targets, GitResult):
+            return [sync_targets]
+
+        for _url, project_path in sync_targets:
             os.makedirs(os.path.dirname(project_path), exist_ok=True)
 
+        return self._sync_workspace_targets(sync_targets)
+
+    def _validated_workspace_sync_targets(
+        self,
+    ) -> list[tuple[str, str]] | GitResult:
+        """Validate every setup destination before any parent is created."""
+        # The manifest is an input to a mutating operation. Revalidate every
+        # exact destination after the workspace root exists and before creating
+        # even a parent directory; a changed map or a newly-created symlink must
+        # never redirect setup outside the approved root.
+        sync_targets: list[tuple[str, str]] = []
+        for url, project_path in self.project_map.items():
+            try:
+                validated_path = self._validate_workspace_path(
+                    project_path,
+                    label=f"workspace sync project {_project_label(project_path)!r}",
+                )
+            except ValueError as exc:
+                logger.error("Workspace sync target refused: %s", exc)
+                return self._path_validation_result("workspace_sync", project_path, exc)
+            sync_targets.append((url, str(validated_path)))
+        return sync_targets
+
+    def _sync_workspace_targets(
+        self, sync_targets: list[tuple[str, str]]
+    ) -> list[GitResult]:
+        """Clone or pull one already-validated workspace target list."""
         logger.info("Syncing repositories (Clone/Pull)...")
         results = []
-        for url, project_path in self.project_map.items():
+        for url, project_path in sync_targets:
             if os.path.exists(project_path):
                 results.append(self.pull_project(project_path))
             else:
@@ -1162,8 +1258,13 @@ class Git:
 
     def _validated_operation_path(self, path: str | None, *, operation: str) -> str:
         """Resolve an operation target only after the full path safety check."""
-        candidate = self.path if path is None else path
+        # Resolve the default workspace through the approved root itself. This
+        # matters for callers that constructed ``Git(path="relative-root")``:
+        # feeding that relative spelling back through the root join would
+        # produce ``relative-root/relative-root``.
+        candidate: object = self.path if path is None else path
         try:
+            candidate = self._operation_target_candidate(path)
             return str(
                 self._validate_workspace_path(
                     candidate,
@@ -1173,6 +1274,10 @@ class Git:
         except ValueError as exc:
             logger.error("Unsafe %s target refused: %s", operation, exc)
             raise _UnsafeMutationTarget(operation, candidate, exc) from exc
+
+    def _operation_target_candidate(self, path: str | None) -> str | Path:
+        """Resolve an optional mutation target without changing its contract."""
+        return self._workspace_root() if path is None else path
 
     def _revalidate_release_target(
         self,
@@ -1199,6 +1304,138 @@ class Git:
                 f"{operation} project {name!r} does not match canonical path {validated}"
             )
         return name, str(validated)
+
+    def _release_plan_input_payload(
+        self, config: dict[str, Any], options: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Capture the exact legacy-plan inputs without retaining raw secrets."""
+        project_map = [
+            [str(url), str(path)]
+            for url, path in sorted(self.project_map.items(), key=lambda item: item[0])
+        ]
+        categories = [
+            [str(url), list(category)]
+            for url, category in sorted(
+                self._project_categories.items(), key=lambda item: item[0]
+            )
+        ]
+        return {
+            "workspace": str(self.path),
+            "project_map": project_map,
+            "project_categories": categories,
+            "config": config,
+            "options": options,
+        }
+
+    def _freeze_release_plan(
+        self,
+        operation: Literal["bump", "push"],
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        *,
+        options: dict[str, Any],
+        auxiliary_targets: list[_ReleaseTarget] | None = None,
+    ) -> _ReleasePlanProvenance:
+        """Freeze input provenance and ordered target membership for a run."""
+        auxiliary = [[name, path] for name, path in (auxiliary_targets or [])]
+        input_digest = _release_plan_digest(
+            self._release_plan_input_payload(config, options)
+        )
+        plan_digest = _release_plan_digest(
+            {
+                "operation": operation,
+                "input_digest": input_digest,
+                "phases": _release_phase_payload(phase_list),
+                "auxiliary_targets": auxiliary,
+            }
+        )
+        return _ReleasePlanProvenance(
+            operation=operation,
+            input_digest=input_digest,
+            plan_digest=plan_digest,
+        )
+
+    def _release_plan_matches(
+        self,
+        provenance: _ReleasePlanProvenance,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        *,
+        options: dict[str, Any],
+        auxiliary_targets: list[_ReleaseTarget] | None = None,
+    ) -> bool:
+        """Check input registry, config, and ordered target membership for drift."""
+        current_input = _release_plan_digest(
+            self._release_plan_input_payload(config, options)
+        )
+        if current_input != provenance.input_digest:
+            return False
+        auxiliary = [[name, path] for name, path in (auxiliary_targets or [])]
+        current_plan = _release_plan_digest(
+            {
+                "operation": provenance.operation,
+                "input_digest": current_input,
+                "phases": _release_phase_payload(phase_list),
+                "auxiliary_targets": auxiliary,
+            }
+        )
+        return current_plan == provenance.plan_digest
+
+    def _assert_release_plan(
+        self,
+        provenance: _ReleasePlanProvenance,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        *,
+        options: dict[str, Any],
+        auxiliary_targets: list[_ReleaseTarget] | None = None,
+    ) -> None:
+        """Raise a typed refusal when a legacy plan no longer matches inputs."""
+        try:
+            matches = self._release_plan_matches(
+                provenance,
+                config,
+                phase_list,
+                options=options,
+                auxiliary_targets=auxiliary_targets,
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            # A concurrently malformed phase/config input is drift, not a
+            # reason to leak an exception past the legacy API or continue with
+            # an unverified target set.
+            matches = False
+        if not matches:
+            raise _ReleasePlanDrift(provenance.operation, provenance.plan_digest)
+
+    def _release_plan_drift_result(self, drift: _ReleasePlanDrift) -> GitResult:
+        """Return a privacy-safe, auditable result for release-plan drift."""
+        return GitResult(
+            status="error",
+            data=f"release_plan_digest={drift.expected_digest}",
+            error=GitError(
+                message=(
+                    f"phased_{drift.operation} aborted: release plan changed "
+                    "before the next mutation"
+                ),
+                code=409,
+            ),
+            metadata=GitMetadata(
+                command=f"phased_{drift.operation}",
+                workspace=_project_label(self.path),
+                return_code=409,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    @staticmethod
+    def _record_release_plan(
+        progress: dict | None, provenance: _ReleasePlanProvenance
+    ) -> None:
+        """Expose only digests, never raw plan paths, in progress state."""
+        if progress is None:
+            return
+        progress["release_plan_digest"] = provenance.plan_digest
+        progress["release_plan_input_digest"] = provenance.input_digest
 
     @staticmethod
     def _normalize_uv_name(name: str, *, label: str) -> str:
@@ -2596,7 +2833,7 @@ class Git:
         Returns:
             GitResult: The result of the Git clone command.
         """
-        target_path = os.path.abspath(os.path.expanduser(target_path))
+        target_path = self._validated_clone_target(target_path)
         if not url:
             return GitResult(
                 status="error",
@@ -2663,6 +2900,25 @@ class Git:
                 return_code=0,
                 timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
             ),
+        )
+
+    def _validated_clone_target(self, target_path: str) -> str:
+        """Validate clone destinations before resolving caller-relative paths."""
+        # ``clone_repository`` historically accepted a destination relative to
+        # the caller's cwd (unlike the other repository operations, which are
+        # workspace-relative). Preserve that contract, but reject lexical
+        # traversal before converting it to an absolute path and then route the
+        # canonical destination through the same workspace validator as every
+        # other mutation.
+        raw_target = Path(os.path.expanduser(target_path))
+        try:
+            _reject_lexical_parent(raw_target, label="clone_repository target")
+        except ValueError as exc:
+            raise _UnsafeMutationTarget("clone_repository", target_path, exc) from exc
+        if not raw_target.is_absolute():
+            raw_target = Path.cwd() / raw_target
+        return self._validated_operation_path(
+            str(raw_target), operation="clone_repository"
         )
 
     def _guarded_default_branch_checkout(
@@ -2755,7 +3011,7 @@ class Git:
         Returns:
             GitResult: The result of the pull operation.
         """
-        target_path = self._resolve_path(path)
+        target_path = self._validated_operation_path(path, operation="pull_project")
         results = [self.git_action(command="git pull", path=target_path)]
 
         logger.info("Repository pull completed")
@@ -4475,13 +4731,15 @@ class Git:
         *,
         start_phase: int,
         single_phase: bool,
+        targets: list[_ReleaseTarget] | None = None,
     ) -> list[GitResult]:
         """Run pre-commit (with autoupdate) and commit the resulting formatting."""
-        targets = self._pre_commit_project_targets(
+        targets = self._resolve_bump_pre_commit_targets(
             config,
             filter_set,
             start_phase=start_phase,
             single_phase=single_phase,
+            targets=targets,
         )
         results = list(
             self.pre_commit_projects(
@@ -4497,6 +4755,25 @@ class Git:
             )
         )
         return results
+
+    def _resolve_bump_pre_commit_targets(
+        self,
+        config: dict,
+        filter_set: set[str] | None,
+        *,
+        start_phase: int,
+        single_phase: bool,
+        targets: list[_ReleaseTarget] | None,
+    ) -> list[_ReleaseTarget] | None:
+        """Reuse the frozen pre-commit scope when one was supplied."""
+        if targets is not None:
+            return targets
+        return self._pre_commit_project_targets(
+            config,
+            filter_set,
+            start_phase=start_phase,
+            single_phase=single_phase,
+        )
 
     def _bump_phase_targets(
         self, phase: dict, filter_set: set[str] | None, assigned_projects: set[str]
@@ -4738,6 +5015,269 @@ class Git:
 
         tracker.end_phase(phase_name)
 
+    def _prepare_bump_release_plan(
+        self,
+        *,
+        config: dict,
+        part: str,
+        start_phase: int,
+        dry_run: bool,
+        allow_pre_commit: bool,
+        single_phase: bool,
+        project_filter: str | None,
+        force: bool,
+        auto_start: bool,
+    ) -> tuple[
+        set[str] | None,
+        list[dict[str, Any]],
+        int,
+        list[_ReleaseTarget] | None,
+        dict[str, Any],
+        _ReleasePlanProvenance,
+    ]:
+        """Build the immutable bump scope and its input/provenance digests."""
+        filter_set = self._parse_project_filter(project_filter)
+        phase_list, total_projects = self._build_bump_phase_list(
+            config=config,
+            start_phase=start_phase,
+            filter_set=filter_set,
+            single_phase=single_phase,
+        )
+        precommit_targets: list[_ReleaseTarget] | None = (
+            self._pre_commit_project_targets(
+                config,
+                filter_set,
+                start_phase=start_phase,
+                single_phase=single_phase,
+            )
+            if allow_pre_commit
+            else []
+        )
+        plan_options = {
+            "part": part,
+            "start_phase": start_phase,
+            "dry_run": dry_run,
+            "allow_pre_commit": allow_pre_commit,
+            "single_phase": single_phase,
+            "project_filter": project_filter,
+            "force": force,
+            "auto_start": auto_start,
+        }
+        provenance = self._freeze_release_plan(
+            "bump",
+            config,
+            phase_list,
+            options=plan_options,
+            auxiliary_targets=precommit_targets,
+        )
+        return (
+            filter_set,
+            phase_list,
+            total_projects,
+            precommit_targets,
+            plan_options,
+            provenance,
+        )
+
+    def _assert_bump_plan(
+        self,
+        provenance: _ReleasePlanProvenance,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        precommit_targets: list[_ReleaseTarget] | None,
+    ) -> None:
+        """Recheck bump input provenance at one operation boundary."""
+        self._assert_release_plan(
+            provenance,
+            config,
+            phase_list,
+            options=plan_options,
+            auxiliary_targets=precommit_targets,
+        )
+
+    def _bump_plan_one(
+        self,
+        project_name: str,
+        project_path: str,
+        *,
+        provenance: _ReleasePlanProvenance,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        precommit_targets: list[_ReleaseTarget] | None,
+        part: str,
+        dry_run: bool,
+        force: bool,
+        all_results: list[GitResult],
+    ) -> str | None:
+        """Guard and bump one exact member of the frozen release plan."""
+        self._assert_bump_plan(
+            provenance, config, phase_list, plan_options, precommit_targets
+        )
+        return self._bump_one_project(
+            project_name=project_name,
+            project_dir=project_path,
+            part=part,
+            dry_run=dry_run,
+            force=force,
+            all_results=all_results,
+        )
+
+    def _propagate_bump_plan(
+        self,
+        project_name: str,
+        new_version: str,
+        phase_num: int,
+        *,
+        provenance: _ReleasePlanProvenance,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        precommit_targets: list[_ReleaseTarget] | None,
+        phase_of: Callable[[str], int],
+        dry_run: bool,
+        all_results: list[GitResult],
+    ) -> None:
+        """Guard and propagate one exact version across later plan phases."""
+        self._assert_bump_plan(
+            provenance, config, phase_list, plan_options, precommit_targets
+        )
+        self._propagate_bump_to_dependents(
+            project_name=project_name,
+            new_version=new_version,
+            phase_num=phase_num,
+            phase_of=phase_of,
+            dry_run=dry_run,
+            all_results=all_results,
+        )
+
+    def _record_release_plan_abort(
+        self,
+        drift: _ReleasePlanDrift,
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> None:
+        """Record a typed abort when a frozen release plan changed."""
+        all_results.append(self._release_plan_drift_result(drift))
+        tracker.note(f"ABORTED — phased {drift.operation} release plan changed")
+
+    def _run_bump_precommit_plan(
+        self,
+        *,
+        allow_pre_commit: bool,
+        config: dict[str, Any],
+        filter_set: set[str] | None,
+        start_phase: int,
+        single_phase: bool,
+        precommit_targets: list[_ReleaseTarget] | None,
+        provenance: _ReleasePlanProvenance,
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> bool:
+        """Run the guarded pre-commit stage, returning false on plan drift."""
+        if not allow_pre_commit:
+            return True
+        try:
+            self._assert_bump_plan(
+                provenance, config, phase_list, plan_options, precommit_targets
+            )
+            all_results.extend(
+                self._run_bump_pre_commit_stage(
+                    config,
+                    filter_set,
+                    start_phase=start_phase,
+                    single_phase=single_phase,
+                    targets=precommit_targets,
+                )
+            )
+        except _ReleasePlanDrift as drift:
+            self._record_release_plan_abort(drift, tracker, all_results)
+            return False
+        return True
+
+    def _execute_frozen_bump_plan(
+        self,
+        *,
+        config: dict[str, Any],
+        filter_set: set[str] | None,
+        start_phase: int,
+        part: str,
+        dry_run: bool,
+        allow_pre_commit: bool,
+        single_phase: bool,
+        force: bool,
+        precommit_targets: list[_ReleaseTarget] | None,
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        provenance: _ReleasePlanProvenance,
+        project_phases: dict[str, int],
+        bulk_phase_num: int,
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> bool:
+        """Execute all guarded bump mutations for one frozen plan."""
+        if not self._run_bump_precommit_plan(
+            allow_pre_commit=allow_pre_commit,
+            config=config,
+            filter_set=filter_set,
+            start_phase=start_phase,
+            single_phase=single_phase,
+            precommit_targets=precommit_targets,
+            provenance=provenance,
+            phase_list=phase_list,
+            plan_options=plan_options,
+            tracker=tracker,
+            all_results=all_results,
+        ):
+            return False
+
+        def phase_of(name: str) -> int:
+            return project_phases.get(name, bulk_phase_num)
+
+        bump_one = functools.partial(
+            self._bump_plan_one,
+            provenance=provenance,
+            config=config,
+            phase_list=phase_list,
+            plan_options=plan_options,
+            precommit_targets=precommit_targets,
+            part=part,
+            dry_run=dry_run,
+            force=force,
+            all_results=all_results,
+        )
+        propagate = functools.partial(
+            self._propagate_bump_plan,
+            provenance=provenance,
+            config=config,
+            phase_list=phase_list,
+            plan_options=plan_options,
+            precommit_targets=precommit_targets,
+            phase_of=phase_of,
+            dry_run=dry_run,
+            all_results=all_results,
+        )
+        processed_paths: set[str] = set()
+        try:
+            for p_info in phase_list:
+                self._assert_bump_plan(
+                    provenance, config, phase_list, plan_options, precommit_targets
+                )
+                self._run_bump_phase(
+                    p_info=p_info,
+                    tracker=tracker,
+                    processed_paths=processed_paths,
+                    bump_one=bump_one,
+                    propagate=propagate,
+                )
+        except _ReleasePlanDrift as drift:
+            self._record_release_plan_abort(drift, tracker, all_results)
+            return False
+        return True
+
     def phased_bumpversion(
         self,
         part: str = "patch",
@@ -4777,9 +5317,6 @@ class Git:
 
         project_phases, bulk_phase_num = self._project_phase_index(config)
 
-        def phase_of(proj_name: str) -> int:
-            return project_phases.get(proj_name, bulk_phase_num)
-
         tracker = _PhaseProgress(state=progress, noun="bump")
 
         if self._should_auto_start(
@@ -4800,57 +5337,50 @@ class Git:
                 return all_results
             start_phase = detected
 
-        filter_set = self._parse_project_filter(project_filter)
-        if allow_pre_commit:
-            all_results.extend(
-                self._run_bump_pre_commit_stage(
-                    config,
-                    filter_set,
-                    start_phase=start_phase,
-                    single_phase=single_phase,
-                )
-            )
-
-        def bump_one(project_name: str, project_path: str) -> str | None:
-            return self._bump_one_project(
-                project_name=project_name,
-                project_dir=project_path,
-                part=part,
-                dry_run=dry_run,
-                force=force,
-                all_results=all_results,
-            )
-
-        def propagate(project_name: str, new_version: str, phase_num: int) -> None:
-            self._propagate_bump_to_dependents(
-                project_name=project_name,
-                new_version=new_version,
-                phase_num=phase_num,
-                phase_of=phase_of,
-                dry_run=dry_run,
-                all_results=all_results,
-            )
-
-        phase_list, tracker.total = self._build_bump_phase_list(
+        (
+            filter_set,
+            phase_list,
+            total_projects,
+            precommit_targets,
+            plan_options,
+            provenance,
+        ) = self._prepare_bump_release_plan(
             config=config,
+            part=part,
             start_phase=start_phase,
-            filter_set=filter_set,
+            dry_run=dry_run,
+            allow_pre_commit=allow_pre_commit,
             single_phase=single_phase,
+            project_filter=project_filter,
+            force=force,
+            auto_start=auto_start,
         )
+        tracker.total = total_projects
+        self._record_release_plan(progress, provenance)
         tracker.initialize(
             "Initializing Bumps",
             self._bump_progress_phases(phase_list),
         )
 
-        processed_paths: set[str] = set()
-        for p_info in phase_list:
-            self._run_bump_phase(
-                p_info=p_info,
-                tracker=tracker,
-                processed_paths=processed_paths,
-                bump_one=bump_one,
-                propagate=propagate,
-            )
+        if not self._execute_frozen_bump_plan(
+            config=config,
+            filter_set=filter_set,
+            start_phase=start_phase,
+            part=part,
+            dry_run=dry_run,
+            allow_pre_commit=allow_pre_commit,
+            single_phase=single_phase,
+            force=force,
+            precommit_targets=precommit_targets,
+            phase_list=phase_list,
+            plan_options=plan_options,
+            provenance=provenance,
+            project_phases=project_phases,
+            bulk_phase_num=bulk_phase_num,
+            tracker=tracker,
+            all_results=all_results,
+        ):
+            return all_results
 
         tracker.finish("Bumps Completed")
         return all_results
@@ -5392,6 +5922,7 @@ class Git:
         p_info: dict[str, Any],
         tracker: "_PhaseProgress",
         all_results: list[GitResult],
+        before_mutation: Callable[[str, str], None] | None = None,
     ) -> bool:
         """Push one phase's projects in parallel; return whether anything landed."""
         phase_name = p_info["name"]
@@ -5408,11 +5939,8 @@ class Git:
         ) as executor:
             future_to_proj = {}
             for proj_name, p_path in projects_to_push:
-                _, validated_path = self._revalidate_release_target(
-                    proj_name,
-                    p_path,
-                    operation="push",
-                    require_directory=True,
+                validated_path = self._validated_push_phase_target(
+                    proj_name, p_path, before_mutation
                 )
                 tracker.begin_item(phase_name, proj_name)
                 future = executor.submit(self.push_project, path=validated_path)
@@ -5426,6 +5954,22 @@ class Git:
 
         tracker.end_phase(phase_name)
         return phase_had_pushes
+
+    def _validated_push_phase_target(
+        self,
+        project_name: str,
+        project_path: str,
+        before_mutation: Callable[[str, str], None] | None,
+    ) -> str:
+        """Run the plan guard, then return the exact canonical push path."""
+        if before_mutation is not None:
+            before_mutation(project_name, project_path)
+        return self._revalidate_release_target(
+            project_name,
+            project_path,
+            operation="push",
+            require_directory=True,
+        )[1]
 
     @staticmethod
     def _report_barrier_timeout(
@@ -5536,6 +6080,66 @@ class Git:
             )
         return True
 
+    def _assert_push_plan(
+        self,
+        _project_name: str,
+        _project_path: str,
+        *,
+        provenance: _ReleasePlanProvenance,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+    ) -> None:
+        """Recheck push provenance immediately before one target mutation."""
+        self._assert_release_plan(
+            provenance,
+            config,
+            phase_list,
+            options=plan_options,
+        )
+
+    def _execute_frozen_push_plan(
+        self,
+        *,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        provenance: _ReleasePlanProvenance,
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> bool:
+        """Execute all guarded push mutations for one frozen plan."""
+        before_mutation = functools.partial(
+            self._assert_push_plan,
+            provenance=provenance,
+            config=config,
+            phase_list=phase_list,
+            plan_options=plan_options,
+        )
+        try:
+            for phase_idx, p_info in enumerate(phase_list):
+                self._assert_release_plan(
+                    provenance, config, phase_list, options=plan_options
+                )
+                phase_had_pushes = self._execute_push_phase(
+                    p_info=p_info,
+                    tracker=tracker,
+                    all_results=all_results,
+                    before_mutation=before_mutation,
+                )
+                if not self._settle_phase_barrier(
+                    p_info=p_info,
+                    phase_had_pushes=phase_had_pushes,
+                    later_phases=phase_list[phase_idx + 1 :],
+                    tracker=tracker,
+                    all_results=all_results,
+                ):
+                    return False
+        except _ReleasePlanDrift as drift:
+            self._record_release_plan_abort(drift, tracker, all_results)
+            return False
+        return True
+
     def phased_push(
         self,
         start_phase: int = 1,
@@ -5592,23 +6196,30 @@ class Git:
             project_filter=project_filter,
             single_phase=single_phase,
         )
+        plan_options = {
+            "start_phase": start_phase,
+            "single_phase": single_phase,
+            "project_filter": project_filter,
+            "auto_start": auto_start,
+        }
+        provenance = self._freeze_release_plan(
+            "push", config, phase_list, options=plan_options
+        )
+        self._record_release_plan(progress, provenance)
         tracker.initialize(
             "Initializing Pushes",
             [(p["name"], [n for n, _ in p["projects_to_push"]]) for p in phase_list],
         )
 
-        for phase_idx, p_info in enumerate(phase_list):
-            phase_had_pushes = self._execute_push_phase(
-                p_info=p_info, tracker=tracker, all_results=all_results
-            )
-            if not self._settle_phase_barrier(
-                p_info=p_info,
-                phase_had_pushes=phase_had_pushes,
-                later_phases=phase_list[phase_idx + 1 :],
-                tracker=tracker,
-                all_results=all_results,
-            ):
-                return all_results
+        if not self._execute_frozen_push_plan(
+            config=config,
+            phase_list=phase_list,
+            plan_options=plan_options,
+            provenance=provenance,
+            tracker=tracker,
+            all_results=all_results,
+        ):
+            return all_results
 
         tracker.finish("Pushes Completed")
         return all_results
@@ -5698,16 +6309,13 @@ class Git:
             )
             return dependency_readiness.GateReadinessOutcome(ok=True, waited_s=0.0)
 
-        targets: dict[str, tuple[str, str]] = {}
-        for later in later_phases:
-            for proj_name, p_path in later["projects_to_push"]:
-                if p_path in targets:
-                    continue
-                constraints = dependency_readiness.declared_fleet_constraints(
-                    p_path, fleet_packages=set(published)
-                )
-                if constraints:
-                    targets[p_path] = (proj_name, p_path)
+        # Keep a separately built universe for the readiness cross-check.  It
+        # must include every later-phase candidate, not only the narrowed set
+        # that currently declares a constraint, or an omitted dependent repo
+        # could make the barrier return early without ever running its check.
+        targets, candidate_repos = self._phase_readiness_targets(
+            published, later_phases
+        )
 
         if not targets:
             logger.info(
@@ -5716,25 +6324,55 @@ class Git:
                 phase_num,
                 sorted(published),
             )
-            return dependency_readiness.GateReadinessOutcome(ok=True, waited_s=0.0)
-
-        logger.info(
-            "Phase %s published %s; running the pre-push gate for %d downstream "
-            "repo(s) (%s), retrying every %.0fs up to a %.0f-minute ceiling, "
-            "abort-and-never-silently-advance if still failing.",
-            phase_num,
-            sorted(published),
-            len(targets),
-            ", ".join(name for name, _ in targets.values()),
-            poll_interval_s,
-            wait_minutes,
-        )
+        else:
+            logger.info(
+                "Phase %s published %s; running the pre-push gate for %d downstream "
+                "repo(s) (%s), retrying every %.0fs up to a %.0f-minute ceiling, "
+                "abort-and-never-silently-advance if still failing.",
+                phase_num,
+                sorted(published),
+                len(targets),
+                ", ".join(name for name, _ in targets.values()),
+                poll_interval_s,
+                wait_minutes,
+            )
         return dependency_readiness.await_gate_readiness(
             list(targets.values()),
             wait_minutes=wait_minutes,
             poll_interval_s=poll_interval_s,
             audit_repo_path=self.path,
+            published_packages=set(published),
+            candidate_repos=candidate_repos,
         )
+
+    def _phase_readiness_targets(
+        self,
+        published: dict[str, str],
+        later_phases: list[dict[str, Any]],
+    ) -> tuple[dict[str, _ReleaseTarget], list[_ReleaseTarget]]:
+        """Build both the complete candidate universe and narrowed gate targets."""
+        targets: dict[str, _ReleaseTarget] = {}
+        candidate_repos: list[_ReleaseTarget] = []
+        candidate_paths: set[str] = set()
+        for later in later_phases:
+            for proj_name, p_path in later["projects_to_push"]:
+                _, validated_path = self._revalidate_release_target(
+                    proj_name,
+                    p_path,
+                    operation="gate-readiness candidate",
+                    require_directory=True,
+                )
+                if validated_path in candidate_paths:
+                    continue
+                candidate = (proj_name, validated_path)
+                candidate_repos.append(candidate)
+                candidate_paths.add(validated_path)
+                constraints = dependency_readiness.declared_fleet_constraints(
+                    validated_path, fleet_packages=set(published)
+                )
+                if constraints:
+                    targets[validated_path] = candidate
+        return targets, candidate_repos
 
     def load_projects_from_yaml(self, yaml_path: str) -> bool:
         """
@@ -5793,6 +6431,7 @@ class Git:
                     self.config.repositories, seen_repository_urls
                 )
             )
+            self._validate_manifest_checkout_origins()
             return True
 
         except Exception as e:
@@ -5820,11 +6459,12 @@ class Git:
     ) -> dict[str, str]:
         """Parse canonical root-level repositories from one workspace manifest."""
         project_map: dict[str, str] = {}
+        workspace_root = Path(os.path.abspath(os.path.expanduser(os.fspath(self.path))))
         for repository in repositories:
             url, name = self._manifest_repository_identity(
                 repository, seen_repository_urls
             )
-            project_map[url] = os.path.join(self.path, name)
+            project_map[url] = str(workspace_root / name)
             self._project_categories[url] = ()
         return project_map
 
@@ -5848,6 +6488,197 @@ class Git:
                 type(exc).__name__,
             )
         return None
+
+    def _validate_manifest_subdirectory(self, name: object, current_path: str) -> Path:
+        """Validate one manifest directory key before joining it to a path.
+
+        Manifest keys are directory *segments*, not arbitrary filesystem paths.
+        Rejecting absolute paths and lexical parents before ``join`` prevents a
+        path alias from being normalized into an apparently safe destination;
+        checking each existing component rejects both live and broken symlinks.
+        The workspace root may not exist yet during a load, so this helper does
+        not require it to be a directory until the later sync boundary.
+        """
+        raw = self._manifest_subdirectory_name(name)
+        root = self._manifest_workspace_root()
+        self._validate_manifest_root_ancestry(root)
+        return self._validated_manifest_subdirectory_path(root, current_path, raw)
+
+    @staticmethod
+    def _manifest_subdirectory_name(name: object) -> Path:
+        """Validate and parse one portable, single-segment manifest key."""
+        if type(name) is not str or not name or name != name.strip():
+            raise ValueError("manifest subdirectory names must be non-empty strings")
+        if "\x00" in name or "\\" in name:
+            raise ValueError(
+                "manifest subdirectory names must be portable path segments"
+            )
+        raw = Path(name)
+        _reject_lexical_parent(raw, label="manifest subdirectory")
+        Git._validate_manifest_subdirectory_shape(name, raw)
+        return raw
+
+    @staticmethod
+    def _validate_manifest_subdirectory_shape(name: str, raw: Path) -> None:
+        """Reject platform-specific absolute or multi-segment spellings."""
+        if raw.is_absolute() or PureWindowsPath(name).is_absolute():
+            raise ValueError("manifest subdirectory must be relative")
+        if PureWindowsPath(name).drive:
+            raise ValueError("manifest subdirectory must not contain a drive")
+        if len(raw.parts) != 1 or raw.parts[0] in {".", ""}:
+            raise ValueError("manifest subdirectory must be one path segment")
+
+    def _manifest_workspace_root(self) -> Path:
+        """Return the absolute workspace root used while parsing a manifest."""
+        return Path(os.path.abspath(os.path.expanduser(os.fspath(self.path))))
+
+    @staticmethod
+    def _validate_manifest_root_ancestry(root: Path) -> None:
+        """Reject symlink or non-directory components in a manifest root."""
+        if root.is_symlink():
+            raise ValueError(f"workspace root contains symlink component {root}")
+        current = Path(root.anchor)
+        for component in root.parts[1:]:
+            current /= component
+            if current.is_symlink():
+                raise ValueError(f"workspace root contains symlink component {current}")
+            if current != root and current.exists() and not current.is_dir():
+                raise ValueError(
+                    f"workspace root contains non-directory component {current}"
+                )
+
+    def _validated_manifest_subdirectory_path(
+        self, root: Path, current_path: str, raw: Path
+    ) -> Path:
+        """Validate containment and existing components for one subdirectory."""
+        base = Path(os.path.abspath(os.path.expanduser(current_path)))
+        candidate = Path(os.path.abspath(base / raw))
+        try:
+            relative = candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("manifest subdirectory escapes workspace root") from exc
+        self._check_path_components(
+            root,
+            relative.parts,
+            label="manifest subdirectory",
+            allow_leaf_symlink=False,
+        )
+        self._check_real_containment(candidate, root, label="manifest subdirectory")
+        return candidate
+
+    @staticmethod
+    def _canonical_checkout_origin(manifest_url: str, checkout_url: str) -> str:
+        """Bind a checkout's ``origin`` to a manifest URL under explicit policy.
+
+        Both values must first pass the strict HTTPS ``*.git`` canonicalizer.
+        Credentials on an existing checkout's transport URL are discarded for
+        identity comparison (never logged or retained); they are transport
+        material, not repository identity. The manifest itself may never carry
+        credentials. A checkout origin may omit the conventional ``.git``
+        suffix; that suffix is added only for this comparison.
+        Canonical URLs compare byte-for-byte for ordinary hosts. GitHub's owner
+        and repository path is case-insensitive, so a case-only path mismatch
+        (the existing ``atlassian-agent`` checkout has this exact condition) is
+        accepted after canonicalization while retaining the manifest spelling
+        as the authoritative project-map key. A different path, authority, or
+        scheme is a hard mismatch and aborts manifest loading.
+        """
+        manifest = canonical_repository_url(manifest_url)
+        checkout = canonical_repository_url(
+            Git._checkout_origin_identity_url(checkout_url)
+        )
+        if manifest == checkout:
+            return manifest
+
+        if Git._github_origin_case_match(manifest, checkout):
+            logger.warning(
+                "Manifest/checkout origin differs only by GitHub path case; "
+                "accepting under the explicit case-insensitive GitHub policy"
+            )
+            return manifest
+        raise ValueError(
+            "manifest repository URL does not match checkout origin after "
+            "canonicalization"
+        )
+
+    @staticmethod
+    def _checkout_origin_identity_url(checkout_url: str) -> str:
+        """Remove transport credentials and add the conventional git suffix."""
+        safe_url = Git._checkout_origin_without_credentials(checkout_url)
+        parsed = urlsplit(safe_url)
+        if parsed.path and not parsed.path.endswith(".git"):
+            safe_url = urlunsplit(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    f"{parsed.path}.git",
+                    parsed.query,
+                    parsed.fragment,
+                )
+            )
+        return safe_url
+
+    @staticmethod
+    def _checkout_origin_without_credentials(checkout_url: str) -> str:
+        """Return an origin URL with userinfo removed for identity comparison."""
+        parsed = urlsplit(checkout_url)
+        if parsed.username is None and parsed.password is None:
+            return checkout_url
+        try:
+            safe_netloc = parsed.hostname or ""
+            if parsed.port is not None:
+                safe_netloc = f"{safe_netloc}:{parsed.port}"
+            return urlunsplit(
+                (
+                    parsed.scheme,
+                    safe_netloc,
+                    parsed.path,
+                    parsed.query,
+                    parsed.fragment,
+                )
+            )
+        except ValueError as exc:
+            raise ValueError("checkout origin has an invalid authority") from exc
+
+    @staticmethod
+    def _github_origin_case_match(manifest: str, checkout: str) -> bool:
+        """Apply the explicit case-insensitive path policy for GitHub only."""
+        manifest_parts = urlsplit(manifest)
+        checkout_parts = urlsplit(checkout)
+        return bool(
+            manifest_parts.hostname in _CASE_INSENSITIVE_ORIGIN_HOSTS
+            and checkout_parts.hostname == manifest_parts.hostname
+            and manifest_parts.scheme == checkout_parts.scheme
+            and manifest_parts.netloc == checkout_parts.netloc
+            and manifest_parts.path.casefold() == checkout_parts.path.casefold()
+        )
+
+    def _validate_manifest_checkout_origins(self) -> None:
+        """Reject an existing checkout whose ``origin`` is not its manifest URL."""
+        for manifest_url, project_path in sorted(self.project_map.items()):
+            candidate = Path(os.path.abspath(os.path.expanduser(project_path)))
+            if not candidate.exists() and not candidate.is_symlink():
+                # Fresh-machine setup creates the manifest-declared directory
+                # only after loading succeeds; there is no origin to bind yet.
+                continue
+            validated = self._validate_workspace_path(
+                project_path,
+                label=f"manifest checkout {_project_label(project_path)!r}",
+            )
+            checkout = Path(validated)
+            git_marker = checkout / ".git"
+            if git_marker.is_symlink():
+                raise ValueError(
+                    f"manifest checkout contains symlink component {git_marker}"
+                )
+            if not git_marker.exists():
+                continue
+            checkout_origin = self._git_remote_url(str(checkout))
+            if checkout_origin is None:
+                raise ValueError(
+                    f"manifest checkout {_project_label(checkout)!r} has no origin"
+                )
+            self._canonical_checkout_origin(manifest_url, checkout_origin)
 
     def discover_projects(self) -> dict[str, str]:
         """
@@ -5889,7 +6720,7 @@ class Git:
         """Helper to recursively parse subdirectories and collect repository paths."""
         project_map = {}
         for name, data in subdirs.items():
-            new_path = os.path.join(current_path, name)
+            new_path = str(self._validate_manifest_subdirectory(name, current_path))
             repo_category = (*category_path, name)
 
             for repo in data.repositories:

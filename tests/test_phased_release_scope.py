@@ -896,6 +896,40 @@ def test_all_eight_agent_service_collisions_preserve_exact_paths_end_to_end(
     ) == sorted(path for _name, path in expected)
 
 
+def test_phased_bump_aborts_before_mutation_when_frozen_plan_drifts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Legacy phased bump binds its mutation boundary to plan provenance."""
+    manager = _scoped_manager(tmp_path)
+    config = {"phases": [{"name": "agents", "phase": 5, "projects": ["agent-one"]}]}
+    original_run_phase = manager._run_bump_phase
+    url = "https://example.invalid/agent-one.git"
+
+    def drift_before_phase(**kwargs):
+        manager.project_map[url] = str(tmp_path / "agent-one-renamed")
+        return original_run_phase(**kwargs)
+
+    monkeypatch.setattr(manager, "_run_bump_phase", drift_before_phase)
+    bump_one = MagicMock(return_value="1.0.1")
+    monkeypatch.setattr(manager, "_bump_one_project", bump_one)
+
+    results = manager.phased_bumpversion(
+        config=config,
+        start_phase=5,
+        auto_start=False,
+        force=True,
+    )
+
+    assert any(
+        result.status == "error"
+        and result.error
+        and "release plan changed" in result.error.message
+        for result in results
+    )
+    bump_one.assert_not_called()
+    assert len(manager.progress["release_plan_digest"]) == 64
+
+
 def test_auto_start_is_operation_specific_and_single_phase_never_advances(
     tmp_path: Path, monkeypatch
 ) -> None:

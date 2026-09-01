@@ -215,16 +215,38 @@ def test_discover_projects(tmp_path):
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
-        (["git", "commit", "-m", "fix(pre-commit): preserve lane pytest partition (D-CDX-5)"], "git commit"),
-        (["git", "commit", "-m", "run git push then pre-commit run for real"], "git commit"),
-        (["git", "commit", "-m", "leaked token: sk-ABCDEF123456 https://evil.example/callback"], "git commit"),
+        (
+            [
+                "git",
+                "commit",
+                "-m",
+                "fix(pre-commit): preserve lane pytest partition (D-CDX-5)",
+            ],
+            "git commit",
+        ),
+        (
+            ["git", "commit", "-m", "run git push then pre-commit run for real"],
+            "git commit",
+        ),
+        (
+            [
+                "git",
+                "commit",
+                "-m",
+                "leaked token: sk-ABCDEF123456 https://evil.example/callback",
+            ],
+            "git commit",
+        ),
         (["git", "push", "origin", "lane/pytest-fixture"], "git push"),
         (["git", "checkout", "pytest-flavored-branch-name"], "git checkout"),
         (["pytest", "-k", "git commit"], "pytest"),
         (["pre-commit", "run", "--all-files"], "pre-commit run"),
         (["git", "status", "--porcelain"], "git status"),
         (["git", "rev-parse", "--show-toplevel"], "git rev-parse"),
-        (["pip", "install", "git+https://example.invalid/pytest-plugin.git"], "pip install"),
+        (
+            ["pip", "install", "git+https://example.invalid/pytest-plugin.git"],
+            "pip install",
+        ),
         (["uv", "sync", "--all-extras"], "uv sync"),
         (["bump2version", "patch"], "bump2version"),
         (
@@ -676,6 +698,153 @@ def test_relative_workspace_clone_and_pull_share_destination_lock(
     assert actual_target in clone_command
     assert clone_cwd == str(tmp_path / "workspace")
     assert not repository_manager_module._REPO_MUTATION_LOCKS
+
+
+@pytest.mark.parametrize("operation", ["clone", "pull"])
+@pytest.mark.parametrize("target_kind", ["parent", "absolute", "symlink"])
+def test_clone_and_pull_route_every_destination_through_path_validation(
+    tmp_path, monkeypatch, operation, target_kind
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if target_kind == "parent":
+        target = "../outside"
+    elif target_kind == "absolute":
+        target = str(outside)
+    else:
+        linked = workspace / "linked"
+        linked.symlink_to(outside, target_is_directory=True)
+        target = str(linked)
+
+    git = Git(path=str(workspace))
+    git_action = patch.object(git, "git_action")
+    with git_action as mocked_action:
+        result = (
+            git.clone_repository("https://example.invalid/repo.git", target)
+            if operation == "clone"
+            else git.pull_project(target)
+        )
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert any(
+        marker in result.error.message
+        for marker in ("lexical parent", "escapes workspace root", "symlink component")
+    )
+    mocked_action.assert_not_called()
+
+
+@pytest.mark.parametrize("subdirectory", ["../escape", "/tmp/escape", "safe/../escape"])
+def test_manifest_loader_rejects_unsafe_subdirectory_keys(tmp_path, subdirectory):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manifest = tmp_path / "workspace.yml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "name": "unsafe",
+                "path": str(workspace),
+                "subdirectories": {
+                    subdirectory: {
+                        "repositories": [{"url": "https://example.invalid/repo.git"}]
+                    }
+                },
+            }
+        )
+    )
+    manager = Git(path=str(workspace))
+
+    assert manager.load_projects_from_yaml(str(manifest)) is False
+    assert manager.project_map == {}
+
+
+def test_manifest_loader_rejects_symlink_subdirectory_keys(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    (workspace / "linked").symlink_to(external, target_is_directory=True)
+    manifest = tmp_path / "workspace.yml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "name": "unsafe-link",
+                "path": str(workspace),
+                "subdirectories": {
+                    "linked": {
+                        "repositories": [{"url": "https://example.invalid/repo.git"}]
+                    }
+                },
+            }
+        )
+    )
+    manager = Git(path=str(workspace))
+
+    assert manager.load_projects_from_yaml(str(manifest)) is False
+    assert manager.project_map == {}
+
+
+def test_workspace_sync_revalidates_paths_before_creating_parents(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    linked = workspace / "linked"
+    linked.symlink_to(external, target_is_directory=True)
+    manager = Git(path=str(workspace))
+    manager.project_map = {"https://example.invalid/repo.git": str(linked / "repo")}
+
+    results = manager._sync_workspace_repositories()
+
+    assert len(results) == 1
+    assert results[0].status == "error"
+    assert results[0].error is not None
+    assert "symlink component" in results[0].error.message
+    assert not (external / "repo").exists()
+
+
+@pytest.mark.parametrize(
+    ("checkout_origin", "expected"),
+    [
+        ("https://github.com/knuckles-team/atlassian-agent.git", True),
+        ("https://user:secret@github.com/knuckles-team/atlassian-agent.git", True),
+        ("https://github.com/knuckles-team/atlassian-agent", True),
+        ("https://github.com/Knuckles-Team/a-different-repo.git", False),
+    ],
+)
+def test_manifest_url_is_bound_to_existing_checkout_origin(
+    tmp_path, monkeypatch, caplog, checkout_origin, expected
+):
+    workspace = tmp_path / "workspace"
+    checkout = workspace / "atlassian-agent"
+    (checkout / ".git").mkdir(parents=True)
+    manifest = tmp_path / "workspace.yml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "name": "origin-bound",
+                "path": str(workspace),
+                "repositories": [
+                    {"url": "https://github.com/Knuckles-Team/atlassian-agent.git"}
+                ],
+            }
+        )
+    )
+    manager = Git(path=str(workspace))
+    monkeypatch.setattr(manager, "_git_remote_url", lambda _path: checkout_origin)
+
+    loaded = manager.load_projects_from_yaml(str(manifest))
+
+    assert loaded is expected
+    if expected:
+        assert any(
+            "case-insensitive GitHub policy" in record.message
+            for record in caplog.records
+        )
+    else:
+        assert manager.project_map == {}
 
 
 @pytest.mark.parametrize(
