@@ -42,6 +42,7 @@ import importlib.util
 import pkgutil
 import sys
 import traceback
+from collections.abc import Callable
 from pathlib import Path
 
 # Stdlib modules that exist only on POSIX.  An import of any of these must be
@@ -222,15 +223,19 @@ def _windows_call_condition(node: ast.Call) -> bool | None:
     return platform_value.endswith(prefix)
 
 
-_COMPARE_OPERATION_EVALUATORS: dict[type, "object"] = {
+_COMPARE_OPERATION_EVALUATORS: dict[
+    type[ast.cmpop], Callable[[str, set[str]], bool]
+] = {
     ast.Eq: lambda platform_value, compared_values: (
         platform_value in compared_values and len(compared_values) == 1
     ),
-    ast.NotEq: lambda platform_value, compared_values: platform_value
-    not in compared_values,
+    ast.NotEq: lambda platform_value, compared_values: (
+        platform_value not in compared_values
+    ),
     ast.In: lambda platform_value, compared_values: platform_value in compared_values,
-    ast.NotIn: lambda platform_value, compared_values: platform_value
-    not in compared_values,
+    ast.NotIn: lambda platform_value, compared_values: (
+        platform_value not in compared_values
+    ),
 }
 
 
@@ -247,7 +252,9 @@ def _windows_compare_condition(node: ast.Compare) -> bool | None:
     return evaluator(platform_value, compared_values)
 
 
-_WINDOWS_CONDITION_DISPATCH: dict[type, "object"] = {
+# The exact AST class used as the key determines each handler's narrower input
+# type, so this table is intentionally heterogeneous at the callable boundary.
+_WINDOWS_CONDITION_DISPATCH: dict[type[ast.AST], Callable[..., bool | None]] = {
     ast.BoolOp: _windows_bool_op_condition,
     ast.Call: _windows_call_condition,
     ast.Compare: _windows_compare_condition,
@@ -313,7 +320,7 @@ class _WindowsImportVisitor:
 
     def _visit_import(
         self,
-        node: "ast.Import | ast.ImportFrom",
+        node: ast.Import | ast.ImportFrom,
         *,
         reaches_windows: bool,
         guarded: bool,
@@ -341,7 +348,9 @@ class _WindowsImportVisitor:
             node.orelse, reaches_windows=else_reaches, guarded=guarded
         )
 
-    def _visit_try(self, node: ast.Try, *, reaches_windows: bool, guarded: bool) -> None:
+    def _visit_try(
+        self, node: ast.Try, *, reaches_windows: bool, guarded: bool
+    ) -> None:
         catches_import_error = any(
             _catches_import_error(handler) for handler in node.handlers
         )
@@ -492,7 +501,7 @@ def _run_simulated_windows(
 
 
 def _run_native_walk(
-    package: str, is_excluded: "object"
+    package: str, is_excluded: Callable[[str], bool]
 ) -> tuple[list[tuple[str, str]], int, Exception | None]:
     try:
         module_names, walk_failures = discover_modules(package)
@@ -552,7 +561,9 @@ def _report_results(
     failures: list[tuple[str, str]],
     simulate_windows: bool,
 ) -> int:
-    standalone_suffix = f" (+{script_count} standalone script(s))" if script_count else ""
+    standalone_suffix = (
+        f" (+{script_count} standalone script(s))" if script_count else ""
+    )
     print(
         f"import-safety[{mode}]: checked {checked} modules/scripts under {package!r}"
         f"{standalone_suffix}"
@@ -563,7 +574,9 @@ def _report_results(
             print(f"  {name}: {err}")
         return 1
 
-    success_detail = "passed AST/native checks" if simulate_windows else "imported cleanly"
+    success_detail = (
+        "passed AST/native checks" if simulate_windows else "imported cleanly"
+    )
     print(f"import-safety[{mode}]: all {checked} modules {success_detail}")
     return 0
 
