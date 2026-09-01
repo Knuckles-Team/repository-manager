@@ -1801,7 +1801,7 @@ def _derive_stage_sequence(
         "decision_context": decision_context,
     }
     stage_by_key: dict[tuple[StageKind, str], StagePreview] = {}
-    stage_order = (
+    stage_order: tuple[StageKind, ...] = (
         StageKind.VALIDATE,
         StageKind.BUMP,
         StageKind.LOCAL_LAND,

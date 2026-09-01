@@ -30,7 +30,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import IO, Any, Protocol, runtime_checkable
 
 from repository_manager.development import (
     ExecutionCommand,
@@ -117,7 +117,9 @@ def _utc(value: datetime, field_name: str) -> datetime:
     return value.astimezone(UTC)
 
 
-def _spawn_git_process(args: Sequence[str], tree: Path) -> subprocess.Popen | None:
+def _spawn_git_process(
+    args: Sequence[str], tree: Path
+) -> tuple[subprocess.Popen[bytes], IO[bytes], IO[bytes]] | None:
     try:
         process = subprocess.Popen(  # nosec B603 - argv is constructed locally
             [_TRUSTED_GIT, *args],
@@ -132,7 +134,7 @@ def _spawn_git_process(args: Sequence[str], tree: Path) -> subprocess.Popen | No
         process.kill()
         process.wait()
         return None
-    return process
+    return process, process.stdout, process.stderr
 
 
 def _drain_selector_events(
@@ -828,8 +830,11 @@ class ValidationRunner:
             request=request, gates=gates, jobs=tuple(jobs), plan_digest=plan_digest
         )
 
-    def _submit_one(self, job: ValidationJob) -> SubmittedValidationJob:
-        result = self.job_authority.submit(job)
+    @staticmethod
+    def _submit_one(
+        job: ValidationJob, authority: ValidationJobAuthority
+    ) -> SubmittedValidationJob:
+        result = authority.submit(job)
         if result.job_id != job.job_id:
             raise ValidationRunnerError(
                 f"durable authority changed immutable job ID for {job.gate_name}"
@@ -845,6 +850,7 @@ class ValidationRunner:
         submitted: list[SubmittedValidationJob],
         current_job: ValidationJob | None,
         exc: Exception,
+        authority: ValidationJobAuthority,
     ) -> None:
         """Best-effort cancel of everything submitted so far, then re-raise.
 
@@ -861,7 +867,7 @@ class ValidationRunner:
         cancellation_failures: list[str] = []
         for job_id in cancellation_ids:
             try:
-                if not self.job_authority.cancel(
+                if not authority.cancel(
                     job_id,
                     reason="validation submission failed; canceling prefix",
                 ):
@@ -883,7 +889,8 @@ class ValidationRunner:
     def submit(self, plan: ValidationPlan) -> tuple[SubmittedValidationJob, ...]:
         """Submit every sealed job to the one durable WorkItem authority."""
 
-        if self.job_authority is None:
+        authority = self.job_authority
+        if authority is None:
             raise ValidationAuthorityUnavailable(
                 "validation requires a graph-os WorkItem authority; no local job store is allowed"
             )
@@ -892,10 +899,10 @@ class ValidationRunner:
         try:
             for job in plan.jobs:
                 current_job = job
-                submitted.append(self._submit_one(job))
+                submitted.append(self._submit_one(job, authority))
                 current_job = None
         except Exception as exc:
-            self._cancel_submission_prefix(submitted, current_job, exc)
+            self._cancel_submission_prefix(submitted, current_job, exc, authority)
         return tuple(submitted)
 
     def _run_one_job(
@@ -1132,12 +1139,13 @@ class ValidationRunner:
     ) -> tuple[int, bytes, bytes] | None:
         """Run fixed-argv Git with bounded, streaming stdout/stderr."""
 
-        process = _spawn_git_process(args, tree)
-        if process is None:
+        spawned = _spawn_git_process(args, tree)
+        if spawned is None:
             return None
+        process, stdout, stderr = spawned
         selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        selector.register(stdout, selectors.EVENT_READ, "stdout")
+        selector.register(stderr, selectors.EVENT_READ, "stderr")
         buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
         deadline = time.monotonic() + timeout_seconds
         try:
@@ -1217,12 +1225,12 @@ class ValidationRunner:
 
     def _prepare_gate_command(
         self, ctx: _GateContext
-    ) -> tuple[ExecutionCommand | None, GateEvidence | None]:
+    ) -> ExecutionCommand | GateEvidence:
         job, gate, started, tree = ctx.job, ctx.gate, ctx.started, ctx.tree
         try:
             current = self._git_output(["rev-parse", "HEAD"], tree)
             if current != job.tree_sha:
-                return None, self._simple_evidence(
+                return self._simple_evidence(
                     job,
                     gate,
                     started,
@@ -1232,7 +1240,7 @@ class ValidationRunner:
                 )
             status = self._git_output(["status", "--porcelain"], tree, allow_error=True)
             if status is None or status:
-                return None, self._simple_evidence(
+                return self._simple_evidence(
                     job,
                     gate,
                     started,
@@ -1247,7 +1255,7 @@ class ValidationRunner:
                 timeout_seconds=gate.timeout_seconds,
             )
         except (ValidationPreparationError, ValueError) as exc:
-            return None, self._simple_evidence(
+            return self._simple_evidence(
                 job,
                 gate,
                 started,
@@ -1255,16 +1263,14 @@ class ValidationRunner:
                 failure_class=ValidationFailureClass.INVALID_REQUEST,
                 detail=str(exc),
             )
-        return command, None
+        return command
 
-    def _acquire_lease(
-        self, ctx: _GateContext
-    ) -> tuple[ResourceLease | None, GateEvidence | None]:
+    def _acquire_lease(self, ctx: _GateContext) -> ResourceLease | GateEvidence:
         job, gate, started = ctx.job, ctx.gate, ctx.started
         try:
             lease = self.resource_admission.reserve(job)
         except Exception as exc:
-            return None, self._simple_evidence(
+            return self._simple_evidence(
                 job,
                 gate,
                 started,
@@ -1276,7 +1282,7 @@ class ValidationRunner:
                 ),
             )
         if lease is None:
-            return None, self._simple_evidence(
+            return self._simple_evidence(
                 job,
                 gate,
                 started,
@@ -1284,7 +1290,7 @@ class ValidationRunner:
                 failure_class=ValidationFailureClass.RESOURCE,
                 detail="resource admission refused before process creation",
             )
-        return lease, None
+        return lease
 
     def _release_with_reconciliation(
         self,
@@ -1395,10 +1401,11 @@ class ValidationRunner:
         command: ExecutionCommand,
         lease: ResourceLease,
         cancellation: CancellationToken,
+        executor: ValidationExecutor,
     ) -> GateEvidence:
         job, gate, started = ctx.job, ctx.gate, ctx.started
         try:
-            result = self.executor.run(
+            result = executor.run(
                 command,
                 command_id=job.job_id,
                 worker_id=self.worker_id,
@@ -1431,6 +1438,7 @@ class ValidationRunner:
         command: ExecutionCommand,
         lease: ResourceLease,
         cancellation: CancellationToken,
+        executor: ValidationExecutor,
     ) -> GateEvidence:
         evidence = self._simple_evidence(
             ctx.job,
@@ -1442,7 +1450,9 @@ class ValidationRunner:
         )
         release_ok = False
         try:
-            evidence = self._invoke_executor(ctx, command, lease, cancellation)
+            evidence = self._invoke_executor(
+                ctx, command, lease, cancellation, executor
+            )
         finally:
             try:
                 release_ok = self.resource_admission.release(
@@ -1482,18 +1492,21 @@ class ValidationRunner:
         ctx = _GateContext(
             job=job, gate=gate, started=started, tree=Path(job.worktree_path)
         )
-        command, evidence = self._prepare_gate_command(ctx)
-        if evidence is not None:
-            return evidence
-        lease, evidence = self._acquire_lease(ctx)
-        if evidence is not None:
-            return evidence
+        prepared = self._prepare_gate_command(ctx)
+        if isinstance(prepared, GateEvidence):
+            return prepared
+        command = prepared
+        admitted = self._acquire_lease(ctx)
+        if isinstance(admitted, GateEvidence):
+            return admitted
+        lease = admitted
         evidence = self._validate_lease(ctx, lease)
         if evidence is not None:
             return evidence
-        if self.executor is None:
+        executor = self.executor
+        if executor is None:
             return self._evidence_no_executor(ctx, lease)
-        return self._run_and_release(ctx, command, lease, cancellation)
+        return self._run_and_release(ctx, command, lease, cancellation, executor)
 
     @staticmethod
     def _outcome_from_result(result: ExecutionResult) -> EvidenceOutcome:
@@ -1814,13 +1827,14 @@ class ValidationRunner:
     @staticmethod
     def _issue_certificate(
         request: ValidationRequest,
+        generation_id: str,
         blocking: tuple[str, ...],
         records: tuple[GateEvidence, ...],
     ) -> ValidationCertificate | None:
         try:
             return ValidationCertificate.issue(
-                certificate_id=f"certificate:{request.generation_id}:{request.tree_sha}",
-                generation_id=request.generation_id,
+                certificate_id=f"certificate:{generation_id}:{request.tree_sha}",
+                generation_id=generation_id,
                 tree_sha=request.tree_sha,
                 gate_config_digest=request.config_digest,
                 toolchain_digest=request.toolchain_digest,
@@ -1841,7 +1855,8 @@ class ValidationRunner:
         evidence: Sequence[GateEvidence],
     ) -> ValidationCertificate | None:
         cert_gates = self._certification_gates(plan)
-        if not cert_gates or request.generation_id is None:
+        generation_id = request.generation_id
+        if not cert_gates or generation_id is None:
             return None
         blocking = self._blocking_gate_names(cert_gates)
         records = self._certification_records(evidence)
@@ -1849,7 +1864,7 @@ class ValidationRunner:
             return None
         if not self._all_blocking_gates_passed(blocking, records):
             return None
-        return self._issue_certificate(request, blocking, records)
+        return self._issue_certificate(request, generation_id, blocking, records)
 
     @staticmethod
     def post_land_smoke_handoff(
