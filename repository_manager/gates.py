@@ -64,9 +64,10 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from repository_manager import build_queue, gate_ledger, merge_queue, task_queue
+from repository_manager.execution.process_supervisor import ProcessSupervisor
 from repository_manager.scan_models import HookResult, RepoScanResult
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ _DURATION_LINE = re.compile(r"^-\s*duration:\s*([\d.]+)\s*s?\s*$", re.IGNORECASE
 _DEFAULT_TIMEOUT_BY_STAGE = {"fast": 600, "heavy": 5400}
 _TIMEOUT_ENV_VAR = "RM_GATE_TIMEOUT_SECONDS"
 _MAX_WORKERS_ENV_VAR = "RM_GATE_MAX_WORKERS"
-_DEFAULT_MAX_WORKERS = 4
+_HEAVY_GATE_MAX_WORKERS = 2
 
 # These libraries all size themselves independently from the host CPU count.
 # A CPU quota only throttles the work after they have spawned it; it does not
@@ -106,6 +107,7 @@ _WORKER_LIMIT_ENV_VARS = (
     "CARGO_BUILD_JOBS",
     "RUST_TEST_THREADS",
     "RAYON_NUM_THREADS",
+    "TOKIO_WORKER_THREADS",
 )
 _SERIAL_NATIVE_THREAD_ENV_VARS = (
     "OMP_NUM_THREADS",
@@ -123,43 +125,91 @@ class GateResourceConfigurationError(ValueError):
     """A gate resource limit is malformed and execution must fail closed."""
 
 
+def _positive_bounded_value(
+    env: Mapping[str, str], name: str, *, default: int, maximum: int
+) -> int:
+    """Return a positive configured value without exceeding ``maximum``."""
+
+    raw_value = env.get(name, str(default)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise GateResourceConfigurationError(
+            f"{name} must be a positive integer, got {raw_value!r}"
+        ) from exc
+    if value <= 0:
+        raise GateResourceConfigurationError(
+            f"{name} must be a positive integer, got {raw_value!r}"
+        )
+    return min(value, maximum)
+
+
+def _apply_heavy_gate_limits(env: dict[str, str]) -> None:
+    """Apply process and native-thread budgets to one heavy gate environment."""
+
+    max_workers = _positive_bounded_value(
+        env,
+        _MAX_WORKERS_ENV_VAR,
+        default=_HEAVY_GATE_MAX_WORKERS,
+        maximum=_HEAVY_GATE_MAX_WORKERS,
+    )
+    env[_MAX_WORKERS_ENV_VAR] = str(max_workers)
+    for name in _WORKER_LIMIT_ENV_VARS:
+        env[name] = str(
+            _positive_bounded_value(env, name, default=max_workers, maximum=max_workers)
+        )
+    for name in _SERIAL_NATIVE_THREAD_ENV_VARS:
+        env[name] = str(_positive_bounded_value(env, name, default=1, maximum=1))
+    # Hugging Face tokenizers expects a boolean rather than a thread count.
+    env["TOKENIZERS_PARALLELISM"] = "false"
+
+
 def precommit_gate_environment(
+    hook_stage: str,
     source: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Return the fail-closed, resource-bounded pre-commit environment.
+    """Return a stage-aware, fail-closed pre-commit environment.
 
-    ``RM_GATE_MAX_WORKERS`` is the one operator control for process-oriented
-    test/build runtimes.  Native numeric libraries are kept serial inside
-    those workers so their own host auto-detection cannot multiply the process
-    pool.  Values are assigned, not defaulted: an inherited interactive-shell
-    setting must not silently defeat the gate's resource contract.
+    Heavy/pre-push hooks may start pytest, Cargo, Tokio, Rayon, and native-math
+    pools in one wave.  Their inherited settings are validated and capped;
+    explicitly stricter positive settings survive.  Fast hooks receive none of
+    those unrelated runtime variables.
     """
 
     env = dict(os.environ if source is None else source)
-    raw_limit = env.get(_MAX_WORKERS_ENV_VAR, str(_DEFAULT_MAX_WORKERS)).strip()
-    try:
-        max_workers = int(raw_limit)
-    except ValueError as exc:
-        raise GateResourceConfigurationError(
-            f"{_MAX_WORKERS_ENV_VAR} must be a positive integer, got {raw_limit!r}"
-        ) from exc
-    if max_workers <= 0:
-        raise GateResourceConfigurationError(
-            f"{_MAX_WORKERS_ENV_VAR} must be a positive integer, got {raw_limit!r}"
-        )
-
-    normalized_limit = str(max_workers)
-    env[_MAX_WORKERS_ENV_VAR] = normalized_limit
-    for name in _WORKER_LIMIT_ENV_VARS:
-        env[name] = normalized_limit
-    for name in _SERIAL_NATIVE_THREAD_ENV_VARS:
-        env[name] = "1"
-    # Hugging Face tokenizers expects a boolean rather than a thread count.
-    env["TOKENIZERS_PARALLELISM"] = "false"
+    if hook_stage == "pre-push":
+        _apply_heavy_gate_limits(env)
     env["SKIP"] = (
         f"{env['SKIP']},no-commit-to-branch" if "SKIP" in env else "no-commit-to-branch"
     )
     return env
+
+
+_GATE_PROCESS_SUPERVISOR = ProcessSupervisor()
+
+
+def _run_gate_subprocess(
+    argv: list[str], repo_path: str, env: Mapping[str, str], timeout: int
+) -> subprocess.CompletedProcess[str]:
+    """Run a gate in its own process group and clean up the group on timeout."""
+
+    process = cast(
+        subprocess.Popen[bytes],
+        _GATE_PROCESS_SUPERVISOR.spawn(argv, cwd=Path(repo_path), env=env),
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        cleanup = _GATE_PROCESS_SUPERVISOR.terminate(process)
+        if not cleanup.cleanup_ok:
+            logger.error("Gate process-group cleanup incomplete: %s", cleanup.error)
+        raise
+    return subprocess.CompletedProcess(
+        args=argv,
+        returncode=cast(int, process.returncode),
+        stdout=stdout.decode(errors="replace"),
+        stderr=stderr.decode(errors="replace"),
+    )
 
 
 def default_gate_timeout(stage: str) -> int:
@@ -197,7 +247,7 @@ def _run_pre_commit(
     specific hook ids (used by ``profile`` when a caller wants to time one
     named hook in isolation).
     """
-    env = precommit_gate_environment()
+    env = precommit_gate_environment(hook_stage)
 
     scope = ["--files", *files] if files else ["--all-files"]
     argv = [
@@ -210,14 +260,7 @@ def _run_pre_commit(
         "--verbose",
     ]
 
-    return subprocess.run(  # nosec B603 B607
-        argv,
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-    )
+    return _run_gate_subprocess(argv, repo_path, env, timeout)
 
 
 #: A hook whose EXECUTABLE is absent did not find a defect -- it never ran.

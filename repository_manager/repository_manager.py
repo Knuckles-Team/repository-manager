@@ -3284,9 +3284,10 @@ class Git:
         """Environment for a pre-commit run.
 
         Skips the branch lock (this helper is used off-branch on purpose) and
-        reuses the gate engine's pytest/Cargo/native-thread resource bounds.
+        uses the gate engine's stage-aware environment without injecting the
+        heavy pytest/Cargo/Tokio limits into this fast pre-commit workflow.
         """
-        env = precommit_gate_environment()
+        env = precommit_gate_environment("pre-commit")
         lane_pytest_options = env.get("PYTEST_ADDOPTS", "").strip()
         bounded_pytest_options = '-q --tb=short -m "not slow" --timeout=60'
         env["PYTEST_ADDOPTS"] = " ".join(

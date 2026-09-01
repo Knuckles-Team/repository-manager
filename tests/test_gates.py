@@ -105,7 +105,9 @@ def test_unknown_stage_rejected(tmp_path):
 
 def test_run_pre_commit_passes_the_hook_stage_flag(tmp_path):
     """The literal fix: --hook-stage must reach the subprocess argv."""
-    with mock.patch("subprocess.run", return_value=_completed(0)) as run:
+    with mock.patch.object(
+        gates, "_run_gate_subprocess", return_value=_completed(0)
+    ) as run:
         gates._run_pre_commit(str(tmp_path), "pre-push", files=["a.py"])
     argv = run.call_args.args[0]
     assert "--hook-stage" in argv
@@ -113,14 +115,14 @@ def test_run_pre_commit_passes_the_hook_stage_flag(tmp_path):
     assert "--files" in argv and "a.py" in argv
 
 
-def test_run_pre_commit_overwrites_inherited_resource_fanout(tmp_path):
-    """The post-push chokepoint must bound every independently-sized pool."""
+def test_run_pre_commit_caps_inherited_resource_fanout_at_two(tmp_path):
+    """A host's four-worker/Tokio defaults cannot escape into a heavy gate."""
     hostile = {
-        "RM_GATE_MAX_WORKERS": "6",
-        "PYTEST_XDIST_AUTO_NUM_WORKERS": "96",
+        "PYTEST_XDIST_AUTO_NUM_WORKERS": "4",
         "CARGO_BUILD_JOBS": "96",
         "RUST_TEST_THREADS": "96",
         "RAYON_NUM_THREADS": "96",
+        "TOKIO_WORKER_THREADS": "96",
         "OMP_NUM_THREADS": "96",
         "OMP_THREAD_LIMIT": "96",
         "OPENBLAS_NUM_THREADS": "96",
@@ -133,17 +135,21 @@ def test_run_pre_commit_overwrites_inherited_resource_fanout(tmp_path):
         "SKIP": "operator-skip",
     }
     with mock.patch.dict(gates.os.environ, hostile, clear=True):
-        with mock.patch("subprocess.run", return_value=_completed(0)) as run:
+        with mock.patch.object(
+            gates, "_run_gate_subprocess", return_value=_completed(0)
+        ) as run:
             gates._run_pre_commit(str(tmp_path), "pre-push")
 
-    env = run.call_args.kwargs["env"]
+    env = run.call_args.args[2]
+    assert env["RM_GATE_MAX_WORKERS"] == "2"
     for name in (
         "PYTEST_XDIST_AUTO_NUM_WORKERS",
         "CARGO_BUILD_JOBS",
         "RUST_TEST_THREADS",
         "RAYON_NUM_THREADS",
+        "TOKIO_WORKER_THREADS",
     ):
-        assert env[name] == "6"
+        assert env[name] == "2"
     for name in (
         "OMP_NUM_THREADS",
         "OMP_THREAD_LIMIT",
@@ -159,17 +165,53 @@ def test_run_pre_commit_overwrites_inherited_resource_fanout(tmp_path):
     assert env["SKIP"] == "operator-skip,no-commit-to-branch"
 
 
-def test_run_pre_commit_defaults_to_four_workers(tmp_path):
+def test_run_pre_commit_defaults_to_two_workers(tmp_path):
     with mock.patch.dict(gates.os.environ, {}, clear=True):
-        with mock.patch("subprocess.run", return_value=_completed(0)) as run:
+        with mock.patch.object(
+            gates, "_run_gate_subprocess", return_value=_completed(0)
+        ) as run:
             gates._run_pre_commit(str(tmp_path), "pre-push")
 
-    env = run.call_args.kwargs["env"]
-    assert env["RM_GATE_MAX_WORKERS"] == "4"
-    assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "4"
-    assert env["CARGO_BUILD_JOBS"] == "4"
-    assert env["RUST_TEST_THREADS"] == "4"
-    assert env["RAYON_NUM_THREADS"] == "4"
+    env = run.call_args.args[2]
+    assert env["RM_GATE_MAX_WORKERS"] == "2"
+    assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "2"
+    assert env["CARGO_BUILD_JOBS"] == "2"
+    assert env["RUST_TEST_THREADS"] == "2"
+    assert env["RAYON_NUM_THREADS"] == "2"
+    assert env["TOKIO_WORKER_THREADS"] == "2"
+
+
+def test_run_pre_commit_preserves_stricter_worker_limits(tmp_path):
+    strict = {
+        "RM_GATE_MAX_WORKERS": "1",
+        "PYTEST_XDIST_AUTO_NUM_WORKERS": "1",
+        "CARGO_BUILD_JOBS": "1",
+        "RUST_TEST_THREADS": "1",
+        "RAYON_NUM_THREADS": "1",
+        "TOKIO_WORKER_THREADS": "1",
+    }
+    with mock.patch.dict(gates.os.environ, strict, clear=True):
+        with mock.patch.object(
+            gates, "_run_gate_subprocess", return_value=_completed(0)
+        ) as run:
+            gates._run_pre_commit(str(tmp_path), "pre-push")
+
+    env = run.call_args.args[2]
+    assert all(env[name] == "1" for name in strict)
+
+
+def test_fast_gate_does_not_inject_heavy_runtime_limits(tmp_path):
+    with mock.patch.dict(gates.os.environ, {}, clear=True):
+        with mock.patch.object(
+            gates, "_run_gate_subprocess", return_value=_completed(0)
+        ) as run:
+            gates._run_pre_commit(str(tmp_path), "pre-commit")
+
+    env = run.call_args.args[2]
+    assert "RM_GATE_MAX_WORKERS" not in env
+    assert "PYTEST_XDIST_AUTO_NUM_WORKERS" not in env
+    assert "TOKIO_WORKER_THREADS" not in env
+    assert "OMP_NUM_THREADS" not in env
 
 
 @pytest.mark.parametrize("invalid", ["", "many", "0", "-2"])
@@ -177,10 +219,38 @@ def test_run_pre_commit_refuses_invalid_worker_limit(tmp_path, invalid):
     with mock.patch.dict(
         gates.os.environ, {"RM_GATE_MAX_WORKERS": invalid}, clear=True
     ):
-        with mock.patch("subprocess.run") as run:
+        with mock.patch.object(gates, "_run_gate_subprocess") as run:
             with pytest.raises(ValueError, match="RM_GATE_MAX_WORKERS"):
                 gates._run_pre_commit(str(tmp_path), "pre-push")
     run.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("name", "invalid"),
+    [("TOKIO_WORKER_THREADS", "0"), ("OMP_NUM_THREADS", "many")],
+)
+def test_run_pre_commit_refuses_invalid_runtime_limit(tmp_path, name, invalid):
+    with mock.patch.dict(gates.os.environ, {name: invalid}, clear=True):
+        with mock.patch.object(gates, "_run_gate_subprocess") as run:
+            with pytest.raises(ValueError, match=name):
+                gates._run_pre_commit(str(tmp_path), "pre-push")
+    run.assert_not_called()
+
+
+def test_run_gate_subprocess_terminates_process_group_on_timeout(tmp_path):
+    process = mock.MagicMock()
+    process.communicate.side_effect = subprocess.TimeoutExpired(["pre-commit"], 10)
+    supervisor = mock.MagicMock()
+    supervisor.spawn.return_value = process
+    supervisor.terminate.return_value.cleanup_ok = True
+
+    with mock.patch.object(gates, "_GATE_PROCESS_SUPERVISOR", supervisor):
+        with pytest.raises(subprocess.TimeoutExpired):
+            gates._run_gate_subprocess(
+                ["pre-commit", "run"], str(tmp_path), {}, timeout=10
+            )
+
+    supervisor.terminate.assert_called_once_with(process)
 
 
 def test_explain_gate_result_condenses_to_failures(tmp_path):
