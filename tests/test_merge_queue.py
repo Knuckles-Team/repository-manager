@@ -101,6 +101,48 @@ def _write_config(repo: Path, body: str) -> None:
     (repo / mq.CONFIG_FILENAME).write_text(textwrap.dedent(body))
 
 
+def test_nested_same_commit_materializations_keep_the_outer_tree(
+    tmp_path: Path,
+) -> None:
+    """A baseline of the same SHA must not delete its caller's gate tree."""
+
+    repo = _init_repo(tmp_path / "nested-materialized")
+    (repo / "tracked.txt").write_text("still here\n")
+    commit = _commit(repo, "init")
+    scope = mq.lane_scope(repo)
+
+    with mq.materialized(repo, commit, scope=scope) as outer:
+        assert (outer / "tracked.txt").read_text() == "still here\n"
+        with mq.materialized(repo, commit, scope=scope) as inner:
+            assert inner != outer
+            assert (inner / "tracked.txt").read_text() == "still here\n"
+            assert (outer / "tracked.txt").read_text() == "still here\n"
+        assert outer.is_dir()
+        assert not inner.exists()
+
+    assert not outer.exists()
+    registered = mq._registered_worktrees(repo)
+    assert outer.resolve(strict=False) not in registered
+    assert inner.resolve(strict=False) not in registered
+
+
+def test_materialized_cleanup_unregisters_a_stale_worktree(tmp_path: Path) -> None:
+    """Cleanup unregisters an exact stale target before deleting its files."""
+
+    repo = _init_repo(tmp_path / "stale-materialized")
+    commit = _commit(repo, "init")
+    root = tmp_path / "lane-scratch" / "merge-queue-verify"
+    root.mkdir(parents=True)
+    stale = root / f"{commit[:12]}-stale"
+    _run(f"git worktree add -q --detach {stale} {commit}", repo)
+    assert stale.resolve(strict=False) in mq._registered_worktrees(repo)
+
+    mq._cleanup_materialized(repo, stale)
+
+    assert not stale.exists()
+    assert stale.resolve(strict=False) not in mq._registered_worktrees(repo)
+
+
 @pytest.fixture
 def shell_repo(tmp_path: Path) -> Path:
     """A repo whose single gate is a plain shell script — no language at all.

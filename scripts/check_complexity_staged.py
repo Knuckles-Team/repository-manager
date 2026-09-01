@@ -50,6 +50,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import NoReturn
 
 DEFAULT_MAX_CYCLOMATIC = 10
 DEFAULT_MAX_COGNITIVE = 15
@@ -81,7 +82,7 @@ SUPPORTED_SUFFIXES = frozenset(
 )
 
 
-def _fail_env(msg: str) -> None:
+def _fail_env(msg: str) -> NoReturn:
     print(f"complexity(staged): CANNOT RUN: {msg}", file=sys.stderr)
     raise SystemExit(2)
 
@@ -207,7 +208,7 @@ def measure(path: str) -> dict[str, list[tuple[int, int]]]:
         doc = json.loads(r.stdout)
     except json.JSONDecodeError as exc:
         _fail_env(f"cccc output was not JSON: {exc}")
-    out: dict[str, tuple[int, int]] = {}
+    out: dict[str, list[tuple[int, int]]] = {}
     for f in doc.get("files", []):
         for fn in f.get("functions", []):
             _walk(fn, "", out)
@@ -269,7 +270,7 @@ def judge(
     return findings
 
 
-def _report_file(rel: str, after: dict[str, tuple[int, int]]) -> None:
+def _report_file(rel: str, after: dict[str, list[tuple[int, int]]]) -> None:
     """Print the REAL absolute numbers for a touched file, on every run.
 
     The no-ratchet rule in code: pre-existing debt in a file you touched stays on

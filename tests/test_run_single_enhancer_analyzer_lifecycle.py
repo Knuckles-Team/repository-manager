@@ -43,8 +43,8 @@ def _load_run_single_enhancer(scripts_dir: Path, monkeypatch, tmp_project: Path)
     spec.loader.exec_module(module)
     # Never touch the real repo's own .specify/ -- redirect to a throwaway
     # project directory. run_enhancer() reads these module globals directly.
-    module.PROJECT_DIR = tmp_project
-    module.SPECIFY_DIR = tmp_project / ".specify"
+    monkeypatch.setattr(module, "PROJECT_DIR", tmp_project)
+    monkeypatch.setattr(module, "SPECIFY_DIR", tmp_project / ".specify")
     return module
 
 

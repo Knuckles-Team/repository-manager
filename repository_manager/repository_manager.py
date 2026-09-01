@@ -57,7 +57,11 @@ from agent_utilities.base_utilities import get_logger
 
 from repository_manager import dependency_readiness
 from repository_manager.canonical_guard import guarded_canonical_mutation
-from repository_manager.gates import HOOK_STAGE_BY_GATE_STAGE, run_gate_stage
+from repository_manager.gates import (
+    HOOK_STAGE_BY_GATE_STAGE,
+    precommit_gate_environment,
+    run_gate_stage,
+)
 from repository_manager.models import (
     GitError,
     GitMetadata,
@@ -3280,14 +3284,9 @@ class Git:
         """Environment for a pre-commit run.
 
         Skips the branch lock (this helper is used off-branch on purpose) and
-        bounds any pytest hook so a repo's own ``-n auto`` cannot fan out.
+        reuses the gate engine's pytest/Cargo/native-thread resource bounds.
         """
-        env = os.environ.copy()
-        if "SKIP" in env:
-            env["SKIP"] += ",no-commit-to-branch"
-        else:
-            env["SKIP"] = "no-commit-to-branch"
-        env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "4"
+        env = precommit_gate_environment()
         lane_pytest_options = env.get("PYTEST_ADDOPTS", "").strip()
         bounded_pytest_options = '-q --tb=short -m "not slow" --timeout=60'
         env["PYTEST_ADDOPTS"] = " ".join(

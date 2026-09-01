@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum, StrEnum
@@ -1889,7 +1890,9 @@ def _build_landing_result(ctx: dict[str, Any]) -> LandingVerificationResult:
 # tuple order below IS the original function's top-to-bottom statement
 # order -- reordering this tuple would change verify_landing's behavior.
 _LANDING_VERIFICATION_STAGES: tuple[
-    "Callable[[LandingVerificationRequest, dict[str, Any]], LandingVerificationResult | None]",
+    Callable[
+        [LandingVerificationRequest, dict[str, Any]], LandingVerificationResult | None
+    ],
     ...,
 ] = (
     _verify_landing_authority,

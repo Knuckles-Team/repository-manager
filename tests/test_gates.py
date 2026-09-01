@@ -10,6 +10,8 @@ does not.
 import subprocess
 from unittest import mock
 
+import pytest
+
 from repository_manager import gates
 from tests.conftest import isolated_git_subprocess_env
 
@@ -109,6 +111,76 @@ def test_run_pre_commit_passes_the_hook_stage_flag(tmp_path):
     assert "--hook-stage" in argv
     assert argv[argv.index("--hook-stage") + 1] == "pre-push"
     assert "--files" in argv and "a.py" in argv
+
+
+def test_run_pre_commit_overwrites_inherited_resource_fanout(tmp_path):
+    """The post-push chokepoint must bound every independently-sized pool."""
+    hostile = {
+        "RM_GATE_MAX_WORKERS": "6",
+        "PYTEST_XDIST_AUTO_NUM_WORKERS": "96",
+        "CARGO_BUILD_JOBS": "96",
+        "RUST_TEST_THREADS": "96",
+        "RAYON_NUM_THREADS": "96",
+        "OMP_NUM_THREADS": "96",
+        "OMP_THREAD_LIMIT": "96",
+        "OPENBLAS_NUM_THREADS": "96",
+        "MKL_NUM_THREADS": "96",
+        "NUMEXPR_NUM_THREADS": "96",
+        "BLIS_NUM_THREADS": "96",
+        "VECLIB_MAXIMUM_THREADS": "96",
+        "GOTO_NUM_THREADS": "96",
+        "TOKENIZERS_PARALLELISM": "true",
+        "SKIP": "operator-skip",
+    }
+    with mock.patch.dict(gates.os.environ, hostile, clear=True):
+        with mock.patch("subprocess.run", return_value=_completed(0)) as run:
+            gates._run_pre_commit(str(tmp_path), "pre-push")
+
+    env = run.call_args.kwargs["env"]
+    for name in (
+        "PYTEST_XDIST_AUTO_NUM_WORKERS",
+        "CARGO_BUILD_JOBS",
+        "RUST_TEST_THREADS",
+        "RAYON_NUM_THREADS",
+    ):
+        assert env[name] == "6"
+    for name in (
+        "OMP_NUM_THREADS",
+        "OMP_THREAD_LIMIT",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "BLIS_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "GOTO_NUM_THREADS",
+    ):
+        assert env[name] == "1"
+    assert env["TOKENIZERS_PARALLELISM"] == "false"
+    assert env["SKIP"] == "operator-skip,no-commit-to-branch"
+
+
+def test_run_pre_commit_defaults_to_four_workers(tmp_path):
+    with mock.patch.dict(gates.os.environ, {}, clear=True):
+        with mock.patch("subprocess.run", return_value=_completed(0)) as run:
+            gates._run_pre_commit(str(tmp_path), "pre-push")
+
+    env = run.call_args.kwargs["env"]
+    assert env["RM_GATE_MAX_WORKERS"] == "4"
+    assert env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "4"
+    assert env["CARGO_BUILD_JOBS"] == "4"
+    assert env["RUST_TEST_THREADS"] == "4"
+    assert env["RAYON_NUM_THREADS"] == "4"
+
+
+@pytest.mark.parametrize("invalid", ["", "many", "0", "-2"])
+def test_run_pre_commit_refuses_invalid_worker_limit(tmp_path, invalid):
+    with mock.patch.dict(
+        gates.os.environ, {"RM_GATE_MAX_WORKERS": invalid}, clear=True
+    ):
+        with mock.patch("subprocess.run") as run:
+            with pytest.raises(ValueError, match="RM_GATE_MAX_WORKERS"):
+                gates._run_pre_commit(str(tmp_path), "pre-push")
+    run.assert_not_called()
 
 
 def test_explain_gate_result_condenses_to_failures(tmp_path):

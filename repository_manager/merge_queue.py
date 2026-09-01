@@ -90,6 +90,7 @@ import os
 import re
 import shutil
 import subprocess  # nosec B404 - fixed argv, never shell=True
+import tempfile
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -1473,17 +1474,56 @@ def materialized(repo: Path, commit: str, *, scope: LaneScope) -> Iterator[Path]
     """
     root = partitioned_paths(scope.tree).scratch_dir / "merge-queue-verify"
     root.mkdir(parents=True, exist_ok=True)
-    target = root / commit[:12]
-    if target.exists():
-        shutil.rmtree(target, ignore_errors=True)
-    _require_git(["worktree", "add", "--detach", str(target), commit], repo)
+    target = Path(tempfile.mkdtemp(prefix=f"{commit[:12]}-", dir=root))
+    target.rmdir()
     try:
+        _require_git(["worktree", "add", "--detach", str(target), commit], repo)
         _attach_repo_venv(scope.main_tree, target)
         yield target
     finally:
-        _run_git(["worktree", "remove", "--force", str(target)], repo)
-        shutil.rmtree(target, ignore_errors=True)
-        _run_git(["worktree", "prune"], repo)
+        _cleanup_materialized(repo, target)
+
+
+def _registered_worktrees(repo: Path) -> frozenset[Path]:
+    """Return Git's registered worktree paths as normalized absolute paths."""
+
+    listing = _require_git(["worktree", "list", "--porcelain"], repo)
+    return frozenset(
+        Path(line.removeprefix("worktree ")).resolve(strict=False)
+        for line in listing.splitlines()
+        if line.startswith("worktree ")
+    )
+
+
+def _cleanup_materialized(repo: Path, target: Path) -> None:
+    """Unregister and remove exactly one disposable materialization.
+
+    A stale registered worktree must go through ``git worktree remove`` before
+    its directory is touched. Removing its files first strands Git's registry
+    entry and is the collision that nested same-commit gates used to trigger.
+    Cleanup is deliberately fail-closed: a target still present or registered
+    after removal prevents the gate from reporting a trustworthy result.
+    """
+
+    normalized = target.resolve(strict=False)
+    if normalized in _registered_worktrees(repo):
+        _require_git(["worktree", "remove", "--force", str(target)], repo)
+    elif target.is_symlink():
+        target.unlink()
+    elif target.exists():
+        if not target.is_dir():
+            raise MergeQueueError(
+                f"materialized worktree target is not a directory: {target}"
+            )
+        shutil.rmtree(target)
+
+    _require_git(["worktree", "prune"], repo)
+    if (
+        target.exists()
+        or target.is_symlink()
+        or normalized in _registered_worktrees(repo)
+    ):
+        raise MergeQueueError(f"materialized worktree cleanup incomplete: {target}")
 
 
 def _attach_repo_venv(canonical: Path, snapshot: Path) -> None:

@@ -174,7 +174,7 @@ def _bounded_text(
 
 def _require_sequence_shape(
     value: object, field_name: str, *, exact_builtin: bool
-) -> None:
+) -> Iterable[object]:
     if exact_builtin and type(value) not in (tuple, list):
         raise _fail(
             VersionPlanningCode.INVALID_INPUT,
@@ -186,6 +186,7 @@ def _require_sequence_shape(
         raise _fail(
             VersionPlanningCode.INVALID_INPUT, f"{field_name} must be a sequence"
         )
+    return cast(Iterable[object], value)
 
 
 def _safe_iter(value: Iterable[object], field_name: str) -> Iterator[object]:
@@ -236,11 +237,16 @@ def _validate_pair_item(item: object, field_name: str) -> tuple[str, str]:
     # A list/tuple subclass can override ``__len__`` (or iteration).  Check
     # exact builtin containers before touching either operation so hostile
     # nested diagnostics fail closed without executing caller code.
-    if type(item) not in (tuple, list) or len(item) != 2:
+    if type(item) not in (tuple, list):
         raise _fail(
             VersionPlanningCode.INVALID_INPUT, f"{field_name} must contain pairs"
         )
-    key, item_value = item
+    pair = cast(tuple[object, ...] | list[object], item)
+    if len(pair) != 2:
+        raise _fail(
+            VersionPlanningCode.INVALID_INPUT, f"{field_name} must contain pairs"
+        )
+    key, item_value = pair
     return (
         _bounded_text(key, f"{field_name} key", max_length=128),
         _bounded_text(item_value, f"{field_name} value"),
@@ -250,8 +256,8 @@ def _validate_pair_item(item: object, field_name: str) -> tuple[str, str]:
 def _bounded_pairs(
     value: object, field_name: str, *, max_items: int = MAX_WITNESSES
 ) -> tuple[tuple[str, str], ...]:
-    _require_sequence_shape(value, field_name, exact_builtin=True)
-    iterator = _safe_iter(value, field_name)
+    iterable = _require_sequence_shape(value, field_name, exact_builtin=True)
+    iterator = _safe_iter(iterable, field_name)
     result = _drain_bounded(
         iterator,
         max_items,
@@ -268,8 +274,8 @@ def _bounded_sequence(
     max_items: int,
     exact_builtin: bool = False,
 ) -> tuple[object, ...]:
-    _require_sequence_shape(value, field_name, exact_builtin=exact_builtin)
-    iterator = _safe_iter(value, field_name)
+    iterable = _require_sequence_shape(value, field_name, exact_builtin=exact_builtin)
+    iterator = _safe_iter(iterable, field_name)
     return tuple(_drain_bounded(iterator, max_items, field_name))
 
 

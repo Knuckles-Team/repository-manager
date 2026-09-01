@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import heapq
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import PurePosixPath
@@ -769,7 +769,7 @@ def _closure_digest(closure: SelectedChangeClosure) -> str:
 
 
 def _verify_closure_policy_and_source(
-    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+    closure: SelectedChangeClosure, ctx: dict[str, Any]
 ) -> None:
     """Stage 1: policy/source-graph type checks, known/selected
     canonicalization, and the policy-uses-known-ids check. Extracted
@@ -815,7 +815,7 @@ def _verify_closure_policy_and_source(
 
 
 def _verify_closure_projects(
-    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+    closure: SelectedChangeClosure, ctx: dict[str, Any]
 ) -> None:
     """Stage 2: closure.projects must exactly match the selected set AND the
     frozen source graph. Extracted verbatim from
@@ -845,8 +845,8 @@ def _verify_closure_projects(
 
 
 def _build_closure_package_map(
-    project_values: tuple["ProjectRecord", ...],
-) -> dict[str, "PackageRecord"]:
+    project_values: tuple[ProjectRecord, ...],
+) -> dict[str, PackageRecord]:
     """Build the package-identity map for closure.edges validation, raising
     on any duplicate package identity across the closure's projects.
     Extracted verbatim from ``SelectedChangeClosure.__post_init__``'s edge
@@ -865,7 +865,7 @@ def _build_closure_package_map(
 
 
 def _validate_closure_edge_membership(
-    edges: tuple["DependencyEdge", ...],
+    edges: tuple[DependencyEdge, ...],
     package_ids: set[str],
     selected: tuple[str, ...],
 ) -> None:
@@ -892,9 +892,7 @@ def _validate_closure_edge_membership(
             raise SelectionError("closure edges must use selected projects")
 
 
-def _verify_closure_edges(
-    closure: "SelectedChangeClosure", ctx: dict[str, Any]
-) -> None:
+def _verify_closure_edges(closure: SelectedChangeClosure, ctx: dict[str, Any]) -> None:
     """Stage 3: closure.edges must be package-identity-consistent, dedup'd,
     scoped to selected projects, and exactly match the source graph's
     selected-subset edges. Extracted verbatim from
@@ -952,7 +950,7 @@ def _canonicalize_closure_project_edge(
 
 
 def _verify_closure_project_edges(
-    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+    closure: SelectedChangeClosure, ctx: dict[str, Any]
 ) -> None:
     """Stage 4: closure.project_edges must be well-formed pairs, dedup'd,
     non-self, scoped to selected projects, and exactly match the
@@ -982,7 +980,7 @@ def _verify_closure_project_edges(
 
 
 def _verify_closure_source_edges_and_evidence(
-    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+    closure: SelectedChangeClosure, ctx: dict[str, Any]
 ) -> None:
     """Stage 5: project_edges must match the source graph's selected-subset
     project edges, and the selected set must match the policy's own closure
@@ -1014,7 +1012,7 @@ def _verify_closure_source_edges_and_evidence(
 
 
 def _verify_closure_parallel_groups(
-    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+    closure: SelectedChangeClosure, ctx: dict[str, Any]
 ) -> None:
     """Stage 6: parallel_groups must be well-formed, canonical, cover every
     selected project exactly once, and match the deterministic topological
@@ -1063,7 +1061,7 @@ def _verify_closure_parallel_groups(
 
 def _verify_closure_explanation_matches_evidence(
     project_id: str,
-    explanation_map: dict[str, "SelectionExplanation"],
+    explanation_map: dict[str, SelectionExplanation],
     expected_included: Any,
     expected_reasons: Any,
     expected_via: Any,
@@ -1099,7 +1097,7 @@ def _verify_closure_explanation_matches_evidence(
 
 
 def _verify_closure_explanations(
-    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+    closure: SelectedChangeClosure, ctx: dict[str, Any]
 ) -> None:
     """Stage 7: explanations must cover every known project exactly once,
     with witnesses restricted to known projects, and must match the policy's
@@ -1140,7 +1138,7 @@ def _verify_closure_explanations(
 
 
 def _finalize_closure_state(
-    closure: "SelectedChangeClosure", ctx: dict[str, Any]
+    closure: SelectedChangeClosure, ctx: dict[str, Any]
 ) -> None:
     """Final stage: freeze the canonicalized field values onto ``closure``
     via ``object.__setattr__``, then validate/derive the content digest.
@@ -1189,7 +1187,7 @@ def _finalize_closure_state(
 # and _finalize_closure_state (which performs the __setattr__ calls and the
 # digest derivation that reads them back) must run LAST.
 _CLOSURE_VALIDATION_STAGES: tuple[
-    "Callable[[SelectedChangeClosure, dict[str, Any]], None]", ...
+    Callable[[SelectedChangeClosure, dict[str, Any]], None], ...
 ] = (
     _verify_closure_policy_and_source,
     _verify_closure_projects,

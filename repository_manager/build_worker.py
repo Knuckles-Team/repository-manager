@@ -9,7 +9,7 @@ import stat
 import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypeGuard, cast
 
 from repository_manager import build_queue as bq
 from repository_manager.build_artifacts import (
@@ -393,6 +393,26 @@ def _as_view(value: DurableJobView | Mapping[str, Any] | None) -> DurableJobView
     return DurableJobView.model_validate(value)
 
 
+def _require_execution_plan(
+    plan: tuple[Any, Any, Any] | None,
+) -> tuple[Any, Any, Any]:
+    if plan is None:
+        raise BuildWorkerError(
+            "build execution plan is missing after preparation",
+            refusal_code="worker_environment_failure",
+        )
+    return plan
+
+
+def _require_result_ref(result_ref: str | None) -> str:
+    if result_ref is None:
+        raise BuildWorkerError(
+            "artifact publication returned no durable result reference",
+            refusal_code="worker_environment_failure",
+        )
+    return result_ref
+
+
 def _key_from_components(components: Mapping[str, Any]) -> bq.CacheKey:
     required = (
         "repo",
@@ -614,7 +634,7 @@ class GraphBuildAuthority:
         claim: Mapping[str, Any],
         job_id: str,
         result_ref: str,
-    ) -> bool:
+    ) -> TypeGuard[DurableJobView]:
         if view is None or view.job_id != str(claim.get("job_id") or job_id):
             return False
         if view.work_item_id != str(claim.get("work_item_id") or ""):
@@ -758,6 +778,16 @@ class _RunJobState:
         self.key: bq.CacheKey | None = None
         self.published = False
         self.terminal_committed = False
+
+    def _require_cache_publication(self) -> tuple[BuildArtifactStore, bq.CacheKey]:
+        """Return complete cache state or refuse before another side effect."""
+
+        if self.store is None or self.key is None:
+            raise BuildWorkerError(
+                "cacheable build publication state is incomplete",
+                refusal_code="worker_environment_failure",
+            )
+        return self.store, self.key
 
 
 class BuildWorker:
@@ -993,7 +1023,8 @@ class BuildWorker:
         """Build, execute, and publish; return ``(result_ref, None)`` or an early dict."""
 
         job_id, actual_claim, view = state.job_id, state.actual_claim, state.view
-        fence, attempt, token, key = state.fence, state.attempt, state.token, state.key
+        fence, attempt, token = state.fence, state.attempt, state.token
+        store, key = state._require_cache_publication()
         with bq.materialized(scope.tree, view.base_sha, scope=scope) as build_tree:
             _verify_toolchain_fingerprint(build_tree, spec, payload, cacheable=True)
             command = ExecutionCommand(
@@ -1023,7 +1054,7 @@ class BuildWorker:
                 return None, self._commit_execution_failure(
                     job_id, actual_claim, view, result, state.reservation_id
                 )
-            staged = state.store.stage(
+            staged = store.stage(
                 build_tree,
                 workdir=payload.workdir,
                 patterns=payload.artifact_patterns,
@@ -1036,7 +1067,7 @@ class BuildWorker:
                 max_artifacts=1024,
                 max_bytes=(view.disk_mib * 1024 * 1024 if view.disk_mib > 0 else None),
             )
-            state.store.publish(
+            store.publish(
                 staged,
                 fence_check=lambda: _require_current_fence(
                     self.authority, job_id, actual_claim
@@ -1049,7 +1080,8 @@ class BuildWorker:
         self, state: _RunJobState, result_ref: str
     ) -> dict[str, Any]:
         job_id, actual_claim, view = state.job_id, state.actual_claim, state.view
-        fence, attempt, key = state.fence, state.attempt, state.key
+        fence, attempt = state.fence, state.attempt
+        store, key = state._require_cache_publication()
         try:
             commit_result = self.authority.commit(
                 job_id,
@@ -1103,7 +1135,7 @@ class BuildWorker:
         # A restart between terminal commit and this metadata update is safe:
         # recovery can finalize the already-published checksummed bytes after
         # observing exact durable terminal evidence.
-        manifest = state.store.finalize(
+        manifest = store.finalize(
             key.digest,
             fence=fence,
             terminal_check=lambda: _terminal_matches(
@@ -1307,13 +1339,13 @@ class BuildWorker:
             )
             if early is not None:
                 return early
-            scope, spec, payload = plan
+            scope, spec, payload = _require_execution_plan(plan)
             result_ref, early = self._materialize_execute_and_publish(
                 state, scope, spec, payload
             )
             if early is not None:
                 return early
-            return self._commit_and_finalize(state, result_ref)
+            return self._commit_and_finalize(state, _require_result_ref(result_ref))
         except Exception as exc:  # noqa: BLE001 - terminalize unexpected worker failures
             return self._handle_run_job_failure(state, exc)
         finally:
@@ -2024,13 +2056,13 @@ class BuildWorker:
 
     def _manifest_proves_terminal(
         self,
+        manifest: Mapping[str, Any] | None,
         job_id: str,
         view: DurableJobView,
         store: BuildArtifactStore,
-        manifest: Mapping[str, Any] | None,
         key_digest: str,
         result_ref: str,
-    ) -> bool:
+    ) -> TypeGuard[Mapping[str, Any]]:
         if not manifest:
             return False
         if not store.validate_manifest(
@@ -2116,7 +2148,7 @@ class BuildWorker:
         manifest_fence = str(manifest.get("fence") or "") if manifest else ""
         result_ref = _result_ref(key_digest, manifest_fence)
         if self._manifest_proves_terminal(
-            job_id, view, store, manifest, key_digest, result_ref
+            manifest, job_id, view, store, key_digest, result_ref
         ):
             return self._finalize_recovered_manifest(
                 job_id, view, store, key_digest, manifest, result_ref

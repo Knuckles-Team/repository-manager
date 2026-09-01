@@ -40,11 +40,11 @@ def _load_module():
     return module
 
 
-vas = _load_module()
+verify_agent_server = _load_module()
 
 
 def test_score_project_mentions_full_url_match():
-    found, missing = vas._score_project_mentions(
+    found, missing = verify_agent_server._score_project_mentions(
         {"git@github.com:org/repo-one.git"}, "See git@github.com:org/repo-one.git for details"
     )
     assert found == 1
@@ -52,7 +52,7 @@ def test_score_project_mentions_full_url_match():
 
 
 def test_score_project_mentions_falls_back_to_bare_repo_name():
-    found, missing = vas._score_project_mentions(
+    found, missing = verify_agent_server._score_project_mentions(
         {"git@github.com:org/repo-one.git"}, "I found repo-one in the workspace"
     )
     assert found == 1
@@ -61,7 +61,7 @@ def test_score_project_mentions_falls_back_to_bare_repo_name():
 
 def test_score_project_mentions_known_bad_input_nothing_mentioned():
     """Plant the known-bad input: chat output that omits every project."""
-    found, missing = vas._score_project_mentions(
+    found, missing = verify_agent_server._score_project_mentions(
         {"git@github.com:org/repo-one.git", "git@github.com:org/repo-two.git"},
         "I could not find any projects.",
     )
@@ -72,8 +72,8 @@ def test_score_project_mentions_known_bad_input_nothing_mentioned():
     }
 
 
-def test_score_project_mentions_partial_match(): 
-    found, missing = vas._score_project_mentions(
+def test_score_project_mentions_partial_match():
+    found, missing = verify_agent_server._score_project_mentions(
         {"git@github.com:org/repo-one.git", "git@github.com:org/repo-two.git"},
         "repo-one is available",
     )
@@ -83,20 +83,20 @@ def test_score_project_mentions_partial_match():
 
 def test_print_comparison_verdict_fails_closed_on_zero_found(capsys):
     """Remove the known-bad input (found_count == 0): confirm FAIL."""
-    result = vas._print_comparison_verdict(0, 2, ["a", "b"])
+    result = verify_agent_server._print_comparison_verdict(0, 2, ["a", "b"])
     assert result is False
     assert "❌" in capsys.readouterr().out
 
 
 def test_print_comparison_verdict_passes_when_some_found(capsys):
     """Well-formed input (found_count > 0): confirm PASS."""
-    result = vas._print_comparison_verdict(2, 2, [])
+    result = verify_agent_server._print_comparison_verdict(2, 2, [])
     assert result is True
     assert "✅" in capsys.readouterr().out
 
 
 def test_print_comparison_verdict_passes_with_partial_matches_noted(capsys):
-    result = vas._print_comparison_verdict(1, 2, ["missing-one"])
+    result = verify_agent_server._print_comparison_verdict(1, 2, ["missing-one"])
     assert result is True
     out = capsys.readouterr().out
     assert "✅" in out

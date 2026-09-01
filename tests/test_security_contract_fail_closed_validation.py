@@ -218,7 +218,7 @@ def test_component_licenses_no_licenses_is_not_malformed():
 
 
 def test_component_licenses_malformed_declaration():
-    component = {"licenses": [{"license": {}}]}
+    component: dict[str, object] = {"licenses": [{"license": {}}]}
     values, malformed = sc._component_licenses(component)
     assert values == ()
     assert malformed is True
