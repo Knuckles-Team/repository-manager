@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from repository_manager import merge_queue_runner
 from repository_manager.merge_queue_runner_install import (
     DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS,
     DEFAULT_HEAVY_TIMEOUT_SECONDS,
@@ -56,9 +57,13 @@ def test_install_is_hash_verified_and_daemon_reloaded(tmp_path: Path) -> None:
     assert report.verified
     assert marker.read_text(encoding="utf-8") == "--user daemon-reload"
     assert bin_path.stat().st_mode & 0o777 == 0o755
+    runner_artifact = report.artifacts[0]
+    assert runner_artifact.name == "runner"
+    assert runner_artifact.source == Path(merge_queue_runner.__file__).resolve()
+    assert bin_path.read_bytes() == runner_artifact.source.read_bytes()
     assert (units / "merge-queue-runner.service").read_text().find(str(bin_path)) >= 0
     service_text = (units / "merge-queue-runner.service").read_text()
-    assert f"ExecStart={Path(sys.executable).resolve()}" in service_text
+    assert f"ExecStart={python_link}" in service_text
     assert service_text.find(str(root)) >= 0
     assert "--drain-deadline-seconds 42" in service_text
     assert "--global-deadline-seconds 300" in service_text

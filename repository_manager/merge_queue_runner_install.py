@@ -147,6 +147,44 @@ def _validate_path(path: Path, *, label: str) -> Path:
     return path
 
 
+def _validate_python_executable(path: Path) -> Path:
+    """Validate a launcher while preserving a virtualenv's symlink spelling.
+
+    uv and virtualenv commonly expose ``.venv/bin/python`` as a symlink to a
+    shared interpreter.  Resolving that final component before rendering
+    ``ExecStart`` loses the virtualenv prefix and its installed packages.  The
+    launcher itself is therefore retained, while its target and every parent
+    directory are still validated before the unit is written.
+    """
+
+    if not path.is_absolute():
+        path = Path(os.path.abspath(path))
+    if any(ord(char) < 0x20 for char in str(path)):
+        raise MergeQueueRunnerInstallError(
+            "python executable contains a control character"
+        )
+    current = path.parent
+    while True:
+        if current.is_symlink():
+            raise MergeQueueRunnerInstallError(
+                f"python executable parent must not use a symbolic link path: {current}"
+            )
+        if current == current.parent:
+            break
+        current = current.parent
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise MergeQueueRunnerInstallError(
+            f"python executable cannot be resolved: {path}: {exc}"
+        ) from exc
+    if not resolved.is_file() or not os.access(resolved, os.X_OK):
+        raise MergeQueueRunnerInstallError(
+            f"python executable is unavailable or not executable: {path}"
+        )
+    return path
+
+
 def _systemd_token(value: Path) -> str:
     """Quote one literal systemd ExecStart/Environment token."""
 
@@ -319,7 +357,8 @@ def _resolve_install_paths(
     if not root.is_dir():
         raise MergeQueueRunnerInstallError(f"workspace root is not a directory: {root}")
     runner_source = _validate_path(
-        _path_value(source_runner, Path(__file__).resolve()), label="runner source"
+        _path_value(source_runner, Path(__file__).with_name("merge_queue_runner.py")),
+        label="runner source",
     )
     service_source = _validate_path(
         _path_value(service_template, _package_path(SERVICE_NAME)),
@@ -345,18 +384,8 @@ def _resolve_install_paths(
         _path_value(unit_directory, Path.home() / ".config" / "systemd" / "user"),
         label="unit directory",
     )
-    python_candidate = _path_value(python_executable, Path(sys.executable).resolve())
-    try:
-        python_candidate = python_candidate.resolve(strict=True)
-    except OSError as exc:
-        raise MergeQueueRunnerInstallError(
-            f"python executable cannot be resolved: {python_candidate}: {exc}"
-        ) from exc
-    python_path = _validate_path(python_candidate, label="python executable")
-    if not python_path.is_file() or not os.access(python_path, os.X_OK):
-        raise MergeQueueRunnerInstallError(
-            f"python executable is unavailable or not executable: {python_path}"
-        )
+    python_candidate = _path_value(python_executable, Path(sys.executable))
+    python_path = _validate_python_executable(python_candidate)
     return _InstallPaths(
         root,
         runner_source,
