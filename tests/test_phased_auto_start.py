@@ -58,23 +58,23 @@ def _make_manager(tmp_path, pending_status):
 
 def test_auto_start_phase_detects_lowest_changed(tmp_path):
     manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": DIRTY})
-    assert manager._auto_start_phase(CONFIG) == 2
+    assert manager._auto_start_phase(CONFIG, operation="bump") == 2
 
 
 def test_auto_start_phase_counts_unpushed_commits(tmp_path):
     # repo2 has no working-tree changes but is ahead of origin (awaiting push).
     manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": AHEAD, "repo3": CLEAN})
-    assert manager._auto_start_phase(CONFIG) == 2
+    assert manager._auto_start_phase(CONFIG, operation="push") == 2
 
 
 def test_auto_start_phase_none_when_all_clean(tmp_path):
     manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN})
-    assert manager._auto_start_phase(CONFIG) is None
+    assert manager._auto_start_phase(CONFIG, operation="bump") is None
 
 
 def test_auto_start_phase_lowest_wins(tmp_path):
     manager = _make_manager(tmp_path, {"repo1": DIRTY, "repo2": CLEAN, "repo3": DIRTY})
-    assert manager._auto_start_phase(CONFIG) == 1
+    assert manager._auto_start_phase(CONFIG, operation="push") == 1
 
 
 @patch("time.sleep")

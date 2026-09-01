@@ -34,7 +34,9 @@ class _ManifestError(Exception):
     pass
 
 
-def _make_runtime(git: MagicMock, *, tmp_workspace_yml: str) -> tuple[CliRuntime, MagicMock]:
+def _make_runtime(
+    git: MagicMock, *, tmp_workspace_yml: str
+) -> tuple[CliRuntime, MagicMock]:
     logger = MagicMock()
     git_factory = MagicMock(return_value=git)
     synchronize = MagicMock()
@@ -273,12 +275,8 @@ def test_gate_failure_count_marks_has_errors_and_skips_push(runtime_and_factory,
         return {"status": "ok", "queued_count": 1, "jobs": {"repo1": job_id}}
 
     with (
-        patch(
-            "repository_manager.gate_runner.dispatch", side_effect=fake_dispatch
-        ),
-        patch(
-            "repository_manager.gate_runner.LocalJobStore"
-        ) as MockStore,
+        patch("repository_manager.gate_runner.dispatch", side_effect=fake_dispatch),
+        patch("repository_manager.gate_runner.LocalJobStore") as MockStore,
         _argv("--gate", "fast", "--push"),
     ):
         store = MockStore.return_value
@@ -347,15 +345,52 @@ def test_validate_success_still_clears_bump_and_push_flags(runtime_and_factory, 
     git.phased_push.assert_not_called()
 
 
-def test_bump_runs_per_project_and_tracks_errors(runtime_and_factory, git):
+def test_standalone_bump_uses_the_phased_selector(runtime_and_factory, git):
     runtime, _ = runtime_and_factory
-    git.project_map = {"u1": "/w/one", "u2": "/w/two"}
-    ok = MagicMock(status="success")
-    err = MagicMock(status="error")
-    git.bump_version.side_effect = [ok, err]
+    git._resolve_maintenance_config.return_value = {"phases": []}
+    git.phased_bumpversion.return_value = []
     with _argv("--bump", "patch"):
         run(runtime)
-    assert git.bump_version.call_count == 2
+    git.bump_version.assert_not_called()
+    git.phased_bumpversion.assert_called_once_with(
+        part="patch",
+        start_phase=1,
+        dry_run=False,
+        config={"phases": []},
+        single_phase=False,
+        project_filter=None,
+        auto_start=True,
+    )
+
+
+def test_standalone_bump_invalid_maintenance_config_exits_nonzero(
+    runtime_and_factory, git
+):
+    runtime, _ = runtime_and_factory
+    git._resolve_maintenance_config.return_value = None
+    with _argv("--bump", "patch"):
+        assert run(runtime) == 1
+    git.phased_bumpversion.assert_not_called()
+
+
+def test_standalone_bump_non_object_json_config_exits_1(runtime_and_factory, tmp_path):
+    runtime, _ = runtime_and_factory
+    bad_config = tmp_path / "bad-shape.json"
+    bad_config.write_text("[]")
+    with (
+        _argv("--bump", "patch", "--config", str(bad_config)),
+        pytest.raises(SystemExit) as exc,
+    ):
+        run(runtime)
+    assert exc.value.code == 1
+
+
+def test_standalone_bump_result_error_is_nonzero(runtime_and_factory, git):
+    runtime, _ = runtime_and_factory
+    git._resolve_maintenance_config.return_value = {"phases": []}
+    git.phased_bumpversion.return_value = [MagicMock(status="error")]
+    with _argv("--bump", "patch"):
+        assert run(runtime) == 1
 
 
 def test_maintain_config_load_failure_exits_1(runtime_and_factory, tmp_path):

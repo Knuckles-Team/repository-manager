@@ -21,9 +21,8 @@ import threading
 import tomllib
 import uuid
 from collections.abc import Callable, Iterator
-from itertools import chain
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 __version__ = "3.4.0"
 
@@ -100,6 +99,7 @@ _ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=(.*)$", re.DOTALL)
 _SHELL_CONTROL_TOKENS = {"&&", "||", ";", "|", "&", "(", ")"}
 _MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024
 _MutationResult = TypeVar("_MutationResult")
+_ReleaseTarget = tuple[str, str]
 _CONSOLIDATED_UNIVERSAL_SKILLS = (
     "agent-package-builder",
     "mcp-builder",
@@ -3845,7 +3845,9 @@ class Git:
         up_to_date = "your branch is up to date" in data_lower
         return not (clean and up_to_date)
 
-    def _auto_start_phase(self, config: dict) -> int | None:
+    def _auto_start_phase(
+        self, config: dict, *, operation: Literal["bump", "push"]
+    ) -> int | None:
         """Lowest phase number that contains a repo with pending work.
 
         Phases are topologically ordered (lower phase = more upstream): a change
@@ -3858,22 +3860,19 @@ class Git:
         """
         claimed: set[str] = set()
         for phase in self._ordered_release_phases(config):
-            projects = self._select_phase_project_names(
+            targets = self._select_phase_targets(
                 phase,
                 filter_set=None,
                 claimed=claimed,
-                include_bulk=bool(phase.get("bulk_bump") or phase.get("bulk_push")),
+                include_bulk=bool(phase.get(f"bulk_{operation}")),
             )
-            if self._phase_has_pending_work(projects):
+            if self._phase_has_pending_work(targets):
                 return phase["phase"]
         return None
 
-    def _phase_has_pending_work(self, projects: list[str]) -> bool:
+    def _phase_has_pending_work(self, targets: list[_ReleaseTarget]) -> bool:
         """Whether any selected project has a local clone with pending work."""
-        paths = (self._project_path_for(project) for project in projects)
-        return any(
-            path is not None and self._repo_has_pending_work(path) for path in paths
-        )
+        return any(self._repo_has_pending_work(path) for _name, path in targets)
 
     @_exclusive_repo_mutation
     def bump_version(
@@ -4266,15 +4265,15 @@ class Git:
                 project_phases[p] = p_num
         return project_phases, bulk_phase_num
 
-    def _pre_commit_project_names(
+    def _pre_commit_project_targets(
         self,
         config: dict,
         filter_set: set[str] | None = None,
         *,
         start_phase: int = 1,
         single_phase: bool = False,
-    ) -> list[Any] | None:
-        """Projects the pre-commit stage should cover, or ``None`` for "all".
+    ) -> list[_ReleaseTarget] | None:
+        """Exact targets the pre-commit stage should cover, or ``None`` for all.
 
         Explicit phase members are always included. A ``bulk_bump`` phase adds
         only manifest-classified, PyPI-buildable agent repositories; it never
@@ -4285,48 +4284,34 @@ class Git:
         phases = self._selected_release_phases(
             config, start_phase=start_phase, single_phase=single_phase
         )
-        return self._pre_commit_projects_for_phases(phases, filter_set)
+        return self._pre_commit_targets_for_phases(phases, filter_set)
 
-    def _pre_commit_projects_for_phases(
+    def _pre_commit_targets_for_phases(
         self,
         phases: list[dict[str, Any]],
         filter_set: set[str] | None,
-    ) -> list[Any]:
-        """Flatten candidate names for already-selected maintenance phases."""
+    ) -> list[_ReleaseTarget]:
+        """Flatten exact targets for already-selected maintenance phases."""
         claimed: set[str] = set()
-        return list(
-            chain.from_iterable(
-                self._select_phase_project_names(
+        targets: list[_ReleaseTarget] = []
+        for phase in phases:
+            targets.extend(
+                self._select_phase_targets(
                     phase,
                     filter_set=filter_set,
                     claimed=claimed,
                     include_bulk=bool(phase.get("bulk_bump")),
                 )
-                for phase in phases
             )
-        )
+        return targets
 
-    def _pre_commit_phase_projects(self, phase: dict) -> list[Any]:
-        """Explicit members plus eligible bulk agents for one phase."""
-        return self._select_phase_project_names(
-            phase,
-            filter_set=None,
-            claimed=set(),
-            include_bulk=bool(phase.get("bulk_bump")),
-        )
-
-    def _pre_commit_project_dirs(
-        self, projects_to_check: list[Any] | None
+    def _pre_commit_target_dirs(
+        self, targets: list[_ReleaseTarget] | None
     ) -> list[str]:
-        """Local clone paths for the pre-commit stage's project scope."""
-        if projects_to_check is None:
+        """Validated local paths for the pre-commit stage's exact scope."""
+        if targets is None:
             return list(self.project_map.values())
-        dirs: list[str] = []
-        for p_name in projects_to_check:
-            p_path = self._project_path_for(p_name)
-            if p_path is not None:
-                dirs.append(p_path)
-        return dirs
+        return [path for _name, path in targets]
 
     def _run_bump_pre_commit_stage(
         self,
@@ -4337,7 +4322,7 @@ class Git:
         single_phase: bool,
     ) -> list[GitResult]:
         """Run pre-commit (with autoupdate) and commit the resulting formatting."""
-        projects_to_check = self._pre_commit_project_names(
+        targets = self._pre_commit_project_targets(
             config,
             filter_set,
             start_phase=start_phase,
@@ -4345,26 +4330,28 @@ class Git:
         )
         results = list(
             self.pre_commit_projects(
-                run=True, autoupdate=True, projects=projects_to_check
+                run=True,
+                autoupdate=True,
+                projects=self._pre_commit_target_dirs(targets),
             )
         )
         results.extend(
             self.commit_projects(
                 message="chore: pre-commit autoupdate and formatting",
-                project_dirs=self._pre_commit_project_dirs(projects_to_check),
+                project_dirs=self._pre_commit_target_dirs(targets),
             )
         )
         return results
 
-    def _bump_phase_projects(
+    def _bump_phase_targets(
         self, phase: dict, filter_set: set[str] | None, assigned_projects: set[str]
-    ) -> list[str]:
-        """The project names one configured phase contributes to the bump plan.
+    ) -> list[_ReleaseTarget]:
+        """The exact targets one configured phase contributes to the bump plan.
 
         A filter only narrows a phase's existing members. It can never manufacture
         a bulk target that failed the manifest/category/package eligibility gate.
         """
-        return self._select_phase_project_names(
+        return self._select_phase_targets(
             phase,
             filter_set=filter_set,
             claimed=assigned_projects,
@@ -4408,18 +4395,18 @@ class Git:
         ):
             phase_num = phase["phase"]
 
-            projects = self._bump_phase_projects(phase, filter_set, assigned_projects)
-            if not projects:
+            targets = self._bump_phase_targets(phase, filter_set, assigned_projects)
+            if not targets:
                 continue
 
             phase_list.append(
                 {
                     "phase_num": phase_num,
                     "name": phase.get("name", f"Phase {phase_num}"),
-                    "projects": projects,
+                    "targets": targets,
                 }
             )
-            total_projects += len(projects)
+            total_projects += len(targets)
 
         return phase_list, total_projects
 
@@ -4436,6 +4423,7 @@ class Git:
         self,
         *,
         project_name: str,
+        project_dir: str,
         part: str,
         dry_run: bool,
         force: bool,
@@ -4449,10 +4437,6 @@ class Git:
         entry / never-cloned repo) must not crash the whole phased bump, so it
         is skipped with a warning and the rest of the topology proceeds.
         """
-        project_dir = self._project_path_for(project_name)
-        if not project_dir:
-            return None
-
         if not os.path.isdir(project_dir):
             logger.warning(
                 "Skipping bump for %s: project directory missing (%s)",
@@ -4557,8 +4541,8 @@ class Git:
         *,
         p_info: dict[str, Any],
         tracker: "_PhaseProgress",
-        processed_projects: set[str],
-        bump_one: Callable[[str], str | None],
+        processed_paths: set[str],
+        bump_one: Callable[[str, str], str | None],
         propagate: Callable[[str, str, int], None],
     ) -> None:
         """Bump every project in one phase, propagating each new version onward."""
@@ -4566,18 +4550,18 @@ class Git:
         phase_num = p_info["phase_num"]
         tracker.begin_phase(phase_name)
 
-        for project_name in p_info["projects"]:
+        for project_name, project_path in p_info["targets"]:
             # Defensive: never bump a project twice in one run (a later phase
             # must not re-bump one an earlier phase already handled).
-            if project_name in processed_projects:
+            if project_path in processed_paths:
                 continue
 
             tracker.begin_item(phase_name, project_name)
-            processed_projects.add(project_name)
+            processed_paths.add(project_path)
             logger.info(
                 f"Bumping version for project: {project_name} in {phase_name}..."
             )
-            new_version = bump_one(project_name)
+            new_version = bump_one(project_name, project_path)
             tracker.finish_item(
                 phase_name, project_name, "success" if new_version else "failed"
             )
@@ -4631,10 +4615,16 @@ class Git:
 
         tracker = _PhaseProgress(state=progress, noun="bump")
 
-        if auto_start and not project_filter and not force:
+        if self._should_auto_start(
+            auto_start=auto_start,
+            project_filter=project_filter,
+            single_phase=single_phase,
+            force=force,
+        ):
             detected = self._resolve_auto_start_phase(
                 config=config,
                 start_phase=start_phase,
+                operation="bump",
                 tracker=tracker,
                 noun="bump",
                 lowest_label="lowest changed phase",
@@ -4654,9 +4644,10 @@ class Git:
                 )
             )
 
-        def bump_one(project_name: str) -> str | None:
+        def bump_one(project_name: str, project_path: str) -> str | None:
             return self._bump_one_project(
                 project_name=project_name,
+                project_dir=project_path,
                 part=part,
                 dry_run=dry_run,
                 force=force,
@@ -4680,21 +4671,32 @@ class Git:
             single_phase=single_phase,
         )
         tracker.initialize(
-            "Initializing Bumps", [(p["name"], p["projects"]) for p in phase_list]
+            "Initializing Bumps",
+            self._bump_progress_phases(phase_list),
         )
 
-        processed_projects: set[str] = set()
+        processed_paths: set[str] = set()
         for p_info in phase_list:
             self._run_bump_phase(
                 p_info=p_info,
                 tracker=tracker,
-                processed_projects=processed_projects,
+                processed_paths=processed_paths,
                 bump_one=bump_one,
                 propagate=propagate,
             )
 
         tracker.finish("Bumps Completed")
         return all_results
+
+    @staticmethod
+    def _bump_progress_phases(
+        phase_list: list[dict[str, Any]],
+    ) -> list[tuple[str, list[str]]]:
+        """Convert exact targets to the progress display's project-name view."""
+        return [
+            (phase["name"], [name for name, _path in phase["targets"]])
+            for phase in phase_list
+        ]
 
     maintain_projects = phased_bumpversion
 
@@ -4772,6 +4774,7 @@ class Git:
         *,
         config: dict,
         start_phase: int,
+        operation: Literal["bump", "push"],
         tracker: "_PhaseProgress",
         noun: str,
         lowest_label: str,
@@ -4782,7 +4785,7 @@ class Git:
         all is pending — in which case *tracker* has already been finalized and
         the caller should return immediately.
         """
-        detected = self._auto_start_phase(config)
+        detected = self._auto_start_phase(config, operation=operation)
         if detected is None:
             logger.info(
                 f"Phased {noun}: no repository changes detected; nothing to {noun}."
@@ -4795,6 +4798,19 @@ class Git:
                 f"starting there (skipping phases {start_phase}–{detected - 1})."
             )
         return max(start_phase, detected)
+
+    @staticmethod
+    def _should_auto_start(
+        *,
+        auto_start: bool,
+        project_filter: str | None,
+        single_phase: bool,
+        force: bool = False,
+    ) -> bool:
+        """Apply the same explicit-scope exclusions to bump and push discovery."""
+        return bool(
+            auto_start and project_filter is None and not single_phase and not force
+        )
 
     def _project_path_for(self, project_name: str) -> str | None:
         """Local clone path of *project_name* from the URL->path project map."""
@@ -4904,13 +4920,12 @@ class Git:
         processed_projects: set[str],
     ) -> list[tuple[str, str]]:
         """The (name, path) pairs one configured phase would push."""
-        projects = self._select_phase_project_names(
+        return self._select_phase_targets(
             phase,
             filter_set=filter_set,
             claimed=processed_projects,
             include_bulk=bool(phase.get("bulk_push")),
         )
-        return self._paths_for_project_names(projects)
 
     def _filtered_bulk_push_targets(
         self,
@@ -4919,42 +4934,108 @@ class Git:
         phase: dict[str, Any] | None = None,
     ) -> list[tuple[str, str]]:
         """Eligible bulk targets narrowed by the shared comma-filter grammar."""
-        names = self._select_phase_project_names(
+        return self._select_phase_targets(
             phase or {},
             filter_set=filter_set,
             claimed=processed_projects,
             include_bulk=True,
         )
-        return self._paths_for_project_names(names)
 
-    def _paths_for_project_names(self, names: list[str]) -> list[tuple[str, str]]:
-        """Resolve selected names to their deterministic local target pairs."""
-        paths = ((name, self._project_path_for(name)) for name in names)
-        return [(name, path) for name, path in paths if path is not None]
-
-    def _select_phase_project_names(
+    def _select_phase_targets(
         self,
         phase: dict[str, Any],
         *,
         filter_set: set[str] | None,
         claimed: set[str],
         include_bulk: bool,
-    ) -> list[str]:
-        """Select one phase's effective union with one deterministic policy."""
-        candidates = set(self._phase_named_projects(phase))
-        if include_bulk:
-            candidates.update(
-                name for name, _path in self._eligible_bulk_release_targets()
-            )
-        selected = sorted(
-            name
-            for name in candidates
-            if name not in claimed
+    ) -> list[_ReleaseTarget]:
+        """Select exact canonical targets with one deterministic policy."""
+        candidates = self._phase_target_candidates(
+            phase,
+            filter_set=filter_set,
+            claimed=claimed,
+            include_bulk=include_bulk,
+        )
+        selected = self._selected_candidate_targets(
+            candidates, phase=phase, filter_set=filter_set, claimed=claimed
+        )
+        claimed.update(name for name, _path in selected)
+        return selected
+
+    def _phase_target_candidates(
+        self,
+        phase: dict[str, Any],
+        *,
+        filter_set: set[str] | None,
+        claimed: set[str],
+        include_bulk: bool,
+    ) -> dict[str, str]:
+        """Build exact candidate identities before common narrowing."""
+        candidates = (
+            {name: path for name, path in self._eligible_bulk_release_targets()}
+            if include_bulk
+            else {}
+        )
+        for name in self._phase_named_projects(phase):
+            if self._explicit_candidate_is_selected(
+                name,
+                candidates=candidates,
+                phase=phase,
+                filter_set=filter_set,
+                claimed=claimed,
+            ):
+                candidates[name] = self._explicit_release_target(name)[1]
+        return candidates
+
+    def _explicit_candidate_is_selected(
+        self,
+        name: str,
+        *,
+        candidates: dict[str, str],
+        phase: dict[str, Any],
+        filter_set: set[str] | None,
+        claimed: set[str],
+    ) -> bool:
+        """Whether an explicit name still needs an exact target resolution."""
+        return bool(
+            name not in candidates
+            and name not in claimed
             and (filter_set is None or name in filter_set)
             and not self._phase_excludes_name(phase, name)
         )
-        claimed.update(selected)
-        return selected
+
+    def _selected_candidate_targets(
+        self,
+        candidates: dict[str, str],
+        *,
+        phase: dict[str, Any],
+        filter_set: set[str] | None,
+        claimed: set[str],
+    ) -> list[_ReleaseTarget]:
+        """Narrow exact candidates with the shared filter/exclude policy."""
+        return [
+            (name, candidates[name])
+            for name in sorted(candidates)
+            if name not in claimed
+            and (filter_set is None or name in filter_set)
+            and not self._phase_excludes_name(phase, name)
+        ]
+
+    def _explicit_release_target(self, expected_name: str) -> _ReleaseTarget:
+        """Resolve one unambiguous manifest name to its validated canonical path."""
+        matches: list[_ReleaseTarget] = []
+        for url, path in sorted(self.project_map.items()):
+            if self._release_project_name_or_empty(url) != expected_name:
+                continue
+            validated = self._validate_workspace_path(
+                path, label="explicit release project"
+            )
+            matches.append((expected_name, str(validated)))
+        if len(matches) != 1:
+            raise ValueError(
+                f"maintenance project must resolve to one canonical path: {expected_name}"
+            )
+        return matches[0]
 
     @staticmethod
     def _phase_named_projects(phase: dict[str, Any]) -> list[str]:
@@ -5289,10 +5370,15 @@ class Git:
 
         tracker = _PhaseProgress(state=progress, noun="push")
 
-        if auto_start and not project_filter:
+        if self._should_auto_start(
+            auto_start=auto_start,
+            project_filter=project_filter,
+            single_phase=single_phase,
+        ):
             detected = self._resolve_auto_start_phase(
                 config=config,
                 start_phase=start_phase,
+                operation="push",
                 tracker=tracker,
                 noun="push",
                 lowest_label="lowest unpushed phase",

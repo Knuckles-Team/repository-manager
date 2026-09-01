@@ -87,13 +87,16 @@ def test_every_standardized_project_key_is_strictly_typed(
         ("readme", {"file": "README.md", "bogus": "x"}),
         ("license", {"file": "LICENSE", "text": "MIT"}),
         ("authors", [{"name": "A", "role": "owner"}]),
+        ("authors", [{"email": "not-an-email"}]),
         ("maintainers", [{"email": 1}]),
         ("scripts", {"agent-one": 1}),
+        ("scripts", {"agent-one": "not a reference"}),
         ("gui-scripts", {1: "agent_one:gui"}),
         ("entry-points", {"agent.plugins": {"one": 1}}),
         ("urls", {"Homepage": 1}),
         ("optional-dependencies", {"test": [1]}),
         ("dependencies", ["not a requirement @@@"]),
+        ("license", "not a valid SPDX expression"),
     ],
 )
 def test_nested_pep621_shapes_fail_closed(field: str, value: object) -> None:
@@ -170,3 +173,87 @@ def test_release_file_reader_rejects_invalid_encoding_toml_and_schema(
     ):
         manifest.write_bytes(content)
         assert read_release_document(manifest, expected_name="agent-one") is None
+
+
+def _file_metadata_document(readme_path: str, license_files: str = "LICENSE") -> str:
+    return f"""\
+[project]
+name = "agent-one"
+version = "1.0"
+license = "MIT"
+license-files = ["{license_files}"]
+
+[project.readme]
+file = "{readme_path}"
+content-type = "text/markdown"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+"""
+
+
+@pytest.mark.parametrize("readme_path", ["../README.md", "/tmp/README.md"])
+def test_release_file_reader_rejects_escaping_readme_paths(
+    tmp_path: Path, readme_path: str
+) -> None:
+    (tmp_path / "LICENSE").write_text("MIT")
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text(_file_metadata_document(readme_path))
+
+    assert read_release_document(manifest, expected_name="agent-one") is None
+
+
+def test_release_file_reader_rejects_symlinked_readme_and_license_paths(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    (outside / "README.md").write_text("outside")
+    (outside / "LICENSE").write_text("MIT")
+    (tmp_path / "README.md").symlink_to(outside / "README.md")
+    (tmp_path / "LICENSE").symlink_to(outside / "LICENSE")
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text(_file_metadata_document("README.md"))
+
+    assert read_release_document(manifest, expected_name="agent-one") is None
+
+
+def test_release_file_reader_rejects_symlinked_license_table_file(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-license-outside"
+    outside.mkdir()
+    (outside / "LICENSE").write_text("MIT")
+    (tmp_path / "README.md").write_text("readme")
+    (tmp_path / "LICENSE").symlink_to(outside / "LICENSE")
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text(
+        """\
+[project]
+name = "agent-one"
+version = "1.0"
+license = {file = "LICENSE"}
+readme = {file = "README.md", content-type = "text/markdown"}
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+"""
+    )
+
+    assert read_release_document(manifest, expected_name="agent-one") is None
+
+
+def test_release_file_reader_requires_readme_content_type_and_safe_license_glob(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text("readme")
+    (tmp_path / "LICENSE").write_text("MIT")
+    manifest = tmp_path / "pyproject.toml"
+    manifest.write_text(_file_metadata_document("README.md", "../LICENSE"))
+    assert read_release_document(manifest, expected_name="agent-one") is None
+
+    document = _complete_document()
+    document["project"]["readme"] = {"file": "README.md"}
+    assert not validate_release_document(document, expected_name="agent-one")

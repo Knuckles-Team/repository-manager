@@ -111,7 +111,7 @@ import os
 import sys
 import time
 import tomllib
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -144,6 +144,7 @@ __all__ = [
     "NON_PACKAGE_SUBDIRECTORY_KEYS",
     "AvailableVersions",
     "ConstraintCheck",
+    "InvalidDependencyMetadata",
     "ReadinessReport",
     "GateCheckFailure",
     "GateReadinessOutcome",
@@ -620,13 +621,6 @@ def fleet_package_names(workspace_yml_path: str | Path) -> set[str]:
     return names
 
 
-def _iter_pyproject_requirements(pyproject: dict[str, Any]) -> Iterable[str]:
-    project = pyproject.get("project") or {}
-    yield from project.get("dependencies") or []
-    for group in (project.get("optional-dependencies") or {}).values():
-        yield from group or []
-
-
 @dataclass
 class DeclaredConstraint:
     """One dependency requirement declared by a repo, before it is checked."""
@@ -636,6 +630,14 @@ class DeclaredConstraint:
     specifier: str
     extras: tuple[str, ...]
     declared_by: str  # path to the pyproject.toml that declared it
+
+
+@dataclass(frozen=True)
+class InvalidDependencyMetadata:
+    """Typed blocking state for unreadable or malformed dependency metadata."""
+
+    declared_by: str
+    detail: str
 
 
 def _resolve_fleet_packages(
@@ -651,12 +653,99 @@ def _resolve_fleet_packages(
     return fleet_package_names(manifest) if manifest else set()
 
 
-def _load_pyproject_toml(pyproject_path: Path) -> dict[str, Any] | None:
+def _load_pyproject_toml(
+    pyproject_path: Path,
+) -> dict[str, Any] | InvalidDependencyMetadata:
     try:
-        with pyproject_path.open("rb") as handle:
-            return tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
-        return None
+        raw = pyproject_path.read_bytes()
+        data = tomllib.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        return InvalidDependencyMetadata(
+            declared_by=str(pyproject_path),
+            detail=f"dependency metadata is unreadable: {type(exc).__name__}",
+        )
+    return data
+
+
+def _validated_dependency_project(
+    data: dict[str, Any], pyproject_path: Path
+) -> tuple[str, list[str]] | InvalidDependencyMetadata:
+    """Validate every project/dependency container before iteration."""
+    project = _dependency_project_table(data, pyproject_path)
+    if isinstance(project, InvalidDependencyMetadata):
+        return project
+    required = _dependency_required_fields(project, pyproject_path)
+    if isinstance(required, InvalidDependencyMetadata):
+        return required
+    name, dependencies = required
+    optional = _dependency_optional_groups(project, pyproject_path)
+    if isinstance(optional, InvalidDependencyMetadata):
+        return optional
+    requirements = [
+        *dependencies,
+        *(item for items in optional.values() for item in items),
+    ]
+    return canonicalize_name(name), requirements
+
+
+def _dependency_project_table(
+    data: dict[str, Any], pyproject_path: Path
+) -> dict[str, Any] | InvalidDependencyMetadata:
+    project = data.get("project")
+    if type(project) is not dict:
+        return _invalid_dependency_metadata(pyproject_path, "[project] must be a table")
+    return project
+
+
+def _dependency_required_fields(
+    project: dict[str, Any], pyproject_path: Path
+) -> tuple[str, list[str]] | InvalidDependencyMetadata:
+    name = project.get("name")
+    dependencies = project.get("dependencies", [])
+    if type(name) is not str or not name.strip():
+        return _invalid_dependency_metadata(
+            pyproject_path, "project.name must be a string"
+        )
+    if type(dependencies) is not list or not all(
+        type(item) is str for item in dependencies
+    ):
+        return _invalid_dependency_metadata(
+            pyproject_path, "project.dependencies must be a string list"
+        )
+    return name, dependencies
+
+
+def _dependency_optional_groups(
+    project: dict[str, Any], pyproject_path: Path
+) -> dict[str, list[str]] | InvalidDependencyMetadata:
+    optional = project.get("optional-dependencies", {})
+    if type(optional) is not dict or not all(type(group) is str for group in optional):
+        return _invalid_dependency_metadata(
+            pyproject_path, "project.optional-dependencies must be a table"
+        )
+    if not all(
+        type(items) is list and all(type(item) is str for item in items)
+        for items in optional.values()
+    ):
+        return _invalid_dependency_metadata(
+            pyproject_path, "optional dependency groups must be string lists"
+        )
+    return optional
+
+
+def _invalid_dependency_metadata(
+    pyproject_path: Path, detail: str
+) -> InvalidDependencyMetadata:
+    return InvalidDependencyMetadata(declared_by=str(pyproject_path), detail=detail)
+
+
+def _read_dependency_requirements(
+    pyproject_path: Path,
+) -> tuple[str, list[str]] | InvalidDependencyMetadata:
+    data = _load_pyproject_toml(pyproject_path)
+    if isinstance(data, InvalidDependencyMetadata):
+        return data
+    return _validated_dependency_project(data, pyproject_path)
 
 
 def _constraint_from_requirement(
@@ -665,11 +754,13 @@ def _constraint_from_requirement(
     own_name: str,
     pyproject_path: Path,
     seen: set[tuple[str, str]],
-) -> DeclaredConstraint | None:
+) -> DeclaredConstraint | InvalidDependencyMetadata | None:
     try:
         req = Requirement(raw)
     except InvalidRequirement:
-        return None
+        return _invalid_dependency_metadata(
+            pyproject_path, f"invalid dependency requirement: {raw!r}"
+        )
     name = canonicalize_name(req.name)
     if name not in fleet_packages or name == own_name:
         return None  # not a fleet package, or a repo gating on its own name
@@ -697,7 +788,7 @@ def declared_fleet_constraints(
     *,
     fleet_packages: set[str] | None = None,
     workspace_yml_path: str | Path | None = None,
-) -> list[DeclaredConstraint]:
+) -> list[DeclaredConstraint | InvalidDependencyMetadata]:
     """This repo's own declared dependency constraints on OTHER fleet packages.
 
     ``fleet_packages`` scopes the check to intra-fleet names — never every
@@ -714,17 +805,18 @@ def declared_fleet_constraints(
     fleet_packages = _resolve_fleet_packages(repo, fleet_packages, workspace_yml_path)
 
     pyproject_path = repo / _PYPROJECT_NAME
-    if not pyproject_path.exists() or not fleet_packages:
+    if not pyproject_path.exists():
         return []
 
-    data = _load_pyproject_toml(pyproject_path)
-    if data is None:
+    validated = _read_dependency_requirements(pyproject_path)
+    if isinstance(validated, InvalidDependencyMetadata):
+        return [validated]
+    if not fleet_packages:
         return []
-
-    own_name = canonicalize_name(repo.name)
-    out: list[DeclaredConstraint] = []
+    own_name, requirements = validated
+    out: list[DeclaredConstraint | InvalidDependencyMetadata] = []
     seen: set[tuple[str, str]] = set()
-    for raw in _iter_pyproject_requirements(data):
+    for raw in requirements:
         constraint = _constraint_from_requirement(
             raw, fleet_packages, own_name, pyproject_path, seen
         )
@@ -789,6 +881,7 @@ CheckStatus = Literal[
     "partial_publish",
     "index_unreachable",
     "package_unknown",
+    "invalid_metadata",
 ]
 
 
@@ -1050,7 +1143,7 @@ def _unsatisfied_result(
 
 
 def check_constraint(
-    constraint: DeclaredConstraint,
+    constraint: DeclaredConstraint | InvalidDependencyMetadata,
     *,
     index_urls: Sequence[str],
     backend: IndexBackend | None = None,
@@ -1074,6 +1167,34 @@ def check_constraint(
     message states the package, the declared constraint, and what's actually
     available — never just "failed".
     """
+    if isinstance(constraint, InvalidDependencyMetadata):
+        return ConstraintCheck(
+            package="<invalid-metadata>",
+            raw_requirement="",
+            specifier="",
+            declared_by=constraint.declared_by,
+            status="invalid_metadata",
+            detail=constraint.detail,
+        )
+    return _check_declared_constraint(
+        constraint,
+        index_urls=index_urls,
+        backend=backend,
+        timeout=timeout,
+        retries=retries,
+        retry_delay_s=retry_delay_s,
+    )
+
+
+def _check_declared_constraint(
+    constraint: DeclaredConstraint,
+    *,
+    index_urls: Sequence[str],
+    backend: IndexBackend | None,
+    timeout: float,
+    retries: int,
+    retry_delay_s: float,
+) -> ConstraintCheck:
     backend = backend or PyPISimpleIndexBackend()
     specifier = (
         SpecifierSet(constraint.specifier) if constraint.specifier else SpecifierSet()
@@ -1082,6 +1203,16 @@ def check_constraint(
     options = _IndexFetchOptions(
         timeout=timeout, retries=retries, retry_delay_s=retry_delay_s
     )
+    return _scan_constraint_indexes(constraint, index_urls, backend, options, specifier)
+
+
+def _scan_constraint_indexes(
+    constraint: DeclaredConstraint,
+    index_urls: Sequence[str],
+    backend: IndexBackend,
+    options: _IndexFetchOptions,
+    specifier: SpecifierSet,
+) -> ConstraintCheck:
     state = _ConstraintCheckState()
     for index_url in index_urls:
         result = _check_index_for_constraint(
@@ -1090,6 +1221,12 @@ def check_constraint(
         if result is not None:
             return result
 
+    return _constraint_failure_result(constraint, state)
+
+
+def _constraint_failure_result(
+    constraint: DeclaredConstraint, state: _ConstraintCheckState
+) -> ConstraintCheck:
     if not state.saw_reachable_index:
         return _index_unreachable_result(constraint, state)
     if state.best_partial is not None:

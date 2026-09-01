@@ -9,6 +9,7 @@ from agent_utilities.security.persistence_privacy import sanitize_for_persistenc
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger("RepositoryManager")
+_MAX_MAINTENANCE_WAIT_MINUTES = 1440.0
 
 _ENDPOINT_PATTERN = re.compile(r"(?i)\b(?:https?|ssh)://[^\s]+|\bgit@[^\s:]+:[^\s]+")
 _SECRET_ASSIGNMENT_PATTERN = re.compile(
@@ -199,7 +200,12 @@ class MaintenancePhase(_StrictMaintenanceModel):
     projects: list[str] = Field(default_factory=list)
     bulk_bump: bool = False
     bulk_push: bool = False
-    wait_minutes: float = 0.0
+    wait_minutes: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=_MAX_MAINTENANCE_WAIT_MINUTES,
+        allow_inf_nan=False,
+    )
     updates: list[MaintenanceUpdate] = Field(default_factory=list)
     exclude: list[str] = Field(default_factory=list)
 

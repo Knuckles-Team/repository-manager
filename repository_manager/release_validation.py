@@ -5,10 +5,12 @@ from __future__ import annotations
 import re
 import tomllib
 from collections.abc import Callable
+from email.headerregistry import Address
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeGuard
 from urllib.parse import SplitResult, quote, unquote, urlsplit
 
+from packaging.licenses import InvalidLicenseExpression, canonicalize_license_expression
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
@@ -18,6 +20,10 @@ _PEP503_SEPARATORS = re.compile(r"[-_.]+")
 _PEP517_BACKEND = re.compile(
     r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
     r"(?::[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)?\Z"
+)
+_ENTRY_POINT_REFERENCE = re.compile(
+    r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*"
+    r"(?::[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)?\Z"
 )
 _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\Z")
 _PROJECT_KEYS = frozenset(
@@ -110,6 +116,10 @@ def _valid_file_or_text_table(value: object) -> bool:
 def _valid_readme(value: object) -> bool:
     if _is_string(value):
         return True
+    return _valid_readme_table(value)
+
+
+def _valid_readme_table(value: object) -> bool:
     if type(value) is not dict or not value:
         return False
     allowed = {"file", "text", "content-type"}
@@ -118,27 +128,47 @@ def _valid_readme(value: object) -> bool:
     return bool(
         keys <= allowed
         and len(sources) == 1
+        and "content-type" in keys
         and all(_is_string(item) for item in value.values())
     )
 
 
 def _valid_license(value: object) -> bool:
-    return _is_string(value) or _valid_file_or_text_table(value)
+    if _is_string(value):
+        return _valid_spdx_expression(value)
+    return _valid_file_or_text_table(value)
+
+
+def _valid_spdx_expression(value: str) -> bool:
+    try:
+        canonicalize_license_expression(value)
+    except InvalidLicenseExpression:
+        return False
+    return True
+
+
+def _valid_email(value: object) -> bool:
+    if not _is_string(value):
+        return False
+    try:
+        address = Address(addr_spec=value)
+    except (TypeError, ValueError):
+        return False
+    return bool(address.username and address.domain and str(address) == value)
 
 
 def _valid_people(value: object) -> bool:
-    if type(value) is not list:
+    return bool(type(value) is list and all(_valid_person(person) for person in value))
+
+
+def _valid_person(person: object) -> bool:
+    if type(person) is not dict or not person:
         return False
-    for person in value:
-        if (
-            type(person) is not dict
-            or not person
-            or not set(person) <= {"name", "email"}
-        ):
-            return False
-        if not all(_is_string(item) for item in person.values()):
-            return False
-    return True
+    if not set(person) <= {"name", "email"}:
+        return False
+    if not all(_is_string(item) for item in person.values()):
+        return False
+    return "email" not in person or _valid_email(person["email"])
 
 
 def _valid_string_map(value: object) -> bool:
@@ -152,8 +182,20 @@ def _valid_entry_points(value: object) -> bool:
     return bool(
         type(value) is dict
         and all(
-            _is_string(group) and _valid_string_map(entries)
+            _is_string(group) and _valid_entry_point_map(entries)
             for group, entries in value.items()
+        )
+    )
+
+
+def _valid_entry_point_map(value: object) -> bool:
+    return bool(
+        type(value) is dict
+        and all(
+            _is_string(name)
+            and _is_string(reference)
+            and _ENTRY_POINT_REFERENCE.fullmatch(reference)
+            for name, reference in value.items()
         )
     )
 
@@ -219,7 +261,7 @@ _FIELD_VALIDATORS: dict[str, Callable[[object], bool]] = {
     "dependencies": _valid_requirements,
     "description": _is_string,
     "entry-points": _valid_entry_points,
-    "gui-scripts": _valid_string_map,
+    "gui-scripts": _valid_entry_point_map,
     "keywords": _is_string_list,
     "license": _valid_license,
     "license-files": _is_string_list,
@@ -228,7 +270,7 @@ _FIELD_VALIDATORS: dict[str, Callable[[object], bool]] = {
     "optional-dependencies": _valid_optional_dependencies,
     "readme": _valid_readme,
     "requires-python": _valid_requires_python,
-    "scripts": _valid_string_map,
+    "scripts": _valid_entry_point_map,
     "urls": _valid_string_map,
     "version": _valid_version,
 }
@@ -281,8 +323,78 @@ def read_release_document(
         data = tomllib.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return None
-    return (
-        data if validate_release_document(data, expected_name=expected_name) else None
+    return _validated_release_data(data, manifest.parent, expected_name)
+
+
+def _validated_release_data(
+    data: dict[str, Any], root: Path, expected_name: str | None
+) -> dict[str, Any] | None:
+    if not validate_release_document(data, expected_name=expected_name):
+        return None
+    return data if _valid_declared_files(data["project"], root) else None
+
+
+def _valid_declared_files(project: dict[str, Any], root: Path) -> bool:
+    """Validate every metadata-declared local file against its project root."""
+    readme = project.get("readme")
+    if isinstance(readme, str) and not _safe_regular_file(root, readme):
+        return False
+    if isinstance(readme, dict) and "file" in readme:
+        if not _safe_regular_file(root, readme["file"]):
+            return False
+    license_value = project.get("license")
+    if isinstance(license_value, dict) and "file" in license_value:
+        if not _safe_regular_file(root, license_value["file"]):
+            return False
+    return all(
+        _safe_license_pattern(root, pattern)
+        for pattern in project.get("license-files", [])
+    )
+
+
+def _safe_regular_file(root: Path, value: object) -> bool:
+    """Require a concrete regular file with no traversal or symlink component."""
+    if not _safe_relative_path(value, allow_glob=False):
+        return False
+    candidate = root / str(value)
+    return _safe_file_candidate(root, candidate)
+
+
+def _safe_license_pattern(root: Path, value: object) -> bool:
+    """Require a relative license glob whose matches are all safe regular files."""
+    if not _safe_relative_path(value, allow_glob=True):
+        return False
+    try:
+        matches = list(root.glob(str(value)))
+    except (OSError, ValueError):
+        return False
+    return bool(matches) and all(_safe_file_candidate(root, path) for path in matches)
+
+
+def _safe_relative_path(value: object, *, allow_glob: bool) -> bool:
+    if not _is_string(value) or "\\" in value or "\x00" in value:
+        return False
+    if not allow_glob and any(character in value for character in "*?[]"):
+        return False
+    path = PurePosixPath(value)
+    return bool(not path.is_absolute() and path.parts and ".." not in path.parts)
+
+
+def _safe_file_candidate(root: Path, candidate: Path) -> bool:
+    if root.is_symlink():
+        return False
+    try:
+        relative = candidate.relative_to(root)
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root.resolve(strict=True))
+    except (OSError, ValueError):
+        return False
+    components = [
+        root.joinpath(*relative.parts[:index])
+        for index in range(1, len(relative.parts) + 1)
+    ]
+    return bool(
+        candidate.is_file() and not any(path.is_symlink() for path in components)
     )
 
 

@@ -1,11 +1,12 @@
 """Adversarial scope proofs for the Phase-5 PyPI agent release wave."""
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 import yaml  # type: ignore[import-untyped]
 
-from repository_manager.repository_manager import Git
+from repository_manager.repository_manager import Git, GitResult
 
 
 def _write_release_metadata(path: Path, **overrides: str) -> None:
@@ -30,6 +31,9 @@ def _scoped_manager(tmp_path: Path) -> Git:
     manager = Git(path=str(tmp_path))
     urls = {
         "pipeline": "https://example.invalid/pipelines.git",
+        "epistemic": "https://example.invalid/epistemic-graph.git",
+        "utilities": "https://example.invalid/agent-utilities.git",
+        "webui": "https://example.invalid/agent-webui.git",
         "agent": "https://example.invalid/agent-one.git",
         "service": "https://example.invalid/service-one.git",
         "image": "https://example.invalid/image-one.git",
@@ -37,6 +41,9 @@ def _scoped_manager(tmp_path: Path) -> Git:
     }
     paths = {
         "pipeline": tmp_path / "pipelines",
+        "epistemic": tmp_path / "epistemic-graph",
+        "utilities": tmp_path / "agent-utilities",
+        "webui": tmp_path / "agent-webui",
         "agent": tmp_path / "agent-packages" / "agents" / "agent-one",
         "service": tmp_path / "services" / "service-one",
         "image": tmp_path / "images" / "image-one",
@@ -47,6 +54,9 @@ def _scoped_manager(tmp_path: Path) -> Git:
     manager.project_map = {urls[key]: str(paths[key]) for key in urls}
     manager._project_categories = {
         urls["pipeline"]: (),
+        urls["epistemic"]: (),
+        urls["utilities"]: (),
+        urls["webui"]: (),
         urls["agent"]: ("agent-packages", "agents"),
         urls["service"]: ("services",),
         urls["image"]: ("images",),
@@ -72,6 +82,10 @@ def _five_phase_config() -> dict:
     }
 
 
+def _target_names(targets: list[tuple[str, str]] | None) -> list[str] | None:
+    return None if targets is None else [name for name, _path in targets]
+
+
 def test_bulk_bump_plan_contains_only_manifest_agent_pypi_targets(
     tmp_path: Path,
 ) -> None:
@@ -82,13 +96,13 @@ def test_bulk_bump_plan_contains_only_manifest_agent_pypi_targets(
     )
 
     assert total == 1
-    assert phases[0]["projects"] == ["agent-one"]
+    assert _target_names(phases[0]["targets"]) == ["agent-one"]
 
 
 def test_bulk_precommit_scope_cannot_absorb_infrastructure(tmp_path: Path) -> None:
     manager = _scoped_manager(tmp_path)
 
-    names = manager._pre_commit_project_names(_five_phase_config())
+    names = _target_names(manager._pre_commit_project_targets(_five_phase_config()))
 
     assert names == [
         "pipelines",
@@ -110,7 +124,7 @@ def test_auto_start_ignores_dirty_unassigned_infrastructure(
         lambda path: path.endswith(("service-one", "image-one", "plans")),
     )
 
-    assert manager._auto_start_phase(_five_phase_config()) is None
+    assert manager._auto_start_phase(_five_phase_config(), operation="bump") is None
 
 
 def test_manifest_loader_records_structural_agent_category(tmp_path: Path) -> None:
@@ -166,7 +180,7 @@ def test_bulk_filter_can_only_narrow_the_eligible_set(tmp_path: Path) -> None:
     )
 
     assert bump_total == push_total == 1
-    assert bump_phases[0]["projects"] == ["agent-one"]
+    assert _target_names(bump_phases[0]["targets"]) == ["agent-one"]
     assert push_phases[0]["projects_to_push"] == [
         ("agent-one", str(tmp_path / "agent-packages" / "agents" / "agent-one"))
     ]
@@ -191,8 +205,10 @@ def test_ineligible_filter_cannot_manufacture_bulk_target(tmp_path: Path) -> Non
 def test_filter_is_passed_through_to_precommit_candidates(tmp_path: Path) -> None:
     manager = _scoped_manager(tmp_path)
 
-    names = manager._pre_commit_project_names(
-        _five_phase_config(), {"agent-one", "service-one"}
+    names = _target_names(
+        manager._pre_commit_project_targets(
+            _five_phase_config(), {"agent-one", "service-one"}
+        )
     )
 
     assert names == ["agent-one"]
@@ -477,8 +493,8 @@ def test_phase_exclude_is_identical_across_all_release_planners(
 
     assert (bump, bump_total) == ([], 0)
     assert (push, push_total) == ([], 0)
-    assert manager._pre_commit_project_names(config, start_phase=5) == []
-    assert manager._auto_start_phase(config) is None
+    assert manager._pre_commit_project_targets(config, start_phase=5) == []
+    assert manager._auto_start_phase(config, operation="bump") is None
 
 
 def test_excluded_bulk_target_can_enter_a_later_phase_consistently(
@@ -505,15 +521,17 @@ def test_excluded_bulk_target_can_enter_a_later_phase_consistently(
         config=config, start_phase=5, project_filter=None
     )
 
-    assert [(phase["phase_num"], phase["projects"]) for phase in bump] == [
-        (6, ["agent-one"])
-    ]
+    assert [
+        (phase["phase_num"], _target_names(phase["targets"])) for phase in bump
+    ] == [(6, ["agent-one"])]
     assert [
         (phase["phase_num"], [name for name, _path in phase["projects_to_push"]])
         for phase in push
     ] == [(6, ["agent-one"])]
-    assert manager._pre_commit_project_names(config, start_phase=5) == ["agent-one"]
-    assert manager._auto_start_phase(config) == 6
+    assert _target_names(
+        manager._pre_commit_project_targets(config, start_phase=5)
+    ) == ["agent-one"]
+    assert manager._auto_start_phase(config, operation="bump") == 6
 
 
 def test_single_phase_builders_execute_exact_start_phase(tmp_path: Path) -> None:
@@ -538,8 +556,8 @@ def test_single_phase_builders_execute_exact_start_phase(tmp_path: Path) -> None
         project_filter=None,
         single_phase=True,
     )
-    precommit_names = manager._pre_commit_project_names(
-        config, start_phase=2, single_phase=True
+    precommit_names = _target_names(
+        manager._pre_commit_project_targets(config, start_phase=2, single_phase=True)
     )
 
     assert [phase["phase_num"] for phase in bump_phases] == [2]
@@ -568,9 +586,11 @@ def test_mixed_explicit_and_bulk_targets_have_identical_sorted_union(
     push, _ = manager._build_push_phase_list(
         config=config, start_phase=5, project_filter=None
     )
-    precommit = manager._pre_commit_project_names(config, start_phase=5)
+    precommit = _target_names(
+        manager._pre_commit_project_targets(config, start_phase=5)
+    )
 
-    assert bump[0]["projects"] == ["agent-one", "pipelines"]
+    assert _target_names(bump[0]["targets"]) == ["agent-one", "pipelines"]
     assert [name for name, _path in push[0]["projects_to_push"]] == [
         "agent-one",
         "pipelines",
@@ -598,7 +618,11 @@ def test_target_order_does_not_depend_on_manifest_insertion_order(
         config=config, start_phase=5, filter_set=None
     )
 
-    assert first[0]["projects"] == second[0]["projects"] == expected
+    assert (
+        _target_names(first[0]["targets"])
+        == _target_names(second[0]["targets"])
+        == expected
+    )
 
 
 def test_auto_start_uses_first_nonempty_effective_reentry_phase(
@@ -622,7 +646,7 @@ def test_auto_start_uses_first_nonempty_effective_reentry_phase(
         lambda path: path.endswith("agent-one"),
     )
 
-    assert manager._auto_start_phase(config) == 6
+    assert manager._auto_start_phase(config, operation="bump") == 6
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -671,6 +695,10 @@ def test_manifest_duplicate_repository_urls_fail_closed_order_independently(
         {"phases": [{"name": "one", "phase": True}]},
         {"phases": [{"name": "one", "phase": 1, "bulk_bump": "true"}]},
         {"phases": [{"name": "one", "phase": 1, "wait_minutes": False}]},
+        {"phases": [{"name": "one", "phase": 1, "wait_minutes": -0.1}]},
+        {"phases": [{"name": "one", "phase": 1, "wait_minutes": float("nan")}]},
+        {"phases": [{"name": "one", "phase": 1, "wait_minutes": float("inf")}]},
+        {"phases": [{"name": "one", "phase": 1, "wait_minutes": 1440.1}]},
         {"phases": [{"name": "one", "phase": 1, "project": None}]},
         {
             "phases": [
@@ -709,3 +737,120 @@ def test_barrier_metadata_uses_same_fail_closed_release_validator(
         ),
     )
     assert manager._phase_published_packages([("agent-one", str(agent_path))]) == {}
+
+
+def _collision_manager(tmp_path: Path) -> tuple[Git, list[tuple[str, str]]]:
+    names = [
+        "arr-mcp",
+        "container-manager-mcp",
+        "documentdb-mcp",
+        "jellyfin-mcp",
+        "kafka-mcp",
+        "mealie-mcp",
+        "searxng-mcp",
+        "vector-mcp",
+    ]
+    manager = Git(path=str(tmp_path))
+    expected: list[tuple[str, str]] = []
+    for name in names:
+        agent_path = tmp_path / "agent-packages" / "agents" / name
+        service_path = tmp_path / "services" / name
+        _write_release_metadata(agent_path)
+        _write_release_metadata(service_path)
+        agent_url = f"https://zzz.invalid/agents/{name}.git"
+        service_url = f"https://aaa.invalid/services/{name}.git"
+        manager.project_map[service_url] = str(service_path)
+        manager.project_map[agent_url] = str(agent_path)
+        manager._project_categories[service_url] = ("services",)
+        manager._project_categories[agent_url] = ("agent-packages", "agents")
+        expected.append((name, str(agent_path)))
+    return manager, expected
+
+
+def test_all_eight_agent_service_collisions_preserve_exact_paths_end_to_end(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager, expected = _collision_manager(tmp_path)
+    config = {
+        "phases": [
+            {
+                "name": "agents",
+                "phase": 5,
+                "bulk_bump": True,
+                "bulk_push": True,
+            }
+        ]
+    }
+
+    bump, bump_total = manager._build_bump_phase_list(
+        config=config, start_phase=5, filter_set=None
+    )
+    push, push_total = manager._build_push_phase_list(
+        config=config, start_phase=5, project_filter=None
+    )
+    precommit = manager._pre_commit_project_targets(config, start_phase=5)
+
+    assert bump_total == push_total == 8
+    assert bump[0]["targets"] == push[0]["projects_to_push"] == precommit == expected
+    assert not any("/services/" in path for _name, path in expected)
+
+    pending_paths: list[str] = []
+
+    def record_pending(path: str) -> bool:
+        pending_paths.append(path)
+        return True
+
+    monkeypatch.setattr(manager, "_repo_has_pending_work", record_pending)
+    assert manager._auto_start_phase(config, operation="bump") == 5
+    assert pending_paths == [expected[0][1]]
+
+    pre_commit_projects = MagicMock(return_value=[])
+    commit_projects = MagicMock(return_value=[])
+    monkeypatch.setattr(manager, "pre_commit_projects", pre_commit_projects)
+    monkeypatch.setattr(manager, "commit_projects", commit_projects)
+    manager._run_bump_pre_commit_stage(config, None, start_phase=5, single_phase=False)
+    pre_commit_projects.assert_called_once_with(
+        run=True,
+        autoupdate=True,
+        projects=[path for _name, path in expected],
+    )
+
+    bump_version = MagicMock(
+        return_value=GitResult(status="success", data="new_version=1.0.1")
+    )
+    monkeypatch.setattr(manager, "bump_version", bump_version)
+    monkeypatch.setattr(manager, "update_dependency", MagicMock(return_value=False))
+    manager.phased_bumpversion(
+        config=config, start_phase=5, auto_start=False, force=True
+    )
+    assert [call.kwargs["path"] for call in bump_version.call_args_list] == [
+        path for _name, path in expected
+    ]
+
+    push_project = MagicMock(return_value=GitResult(status="success", data="Pushed"))
+    monkeypatch.setattr(manager, "push_project", push_project)
+    manager.phased_push(config=config, start_phase=5, auto_start=False)
+    assert sorted(
+        call.kwargs["path"] for call in push_project.call_args_list
+    ) == sorted(path for _name, path in expected)
+
+
+def test_auto_start_is_operation_specific_and_single_phase_never_advances(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _scoped_manager(tmp_path)
+    config = {
+        "phases": [
+            {"name": "bump only", "phase": 5, "bulk_bump": True},
+            {"name": "push only", "phase": 6, "bulk_push": True},
+        ]
+    }
+    monkeypatch.setattr(manager, "_repo_has_pending_work", lambda _path: True)
+
+    assert manager._auto_start_phase(config, operation="bump") == 5
+    assert manager._auto_start_phase(config, operation="push") == 6
+
+    push_project = MagicMock(return_value=GitResult(status="success", data="Pushed"))
+    monkeypatch.setattr(manager, "push_project", push_project)
+    manager.phased_push(config=config, start_phase=5, single_phase=True)
+    push_project.assert_not_called()

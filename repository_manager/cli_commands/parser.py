@@ -708,7 +708,7 @@ Examples:
     has_errors = _dispatch_bump(runtime, git, args, has_errors)
     has_errors = _dispatch_maintain(runtime, git, args, has_errors)
     has_errors = _dispatch_push(runtime, git, args, has_errors)
-    return _cli_return_code(args.push, has_errors)
+    return _cli_return_code(has_errors)
 
 
 def _dispatch_immediate_verb(args: argparse.Namespace) -> None:
@@ -1153,34 +1153,56 @@ def _dispatch_bump(
 ) -> bool:
     if not (args.bump and not args.maintain):
         return has_errors
-    if has_errors and (args.push or args.bump):
+    if has_errors:
         runtime.logger.error("Skipping bump due to preceding validation errors.")
+        return True
+    config = _cli_maintenance_config(runtime, git, args)
+    if config is None:
+        return True
+    runtime.logger.info(f"Bumping version ({args.bump}) with phased selection...")
+    results = git.phased_bumpversion(
+        part=args.bump,
+        start_phase=args.phase,
+        dry_run=args.dry_run,
+        config=config,
+        single_phase=args.single_phase,
+        project_filter=args.project,
+        auto_start=args.auto_start,
+    )
+    if any(result.status == "error" for result in results):
         has_errors = True
-    else:
-        runtime.logger.info(f"Bumping version ({args.bump}) for all projects...")
-        project_dirs = list(git.project_map.values())
-        results = []
-        for d in project_dirs:
-            res = git.bump_version(
-                args.bump, allow_dirty=True, path=d, dry_run=args.dry_run
-            )
-            results.append(res)
-            if res.status == "error":
-                has_errors = True
-
-        summary = git.generate_markdown_summary("Bulk Version Bump", results)
-        runtime.logger.info(summary)
-        git._export_report(summary, "version_bump_report.md")
+    summary = git.generate_markdown_summary("Phased Version Bump", results)
+    runtime.logger.info(summary)
+    git._export_report(summary, "version_bump_report.md")
     return has_errors
 
 
 def _load_config_file(runtime: CliRuntime, config_path: str) -> dict[str, Any] | None:
     try:
         with open(config_path) as f:
-            return json.load(f)
+            data = json.load(f)
     except Exception as e:
         runtime.logger.error("Operation failed: error_type=%s", type(e).__name__)
         sys.exit(1)
+    return _require_config_mapping(runtime, data)
+
+
+def _require_config_mapping(runtime: CliRuntime, data: object) -> dict[str, Any] | None:
+    if type(data) is dict:
+        return data
+    runtime.logger.error("Operation failed: error_type=ValueError")
+    sys.exit(1)
+
+
+def _cli_maintenance_config(
+    runtime: CliRuntime, git: Git, args: argparse.Namespace
+) -> dict[str, Any] | None:
+    """Resolve every CLI maintenance verb through the core strict boundary."""
+    raw = _load_config_file(runtime, args.config) if args.config else None
+    resolved = git._resolve_maintenance_config(raw)
+    if resolved is None:
+        runtime.logger.error("Maintenance configuration is invalid or unavailable.")
+    return resolved
 
 
 def _dispatch_maintain(
@@ -1194,7 +1216,9 @@ def _dispatch_maintain(
         )
         has_errors = True
     else:
-        config = _load_config_file(runtime, args.config) if args.config else None
+        config = _cli_maintenance_config(runtime, git, args)
+        if config is None:
+            return True
 
         results = git.phased_bumpversion(
             part=args.bump if args.bump else "patch",
@@ -1229,16 +1253,9 @@ def _dispatch_push(
         )
         return True
     else:
-        config = None
-        if args.config:
-            try:
-                with open(args.config) as f:
-                    config = json.load(f)
-            except Exception as e:
-                runtime.logger.error(
-                    "Operation failed: error_type=%s", type(e).__name__
-                )
-                sys.exit(1)
+        config = _cli_maintenance_config(runtime, git, args)
+        if config is None:
+            return True
         push_results = git.phased_push(
             start_phase=args.phase,
             config=config,
@@ -1258,7 +1275,7 @@ def _push_results_have_errors(push_results: list[Any]) -> bool:
     return any(getattr(result, "status", None) == "error" for result in push_results)
 
 
-def _cli_return_code(push_requested: bool, has_errors: bool) -> int:
-    """Expose push failures to shell callers while preserving no-push success."""
+def _cli_return_code(has_errors: bool) -> int:
+    """Expose every requested operation failure to shell callers."""
 
-    return int(push_requested and has_errors)
+    return int(has_errors)

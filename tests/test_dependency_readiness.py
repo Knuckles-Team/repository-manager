@@ -11,6 +11,9 @@ separately, out of band, against the real PyPI index.
 from __future__ import annotations
 
 import json
+from typing import cast
+
+import pytest
 
 from repository_manager import dependency_readiness as dr
 from repository_manager.scan_models import HookResult, RepoScanResult
@@ -19,7 +22,9 @@ from repository_manager.scan_models import HookResult, RepoScanResult
 class _FakeBackend:
     """A scripted `IndexBackend`: package -> versions, or an exception to raise."""
 
-    def __init__(self, table: dict[str, list[str] | Exception], calls: list | None = None):
+    def __init__(
+        self, table: dict[str, list[str] | Exception], calls: list | None = None
+    ):
         self.table = table
         self.calls = calls if calls is not None else []
 
@@ -37,7 +42,9 @@ class _FakeBackend:
         )
 
 
-def _constraint(package="epistemic-graph", spec=">=2.23.2,<3.0.0", declared_by="pyproject.toml"):
+def _constraint(
+    package="epistemic-graph", spec=">=2.23.2,<3.0.0", declared_by="pyproject.toml"
+):
     return dr.DeclaredConstraint(
         package=package,
         raw_requirement=f"{package}{spec}",
@@ -53,7 +60,9 @@ def _constraint(package="epistemic-graph", spec=">=2.23.2,<3.0.0", declared_by="
 
 
 def test_check_constraint_satisfied():
-    backend = _FakeBackend({"epistemic-graph": ["2.22.0", "2.23.0", "2.23.2", "2.24.0"]})
+    backend = _FakeBackend(
+        {"epistemic-graph": ["2.22.0", "2.23.0", "2.23.2", "2.24.0"]}
+    )
     result = dr.check_constraint(
         _constraint(), index_urls=["https://pypi.org/simple"], backend=backend
     )
@@ -102,7 +111,10 @@ def test_check_constraint_retries_transient_unreachable_then_succeeds():
             if calls["n"] == 1:
                 raise dr.IndexUnreachableError("503 momentarily")
             return dr.AvailableVersions(
-                package=package, index_url=index_url, versions=["2.23.2"], latest="2.23.2"
+                package=package,
+                index_url=index_url,
+                versions=["2.23.2"],
+                latest="2.23.2",
             )
 
     result = dr.check_constraint(
@@ -122,7 +134,10 @@ def test_check_constraint_second_index_used_when_first_lacks_package():
             if index_url == "https://primary/simple":
                 raise dr.PackageUnknownError("not here")
             return dr.AvailableVersions(
-                package=package, index_url=index_url, versions=["2.23.2"], latest="2.23.2"
+                package=package,
+                index_url=index_url,
+                versions=["2.23.2"],
+                latest="2.23.2",
             )
 
     result = dr.check_constraint(
@@ -131,7 +146,10 @@ def test_check_constraint_second_index_used_when_first_lacks_package():
         backend=_SecondIndexHasIt({}),
     )
     assert result.status == "satisfied"
-    assert result.index_urls_checked == ["https://primary/simple", "https://secondary/simple"]
+    assert result.index_urls_checked == [
+        "https://primary/simple",
+        "https://secondary/simple",
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -152,8 +170,11 @@ dependencies = [
 extra = ["skill-graphs>=1.1.0"]
 """
     )
-    constraints = dr.declared_fleet_constraints(
-        tmp_path, fleet_packages={"epistemic-graph", "skill-graphs"}
+    constraints = cast(
+        list[dr.DeclaredConstraint],
+        dr.declared_fleet_constraints(
+            tmp_path, fleet_packages={"epistemic-graph", "skill-graphs"}
+        ),
     )
     names = {c.package for c in constraints}
     assert names == {"epistemic-graph", "skill-graphs"}
@@ -173,10 +194,52 @@ name = "epistemic-graph"
 dependencies = ["epistemic-graph-stubs>=1.0.0"]
 """
     )
-    constraints = dr.declared_fleet_constraints(
-        tmp_path, fleet_packages={"epistemic-graph", "epistemic-graph-stubs"}
+    constraints = cast(
+        list[dr.DeclaredConstraint],
+        dr.declared_fleet_constraints(
+            tmp_path,
+            fleet_packages={"epistemic-graph", "epistemic-graph-stubs"},
+        ),
     )
     assert [c.package for c in constraints] == ["epistemic-graph-stubs"]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"\xff\xfe",
+        b"[project\nname = 'broken'",
+        b"[project]\nname = 7\ndependencies = []\n",
+        b"[project]\nname = 'broken'\ndependencies = 'requests'\n",
+        (
+            b"[project]\nname = 'broken'\ndependencies = []\n"
+            b"[project.optional-dependencies]\nextra = 'requests'\n"
+        ),
+        b"[project]\nname = 'broken'\ndependencies = ['not a requirement @@@']\n",
+    ],
+)
+def test_invalid_dependency_metadata_returns_typed_blocking_state(tmp_path, content):
+    (tmp_path / "pyproject.toml").write_bytes(content)
+
+    constraints = dr.declared_fleet_constraints(
+        tmp_path, fleet_packages={"epistemic-graph"}
+    )
+
+    assert len(constraints) == 1
+    invalid = constraints[0]
+    assert isinstance(invalid, dr.InvalidDependencyMetadata)
+    result = dr.check_constraint(invalid, index_urls=[])
+    assert result.status == "invalid_metadata"
+    assert result.satisfied is False
+
+
+def test_invalid_dependency_metadata_blocks_even_with_empty_fleet_scope(tmp_path):
+    (tmp_path / "pyproject.toml").write_bytes(b"\xff")
+
+    constraints = dr.declared_fleet_constraints(tmp_path, fleet_packages=set())
+
+    assert len(constraints) == 1
+    assert isinstance(constraints[0], dr.InvalidDependencyMetadata)
 
 
 def test_fleet_package_names_excludes_infra_subdirectories(tmp_path):
@@ -319,9 +382,13 @@ dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
     )
     (tmp_path / ".git").mkdir()
     backend = _FakeBackend({"epistemic-graph": ["2.23.0"]})
-    monkeypatch.setenv(dr.OVERRIDE_ENV_VAR, "shipping an urgent fix, eg 2.23.2 not yet cut")
+    monkeypatch.setenv(
+        dr.OVERRIDE_ENV_VAR, "shipping an urgent fix, eg 2.23.2 not yet cut"
+    )
 
-    report = dr.check_tree(tmp_path, fleet_packages={"epistemic-graph"}, backend=backend)
+    report = dr.check_tree(
+        tmp_path, fleet_packages={"epistemic-graph"}, backend=backend
+    )
 
     assert report.ok is True  # the override lets the push proceed
     assert report.overridden is True
@@ -348,7 +415,9 @@ dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
     backend = _FakeBackend({"epistemic-graph": ["2.23.0"]})
-    report = dr.check_tree(tmp_path, fleet_packages={"epistemic-graph"}, backend=backend)
+    report = dr.check_tree(
+        tmp_path, fleet_packages={"epistemic-graph"}, backend=backend
+    )
     assert report.ok is False
     assert report.overridden is False
 
@@ -448,7 +517,9 @@ def test_await_gate_readiness_aborts_when_deadline_passes_unsatisfied(monkeypatc
     assert clock.t >= 2 * 60  # genuinely waited out the full ceiling before giving up
 
 
-def test_await_gate_readiness_override_bypasses_abort_loudly(tmp_path, monkeypatch, capsys):
+def test_await_gate_readiness_override_bypasses_abort_loudly(
+    tmp_path, monkeypatch, capsys
+):
     clock = _Clock()
     monkeypatch.setattr(dr, "hook_declared", lambda repo_path: True)
     monkeypatch.setenv(dr.OVERRIDE_ENV_VAR, "operator accepted the risk")
@@ -474,7 +545,9 @@ def test_await_gate_readiness_override_bypasses_abort_loudly(tmp_path, monkeypat
 
 def test_await_gate_readiness_no_targets_returns_immediately():
     clock = _Clock()
-    outcome = dr.await_gate_readiness([], wait_minutes=30, sleep=clock.sleep, now=clock.now)
+    outcome = dr.await_gate_readiness(
+        [], wait_minutes=30, sleep=clock.sleep, now=clock.now
+    )
     assert outcome.ok is True
     assert outcome.waited_s == 0.0
     assert clock.slept == []  # never even ran the gate once
@@ -556,7 +629,9 @@ default = true
     assert urls[0] == "https://gitlab.example.internal/api/v4/pypi/simple"
 
 
-def test_resolve_index_urls_falls_back_to_pypi_when_nothing_configured(tmp_path, monkeypatch):
+def test_resolve_index_urls_falls_back_to_pypi_when_nothing_configured(
+    tmp_path, monkeypatch
+):
     monkeypatch.delenv("UV_INDEX_URL", raising=False)
     monkeypatch.delenv("PIP_INDEX_URL", raising=False)
     urls = dr.resolve_index_urls(tmp_path)
@@ -768,7 +843,9 @@ def test_cross_check_targets_ignores_repos_not_naming_the_package(tmp_path):
     _write_pyproject(unrelated, name="unrelated-repo", deps=["requests>=2.0"])
 
     missing = dr.cross_check_targets(
-        [], published_packages={"epistemic-graph"}, candidate_repos=[("unrelated-repo", str(unrelated))]
+        [],
+        published_packages={"epistemic-graph"},
+        candidate_repos=[("unrelated-repo", str(unrelated))],
     )
     assert missing == []
 
