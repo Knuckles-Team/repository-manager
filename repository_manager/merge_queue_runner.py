@@ -347,22 +347,32 @@ def declared_repositories(
     return _validated_repositories(identifiers, root=root, manifest_path=manifest_path)
 
 
-def _git_common_directory(repository: DeclaredRepository) -> Path:
+def _git_common_directory_for_path(path: Path, *, label: str) -> Path:
+    """Resolve Git's common directory for a registered worktree path."""
+
     raw = _git_output(
-        ["-C", str(repository.path), "rev-parse", "--git-common-dir"],
-        cwd=repository.path,
-        label=f"repository {repository.identifier!r}",
+        ["-C", str(path), "rev-parse", "--git-common-dir"],
+        cwd=path,
+        label=label,
     )
     common = Path(raw)
     if not common.is_absolute():
-        common = (repository.path / common).resolve()
+        common = (path / common).resolve()
     else:
         common = common.resolve()
     if not common.is_dir():
         raise MergeQueueRunnerError(
-            f"repository {repository.identifier!r} has no readable git common directory: {common}"
+            f"{label} has no readable git common directory: {common}"
         )
     return common
+
+
+def _git_common_directory(repository: DeclaredRepository) -> Path:
+    """Resolve the declared repository's Git common directory."""
+
+    return _git_common_directory_for_path(
+        repository.path, label=f"repository {repository.identifier!r}"
+    )
 
 
 def _fragment_records(path: Path) -> list[dict[str, Any]]:
@@ -467,6 +477,38 @@ def _registered_worktrees(repository: DeclaredRepository) -> frozenset[Path]:
     return frozenset(paths)
 
 
+def _validate_worktree_git_identity(
+    repository: DeclaredRepository,
+    record: QueueRecord,
+    target: Path,
+    normalized: Path,
+) -> None:
+    """Require a registered lane to belong to the declared Git repository."""
+
+    top_level = Path(
+        _git_output(
+            ["-C", str(target), "rev-parse", "--show-toplevel"],
+            cwd=repository.path,
+            label=f"queue record {record.candidate_id!r} worktree",
+        )
+    ).resolve()
+    if top_level != normalized:
+        raise MergeQueueRunnerError(
+            f"queue record {record.candidate_id!r} in {record.source} points to "
+            f"worktree {normalized} from {top_level}, not its registered root"
+        )
+    repository_common = _git_common_directory(repository)
+    worktree_common = _git_common_directory_for_path(
+        target, label=f"queue record {record.candidate_id!r} worktree"
+    )
+    if worktree_common != repository_common:
+        raise MergeQueueRunnerError(
+            f"queue record {record.candidate_id!r} in {record.source} points to "
+            f"Git common directory {worktree_common}, not the declared repository "
+            f"{repository_common}"
+        )
+
+
 def _validate_queued_worktree(
     repository: DeclaredRepository, record: QueueRecord
 ) -> None:
@@ -500,18 +542,7 @@ def _validate_queued_worktree(
             f"queue record {record.candidate_id!r} in {record.source} records "
             f"unregistered worktree {normalized}; refusing stale lane"
         )
-    top_level = Path(
-        _git_output(
-            ["-C", str(target), "rev-parse", "--show-toplevel"],
-            cwd=repository.path,
-            label=f"queue record {record.candidate_id!r} worktree",
-        )
-    ).resolve()
-    if top_level != repository.path.resolve():
-        raise MergeQueueRunnerError(
-            f"queue record {record.candidate_id!r} in {record.source} points to "
-            f"worktree {normalized} from {top_level}, not {repository.path}"
-        )
+    _validate_worktree_git_identity(repository, record, target, normalized)
 
 
 def queued_repositories(
