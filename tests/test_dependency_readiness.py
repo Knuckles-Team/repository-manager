@@ -291,6 +291,99 @@ maintenance:
         assert "agent-utilities" in names
 
 
+@pytest.mark.parametrize(
+    "manifest_body",
+    [
+        "subdirectories: invalid\n",
+        "maintenance:\n  phases:\n    - null\n",
+        "maintenance:\n  phases:\n    - projects: agent-utilities\n",
+        (
+            "subdirectories:\n"
+            "  agent-packages:\n"
+            "    repositories:\n"
+            "      - url: https://example.invalid/org/../epistemic-graph.git\n"
+        ),
+        (
+            "subdirectories:\n"
+            "  agent-packages:\n"
+            "    repositories:\n"
+            "      - url: https://example.invalid/org/EPİSTEMIC-GRAPH.git\n"
+        ),
+        (
+            "subdirectories:\n"
+            "  agent-packages:\n"
+            "    repositories:\n"
+            "      - url: ' https://example.invalid/org/epistemic-graph.git'\n"
+        ),
+        "maintenance:\n  phases:\n    - projects: [org/agent-utilities]\n",
+    ],
+)
+def test_malformed_manifest_is_typed_blocking_state(
+    tmp_path, manifest_body: str
+) -> None:
+    manifest = tmp_path / "workspace.yml"
+    manifest.write_text(manifest_body)
+
+    assert dr.fleet_package_names(manifest) == set()
+    constraints = dr.declared_fleet_constraints(
+        tmp_path,
+        workspace_yml_path=manifest,
+    )
+
+    assert len(constraints) == 1
+    invalid = constraints[0]
+    assert isinstance(invalid, dr.InvalidDependencyMetadata)
+    assert invalid.declared_by == str(manifest)
+    assert "workspace manifest is malformed" in invalid.detail
+    assert dr.check_constraint(invalid, index_urls=[]).status == "invalid_metadata"
+
+
+def test_external_and_broken_pyproject_symlinks_are_typed_blockers(tmp_path) -> None:
+    external = tmp_path / "external-pyproject.toml"
+    external.write_text("[project]\nname='repo'\ndependencies=[]\n")
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.symlink_to(external)
+
+    constraints = dr.declared_fleet_constraints(tmp_path, fleet_packages=set())
+    assert len(constraints) == 1
+    assert isinstance(constraints[0], dr.InvalidDependencyMetadata)
+    assert "must not be a symlink" in constraints[0].detail
+
+    real_repo = tmp_path / "real-repo"
+    real_repo.mkdir()
+    (real_repo / "pyproject.toml").write_text(
+        "[project]\nname='repo'\ndependencies=[]\n"
+    )
+    linked_repo = tmp_path / "repo-link"
+    linked_repo.symlink_to(real_repo, target_is_directory=True)
+    constraints = dr.declared_fleet_constraints(linked_repo, fleet_packages=set())
+    assert len(constraints) == 1
+    assert isinstance(constraints[0], dr.InvalidDependencyMetadata)
+    assert "symlink component" in constraints[0].detail
+
+    pyproject.unlink()
+    pyproject.symlink_to(tmp_path / "missing-pyproject.toml")
+    constraints = dr.declared_fleet_constraints(tmp_path, fleet_packages=set())
+    assert len(constraints) == 1
+    assert isinstance(constraints[0], dr.InvalidDependencyMetadata)
+    assert "must not be a symlink" in constraints[0].detail
+
+
+def test_broken_manifest_symlink_is_typed_blocker(tmp_path) -> None:
+    manifest = tmp_path / "workspace.yml"
+    manifest.symlink_to(tmp_path / "missing-workspace.yml")
+
+    assert dr.fleet_package_names(manifest) == set()
+    constraints = dr.declared_fleet_constraints(
+        tmp_path,
+        workspace_yml_path=manifest,
+    )
+
+    assert len(constraints) == 1
+    assert isinstance(constraints[0], dr.InvalidDependencyMetadata)
+    assert "manifest must not be a symlink" in constraints[0].detail
+
+
 # --------------------------------------------------------------------------- #
 # check_tree -- Layer 1, the pre-push hook entrypoint
 # --------------------------------------------------------------------------- #
@@ -600,6 +693,45 @@ def test_await_gate_readiness_backs_off_exponentially(monkeypatch):
     assert clock.slept[1] == 60
     assert clock.slept[2] == 120
     assert clock.slept[3] == 120  # capped, not 240
+
+
+@pytest.mark.parametrize(
+    ("wait_minutes", "poll_interval_s", "max_interval_s", "message"),
+    [
+        (float("nan"), 1.0, 1.0, "wait_minutes must be finite"),
+        (float("inf"), 1.0, 1.0, "wait_minutes must be finite"),
+        (1440.1, 1.0, 1.0, "wait_minutes must be <= 1440"),
+        (1e308, 1.0, 1.0, "wait_minutes must be <= 1440"),
+        (-1.0, 1.0, 1.0, "wait_minutes must be non-negative"),
+        (1.0, 0.0, 1.0, "poll_interval_s must be strictly positive"),
+        (1.0, float("nan"), 1.0, "poll_interval_s must be finite"),
+        (1.0, float("inf"), 1.0, "poll_interval_s must be finite"),
+        (1.0, 1.0, 0.0, "max_interval_s must be strictly positive"),
+        (1.0, 1.0, float("inf"), "max_interval_s must be finite"),
+    ],
+)
+def test_await_gate_readiness_rejects_unbounded_timing_inputs(
+    wait_minutes, poll_interval_s, max_interval_s, message
+):
+    calls = {"gate": 0, "sleep": 0}
+
+    def run_gate(_path):
+        calls["gate"] += 1
+        return _gate_result(success=False)
+
+    def sleep(_seconds):
+        calls["sleep"] += 1
+
+    with pytest.raises(ValueError, match=message):
+        dr.await_gate_readiness(
+            [("repo", "/fake/repo")],
+            wait_minutes=wait_minutes,
+            poll_interval_s=poll_interval_s,
+            max_interval_s=max_interval_s,
+            run_gate=run_gate,
+            sleep=sleep,
+        )
+    assert calls == {"gate": 0, "sleep": 0}
 
 
 # --------------------------------------------------------------------------- #

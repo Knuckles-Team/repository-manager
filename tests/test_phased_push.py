@@ -472,7 +472,12 @@ def test_phased_push_honors_declarative_exclude_pattern(mock_repo_manager):
 
 
 def test_push_projects(mock_repo_manager):
-    results = mock_repo_manager.push_projects(["/fake/path/repo1", "/fake/path/repo2"])
+    results = mock_repo_manager.push_projects(
+        [
+            str(Path(mock_repo_manager.path) / "repo1"),
+            str(Path(mock_repo_manager.path) / "repo2"),
+        ]
+    )
 
     assert len(results) == 2
     # 2 status checks + 2 pushes = 4 calls

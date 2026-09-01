@@ -305,6 +305,40 @@ def test_bulk_target_rejects_workspace_escape(tmp_path: Path) -> None:
     assert manager._bulk_release_targets(set()) == []
 
 
+def test_bulk_target_rejects_lexical_parent_before_normalization(
+    tmp_path: Path,
+) -> None:
+    manager = _scoped_manager(tmp_path)
+    url = "https://example.invalid/agent-one.git"
+    aliases = tmp_path / "agent-packages" / "agents" / "aliases"
+    aliases.mkdir(parents=True)
+    manager.project_map[url] = str(aliases / ".." / "agent-one")
+    manager._project_categories[url] = ("agent-packages", "agents")
+
+    assert manager._bulk_release_targets(set()) == []
+    with pytest.raises(ValueError, match="lexical parent"):
+        manager._pre_commit_target_dirs([("agent-one", manager.project_map[url])])
+
+
+def test_symlink_parent_traversal_cannot_widen_bulk_scope(tmp_path: Path) -> None:
+    manager = _scoped_manager(tmp_path)
+    category_root = tmp_path / "agent-packages" / "agents"
+    external = tmp_path / "external" / "nested"
+    _write_release_metadata(external / "arr-mcp")
+    _write_release_metadata(category_root / "arr-mcp")
+    link = category_root / "link"
+    link.symlink_to(external, target_is_directory=True)
+    url = "https://example.invalid/arr-mcp.git"
+    manager.project_map[url] = str(link / ".." / "arr-mcp")
+    manager._project_categories[url] = ("agent-packages", "agents")
+
+    assert [name for name, _path in manager._bulk_release_targets(set())] == [
+        "agent-one"
+    ]
+    with pytest.raises(ValueError, match="lexical parent"):
+        manager._pre_commit_target_dirs([("arr-mcp", manager.project_map[url])])
+
+
 def test_bulk_target_rejects_symlinked_project_or_parent(tmp_path: Path) -> None:
     manager = _scoped_manager(tmp_path)
     url = "https://example.invalid/agent-one.git"
@@ -337,6 +371,33 @@ def test_bulk_target_rejects_symlinked_project_or_parent(tmp_path: Path) -> None
         linked_url: ("agent-packages", "agents"),
     }
     assert manager._bulk_release_targets(set()) == []
+
+
+def test_mutation_entrypoints_refuse_external_symlink_targets(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _scoped_manager(tmp_path)
+    external = tmp_path / "external"
+    _write_release_metadata(external)
+    linked = tmp_path / "linked"
+    linked.symlink_to(external, target_is_directory=True)
+    git_action = MagicMock()
+    monkeypatch.setattr(manager, "git_action", git_action)
+
+    for operation in (
+        lambda: manager.bump_version("patch", path=str(linked)),
+        lambda: manager.push_project(path=str(linked)),
+        lambda: manager.pre_commit(path=str(linked)),
+        lambda: manager.commit_project("test", path=str(linked)),
+        lambda: manager.add_project(path=str(linked)),
+        lambda: manager.commit_code_project("test", path=str(linked)),
+    ):
+        result = operation()
+        assert result.status == "error"
+        assert result.error is not None
+        assert "symlink component" in result.error.message
+
+    git_action.assert_not_called()
 
 
 def test_malformed_url_basename_fails_closed(tmp_path: Path) -> None:

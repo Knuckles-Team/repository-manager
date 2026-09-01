@@ -107,7 +107,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 import sys
 import time
 import tomllib
@@ -134,6 +136,7 @@ from packaging.version import InvalidVersion, Version
 # not a second optional-import guard here (it has no hard external deps of
 # its own; ITS optional forge clients are guarded inside it).
 from repository_manager import forge_status
+from repository_manager.release_validation import release_repository_name
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +173,7 @@ __all__ = [
 DEFAULT_INDEX_URL = "https://pypi.org/simple"
 
 _SIMPLE_JSON_ACCEPT = "application/vnd.pypi.simple.v1+json"
+_MAX_GATE_WAIT_MINUTES = 1440.0
 
 #: The one explicit, loud, auditable escape hatch (never a silent `--no-verify`
 #: substitute). Value is the human-readable reason and must be non-empty.
@@ -559,33 +563,238 @@ def resolve_index_urls(repo_path: str | Path) -> list[str]:
 NON_PACKAGE_SUBDIRECTORY_KEYS = frozenset({"images", "services"})
 
 
-def _repo_name_from_url(url: str) -> str | None:
-    name = url.rstrip("/").split("/")[-1]
-    if name.endswith(".git"):
-        name = name[: -len(".git")]
-    return name or None
+@dataclass(frozen=True)
+class InvalidDependencyMetadata:
+    """Typed blocking state for unreadable or malformed dependency metadata."""
+
+    declared_by: str
+    detail: str
 
 
-def _collect_manifest_repo_names(node: dict[str, Any], names: set[str]) -> None:
-    for repo in node.get("repositories", []) or []:
-        url = repo.get("url") if isinstance(repo, dict) else None
-        if not url:
+_MANIFEST_ENV_ORIGIN = re.compile(
+    r"^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)(?P<path>/.*)$"
+)
+_MISSING = object()
+
+
+def _path_has_symlink_component(path: Path) -> bool:
+    """Detect leaf, ancestor, and broken symlink components without resolving."""
+    return any(item.is_symlink() for item in (path, *path.parents))
+
+
+def _invalid_manifest(manifest: Path, detail: str) -> InvalidDependencyMetadata:
+    return InvalidDependencyMetadata(
+        declared_by=str(manifest),
+        detail=f"workspace manifest is malformed: {detail}",
+    )
+
+
+def _manifest_repository_name(
+    value: object, manifest: Path
+) -> str | InvalidDependencyMetadata:
+    """Derive one fleet name through the strict canonical URL validator.
+
+    The packaged manifest intentionally permits an unresolved ``$ORIGIN``
+    prefix for hook environments. Only that exact, path-preserving form is
+    substituted with a neutral authority; every other URL is validated as-is.
+    """
+    if type(value) is not str or not value or value != value.strip():
+        return _invalid_manifest(manifest, "repository url must be a non-empty string")
+    raw = value
+    try:
+        return release_repository_name(raw)
+    except ValueError as exc:
+        match = _MANIFEST_ENV_ORIGIN.fullmatch(raw)
+        if match is None:
+            return _invalid_manifest(
+                manifest, f"repository url is invalid: {type(exc).__name__}"
+            )
+        try:
+            return release_repository_name(
+                f"https://manifest.invalid{match.group('path')}"
+            )
+        except ValueError as substituted_exc:
+            return _invalid_manifest(
+                manifest,
+                f"repository url is invalid: {type(substituted_exc).__name__}",
+            )
+
+
+def _collect_manifest_repo_names(
+    node: dict[str, Any], names: set[str], manifest: Path
+) -> InvalidDependencyMetadata | None:
+    repositories = node.get("repositories", _MISSING)
+    if repositories is _MISSING:
+        repositories = []
+    if type(repositories) is not list:
+        return _invalid_manifest(manifest, "repositories must be a list")
+    for repo in repositories:
+        if type(repo) is not dict:
+            return _invalid_manifest(manifest, "repository entries must be tables")
+        name = _manifest_repository_name(repo.get("url"), manifest)
+        if isinstance(name, InvalidDependencyMetadata):
+            return name
+        names.add(name)
+    return None
+
+
+def _walk_manifest_repo_names_strict(
+    node: Any,
+    names: set[str],
+    *,
+    manifest: Path,
+    skip_keys: frozenset[str] = frozenset(),
+) -> InvalidDependencyMetadata | None:
+    if type(node) is not dict:
+        return _invalid_manifest(manifest, "subdirectories entries must be tables")
+    collected = _collect_manifest_repo_names(node, names, manifest)
+    if collected is not None:
+        return collected
+    subdirectories = node.get("subdirectories", _MISSING)
+    if subdirectories is _MISSING:
+        subdirectories = {}
+    if type(subdirectories) is not dict:
+        return _invalid_manifest(manifest, "subdirectories must be a table")
+    for key, sub in subdirectories.items():
+        if type(key) is not str:
+            return _invalid_manifest(manifest, "subdirectory names must be strings")
+        if key in skip_keys:
             continue
-        name = _repo_name_from_url(url)
-        if name:
-            names.add(canonicalize_name(name))
+        walked = _walk_manifest_repo_names_strict(
+            sub,
+            names,
+            manifest=manifest,
+            skip_keys=skip_keys,
+        )
+        if walked is not None:
+            return walked
+    return None
 
 
 def _walk_manifest_repo_names(
-    node: Any, names: set[str], *, skip_keys: frozenset[str] = frozenset()
-) -> None:
-    if not isinstance(node, dict):
-        return
-    _collect_manifest_repo_names(node, names)
-    for key, sub in (node.get("subdirectories") or {}).items():
-        if key in skip_keys:
-            continue
-        _walk_manifest_repo_names(sub, names, skip_keys=skip_keys)
+    node: Any,
+    names: set[str],
+    *,
+    manifest: Path,
+    skip_keys: frozenset[str] = frozenset(),
+) -> InvalidDependencyMetadata | None:
+    """Walk the manifest through the strict shape-validating implementation."""
+    return _walk_manifest_repo_names_strict(
+        node,
+        names,
+        manifest=manifest,
+        skip_keys=skip_keys,
+    )
+
+
+def _manifest_project_name(
+    value: object, manifest: Path
+) -> str | InvalidDependencyMetadata:
+    """Validate a maintenance project name with release identity rules."""
+    if type(value) is not str or not value or value != value.strip():
+        return _invalid_manifest(
+            manifest, "maintenance project names must be non-empty strings"
+        )
+    raw = value
+    try:
+        name = release_repository_name(f"https://manifest.invalid/{raw}.git")
+        if name != raw:
+            raise ValueError("maintenance project name is not a basename")
+        return name
+    except ValueError as exc:
+        return _invalid_manifest(
+            manifest,
+            "maintenance project name is not a normalized release identity: "
+            f"{type(exc).__name__}",
+        )
+
+
+def _manifest_phase_projects(
+    phase: dict[str, Any], manifest: Path
+) -> list[str] | InvalidDependencyMetadata:
+    projects = phase.get("projects", _MISSING)
+    if projects is _MISSING:
+        return []
+    if type(projects) is not list:
+        return _invalid_manifest(manifest, "maintenance phase projects must be a list")
+    names: list[str] = []
+    for project in projects:
+        name = _manifest_project_name(project, manifest)
+        if isinstance(name, InvalidDependencyMetadata):
+            return name
+        names.append(name)
+    return names
+
+
+def _manifest_phase_names(
+    phase: object, manifest: Path
+) -> list[str] | InvalidDependencyMetadata:
+    if type(phase) is not dict:
+        return _invalid_manifest(manifest, "maintenance phases must be tables")
+    names = _manifest_phase_projects(phase, manifest)
+    if isinstance(names, InvalidDependencyMetadata):
+        return names
+    project = phase.get("project", _MISSING)
+    if project is not _MISSING:
+        name = _manifest_project_name(project, manifest)
+        if isinstance(name, InvalidDependencyMetadata):
+            return name
+        names.append(name)
+    return names
+
+
+def _collect_manifest_phase_names(
+    data: dict[str, Any], names: set[str], manifest: Path
+) -> InvalidDependencyMetadata | None:
+    maintenance = data.get("maintenance", _MISSING)
+    if maintenance is _MISSING:
+        return None
+    if type(maintenance) is not dict:
+        return _invalid_manifest(manifest, "maintenance must be a table")
+    phases = maintenance.get("phases", _MISSING)
+    if phases is _MISSING:
+        return None
+    if type(phases) is not list:
+        return _invalid_manifest(manifest, "maintenance.phases must be a list")
+    for phase in phases:
+        phase_names = _manifest_phase_names(phase, manifest)
+        if isinstance(phase_names, InvalidDependencyMetadata):
+            return phase_names
+        names.update(phase_names)
+    return None
+
+
+def _load_fleet_package_names(
+    workspace_yml_path: str | Path,
+) -> set[str] | InvalidDependencyMetadata:
+    path = Path(workspace_yml_path)
+    if _path_has_symlink_component(path):
+        return _invalid_manifest(
+            path, "manifest must not be a symlink or contain symlink components"
+        )
+    if not path.exists():
+        return set()
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        return _invalid_manifest(path, f"cannot read YAML: {type(exc).__name__}")
+    data = {} if loaded is None else loaded
+    if type(data) is not dict:
+        return _invalid_manifest(path, "top-level document must be a table")
+
+    names: set[str] = set()
+    walked = _walk_manifest_repo_names(
+        data,
+        names,
+        manifest=path,
+        skip_keys=NON_PACKAGE_SUBDIRECTORY_KEYS,
+    )
+    if walked is not None:
+        return walked
+    phases = _collect_manifest_phase_names(data, names, path)
+    if phases is not None:
+        return phases
+    return names
 
 
 def fleet_package_names(workspace_yml_path: str | Path) -> set[str]:
@@ -603,22 +812,11 @@ def fleet_package_names(workspace_yml_path: str | Path) -> set[str]:
     walking ``subdirectories`` so an infra/deploy repo never collides with an
     unrelated third-party PyPI package of the same name.
     """
-    path = Path(workspace_yml_path)
-    if not path.exists():
+    loaded = _load_fleet_package_names(workspace_yml_path)
+    if isinstance(loaded, InvalidDependencyMetadata):
+        logger.warning("Ignoring malformed fleet manifest: %s", loaded.detail)
         return set()
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError:
-        return set()
-
-    names: set[str] = set()
-    _walk_manifest_repo_names(data, names, skip_keys=NON_PACKAGE_SUBDIRECTORY_KEYS)
-    for phase in ((data.get("maintenance") or {}).get("phases")) or []:
-        for proj in phase.get("projects", []) or []:
-            names.add(canonicalize_name(proj))
-        if phase.get("project"):
-            names.add(canonicalize_name(phase["project"]))
-    return names
+    return loaded
 
 
 @dataclass
@@ -632,17 +830,9 @@ class DeclaredConstraint:
     declared_by: str  # path to the pyproject.toml that declared it
 
 
-@dataclass(frozen=True)
-class InvalidDependencyMetadata:
-    """Typed blocking state for unreadable or malformed dependency metadata."""
-
-    declared_by: str
-    detail: str
-
-
 def _resolve_fleet_packages(
     repo: Path, fleet_packages: set[str] | None, workspace_yml_path: str | Path | None
-) -> set[str]:
+) -> set[str] | InvalidDependencyMetadata:
     if fleet_packages is not None:
         return fleet_packages
     manifest = (
@@ -650,19 +840,41 @@ def _resolve_fleet_packages(
         if workspace_yml_path is not None
         else _find_workspace_manifest(repo)
     )
-    return fleet_package_names(manifest) if manifest else set()
+    return _load_fleet_package_names(manifest) if manifest else set()
+
+
+def _dependency_path_present(path: Path) -> bool:
+    """Treat broken symlink components as present so they become blockers."""
+    return path.exists() or _path_has_symlink_component(path)
+
+
+def _ensure_regular_dependency_path(path: Path) -> None:
+    """Reject symlink components and non-regular dependency metadata files."""
+    current = path
+    while True:
+        if current.is_symlink():
+            raise OSError(
+                "dependency metadata must not be a symlink "
+                "(path contains a symlink component)"
+            )
+        if current.parent == current:
+            break
+        current = current.parent
+    if not path.is_file():
+        raise OSError("dependency metadata must be a regular file")
 
 
 def _load_pyproject_toml(
     pyproject_path: Path,
 ) -> dict[str, Any] | InvalidDependencyMetadata:
     try:
+        _ensure_regular_dependency_path(pyproject_path)
         raw = pyproject_path.read_bytes()
         data = tomllib.loads(raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         return InvalidDependencyMetadata(
             declared_by=str(pyproject_path),
-            detail=f"dependency metadata is unreadable: {type(exc).__name__}",
+            detail=f"dependency metadata is unreadable: {exc}",
         )
     return data
 
@@ -783,6 +995,40 @@ def _constraint_from_requirement(
     )
 
 
+def _declared_fleet_constraints(
+    repo_path: str | Path,
+    *,
+    fleet_packages: set[str] | None,
+    workspace_yml_path: str | Path | None,
+) -> list[DeclaredConstraint | InvalidDependencyMetadata]:
+    """Resolve scope, validate metadata, and collect its constraints."""
+    repo = Path(repo_path)
+    resolved_scope = _resolve_fleet_packages(repo, fleet_packages, workspace_yml_path)
+    if isinstance(resolved_scope, InvalidDependencyMetadata):
+        return [resolved_scope]
+    fleet_packages = resolved_scope
+
+    pyproject_path = repo / _PYPROJECT_NAME
+    if not _dependency_path_present(pyproject_path):
+        return []
+
+    validated = _read_dependency_requirements(pyproject_path)
+    if isinstance(validated, InvalidDependencyMetadata):
+        return [validated]
+    if not fleet_packages:
+        return []
+    own_name, requirements = validated
+    out: list[DeclaredConstraint | InvalidDependencyMetadata] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in requirements:
+        constraint = _constraint_from_requirement(
+            raw, fleet_packages, own_name, pyproject_path, seen
+        )
+        if constraint is not None:
+            out.append(constraint)
+    return out
+
+
 def declared_fleet_constraints(
     repo_path: str | Path,
     *,
@@ -801,28 +1047,11 @@ def declared_fleet_constraints(
     (never an error) results when no manifest is found — a repo with no
     reachable manifest has no known fleet scope to check, not a failure.
     """
-    repo = Path(repo_path)
-    fleet_packages = _resolve_fleet_packages(repo, fleet_packages, workspace_yml_path)
-
-    pyproject_path = repo / _PYPROJECT_NAME
-    if not pyproject_path.exists():
-        return []
-
-    validated = _read_dependency_requirements(pyproject_path)
-    if isinstance(validated, InvalidDependencyMetadata):
-        return [validated]
-    if not fleet_packages:
-        return []
-    own_name, requirements = validated
-    out: list[DeclaredConstraint | InvalidDependencyMetadata] = []
-    seen: set[tuple[str, str]] = set()
-    for raw in requirements:
-        constraint = _constraint_from_requirement(
-            raw, fleet_packages, own_name, pyproject_path, seen
-        )
-        if constraint is not None:
-            out.append(constraint)
-    return out
+    return _declared_fleet_constraints(
+        repo_path,
+        fleet_packages=fleet_packages,
+        workspace_yml_path=workspace_yml_path,
+    )
 
 
 def hook_declared(repo_path: str | Path) -> bool:
@@ -1564,6 +1793,34 @@ def _cross_check_failure(
     )
 
 
+def _validate_readiness_timing(
+    *, wait_minutes: float, poll_interval_s: float, max_interval_s: float
+) -> tuple[float, float, float]:
+    """Validate direct API timing inputs before any gate or sleep call."""
+    values = {
+        "wait_minutes": wait_minutes,
+        "poll_interval_s": poll_interval_s,
+        "max_interval_s": max_interval_s,
+    }
+    for name, value in values.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{name} must be a finite number")
+        if not math.isfinite(float(value)):
+            raise ValueError(f"{name} must be finite")
+    wait = float(wait_minutes)
+    poll = float(poll_interval_s)
+    maximum = float(max_interval_s)
+    if wait < 0:
+        raise ValueError("wait_minutes must be non-negative")
+    if wait > _MAX_GATE_WAIT_MINUTES:
+        raise ValueError(f"wait_minutes must be <= {_MAX_GATE_WAIT_MINUTES:g}")
+    if poll <= 0:
+        raise ValueError("poll_interval_s must be strictly positive")
+    if maximum <= 0:
+        raise ValueError("max_interval_s must be strictly positive")
+    return wait, poll, maximum
+
+
 def _ci_run_failed_outcome(
     forge: _ForgeRunTarget, run_status: Any, targets_checked: list[str], waited_s: float
 ) -> GateReadinessOutcome:
@@ -1761,6 +2018,11 @@ def await_gate_readiness(
       ran) breaks out of the wait immediately and falls through to today's
       index-polling behavior.
     """
+    wait_minutes, poll_interval_s, max_interval_s = _validate_readiness_timing(
+        wait_minutes=wait_minutes,
+        poll_interval_s=poll_interval_s,
+        max_interval_s=max_interval_s,
+    )
     targets_checked = [name for name, _ in targets]
 
     cross_check_outcome = _cross_check_failure(
@@ -1779,8 +2041,8 @@ def await_gate_readiness(
         sleep=sleep,
         now=now,
     )
-    deadline = now() + wait_minutes * 60
     started = now()
+    deadline = started + wait_minutes * 60
     attempt = 0
     failures: list[GateCheckFailure] = []
 

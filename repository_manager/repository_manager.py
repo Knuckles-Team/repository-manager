@@ -124,6 +124,24 @@ _CONSOLIDATED_SKILL_GRAPHS = (
 _UV_WORKSPACE_SIBLINGS_DIRNAME = ".uv-workspace-siblings"
 _PEP503_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z")
 _PEP503_NAME_SEPARATORS = re.compile(r"[-_.]+")
+
+
+class _UnsafeMutationTarget(ValueError):
+    """Carry a typed refusal from target validation to the mutation wrapper."""
+
+    def __init__(self, operation: str, candidate: object, cause: ValueError) -> None:
+        super().__init__(str(cause))
+        self.operation = operation
+        self.candidate = candidate
+
+
+def _reject_lexical_parent(path: Path, *, label: str) -> Path:
+    """Reject traversal syntax before any path normalization can erase it."""
+    if ".." in path.parts:
+        raise ValueError(f"{label} contains a lexical parent segment")
+    return path
+
+
 # Keep this list in sync with uv's documented ``tool.uv.sources`` table
 # fields.  Parsing source tables structurally, rather than looking only for
 # ``path``, is important here: a malformed extra field or a path/remote
@@ -198,6 +216,32 @@ def _hold_repo_mutation(path: str) -> Iterator[None]:
                 del _REPO_MUTATION_LOCKS[key]
 
 
+def _mutation_lock_path(manager: Any, bound: inspect.BoundArguments) -> str:
+    """Resolve the lock key without normalizing a mutation target for use."""
+    if "target_path" in bound.arguments:
+        # clone_repository's contract names this as the destination path,
+        # already relative to the caller's cwd when it is not absolute. Do
+        # not feed a workspace-prefixed target through ``_resolve_path`` a
+        # second time (``workspace/workspace/repo``).
+        return os.path.abspath(os.path.expanduser(str(bound.arguments["target_path"])))
+    return manager._resolve_path(bound.arguments.get("path"))
+
+
+def _call_exclusive_mutation(
+    manager: Any,
+    method: Callable[..., _MutationResult],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    target_path: str,
+) -> _MutationResult:
+    """Run one mutation under its lock and type unsafe-target refusals."""
+    try:
+        with _hold_repo_mutation(target_path):
+            return method(*args, **kwargs)
+    except _UnsafeMutationTarget as exc:
+        return manager._path_validation_result(exc.operation, exc.candidate, exc)
+
+
 def _exclusive_repo_mutation(
     method: Callable[..., _MutationResult],
 ) -> Callable[..., _MutationResult]:
@@ -209,18 +253,8 @@ def _exclusive_repo_mutation(
         bound = method_signature.bind(*args, **kwargs)
         bound.apply_defaults()
         manager = args[0]
-        if "target_path" in bound.arguments:
-            # clone_repository's contract names this as the destination path,
-            # already relative to the caller's cwd when it is not absolute. Do
-            # not feed a workspace-prefixed target through ``_resolve_path`` a
-            # second time (``workspace/workspace/repo``).
-            target_path = os.path.abspath(
-                os.path.expanduser(str(bound.arguments["target_path"]))
-            )
-        else:
-            target_path = manager._resolve_path(bound.arguments.get("path"))
-        with _hold_repo_mutation(target_path):
-            return method(*args, **kwargs)
+        target_path = _mutation_lock_path(manager, bound)
+        return _call_exclusive_mutation(manager, method, args, kwargs, target_path)
 
     return wrapped
 
@@ -1011,7 +1045,11 @@ class Git:
 
     def _workspace_root(self) -> Path:
         """Return the approved workspace root after rejecting symlink ancestry."""
-        root = Path(os.path.abspath(os.path.expanduser(self.path)))
+        raw_root = _reject_lexical_parent(
+            Path(os.path.expanduser(os.fspath(self.path))),
+            label="workspace root",
+        )
+        root = Path(os.path.abspath(raw_root))
         current = Path(root.anchor)
         for component in root.parts[1:]:
             current /= component
@@ -1077,7 +1115,10 @@ class Git:
         discovery or canonical target selection outside the approved root.
         """
         root = self._workspace_root()
-        path = Path(os.path.expanduser(os.fspath(candidate)))
+        path = _reject_lexical_parent(
+            Path(os.path.expanduser(os.fspath(candidate))),
+            label=label,
+        )
         if not path.is_absolute():
             path = root / path
         path = Path(os.path.abspath(path))
@@ -1102,6 +1143,62 @@ class Git:
         if not (allow_leaf_symlink and path.is_symlink()):
             self._check_real_containment(path, root, label=label)
         return path
+
+    def _path_validation_result(
+        self, operation: str, candidate: object, error: ValueError
+    ) -> GitResult:
+        """Return a typed refusal when an operation target is unsafe."""
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(message=f"{operation} refused: {error}", code=1),
+            metadata=GitMetadata(
+                command=operation,
+                workspace=_project_label(candidate),
+                return_code=1,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    def _validated_operation_path(self, path: str | None, *, operation: str) -> str:
+        """Resolve an operation target only after the full path safety check."""
+        candidate = self.path if path is None else path
+        try:
+            return str(
+                self._validate_workspace_path(
+                    candidate,
+                    label=f"{operation} target",
+                )
+            )
+        except ValueError as exc:
+            logger.error("Unsafe %s target refused: %s", operation, exc)
+            raise _UnsafeMutationTarget(operation, candidate, exc) from exc
+
+    def _revalidate_release_target(
+        self,
+        name: str,
+        path: str,
+        *,
+        operation: str,
+        require_directory: bool = False,
+    ) -> _ReleaseTarget:
+        """Revalidate and return one canonical release ``(name, path)`` pair.
+
+        Release plans are built from a mutable project registry.  Rechecking
+        the exact pair at the operation boundary prevents a lexical alias or a
+        filesystem swap between planning and the mutation from widening the
+        operation's scope.
+        """
+        validated = self._validate_workspace_path(
+            path,
+            label=f"{operation} project {name!r}",
+            require_directory=require_directory,
+        )
+        if validated.name != name:
+            raise ValueError(
+                f"{operation} project {name!r} does not match canonical path {validated}"
+            )
+        return name, str(validated)
 
     @staticmethod
     def _normalize_uv_name(name: str, *, label: str) -> str:
@@ -2977,7 +3074,7 @@ class Git:
         - GitHub secret scanning (GH013): returns actionable error with unblock URL
         - Tag conflicts: falls back to pushing without --follow-tags
         """
-        target_path = self._resolve_path(path)
+        target_path = self._validated_operation_path(path, operation="push_project")
         logger.info("Checking configured project for uncommitted changes")
 
         status_check = self.git_action(
@@ -3034,7 +3131,7 @@ class Git:
         """
         Stage all changes (git add -A) for a single Git project.
         """
-        target_path = self._resolve_path(path)
+        target_path = self._validated_operation_path(path, operation="add_project")
         logger.info("Staging all changes for configured project")
         return self.git_action(command="git add -A", path=target_path)
 
@@ -3071,7 +3168,7 @@ class Git:
         """
         Commit staged changes (git commit -m "{message}") for a single Git project.
         """
-        target_path = self._resolve_path(path)
+        target_path = self._validated_operation_path(path, operation="commit_project")
 
         # Check if there are staged changes to commit
         status_res = self.git_action(command="git status --porcelain", path=target_path)
@@ -3153,7 +3250,9 @@ class Git:
         If pre-commit fails for real (not just auto-format), the failure is
         surfaced and nothing is committed.
         """
-        target_path = self._resolve_path(path)
+        target_path = self._validated_operation_path(
+            path, operation="commit_code_project"
+        )
 
         # Un-cloned / missing repo (e.g. a workspace.yml entry not pulled): skip
         # gracefully — a missing dir must never abort the whole batch. D-CDX-60:
@@ -3398,7 +3497,7 @@ class Git:
             autoupdate (bool): Whether to run 'pre-commit autoupdate'. Default False.
             path (str, optional): Path to run in. Defaults to self.path.
         """
-        target_path = self._resolve_path(path)
+        target_path = self._validated_operation_path(path, operation="pre_commit")
 
         # Clean artifacts before running pre-commit
         self.cleanup_artifacts(target_path)
@@ -3610,6 +3709,7 @@ class Git:
                 p_path: str | None = p
             else:
                 p_path = self._project_path_for(p)
+            p_path = self._validated_precommit_path(p, p_path)
             if (
                 p_path
                 and os.path.isdir(p_path)
@@ -3617,6 +3717,32 @@ class Git:
             ):
                 dirs.append(p_path)
         return dirs
+
+    def _validated_precommit_path(
+        self, project_name: str, project_path: str | None
+    ) -> str | None:
+        """Return one validated pre-commit path, preserving missing-name skips."""
+        if project_path is None:
+            return None
+        return str(
+            self._validate_workspace_path(
+                project_path,
+                label=f"pre-commit project {project_name!r}",
+            )
+        )
+
+    def _validated_precommit_dir(self, project_path: str) -> str | None:
+        """Return a mapped directory only when it carries pre-commit config."""
+        validated = self._validate_workspace_path(
+            project_path,
+            label="pre-commit project",
+        )
+        if (
+            not validated.is_dir()
+            or not (validated / ".pre-commit-config.yaml").exists()
+        ):
+            return None
+        return str(validated)
 
     def _precommit_project_dirs(self, projects: list[str] | None) -> list[str]:
         """Directories carrying a ``.pre-commit-config.yaml`` for the given scope.
@@ -3630,9 +3756,9 @@ class Git:
             logger.warning("No projects found in project_map for pre-commit.")
             return []
         return [
-            p
+            validated
             for p in self.project_map.values()
-            if os.path.exists(os.path.join(p, ".pre-commit-config.yaml"))
+            if (validated := self._validated_precommit_dir(p)) is not None
         ]
 
     def _run_precommit_pool(
@@ -3872,7 +3998,20 @@ class Git:
 
     def _phase_has_pending_work(self, targets: list[_ReleaseTarget]) -> bool:
         """Whether any selected project has a local clone with pending work."""
-        return any(self._repo_has_pending_work(path) for _name, path in targets)
+        return any(
+            self._phase_target_has_pending_work(name, path) for name, path in targets
+        )
+
+    def _phase_target_has_pending_work(self, name: str, path: str) -> bool:
+        """Check one canonical target for work without widening its scope."""
+        _, validated_path = self._revalidate_release_target(
+            name,
+            path,
+            operation="auto-start",
+        )
+        return os.path.isdir(validated_path) and self._repo_has_pending_work(
+            validated_path
+        )
 
     @_exclusive_repo_mutation
     def bump_version(
@@ -3901,7 +4040,7 @@ class Git:
         Returns:
             GitResult: Result of the operation.
         """
-        target_dir = self._resolve_path(path)
+        target_dir = self._validated_operation_path(path, operation="bump_version")
 
         validation_error = self._bump_version_validate_target(target_dir, part)
         if validation_error is not None:
@@ -4310,8 +4449,24 @@ class Git:
     ) -> list[str]:
         """Validated local paths for the pre-commit stage's exact scope."""
         if targets is None:
-            return list(self.project_map.values())
-        return [path for _name, path in targets]
+            return self._all_precommit_target_dirs()
+        return self._release_precommit_target_dirs(targets)
+
+    def _all_precommit_target_dirs(self) -> list[str]:
+        """Validate every mapped project path for an unrestricted pre-commit run."""
+        return [
+            str(self._validate_workspace_path(path, label="pre-commit project"))
+            for path in self.project_map.values()
+        ]
+
+    def _release_precommit_target_dirs(
+        self, targets: list[_ReleaseTarget]
+    ) -> list[str]:
+        """Revalidate the exact release pairs selected for pre-commit."""
+        return [
+            self._revalidate_release_target(name, path, operation="pre-commit")[1]
+            for name, path in targets
+        ]
 
     def _run_bump_pre_commit_stage(
         self,
@@ -4437,13 +4592,19 @@ class Git:
         entry / never-cloned repo) must not crash the whole phased bump, so it
         is skipped with a warning and the rest of the topology proceeds.
         """
-        if not os.path.isdir(project_dir):
+        _, validated_path = self._revalidate_release_target(
+            project_name,
+            project_dir,
+            operation="bump",
+        )
+        if not os.path.isdir(validated_path):
             logger.warning(
                 "Skipping bump for %s: project directory missing (%s)",
                 project_name,
-                project_dir,
+                validated_path,
             )
             return None
+        project_dir = validated_path
 
         if not force and self._bump_skip_reason(project_dir):
             logger.info("Skipping project version bump")
@@ -4487,6 +4648,12 @@ class Git:
         package (often ``==``) and would otherwise go stale.
         (CONCEPT:RM-BUMP cross-dependency propagation)
         """
+        path = str(
+            self._validate_workspace_path(
+                path,
+                label=f"dependency update project {project_name!r}",
+            )
+        )
         results: list[GitResult] = []
         for dep_file_name in ("pyproject.toml", "requirements.txt"):
             dep_file = Path(path) / dep_file_name
@@ -4887,18 +5054,36 @@ class Git:
             and self._url_has_pypi_release_metadata(url, project_path)
         )
 
+    def _validated_bulk_release_target(
+        self, url: str, project_path: str
+    ) -> _ReleaseTarget | None:
+        """Return one eligible target with its canonical path, or ``None``."""
+        name = self._release_project_name_or_empty(url)
+        if not name or self._project_categories.get(url) != (
+            "agent-packages",
+            "agents",
+        ):
+            return None
+        validated = self._validated_bulk_release_path(project_path, name)
+        if validated is None or not read_release_document(
+            validated / "pyproject.toml", expected_name=name
+        ):
+            return None
+        return name, str(validated)
+
     def _eligible_bulk_release_targets(self) -> list[tuple[str, str]]:
         """Validate and deduplicate the complete eligible Phase-5 universe."""
         targets: list[tuple[str, str]] = []
         eligible_names: set[str] = set()
         for url, path in sorted(self.project_map.items()):
-            if not self._is_bulk_release_target(url, path):
+            target = self._validated_bulk_release_target(url, path)
+            if target is None:
                 continue
-            name = self._release_project_name(url)
+            name, canonical_path = target
             if name in eligible_names:
                 raise ValueError(f"duplicate Phase-5 repository basename: {name}")
             eligible_names.add(name)
-            targets.append((name, path))
+            targets.append((name, canonical_path))
         return sorted(targets, key=lambda target: (target[0], target[1]))
 
     def _bulk_release_targets(
@@ -5021,16 +5206,24 @@ class Git:
             and not self._phase_excludes_name(phase, name)
         ]
 
+    def _validated_explicit_targets(
+        self, url: str, path: str, expected_name: str
+    ) -> tuple[_ReleaseTarget, ...]:
+        """Return the exact validated match for one manifest entry."""
+        if self._release_project_name_or_empty(url) != expected_name:
+            return ()
+        validated = self._validate_workspace_path(
+            path, label="explicit release project"
+        )
+        if validated.name != expected_name:
+            return ()
+        return ((expected_name, str(validated)),)
+
     def _explicit_release_target(self, expected_name: str) -> _ReleaseTarget:
         """Resolve one unambiguous manifest name to its validated canonical path."""
         matches: list[_ReleaseTarget] = []
         for url, path in sorted(self.project_map.items()):
-            if self._release_project_name_or_empty(url) != expected_name:
-                continue
-            validated = self._validate_workspace_path(
-                path, label="explicit release project"
-            )
-            matches.append((expected_name, str(validated)))
+            matches.extend(self._validated_explicit_targets(url, path, expected_name))
         if len(matches) != 1:
             raise ValueError(
                 f"maintenance project must resolve to one canonical path: {expected_name}"
@@ -5215,8 +5408,14 @@ class Git:
         ) as executor:
             future_to_proj = {}
             for proj_name, p_path in projects_to_push:
+                _, validated_path = self._revalidate_release_target(
+                    proj_name,
+                    p_path,
+                    operation="push",
+                    require_directory=True,
+                )
                 tracker.begin_item(phase_name, proj_name)
-                future = executor.submit(self.push_project, path=p_path)
+                future = executor.submit(self.push_project, path=validated_path)
                 future_to_proj[future] = proj_name
 
             for future in concurrent.futures.as_completed(future_to_proj):
@@ -5430,8 +5629,13 @@ class Git:
         from packaging.utils import canonicalize_name
 
         published: dict[str, str] = {}
-        for _proj_name, p_path in projects_to_push:
-            pyproject_path = Path(p_path) / "pyproject.toml"
+        for proj_name, p_path in projects_to_push:
+            _, validated_path = self._revalidate_release_target(
+                proj_name,
+                p_path,
+                operation="published-package inspection",
+            )
+            pyproject_path = Path(validated_path) / "pyproject.toml"
             data = read_release_document(pyproject_path)
             if data is None:
                 continue
