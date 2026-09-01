@@ -1,0 +1,26 @@
+[Unit]
+Description=Fast drain of declared repository merge queues (no publication)
+Documentation=https://knuckles-team.github.io/repository-manager/merge-queue-runner/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@PYTHON_EXECUTABLE@ @RUNNER_PATH@ --workspace-root @WORKSPACE_ROOT@ --max-age-seconds @MAX_AGE_SECONDS@ --drain-deadline-seconds @DRAIN_DEADLINE_SECONDS@ --global-deadline-seconds @GLOBAL_DRAIN_DEADLINE_SECONDS@
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+TimeoutStartSec=@SERVICE_TIMEOUT_SECONDS@s
+TimeoutStopSec=60s
+KillMode=control-group
+SendSIGKILL=yes
+OOMPolicy=stop
+Delegate=no
+CPUAccounting=yes
+MemoryAccounting=yes
+TasksAccounting=yes
+CPUQuota=200%
+MemoryHigh=4G
+MemoryMax=6G
+MemorySwapMax=1G
+TasksMax=256
+Nice=10
+IOSchedulingClass=idle

@@ -193,16 +193,24 @@ When query strings or parameters are supplied, an LLM-free **Knowledge Graph res
         "GIT_OPERATIONSTOOL": "True",
         "LANETOOL": "True",
         "MERGE_QUEUETOOL": "True",
+        "MERGE_QUEUE_DRAIN_DEADLINE_SECONDS": "180",
+        "MERGE_QUEUE_GLOBAL_DEADLINE_SECONDS": "3600",
+        "MERGE_QUEUE_HEAVY_DEADLINE_SECONDS": "18000",
+        "MERGE_QUEUE_LEASE_TTL_SECONDS": "14400",
+        "MERGE_QUEUE_MAX_AGE_SECONDS": "86400",
         "MISCTOOL": "True",
         "PROJECTTOOL": "True",
         "PROJECT_MANAGEMENTTOOL": "True",
         "REMOTE_WORKERSTOOL": "True",
         "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
         "REPOSITORY_MANAGER_THREADS": "12",
+        "RM_CPU_FRACTION": "0.20",
         "RM_GATE_BEFORE_PUSH": "true",
         "RM_GATE_TIMEOUT_SECONDS": "1800",
         "RM_JOB_STALE_SECONDS": "1800",
         "RM_MAX_WORKERS": "8",
+        "RM_RAM_FRACTION": "0.20",
+        "RM_WORKER_MEM_GB": "1.5",
         "WORKSPACE_MANAGEMENTTOOL": "True",
         "WORKSPACE_YML": "workspace.yml",
         "WORKTREETOOL": "True"
@@ -251,16 +259,24 @@ own runtime secret boundary.
         "GIT_OPERATIONSTOOL": "True",
         "LANETOOL": "True",
         "MERGE_QUEUETOOL": "True",
+        "MERGE_QUEUE_DRAIN_DEADLINE_SECONDS": "180",
+        "MERGE_QUEUE_GLOBAL_DEADLINE_SECONDS": "3600",
+        "MERGE_QUEUE_HEAVY_DEADLINE_SECONDS": "18000",
+        "MERGE_QUEUE_LEASE_TTL_SECONDS": "14400",
+        "MERGE_QUEUE_MAX_AGE_SECONDS": "86400",
         "MISCTOOL": "True",
         "PROJECTTOOL": "True",
         "PROJECT_MANAGEMENTTOOL": "True",
         "REMOTE_WORKERSTOOL": "True",
         "REPOSITORY_MANAGER_DEFAULT_BRANCH": "main",
         "REPOSITORY_MANAGER_THREADS": "12",
+        "RM_CPU_FRACTION": "0.20",
         "RM_GATE_BEFORE_PUSH": "true",
         "RM_GATE_TIMEOUT_SECONDS": "1800",
         "RM_JOB_STALE_SECONDS": "1800",
         "RM_MAX_WORKERS": "8",
+        "RM_RAM_FRACTION": "0.20",
+        "RM_WORKER_MEM_GB": "1.5",
         "WORKSPACE_MANAGEMENTTOOL": "True",
         "WORKSPACE_YML": "workspace.yml",
         "WORKTREETOOL": "True"
@@ -308,16 +324,24 @@ docker run -i --rm \
   -e GIT_OPERATIONSTOOL=True \
   -e LANETOOL=True \
   -e MERGE_QUEUETOOL=True \
+  -e MERGE_QUEUE_DRAIN_DEADLINE_SECONDS=180 \
+  -e MERGE_QUEUE_GLOBAL_DEADLINE_SECONDS=3600 \
+  -e MERGE_QUEUE_HEAVY_DEADLINE_SECONDS=18000 \
+  -e MERGE_QUEUE_LEASE_TTL_SECONDS=14400 \
+  -e MERGE_QUEUE_MAX_AGE_SECONDS=86400 \
   -e MISCTOOL=True \
   -e PROJECTTOOL=True \
   -e PROJECT_MANAGEMENTTOOL=True \
   -e REMOTE_WORKERSTOOL=True \
   -e REPOSITORY_MANAGER_DEFAULT_BRANCH=main \
   -e REPOSITORY_MANAGER_THREADS=12 \
+  -e RM_CPU_FRACTION=0.20 \
   -e RM_GATE_BEFORE_PUSH=true \
   -e RM_GATE_TIMEOUT_SECONDS=1800 \
   -e RM_JOB_STALE_SECONDS=1800 \
   -e RM_MAX_WORKERS=8 \
+  -e RM_RAM_FRACTION=0.20 \
+  -e RM_WORKER_MEM_GB=1.5 \
   -e WORKSPACE_MANAGEMENTTOOL=True \
   -e WORKSPACE_YML=workspace.yml \
   -e WORKTREETOOL=True \
@@ -505,10 +529,15 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MCP_URL` | `http://localhost:8000` |  |
 | `DOCS_READINESSTOOL` | `True` |  |
 | `RM_GATE_TIMEOUT_SECONDS` | `1800` | Wall-clock ceiling, in seconds, for one pre-commit gate stage (repository_manager/gates.py). Unset uses the per-stage built-in default. |
-| `GITHUB_TLS_PROFILE` | `default` | Named TLS profile, or a secret reference to one, used for outbound calls to each forge. Unset resolves the AgentConfig default profile; these never take a boolean "verify" switch. |
-| `GITHUB_TLS_PROFILE_REF` | — |  |
-| `GITLAB_TLS_PROFILE` | `default` |  |
-| `GITLAB_TLS_PROFILE_REF` | — |  |
+| `MERGE_QUEUE_DRAIN_DEADLINE_SECONDS` | `180` | per-repository fast queue drain wall-clock deadline |
+| `MERGE_QUEUE_GLOBAL_DEADLINE_SECONDS` | `3600` | whole fast queue invocation wall-clock deadline |
+| `MERGE_QUEUE_HEAVY_DEADLINE_SECONDS` | `18000` | heavy phased-push invocation wall-clock deadline |
+| `MERGE_QUEUE_MAX_AGE_SECONDS` | `86400` | queued-record age limit before fail-closed omission |
+| `MERGE_QUEUE_LEASE_TTL_SECONDS` | `14400` | repo-scoped queue lease; must exceed the drain deadline |
+| `RM_CPU_FRACTION` | `0.20` | fraction of logical cores budgeted for validation workers |
+| `RM_RAM_FRACTION` | `0.20` | fraction of host RAM budgeted for validation workers |
+| `RM_WORKER_MEM_GB` | `1.5` | assumed RAM per validation worker for auto-sizing |
+| `REPOSITORY_MANAGER_COMMAND` | — | optional executable used by the queue runner |
 | `REPOSITORY_MANAGER_MCP_IMAGE` | — | Both compose files require these; set each to an image@sha256:<digest>. |
 | `REPOSITORY_MANAGER_AGENT_IMAGE` | — |  |
 
@@ -532,7 +561,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | `gpt-4o` | Model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_63 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_68 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 

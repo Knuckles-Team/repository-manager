@@ -5549,10 +5549,10 @@ from repository_manager.cli_commands import (
 from repository_manager.cli_commands.context import runtime_from_module
 
 
-def main() -> None:
+def main() -> int:
     """Run the Repository Manager command-line adapter."""
-    _run_cli(runtime_from_module())
+    return _run_cli(runtime_from_module())
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

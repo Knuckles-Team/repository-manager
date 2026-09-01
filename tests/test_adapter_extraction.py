@@ -58,7 +58,7 @@ EXPECTED_TOOL_NAMES = (
 # ``fail_fast_audit``/``xdist_rollout`` and add the ``fleet``/``dry_run``
 # parameters to the tool signature.
 BASELINE_CATALOG_SHA256 = (
-    "713c91f82e4c52e802ef838a73b79eceeae42855a26806084259ae6782d09183"
+    "a4dfbbf1489be28501953e84ba2b6d77c1cdcf445dc3542640ed9f5f4cde9d04"
 )
 
 
