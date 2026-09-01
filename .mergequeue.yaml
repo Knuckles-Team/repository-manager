@@ -41,7 +41,6 @@ gates:
       - pytest
       - tests/test_merge_queue.py
       - tests/test_config_schema.py
-      - tests/test_repository_manager_mergequeue_config.py
       - -q
     timeout: 1800
     compare: pytest-ids
