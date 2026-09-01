@@ -287,6 +287,76 @@ def test_fresh_queue_record_with_stale_worktree_fails_closed(tmp_path: Path) -> 
         discover_queued_repositories(tmp_path, now=NOW)
 
 
+def test_fresh_queue_record_with_registered_external_worktree_is_accepted(
+    tmp_path: Path,
+) -> None:
+    """Native lanes may live outside the workspace while Git owns registration."""
+
+    _workspace(tmp_path)
+    repository = tmp_path / "plans"
+    external = tmp_path.parent / f"{tmp_path.name}-plans-lane"
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repository),
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "external-lane",
+            str(external),
+            "main",
+        ],
+        check=True,
+    )
+    try:
+        _fragment(
+            repository,
+            "lane.yaml",
+            [_record("external", worktree=str(external))],
+        )
+        selected = discover_queued_repositories(tmp_path, now=NOW)
+        assert [item.identifier for item in selected] == ["plans"]
+    finally:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "worktree",
+                "remove",
+                "--force",
+                str(external),
+            ],
+            check=True,
+        )
+
+
+def test_registered_worktree_from_another_git_repository_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Registration must still be paired with the declared Git common directory."""
+
+    _workspace(tmp_path)
+    foreign = tmp_path / "foreign"
+    _git_repo(foreign)
+    _fragment(
+        tmp_path / "plans",
+        "lane.yaml",
+        [_record("foreign", worktree=str(foreign))],
+    )
+    import repository_manager.merge_queue_runner as runner
+
+    monkeypatch.setattr(
+        runner,
+        "_registered_worktrees",
+        lambda _repository: frozenset({foreign.resolve()}),
+    )
+    with pytest.raises(MergeQueueRunnerError, match="Git common directory"):
+        discover_queued_repositories(tmp_path, now=NOW)
+
+
 def test_fresh_queue_record_without_worktree_fails_closed(tmp_path: Path) -> None:
     _workspace(tmp_path)
     _fragment(tmp_path / "plans", "lane.yaml", [_record("missing", worktree="")])
