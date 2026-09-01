@@ -21,6 +21,7 @@ def run_merge_queue_cli(args: Any) -> int:
             reason=args.queue_reason,
             batch_size=args.queue_batch_size,
             prune=not args.queue_no_prune,
+            lease_ttl_seconds=getattr(args, "queue_lease_ttl_seconds", None),
         )
     except LeaseUnavailable as exc:
         print(json.dumps({"deferred": True, "holder": exc.holder}, default=str))

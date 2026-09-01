@@ -424,6 +424,15 @@ Examples:
         action="store_true",
         help="Land but keep the worktrees and branches (skips the guarded prune).",
     )
+    group_queue.add_argument(
+        "--queue-lease-ttl-seconds",
+        type=int,
+        default=None,
+        help=(
+            "repo lease TTL for a long gate; must remain within the bounded "
+            "24-hour lease maximum"
+        ),
+    )
 
     # CONCEPT:RM-DIFF-SELECT — the GOC-69 pre-push differential tier's mapping
     # step (changed files -> pytest targets). A thin standalone way to inspect

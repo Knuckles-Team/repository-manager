@@ -86,6 +86,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -170,6 +171,10 @@ WITHDRAWN = "withdrawn"
 #: BISECTS, so one bad candidate costs ceil(log2(N)) extra gate runs rather than
 #: rejecting N-1 innocent ones.
 DEFAULT_BATCH_SIZE = 8
+DEFAULT_MERGE_LEASE_TTL_SECONDS = 14_400
+MAX_MERGE_LEASE_TTL_SECONDS = 86_400
+MERGE_LEASE_TTL_ENV = "MERGE_QUEUE_LEASE_TTL_SECONDS"
+_LOGGER = logging.getLogger(__name__)
 
 #: pytest exit codes under which the ``-rfE`` short summary can be trusted to
 #: enumerate every failing id: 0 green, 1 tests failed, 5 nothing collected (an
@@ -245,6 +250,43 @@ def _require_git(
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _merge_lease_ttl(value: int | None) -> int:
+    """Resolve a bounded lease TTL that cannot expire during a declared run."""
+
+    configured = os.environ.get(MERGE_LEASE_TTL_ENV)
+    raw = configured if value is None and configured is not None else value
+    try:
+        ttl = DEFAULT_MERGE_LEASE_TTL_SECONDS if raw is None else int(raw)
+    except (TypeError, ValueError) as exc:
+        raise MergeQueueError(
+            f"{MERGE_LEASE_TTL_ENV} must be between 1 and "
+            f"{MAX_MERGE_LEASE_TTL_SECONDS} seconds"
+        ) from exc
+    if ttl <= 0 or ttl > MAX_MERGE_LEASE_TTL_SECONDS:
+        raise MergeQueueError(
+            f"{MERGE_LEASE_TTL_ENV} must be between 1 and "
+            f"{MAX_MERGE_LEASE_TTL_SECONDS} seconds"
+        )
+    return ttl
+
+
+def _lease_receipt(
+    event: str, record: dict[str, Any], ttl_seconds: int
+) -> dict[str, Any]:
+    """Build an observable receipt for lease lifetime and deadline evidence."""
+
+    receipt = {
+        "event": event,
+        "lease": MERGE_LEASE,
+        "recorded_at": _now(),
+        "acquired_at": record.get("acquired_at"),
+        "expires_at": record.get("expires_at"),
+        "ttl_seconds": ttl_seconds,
+    }
+    _LOGGER.info("merge_queue_lease %s", json.dumps(receipt, sort_keys=True))
+    return receipt
 
 
 # ---------------------------------------------------------------------------
@@ -3157,7 +3199,7 @@ def _drain_plan(
     return requested_base or config.base, config, [candidate]
 
 
-def _drain_batch_under_lease(
+def _drain_batch(
     scope: LaneScope,
     repo: Path,
     requested_base: str,
@@ -3165,33 +3207,71 @@ def _drain_batch_under_lease(
     git: Any,
     prune: bool,
 ) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None, QueueConfig]:
-    with hold_lease(
-        MERGE_LEASE, operation=f"drain the {repo.name} merge queue", path=scope.tree
-    ):
-        base, config, batch = _drain_plan(scope, requested_base, requested_batch_size)
-        _verify_base_exists(repo, base, config)
-        if not batch:
-            return (
-                None,
-                {
-                    "repo": repo.name,
-                    "drained": 0,
-                    "outcomes": [],
-                    "seconds": 0.0,
-                },
-                config,
-            )
-        by_branch = {c.branch: c for c in batch}
-        outcomes = integrate_batch(
-            batch, base=base, scope=scope, config=config, git=git
+    """Evaluate and record one selected batch after lease admission."""
+
+    base, config, batch = _drain_plan(scope, requested_base, requested_batch_size)
+    _verify_base_exists(repo, base, config)
+    if not batch:
+        return (
+            None,
+            {"repo": repo.name, "drained": 0, "outcomes": [], "seconds": 0.0},
+            config,
         )
-        for outcome in outcomes:
-            _record_batch_outcome(outcome, by_branch, scope, repo, base, git, prune)
+    by_branch = {c.branch: c for c in batch}
+    outcomes = integrate_batch(batch, base=base, scope=scope, config=config, git=git)
+    for outcome in outcomes:
+        _record_batch_outcome(outcome, by_branch, scope, repo, base, git, prune)
     return outcomes, None, config
 
 
+def _drain_batch_under_lease(
+    scope: LaneScope,
+    repo: Path,
+    requested_base: str,
+    requested_batch_size: int,
+    git: Any,
+    prune: bool,
+    lease_ttl_seconds: int | None,
+) -> tuple[
+    list[dict[str, Any]] | None,
+    dict[str, Any] | None,
+    QueueConfig,
+    tuple[dict[str, Any], ...],
+]:
+    lease_ttl_seconds = _merge_lease_ttl(lease_ttl_seconds)
+    receipts: list[dict[str, Any]] = []
+    lease_record: dict[str, Any] | None = None
+    early: dict[str, Any] | None = None
+    outcomes: list[dict[str, Any]] | None = None
+    try:
+        with hold_lease(
+            MERGE_LEASE,
+            operation=f"drain the {repo.name} merge queue",
+            path=scope.tree,
+            ttl_seconds=lease_ttl_seconds,
+        ) as record:
+            lease_record = record
+            receipts.append(_lease_receipt("acquired", record, lease_ttl_seconds))
+            receipts.append(_lease_receipt("deadline", record, lease_ttl_seconds))
+            outcomes, early, config = _drain_batch(
+                scope, repo, requested_base, requested_batch_size, git, prune
+            )
+    finally:
+        if lease_record is not None:
+            receipts.append(_lease_receipt("released", lease_record, lease_ttl_seconds))
+    if early is not None:
+        early["lease_receipts"] = tuple(receipts)
+        return None, early, config, tuple(receipts)
+    assert outcomes is not None
+    return outcomes, None, config, tuple(receipts)
+
+
 def _run_queue_summary(
-    repo: Path, config: QueueConfig, outcomes: list[dict[str, Any]], started: float
+    repo: Path,
+    config: QueueConfig,
+    outcomes: list[dict[str, Any]],
+    started: float,
+    lease_receipts: tuple[dict[str, Any], ...],
 ) -> dict[str, Any]:
     return {
         "repo": repo.name,
@@ -3204,6 +3284,7 @@ def _run_queue_summary(
             1 for o in outcomes if o["landed"] and not o.get("pushed")
         ),
         "outcomes": outcomes,
+        "lease_receipts": lease_receipts,
         "seconds": round(time.monotonic() - started, 2),
     }
 
@@ -3215,6 +3296,7 @@ def run_queue(
     prune: bool = True,
     path: Path | str | None = None,
     git: Any = None,
+    lease_ttl_seconds: int | None = None,
 ) -> dict[str, Any]:
     """Drain up to *batch_size* candidates for ONE repository, under the lease.
 
@@ -3223,18 +3305,24 @@ def run_queue(
     is the correct outcome and the caller must make it explicit, exactly as every
     other LEASE-class resource here. The lease is repo-scoped, so draining
     agent-utilities and epistemic-graph concurrently is safe by construction.
+    ``lease_ttl_seconds`` is bounded independently from gate worker limits and
+    is reported with acquired/deadline/released receipts in the result.
     """
     scope = lane_scope(path)
     repo = scope.main_tree
     git = _resolve_git_client(git, repo)
     started = time.monotonic()
-    outcomes, early, config = _drain_batch_under_lease(
-        scope, repo, base, batch_size, git, prune
+    outcomes, early, config, lease_receipts = _drain_batch_under_lease(
+        scope, repo, base, batch_size, git, prune, lease_ttl_seconds
     )
     if early is not None:
         return early
     return _run_queue_summary(
-        repo, config, cast(list[dict[str, Any]], outcomes), started
+        repo,
+        config,
+        cast(list[dict[str, Any]], outcomes),
+        started,
+        lease_receipts,
     )
 
 
@@ -3262,6 +3350,7 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
             batch_size=int(kwargs.get("batch_size") or 0),
             prune=bool(kwargs.get("prune", True)),
             path=kwargs.get("path"),
+            lease_ttl_seconds=kwargs.get("lease_ttl_seconds"),
         ),
         "config": lambda: _config_report(kwargs.get("path")),
     }
@@ -3337,6 +3426,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--reason", default="")
     p.add_argument("--batch-size", type=int, default=0)
     p.add_argument("--no-prune", action="store_true")
+    p.add_argument("--lease-ttl-seconds", type=int, default=None)
     args = p.parse_args(argv)
     try:
         out = dispatch(
@@ -3347,6 +3437,7 @@ def main(argv: list[str] | None = None) -> int:
             reason=args.reason,
             batch_size=args.batch_size,
             prune=not args.no_prune,
+            lease_ttl_seconds=args.lease_ttl_seconds,
         )
     except LeaseUnavailable as exc:
         # Exit 75 (EX_TEMPFAIL), the same contract every other LEASE surface
