@@ -178,6 +178,29 @@ def shell_repo(tmp_path: Path) -> Path:
     return repo
 
 
+def test_long_gate_lease_ttl_and_deadline_receipts_are_observable(
+    shell_repo: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A healthy long gate cannot be stolen after the legacy 1800s TTL."""
+
+    caplog.set_level("INFO", logger="repository_manager.merge_queue")
+    result = mq.run_queue(
+        path=shell_repo,
+        prune=False,
+        git=FakeGit(str(shell_repo.parent), {"shell": str(shell_repo)}),
+        lease_ttl_seconds=7200,
+    )
+    receipts = result["lease_receipts"]
+    assert [receipt["event"] for receipt in receipts] == [
+        "acquired",
+        "deadline",
+        "released",
+    ]
+    assert all(receipt["ttl_seconds"] == 7200 for receipt in receipts)
+    assert all(receipt["expires_at"] for receipt in receipts)
+    assert "merge_queue_lease" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # THE GENERICITY PROOF — a Rust repository, gated by cargo, end to end
 # ---------------------------------------------------------------------------
