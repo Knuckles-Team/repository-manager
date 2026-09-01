@@ -456,6 +456,27 @@ def config_at_ref(repo: Path, ref: str) -> QueueConfig | None:
         raise MergeQueueError(str(exc)) from exc
 
 
+def _strict_config_at_tip(repo: Path, tip: str) -> QueueConfig:
+    """Load one bootstrap declaration without executing anything from its tree."""
+
+    source = f"{tip}:{CONFIG_FILENAME}"
+    result = _run_git(["show", source], repo)
+    if not result.ok:
+        raise MergeQueueError(
+            f"bootstrap candidate {tip[:12]} does not contain {CONFIG_FILENAME}"
+        )
+    try:
+        data = load_yaml_mapping_text(result.out, source=source)
+    except ConfigSchemaError as exc:
+        raise MergeQueueError(str(exc)) from exc
+    if data.get("schema_version") != 2:
+        raise MergeQueueError(
+            f"{source}: bootstrap requires strict schema_version 2; legacy or "
+            "unversioned declarations cannot establish queue governance"
+        )
+    return parse_config(data, source=source)
+
+
 def _dropped_gates(merged: QueueConfig, base: QueueConfig | None) -> list[str]:
     """Fast-tier gate names the base declares that the merged tree does not.
 
@@ -486,6 +507,10 @@ class Candidate:
     enqueued_at: str = ""
     state: str = QUEUED
     reason: str = ""
+    #: Immutable branch tip recorded when the candidate entered the queue.  The
+    #: config-bootstrap path requires it so a branch cannot change between the
+    #: operator's enqueue and the queue's first trusted configuration load.
+    tip: str = ""
     #: WHEN THIS RECORD was appended — distinct from ``enqueued_at``, which is
     #: the original enqueue time and stays fixed across every later transition.
     #: The fold resolves duplicates on this (see
@@ -503,6 +528,7 @@ class Candidate:
             enqueued_at=str(record.get("enqueued_at", "")),
             state=str(record.get("state", QUEUED)),
             reason=str(record.get("reason", "")),
+            tip=str(record.get("tip", "")),
             recorded_at=str(record.get("recorded_at", "")),
         )
 
@@ -516,6 +542,7 @@ class Candidate:
             "enqueued_at": self.enqueued_at,
             "state": self.state,
             "reason": self.reason,
+            "tip": self.tip,
             "recorded_at": self.recorded_at,
         }
 
@@ -707,6 +734,7 @@ def enqueue(
         worktree=str(Path(worktree).resolve()) if worktree else str(scope.tree),
         enqueued_at=now,
         state=QUEUED,
+        tip=_require_git(["rev-parse", "--verify", _base_ref(branch)], scope.main_tree),
         recorded_at=now,
     )
     queue_store(scope.tree).append(candidate.to_record(), lane=scope.lane)
@@ -2744,6 +2772,135 @@ def prune_landed(
 # ---------------------------------------------------------------------------
 # The runner — optimistic batching with bisection on failure
 # ---------------------------------------------------------------------------
+def _bootstrap_worktree(repo: Path, candidate: Candidate) -> Path:
+    """Resolve the registered worktree recorded by one bootstrap candidate."""
+
+    if not candidate.worktree or not candidate.tip:
+        raise MergeQueueError(
+            f"bootstrap candidate {candidate.branch!r} lacks a recorded worktree "
+            "or immutable tip; withdraw it and enqueue it again"
+        )
+    worktree = Path(candidate.worktree).resolve(strict=False)
+    if worktree not in _registered_worktrees(repo):
+        raise MergeQueueError(
+            f"bootstrap candidate {candidate.branch!r} recorded worktree "
+            f"{worktree}, but Git does not register that worktree"
+        )
+    return worktree
+
+
+def _require_clean_bootstrap_worktree(worktree: Path, candidate: Candidate) -> None:
+    """Refuse tracked or untracked bytes beyond the recorded commit."""
+
+    status = _run_git(["status", "--porcelain=v1", "--untracked-files=all"], worktree)
+    if not status.ok or status.out:
+        detail = status.err or status.out or "status was unreadable"
+        raise MergeQueueError(
+            f"bootstrap candidate {candidate.branch!r} has an unclean recorded "
+            f"worktree {worktree}: {detail}"
+        )
+
+
+def _require_bootstrap_tip(repo: Path, worktree: Path, candidate: Candidate) -> None:
+    """Prove the recorded branch and worktree still point at the queued tip."""
+
+    head = _require_git(["rev-parse", "HEAD"], worktree)
+    branch = _require_git(["rev-parse", "--abbrev-ref", "HEAD"], worktree)
+    live_tip = _require_git(
+        ["rev-parse", "--verify", _base_ref(candidate.branch)], repo
+    )
+    if branch != candidate.branch or head != candidate.tip or live_tip != candidate.tip:
+        raise MergeQueueError(
+            f"bootstrap candidate {candidate.branch!r} no longer matches its "
+            "recorded clean worktree/tip; withdraw it and enqueue the current tip"
+        )
+
+
+def _require_bootstrap_worktree(repo: Path, candidate: Candidate) -> None:
+    """Prove the recorded lane still holds the exact clean tip it enqueued."""
+
+    worktree = _bootstrap_worktree(repo, candidate)
+    _require_clean_bootstrap_worktree(worktree, candidate)
+    _require_bootstrap_tip(repo, worktree, candidate)
+
+
+def _bootstrap_changes(repo: Path, candidate: Candidate) -> list[str]:
+    """Return the recorded candidate's base-to-tip tree changes."""
+
+    tip = candidate.tip or _require_git(
+        ["rev-parse", "--verify", _base_ref(candidate.branch)], repo
+    )
+    return _require_git(
+        [
+            "diff",
+            "--name-status",
+            "--no-renames",
+            f"{_base_ref(candidate.base)}..{tip}",
+            "--",
+        ],
+        repo,
+    ).splitlines()
+
+
+def _touches_queue_config(changes: list[str]) -> bool:
+    return any(change.split("\t")[-1] == CONFIG_FILENAME for change in changes)
+
+
+def _config_only_contenders(repo: Path, pending: list[Candidate]) -> list[Candidate]:
+    """Find config candidates while refusing a config/payload mixed tree."""
+
+    contenders: list[Candidate] = []
+    for candidate in pending:
+        changes = _bootstrap_changes(repo, candidate)
+        if not _touches_queue_config(changes):
+            continue
+        if changes != [f"A\t{CONFIG_FILENAME}"]:
+            rendered = ", ".join(changes) or "no tree changes"
+            raise MergeQueueError(
+                f"bootstrap candidate {candidate.branch!r} mixes queue governance "
+                f"with payload: expected exactly 'A {CONFIG_FILENAME}', found "
+                f"{rendered}"
+            )
+        contenders.append(candidate)
+    return contenders
+
+
+def _unique_config_candidate(contenders: list[Candidate]) -> Candidate:
+    """Refuse zero or multiple governance authorities."""
+
+    if len(contenders) == 1:
+        return contenders[0]
+    branches = ", ".join(candidate.branch for candidate in contenders) or "none"
+    raise MergeQueueError(
+        f"no canonical {CONFIG_FILENAME}: bootstrap requires exactly one queued "
+        f"config-only candidate, found {len(contenders)} ({branches})"
+    )
+
+
+def _bootstrap_candidate(
+    scope: LaneScope, requested_base: str
+) -> tuple[Candidate, QueueConfig]:
+    """Select the sole config-only candidate when the canonical tree has none."""
+
+    repo = scope.main_tree
+    candidate = _unique_config_candidate(
+        _config_only_contenders(repo, queued(scope.tree))
+    )
+    _require_bootstrap_worktree(repo, candidate)
+    if requested_base and candidate.base != requested_base:
+        raise MergeQueueError(
+            f"bootstrap candidate {candidate.branch!r} targets {candidate.base!r}, "
+            f"not requested base {requested_base!r}"
+        )
+    config = _strict_config_at_tip(repo, candidate.tip)
+    if config.base != candidate.base:
+        raise MergeQueueError(
+            f"bootstrap candidate {candidate.branch!r} records base "
+            f"{candidate.base!r}, but {CONFIG_FILENAME} declares {config.base!r}"
+        )
+    return candidate, config
+
+
 def _build_chain(
     repo: Path,
     base: str,
@@ -2986,33 +3143,51 @@ def _record_batch_outcome(
         _record_state(candidate, REJECTED, outcome["reason"], scope.tree)
 
 
+def _drain_plan(
+    scope: LaneScope, requested_base: str, requested_batch_size: int
+) -> tuple[str, QueueConfig, list[Candidate]]:
+    """Resolve governance and the one lease-held batch to evaluate."""
+
+    if (scope.main_tree / CONFIG_FILENAME).is_file():
+        config = _repo_config(scope)
+        base = requested_base or config.base
+        limit = requested_batch_size or config.batch_size
+        return base, config, queued(scope.tree)[:limit]
+    candidate, config = _bootstrap_candidate(scope, requested_base)
+    return requested_base or config.base, config, [candidate]
+
+
 def _drain_batch_under_lease(
     scope: LaneScope,
     repo: Path,
-    base: str,
-    batch_size: int,
-    config: QueueConfig,
+    requested_base: str,
+    requested_batch_size: int,
     git: Any,
     prune: bool,
-) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None, QueueConfig]:
     with hold_lease(
         MERGE_LEASE, operation=f"drain the {repo.name} merge queue", path=scope.tree
     ):
-        batch = queued(scope.tree)[:batch_size]
+        base, config, batch = _drain_plan(scope, requested_base, requested_batch_size)
+        _verify_base_exists(repo, base, config)
         if not batch:
-            return None, {
-                "repo": repo.name,
-                "drained": 0,
-                "outcomes": [],
-                "seconds": 0.0,
-            }
+            return (
+                None,
+                {
+                    "repo": repo.name,
+                    "drained": 0,
+                    "outcomes": [],
+                    "seconds": 0.0,
+                },
+                config,
+            )
         by_branch = {c.branch: c for c in batch}
         outcomes = integrate_batch(
             batch, base=base, scope=scope, config=config, git=git
         )
         for outcome in outcomes:
             _record_batch_outcome(outcome, by_branch, scope, repo, base, git, prune)
-    return outcomes, None
+    return outcomes, None, config
 
 
 def _run_queue_summary(
@@ -3051,14 +3226,10 @@ def run_queue(
     """
     scope = lane_scope(path)
     repo = scope.main_tree
-    config = _repo_config(scope)
-    base = base or config.base
-    batch_size = batch_size or config.batch_size
     git = _resolve_git_client(git, repo)
-    _verify_base_exists(repo, base, config)
     started = time.monotonic()
-    outcomes, early = _drain_batch_under_lease(
-        scope, repo, base, batch_size, config, git, prune
+    outcomes, early, config = _drain_batch_under_lease(
+        scope, repo, base, batch_size, git, prune
     )
     if early is not None:
         return early

@@ -36,7 +36,8 @@ GATES      (<repo>/.mergequeue.yaml — declarative, per project)
 **The queue must not know what a gate IS — only how to run one and compare its
 result against the base ref.** A repository that declares no config is *refused*,
 not defaulted: "declared no gates" and "has no queue configured" must not be the
-same value.
+same value. The sole exception is the fail-closed first-config bootstrap below;
+it installs a reviewed declaration through this queue instead of bypassing it.
 
 ```mermaid
 flowchart TD
@@ -44,7 +45,10 @@ flowchart TD
     L2[lane B worktree] -->|enqueue| S
     L3[lane N worktree] -->|enqueue| S
     S --> R{{"run — holds the repo's<br/>reconciliation-merge LEASE"}}
-    R --> C["merge-tree --write-tree<br/>→ commit-tree<br/>NO working tree touched"]
+    R --> Q{"canonical config exists?"}
+    Q -->|yes| C["merge-tree --write-tree<br/>→ commit-tree<br/>NO working tree touched"]
+    Q -->|no| BC["select exactly one clean<br/>config-only candidate"]
+    BC --> C
     C --> G["materialize a throwaway<br/>detached worktree"]
     G --> Y[".mergequeue.yaml<br/>read from the MERGED tree"]
     Y --> F[run each fast-tier gate]
@@ -66,6 +70,29 @@ flowchart TD
 | 4 | **Guarded prune** | Merge-base re-checked *at delete time*, a `refs/lane-backup/<branch>` anchor written first, `git branch -d` **never** `-D`, and any worktree holding uncommitted work refused. |
 | 5 | **Honest degradation** | Every refusal names its reason. No path reports success it did not verify — enforced by the landing post-condition (D-RMD-1, below), not just intended. |
 
+## First-config bootstrap
+
+A repository cannot use its normal queue until its first `.mergequeue.yaml`
+lands, but hand-merging that file would bypass the mechanism it establishes.
+While holding the normal `reconciliation-merge` lease, the runner therefore may
+select exactly one queued candidate whose base-to-recorded-tip tree delta is
+exactly `A .mergequeue.yaml`. Ordinary payload candidates may already be waiting;
+they remain queued until governance lands and are processed normally afterward.
+
+The selected candidate must record a registered, clean worktree and immutable
+tip; its worktree `HEAD`, named branch, and live branch ref must still equal that
+tip. The declaration must use strict schema version 2 and its declared base must
+match both the candidate record and any requested base. A config change mixed
+with any other path, multiple config-only candidates, an absent candidate, a
+moved tip, an unclean worktree, or malformed configuration refuses the whole
+bootstrap without advancing a ref or recording a landing.
+
+Validation does not execute a candidate-selected helper to decide whether the
+candidate is trusted. It reads YAML with `git show`, validates the typed argv
+schema, then enters the existing path: materialize the merged candidate, run its
+declared fixed argv, independently materialize the base for differential
+comparison, and land through the guarded compare-and-swap path.
+
 ## `.mergequeue.yaml`
 
 The declaration is versioned and migratable. New repositories should use
@@ -75,6 +102,7 @@ certification stages. See [Configuration schemas and migration](config-schema-mi
 for the complete gate/resource/path/artifact contract and guarded atomic migration.
 
 ```yaml
+schema_version: 2
 base: main
 batch_size: 8
 environment_signature: ["cargo", "--version"]   # busts the baseline cache on a toolchain change
@@ -82,7 +110,7 @@ environment_signature: ["cargo", "--version"]   # busts the baseline cache on a 
 gates:
   - name: cargo-check
     command: [cargo, check, --all-features, --message-format, short]
-    tier: fast              # fast = inside the queue; slow = declared, run post-merge
+    stage: integration      # integration = inside the queue
     timeout: 1800
     baseline_timeout: 3600  # the base run is no smaller and contends differently (D-MW-10)
     compare: lines          # exit | lines | pytest-ids

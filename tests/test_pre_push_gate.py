@@ -117,6 +117,28 @@ def test_gate_runs_the_heavy_pre_push_stage(tmp_path):
         assert hook_stage == "pre-push"
 
 
+def test_post_land_pre_push_caps_inherited_xdist_and_tokio(tmp_path):
+    """The push path itself must pass the heavy cap into its child process."""
+    m = _git(tmp_path)
+    m.gate_before_push = True
+    inherited = {
+        "RM_GATE_MAX_WORKERS": "4",
+        "PYTEST_XDIST_AUTO_NUM_WORKERS": "4",
+        "TOKIO_WORKER_THREADS": "96",
+    }
+    with patch.dict(os.environ, inherited):
+        with patch(
+            "repository_manager.gates._run_gate_subprocess",
+            return_value=_completed(0),
+        ) as run:
+            assert m._gate_before_push(str(tmp_path)) is None
+
+    child_env = run.call_args.args[2]
+    assert child_env["RM_GATE_MAX_WORKERS"] == "2"
+    assert child_env["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "2"
+    assert child_env["TOKIO_WORKER_THREADS"] == "2"
+
+
 def test_gate_failure_aborts_push(tmp_path):
     m = _git(tmp_path)
     m.gate_before_push = True
