@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -326,7 +327,12 @@ def test_phased_push_blocks_the_wave_when_the_downstream_gate_keeps_failing(
     # while still genuinely exercising the deadline path.
     config = {
         "phases": [
-            {"phase": 1, "name": "Phase 1", "projects": ["repo1"], "wait_minutes": 0.001},
+            {
+                "phase": 1,
+                "name": "Phase 1",
+                "projects": ["repo1"],
+                "wait_minutes": 0.001,
+            },
             {"phase": 2, "name": "Phase 2", "projects": ["repo2"], "wait_minutes": 0},
         ]
     }
@@ -347,17 +353,30 @@ def test_phased_push_blocks_the_wave_when_the_downstream_gate_keeps_failing(
     )
 
 
-def test_phased_push_bulk_push_includes_images_and_services(mock_repo_manager):
-    """CONCEPT:RM-PUSH bulk-push-scope: a ``bulk_push: true`` phase resolves
-    against the WHOLE ``project_map`` (built from the entire workspace
-    manifest) and pushes every repo in it that an earlier phase did not
-    already handle — ``images/`` and ``services/`` INCLUDED.
+def _write_release_pyproject(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "pyproject.toml").write_text(
+        """\
+[project]
+name = "release-candidate"
+version = "1.0.0"
 
-    This is deliberate: the phased push exists to move the whole workspace,
-    not only the Python packages. An earlier revision carved the infra trees
-    out via a ``_bulk_push_excluded`` guard; that narrowed the push below its
-    designed scope and was removed. Use the declarative ``exclude`` field
-    (see the next test) to carve out a specific repo."""
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+"""
+    )
+
+
+def test_phased_push_bulk_push_excludes_infrastructure_even_when_buildable(
+    mock_repo_manager,
+):
+    """Phase 5 selects PyPI agents, not every repository in ``project_map``.
+
+    Giving images and services valid Python build metadata proves category is a
+    required independent condition, rather than an accidental pyproject-only
+    allow-list.
+    """
     root = mock_repo_manager.path
     mock_repo_manager.project_map = {
         "https://gitlab.arpa/agent-packages/agents/repo1.git": os.path.join(
@@ -366,8 +385,16 @@ def test_phased_push_bulk_push_includes_images_and_services(mock_repo_manager):
         "https://gitlab.arpa/images/foo.git": os.path.join(root, "images", "foo"),
         "https://gitlab.arpa/services/bar.git": os.path.join(root, "services", "bar"),
     }
+    mock_repo_manager._project_categories = {
+        "https://gitlab.arpa/agent-packages/agents/repo1.git": (
+            "agent-packages",
+            "agents",
+        ),
+        "https://gitlab.arpa/images/foo.git": ("images",),
+        "https://gitlab.arpa/services/bar.git": ("services",),
+    }
     for rel in ("agent-packages/agents/repo1", "images/foo", "services/bar"):
-        os.makedirs(os.path.join(root, rel), exist_ok=True)
+        _write_release_pyproject(Path(mock_repo_manager.path) / rel)
 
     config = {
         "phases": [
@@ -383,10 +410,43 @@ def test_phased_push_bulk_push_includes_images_and_services(mock_repo_manager):
         start_phase=1, config=config, auto_start=False
     )
 
-    # All three pushed: agent-packages/repo1, images/foo AND services/bar.
-    assert len(results) == 3
+    assert len(results) == 1
     assert all(r.status == "success" for r in results)
-    assert mock_repo_manager.git_action.call_count == 6  # 3 x (status + push)
+    assert mock_repo_manager.git_action.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("category", "metadata"),
+    [
+        (None, "valid"),
+        (("agent-packages", "unknown"), "valid"),
+        (("agent-packages", "agents"), "missing"),
+        (("agent-packages", "agents"), "empty"),
+        (("agent-packages", "agents"), "malformed"),
+    ],
+)
+def test_phased_push_bulk_metadata_and_category_fail_closed(
+    mock_repo_manager, category, metadata
+):
+    url = "https://github.com/Knuckles-Team/candidate.git"
+    path = Path(mock_repo_manager.path) / "agent-packages" / "agents" / "candidate"
+    path.mkdir(parents=True)
+    mock_repo_manager.project_map = {url: str(path)}
+    mock_repo_manager._project_categories = {} if category is None else {url: category}
+    if metadata == "valid":
+        _write_release_pyproject(path)
+    elif metadata == "empty":
+        (path / "pyproject.toml").write_text("[project]\n")
+    elif metadata == "malformed":
+        (path / "pyproject.toml").write_text("[project\n")
+
+    config = {"phases": [{"phase": 5, "name": "Phase 5: Agents", "bulk_push": True}]}
+    results = mock_repo_manager.phased_push(
+        start_phase=5, config=config, auto_start=False
+    )
+
+    assert results == []
+    mock_repo_manager.git_action.assert_not_called()
 
 
 def test_phased_push_honors_declarative_exclude_pattern(mock_repo_manager):

@@ -711,6 +711,10 @@ class Git:
                 pass
 
         self.project_map: dict[str, str] = {}
+        # Manifest category path for each configured origin. Bulk release
+        # selection consults this registry instead of inferring eligibility from
+        # a clone's filesystem path. An absent entry therefore fails closed.
+        self._project_categories: dict[str, tuple[str, ...]] = {}
         self.config: WorkspaceConfig | None = None
         self.set_to_default_branch = set_to_default_branch
         self.capture_output = capture_output
@@ -3824,9 +3828,9 @@ class Git:
 
         Returns ``(project_phases, bulk_phase_num)`` where ``project_phases``
         maps a project name to the phase that names it, and ``bulk_phase_num``
-        is the phase carrying ``bulk_bump``/``bulk_push`` (the catch-all every
-        unnamed repo falls into). Mirrors the per-project phase resolution
-        already used by :meth:`phased_bumpversion`.
+        is the phase carrying ``bulk_bump``/``bulk_push`` (the phase for every
+        eligible, unnamed agent package). Mirrors the per-project phase
+        resolution already used by :meth:`phased_bumpversion`.
         """
         project_phases: dict[str, int] = {}
         bulk_phase_num = 5
@@ -3869,15 +3873,41 @@ class Git:
         """
         project_phases, bulk_phase_num = self._build_phase_map(config)
         lowest: int | None = None
-        for url, path in self.project_map.items():
-            name = url.split("/")[-1].replace(".git", "")
-            phase_num = project_phases.get(name, bulk_phase_num)
+        candidates = self._release_phase_candidates(project_phases, bulk_phase_num)
+        for phase_num, path in candidates:
             # Once a candidate is found, only earlier phases can lower it.
             if lowest is not None and phase_num >= lowest:
                 continue
             if self._repo_has_pending_work(path):
                 lowest = phase_num
         return lowest
+
+    def _release_phase_for_project(
+        self,
+        url: str,
+        path: str,
+        project_phases: dict[str, int],
+        bulk_phase_num: int,
+    ) -> int | None:
+        """Explicit phase, eligible bulk phase, or no release phase."""
+        name = url.split("/")[-1].replace(".git", "")
+        explicit_phase = project_phases.get(name)
+        if explicit_phase is not None:
+            return explicit_phase
+        if self._is_bulk_release_target(url, path):
+            return bulk_phase_num
+        return None
+
+    def _release_phase_candidates(
+        self, project_phases: dict[str, int], bulk_phase_num: int
+    ) -> Iterator[tuple[int, str]]:
+        """Yield only manifest projects that belong to a release phase."""
+        for url, path in self.project_map.items():
+            phase = self._release_phase_for_project(
+                url, path, project_phases, bulk_phase_num
+            )
+            if phase is not None:
+                yield phase, path
 
     @_exclusive_repo_mutation
     def bump_version(
@@ -4273,24 +4303,29 @@ class Git:
                 project_phases[p] = p_num
         return project_phases, bulk_phase_num
 
-    @staticmethod
-    def _pre_commit_project_names(config: dict) -> list[Any] | None:
+    def _pre_commit_project_names(self, config: dict) -> list[Any] | None:
         """Projects the pre-commit stage should cover, or ``None`` for "all".
 
-        A ``bulk_bump`` phase means the run sweeps everything, so scoping the
-        pre-commit stage to a name list would be wrong -- ``None`` is returned
-        the moment one is seen.
+        Explicit phase members are always included. A ``bulk_bump`` phase adds
+        only manifest-classified, PyPI-buildable agent repositories; it never
+        expands pre-commit to unrelated infrastructure repositories.
         """
         if not config:
             return None
         projects_to_check: list[Any] = []
         for phase in config.get("phases", []):
-            if phase.get("bulk_bump"):
-                return None
-            projects_to_check.extend(phase.get("projects", []))
-            if phase.get("project"):
-                projects_to_check.append(phase.get("project"))
-        return projects_to_check
+            projects_to_check.extend(self._pre_commit_phase_projects(phase))
+        return list(dict.fromkeys(projects_to_check))
+
+    def _pre_commit_phase_projects(self, phase: dict) -> list[Any]:
+        """Explicit members plus eligible bulk agents for one phase."""
+        projects = list(phase.get("projects", []))
+        project = phase.get("project")
+        if project:
+            projects.append(project)
+        if phase.get("bulk_bump"):
+            projects.extend(name for name, _path in self._bulk_release_targets(set()))
+        return projects
 
     def _pre_commit_project_dirs(
         self, projects_to_check: list[Any] | None
@@ -4324,13 +4359,9 @@ class Git:
     def _unassigned_project_names(
         self, assigned_projects: set[str], claimed: list[str]
     ) -> list[str]:
-        """Mapped project names not claimed by an earlier phase or *claimed*."""
-        names: list[str] = []
-        for url in self.project_map:
-            name = url.split("/")[-1].replace(".git", "")
-            if name not in assigned_projects and name not in claimed:
-                names.append(name)
-        return names
+        """Eligible bulk-release agents not claimed by an earlier phase."""
+        excluded = assigned_projects | set(claimed)
+        return [name for name, _path in self._bulk_release_targets(excluded)]
 
     def _bump_phase_projects(
         self, phase: dict, filter_set: set[str] | None, assigned_projects: set[str]
@@ -4338,8 +4369,8 @@ class Git:
         """The project names one configured phase contributes to the bump plan.
 
         When a ``project_filter`` set is active, a bulk phase contributes exactly
-        the not-yet-assigned filter members (so filtered agents/services land in
-        the bulk phase). Without a filter, bulk sweeps everything unassigned.
+        the not-yet-assigned filter members. Without a filter, bulk sweeps only
+        unassigned, manifest-classified PyPI agent repositories.
         """
         projects = phase.get("projects", [])[:]
         if phase.get("project"):
@@ -4763,12 +4794,82 @@ class Git:
                 return p_path
         return None
 
-    def _bulk_push_targets(self, processed_projects: set[str]) -> list[tuple[str, str]]:
-        """Every mapped project not already claimed by an earlier phase."""
+    @staticmethod
+    def _has_release_version(project: dict[str, Any]) -> bool:
+        """Whether PEP 621 metadata declares a static or dynamic version."""
+        version = project.get("version")
+        if isinstance(version, str) and version.strip():
+            return True
+        dynamic = project.get("dynamic", [])
+        return isinstance(dynamic, list) and "version" in dynamic
+
+    @staticmethod
+    def _valid_build_system(build_system: object) -> bool:
+        """Whether metadata selects a non-empty PEP 517 build backend."""
+        if not isinstance(build_system, dict):
+            return False
+        backend = build_system.get("build-backend")
+        requires = build_system.get("requires")
+        if not isinstance(backend, str) or not backend.strip():
+            return False
+        if not isinstance(requires, list) or not requires:
+            return False
+        return all(isinstance(item, str) and item.strip() for item in requires)
+
+    @classmethod
+    def _valid_release_document(cls, data: dict[str, Any]) -> bool:
+        """Whether parsed TOML declares a named, versioned build."""
+        project = data.get("project")
+        if not isinstance(project, dict):
+            return False
+        name = project.get("name")
+        return bool(
+            isinstance(name, str)
+            and name.strip()
+            and cls._has_release_version(project)
+            and cls._valid_build_system(data.get("build-system"))
+        )
+
+    @classmethod
+    def _has_pypi_release_metadata(cls, project_path: str) -> bool:
+        """Whether *project_path* declares a buildable PyPI distribution.
+
+        Phase 5 is a package-release wave, so merely having a git repository or
+        a file named ``pyproject.toml`` is insufficient. The metadata must name
+        the distribution, provide a static or dynamic version, and select a
+        PEP 517 build backend with non-empty requirements. Malformed, partial,
+        or unreadable metadata fails closed.
+        """
+        import tomllib
+
+        manifest = Path(project_path) / "pyproject.toml"
+        if manifest.is_symlink() or not manifest.is_file():
+            return False
+        try:
+            with manifest.open("rb") as handle:
+                data = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            return False
+
+        return cls._valid_release_document(data)
+
+    def _is_bulk_release_target(self, url: str, project_path: str) -> bool:
+        """Whether a manifest entry is eligible for the Phase-5 PyPI wave."""
+        return self._project_categories.get(url) == (
+            "agent-packages",
+            "agents",
+        ) and self._has_pypi_release_metadata(project_path)
+
+    def _bulk_release_targets(
+        self, processed_projects: set[str]
+    ) -> list[tuple[str, str]]:
+        """Eligible PyPI agent repos not already claimed by an earlier phase."""
         targets: list[tuple[str, str]] = []
         for url, path in self.project_map.items():
             name = url.split("/")[-1].replace(".git", "")
-            if name in processed_projects:
+            if name in processed_projects or not self._is_bulk_release_target(
+                url, path
+            ):
                 continue
             targets.append((name, path))
         return targets
@@ -4807,7 +4908,7 @@ class Git:
                 projects = [project_filter]
 
         if phase.get("bulk_push") and not project_filter:
-            return self._bulk_push_targets(processed_projects)
+            return self._bulk_release_targets(processed_projects)
         return self._named_push_targets(projects, processed_projects)
 
     @staticmethod
@@ -5271,6 +5372,7 @@ class Git:
                 return False
 
             self.config = WorkspaceConfig(**data)
+            self._project_categories = {}
 
             yaml_config_path = os.path.expanduser(
                 _expand_required_environment(
@@ -5295,7 +5397,7 @@ class Git:
             logger.info("Workspace root resolved")
 
             self.project_map = self._parse_subdirectories(
-                self.config.subdirectories, self.path
+                self.config.subdirectories, self.path, category_path=()
             )
 
             for repo in self.config.repositories:
@@ -5305,6 +5407,7 @@ class Git:
                 )
                 repo_name = repo_url.split("/")[-1].replace(".git", "")
                 self.project_map[repo_url] = os.path.join(self.path, repo_name)
+                self._project_categories[repo_url] = ()
             return True
 
         except Exception as e:
@@ -5349,6 +5452,7 @@ class Git:
         Populates and returns self.project_map.
         """
         self.project_map = {}
+        self._project_categories = {}
         expanded_path = os.path.abspath(os.path.expanduser(self.path))
         if not os.path.exists(expanded_path):
             return self.project_map
@@ -5372,12 +5476,17 @@ class Git:
         return self.project_map
 
     def _parse_subdirectories(
-        self, subdirs: dict[str, SubdirectoryConfig], current_path: str
+        self,
+        subdirs: dict[str, SubdirectoryConfig],
+        current_path: str,
+        *,
+        category_path: tuple[str, ...],
     ) -> dict[str, str]:
         """Helper to recursively parse subdirectories and collect repository paths."""
         project_map = {}
         for name, data in subdirs.items():
             new_path = os.path.join(current_path, name)
+            repo_category = (*category_path, name)
 
             for repo in data.repositories:
                 repo_url = _expand_required_environment(
@@ -5386,10 +5495,15 @@ class Git:
                 )
                 repo_name = repo_url.split("/")[-1].replace(".git", "")
                 project_map[repo_url] = os.path.join(new_path, repo_name)
+                self._project_categories[repo_url] = repo_category
 
             if data.subdirectories:
                 project_map.update(
-                    self._parse_subdirectories(data.subdirectories, new_path)
+                    self._parse_subdirectories(
+                        data.subdirectories,
+                        new_path,
+                        category_path=repo_category,
+                    )
                 )
 
         return project_map

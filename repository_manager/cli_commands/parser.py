@@ -307,12 +307,18 @@ Examples:
     group_maintenance.add_argument(
         "--maintain",
         action="store_true",
-        help="Execute phased maintenance (Bump -> Pre-commit -> Verify).",
+        help=(
+            "Execute five-phase maintenance (Bump -> Pre-commit -> Verify); "
+            "Phase 5 is limited to manifest-classified PyPI agents."
+        ),
     )
     group_maintenance.add_argument(
         "--push",
         action="store_true",
-        help="Execute phased push.",
+        help=(
+            "Execute five-phase push; Phase 5 is limited to "
+            "manifest-classified PyPI agents."
+        ),
     )
     group_maintenance.add_argument(
         "--bump",
@@ -329,7 +335,7 @@ Examples:
         "--phase",
         type=int,
         default=1,
-        help="Starting phase for maintenance lifecycle (1-3).",
+        help="Starting phase for the five-phase maintenance lifecycle (1-5).",
     )
     group_maintenance.add_argument(
         "--single-phase",

@@ -4,18 +4,28 @@ The `repository-manager` includes powerful workflow automation features to execu
 
 ## Phased Maintenance Phases
 
-The agent ecosystem enforces dependency order updates through sequential maintenance phases. By default, three core phases govern the ecosystem:
+The agent ecosystem enforces dependency order updates through five sequential maintenance phases:
 
-1. **Phase 1: Core Tools and UIs**
-   Updates the foundation (`universal-skills`, `skill-graphs`, `agent-webui`, `agent-terminal-ui`).
-   Wait Interval: 10 minutes (allows CI/CD or CD pipeline deployments to propagate).
+1. **Phase 1: GitHub Pipelines**
+   Publishes the shared GitHub Actions pipeline repository.
 
-2. **Phase 2: agent-utilities**
-   Updates the primary orchestrator that depends on core tools.
-   Wait Interval: 5 minutes.
+2. **Phase 2: Epistemic Graph**
+   Publishes the database engine before its Python consumers.
+   Gate-readiness ceiling: 30 minutes.
 
-3. **Phase 3: Agents**
-   Executes a bulk update for all `agent` projects using a wildcard strategy to deploy final updates to the ecosystem.
+3. **Phase 3: agent-utilities**
+   Publishes the primary orchestrator after Epistemic Graph.
+   Gate-readiness ceiling: 30 minutes.
+
+4. **Phase 4: Core Tools and UIs**
+   Publishes `universal-skills`, `skill-graphs`, `agent-webui`,
+   `agent-terminal-ui`, and `geniusbot`.
+
+5. **Phase 5: Agents**
+   Bulk bumps and pushes only repositories explicitly recorded in the manifest's
+   `agent-packages/agents` category that also declare complete PyPI build metadata.
+   Services, images, plans, pipelines, non-package repositories, and unknown or
+   incomplete metadata fail closed and cannot enter the bulk target set.
 
 ## Change-aware Start Phase (default)
 
@@ -52,7 +62,7 @@ The following flags control phased update and push sequences:
 - `--bump [patch/minor/major]`: Executes a version bump.
 - `--maintain`: Executes phased dependency updates across the workspace. Modifies `pyproject.toml` automatically based on dependency tree.
 - `--push`: Executes a parallelized Git Push sequence per-phase. Phase transitions are gate-driven (CONCEPT:RM-DEP-READY) — `wait_minutes` is the retry ceiling for downstream repos' own pre-push gates, not a sleep; see `docs/phased_push.md`.
-- `--phase [int]`: Starting phase (1-3). Acts as a floor under change-aware start.
+- `--phase [int]`: Starting phase (1-5). Acts as a floor under change-aware start.
 - `--no-auto-start`: Opt out of change-aware start; begin at `--phase` (default 1) instead of the lowest changed phase.
 - `--single-phase`: Execute only the specified starting phase and halt.
 - `--project [name]`: Execute bumps or pushes exclusively for a targeted project name (disables change-aware start).
