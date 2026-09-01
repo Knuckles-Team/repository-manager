@@ -706,7 +706,7 @@ def _require_finalize_preconditions(
     job_id: str,
     work_item_id: str,
     attempt: int | None,
-) -> None:
+) -> Callable[[], bool]:
     """Reject `finalize()` calls missing durable WorkItem identity/proof."""
     if terminal_check is None or not job_id.strip() or not work_item_id.strip():
         raise ArtifactFenceLost(
@@ -714,6 +714,7 @@ def _require_finalize_preconditions(
         )
     if attempt is None or attempt < 1:
         raise ArtifactFenceLost("durable WorkItem attempt is required before finalize")
+    return terminal_check
 
 
 def _require_matching_manifest_identity(
@@ -1034,7 +1035,7 @@ def _validate_manifest_schema_key(
 
 def _validate_manifest_entry_fields(
     entry: object, schema: object
-) -> tuple[str, str] | None:
+) -> tuple[Mapping[str, Any], str, str] | None:
     """Validate one entry's stored_at/sha256/bytes-type fields.
 
     Returns ``(stored_at, checksum)`` on success.
@@ -1051,7 +1052,7 @@ def _validate_manifest_entry_fields(
         not isinstance(entry.get("bytes"), int) or isinstance(entry.get("bytes"), bool)
     ):
         return None
-    return stored_at, checksum
+    return entry, stored_at, checksum
 
 
 def _validate_artifact_stat(
@@ -1089,9 +1090,9 @@ def _validate_manifest_entry_metadata(
     fields = _validate_manifest_entry_fields(entry, schema)
     if fields is None:
         return None
-    stored_at, checksum = fields
+    validated_entry, stored_at, checksum = fields
     artifact = Path(stored_at)
-    declared_bytes = _validate_artifact_stat(artifact, expected_root, entry)
+    declared_bytes = _validate_artifact_stat(artifact, expected_root, validated_entry)
     if declared_bytes is None:
         return None
     return artifact, checksum, declared_bytes
@@ -1900,7 +1901,9 @@ class BuildArtifactStore:
         """Mark a published manifest committed after WorkItem terminal commit."""
 
         self._require_fence(fence_check)
-        _require_finalize_preconditions(terminal_check, job_id, work_item_id, attempt)
+        terminal_check = _require_finalize_preconditions(
+            terminal_check, job_id, work_item_id, attempt
+        )
         lock_path = self._lock_path(key)
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("a+") as lock:

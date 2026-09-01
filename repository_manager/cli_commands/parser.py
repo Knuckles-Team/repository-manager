@@ -11,7 +11,10 @@ import argparse
 import json
 import os
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from repository_manager.repository_manager import Git
 
 from repository_manager.cli_commands.build_queue import run_build_queue_cli
 from repository_manager.cli_commands.concepts import run_concepts_cli
@@ -759,7 +762,7 @@ def _run_manifest_sync(
     return True
 
 
-def _apply_runtime_flags(git: object, args: argparse.Namespace) -> None:
+def _apply_runtime_flags(git: Git, args: argparse.Namespace) -> None:
     if args.default_branch:
         git.set_to_default_branch = True
 
@@ -770,7 +773,7 @@ def _apply_runtime_flags(git: object, args: argparse.Namespace) -> None:
 def _load_workspace_file(
     runtime: CliRuntime,
     parser: argparse.ArgumentParser,
-    git: object,
+    git: Git,
     args: argparse.Namespace,
 ) -> None:
     if args.file:
@@ -786,7 +789,7 @@ def _load_workspace_file(
         git.load_projects_from_yaml(runtime.default_workspace_yml)
 
 
-def _filter_existing_project_map(git: object, names_to_keep: set[str]) -> None:
+def _filter_existing_project_map(git: Git, names_to_keep: set[str]) -> None:
     filtered = {}
     for url, path in git.project_map.items():
         name = url.split("/")[-1].replace(".git", "")
@@ -795,7 +798,7 @@ def _filter_existing_project_map(git: object, names_to_keep: set[str]) -> None:
     git.project_map = filtered
 
 
-def _seed_project_map_from_names(git: object, repositories: list[str]) -> None:
+def _seed_project_map_from_names(git: Git, repositories: list[str]) -> None:
     for r in repositories:
         if "/" in r:
             name = r.split("/")[-1].replace(".git", "")
@@ -806,7 +809,7 @@ def _seed_project_map_from_names(git: object, repositories: list[str]) -> None:
             )
 
 
-def _apply_repository_filter(git: object, args: argparse.Namespace) -> None:
+def _apply_repository_filter(git: Git, args: argparse.Namespace) -> None:
     if not args.repositories:
         return
     repositories = args.repositories.replace(" ", "").split(",")
@@ -818,7 +821,7 @@ def _apply_repository_filter(git: object, args: argparse.Namespace) -> None:
 
 
 def _maybe_setup_from_file(
-    runtime: CliRuntime, git: object, args: argparse.Namespace
+    runtime: CliRuntime, git: Git, args: argparse.Namespace
 ) -> None:
     if args.file and os.path.exists(args.file):
         if args.setup:
@@ -826,7 +829,7 @@ def _maybe_setup_from_file(
             git.load_projects_from_yaml(args.file)
 
 
-def _run_clone_pull(git: object, args: argparse.Namespace) -> None:
+def _run_clone_pull(git: Git, args: argparse.Namespace) -> None:
     if args.clone:
         git.clone_projects()
     if args.pull:
@@ -834,7 +837,7 @@ def _run_clone_pull(git: object, args: argparse.Namespace) -> None:
 
 
 def _run_basic_bulk_verbs(
-    runtime: CliRuntime, git: object, args: argparse.Namespace
+    runtime: CliRuntime, git: Git, args: argparse.Namespace
 ) -> None:
     if args.add:
         results = git.add_projects()
@@ -875,9 +878,7 @@ def _run_basic_bulk_verbs(
         git._export_report(summary, "build_report.md")
 
 
-def _run_gate_dispatch(
-    runtime: CliRuntime, git: object, args: argparse.Namespace
-) -> bool:
+def _run_gate_dispatch(runtime: CliRuntime, git: Git, args: argparse.Namespace) -> bool:
     """Run --gate / --gate-retest. Extracted verbatim from ``run``, including
     its three nested closures (unchanged) -- only the surrounding statements
     moved; lizard measures nested ``def``s as their own units, so moving them
@@ -1095,7 +1096,7 @@ def _run_gate_retest(
 
 
 def _dispatch_validate(
-    runtime: CliRuntime, git: object, args: argparse.Namespace, has_errors: bool
+    runtime: CliRuntime, git: Git, args: argparse.Namespace, has_errors: bool
 ) -> bool:
     if not args.validate:
         return has_errors
@@ -1120,7 +1121,7 @@ def _dispatch_validate(
 
 
 def _dispatch_bump(
-    runtime: CliRuntime, git: object, args: argparse.Namespace, has_errors: bool
+    runtime: CliRuntime, git: Git, args: argparse.Namespace, has_errors: bool
 ) -> bool:
     if not (args.bump and not args.maintain):
         return has_errors
@@ -1155,7 +1156,7 @@ def _load_config_file(runtime: CliRuntime, config_path: str) -> dict[str, Any] |
 
 
 def _dispatch_maintain(
-    runtime: CliRuntime, git: object, args: argparse.Namespace, has_errors: bool
+    runtime: CliRuntime, git: Git, args: argparse.Namespace, has_errors: bool
 ) -> bool:
     if not args.maintain:
         return has_errors
@@ -1190,7 +1191,7 @@ def _dispatch_maintain(
 
 
 def _dispatch_push(
-    runtime: CliRuntime, git: object, args: argparse.Namespace, has_errors: bool
+    runtime: CliRuntime, git: Git, args: argparse.Namespace, has_errors: bool
 ) -> None:
     if not args.push:
         return

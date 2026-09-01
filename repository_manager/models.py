@@ -801,7 +801,9 @@ def _get_single_error_line(
     lines = [line.strip() for line in content.split("\n") if line.strip()]
 
     strategies: tuple[Callable[[], str | None], ...] = (
-        lambda: _first_matching_line(lines, _EXCEPTION_LINE_RE.match),
+        lambda: _first_matching_line(
+            lines, lambda line: _EXCEPTION_LINE_RE.match(line) is not None
+        ),
         lambda: _first_matching_line(lines, _is_error_tagged_line),
         lambda: _first_matching_line(lines, _is_failed_tagged_line),
         lambda: _extracted_error_fallback_line(content, command),
