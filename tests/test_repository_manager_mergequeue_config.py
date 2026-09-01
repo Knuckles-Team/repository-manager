@@ -11,6 +11,15 @@ from repository_manager import merge_queue
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_PYTHON = ".venv/bin/python"
+QUEUE_TEST_COMMAND = (
+    REPO_PYTHON,
+    "-m",
+    "pytest",
+    "tests/test_merge_queue.py",
+    "tests/test_config_schema.py",
+    "tests/test_repository_manager_mergequeue_config.py",
+    "-q",
+)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -33,6 +42,14 @@ def test_repository_queue_config_never_invokes_ambient_python() -> None:
 
     assert commands
     assert all(command[0] == REPO_PYTHON for command in commands)
+
+
+def test_repository_queue_config_uses_exact_queue_owned_test_census() -> None:
+    config = merge_queue.load_config(ROOT)
+    queue_gate = next(gate for gate in config.gates if gate.name == "queue-tests")
+
+    assert queue_gate.command == QUEUE_TEST_COMMAND
+    assert "tests/" not in queue_gate.command
 
 
 def test_materialized_snapshot_attaches_only_an_existing_ignored_venv(
