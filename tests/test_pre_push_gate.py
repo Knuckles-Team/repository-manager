@@ -7,6 +7,7 @@ hooks). These tests assert the fixed call shape; ``tests/test_gates.py`` proves
 the live ``--hook-stage`` firing behavior end to end against real ``pre-commit``.
 """
 
+import os
 import subprocess
 from unittest.mock import MagicMock, patch
 
@@ -40,7 +41,14 @@ def _git(tmp_path, ahead="1"):
 
 def _completed(returncode, stdout=""):
     return subprocess.CompletedProcess(
-        args=["pre-commit", "run", "--hook-stage", "pre-push", "--all-files", "--verbose"],
+        args=[
+            "pre-commit",
+            "run",
+            "--hook-stage",
+            "pre-push",
+            "--all-files",
+            "--verbose",
+        ],
         returncode=returncode,
         stdout=stdout,
         stderr="",
@@ -125,6 +133,20 @@ def test_gate_failure_aborts_push(tmp_path):
         for c in m.git_action.call_args_list
     )
     assert not pushed
+
+
+def test_invalid_worker_budget_fails_push_closed(tmp_path):
+    """A malformed resource policy must never bypass the post-land push gate."""
+    m = _git(tmp_path)
+    m.gate_before_push = True
+    with patch.dict(os.environ, {"RM_GATE_MAX_WORKERS": "unbounded"}):
+        result = m._gate_before_push(str(tmp_path))
+
+    assert result is not None
+    assert result.status == "error"
+    assert result.error is not None
+    assert "did not complete" in result.error.message.lower()
+    assert "RM_GATE_MAX_WORKERS" in result.error.message
 
 
 def test_gate_skipped_without_precommit_config(tmp_path):

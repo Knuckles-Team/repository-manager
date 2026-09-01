@@ -61,6 +61,7 @@ import re
 import socket
 import subprocess  # nosec B404 - fixed argv only, never shell=True
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -91,6 +92,74 @@ _DURATION_LINE = re.compile(r"^-\s*duration:\s*([\d.]+)\s*s?\s*$", re.IGNORECASE
 # is indistinguishable from the gate actually finding a defect.
 _DEFAULT_TIMEOUT_BY_STAGE = {"fast": 600, "heavy": 5400}
 _TIMEOUT_ENV_VAR = "RM_GATE_TIMEOUT_SECONDS"
+_MAX_WORKERS_ENV_VAR = "RM_GATE_MAX_WORKERS"
+_DEFAULT_MAX_WORKERS = 4
+
+# These libraries all size themselves independently from the host CPU count.
+# A CPU quota only throttles the work after they have spawned it; it does not
+# stop one pre-push hook from creating a pytest process pool, a Cargo compile
+# pool, and a native-math thread pool at the same time.  Keep the policy at the
+# one pre-commit subprocess chokepoint so CLI, MCP, phased-push, and merge-queue
+# push callers cannot drift.
+_WORKER_LIMIT_ENV_VARS = (
+    "PYTEST_XDIST_AUTO_NUM_WORKERS",
+    "CARGO_BUILD_JOBS",
+    "RUST_TEST_THREADS",
+    "RAYON_NUM_THREADS",
+)
+_SERIAL_NATIVE_THREAD_ENV_VARS = (
+    "OMP_NUM_THREADS",
+    "OMP_THREAD_LIMIT",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "BLIS_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "GOTO_NUM_THREADS",
+)
+
+
+class GateResourceConfigurationError(ValueError):
+    """A gate resource limit is malformed and execution must fail closed."""
+
+
+def precommit_gate_environment(
+    source: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return the fail-closed, resource-bounded pre-commit environment.
+
+    ``RM_GATE_MAX_WORKERS`` is the one operator control for process-oriented
+    test/build runtimes.  Native numeric libraries are kept serial inside
+    those workers so their own host auto-detection cannot multiply the process
+    pool.  Values are assigned, not defaulted: an inherited interactive-shell
+    setting must not silently defeat the gate's resource contract.
+    """
+
+    env = dict(os.environ if source is None else source)
+    raw_limit = env.get(_MAX_WORKERS_ENV_VAR, str(_DEFAULT_MAX_WORKERS)).strip()
+    try:
+        max_workers = int(raw_limit)
+    except ValueError as exc:
+        raise GateResourceConfigurationError(
+            f"{_MAX_WORKERS_ENV_VAR} must be a positive integer, got {raw_limit!r}"
+        ) from exc
+    if max_workers <= 0:
+        raise GateResourceConfigurationError(
+            f"{_MAX_WORKERS_ENV_VAR} must be a positive integer, got {raw_limit!r}"
+        )
+
+    normalized_limit = str(max_workers)
+    env[_MAX_WORKERS_ENV_VAR] = normalized_limit
+    for name in _WORKER_LIMIT_ENV_VARS:
+        env[name] = normalized_limit
+    for name in _SERIAL_NATIVE_THREAD_ENV_VARS:
+        env[name] = "1"
+    # Hugging Face tokenizers expects a boolean rather than a thread count.
+    env["TOKENIZERS_PARALLELISM"] = "false"
+    env["SKIP"] = (
+        f"{env['SKIP']},no-commit-to-branch" if "SKIP" in env else "no-commit-to-branch"
+    )
+    return env
 
 
 def default_gate_timeout(stage: str) -> int:
@@ -128,12 +197,7 @@ def _run_pre_commit(
     specific hook ids (used by ``profile`` when a caller wants to time one
     named hook in isolation).
     """
-    env = os.environ.copy()
-    env["SKIP"] = (
-        f"{env['SKIP']},no-commit-to-branch"
-        if "SKIP" in env
-        else ("no-commit-to-branch")
-    )
+    env = precommit_gate_environment()
 
     scope = ["--files", *files] if files else ["--all-files"]
     argv = [
@@ -475,6 +539,29 @@ def _needs_build_reservation(
     return os.path.exists(os.path.join(repo_path, _CARGO_MANIFEST))
 
 
+def _gate_execution_exception_result(
+    invocation: _GateInvocation, started: float, exc: Exception
+) -> RepoScanResult:
+    """Map execution/configuration exceptions without growing runner complexity."""
+
+    error = (
+        f"Invalid gate resource configuration: {exc}"
+        if isinstance(exc, GateResourceConfigurationError)
+        else (
+            f"Error executing the {invocation.stage!r} "
+            f"({invocation.hook_stage}) gate: {type(exc).__name__}"
+        )
+    )
+    return RepoScanResult(
+        repo_path=invocation.repo_path,
+        success=False,
+        exit_code=-1,
+        error=error,
+        stage=invocation.stage,
+        duration_s=time.monotonic() - started,
+    )
+
+
 def _run_gate_process(
     invocation: _GateInvocation, started: float
 ) -> tuple[subprocess.CompletedProcess | None, RepoScanResult | None]:
@@ -547,17 +634,7 @@ def _run_gate_process(
             duration_s=time.monotonic() - started,
         )
     except Exception as e:
-        return None, RepoScanResult(
-            repo_path=invocation.repo_path,
-            success=False,
-            exit_code=-1,
-            error=(
-                f"Error executing the {invocation.stage!r} "
-                f"({invocation.hook_stage}) gate: {type(e).__name__}"
-            ),
-            stage=invocation.stage,
-            duration_s=time.monotonic() - started,
-        )
+        return None, _gate_execution_exception_result(invocation, started, e)
     return result, None
 
 
