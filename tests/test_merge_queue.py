@@ -723,6 +723,201 @@ def test_dropping_a_declared_gate_is_a_refusal(shell_repo: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# First-config bootstrap — one clean config-only candidate, under the lease
+# ---------------------------------------------------------------------------
+def _bootstrap_config(*, base: str = "main", command: str = '["./gate.sh"]') -> str:
+    return textwrap.dedent(
+        f"""
+        schema_version: 2
+        base: {base}
+        batch_size: 1
+        gates:
+          - name: bootstrap-gate
+            command: {command}
+            stage: integration
+            timeout: 60
+            baseline_mode: differential
+            compare: lines
+        """
+    )
+
+
+def _bootstrap_repo(tmp_path: Path) -> Path:
+    repo = _init_repo(tmp_path / "bootstrap-repo")
+    (repo / "gate.sh").write_text("#!/bin/sh\necho checked\n")
+    os.chmod(repo / "gate.sh", 0o755)
+    (repo / "base.txt").write_text("base\n")
+    _commit(repo, "base without queue config")
+    return repo
+
+
+def _enqueue_bootstrap_candidate(
+    repo: Path,
+    tmp_path: Path,
+    branch: str,
+    config: str | None,
+    *,
+    recorded_base: str = "main",
+    extra: dict[str, str] | None = None,
+) -> Path:
+    worktree = tmp_path / branch.replace("/", "-")
+    _run(f"git worktree add -q -b {branch} {worktree} main", repo)
+    if config is not None:
+        _write_config(worktree, config)
+    for relative, body in (extra or {}).items():
+        target = worktree / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body)
+    _commit(worktree, f"candidate {branch}")
+    mq.enqueue(branch, base=recorded_base, path=worktree)
+    return worktree
+
+
+def test_one_clean_config_only_candidate_bootstraps_and_runs_exact_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _bootstrap_repo(tmp_path)
+    _enqueue_bootstrap_candidate(repo, tmp_path, "bootstrap/only", _bootstrap_config())
+    calls: list[tuple[tuple[str, ...], Path]] = []
+    timed_run = mq._timed_run
+
+    def record_run(argv, cwd, *, timeout, env):
+        calls.append((tuple(argv), cwd))
+        return timed_run(argv, cwd, timeout=timeout, env=env)
+
+    monkeypatch.setattr(mq, "_timed_run", record_run)
+    result = mq.run_queue(path=repo, prune=False, git=FakeGit(str(repo), {}))
+
+    assert result["landed"] == 1
+    assert (repo / mq.CONFIG_FILENAME).is_file()
+    assert [argv for argv, _cwd in calls] == [
+        ("./gate.sh",),
+        ("./gate.sh",),
+    ]
+    assert len({cwd for _argv, cwd in calls}) == 2
+
+
+def test_bootstrap_refuses_multiple_candidates_without_landing(tmp_path: Path) -> None:
+    repo = _bootstrap_repo(tmp_path)
+    original = _run("git rev-parse refs/heads/main", repo)
+    _enqueue_bootstrap_candidate(repo, tmp_path, "bootstrap/a", _bootstrap_config())
+    _enqueue_bootstrap_candidate(repo, tmp_path, "bootstrap/b", _bootstrap_config())
+
+    with pytest.raises(mq.MergeQueueError, match="exactly one queued"):
+        mq.run_queue(path=repo, prune=False, git=FakeGit(str(repo), {}))
+
+    assert _run("git rev-parse refs/heads/main", repo) == original
+
+
+def test_bootstrap_lands_governance_ahead_of_ordinary_queued_payload(
+    tmp_path: Path,
+) -> None:
+    repo = _bootstrap_repo(tmp_path)
+    _enqueue_bootstrap_candidate(
+        repo,
+        tmp_path,
+        "feature/already-waiting",
+        None,
+        extra={"feature.txt": "wait for governance\n"},
+    )
+    _enqueue_bootstrap_candidate(
+        repo, tmp_path, "bootstrap/governance", _bootstrap_config()
+    )
+
+    result = mq.run_queue(path=repo, prune=False, git=FakeGit(str(repo), {}))
+
+    assert result["landed"] == 1
+    assert result["outcomes"][0]["branch"] == "bootstrap/governance"
+    assert [candidate.branch for candidate in mq.queued(repo)] == [
+        "feature/already-waiting"
+    ]
+
+
+def test_bootstrap_refuses_config_mixed_with_payload(tmp_path: Path) -> None:
+    repo = _bootstrap_repo(tmp_path)
+    original = _run("git rev-parse refs/heads/main", repo)
+    _enqueue_bootstrap_candidate(
+        repo,
+        tmp_path,
+        "bootstrap/payload",
+        _bootstrap_config(),
+        extra={"payload.txt": "must not land\n"},
+    )
+
+    with pytest.raises(mq.MergeQueueError, match="mixes queue governance with payload"):
+        mq.run_queue(path=repo, prune=False, git=FakeGit(str(repo), {}))
+
+    assert _run("git rev-parse refs/heads/main", repo) == original
+
+
+def test_bootstrap_refuses_malformed_config_before_any_gate_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _bootstrap_repo(tmp_path)
+    _enqueue_bootstrap_candidate(
+        repo,
+        tmp_path,
+        "bootstrap/malformed",
+        _bootstrap_config(command="./gate.sh"),
+    )
+
+    def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("an unvalidated bootstrap command was executed")
+
+    monkeypatch.setattr(mq, "_timed_run", unexpected_run)
+    with pytest.raises(mq.MergeQueueError, match="must be a LIST"):
+        mq.run_queue(path=repo, prune=False, git=FakeGit(str(repo), {}))
+
+
+def test_bootstrap_refuses_an_unclean_recorded_worktree(tmp_path: Path) -> None:
+    repo = _bootstrap_repo(tmp_path)
+    worktree = _enqueue_bootstrap_candidate(
+        repo, tmp_path, "bootstrap/dirty", _bootstrap_config()
+    )
+    (worktree / "untracked.tmp").write_text("not part of the recorded tip\n")
+
+    with pytest.raises(mq.MergeQueueError, match="unclean recorded worktree"):
+        mq.run_queue(path=repo, prune=False, git=FakeGit(str(repo), {}))
+
+
+def test_bootstrap_refuses_a_branch_that_moved_after_enqueue(tmp_path: Path) -> None:
+    repo = _bootstrap_repo(tmp_path)
+    worktree = _enqueue_bootstrap_candidate(
+        repo, tmp_path, "bootstrap/moved", _bootstrap_config()
+    )
+    _commit(worktree, "move the branch after enqueue")
+
+    with pytest.raises(mq.MergeQueueError, match="no longer matches.*recorded"):
+        mq.run_queue(path=repo, prune=False, git=FakeGit(str(repo), {}))
+
+
+def test_bootstrap_refuses_declared_base_mismatch(tmp_path: Path) -> None:
+    repo = _bootstrap_repo(tmp_path)
+    original = _run("git rev-parse refs/heads/main", repo)
+    _enqueue_bootstrap_candidate(
+        repo,
+        tmp_path,
+        "bootstrap/wrong-base",
+        _bootstrap_config(base="release"),
+        recorded_base="main",
+    )
+
+    with pytest.raises(
+        mq.MergeQueueError, match="records base 'main'.*declares 'release'"
+    ):
+        mq.run_queue(path=repo, prune=False, git=FakeGit(str(repo), {}))
+
+    assert _run("git rev-parse refs/heads/main", repo) == original
+
+
+def test_bootstrap_refuses_when_no_candidate_exists(tmp_path: Path) -> None:
+    repo = _bootstrap_repo(tmp_path)
+
+    with pytest.raises(mq.MergeQueueError, match=r"found 0 \(none\)"):
+        mq.run_queue(path=repo, prune=False, git=FakeGit(str(repo), {}))
+
+
+# ---------------------------------------------------------------------------
 # The config seam — a missing declaration REFUSES rather than defaulting
 # ---------------------------------------------------------------------------
 def test_repository_queue_config_never_invokes_ambient_python() -> None:
