@@ -65,7 +65,7 @@ The following flags control phased update and push sequences:
 - `--phase [int]`: Starting phase (1-5). Acts as a floor under change-aware start.
 - `--no-auto-start`: Opt out of change-aware start; begin at `--phase` (default 1) instead of the lowest changed phase.
 - `--single-phase`: Execute only the specified starting phase and halt.
-- `--project [name]`: Execute bumps or pushes exclusively for a targeted project name (disables change-aware start).
+- `--project [name[,name...]]`: Narrow bumps, pre-commit candidates, and pushes to one or more comma-separated project names (disables change-aware start). In a bulk phase this is an intersection with the eligible PyPI-agent set, never a way to add a service, image, plan, pipeline, or other ineligible repository.
 
 ## Example: The Sequential Execution Pipeline
 
@@ -90,4 +90,9 @@ repository-manager --push --phase 2 --single-phase
 Target only `agent-utilities` during a phased bump:
 ```bash
 repository-manager --maintain --bump patch --project agent-utilities
+```
+
+Target two eligible agent distributions during both bump and push:
+```bash
+repository-manager --maintain --push --project jira-agent,servicenow-agent
 ```

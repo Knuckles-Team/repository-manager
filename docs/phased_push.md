@@ -75,9 +75,13 @@ repository-manager --maintain --push
 # Execute a single phase (e.g. Phase 2) and exit without continuing to Phase 3
 repository-manager --push --phase 2 --single-phase
 
-# Push only a specific project defined in the configuration
-repository-manager --push --project agent-utilities
+# Push only specific projects defined in the configuration (comma-separated)
+repository-manager --push --project agent-utilities,agent-webui
 ```
+
+For a bulk phase, `--project` only intersects the already eligible
+manifest-classified PyPI-agent set. It cannot promote an infrastructure or
+otherwise ineligible repository into the release wave.
 
 ### MCP Tool Usage
 The autonomous harness triggers pushes through the condensed `rm_git` MCP tool:

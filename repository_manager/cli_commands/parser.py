@@ -356,7 +356,11 @@ Examples:
     group_maintenance.add_argument(
         "--project",
         type=str,
-        help="Only execute maintenance operations for a specific project.",
+        help=(
+            "Only execute maintenance operations for the given project name or "
+            "comma-separated project names. A bulk phase can only be narrowed; "
+            "this filter cannot add an ineligible release target."
+        ),
     )
     group_maintenance.add_argument(
         "--dry-run",

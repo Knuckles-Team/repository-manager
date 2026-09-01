@@ -356,9 +356,9 @@ def test_phased_push_blocks_the_wave_when_the_downstream_gate_keeps_failing(
 def _write_release_pyproject(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / "pyproject.toml").write_text(
-        """\
+        f"""\
 [project]
-name = "release-candidate"
+name = "{path.name}"
 version = "1.0.0"
 
 [build-system]
