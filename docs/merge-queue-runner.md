@@ -46,8 +46,12 @@ Queue discovery reads each declared repository's own Git common directory. It
 folds candidate records by their `recorded_at` timestamp, so a stale lane
 fragment cannot revive a newer terminal state. `canonical.yaml`, terminal
 states, and queued records older than `MERGE_QUEUE_MAX_AGE_SECONDS` (default
-86400) are ignored. A fresh queued candidate must retain an absolute, registered
-native worktree whose Git root is the recorded path and whose Git common
+86400) are ignored. Legacy fragments written before `recorded_at` existed are
+read without synthesizing a timestamp: a timestamped record wins when present,
+and an entirely legacy group retains append order only for age filtering. A
+fresh queued legacy record is refused until it receives an authoritative
+timestamped state transition. A fresh queued candidate must retain an absolute,
+registered native worktree whose Git root is the recorded path and whose Git common
 directory matches the declared repository. The native worktree may live outside
 the canonical checkout (as RM does for isolated lanes), but missing,
 unregistered, symlinked, or cross-repository worktrees fail closed before any

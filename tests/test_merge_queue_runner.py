@@ -250,6 +250,46 @@ def test_discovery_folds_latest_record_and_ignores_canonical_stale_terminal(
     assert [item.identifier for item in selected] == ["plans"]
 
 
+def test_stale_legacy_record_without_recorded_at_is_ignored(tmp_path: Path) -> None:
+    _workspace(tmp_path)
+    legacy = _record("legacy", enqueued="2026-08-01T11:00:00+00:00")
+    legacy.pop("recorded_at")
+    _fragment(tmp_path / "plans", "legacy.yaml", [legacy])
+
+    assert discover_queued_repositories(tmp_path, now=NOW, max_age_seconds=86400) == ()
+
+
+def test_fresh_legacy_record_without_recorded_at_fails_closed(tmp_path: Path) -> None:
+    _workspace(tmp_path)
+    legacy = _record("legacy", enqueued="2026-08-31T11:00:00+00:00")
+    legacy.pop("recorded_at")
+    _fragment(tmp_path / "plans", "legacy.yaml", [legacy])
+
+    with pytest.raises(MergeQueueRunnerError, match="missing recorded_at"):
+        discover_queued_repositories(tmp_path, now=NOW, max_age_seconds=86400)
+
+
+def test_timestamped_terminal_supersedes_legacy_queue_record(tmp_path: Path) -> None:
+    _workspace(tmp_path)
+    legacy = _record("legacy", enqueued="2026-08-01T11:00:00+00:00")
+    legacy.pop("recorded_at")
+    _fragment(tmp_path / "plans", "legacy.yaml", [legacy])
+    _fragment(
+        tmp_path / "plans",
+        CANONICAL_FRAGMENT,
+        [
+            _record(
+                "legacy",
+                state="landed",
+                enqueued="2026-08-01T11:00:00+00:00",
+                recorded="2026-08-01T12:00:00+00:00",
+            )
+        ],
+    )
+
+    assert discover_queued_repositories(tmp_path, now=NOW, max_age_seconds=86400) == ()
+
+
 def test_missing_declared_root_and_manifest_path_drift_fail_loudly(
     tmp_path: Path,
 ) -> None:
