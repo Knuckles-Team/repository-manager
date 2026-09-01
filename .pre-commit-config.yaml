@@ -144,7 +144,7 @@ repos:
   - id: check-cli-help
     name: check cli help
     entry: |-
-      bash -c 'for f in $(find . -type f \( -name "mcp_server.py" -o -name "agent_server.py" \) -not -path "*/\.venv/*" -not -path "*/__pycache__/*"); do mod=$(echo "$f" | sed -e "s/^\.\///" -e "s/\.py$//" -e "s/\//./g"); python scripts/run_agent_utilities_gate.py --module "$mod" -- --help >/dev/null || exit 1; done'
+      bash -c 'for f in $(find . -type f \( -name "mcp_server.py" -o -name "agent_server.py" \) -not -path "*/\.venv/*" -not -path "*/__pycache__/*"); do mod=$(echo "$f" | sed -e "s/^\.\///" -e "s/\.py$//" -e "s/\//./g"); python scripts/run_agent_utilities_gate.py --extra agent --module "$mod" -- --help >/dev/null || exit 1; done'
     language: system
     pass_filenames: false
     always_run: true
@@ -203,7 +203,11 @@ repos:
   hooks:
   - id: pytest
     name: pytest
-    entry: bash -c 'test_target="tests"; for d in tests/unit test/unit tests test; do if [ -d "$d" ]; then test_target="$d"; break; fi; done; python scripts/run_agent_utilities_gate.py --module pytest -- "$test_target" -q --tb=short -m "not slow and not integration" --timeout=60'
+    # Run this repository's tests from this repository's locked uv project.
+    # The test extra declares the graphos kernel required by the RM ingestion
+    # tests; the gate helper only resolves the live AU source dependency and
+    # never changes the collection root to the sibling checkout.
+    entry: bash -c 'test_target="tests"; for d in tests/unit test/unit tests test; do if [ -d "$d" ]; then test_target="$d"; break; fi; done; python scripts/run_agent_utilities_gate.py --extra test --module pytest -- "$test_target" -q --tb=short -m "not slow and not integration" --timeout=60'
     language: system
     types: [python]
     pass_filenames: false

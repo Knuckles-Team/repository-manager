@@ -25,7 +25,7 @@ The base install is intentionally minimal. Install the extra for what you need:
 |---|---|---|
 | `mcp` | `pip install "repository-manager[mcp]"` | FastMCP MCP-server runtime (`agent-utilities[mcp]`) |
 | `agent` | `pip install "repository-manager[agent]"` | Pydantic-AI agent + Logfire tracing, `pre-commit`, `bump2version` |
-| `test` | `pip install "repository-manager[test]"` | `pytest`, `pytest-xdist`, `pytest-asyncio`, `pytest-cov`, `pytest-timeout` |
+| `test` | `pip install "repository-manager[test]"` | `pytest` tooling plus `agent-utilities[graphos,mcp]` and the certified `epistemic-graph` test kernel |
 | `all` | `pip install "repository-manager[all]"` | Everything above |
 
 ```bash
@@ -50,12 +50,15 @@ uv run repository-manager-mcp
 
 ## Pre-commit in an isolated worktree
 
-The framework-owned checks run in the locked `agent-utilities` environment so
-they exercise the same implementation as the workspace gate. In a normal
-workspace, the hook discovers the canonical `repository-manager` worktree and
-its sibling `agent-utilities` checkout. For a standalone clone, set
-`AGENT_UTILITIES_ROOT` to that checkout before running `pre-commit run
---all-files`.
+The framework-owned checks run from this repository's locked uv project, with
+the live `agent-utilities` checkout linked through the ignored
+`.uv-workspace-siblings/` path declared in `pyproject.toml`. The pytest hook
+selects the repository's `test` extra, which includes the certified
+`epistemic-graph` kernel required by RM's ingestion tests; it always collects
+the current repository's test root, never a sibling checkout's `tests/` tree.
+In a normal workspace the hook discovers the sibling automatically. For a
+standalone clone, set `AGENT_UTILITIES_ROOT` to that checkout before running
+`pre-commit run --all-files`.
 
 Docker Compose validation uses the checked-in synthetic digest fixture at
 `scripts/fixtures/precommit-compose.env`; it is never used for deployment.

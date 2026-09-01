@@ -26,6 +26,7 @@ from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -1557,6 +1558,28 @@ def test_landing_still_works_when_canonical_IS_on_the_base(shell_repo: Path) -> 
     # The working tree moved too, not just the ref.
     assert (shell_repo / "y.txt").is_file()
     assert _run("git rev-parse HEAD", shell_repo) == outcome["to"]
+
+
+def test_queue_fast_drain_can_defer_publication_without_invoking_heavy_push(
+    shell_repo: Path,
+) -> None:
+    """The timer's no-push mode lands locally and leaves publication visible."""
+
+    _branch_with(shell_repo, "feat/defer-push", {"deferred.txt": "fine\n"}, "defer")
+    git = FakeGit(str(shell_repo.parent), {"x": str(shell_repo)})
+    push_project = MagicMock(side_effect=AssertionError("heavy push invoked"))
+    git_any: Any = git
+    git_any.push_project = push_project
+    mq.enqueue("feat/defer-push", path=shell_repo)
+
+    outcome = mq.run_queue(path=shell_repo, prune=False, git=git, push=False)[
+        "outcomes"
+    ][0]
+
+    assert outcome["landed"] is True
+    assert outcome["pushed"] is False
+    assert "dedicated phased-push scheduler" in outcome["push_error"]
+    push_project.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

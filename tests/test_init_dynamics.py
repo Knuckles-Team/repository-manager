@@ -69,7 +69,10 @@ def test_dynamic_attributes_import_failure():
 def test_main_entrypoint():
     """Import and test the __main__.py file in isolation with runpy."""
     with patch("repository_manager.repository_manager.main") as mock_main:
-        runpy.run_module("repository_manager.__main__", run_name="__main__")
+        mock_main.return_value = 0
+        with pytest.raises(SystemExit) as raised:
+            runpy.run_module("repository_manager.__main__", run_name="__main__")
+        assert raised.value.code == 0
         mock_main.assert_called_once()
 
     # Clean up to avoid polluting other modules

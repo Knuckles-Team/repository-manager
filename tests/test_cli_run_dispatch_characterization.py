@@ -382,6 +382,14 @@ def test_push_config_load_failure_exits_1(runtime_and_factory, tmp_path):
     assert exc.value.code == 1
 
 
+def test_push_result_error_is_reported_as_nonzero_cli_status(runtime_and_factory, git):
+    runtime, _ = runtime_and_factory
+    git.phased_push.return_value = [MagicMock(status="error")]
+    with _argv("--push"):
+        assert run(runtime) == 1
+    git.phased_push.assert_called_once()
+
+
 def test_push_skipped_when_has_errors_from_failed_maintain(runtime_and_factory, git):
     runtime, _ = runtime_and_factory
     err = MagicMock(status="error")

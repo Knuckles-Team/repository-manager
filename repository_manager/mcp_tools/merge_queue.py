@@ -62,6 +62,14 @@ def register_merge_queue_tools(
                 "and a worktree holding uncommitted work is refused)."
             ),
         ),
+        push: bool = Field(
+            default=True,
+            description=(
+                "Publish a landed base through the repository's gated push path. "
+                "Set false for the fast queue timer; the phased-push scheduler "
+                "then owns publication."
+            ),
+        ),
         ctx: Context | None = Field(
             default=None, description="MCP context for progress reporting"
         ),
@@ -70,7 +78,8 @@ def register_merge_queue_tools(
 
         The canonical driver of parallel development: lanes take worktrees, work,
         then hand branches here, and the queue gates them **as merged**,
-        fast-forwards the base, and prunes the worktree and branch.
+        fast-forwards the base, and prunes the worktree and branch. Set ``push``
+        false when a scheduler must leave publication to phased push.
 
         **The queue does not know what a gate is.** Gates are declared in the
         target repository's own ``.mergequeue.yaml`` — a command, a tier, a
@@ -93,13 +102,14 @@ def register_merge_queue_tools(
 
         **``landed`` vs ``pushed`` (D-W3WPS-3).** Each outcome carries both,
         separately: ``landed`` means the declared base ref fast-forwarded in the
-        LOCAL canonical checkout (proven by re-reading it); ``pushed`` means that
-        commit also reached the configured remote via the repo's own gated push
-        path (``_gate_before_push`` + ``push_project`` — the same pre-commit
-        gates and GH013/divergent-remote handling a manual push gets). A push
-        failure never fails the landing — ``landed: true, pushed: false`` is a
-        legitimate, visible intermediate state (network blip, a diverged
-        remote); check ``push_error`` on the outcome for why. The queue's own
+        LOCAL canonical checkout (proven by re-reading it); when ``push`` is
+        true, ``pushed`` means that commit also reached the configured remote via
+        the repo's own gated push path (``_gate_before_push`` + ``push_project``
+        — the same pre-commit gates and GH013/divergent-remote handling a manual
+        push gets). With ``push`` false, publication is deliberately deferred to
+        the phased-push scheduler. A push failure never fails the landing —
+        ``landed: true, pushed: false`` is a legitimate, visible intermediate
+        state; check ``push_error`` on the outcome for why. The queue's own
         ``run`` summary also reports ``pushed``/``landed_unpushed`` counts.
         """
         from agent_utilities.governance.lanes import (
@@ -126,6 +136,7 @@ def register_merge_queue_tools(
                 reason=reason or "",
                 batch_size=batch_size,
                 prune=prune,
+                push=push,
             )
         except LeaseUnavailable as exc:
             return {

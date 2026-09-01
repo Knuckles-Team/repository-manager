@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically run the dedicated heavy phased-push lane
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=10min
+AccuracySec=30s
+Persistent=true
+Unit=phased-push-runner.service
+
+[Install]
+WantedBy=timers.target

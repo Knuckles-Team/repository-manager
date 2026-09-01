@@ -786,11 +786,13 @@ def enqueue(
         "note": (
             "queued != landed. D-MQR-7: this note used to say nothing drives "
             "the queue -- that was true under D-ORC-20 and is false now. "
-            "`merge-queue-runner.timer` drains every repo with a queue store "
-            "automatically (~every 5 minutes, across agent-packages/, "
+            "`merge-queue-runner.timer` drains every declared repo with a queue "
+            "store automatically (~every 5 minutes, across agent-packages/, "
             "services/, images/, and the infra roots): it gates the candidate "
-            "DIFFERENTIALLY against the base, lands it, and prunes the "
-            "worktree/branch. You do not need to run anything yourself — "
+            "DIFFERENTIALLY against the base and fast-lands it. The timer does "
+            "not run the heavy pre-push gate or publish; the separate "
+            "`phased-push-runner.timer` owns publication. You do not need to "
+            "run anything yourself — "
             "watch it with `repository-manager --merge-queue status "
             "--repo-path .`. Do NOT hand-drain with `--merge-queue run`: "
             "concurrent lanes share one reconciliation-merge lease and a "
@@ -2402,16 +2404,29 @@ def _resolve_generated_file_conflict(
 # ---------------------------------------------------------------------------
 # Push-on-land (D-W3WPS-3) — wires the EXISTING gated push path, never a new one
 # ---------------------------------------------------------------------------
-def _push_landed_base(
+def _deferred_push_result() -> dict[str, Any]:
+    """Return the durable hand-off record for the fast queue lane."""
+
+    return {
+        "pushed": False,
+        "push_error": (
+            "push deferred by the merge-queue scheduler; the fast drain "
+            "lands locally and the dedicated phased-push scheduler owns "
+            "publication"
+        ),
+    }
+
+
+def _push_landed_base_now(
     canonical: Path,
     *,
     base: str,
     canonical_on_base: bool,
     git: Any,
 ) -> dict[str, Any]:
-    """Push the just-advanced base ref, honestly reporting whether it shipped.
+    """Publish the just-advanced base ref when the caller requested it.
 
-    D-W3WPS-3: ``land`` used to report ``landed: true`` after only fast-forwarding
+    D-W3WPS-3: direct ``land`` calls used to report ``landed: true`` after only fast-forwarding
     the LOCAL canonical checkout, never touching the remote — 78 repos ended up
     with unpushed "landed" work. This closes that gap by reusing the EXISTING
     gated push path (:meth:`Git.push_project`, which already runs
@@ -2478,6 +2493,26 @@ def _push_landed_base(
     return {"pushed": False, "push_error": str(message)}
 
 
+def _push_landed_base(
+    canonical: Path,
+    *,
+    base: str,
+    canonical_on_base: bool,
+    git: Any,
+    push: bool,
+) -> dict[str, Any]:
+    """Publish the just-advanced base ref, or explicitly defer publication."""
+
+    if not push:
+        return _deferred_push_result()
+    return _push_landed_base_now(
+        canonical,
+        base=base,
+        canonical_on_base=canonical_on_base,
+        git=git,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Landing — the DECLARED base ref only ever FAST-FORWARDS, under both guards
 # ---------------------------------------------------------------------------
@@ -2532,6 +2567,7 @@ class _LandContext:
     current: str
     canonical_on_base: bool
     git: Any
+    push: bool
 
 
 def _land_already_current_result(ctx: _LandContext) -> dict[str, Any]:
@@ -2540,6 +2576,7 @@ def _land_already_current_result(ctx: _LandContext) -> dict[str, Any]:
         base=ctx.base,
         canonical_on_base=ctx.canonical_on_base,
         git=ctx.git,
+        push=ctx.push,
     )
     return {
         "base": ctx.base,
@@ -2629,7 +2666,13 @@ def _verify_land_postcondition(ctx: _LandContext) -> None:
 
 
 def land(
-    repo: Path, commit: str, *, base: str, scope: LaneScope, git: Any = None
+    repo: Path,
+    commit: str,
+    *,
+    base: str,
+    scope: LaneScope,
+    git: Any = None,
+    push: bool = True,
 ) -> dict[str, Any]:
     """Advance the **declared base ref** to *commit*, fast-forward only.
 
@@ -2681,14 +2724,13 @@ def land(
     alternative, and the same merge/deploy decoupling the promotion ref exists
     for.
 
-    **D-W3WPS-3 — landing now also pushes, honestly.** This used to return
-    ``landed: true`` after only fast-forwarding the LOCAL canonical checkout,
-    never the remote — 78 repos ended up "landed" with nothing shipped. The
-    returned dict now ALSO carries ``pushed`` (bool) and, when ``False``,
-    ``push_error`` explaining why — see :func:`_push_landed_base`. A push
-    failure never raises out of this function: the fast-forward genuinely
-    happened, so it is reported as such; landed-but-unpushed is a legitimate,
-    visible state, not a reason to pretend the landing itself failed.
+    **D-W3WPS-3 — publication is explicit and honest.** Direct ``land`` calls
+    retain push-on-land by default, while the fast queue passes ``push=False``
+    so the heavy pre-push gate cannot run in its timer. The returned dict always
+    carries ``pushed`` (bool) and, when ``False``, ``push_error`` explaining the
+    hand-off or failure — see :func:`_push_landed_base`. A push failure never
+    raises out of this function: the fast-forward genuinely happened, so it is
+    reported as such; landed-but-unpushed is a legitimate, visible state.
     """
     canonical = scope.main_tree
     ref = _base_ref(base)
@@ -2711,6 +2753,7 @@ def land(
         current=current,
         canonical_on_base=canonical_on_base,
         git=git,
+        push=push,
     )
     if current == commit:
         return _land_already_current_result(ctx)
@@ -2727,8 +2770,12 @@ def land(
     # its own (in-process, re-entrant-safe but unnecessary to nest) mutation
     # lock, and pushing a ref is not a tree mutation the canonical-checkout
     # guards above are protecting against.
-    push = _push_landed_base(
-        canonical, base=base, canonical_on_base=canonical_on_base, git=git
+    push_result = _push_landed_base(
+        canonical,
+        base=base,
+        canonical_on_base=canonical_on_base,
+        git=git,
+        push=push,
     )
     return {
         "base": base,
@@ -2737,7 +2784,7 @@ def land(
         "to": commit,
         "method": method,
         "verified": True,
-        **push,
+        **push_result,
     }
 
 
@@ -3064,6 +3111,7 @@ def _bisect_outcomes(
     config: QueueConfig,
     git: Any,
     depth: int,
+    push: bool,
 ) -> list[dict[str, Any]]:
     middle = len(accepted) // 2
     outcomes = integrate_batch(
@@ -3073,6 +3121,7 @@ def _bisect_outcomes(
         config=config,
         git=git,
         depth=depth + 1,
+        push=push,
     )
     outcomes += integrate_batch(
         accepted[middle:],
@@ -3081,6 +3130,7 @@ def _bisect_outcomes(
         config=config,
         git=git,
         depth=depth + 1,
+        push=push,
     )
     return outcomes
 
@@ -3093,6 +3143,7 @@ def integrate_batch(
     config: QueueConfig,
     git: Any = None,
     depth: int = 0,
+    push: bool = True,
 ) -> list[dict[str, Any]]:
     """Gate *candidates* together; on failure, BISECT rather than serialize.
 
@@ -3119,7 +3170,7 @@ def integrate_batch(
     gate = _run_batch_gate(repo, head, base, scope, config, accepted)
 
     if gate.ok:
-        landing = land(repo, head, base=base, scope=scope, git=git)
+        landing = land(repo, head, base=base, scope=scope, git=git, push=push)
         return outcomes + _landed_outcomes(accepted, gate, landing)
 
     if len(accepted) == 1:
@@ -3127,7 +3178,13 @@ def integrate_batch(
         return outcomes
 
     outcomes += _bisect_outcomes(
-        accepted, base=base, scope=scope, config=config, git=git, depth=depth
+        accepted,
+        base=base,
+        scope=scope,
+        config=config,
+        git=git,
+        depth=depth,
+        push=push,
     )
     return outcomes
 
@@ -3206,6 +3263,7 @@ def _drain_batch(
     requested_batch_size: int,
     git: Any,
     prune: bool,
+    push: bool,
 ) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None, QueueConfig]:
     """Evaluate and record one selected batch after lease admission."""
 
@@ -3218,7 +3276,9 @@ def _drain_batch(
             config,
         )
     by_branch = {c.branch: c for c in batch}
-    outcomes = integrate_batch(batch, base=base, scope=scope, config=config, git=git)
+    outcomes = integrate_batch(
+        batch, base=base, scope=scope, config=config, git=git, push=push
+    )
     for outcome in outcomes:
         _record_batch_outcome(outcome, by_branch, scope, repo, base, git, prune)
     return outcomes, None, config
@@ -3232,6 +3292,7 @@ def _drain_batch_under_lease(
     git: Any,
     prune: bool,
     lease_ttl_seconds: int | None,
+    push: bool,
 ) -> tuple[
     list[dict[str, Any]] | None,
     dict[str, Any] | None,
@@ -3254,7 +3315,7 @@ def _drain_batch_under_lease(
             receipts.append(_lease_receipt("acquired", record, lease_ttl_seconds))
             receipts.append(_lease_receipt("deadline", record, lease_ttl_seconds))
             outcomes, early, config = _drain_batch(
-                scope, repo, requested_base, requested_batch_size, git, prune
+                scope, repo, requested_base, requested_batch_size, git, prune, push
             )
     finally:
         if lease_record is not None:
@@ -3297,6 +3358,7 @@ def run_queue(
     path: Path | str | None = None,
     git: Any = None,
     lease_ttl_seconds: int | None = None,
+    push: bool = True,
 ) -> dict[str, Any]:
     """Drain up to *batch_size* candidates for ONE repository, under the lease.
 
@@ -3313,7 +3375,7 @@ def run_queue(
     git = _resolve_git_client(git, repo)
     started = time.monotonic()
     outcomes, early, config, lease_receipts = _drain_batch_under_lease(
-        scope, repo, base, batch_size, git, prune, lease_ttl_seconds
+        scope, repo, base, batch_size, git, prune, lease_ttl_seconds, push
     )
     if early is not None:
         return early
@@ -3351,6 +3413,7 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
             prune=bool(kwargs.get("prune", True)),
             path=kwargs.get("path"),
             lease_ttl_seconds=kwargs.get("lease_ttl_seconds"),
+            push=bool(kwargs.get("push", True)),
         ),
         "config": lambda: _config_report(kwargs.get("path")),
     }
@@ -3426,6 +3489,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--reason", default="")
     p.add_argument("--batch-size", type=int, default=0)
     p.add_argument("--no-prune", action="store_true")
+    p.add_argument(
+        "--no-push",
+        action="store_true",
+        help="land through fast gates but defer publication to phased push",
+    )
     p.add_argument("--lease-ttl-seconds", type=int, default=None)
     args = p.parse_args(argv)
     try:
@@ -3438,6 +3506,7 @@ def main(argv: list[str] | None = None) -> int:
             batch_size=args.batch_size,
             prune=not args.no_prune,
             lease_ttl_seconds=args.lease_ttl_seconds,
+            push=not args.no_push,
         )
     except LeaseUnavailable as exc:
         # Exit 75 (EX_TEMPFAIL), the same contract every other LEASE surface

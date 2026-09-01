@@ -28,7 +28,7 @@ from repository_manager.cli_commands.merge_queue import run_merge_queue_cli
 from repository_manager.cli_commands.remote_workers import run_remote_workers_cli
 
 
-def run(runtime: CliRuntime) -> None:
+def run(runtime: CliRuntime) -> int:
     """
     Main entry point for the Repository Manager CLI.
     Supports workspace management, Git bulk operations, and maintenance.
@@ -425,6 +425,14 @@ Examples:
         help="Land but keep the worktrees and branches (skips the guarded prune).",
     )
     group_queue.add_argument(
+        "--queue-no-push",
+        action="store_true",
+        help=(
+            "Land through the queue's fast gates but defer publication to the "
+            "dedicated phased-push scheduler."
+        ),
+    )
+    group_queue.add_argument(
         "--queue-lease-ttl-seconds",
         type=int,
         default=None,
@@ -663,7 +671,7 @@ Examples:
     _dispatch_immediate_verb(args)
 
     if _dispatch_manifest_ops(runtime, parser, args):
-        return
+        return 0
 
     # CONCEPT:RM-LANE-DOCTOR — handled before the bulk verbs and returning
     # immediately: the lane verbs drive ONE tree and must not be combined with
@@ -689,7 +697,8 @@ Examples:
     has_errors = _dispatch_validate(runtime, git, args, has_errors)
     has_errors = _dispatch_bump(runtime, git, args, has_errors)
     has_errors = _dispatch_maintain(runtime, git, args, has_errors)
-    _dispatch_push(runtime, git, args, has_errors)
+    has_errors = _dispatch_push(runtime, git, args, has_errors)
+    return _cli_return_code(args.push, has_errors)
 
 
 def _dispatch_immediate_verb(args: argparse.Namespace) -> None:
@@ -1201,13 +1210,14 @@ def _dispatch_maintain(
 
 def _dispatch_push(
     runtime: CliRuntime, git: Git, args: argparse.Namespace, has_errors: bool
-) -> None:
+) -> bool:
     if not args.push:
-        return
+        return has_errors
     if has_errors:
         runtime.logger.error(
             "Skipping push due to preceding validation or bump errors."
         )
+        return True
     else:
         config = None
         if args.config:
@@ -1229,3 +1239,16 @@ def _dispatch_push(
         summary = git.generate_markdown_summary("Phased Push", push_results)
         runtime.logger.info(summary)
         git._export_report(summary, "push_report.md")
+        return _push_results_have_errors(push_results)
+
+
+def _push_results_have_errors(push_results: list[Any]) -> bool:
+    """Return whether any phased-push result reports an execution error."""
+
+    return any(getattr(result, "status", None) == "error" for result in push_results)
+
+
+def _cli_return_code(push_requested: bool, has_errors: bool) -> int:
+    """Expose push failures to shell callers while preserving no-push success."""
+
+    return int(push_requested and has_errors)

@@ -1,0 +1,30 @@
+[Unit]
+Description=Dedicated heavy phased-push lane for declared repositories
+Documentation=https://knuckles-team.github.io/repository-manager/merge-queue-runner/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The runner launches the direct interpreter/module child and verifies every
+# descendant cgroup. Snap/uv wrappers can create a separate scope and defeat
+# the unit's resource caps, so escapes fail closed before publication continues.
+ExecStart=@PYTHON_EXECUTABLE@ @RUNNER_PATH@ --workspace-root @WORKSPACE_ROOT@ --manifest @MANIFEST_PATH@ --phased-push --heavy-deadline-seconds @HEAVY_TIMEOUT_SECONDS@ --heavy-gate-timeout-seconds @HEAVY_GATE_TIMEOUT_SECONDS@
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=RM_GATE_TIMEOUT_SECONDS=@HEAVY_GATE_TIMEOUT_SECONDS@
+Environment=RM_GATE_MAX_WORKERS=2
+TimeoutStartSec=@HEAVY_TIMEOUT_SECONDS@s
+TimeoutStopSec=60s
+KillMode=control-group
+SendSIGKILL=yes
+OOMPolicy=stop
+Delegate=no
+CPUAccounting=yes
+MemoryAccounting=yes
+TasksAccounting=yes
+CPUQuota=400%
+MemoryHigh=15G
+MemoryMax=16G
+MemorySwapMax=1G
+TasksMax=512
+Nice=5

@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically drain the declared repository merge queues
+Description=Periodically fast-drain declared repository merge queues
 
 [Timer]
 OnBootSec=5min

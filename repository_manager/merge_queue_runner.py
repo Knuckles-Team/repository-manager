@@ -12,11 +12,13 @@ clone that is merely present on disk cannot accidentally become eligible.
 from __future__ import annotations
 
 import argparse
+import copy
 import os
 import shutil
 import signal
 import subprocess  # nosec B404 - all commands are fixed argv
 import sys
+import tempfile
 import threading
 import time
 from collections import defaultdict
@@ -33,10 +35,17 @@ from repository_manager.workspace_manifest import (
     select_repositories,
 )
 
-# This is the supervisor's wall-clock ceiling for one repository drain.  It is
-# intentionally independent from gate worker/resource caps: a low-concurrency
-# heavy gate may need hours while remaining within its CPU/memory/task budget.
-DEFAULT_DRAIN_DEADLINE_SECONDS = 10800
+# The queue timer owns only the fast, no-push drain.  Keep its per-repository
+# wall-clock budget small enough that a slow or wedged fast gate cannot occupy
+# the timer for hours. This is independent from gate worker/resource caps.
+DEFAULT_DRAIN_DEADLINE_SECONDS = 180
+# One invocation is bounded separately from every child. Twenty fast roots at
+# the documented 180-second budget fit within this ceiling; a larger selection
+# is admitted only until the global deadline and is reported as deferred.
+DEFAULT_GLOBAL_DRAIN_DEADLINE_SECONDS = 3600
+SYSTEMD_TIMEOUT_MARGIN_SECONDS = 60
+DEFAULT_HEAVY_TIMEOUT_SECONDS = 18000
+DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS = 14400
 DEFAULT_LEASE_SAFETY_MARGIN_SECONDS = 600
 MAX_LEASE_TTL_SECONDS = 86400
 DEFAULT_MAX_QUEUE_AGE_SECONDS = 86400
@@ -77,6 +86,7 @@ class QueueRecord:
     state: str
     enqueued_at: datetime
     recorded_at: datetime
+    worktree: str
     source: Path
 
 
@@ -394,8 +404,21 @@ def _record_from_mapping(
         state=state_value,
         enqueued_at=enqueued_at,
         recorded_at=recorded_at,
+        worktree=_record_worktree(mapping),
         source=source,
     )
+
+
+def _record_worktree(mapping: dict[str, Any]) -> str:
+    """Normalize a queue record's optional worktree without hiding fresh drift."""
+
+    value = mapping.get("worktree", "")
+    if isinstance(value, str):
+        return value.strip()
+    # Terminal and canonical projections are ignored by selection. Preserve
+    # that lifecycle rule here; a fresh non-canonical queued record reaches
+    # _validate_queued_worktree and fails closed with a useful reason.
+    return ""
 
 
 def _latest_queue_records(common: Path) -> tuple[QueueRecord, ...]:
@@ -429,6 +452,68 @@ def _latest_queue_records(common: Path) -> tuple[QueueRecord, ...]:
     )
 
 
+def _registered_worktrees(repository: DeclaredRepository) -> frozenset[Path]:
+    """Read Git's registration authority for one declared repository."""
+
+    listing = _git_output(
+        ["-C", str(repository.path), "worktree", "list", "--porcelain"],
+        cwd=repository.path,
+        label=f"repository {repository.identifier!r} worktree registration",
+    )
+    paths: set[Path] = set()
+    for line in listing.splitlines():
+        if line.startswith("worktree "):
+            paths.add(Path(line[len("worktree ") :].strip()).resolve(strict=False))
+    return frozenset(paths)
+
+
+def _validate_queued_worktree(
+    repository: DeclaredRepository, record: QueueRecord
+) -> None:
+    """Refuse a fresh queue record whose recorded lane is no longer live.
+
+    Queue discovery is allowed to ignore old records, canonical projections,
+    and terminal states. A fresh non-canonical queued record is different: if
+    its lane disappeared or points at another checkout, selecting the root
+    would hide a queue-authority failure. Fail closed before starting any gate.
+    """
+
+    if not record.worktree:
+        raise MergeQueueRunnerError(
+            f"queue record {record.candidate_id!r} in {record.source} has no "
+            "recorded worktree; refusing to schedule an unverifiable lane"
+        )
+    target = Path(record.worktree).expanduser()
+    if not target.is_absolute():
+        raise MergeQueueRunnerError(
+            f"queue record {record.candidate_id!r} in {record.source} records a "
+            f"relative worktree {record.worktree!r}; refusing path drift"
+        )
+    if target.is_symlink() or not target.is_dir():
+        raise MergeQueueRunnerError(
+            f"queue record {record.candidate_id!r} in {record.source} records "
+            f"stale or missing worktree {target}"
+        )
+    normalized = target.resolve(strict=False)
+    if normalized not in _registered_worktrees(repository):
+        raise MergeQueueRunnerError(
+            f"queue record {record.candidate_id!r} in {record.source} records "
+            f"unregistered worktree {normalized}; refusing stale lane"
+        )
+    top_level = Path(
+        _git_output(
+            ["-C", str(target), "rev-parse", "--show-toplevel"],
+            cwd=repository.path,
+            label=f"queue record {record.candidate_id!r} worktree",
+        )
+    ).resolve()
+    if top_level != repository.path.resolve():
+        raise MergeQueueRunnerError(
+            f"queue record {record.candidate_id!r} in {record.source} points to "
+            f"worktree {normalized} from {top_level}, not {repository.path}"
+        )
+
+
 def queued_repositories(
     repositories: Iterable[DeclaredRepository],
     *,
@@ -443,16 +528,23 @@ def queued_repositories(
     cutoff = current - timedelta(seconds=max_age_seconds)
     selected: list[DeclaredRepository] = []
     for repository in repositories:
-        common = _git_common_directory(repository)
-        records = _latest_queue_records(common)
-        if any(
-            record.source.name != CANONICAL_FRAGMENT
-            and record.state == QUEUED_STATE
-            and record.enqueued_at >= cutoff
-            for record in records
-        ):
+        if _has_fresh_queue_record(repository, cutoff):
             selected.append(repository)
     return tuple(selected)
+
+
+def _has_fresh_queue_record(repository: DeclaredRepository, cutoff: datetime) -> bool:
+    """Validate and report whether one repository has a fresh queued record."""
+
+    common = _git_common_directory(repository)
+    for record in _latest_queue_records(common):
+        if record.source.name == CANONICAL_FRAGMENT:
+            continue
+        if record.state != QUEUED_STATE or record.enqueued_at < cutoff:
+            continue
+        _validate_queued_worktree(repository, record)
+        return True
+    return False
 
 
 def discover_queued_repositories(
@@ -671,6 +763,7 @@ def _runner_command(
             "--repo-path",
             str(repository.path),
             "--queue-no-prune",
+            "--queue-no-push",
         ]
     )
     if lease_ttl_seconds is not None:
@@ -679,7 +772,10 @@ def _runner_command(
 
 
 def _launch_process(
-    command: list[str], repository: DeclaredRepository
+    command: list[str],
+    repository: DeclaredRepository,
+    *,
+    env: dict[str, str] | None = None,
 ) -> subprocess.Popen[str]:
     """Start one direct child process in its own process group."""
 
@@ -691,6 +787,7 @@ def _launch_process(
             stderr=subprocess.STDOUT,
             text=True,
             start_new_session=True,
+            env=env,
         )
     except OSError as exc:
         raise MergeQueueRunnerError(
@@ -791,6 +888,197 @@ def drain_repository(
     return DrainResult(repository, returncode, output)
 
 
+def _phased_push_command(workspace_root: Path, manifest: Path) -> list[str]:
+    """Build the one-lane direct-module command for heavy publication."""
+
+    return [
+        sys.executable,
+        "-m",
+        "repository_manager",
+        "--workspace",
+        str(workspace_root),
+        "--file",
+        str(manifest),
+        "--threads",
+        "1",
+        "--push",
+    ]
+
+
+def _project_manifest_repositories(
+    raw_repositories: object, *, prefix: tuple[str, ...], source: Path
+) -> list[object]:
+    """Copy repository declarations except explicitly excluded path components."""
+
+    if not isinstance(raw_repositories, list):
+        raise MergeQueueRunnerError(
+            f"{source}: repositories must be a list in generated projection"
+        )
+    repositories: list[object] = []
+    for entry in raw_repositories:
+        if not isinstance(entry, dict) or not isinstance(entry.get("url"), str):
+            raise MergeQueueRunnerError(
+                f"{source}: each repository must have a string url"
+            )
+        name = entry["url"].strip().rstrip("/").rsplit("/", 1)[-1]
+        name = name.removesuffix(".git")
+        identifier = "/".join((*prefix, name))
+        if frozenset(identifier.split("/")) & EXCLUDED_MANIFEST_COMPONENTS:
+            continue
+        repositories.append(copy.deepcopy(entry))
+    return repositories
+
+
+def _project_manifest_subdirectories(
+    raw_subdirectories: object, *, prefix: tuple[str, ...], source: Path
+) -> dict[str, Any]:
+    """Recursively copy non-reference workspace directory declarations."""
+
+    if not isinstance(raw_subdirectories, dict):
+        raise MergeQueueRunnerError(
+            f"{source}: subdirectories must be a mapping in generated projection"
+        )
+    subdirectories: dict[str, Any] = {}
+    for name, child in raw_subdirectories.items():
+        if not isinstance(name, str) or not name:
+            raise MergeQueueRunnerError(
+                f"{source}: subdirectory names must be non-empty strings"
+            )
+        child_prefix = (*prefix, name)
+        if frozenset(child_prefix) & EXCLUDED_MANIFEST_COMPONENTS:
+            continue
+        subdirectories[name] = _project_manifest_node(child, child_prefix, source)
+    return subdirectories
+
+
+def _project_manifest_node(
+    node: object, prefix: tuple[str, ...], source: Path
+) -> dict[str, Any]:
+    """Copy one manifest directory and recursively remove excluded inputs."""
+
+    if not isinstance(node, dict):
+        raise MergeQueueRunnerError(f"{source}: manifest directory must be a mapping")
+    projected = copy.deepcopy(node)
+    projected["repositories"] = _project_manifest_repositories(
+        node.get("repositories", []), prefix=prefix, source=source
+    )
+    projected["subdirectories"] = _project_manifest_subdirectories(
+        node.get("subdirectories", {}), prefix=prefix, source=source
+    )
+    return projected
+
+
+def _excluded_manifest_identifiers(
+    identifiers: Iterable[str], *, source: Path
+) -> tuple[str, ...]:
+    """Find excluded identifiers that would indicate projection drift."""
+
+    excluded = tuple(
+        identifier
+        for identifier in identifiers
+        if frozenset(identifier.split("/")) & EXCLUDED_MANIFEST_COMPONENTS
+    )
+    if excluded:
+        raise MergeQueueRunnerError(
+            f"{source}: generated phased-push projection retained excluded "
+            f"repositories: {', '.join(excluded)}"
+        )
+    return excluded
+
+
+def _eligible_manifest_projection(
+    data: dict[str, Any], *, source: Path
+) -> dict[str, Any]:
+    """Build the heavy lane's validated projection of the canonical manifest.
+
+    The canonical manifest remains the authority.  This projection only removes
+    entries classified as reference inputs (currently ``open-source-libraries``)
+    using the same path-component rule as queue discovery; it never invents a
+    second repository inventory.  Keeping the projection in a temporary
+    directory prevents the scheduler from mutating the canonical manifest or
+    leaving generated files in a workspace checkout.
+    """
+
+    projection = _project_manifest_node(data, (), source)
+    identifiers = _manifest_identifiers(projection, source)
+    _excluded_manifest_identifiers(identifiers, source=source)
+    return projection
+
+
+def run_phased_push(
+    workspace_root: str | Path,
+    *,
+    manifest: str | Path | None = None,
+    deadline_seconds: int = DEFAULT_HEAVY_TIMEOUT_SECONDS,
+    gate_timeout_seconds: int = DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS,
+) -> int:
+    """Run the heavy phased-push child under the same cgroup supervisor.
+
+    The service owns one dedicated lane, while this process boundary verifies
+    every descendant remains in the service cgroup. This catches a gate that
+    tries to launch a Snap/uv scope instead of relying on ``KillMode`` alone.
+    """
+
+    if deadline_seconds <= 0 or gate_timeout_seconds <= 0:
+        raise MergeQueueRunnerError("heavy runner settings must be positive integers")
+    root = _configured_workspace_root(workspace_root)
+    manifest_path = _manifest_path(root, manifest)
+    # Validate the same canonical inventory as the queue mode before starting a
+    # heavy gate. A missing clone or manifest drift must not become a partial
+    # publication run.
+    declared_repositories(root, manifest=manifest_path)
+    manifest_data = _manifest_mapping(manifest_path)
+    projected_manifest = _eligible_manifest_projection(
+        manifest_data, source=manifest_path
+    )
+    # The child is deliberately launched with an explicit workspace root. Make
+    # the generated projection self-contained as well, so a canonical manifest
+    # using the portable ``${AGENT_UTILITIES_WORKSPACE_ROOT}`` reference does
+    # not depend on an ambient service environment variable.
+    projected_manifest["path"] = str(root)
+    repository = DeclaredRepository("phased-push", "phased-push", root)
+    env = os.environ.copy()
+    env.update(
+        {
+            "RM_GATE_TIMEOUT_SECONDS": str(gate_timeout_seconds),
+            "RM_GATE_MAX_WORKERS": "2",
+            "REPOSITORY_MANAGER_THREADS": "1",
+        }
+    )
+    expected_cgroup = _process_cgroup(os.getpid())
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="repository-manager-phased-push-"
+        ) as directory:
+            projected_path = Path(directory) / "workspace.yml"
+            projected_path.write_bytes(
+                yaml.safe_dump(projected_manifest, sort_keys=False).encode("utf-8")
+            )
+            process = _launch_process(
+                _phased_push_command(root, projected_path), repository, env=env
+            )
+            try:
+                output, returncode, violations = _run_monitored_process(
+                    process, repository, expected_cgroup, deadline_seconds
+                )
+            except (MergeQueueRunnerError, subprocess.SubprocessError) as exc:
+                _log(f"phased push FAILED: {exc}")
+                return 1
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        _log(f"phased push FAILED: generated manifest projection unavailable: {exc}")
+        return 1
+    if output:
+        print(output, end="" if output.endswith("\n") else "\n")
+    if violations:
+        _log(f"phased push FAILED: cgroup escape: {violations[0]}")
+        return 1
+    if returncode != 0:
+        _log(f"phased push FAILED with status {returncode}")
+        return 1
+    _log("phased push completed successfully")
+    return 0
+
+
 def _log(message: str) -> None:
     print(f"{datetime.now().astimezone().isoformat()} merge-queue-runner: {message}")
 
@@ -805,6 +1093,7 @@ class RunnerSettings:
     """Validated runtime settings for one timer invocation."""
 
     deadline_seconds: int
+    global_deadline_seconds: int
     lease_ttl_seconds: int
     max_age_seconds: int
     executable: str | None
@@ -834,6 +1123,12 @@ def _runner_settings(args: argparse.Namespace) -> RunnerSettings:
         "MERGE_QUEUE_DRAIN_DEADLINE_SECONDS",
         DEFAULT_DRAIN_DEADLINE_SECONDS,
     )
+    global_deadline_seconds = _optional_setting(
+        args.global_deadline_seconds,
+        "MERGE_QUEUE_GLOBAL_DEADLINE_SECONDS",
+        DEFAULT_GLOBAL_DRAIN_DEADLINE_SECONDS,
+    )
+    _validate_global_deadline(deadline_seconds, global_deadline_seconds)
     lease_ttl_seconds = _lease_ttl(
         deadline_seconds,
         args.lease_ttl_seconds,
@@ -850,8 +1145,22 @@ def _runner_settings(args: argparse.Namespace) -> RunnerSettings:
         else None
     )
     return RunnerSettings(
-        deadline_seconds, lease_ttl_seconds, max_age_seconds, executable
+        deadline_seconds,
+        global_deadline_seconds,
+        lease_ttl_seconds,
+        max_age_seconds,
+        executable,
     )
+
+
+def _validate_global_deadline(per_root_seconds: int, global_seconds: int) -> None:
+    """Require the fleet ceiling to admit at least one complete root budget."""
+
+    if global_seconds < per_root_seconds:
+        raise MergeQueueRunnerError(
+            "global deadline must be at least the per-repository drain deadline "
+            f"({per_root_seconds}s)"
+        )
 
 
 def _discover_for_run(
@@ -886,6 +1195,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--global-deadline-seconds",
+        type=int,
+        default=None,
+        help=(
+            "whole-invocation wall-clock deadline across all selected roots; "
+            "independent from each root's deadline"
+        ),
+    )
+    parser.add_argument(
         "--max-age-seconds",
         type=int,
         default=None,
@@ -904,6 +1222,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--repository-manager-command",
         default=os.environ.get("REPOSITORY_MANAGER_COMMAND"),
         help="repository-manager executable used for each drain",
+    )
+    parser.add_argument(
+        "--phased-push",
+        action="store_true",
+        help="run the dedicated heavy phased-push child instead of the queue drain",
+    )
+    parser.add_argument(
+        "--heavy-deadline-seconds",
+        type=int,
+        default=None,
+        help="heavy phased-push wall-clock deadline",
+    )
+    parser.add_argument(
+        "--heavy-gate-timeout-seconds",
+        type=int,
+        default=None,
+        help="RM_GATE_TIMEOUT_SECONDS for the heavy phased-push child",
     )
     return parser
 
@@ -939,39 +1274,125 @@ def _drain_one(
     return "failed"
 
 
+def _root_deadline(
+    per_root_seconds: int, global_seconds: int, elapsed_seconds: float
+) -> int | None:
+    """Return the integer child budget that fits within the global ceiling."""
+
+    remaining = global_seconds - elapsed_seconds
+    if remaining < 1:
+        return None
+    return min(per_root_seconds, int(remaining))
+
+
+def _drain_selected_outcomes(
+    selected: tuple[DeclaredRepository, ...],
+    *,
+    executable: str | None,
+    deadline_seconds: int,
+    global_deadline_seconds: int,
+    lease_ttl_seconds: int,
+) -> tuple[list[str], int, bool, float]:
+    """Run selected roots until the global ceiling, returning accounting data."""
+
+    _validate_global_deadline(deadline_seconds, global_deadline_seconds)
+    started = time.monotonic()
+    outcomes: list[str] = []
+    skipped_for_deadline = False
+    attempted = 0
+    for repository in selected:
+        child_deadline = _root_deadline(
+            deadline_seconds, global_deadline_seconds, time.monotonic() - started
+        )
+        if child_deadline is None:
+            _log(
+                f"{repository.identifier}: global drain deadline reached; "
+                "deferring without starting another child"
+            )
+            outcomes.append("deferred")
+            skipped_for_deadline = True
+            continue
+        outcomes.append(
+            _drain_one(
+                repository,
+                executable=executable,
+                deadline_seconds=child_deadline,
+                lease_ttl_seconds=lease_ttl_seconds,
+            )
+        )
+        attempted += 1
+    return outcomes, attempted, skipped_for_deadline, started
+
+
+def _drain_exit(
+    failed: int, skipped_for_deadline: bool, elapsed: float, global_seconds: int
+) -> tuple[bool, int]:
+    """Compute the supervisor result from child failures and deadline evidence."""
+
+    deadline_exhausted = skipped_for_deadline or elapsed > global_seconds
+    return deadline_exhausted, int(failed > 0 or deadline_exhausted)
+
+
 def _drain_selected(
     selected: tuple[DeclaredRepository, ...],
     *,
     executable: str | None,
     deadline_seconds: int,
+    global_deadline_seconds: int,
     lease_ttl_seconds: int,
 ) -> int:
-    """Drain selected repositories and summarize failures without stopping the fleet."""
+    """Drain selected roots serially within per-root and global ceilings."""
 
-    outcomes = [
-        _drain_one(
-            repository,
-            executable=executable,
-            deadline_seconds=deadline_seconds,
-            lease_ttl_seconds=lease_ttl_seconds,
-        )
-        for repository in selected
-    ]
+    outcomes, attempted, skipped_for_deadline, started = _drain_selected_outcomes(
+        selected,
+        executable=executable,
+        deadline_seconds=deadline_seconds,
+        global_deadline_seconds=global_deadline_seconds,
+        lease_ttl_seconds=lease_ttl_seconds,
+    )
     drained = outcomes.count("drained")
     deferred = outcomes.count("deferred")
     failed = outcomes.count("failed")
-    exit_code = 1 if failed else 0
+    elapsed = time.monotonic() - started
+    deadline_exhausted, exit_code = _drain_exit(
+        failed, skipped_for_deadline, elapsed, global_deadline_seconds
+    )
     _log(
-        f"done: attempted {len(selected)} queued root(s), drained {drained}, "
-        f"deferred {deferred}, failed {failed}, exit {exit_code}"
+        f"done: attempted {attempted}/{len(selected)} queued root(s), drained {drained}, "
+        f"deferred {deferred}, failed {failed}, global_deadline_exhausted="
+        f"{deadline_exhausted}, exit {exit_code}"
     )
     return exit_code
 
 
-def main(argv: list[str] | None = None) -> int:
-    """CLI entry point used by the installed user service."""
+def _run_phased_push_cli(args: argparse.Namespace) -> int:
+    """Resolve heavy-lane settings and run its direct child."""
 
-    args = build_parser().parse_args(argv)
+    try:
+        deadline_seconds = _optional_setting(
+            args.heavy_deadline_seconds,
+            "MERGE_QUEUE_HEAVY_DEADLINE_SECONDS",
+            DEFAULT_HEAVY_TIMEOUT_SECONDS,
+        )
+        gate_timeout_seconds = _optional_setting(
+            args.heavy_gate_timeout_seconds,
+            "RM_GATE_TIMEOUT_SECONDS",
+            DEFAULT_HEAVY_GATE_TIMEOUT_SECONDS,
+        )
+        return run_phased_push(
+            args.workspace_root,
+            manifest=args.manifest,
+            deadline_seconds=deadline_seconds,
+            gate_timeout_seconds=gate_timeout_seconds,
+        )
+    except MergeQueueRunnerError as exc:
+        _log(f"FATAL: {exc}")
+        return 78
+
+
+def _run_queue_cli(args: argparse.Namespace) -> int:
+    """Resolve queue settings, discover eligible roots, and drain them."""
+
     try:
         settings = _runner_settings(args)
         discovery = _discover_for_run(args, max_age_seconds=settings.max_age_seconds)
@@ -989,8 +1410,24 @@ def main(argv: list[str] | None = None) -> int:
         discovery.selected,
         executable=settings.executable,
         deadline_seconds=settings.deadline_seconds,
+        global_deadline_seconds=settings.global_deadline_seconds,
         lease_ttl_seconds=settings.lease_ttl_seconds,
     )
+
+
+def _run_mode(args: argparse.Namespace) -> int:
+    """Dispatch one parsed invocation to its dedicated scheduler lane."""
+
+    if args.phased_push:
+        return _run_phased_push_cli(args)
+    return _run_queue_cli(args)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entry point used by the installed user service."""
+
+    args = build_parser().parse_args(argv)
+    return _run_mode(args)
 
 
 if (
