@@ -31,6 +31,17 @@ import pytest
 
 from repository_manager import merge_queue as mq
 
+ROOT = Path(__file__).resolve().parents[1]
+REPO_PYTHON = ".venv/bin/python"
+QUEUE_TEST_COMMAND = (
+    REPO_PYTHON,
+    "-m",
+    "pytest",
+    "tests/test_merge_queue.py",
+    "tests/test_config_schema.py",
+    "-q",
+)
+
 
 def _run(cmd: str, cwd: Path) -> str:
     proc = subprocess.run(
@@ -672,6 +683,52 @@ def test_dropping_a_declared_gate_is_a_refusal(shell_repo: Path) -> None:
 # ---------------------------------------------------------------------------
 # The config seam — a missing declaration REFUSES rather than defaulting
 # ---------------------------------------------------------------------------
+def test_repository_queue_config_never_invokes_ambient_python() -> None:
+    config = mq.load_config(ROOT)
+    commands = (
+        config.environment_signature,
+        *(gate.command for gate in config.gates),
+        *config.regenerate,
+    )
+
+    assert commands
+    assert all(command[0] == REPO_PYTHON for command in commands)
+
+
+def test_repository_queue_config_uses_exact_queue_owned_test_census() -> None:
+    config = mq.load_config(ROOT)
+    queue_gate = next(gate for gate in config.gates if gate.name == "queue-tests")
+
+    assert queue_gate.command == QUEUE_TEST_COMMAND
+    assert "tests/" not in queue_gate.command
+
+
+def test_materialized_snapshot_attaches_only_an_existing_ignored_venv(
+    tmp_path: Path,
+) -> None:
+    from agent_utilities.governance.lanes import lane_scope
+
+    repo = _init_repo(tmp_path / "repo")
+    (repo / ".gitignore").write_text(".venv\n", encoding="utf-8")
+    (repo / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    head = _commit(repo, "fixture")
+    scope = lane_scope(repo)
+
+    with mq.materialized(repo, head, scope=scope) as snapshot:
+        assert not (snapshot / ".venv").exists()
+
+    interpreter = repo / REPO_PYTHON
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    interpreter.chmod(0o755)
+
+    with mq.materialized(repo, head, scope=scope) as snapshot:
+        attached = snapshot / ".venv"
+        assert attached.is_symlink()
+        assert attached.resolve() == (repo / ".venv").resolve()
+        assert (snapshot / REPO_PYTHON).is_file()
+
+
 def test_a_repo_with_no_config_is_refused_not_defaulted(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path / "unconfigured")
     _commit(repo, "init")

@@ -9,13 +9,14 @@
 # merges, so its own gates must be fast and dependency-light. A driver whose
 # gate suite is slow or flaky stalls every repo behind it.
 
+schema_version: 2
 base: main
 batch_size: 8
 
 # A verdict is only ever a claim about the interpreter that produced it. Pinning
 # the signature makes that claim legible — the ambient `python3` instead of the
 # repo `.venv` produced ~80 false "environment-blocked" verdicts in one day here.
-environment_signature: ["python3", "-c", "import sys, sysconfig; print(sys.version, sysconfig.get_paths()['purelib'])"]
+environment_signature: [".venv/bin/python", "-c", "import sys, sysconfig; print(sys.version, sysconfig.get_paths()['purelib'])"]
 
 gates:
   # Syntax/import integrity. This repo is hostPath-mounted straight over the
@@ -24,7 +25,7 @@ gates:
   # `command` is argv, never a shell string — no quoting, no injection surface.
   - name: import-smoke
     command:
-      - python3
+      - .venv/bin/python
       - -c
       - import repository_manager, repository_manager.merge_queue, repository_manager.worktree, repository_manager.lane_doctor
     timeout: 120
@@ -35,10 +36,11 @@ gates:
   # red test, which is exactly the deadlock that stranded 19 branches elsewhere.
   - name: queue-tests
     command:
-      - python3
+      - .venv/bin/python
       - -m
       - pytest
-      - tests/
+      - tests/test_merge_queue.py
+      - tests/test_config_schema.py
       - -q
     timeout: 1800
     compare: pytest-ids
@@ -48,8 +50,8 @@ gates:
 
 # Generated views are regenerated from the merged tree rather than hand-resolved.
 # Hand-picking one side of a generated file is how a regeneration loop starts.
-regenerate_on_conflict:
-  paths:
-    - AGENTS.md
-    - README.md
-  regenerate: python3 -c "print('no generator wired yet for repository-manager; see D-RMQ-4')"
+generated_files:
+  - AGENTS.md
+  - README.md
+regenerate:
+  - [".venv/bin/python", "-c", "print('no generator wired yet for repository-manager; see D-RMQ-4')"]

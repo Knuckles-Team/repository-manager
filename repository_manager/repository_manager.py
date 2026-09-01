@@ -3459,6 +3459,15 @@ class Git:
         return test_target, None
 
     @staticmethod
+    def _require_test_target(test_target: str | None) -> str:
+        """Return a planned test target or reject an incomplete plan."""
+        if test_target is None:
+            raise RuntimeError(
+                "project test plan returned no target without a skip reason"
+            )
+        return test_target
+
+    @staticmethod
     def _skipped_test_result(path: str, reason: str) -> GitResult:
         """The ``skipped`` record for a project that cannot be pytest'd."""
         return GitResult(
@@ -3558,6 +3567,7 @@ class Git:
                         progress_dict, progress_phase, repo_name, "skipped"
                     )
                     continue
+                test_target = self._require_test_target(test_target)
 
                 fut = executor.submit(
                     self._run_project_test,
