@@ -27,6 +27,11 @@ The agent ecosystem enforces dependency order updates through five sequential ma
    Services, images, plans, pipelines, non-package repositories, and unknown or
    incomplete metadata fail closed and cannot enter the bulk target set.
 
+Every phase's optional `exclude` fnmatch list is applied by the same predicate to
+version bumps, pre-commit candidates, pushes, and change-aware auto-start. Explicit
+project names must be unique within and across phases; duplicate ownership is rejected
+instead of being resolved by declaration order.
+
 ## Change-aware Start Phase (default)
 
 Phased bump and push are **change-aware by default**: instead of blindly starting at

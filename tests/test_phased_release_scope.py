@@ -212,6 +212,13 @@ def test_filter_is_passed_through_to_precommit_candidates(tmp_path: Path) -> Non
         "[build-system]\nrequires=['hatchling']\nbuild-backend='hatchling.build'\n",
         "[project]\nname='agent-one'\ndynamic=['version', 1]\n"
         "[build-system]\nrequires=['hatchling']\nbuild-backend='hatchling.build'\n",
+        "[project]\nname='agent-one'\nversion='1.0'\ndynamic=['name']\n"
+        "[build-system]\nrequires=['hatchling']\nbuild-backend='hatchling.build'\n",
+        "[project]\nname='agent-one'\nversion='1.0'\ndynamic=['bogus']\n"
+        "[build-system]\nrequires=['hatchling']\nbuild-backend='hatchling.build'\n",
+        "[project]\nname='agent-one'\nversion='1.0'\ndescription='static'\n"
+        "dynamic=['description']\n"
+        "[build-system]\nrequires=['hatchling']\nbuild-backend='hatchling.build'\n",
         # Static versions are parsed as PEP 440.
         "[project]\nname='agent-one'\nversion='not a version'\n"
         "[build-system]\nrequires=['hatchling']\nbuild-backend='hatchling.build'\n",
@@ -242,6 +249,32 @@ def test_missing_version_and_build_metadata_fail_closed(tmp_path: Path) -> None:
     manager = _scoped_manager(tmp_path)
     agent = tmp_path / "agent-packages" / "agents" / "agent-one"
     _write_release_metadata(agent, document="[project]\nname='agent-one'\n")
+
+    assert manager._bulk_release_targets(set()) == []
+
+
+def test_supported_non_static_dynamic_field_remains_eligible(tmp_path: Path) -> None:
+    manager = _scoped_manager(tmp_path)
+    agent = tmp_path / "agent-packages" / "agents" / "agent-one"
+    _write_release_metadata(
+        agent,
+        document=(
+            "[project]\nname='agent-one'\nversion='1.0'\n"
+            "dynamic=['description']\n"
+            "[build-system]\nrequires=['hatchling']\n"
+            "build-backend='hatchling.build'\n"
+        ),
+    )
+
+    assert [name for name, _path in manager._bulk_release_targets(set())] == [
+        "agent-one"
+    ]
+
+
+def test_invalid_toml_encoding_fails_closed(tmp_path: Path) -> None:
+    manager = _scoped_manager(tmp_path)
+    manifest = tmp_path / "agent-packages" / "agents" / "agent-one" / "pyproject.toml"
+    manifest.write_bytes(b"\xff\xfe[project]")
 
     assert manager._bulk_release_targets(set()) == []
 
@@ -298,6 +331,42 @@ def test_malformed_url_basename_fails_closed(tmp_path: Path) -> None:
     manager._project_categories = {url: ("agent-packages", "agents")}
 
     assert manager._bulk_release_targets(set()) == []
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.invalid/org/../agent-one.git",
+        "https://example.invalid/org/./agent-one.git",
+        "https://example.invalid/org/%2e%2e/agent-one.git",
+        "https://example.invalid/org/%2e/agent-one.git",
+        "https://example.invalid/org//agent-one.git",
+        "https://example.invalid/org/%2Fescape/agent-one.git",
+        "https://example.invalid/org/%5cescape/agent-one.git",
+        "https://example.invalid/org/%252Fescape/agent-one.git",
+        "https://example.invalid/org/%ff/agent-one.git",
+        "https://example.invalid/org/agent-one.git/",
+    ],
+)
+def test_unsafe_url_path_segment_fails_closed(tmp_path: Path, url: str) -> None:
+    manager = _scoped_manager(tmp_path)
+    agent_path = tmp_path / "agent-packages" / "agents" / "agent-one"
+    manager.project_map = {url: str(agent_path)}
+    manager._project_categories = {url: ("agent-packages", "agents")}
+
+    assert manager._bulk_release_targets(set()) == []
+
+
+def test_safe_percent_encoded_url_segments_are_decoded(tmp_path: Path) -> None:
+    manager = _scoped_manager(tmp_path)
+    url = "https://example.invalid/Knuckles%2DTeam/%61gent-one.git"
+    agent_path = tmp_path / "agent-packages" / "agents" / "agent-one"
+    manager.project_map = {url: str(agent_path)}
+    manager._project_categories = {url: ("agent-packages", "agents")}
+
+    assert [name for name, _path in manager._bulk_release_targets(set())] == [
+        "agent-one"
+    ]
 
 
 def test_duplicate_eligible_basenames_are_rejected(tmp_path: Path) -> None:
@@ -364,6 +433,87 @@ def test_phase_order_is_sorted_and_duplicate_numbers_are_rejected(
     duplicate = {"phases": [{"phase": 1}, {"phase": 1}]}
     with pytest.raises(ValueError, match="duplicate maintenance phase number"):
         manager._build_bump_phase_list(config=duplicate, start_phase=1, filter_set=None)
+
+    repeated_within = {"phases": [{"phase": 1, "projects": ["agent-one", "agent-one"]}]}
+    with pytest.raises(ValueError, match="duplicate maintenance project name"):
+        manager._build_bump_phase_list(
+            config=repeated_within, start_phase=1, filter_set=None
+        )
+
+    repeated_across = {
+        "phases": [
+            {"phase": 1, "projects": ["agent-one"]},
+            {"phase": 2, "project": "agent-one"},
+        ]
+    }
+    with pytest.raises(ValueError, match="duplicate maintenance project name"):
+        manager._build_push_phase_list(
+            config=repeated_across, start_phase=1, project_filter=None
+        )
+
+
+def test_phase_exclude_is_identical_across_all_release_planners(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _scoped_manager(tmp_path)
+    config = {
+        "phases": [
+            {
+                "phase": 5,
+                "bulk_bump": True,
+                "bulk_push": True,
+                "exclude": ["agent-*"],
+            }
+        ]
+    }
+    monkeypatch.setattr(manager, "_repo_has_pending_work", lambda _path: True)
+
+    bump, bump_total = manager._build_bump_phase_list(
+        config=config, start_phase=5, filter_set=None
+    )
+    push, push_total = manager._build_push_phase_list(
+        config=config, start_phase=5, project_filter=None
+    )
+
+    assert (bump, bump_total) == ([], 0)
+    assert (push, push_total) == ([], 0)
+    assert manager._pre_commit_project_names(config, start_phase=5) == []
+    assert manager._auto_start_phase(config) is None
+
+
+def test_excluded_bulk_target_can_enter_a_later_phase_consistently(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _scoped_manager(tmp_path)
+    config = {
+        "phases": [
+            {
+                "phase": 5,
+                "bulk_bump": True,
+                "bulk_push": True,
+                "exclude": ["agent-one"],
+            },
+            {"phase": 6, "bulk_bump": True, "bulk_push": True},
+        ]
+    }
+    monkeypatch.setattr(manager, "_repo_has_pending_work", lambda _path: True)
+
+    bump, _ = manager._build_bump_phase_list(
+        config=config, start_phase=5, filter_set=None
+    )
+    push, _ = manager._build_push_phase_list(
+        config=config, start_phase=5, project_filter=None
+    )
+
+    assert [(phase["phase_num"], phase["projects"]) for phase in bump] == [
+        (6, ["agent-one"])
+    ]
+    assert [
+        (phase["phase_num"], [name for name, _path in phase["projects_to_push"]])
+        for phase in push
+    ] == [(6, ["agent-one"])]
+    assert manager._pre_commit_project_names(config, start_phase=5) == ["agent-one"]
+    assert manager._auto_start_phase(config) == 6
 
 
 def test_single_phase_builders_execute_exact_start_phase(tmp_path: Path) -> None:
