@@ -22,9 +22,8 @@ import tomllib
 import uuid
 from collections.abc import Callable, Iterator
 from itertools import chain
-from pathlib import Path, PurePosixPath
-from typing import Any, TypeGuard, TypeVar
-from urllib.parse import unquote, urlsplit
+from pathlib import Path
+from typing import Any, TypeVar
 
 __version__ = "3.4.0"
 
@@ -45,8 +44,7 @@ import signal
 
 import yaml  # type: ignore[import-untyped]
 from agent_utilities.base_utilities import get_library_file_path, to_boolean
-from packaging.requirements import InvalidRequirement, Requirement
-from packaging.version import InvalidVersion, Version
+from pydantic import ValidationError
 
 try:
     from skill_graphs.skill_graph_utilities import get_skill_graphs_path
@@ -72,8 +70,15 @@ from repository_manager.models import (
     GitResult,
     MaintenanceConfig,
     ReadmeResult,
+    RepositoryConfig,
     SubdirectoryConfig,
     WorkspaceConfig,
+)
+from repository_manager.release_validation import (
+    canonical_repository_url,
+    read_release_document,
+    release_repository_name,
+    repository_name,
 )
 from repository_manager.scan_models import RepoScanResult
 from repository_manager.workspace_manifest import (
@@ -119,31 +124,6 @@ _CONSOLIDATED_SKILL_GRAPHS = (
 _UV_WORKSPACE_SIBLINGS_DIRNAME = ".uv-workspace-siblings"
 _PEP503_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\Z")
 _PEP503_NAME_SEPARATORS = re.compile(r"[-_.]+")
-_PEP517_BACKEND = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
-    r"(?::[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)?\Z"
-)
-_PEP621_DYNAMIC_FIELDS = frozenset(
-    {
-        "authors",
-        "classifiers",
-        "dependencies",
-        "description",
-        "entry-points",
-        "gui-scripts",
-        "keywords",
-        "license",
-        "license-files",
-        "maintainers",
-        "optional-dependencies",
-        "readme",
-        "requires-python",
-        "scripts",
-        "urls",
-        "version",
-    }
-)
-
 # Keep this list in sync with uv's documented ``tool.uv.sources`` table
 # fields.  Parsing source tables structurally, rather than looking only for
 # ``path``, is important here: a malformed extra field or a path/remote
@@ -3850,26 +3830,6 @@ class Git:
                 return "already bumped, awaiting push (avoids double-bump)"
         return None
 
-    @classmethod
-    def _build_phase_map(cls, config: dict) -> tuple[dict[str, int], int]:
-        """Map each explicitly-named project to its phase number.
-
-        Returns ``(project_phases, bulk_phase_num)`` where ``project_phases``
-        maps a project name to the phase that names it, and ``bulk_phase_num``
-        is the phase carrying ``bulk_bump``/``bulk_push`` (the phase for every
-        eligible, unnamed agent package). Mirrors the per-project phase
-        resolution already used by :meth:`phased_bumpversion`.
-        """
-        project_phases: dict[str, int] = {}
-        bulk_phase_num = 5
-        for phase in cls._ordered_release_phases(config):
-            p_num = phase["phase"]
-            if phase.get("bulk_bump") or phase.get("bulk_push"):
-                bulk_phase_num = p_num
-            for p in cls._phase_named_projects(phase):
-                project_phases[p] = p_num
-        return project_phases, bulk_phase_num
-
     def _repo_has_pending_work(self, project_dir: str) -> bool:
         """True when a repo has anything to bump or push.
 
@@ -3896,67 +3856,24 @@ class Git:
         inter-phase waits). Returns ``None`` when no repo has pending work — the
         caller should then do nothing. (CONCEPT:RM-PHASE-START)
         """
-        project_phases, bulk_phase_num = self._build_phase_map(config)
-        lowest: int | None = None
-        phase_configs = self._release_phases_by_number(config)
-        candidates = self._release_phase_candidates(
-            project_phases, bulk_phase_num, phase_configs
-        )
-        for phase_num, path in candidates:
-            # Once a candidate is found, only earlier phases can lower it.
-            if lowest is not None and phase_num >= lowest:
-                continue
-            if self._repo_has_pending_work(path):
-                lowest = phase_num
-        return lowest
-
-    def _release_phase_for_project(
-        self,
-        url: str,
-        path: str,
-        project_phases: dict[str, int],
-        bulk_phase_num: int,
-        phase_configs: dict[int, dict[str, Any]],
-    ) -> int | None:
-        """Explicit phase, eligible bulk phase, or no release phase."""
-        name = self._release_project_name_or_empty(url)
-        phase = self._release_phase_number(
-            url, path, name, project_phases, bulk_phase_num
-        )
-        if phase is None:
-            return None
-        phase_config = phase_configs.get(phase, {})
-        return None if self._phase_excludes_name(phase_config, name) else phase
-
-    def _release_phase_number(
-        self,
-        url: str,
-        path: str,
-        name: str,
-        project_phases: dict[str, int],
-        bulk_phase_num: int,
-    ) -> int | None:
-        """Resolve explicit or eligible-bulk phase before exclusions."""
-        explicit_phase = project_phases.get(name)
-        if explicit_phase is not None:
-            return explicit_phase
-        if self._is_bulk_release_target(url, path):
-            return bulk_phase_num
+        claimed: set[str] = set()
+        for phase in self._ordered_release_phases(config):
+            projects = self._select_phase_project_names(
+                phase,
+                filter_set=None,
+                claimed=claimed,
+                include_bulk=bool(phase.get("bulk_bump") or phase.get("bulk_push")),
+            )
+            if self._phase_has_pending_work(projects):
+                return phase["phase"]
         return None
 
-    def _release_phase_candidates(
-        self,
-        project_phases: dict[str, int],
-        bulk_phase_num: int,
-        phase_configs: dict[int, dict[str, Any]],
-    ) -> Iterator[tuple[int, str]]:
-        """Yield only manifest projects that belong to a release phase."""
-        for url, path in self.project_map.items():
-            phase = self._release_phase_for_project(
-                url, path, project_phases, bulk_phase_num, phase_configs
-            )
-            if phase is not None:
-                yield phase, path
+    def _phase_has_pending_work(self, projects: list[str]) -> bool:
+        """Whether any selected project has a local clone with pending work."""
+        paths = (self._project_path_for(project) for project in projects)
+        return any(
+            path is not None and self._repo_has_pending_work(path) for path in paths
+        )
 
     @_exclusive_repo_mutation
     def bump_version(
@@ -4368,26 +4285,35 @@ class Git:
         phases = self._selected_release_phases(
             config, start_phase=start_phase, single_phase=single_phase
         )
-        projects_to_check = self._pre_commit_projects_for_phases(phases)
-        unique = list(dict.fromkeys(projects_to_check))
-        return self._filter_project_names(unique, filter_set)
+        return self._pre_commit_projects_for_phases(phases, filter_set)
 
     def _pre_commit_projects_for_phases(
-        self, phases: list[dict[str, Any]]
+        self,
+        phases: list[dict[str, Any]],
+        filter_set: set[str] | None,
     ) -> list[Any]:
         """Flatten candidate names for already-selected maintenance phases."""
+        claimed: set[str] = set()
         return list(
             chain.from_iterable(
-                self._pre_commit_phase_projects(phase) for phase in phases
+                self._select_phase_project_names(
+                    phase,
+                    filter_set=filter_set,
+                    claimed=claimed,
+                    include_bulk=bool(phase.get("bulk_bump")),
+                )
+                for phase in phases
             )
         )
 
     def _pre_commit_phase_projects(self, phase: dict) -> list[Any]:
         """Explicit members plus eligible bulk agents for one phase."""
-        projects = self._phase_named_projects(phase)
-        if phase.get("bulk_bump"):
-            projects.extend(name for name, _path in self._bulk_release_targets(set()))
-        return self._filter_phase_excludes(phase, projects)
+        return self._select_phase_project_names(
+            phase,
+            filter_set=None,
+            claimed=set(),
+            include_bulk=bool(phase.get("bulk_bump")),
+        )
 
     def _pre_commit_project_dirs(
         self, projects_to_check: list[Any] | None
@@ -4430,13 +4356,6 @@ class Git:
         )
         return results
 
-    def _unassigned_project_names(
-        self, assigned_projects: set[str], claimed: list[str]
-    ) -> list[str]:
-        """Eligible bulk-release agents not claimed by an earlier phase."""
-        excluded = assigned_projects | set(claimed)
-        return [name for name, _path in self._bulk_release_targets(excluded)]
-
     def _bump_phase_projects(
         self, phase: dict, filter_set: set[str] | None, assigned_projects: set[str]
     ) -> list[str]:
@@ -4445,13 +4364,12 @@ class Git:
         A filter only narrows a phase's existing members. It can never manufacture
         a bulk target that failed the manifest/category/package eligibility gate.
         """
-        projects = self._phase_named_projects(phase)
-        projects = self._filter_project_names(projects, filter_set)
-
-        if phase.get("bulk_bump"):
-            eligible = self._unassigned_project_names(assigned_projects, projects)
-            projects.extend(self._filter_project_names(eligible, filter_set))
-        return self._filter_phase_excludes(phase, projects)
+        return self._select_phase_project_names(
+            phase,
+            filter_set=filter_set,
+            claimed=assigned_projects,
+            include_bulk=bool(phase.get("bulk_bump")),
+        )
 
     @staticmethod
     def _parse_project_filter(project_filter: str | None) -> set[str] | None:
@@ -4491,8 +4409,6 @@ class Git:
             phase_num = phase["phase"]
 
             projects = self._bump_phase_projects(phase, filter_set, assigned_projects)
-            projects = [p for p in projects if p not in assigned_projects]
-            assigned_projects.update(projects)
             if not projects:
                 continue
 
@@ -4823,20 +4739,33 @@ class Git:
             return self.config.maintenance
         return None
 
-    def _resolve_maintenance_config(self, config: dict | None) -> dict | None:
-        """Return *config* unchanged, or load the maintenance config in its place.
+    def _resolve_maintenance_config(self, config: object | None) -> dict | None:
+        """Strictly validate *config*, or load the manifest config in its place.
 
         ``None`` means no maintenance configuration is reachable and the caller
         must abort; the error is logged here so every phased workflow reports it
         identically.
         """
         if config is not None:
-            return config
+            return self._validated_maintenance_mapping(config)
         config_model = self._maintenance_config_model()
         if config_model is None:
             logger.error("No maintenance configuration found.")
             return None
-        return config_model.model_dump()
+        return config_model.model_dump(exclude_none=True)
+
+    @staticmethod
+    def _validated_maintenance_mapping(config: object) -> dict[str, Any] | None:
+        """Validate a caller-supplied maintenance mapping without coercion."""
+        if type(config) is not dict:
+            logger.error("Maintenance configuration must be a mapping.")
+            return None
+        try:
+            model = MaintenanceConfig.model_validate(config, strict=True)
+        except ValidationError as exc:
+            logger.error("Invalid maintenance configuration: %s", exc)
+            return None
+        return model.model_dump(exclude_none=True)
 
     def _resolve_auto_start_phase(
         self,
@@ -4869,132 +4798,10 @@ class Git:
 
     def _project_path_for(self, project_name: str) -> str | None:
         """Local clone path of *project_name* from the URL->path project map."""
-        for url, p_path in self.project_map.items():
-            if url.endswith(f"/{project_name}.git") or url.endswith(f"/{project_name}"):
+        for url, p_path in sorted(self.project_map.items()):
+            if self._release_project_name_or_empty(url) == project_name:
                 return p_path
         return None
-
-    @staticmethod
-    def _valid_unique_string_list(value: object) -> TypeGuard[list[str]]:
-        """Whether a value is a duplicate-free typed string list."""
-        return bool(
-            isinstance(value, list)
-            and all(isinstance(item, str) for item in value)
-            and len(value) == len(set(value))
-        )
-
-    @staticmethod
-    def _valid_static_version(version: object) -> bool:
-        """Whether a static version is a stripped PEP 440 string."""
-        if not isinstance(version, str) or not version or version != version.strip():
-            return False
-        try:
-            Version(version)
-        except InvalidVersion:
-            return False
-        return True
-
-    @classmethod
-    def _valid_project_dynamic(cls, project: dict[str, Any]) -> bool:
-        """Whether PEP 621 dynamic fields are supported and not also static."""
-        dynamic = project.get("dynamic", [])
-        if not cls._valid_unique_string_list(dynamic):
-            return False
-        return bool(
-            set(dynamic).issubset(_PEP621_DYNAMIC_FIELDS)
-            and not any(field in project for field in dynamic)
-        )
-
-    @classmethod
-    def _has_release_version(cls, project: dict[str, Any]) -> bool:
-        """Whether PEP 621 metadata coherently declares exactly one version mode."""
-        version = project.get("version")
-        dynamic = project.get("dynamic", [])
-        if not cls._valid_project_dynamic(project):
-            return False
-        dynamic_version = "version" in dynamic
-        if version is None:
-            return dynamic_version
-        return all((not dynamic_version, cls._valid_static_version(version)))
-
-    @staticmethod
-    def _valid_build_requires(requires: object) -> bool:
-        """Whether PEP 517 build requirements are typed valid PEP 508 strings."""
-        if not isinstance(requires, list) or not requires:
-            return False
-        for item in requires:
-            if not isinstance(item, str) or not item.strip():
-                return False
-            try:
-                Requirement(item)
-            except InvalidRequirement:
-                return False
-        return True
-
-    @staticmethod
-    def _valid_backend_path_item(item: object) -> bool:
-        """Whether one PEP 517 backend path is a safe relative POSIX path."""
-        if not isinstance(item, str):
-            return False
-        path = PurePosixPath(item)
-        unsafe = (
-            not item,
-            "\\" in item,
-            "\x00" in item,
-            path.is_absolute(),
-            ".." in path.parts,
-            path.as_posix() != item,
-        )
-        return not any(unsafe)
-
-    @classmethod
-    def _valid_backend_path(cls, backend_path: object) -> bool:
-        """Whether PEP 517 backend paths are unique safe relative POSIX paths."""
-        return bool(
-            cls._valid_unique_string_list(backend_path)
-            and all(cls._valid_backend_path_item(item) for item in backend_path)
-        )
-
-    @classmethod
-    def _valid_build_system(cls, build_system: object) -> bool:
-        """Whether metadata selects a syntactically valid PEP 517 backend."""
-        if not isinstance(build_system, dict):
-            return False
-        backend = build_system.get("build-backend")
-        checks = (
-            isinstance(backend, str) and _PEP517_BACKEND.fullmatch(backend) is not None,
-            cls._valid_build_requires(build_system.get("requires")),
-            cls._valid_backend_path(build_system.get("backend-path", [])),
-        )
-        return all(checks)
-
-    @classmethod
-    def _release_name_matches(cls, name: object, expected_name: str) -> bool:
-        """Whether the distribution name is strict normalized PEP 503 identity."""
-        if not isinstance(name, str):
-            return False
-        try:
-            normalized_name = cls._normalize_uv_name(name, label="project.name")
-        except ValueError:
-            return False
-        return name == normalized_name == expected_name
-
-    @classmethod
-    def _valid_release_document(
-        cls, data: dict[str, Any], *, expected_name: str
-    ) -> bool:
-        """Whether parsed TOML declares a named, versioned build."""
-        project = data.get("project")
-        if not isinstance(project, dict):
-            return False
-        return all(
-            (
-                cls._release_name_matches(project.get("name"), expected_name),
-                cls._valid_project_dynamic(project),
-                cls._has_release_version(project),
-                cls._valid_build_system(data.get("build-system")),
-            )
-        )
 
     def _validated_bulk_release_path(
         self, project_path: str, expected_name: str
@@ -5017,17 +4824,6 @@ class Git:
             return None
         return validated
 
-    @staticmethod
-    def _read_release_document(manifest: Path) -> dict[str, Any] | None:
-        """Parse a regular, non-symlink TOML manifest or fail closed."""
-        if manifest.is_symlink() or not manifest.is_file():
-            return None
-        try:
-            with manifest.open("rb") as handle:
-                return tomllib.load(handle)
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-            return None
-
     def _has_pypi_release_metadata(
         self, project_path: str, *, expected_name: str
     ) -> bool:
@@ -5042,77 +4838,16 @@ class Git:
         validated = self._validated_bulk_release_path(project_path, expected_name)
         if validated is None:
             return False
-        data = self._read_release_document(validated / "pyproject.toml")
-        if data is None:
-            return False
-        return self._valid_release_document(data, expected_name=expected_name)
-
-    @classmethod
-    def _repository_url_segments(cls, url: str) -> list[str]:
-        """Decode and validate every repository URL path segment."""
-        raw_path = cls._repository_url_path(url)
-        raw_segments = cls._raw_repository_url_segments(raw_path, url)
-        return [
-            cls._decode_repository_url_segment(segment, url) for segment in raw_segments
-        ]
-
-    @staticmethod
-    def _repository_url_path(url: str) -> str:
-        """Extract an HTTP/SSH/SCP-style repository path."""
-        if not isinstance(url, str) or not url.strip():
-            raise ValueError("release repository URL must be a non-empty string")
-        parsed = urlsplit(url)
-        raw_path = parsed.path
-        if not parsed.scheme and not parsed.netloc and ":" in raw_path:
-            _scp_host, raw_path = raw_path.split(":", 1)
-        if raw_path.startswith("/"):
-            raw_path = raw_path[1:]
-        return raw_path
-
-    @staticmethod
-    def _raw_repository_url_segments(raw_path: str, url: str) -> list[str]:
-        """Reject absent, repeated, or trailing repository path segments."""
-        raw_segments = raw_path.split("/")
-        if not raw_path or any(not segment for segment in raw_segments):
-            raise ValueError(f"release repository URL has empty path segment: {url!r}")
-        return raw_segments
-
-    @staticmethod
-    def _decode_repository_url_segment(raw_segment: str, url: str) -> str:
-        """Strictly decode one non-traversing URL segment."""
-        try:
-            segment = unquote(raw_segment, errors="strict")
-        except UnicodeDecodeError as exc:
-            raise ValueError(
-                f"release repository URL has invalid encoding: {url!r}"
-            ) from exc
-        forbidden = (
-            segment in {"", ".", ".."},
-            "/" in segment,
-            "\\" in segment,
-            "%" in segment,
-            any(ord(character) < 32 for character in segment),
+        return bool(
+            read_release_document(
+                validated / "pyproject.toml", expected_name=expected_name
+            )
         )
-        if any(forbidden):
-            raise ValueError(f"release repository URL has unsafe path segment: {url!r}")
-        return segment
 
     @classmethod
     def _release_project_name(cls, url: str) -> str:
         """Return a safe normalized repository basename or reject the URL."""
-        basename = cls._repository_url_segments(url)[-1]
-        if basename.endswith(".git"):
-            basename = basename[:-4]
-        if basename in {"", ".", ".."}:
-            raise ValueError(f"release repository URL has unsafe basename: {url!r}")
-        normalized = cls._normalize_uv_name(
-            basename, label="release repository basename"
-        )
-        if basename != normalized:
-            raise ValueError(
-                f"release repository basename is not PEP 503 normalized: {url!r}"
-            )
-        return normalized
+        return release_repository_name(url)
 
     @classmethod
     def _release_project_name_or_empty(cls, url: str) -> str:
@@ -5140,7 +4875,7 @@ class Git:
         """Validate and deduplicate the complete eligible Phase-5 universe."""
         targets: list[tuple[str, str]] = []
         eligible_names: set[str] = set()
-        for url, path in self.project_map.items():
+        for url, path in sorted(self.project_map.items()):
             if not self._is_bulk_release_target(url, path):
                 continue
             name = self._release_project_name(url)
@@ -5148,7 +4883,7 @@ class Git:
                 raise ValueError(f"duplicate Phase-5 repository basename: {name}")
             eligible_names.add(name)
             targets.append((name, path))
-        return targets
+        return sorted(targets, key=lambda target: (target[0], target[1]))
 
     def _bulk_release_targets(
         self, processed_projects: set[str]
@@ -5162,22 +4897,6 @@ class Git:
         processed_projects.update(name for name, _path in targets)
         return targets
 
-    def _named_push_targets(
-        self, projects: list[str], processed_projects: set[str]
-    ) -> list[tuple[str, str]]:
-        """Resolve an explicit ``projects:`` list to (name, path) pairs.
-
-        Claims every named project in *processed_projects* (even one with no
-        local clone) so a later bulk phase cannot re-push it.
-        """
-        targets: list[tuple[str, str]] = []
-        for project_name in projects:
-            processed_projects.add(project_name)
-            p_path = self._project_path_for(project_name)
-            if p_path is not None:
-                targets.append((project_name, p_path))
-        return targets
-
     def _phase_push_targets(
         self,
         phase: dict,
@@ -5185,15 +4904,13 @@ class Git:
         processed_projects: set[str],
     ) -> list[tuple[str, str]]:
         """The (name, path) pairs one configured phase would push."""
-        projects = self._phase_named_projects(phase)
-        projects = self._filter_project_names(projects, filter_set)
-        projects = self._filter_phase_excludes(phase, projects)
-
-        if phase.get("bulk_push"):
-            return self._filtered_bulk_push_targets(
-                processed_projects, filter_set, phase
-            )
-        return self._named_push_targets(projects, processed_projects)
+        projects = self._select_phase_project_names(
+            phase,
+            filter_set=filter_set,
+            claimed=processed_projects,
+            include_bulk=bool(phase.get("bulk_push")),
+        )
+        return self._paths_for_project_names(projects)
 
     def _filtered_bulk_push_targets(
         self,
@@ -5202,52 +4919,42 @@ class Git:
         phase: dict[str, Any] | None = None,
     ) -> list[tuple[str, str]]:
         """Eligible bulk targets narrowed by the shared comma-filter grammar."""
-        targets = self._bulk_release_targets(set())
-        targets = self._unprocessed_push_targets(targets, processed_projects)
-        targets = self._filter_push_target_names(targets, filter_set)
-        targets = self._filter_push_target_excludes(targets, phase)
-        processed_projects.update(name for name, _path in targets)
-        return targets
+        names = self._select_phase_project_names(
+            phase or {},
+            filter_set=filter_set,
+            claimed=processed_projects,
+            include_bulk=True,
+        )
+        return self._paths_for_project_names(names)
 
-    @staticmethod
-    def _unprocessed_push_targets(
-        targets: list[tuple[str, str]], processed_projects: set[str]
-    ) -> list[tuple[str, str]]:
-        """Remove targets already claimed by an earlier release phase."""
-        return [target for target in targets if target[0] not in processed_projects]
+    def _paths_for_project_names(self, names: list[str]) -> list[tuple[str, str]]:
+        """Resolve selected names to their deterministic local target pairs."""
+        paths = ((name, self._project_path_for(name)) for name in names)
+        return [(name, path) for name, path in paths if path is not None]
 
-    @staticmethod
-    def _filter_push_target_names(
-        targets: list[tuple[str, str]], filter_set: set[str] | None
-    ) -> list[tuple[str, str]]:
-        """Narrow target pairs with the shared explicit project filter."""
-        if filter_set is None:
-            return targets
-        return [(name, path) for name, path in targets if name in filter_set]
-
-    @classmethod
-    def _filter_push_target_excludes(
-        cls,
-        targets: list[tuple[str, str]],
-        phase: dict[str, Any] | None,
-    ) -> list[tuple[str, str]]:
-        """Narrow target pairs with the shared phase exclusion predicate."""
-        if phase is None:
-            return targets
-        return [
-            (name, path)
-            for name, path in targets
-            if not cls._phase_excludes_name(phase, name)
-        ]
-
-    @staticmethod
-    def _filter_project_names(
-        projects: list[Any], filter_set: set[str] | None
-    ) -> list[Any]:
-        """Intersect names with an optional explicit targeting filter."""
-        if filter_set is None:
-            return projects
-        return [project for project in projects if project in filter_set]
+    def _select_phase_project_names(
+        self,
+        phase: dict[str, Any],
+        *,
+        filter_set: set[str] | None,
+        claimed: set[str],
+        include_bulk: bool,
+    ) -> list[str]:
+        """Select one phase's effective union with one deterministic policy."""
+        candidates = set(self._phase_named_projects(phase))
+        if include_bulk:
+            candidates.update(
+                name for name, _path in self._eligible_bulk_release_targets()
+            )
+        selected = sorted(
+            name
+            for name in candidates
+            if name not in claimed
+            and (filter_set is None or name in filter_set)
+            and not self._phase_excludes_name(phase, name)
+        )
+        claimed.update(selected)
+        return selected
 
     @staticmethod
     def _phase_named_projects(phase: dict[str, Any]) -> list[str]:
@@ -5281,13 +4988,6 @@ class Git:
             for pattern in cls._phase_exclude_patterns(phase)
         )
 
-    @classmethod
-    def _filter_phase_excludes(
-        cls, phase: dict[str, Any], projects: list[str]
-    ) -> list[str]:
-        """Apply the shared phase exclusion predicate to project names."""
-        return [name for name in projects if not cls._phase_excludes_name(phase, name)]
-
     @staticmethod
     def _claim_unique_phase_projects(names: list[str], claimed: set[str]) -> None:
         """Reject a repeated explicit project within or across phases."""
@@ -5320,11 +5020,6 @@ class Git:
             cls._phase_exclude_patterns(phase)
             ordered.append(phase)
         return sorted(ordered, key=lambda phase: phase["phase"])
-
-    @classmethod
-    def _release_phases_by_number(cls, config: dict) -> dict[int, dict[str, Any]]:
-        """Validated phase configuration indexed by its unique number."""
-        return {phase["phase"]: phase for phase in cls._ordered_release_phases(config)}
 
     @classmethod
     def _selected_release_phases(
@@ -5646,23 +5341,16 @@ class Git:
         ``pyproject.toml`` (or no ``[project].name``) publishes nothing this
         barrier can reason about and is silently skipped, not an error.
         """
-        import tomllib
-
         from packaging.utils import canonicalize_name
 
         published: dict[str, str] = {}
         for _proj_name, p_path in projects_to_push:
-            pyproject_path = os.path.join(p_path, "pyproject.toml")
-            if not os.path.isfile(pyproject_path):
+            pyproject_path = Path(p_path) / "pyproject.toml"
+            data = read_release_document(pyproject_path)
+            if data is None:
                 continue
-            try:
-                with open(pyproject_path, "rb") as handle:
-                    data = tomllib.load(handle)
-            except (OSError, tomllib.TOMLDecodeError):
-                continue
-            name = (data.get("project") or {}).get("name")
-            if name:
-                published[canonicalize_name(name)] = pyproject_path
+            name = data["project"]["name"]
+            published[canonicalize_name(name)] = str(pyproject_path)
         return published
 
     def _await_phase_dependency_readiness(
@@ -5802,18 +5490,19 @@ class Git:
 
             logger.info("Workspace root resolved")
 
+            seen_repository_urls: set[str] = set()
             self.project_map = self._parse_subdirectories(
-                self.config.subdirectories, self.path, category_path=()
+                self.config.subdirectories,
+                self.path,
+                category_path=(),
+                seen_repository_urls=seen_repository_urls,
             )
 
-            for repo in self.config.repositories:
-                repo_url = _expand_required_environment(
-                    repo.url,
-                    label="repository origin",
+            self.project_map.update(
+                self._parse_root_repositories(
+                    self.config.repositories, seen_repository_urls
                 )
-                repo_name = repo_url.split("/")[-1].replace(".git", "")
-                self.project_map[repo_url] = os.path.join(self.path, repo_name)
-                self._project_categories[repo_url] = ()
+            )
             return True
 
         except Exception as e:
@@ -5829,7 +5518,25 @@ class Git:
                 type(e).__name__,
                 e,
             )
+            self.config = None
+            self.project_map = {}
+            self._project_categories = {}
             return False
+
+    def _parse_root_repositories(
+        self,
+        repositories: list[RepositoryConfig],
+        seen_repository_urls: set[str],
+    ) -> dict[str, str]:
+        """Parse canonical root-level repositories from one workspace manifest."""
+        project_map: dict[str, str] = {}
+        for repository in repositories:
+            url, name = self._manifest_repository_identity(
+                repository, seen_repository_urls
+            )
+            project_map[url] = os.path.join(self.path, name)
+            self._project_categories[url] = ()
+        return project_map
 
     @staticmethod
     def _git_remote_url(repo_path: str) -> str | None:
@@ -5887,6 +5594,7 @@ class Git:
         current_path: str,
         *,
         category_path: tuple[str, ...],
+        seen_repository_urls: set[str],
     ) -> dict[str, str]:
         """Helper to recursively parse subdirectories and collect repository paths."""
         project_map = {}
@@ -5895,11 +5603,9 @@ class Git:
             repo_category = (*category_path, name)
 
             for repo in data.repositories:
-                repo_url = _expand_required_environment(
-                    repo.url,
-                    label="repository origin",
+                repo_url, repo_name = self._manifest_repository_identity(
+                    repo, seen_repository_urls
                 )
-                repo_name = repo_url.split("/")[-1].replace(".git", "")
                 project_map[repo_url] = os.path.join(new_path, repo_name)
                 self._project_categories[repo_url] = repo_category
 
@@ -5909,10 +5615,26 @@ class Git:
                         data.subdirectories,
                         new_path,
                         category_path=repo_category,
+                        seen_repository_urls=seen_repository_urls,
                     )
                 )
 
         return project_map
+
+    @staticmethod
+    def _manifest_repository_identity(
+        repository: RepositoryConfig, seen_repository_urls: set[str]
+    ) -> tuple[str, str]:
+        """Canonical URL/name identity, rejecting duplicates before insertion."""
+        expanded = _expand_required_environment(
+            repository.url,
+            label="repository origin",
+        )
+        url = canonical_repository_url(expanded)
+        if url in seen_repository_urls:
+            raise ValueError(f"duplicate repository URL: {url}")
+        seen_repository_urls.add(url)
+        return url, repository_name(url)
 
     def generate_workspace_template(
         self, target_path: str, use_default: bool = True

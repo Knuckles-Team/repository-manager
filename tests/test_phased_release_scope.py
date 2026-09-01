@@ -545,3 +545,167 @@ def test_single_phase_builders_execute_exact_start_phase(tmp_path: Path) -> None
     assert [phase["phase_num"] for phase in bump_phases] == [2]
     assert [phase["phase_num"] for phase in push_phases] == [2]
     assert precommit_names == ["service-one"]
+
+
+def test_mixed_explicit_and_bulk_targets_have_identical_sorted_union(
+    tmp_path: Path,
+) -> None:
+    manager = _scoped_manager(tmp_path)
+    config = {
+        "phases": [
+            {
+                "phase": 5,
+                "projects": ["pipelines", "agent-one"],
+                "bulk_bump": True,
+                "bulk_push": True,
+            }
+        ]
+    }
+
+    bump, _ = manager._build_bump_phase_list(
+        config=config, start_phase=5, filter_set=None
+    )
+    push, _ = manager._build_push_phase_list(
+        config=config, start_phase=5, project_filter=None
+    )
+    precommit = manager._pre_commit_project_names(config, start_phase=5)
+
+    assert bump[0]["projects"] == ["agent-one", "pipelines"]
+    assert [name for name, _path in push[0]["projects_to_push"]] == [
+        "agent-one",
+        "pipelines",
+    ]
+    assert precommit == ["agent-one", "pipelines"]
+
+
+def test_target_order_does_not_depend_on_manifest_insertion_order(
+    tmp_path: Path,
+) -> None:
+    manager = _scoped_manager(tmp_path)
+    second_url = "https://example.invalid/agent-two.git"
+    second_path = tmp_path / "agent-packages" / "agents" / "agent-two"
+    _write_release_metadata(second_path)
+    manager.project_map[second_url] = str(second_path)
+    manager._project_categories[second_url] = ("agent-packages", "agents")
+    config = {"phases": [{"phase": 5, "bulk_bump": True, "bulk_push": True}]}
+
+    expected = ["agent-one", "agent-two"]
+    first, _ = manager._build_bump_phase_list(
+        config=config, start_phase=5, filter_set=None
+    )
+    manager.project_map = dict(reversed(list(manager.project_map.items())))
+    second, _ = manager._build_bump_phase_list(
+        config=config, start_phase=5, filter_set=None
+    )
+
+    assert first[0]["projects"] == second[0]["projects"] == expected
+
+
+def test_auto_start_uses_first_nonempty_effective_reentry_phase(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manager = _scoped_manager(tmp_path)
+    second_url = "https://example.invalid/agent-two.git"
+    second_path = tmp_path / "agent-packages" / "agents" / "agent-two"
+    _write_release_metadata(second_path)
+    manager.project_map[second_url] = str(second_path)
+    manager._project_categories[second_url] = ("agent-packages", "agents")
+    config = {
+        "phases": [
+            {"phase": 5, "bulk_bump": True, "exclude": ["agent-one"]},
+            {"phase": 6, "bulk_bump": True},
+        ]
+    }
+    monkeypatch.setattr(
+        manager,
+        "_repo_has_pending_work",
+        lambda path: path.endswith("agent-one"),
+    )
+
+    assert manager._auto_start_phase(config) == 6
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_manifest_duplicate_repository_urls_fail_closed_order_independently(
+    tmp_path: Path, reverse: bool
+) -> None:
+    url = "https://example.invalid/org/%61gent-one.git"
+    canonical_duplicate = "https://example.invalid/org/agent-one.git"
+    root_repositories = [{"url": canonical_duplicate}]
+    nested_repositories = [{"url": url}]
+    if reverse:
+        root_repositories, nested_repositories = (
+            nested_repositories,
+            root_repositories,
+        )
+    manifest = tmp_path / "workspace.yml"
+    manifest.write_text(
+        yaml.safe_dump(
+            {
+                "name": "duplicate",
+                "path": str(tmp_path / "workspace"),
+                "repositories": root_repositories,
+                "subdirectories": {
+                    "agent-packages": {
+                        "subdirectories": {
+                            "agents": {"repositories": nested_repositories}
+                        }
+                    }
+                },
+            }
+        )
+    )
+    manager = Git(path=str(tmp_path / "workspace"))
+
+    assert manager.load_projects_from_yaml(str(manifest)) is False
+    assert manager.project_map == {}
+    assert manager._project_categories == {}
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        [],
+        {"unknown": True},
+        {"phases": None},
+        {"phases": [{"name": "one", "phase": True}]},
+        {"phases": [{"name": "one", "phase": 1, "bulk_bump": "true"}]},
+        {"phases": [{"name": "one", "phase": 1, "wait_minutes": False}]},
+        {"phases": [{"name": "one", "phase": 1, "project": None}]},
+        {
+            "phases": [
+                {
+                    "name": "one",
+                    "phase": 1,
+                    "updates": [{"package": "pkg", "unknown": "value"}],
+                }
+            ]
+        },
+    ],
+)
+def test_raw_maintenance_config_rejects_coercion_unknowns_and_nulls(
+    tmp_path: Path, config: object
+) -> None:
+    manager = _scoped_manager(tmp_path)
+
+    assert manager._resolve_maintenance_config(config) is None
+
+
+def test_barrier_metadata_uses_same_fail_closed_release_validator(
+    tmp_path: Path,
+) -> None:
+    manager = _scoped_manager(tmp_path)
+    agent_path = tmp_path / "agent-packages" / "agents" / "agent-one"
+    (agent_path / "pyproject.toml").write_bytes(b"\xff\xfe[project]")
+
+    assert manager._phase_published_packages([("agent-one", str(agent_path))]) == {}
+
+    _write_release_metadata(
+        agent_path,
+        document=(
+            "[project]\nname='agent-one'\nversion='1.0'\nunknown=true\n"
+            "[build-system]\nrequires=['hatchling']\n"
+            "build-backend='hatchling.build'\n"
+        ),
+    )
+    assert manager._phase_published_packages([("agent-one", str(agent_path))]) == {}

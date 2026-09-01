@@ -1,0 +1,172 @@
+"""Closed-schema probes for release metadata and manifest repository URLs."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
+
+from repository_manager.release_validation import (
+    canonical_repository_url,
+    read_release_document,
+    repository_name,
+    validate_release_document,
+)
+
+
+def _complete_document() -> dict:
+    return {
+        "project": {
+            "name": "agent-one",
+            "version": "1.2.3",
+            "description": "One agent",
+            "readme": {"text": "README", "content-type": "text/markdown"},
+            "requires-python": ">=3.11",
+            "license": "MIT",
+            "license-files": ["LICENSE*"],
+            "authors": [{"name": "Author", "email": "author@example.invalid"}],
+            "maintainers": [{"name": "Maintainer"}],
+            "keywords": ["agents"],
+            "classifiers": ["Programming Language :: Python :: 3"],
+            "urls": {"Homepage": "https://example.invalid"},
+            "scripts": {"agent-one": "agent_one:main"},
+            "gui-scripts": {"agent-one-gui": "agent_one:gui"},
+            "entry-points": {"agent.plugins": {"one": "agent_one:plugin"}},
+            "dependencies": ["packaging>=24"],
+            "optional-dependencies": {"test": ["pytest>=8"]},
+            "dynamic": [],
+        },
+        "build-system": {
+            "requires": ["hatchling>=1"],
+            "build-backend": "hatchling.build",
+            "backend-path": ["backend"],
+        },
+    }
+
+
+def test_complete_standardized_pep621_schema_is_accepted() -> None:
+    assert validate_release_document(_complete_document(), expected_name="agent-one")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("name", b"agent-one"),
+        ("version", 1),
+        ("description", []),
+        ("readme", 1),
+        ("requires-python", []),
+        ("license", 1),
+        ("license-files", "LICENSE"),
+        ("authors", {}),
+        ("maintainers", ["Maintainer"]),
+        ("keywords", "agents"),
+        ("classifiers", {}),
+        ("urls", []),
+        ("scripts", []),
+        ("gui-scripts", []),
+        ("entry-points", []),
+        ("dependencies", "packaging"),
+        ("optional-dependencies", []),
+        ("dynamic", "version"),
+    ],
+)
+def test_every_standardized_project_key_is_strictly_typed(
+    field: str, value: object
+) -> None:
+    document = _complete_document()
+    document["project"][field] = value
+
+    assert not validate_release_document(document, expected_name="agent-one")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("readme", {"file": "README.md", "bogus": "x"}),
+        ("license", {"file": "LICENSE", "text": "MIT"}),
+        ("authors", [{"name": "A", "role": "owner"}]),
+        ("maintainers", [{"email": 1}]),
+        ("scripts", {"agent-one": 1}),
+        ("gui-scripts", {1: "agent_one:gui"}),
+        ("entry-points", {"agent.plugins": {"one": 1}}),
+        ("urls", {"Homepage": 1}),
+        ("optional-dependencies", {"test": [1]}),
+        ("dependencies", ["not a requirement @@@"]),
+    ],
+)
+def test_nested_pep621_shapes_fail_closed(field: str, value: object) -> None:
+    document = _complete_document()
+    document["project"][field] = value
+
+    assert not validate_release_document(document, expected_name="agent-one")
+
+
+def test_unknown_and_unsupported_dynamic_project_keys_fail_closed() -> None:
+    unknown = _complete_document()
+    unknown["project"]["private"] = True
+    assert not validate_release_document(unknown, expected_name="agent-one")
+
+    dynamic_license_files = _complete_document()
+    del dynamic_license_files["project"]["license-files"]
+    dynamic_license_files["project"]["dynamic"] = ["license-files"]
+    assert not validate_release_document(
+        dynamic_license_files, expected_name="agent-one"
+    )
+
+    conflict = deepcopy(_complete_document())
+    conflict["project"]["dynamic"] = ["description"]
+    assert not validate_release_document(conflict, expected_name="agent-one")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        b"https://example.invalid/org/agent-one.git",
+        " https://example.invalid/org/agent-one.git",
+        "https://example.invalid/org/agent-one.git\x7f",
+        "https://example.invalid/org/agent-one.git\x85",
+        "https://user@example.invalid/org/agent-one.git",
+        "https://user:secret@example.invalid/org/agent-one.git",
+        "https://example.invalid:/org/agent-one.git",
+        "https://example.invalid:nope/org/agent-one.git",
+        "https://example.invalid:0/org/agent-one.git",
+        "https://example.invalid:65536/org/agent-one.git",
+        "ssh://example.invalid/org/agent-one.git",
+        "git@example.invalid:org/agent-one.git",
+        "https:///org/agent-one.git",
+        "https://example.invalid/org/agent-one",
+        "https://example.invalid/org/agent-one.git?token=secret",
+        "https://example.invalid/org/agent-one.git?",
+        "https://example.invalid/org/agent-one.git#fragment",
+        "https://example.invalid/org/agent-one.git#",
+    ],
+)
+def test_repository_url_rejects_noncanonical_authority_and_raw_text(
+    url: object,
+) -> None:
+    with pytest.raises(ValueError):
+        canonical_repository_url(url)
+
+
+def test_repository_url_canonicalization_and_name_share_one_parser() -> None:
+    url = "HTTPS://Example.Invalid:443/Knuckles%2DTeam/%61gent-one.git"
+
+    assert canonical_repository_url(url) == (
+        "https://example.invalid/Knuckles-Team/agent-one.git"
+    )
+    assert repository_name(url) == "agent-one"
+
+
+def test_release_file_reader_rejects_invalid_encoding_toml_and_schema(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "pyproject.toml"
+    for content in (
+        b"\xff\xfe[project]",
+        b"[project\nname='agent-one'",
+        b"[project]\nname='agent-one'\nunknown=true\n",
+    ):
+        manifest.write_bytes(content)
+        assert read_release_document(manifest, expected_name="agent-one") is None

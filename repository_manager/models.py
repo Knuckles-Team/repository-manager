@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 
 from agent_utilities.security.persistence_privacy import sanitize_for_persistence
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger("RepositoryManager")
 
@@ -160,6 +160,8 @@ class ReadmeResult(BaseModel):
 
 
 class RepositoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     url: str
     description: str | None = None
 
@@ -170,26 +172,39 @@ class SubdirectoryConfig(BaseModel):
     subdirectories: dict[str, "SubdirectoryConfig"] = Field(default_factory=dict)
 
 
-class MaintenanceUpdate(BaseModel):
+class _StrictMaintenanceModel(BaseModel):
+    """Reject coercion, unknown keys, and explicit nulls in release controls."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_nulls(cls, value: object) -> object:
+        if isinstance(value, dict) and any(item is None for item in value.values()):
+            raise ValueError("maintenance fields cannot be null")
+        return value
+
+
+class MaintenanceUpdate(_StrictMaintenanceModel):
     target: str | None = None
     target_pattern: str | None = None
     package: str
     exclude: list[str] = Field(default_factory=list)
 
 
-class MaintenancePhase(BaseModel):
+class MaintenancePhase(_StrictMaintenanceModel):
     name: str
     phase: int
     project: str | None = None
     projects: list[str] = Field(default_factory=list)
     bulk_bump: bool = False
     bulk_push: bool = False
-    wait_minutes: int = 0
+    wait_minutes: float = 0.0
     updates: list[MaintenanceUpdate] = Field(default_factory=list)
     exclude: list[str] = Field(default_factory=list)
 
 
-class MaintenanceConfig(BaseModel):
+class MaintenanceConfig(_StrictMaintenanceModel):
     description: str | None = None
     phases: list[MaintenancePhase] = Field(default_factory=list)
 
