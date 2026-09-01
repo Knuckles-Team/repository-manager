@@ -85,7 +85,7 @@ class QueueRecord:
     candidate_id: str
     state: str
     enqueued_at: datetime
-    recorded_at: datetime
+    recorded_at: datetime | None
     worktree: str
     source: Path
 
@@ -155,6 +155,14 @@ def _timestamp(value: object, *, field: str, source: Path) -> datetime:
             f"{source}: {field} timestamp must include a timezone"
         )
     return parsed.astimezone(UTC)
+
+
+def _optional_timestamp(value: object, *, field: str, source: Path) -> datetime | None:
+    """Parse a lifecycle timestamp while retaining pre-field legacy records."""
+
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return _timestamp(value, field=field, source=source)
 
 
 def _load_yaml(path: Path) -> Any:
@@ -384,6 +392,21 @@ def _fragment_records(path: Path) -> list[dict[str, Any]]:
     return value
 
 
+def _latest_record(records: list[QueueRecord]) -> QueueRecord:
+    """Fold one candidate's records without fabricating legacy timestamps."""
+
+    timestamped = [record for record in records if record.recorded_at is not None]
+    if not timestamped:
+        return records[-1]
+    return max(
+        timestamped,
+        key=lambda record: (
+            record.recorded_at,
+            record.source.name == CANONICAL_FRAGMENT,
+        ),
+    )
+
+
 def _record_from_mapping(
     mapping: dict[str, Any], *, source: Path, index: int
 ) -> QueueRecord | None:
@@ -408,7 +431,7 @@ def _record_from_mapping(
     if recorded_raw is None and state_value != QUEUED_STATE:
         recorded_raw = enqueued_raw
     enqueued_at = _timestamp(enqueued_raw, field="enqueued_at", source=source)
-    recorded_at = _timestamp(recorded_raw, field="recorded_at", source=source)
+    recorded_at = _optional_timestamp(recorded_raw, field="recorded_at", source=source)
     return QueueRecord(
         candidate_id=candidate_id,
         state=state_value,
@@ -445,18 +468,13 @@ def _latest_queue_records(common: Path) -> tuple[QueueRecord, ...]:
                 grouped[record.candidate_id].append(record)
     # Timestamps, not lane/filename order, are lifecycle authority.  The
     # canonical projection wins an exact timestamp tie so a copied terminal
-    # state cannot be revived by an older lane fragment.
+    # state cannot be revived by an older lane fragment.  Before recorded_at
+    # existed, preserve deterministic append order without fabricating a time;
+    # a fresh queued record still fails closed below because it cannot establish
+    # lifecycle ordering.
     latest: list[QueueRecord] = []
     for records in grouped.values():
-        latest.append(
-            max(
-                records,
-                key=lambda record: (
-                    record.recorded_at,
-                    record.source.name == CANONICAL_FRAGMENT,
-                ),
-            )
-        )
+        latest.append(_latest_record(records))
     return tuple(
         sorted(latest, key=lambda record: (record.enqueued_at, record.candidate_id))
     )
@@ -564,6 +582,20 @@ def queued_repositories(
     return tuple(selected)
 
 
+def _is_fresh_queued_record(record: QueueRecord, cutoff: datetime) -> bool:
+    """Accept only timestamped queued records inside the configured age window."""
+
+    if record.state != QUEUED_STATE or record.enqueued_at < cutoff:
+        return False
+    if record.recorded_at is None:
+        raise MergeQueueRunnerError(
+            f"{record.source}: fresh queued record {record.candidate_id!r} "
+            "is missing recorded_at; migrate the legacy queue record before "
+            "scheduling it"
+        )
+    return True
+
+
 def _has_fresh_queue_record(repository: DeclaredRepository, cutoff: datetime) -> bool:
     """Validate and report whether one repository has a fresh queued record."""
 
@@ -571,7 +603,7 @@ def _has_fresh_queue_record(repository: DeclaredRepository, cutoff: datetime) ->
     for record in _latest_queue_records(common):
         if record.source.name == CANONICAL_FRAGMENT:
             continue
-        if record.state != QUEUED_STATE or record.enqueued_at < cutoff:
+        if not _is_fresh_queued_record(record, cutoff):
             continue
         _validate_queued_worktree(repository, record)
         return True
