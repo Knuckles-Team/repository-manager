@@ -20,6 +20,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import tomllib
 import uuid
@@ -121,6 +122,31 @@ _SHELL_CONTROL_TOKENS = {"&&", "||", ";", "|", "&", "(", ")"}
 _MAX_CAPTURED_OUTPUT_BYTES = 1024 * 1024
 _MutationResult = TypeVar("_MutationResult")
 _ReleaseTarget = tuple[str, str]
+
+
+@dataclasses.dataclass(frozen=True)
+class _SealedPushRefs:
+    """Exact local refs admitted to one atomic remote publication."""
+
+    branch: str
+    head_oid: str
+    tag: str | None = None
+    tag_oid: str | None = None
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Return the exact refs exported into the sealed admin repository."""
+        return (self.branch,) if self.tag is None else (self.branch, self.tag)
+
+    @property
+    def expected(self) -> dict[str, str]:
+        """Return expected remote object identities by full ref name."""
+        values = {self.branch: self.head_oid}
+        if self.tag is not None and self.tag_oid is not None:
+            values[self.tag] = self.tag_oid
+        return values
+
+
 _CONSOLIDATED_UNIVERSAL_SKILLS = (
     "agent-package-builder",
     "mcp-builder",
@@ -4167,38 +4193,304 @@ class Git:
             error_text += " " + result.data
         return error_text
 
-    def _push_release_tag(
-        self, target_path: str, *, pinned: PinnedDirectory | None = None
-    ) -> GitResult | None:
-        """Push the CURRENT release tag explicitly after a successful branch push.
-
-        ``--follow-tags`` only pushes ANNOTATED tags. bump2version can emit
-        LIGHTWEIGHT tags (objecttype=commit), which would silently never
-        reach the remote — so no tag-triggered CI / image build. Pushing the
-        current release tag (v<current_version> from .bumpversion.cfg) covers
-        both annotated and lightweight, WITHOUT also dumping stale
-        never-pushed historical tags onto the remote (which would trigger CI
-        for old versions).
-        (CONCEPT:RM-BUMP tag-publish correctness)
-        """
-        rel_tag = self._current_release_tag(target_path, pinned=pinned)
-        if not rel_tag:
-            return None
-        tag_res = self.git_action(
-            command=f"git push origin {rel_tag}",
+    def _pinned_git_value(
+        self, target_path: str, pinned: PinnedDirectory, command: str
+    ) -> str:
+        """Read one required Git value through the admitted source descriptor."""
+        result = self.git_action(
+            command=command,
             path=target_path,
+            quiet=True,
+            raw_output=True,
             **self._pinned_git_kwargs(pinned),
         )
-        if tag_res.status != "success":
-            logger.warning("Branch pushed but the release-tag push failed")
-        return tag_res
+        value = (result.data or "").strip()
+        if result.status != "success" or not value:
+            raise OperationBoundaryError("cannot resolve exact ref for sealed push")
+        return value
+
+    @staticmethod
+    def _validate_sealed_ref(ref: str, prefix: str) -> str:
+        """Refuse names whose spelling could alter a refspec or command shape."""
+        forbidden = ("..", "@{", "\\", "~", "^", ":", "?", "*", "[")
+        if (
+            not ref.startswith(prefix)
+            or ref.endswith(("/", "."))
+            or "//" in ref
+            or any(token in ref for token in forbidden)
+            or any(ord(char) <= 0x20 or ord(char) == 0x7F for char in ref)
+        ):
+            raise OperationBoundaryError("sealed push ref is unsafe")
+        return ref
+
+    @staticmethod
+    def _validate_object_id(value: str) -> str:
+        """Require an unabbreviated SHA-1 or SHA-256 Git object identity."""
+        if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", value) is None:
+            raise OperationBoundaryError("sealed push object identity is invalid")
+        return value
+
+    def _sealed_push_refs(
+        self, target_path: str, pinned: PinnedDirectory
+    ) -> _SealedPushRefs:
+        """Snapshot the exact current branch and optional current release tag."""
+        branch = self._validate_sealed_ref(
+            self._pinned_git_value(
+                target_path, pinned, "git symbolic-ref --quiet HEAD"
+            ),
+            "refs/heads/",
+        )
+        head_oid = self._validate_object_id(
+            self._pinned_git_value(
+                target_path, pinned, "git rev-parse --verify HEAD^{commit}"
+            )
+        )
+        release_tag = self._current_release_tag(target_path, pinned=pinned)
+        if release_tag is None:
+            return _SealedPushRefs(branch=branch, head_oid=head_oid)
+        tag = self._validate_sealed_ref(f"refs/tags/{release_tag}", "refs/tags/")
+        tag_oid = self._validate_object_id(
+            self._pinned_git_value(
+                target_path, pinned, f"git rev-parse --verify {shlex.quote(tag)}"
+            )
+        )
+        tag_commit = self._validate_object_id(
+            self._pinned_git_value(
+                target_path,
+                pinned,
+                f"git rev-parse --verify {shlex.quote(tag)}^{{commit}}",
+            )
+        )
+        if tag_commit != head_oid:
+            raise OperationBoundaryError("current release tag does not name HEAD")
+        return _SealedPushRefs(branch, head_oid, tag, tag_oid)
+
+    def _sealed_push_destination(
+        self, target_path: str, pinned: PinnedDirectory
+    ) -> str:
+        """Resolve one authorized endpoint without consulting a mutation child."""
+        if pinned.expected_origin is not None:
+            return self._authorized_push_destination(pinned)
+        return self._configured_push_destination(target_path, pinned)
+
+    @staticmethod
+    def _authorized_push_destination(pinned: PinnedDirectory) -> str:
+        """Require the local fetch origin to match a release-plan destination."""
+        expected = canonical_repository_url(pinned.expected_origin)
+        if pinned.configured_origin is None:
+            return expected
+        configured = canonical_repository_url(pinned.configured_origin)
+        if configured != expected:
+            raise OperationBoundaryError(
+                "configured origin differs from the authorized destination"
+            )
+        return expected
+
+    @staticmethod
+    def _configured_push_destination(target_path: str, pinned: PinnedDirectory) -> str:
+        """Normalize a generic push's sole admitted local origin."""
+        configured = pinned.configured_origin
+        if configured is None:
+            raise OperationBoundaryError("push target has no admitted origin URL")
+        if any(ord(char) < 0x20 or ord(char) == 0x7F for char in configured):
+            raise OperationBoundaryError("push target contains control characters")
+        parsed = urlsplit(configured)
+        if parsed.scheme in {"http", "https"}:
+            return canonical_repository_url(configured)
+        if parsed.scheme == "file":
+            return configured
+        if parsed.scheme:
+            raise OperationBoundaryError("push target uses an unsupported transport")
+        return os.path.abspath(os.path.join(target_path, configured))
+
+    @staticmethod
+    def _sealed_git_environment() -> dict[str, str]:
+        """Build an environment with no system, user, or injected Git config."""
+        return PinnedDirectory.anchored_git_environment(os.environ.copy())
+
+    def _run_sealed_git(
+        self,
+        admin: PinnedDirectory,
+        argv: list[str],
+        *,
+        target_path: str,
+        initialized: bool = True,
+    ) -> GitResult:
+        """Run Git only inside the private admin repository."""
+        command = ["git"]
+        if initialized:
+            command.append(f"--git-dir=/proc/self/fd/{admin.fd}")
+        command.extend(argv)
+        return self._run_pinned_repository_command(
+            command,
+            self._sealed_git_environment(),
+            target_path=target_path,
+            operation=f"git {argv[0]}",
+            quiet=True,
+            timeout=1800,
+            raw_output=True,
+            cwd_fd=admin.fd,
+            pass_fds=admin.pass_fds,
+            path_anchor=None,
+        )
+
+    @staticmethod
+    def _require_sealed_success(result: GitResult, label: str) -> None:
+        """Translate an internal admin failure into a fail-closed boundary error."""
+        if result.status != "success":
+            raise OperationBoundaryError(f"sealed release admin {label} failed")
+
+    def _export_sealed_bundle(
+        self,
+        target_path: str,
+        pinned: PinnedDirectory,
+        refs: _SealedPushRefs,
+        bundle_path: Path,
+    ) -> None:
+        """Export only admitted refs; this source child performs no network I/O."""
+        arguments = " ".join(shlex.quote(ref) for ref in refs.names)
+        result = self.git_action(
+            command=f"git bundle create {shlex.quote(str(bundle_path))} {arguments}",
+            path=target_path,
+            quiet=True,
+            **self._pinned_git_kwargs(pinned),
+        )
+        self._require_sealed_success(result, "bundle export")
+        pinned.assert_operation_identity()
+
+    def _populate_sealed_admin(
+        self,
+        admin: PinnedDirectory,
+        bundle_path: Path,
+        refs: _SealedPushRefs,
+        target_path: str,
+    ) -> None:
+        """Initialize a bare admin repository and import only the admitted refs."""
+        initialized = self._run_sealed_git(
+            admin,
+            ["init", "--bare", "--template=", "."],
+            target_path=target_path,
+            initialized=False,
+        )
+        self._require_sealed_success(initialized, "initialization")
+        refspecs = [f"+{ref}:{ref}" for ref in refs.names]
+        fetched = self._run_sealed_git(
+            admin,
+            ["fetch", "--no-tags", str(bundle_path), *refspecs],
+            target_path=target_path,
+        )
+        self._require_sealed_success(fetched, "ref import")
+        self._verify_sealed_admin_refs(admin, refs, target_path)
+
+    def _verify_sealed_admin_refs(
+        self, admin: PinnedDirectory, refs: _SealedPushRefs, target_path: str
+    ) -> None:
+        """Prove the private repository contains the exact expected object set."""
+        listed = self._run_sealed_git(
+            admin,
+            ["for-each-ref", "--format=%(refname)"],
+            target_path=target_path,
+        )
+        self._require_sealed_success(listed, "ref inventory")
+        if set((listed.data or "").splitlines()) != set(refs.names):
+            raise OperationBoundaryError("sealed release admin ref inventory changed")
+        for ref, expected in refs.expected.items():
+            result = self._run_sealed_git(
+                admin,
+                ["rev-parse", "--verify", ref],
+                target_path=target_path,
+            )
+            self._require_sealed_success(result, "ref verification")
+            actual = self._validate_object_id((result.data or "").strip())
+            if actual != expected:
+                raise OperationBoundaryError(
+                    "sealed release admin ref identity changed"
+                )
+
+    def _verify_sealed_destination(
+        self, admin: PinnedDirectory, destination: str, target_path: str
+    ) -> None:
+        """Require Git's own rewrite resolution to preserve the authorized URL."""
+        result = self._run_sealed_git(
+            admin,
+            ["ls-remote", "--get-url", "--", destination],
+            target_path=target_path,
+        )
+        self._require_sealed_success(result, "destination verification")
+        if (result.data or "").strip() != destination:
+            raise OperationBoundaryError("sealed release destination was rewritten")
+
+    def _verify_remote_refs(
+        self,
+        admin: PinnedDirectory,
+        destination: str,
+        refs: _SealedPushRefs,
+        target_path: str,
+    ) -> bool:
+        """Read back every published ref and compare its exact object identity."""
+        result = self._run_sealed_git(
+            admin,
+            ["ls-remote", "--refs", "--", destination, *refs.names],
+            target_path=target_path,
+        )
+        if result.status != "success":
+            return False
+        observed = {
+            name: oid
+            for line in (result.data or "").splitlines()
+            if "\t" in line
+            for oid, name in [line.split("\t", 1)]
+        }
+        return observed == refs.expected
+
+    def _sealed_atomic_push(
+        self,
+        admin: PinnedDirectory,
+        destination: str,
+        refs: _SealedPushRefs,
+        target_path: str,
+    ) -> GitResult:
+        """Atomically publish exact refs from the sealed private repository."""
+        self._verify_sealed_destination(admin, destination, target_path)
+        self._verify_sealed_admin_refs(admin, refs, target_path)
+        refspecs = [f"{ref}:{ref}" for ref in refs.names]
+        result = self._run_sealed_git(
+            admin,
+            ["push", "--porcelain", "--atomic", "--", destination, *refspecs],
+            target_path=target_path,
+        )
+        self._verify_sealed_admin_refs(admin, refs, target_path)
+        if result.status == "success" and not self._verify_remote_refs(
+            admin, destination, refs, target_path
+        ):
+            return GitResult(
+                status="error",
+                data="Remote publication could not be verified",
+                error=GitError(message="remote ref verification failed", code=1),
+                metadata=result.metadata,
+            )
+        return result
+
+    def _push_from_sealed_admin(
+        self, target_path: str, pinned: PinnedDirectory
+    ) -> GitResult:
+        """Publish without exposing source repository config to the push child."""
+        refs = self._sealed_push_refs(target_path, pinned)
+        destination = self._sealed_push_destination(target_path, pinned)
+        with tempfile.TemporaryDirectory(prefix="repository-manager-release-") as temp:
+            temp_path = Path(temp)
+            bundle_path = temp_path / "release.bundle"
+            admin_path = temp_path / "admin.git"
+            admin_path.mkdir(mode=0o700)
+            self._export_sealed_bundle(target_path, pinned, refs, bundle_path)
+            with open_directory(admin_path) as admin:
+                self._populate_sealed_admin(admin, bundle_path, refs, target_path)
+                return self._sealed_atomic_push(admin, destination, refs, target_path)
 
     def _handle_push_failure(
         self,
         target_path: str,
         result: GitResult,
-        *,
-        pinned: PinnedDirectory | None = None,
     ) -> GitResult:
         """Translate a failed ``git push`` into an actionable result."""
         error_text = self._push_error_text(result)
@@ -4213,20 +4505,12 @@ class Git:
         if (
             "non-fast-forward" in error_text
             or "tip of your current branch is behind" in error_text
+            or "[rejected] (fetch first)" in error_text
         ):
             logger.warning("Push refused because the remote branch has diverged")
             return self._diverged_push_refusal(result)
 
-        # Tag already exists on remote — retry without tags
-        if "tag already exists" in error_text:
-            logger.warning("Tag conflict detected; retrying without follow-tags")
-            return self.git_action(
-                command="git push origin main",
-                path=target_path,
-                **self._pinned_git_kwargs(pinned),
-            )
-
-        # Unknown error — return as-is
+        # Any other failure, including a tag collision, preserves atomic refusal.
         return result
 
     def _push_preconditions(
@@ -4247,26 +4531,6 @@ class Git:
             return self._dirty_push_refusal(target_path)
         return self._gate_before_push(target_path, pinned=pinned)
 
-    def _complete_successful_push(
-        self, target_path: str, pinned: PinnedDirectory, result: GitResult
-    ) -> GitResult:
-        """Require the explicit release-tag push to succeed as part of the push."""
-        tag_result = self._push_release_tag(target_path, pinned=pinned)
-        if tag_result is None or tag_result.status == "success":
-            return result
-        return GitResult(
-            status="error",
-            data=tag_result.data,
-            error=GitError(
-                message=(
-                    "Branch push succeeded, but the release-tag push "
-                    "failed; the overall push is incomplete."
-                ),
-                code=tag_result.error.code if tag_result.error else 1,
-            ),
-            metadata=tag_result.metadata or result.metadata,
-        )
-
     def _push_project_with_handle(
         self, target_path: str, pinned: PinnedDirectory
     ) -> GitResult:
@@ -4278,16 +4542,25 @@ class Git:
         if precondition is not None:
             return precondition
 
-        logger.info("Pushing latest changes and tags for configured project")
-        pinned.assert_path_identity()
-        result = self.git_action(
-            command="git push --follow-tags origin",
-            path=target_path,
-            **git_kwargs,
+        logger.info("Pushing exact refs from a sealed release admin repository")
+        pinned.assert_operation_identity()
+        result = self._sealed_push_result(target_path, pinned)
+        return (
+            result
+            if result.status == "success"
+            else self._handle_push_failure(target_path, result)
         )
-        if result.status == "success":
-            return self._complete_successful_push(target_path, pinned, result)
-        return self._handle_push_failure(target_path, result, pinned=pinned)
+
+    def _sealed_push_result(
+        self, target_path: str, pinned: PinnedDirectory
+    ) -> GitResult:
+        """Run a sealed push and translate boundary drift to a typed refusal."""
+        try:
+            result = self._push_from_sealed_admin(target_path, pinned)
+            pinned.assert_operation_identity()
+            return result
+        except OperationBoundaryError as exc:
+            return self._path_validation_result("push_project", target_path, exc)
 
     @_exclusive_repo_mutation
     def push_project(

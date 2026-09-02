@@ -78,7 +78,7 @@ def test_auto_start_phase_lowest_wins(tmp_path):
 
 
 @patch("time.sleep")
-def test_phased_push_auto_start_skips_early_phases(mock_sleep, tmp_path):
+def test_phased_push_auto_start_skips_early_phases(_mock_sleep, tmp_path):
     manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": DIRTY})
     manager.push_project = MagicMock(
         return_value=GitResult(
@@ -97,7 +97,7 @@ def test_phased_push_auto_start_skips_early_phases(mock_sleep, tmp_path):
 
 
 @patch("time.sleep")
-def test_phased_push_auto_start_no_changes_is_noop(mock_sleep, tmp_path):
+def test_phased_push_auto_start_no_changes_is_noop(_mock_sleep, tmp_path):
     manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": CLEAN, "repo3": CLEAN})
     manager.push_project = MagicMock()
 
@@ -140,7 +140,7 @@ def test_phased_bumpversion_auto_start_no_changes_is_noop(tmp_path):
 
 
 @patch("time.sleep")
-def test_phased_push_auto_start_is_default(mock_sleep, tmp_path):
+def test_phased_push_auto_start_is_default(_mock_sleep, tmp_path):
     # No auto_start argument => change-aware start is the default.
     manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": CLEAN})
     manager.push_project = MagicMock(
@@ -156,7 +156,7 @@ def test_phased_push_auto_start_is_default(mock_sleep, tmp_path):
 
 
 @patch("time.sleep")
-def test_phased_push_auto_start_false_opts_out(mock_sleep, tmp_path):
+def test_phased_push_auto_start_false_opts_out(_mock_sleep, tmp_path):
     # auto_start=False => always start at start_phase (Phase 1 here).
     manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": CLEAN})
     manager.push_project = MagicMock(
@@ -172,7 +172,7 @@ def test_phased_push_auto_start_false_opts_out(mock_sleep, tmp_path):
 
 
 @patch("time.sleep")
-def test_phased_push_project_filter_disables_auto_start(mock_sleep, tmp_path):
+def test_phased_push_project_filter_disables_auto_start(_mock_sleep, tmp_path):
     # Targeting repo1 (Phase 1, clean) must still push it even though the lowest
     # changed phase is 2 — explicit targeting overrides change-aware start.
     manager = _make_manager(tmp_path, {"repo1": CLEAN, "repo2": DIRTY, "repo3": DIRTY})

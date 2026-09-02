@@ -9,9 +9,9 @@ the live ``--hook-stage`` firing behavior end to end against real ``pre-commit``
 
 import os
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from repository_manager.models import GitError
 from repository_manager.repository_manager import Git, GitResult
 
 
@@ -53,6 +53,54 @@ def _completed(returncode, stdout=""):
         stdout=stdout,
         stderr="",
     )
+
+
+def _run_git(path: Path, *arguments: str) -> None:
+    subprocess.run(["git", *arguments], cwd=path, check=True)
+
+
+def _diverged_push_repository(tmp_path: Path) -> Path:
+    """Create local and remote branches that independently advanced."""
+    repository = tmp_path / "repository"
+    remote = tmp_path / "remote.git"
+    peer = tmp_path / "peer"
+    repository.mkdir()
+    _run_git(repository, "init", "-q", "-b", "main")
+    _run_git(repository, "config", "user.name", "test")
+    _run_git(repository, "config", "user.email", "test@example.invalid")
+    (repository / "README.md").write_text("initial\n")
+    _run_git(repository, "add", "README.md")
+    _run_git(repository, "commit", "-qm", "initial")
+    _run_git(tmp_path, "init", "-q", "--bare", str(remote))
+    _run_git(repository, "remote", "add", "origin", str(remote))
+    _run_git(repository, "push", "-q", "origin", "main")
+    _run_git(tmp_path, "clone", "-q", "-b", "main", str(remote), str(peer))
+    _run_git(peer, "config", "user.name", "test")
+    _run_git(peer, "config", "user.email", "test@example.invalid")
+    (peer / "peer.txt").write_text("peer\n")
+    _run_git(peer, "add", "peer.txt")
+    _run_git(peer, "commit", "-qm", "peer")
+    _run_git(peer, "push", "-q", "origin", "main")
+    (repository / "local.txt").write_text("local\n")
+    _run_git(repository, "add", "local.txt")
+    _run_git(repository, "commit", "-qm", "local")
+    return repository
+
+
+def _popen_observer(commands, original):
+    def observe(*args, **kwargs):
+        commands.append(args[0] if args else kwargs.get("args"))
+        return original(*args, **kwargs)
+
+    return observe
+
+
+def _assert_no_history_rewrite(commands) -> None:
+    tokens = [
+        token for command in commands if isinstance(command, list) for token in command
+    ]
+    assert "rebase" not in tokens
+    assert not any(token.startswith("--force") for token in tokens)
 
 
 def test_gate_disabled_is_noop(tmp_path):
@@ -197,29 +245,18 @@ def test_push_refuses_dirty_repository_without_implicit_commit(tmp_path):
     assert not any("git push" in command for command in commands)
 
 
-def test_diverged_push_never_rebases_or_force_pushes(tmp_path):
+def test_diverged_push_never_rebases_or_force_pushes(tmp_path, monkeypatch):
+    repository = _diverged_push_repository(tmp_path)
+    commands: list[object] = []
+    original = subprocess.Popen
+    monkeypatch.setattr(subprocess, "Popen", _popen_observer(commands, original))
     manager = Git(path=str(tmp_path))
     manager.gate_before_push = False
-
-    def action(*args, **kwargs):
-        command = kwargs.get("command", "") or (args[0] if args else "")
-        if "status --porcelain" in command:
-            return GitResult(status="success", data="", error=None)
-        return GitResult(
-            status="error",
-            data="",
-            error=GitError(message="non-fast-forward", code=1),
-        )
-
-    manager.git_action = MagicMock(side_effect=action)  # type: ignore[method-assign]
-    result = manager.push_project(str(tmp_path))
+    result = manager.push_project(str(repository))
 
     assert result.status == "error"
     assert result.error and result.error.code == 409
-    commands = [
-        call.kwargs.get("command", "") for call in manager.git_action.call_args_list
-    ]
-    assert not any("rebase" in command or "--force" in command for command in commands)
+    _assert_no_history_rewrite(commands)
 
 
 def test_missing_toolchain_is_reported_as_unrunnable_not_as_a_defect(tmp_path):

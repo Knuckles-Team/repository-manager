@@ -1,12 +1,45 @@
 import os
+import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from repository_manager import dependency_readiness as dep_ready
-from repository_manager.repository_manager import Git, GitResult
+from repository_manager.repository_manager import Git
 from repository_manager.scan_models import HookResult, RepoScanResult
+
+
+def _run_git(path: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _initialize_push_project(path: Path, origin: str) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _run_git(path, "init", "-q", "-b", "main")
+    _run_git(path, "config", "user.name", "test")
+    _run_git(path, "config", "user.email", "test@example.invalid")
+    (path / "README.md").write_text(f"{path.name}\n")
+    _run_git(path, "add", "README.md")
+    _run_git(path, "commit", "-qm", "initial")
+    _run_git(path, "remote", "add", "origin", origin)
+
+
+def _remote_ref(manager: Git, project: str) -> str | None:
+    remote = Path(manager.path) / "remotes" / f"{project}.git"
+    result = subprocess.run(
+        ["git", "--git-dir", str(remote), "rev-parse", "--verify", "refs/heads/main"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 @pytest.fixture
@@ -17,25 +50,26 @@ def mock_repo_manager(tmp_path):
         "https://github.com/Knuckles-Team/repo2.git": str(tmp_path / "repo2"),
         "https://github.com/Knuckles-Team/repo3.git": str(tmp_path / "repo3"),
     }
-    # The phased push/bump loops skip projects whose local clone is absent
-    # (os.path.isdir guard); create the mapped dirs so the mocked git_action runs.
-    for name in ("repo1", "repo2", "repo3"):
-        (tmp_path / name).mkdir(exist_ok=True)
+    remotes = tmp_path / "remotes"
+    remotes.mkdir()
+    for url, project_path in manager.project_map.items():
+        project = Path(project_path)
+        _initialize_push_project(project, url)
+        remote = remotes / f"{project.name}.git"
+        _run_git(remotes, "init", "-q", "--bare", str(remote))
 
-    def git_action_side_effect(*args, **kwargs):
-        command = kwargs.get("command", "")
-        if not command and args:
-            command = args[0]
-        if "status --porcelain" in command:
-            return GitResult(status="success", data="", error=None, metadata=None)
-        return GitResult(status="success", data="Pushed", error=None, metadata=None)
+    def local_destination(target_path, _pinned):
+        remote = remotes / f"{Path(target_path).name}.git"
+        if not remote.exists():
+            _run_git(remotes, "init", "-q", "--bare", str(remote))
+        return str(remote)
 
-    manager.git_action = MagicMock(side_effect=git_action_side_effect)  # type: ignore[method-assign]
+    manager._sealed_push_destination = local_destination  # type: ignore[method-assign]
+    manager.gate_before_push = False
     return manager
 
 
-@patch("time.sleep")
-def test_phased_push(mock_sleep, mock_repo_manager):
+def test_phased_push(mock_repo_manager):
     config = {
         "phases": [
             {"phase": 1, "name": "Phase 1", "projects": ["repo1"], "wait_minutes": 5},
@@ -54,8 +88,9 @@ def test_phased_push(mock_sleep, mock_repo_manager):
     )
 
     assert len(results) == 3  # 3 pushes
-    # 3 status checks + 3 pushes = 6 calls
-    assert mock_repo_manager.git_action.call_count == 6
+    assert _remote_ref(mock_repo_manager, "repo1") is not None
+    assert _remote_ref(mock_repo_manager, "repo2") is not None
+    assert _remote_ref(mock_repo_manager, "repo3") is not None
 
     # CONCEPT:RM-DEP-READY: the old blind `time.sleep(wait_minutes * 60)` is
     # gone. The mocked repos here have no `pyproject.toml`, so
@@ -63,11 +98,9 @@ def test_phased_push(mock_sleep, mock_repo_manager):
     # poll-until-satisfied-or-abort barrier returns immediately (nothing to
     # wait FOR) instead of always sleeping the full budget regardless of
     # whether anything downstream needed it.
-    assert mock_sleep.call_count == 0
 
 
-@patch("time.sleep")
-def test_phased_push_single_project(mock_sleep, mock_repo_manager):
+def test_phased_push_single_project(mock_repo_manager):
     config = {
         "phases": [
             {
@@ -85,11 +118,11 @@ def test_phased_push_single_project(mock_sleep, mock_repo_manager):
 
     assert len(results) == 1
     # 1 status check + 1 push = 2 calls
-    assert mock_repo_manager.git_action.call_count == 2
+    assert _remote_ref(mock_repo_manager, "repo1") is not None
+    assert _remote_ref(mock_repo_manager, "repo2") is None
 
     # No `pyproject.toml` in the mocked repo -> nothing published -> the
     # dependency-readiness barrier has nothing to wait for (CONCEPT:RM-DEP-READY).
-    assert mock_sleep.call_count == 0
 
 
 def test_phased_push_aborts_wave_when_barrier_times_out_unsatisfied(
@@ -111,7 +144,7 @@ def test_phased_push_aborts_wave_when_barrier_times_out_unsatisfied(
     monkeypatch.setattr(
         dep_ready,
         "declared_fleet_constraints",
-        lambda *a, **k: [
+        lambda *_args, **_kwargs: [
             dep_ready.DeclaredConstraint(
                 package="epistemic-graph",
                 raw_requirement="epistemic-graph[full]>=2.23.2,<3.0.0",
@@ -129,7 +162,7 @@ def test_phased_push_aborts_wave_when_barrier_times_out_unsatisfied(
     monkeypatch.setattr(
         dep_ready,
         "await_gate_readiness",
-        lambda *a, **k: dep_ready.GateReadinessOutcome(
+        lambda *_args, **_kwargs: dep_ready.GateReadinessOutcome(
             ok=False, waited_s=1800.0, attempts=4, failures=[unresolved]
         ),
     )
@@ -144,8 +177,8 @@ def test_phased_push_aborts_wave_when_barrier_times_out_unsatisfied(
         start_phase=1, config=config, auto_start=False
     )
 
-    # Phase 1 pushed (status-check + push = 2 calls); phase 2 must NEVER run.
-    assert mock_repo_manager.git_action.call_count == 2
+    assert _remote_ref(mock_repo_manager, "repo1") is not None
+    assert _remote_ref(mock_repo_manager, "repo2") is None
     assert any(
         r.status == "error"
         and r.error
@@ -169,7 +202,7 @@ def test_phased_push_proceeds_immediately_when_barrier_satisfied(
     monkeypatch.setattr(
         dep_ready,
         "declared_fleet_constraints",
-        lambda *a, **k: [
+        lambda *_args, **_kwargs: [
             dep_ready.DeclaredConstraint(
                 package="epistemic-graph",
                 raw_requirement="epistemic-graph>=2.23.0",
@@ -182,7 +215,7 @@ def test_phased_push_proceeds_immediately_when_barrier_satisfied(
     monkeypatch.setattr(
         dep_ready,
         "await_gate_readiness",
-        lambda *a, **k: dep_ready.GateReadinessOutcome(
+        lambda *_args, **_kwargs: dep_ready.GateReadinessOutcome(
             ok=True, waited_s=12.0, attempts=1, targets_checked=["repo2"]
         ),
     )
@@ -194,15 +227,13 @@ def test_phased_push_proceeds_immediately_when_barrier_satisfied(
         ]
     }
 
-    with patch("time.sleep") as mock_sleep:
-        results = mock_repo_manager.phased_push(
-            start_phase=1, config=config, auto_start=False
-        )
+    results = mock_repo_manager.phased_push(
+        start_phase=1, config=config, auto_start=False
+    )
 
-    # Both phases ran (2 status checks + 2 pushes = 4 calls); no blind sleep.
-    assert mock_repo_manager.git_action.call_count == 4
+    assert _remote_ref(mock_repo_manager, "repo1") is not None
+    assert _remote_ref(mock_repo_manager, "repo2") is not None
     assert all(r.status == "success" for r in results)
-    assert mock_sleep.call_count == 0
 
 
 def test_phase_readiness_cross_checks_the_independent_later_phase_universe(
@@ -224,7 +255,8 @@ dependencies = ["epistemic-graph>=2.0.0"]
     )
     calls = {"n": 0}
 
-    def narrowed_then_independent(path, *, fleet_packages):
+    def narrowed_then_independent(path, *, fleet_packages: object):
+        del fleet_packages
         calls["n"] += 1
         if calls["n"] == 1:
             # Simulate the planner's narrowed scan missing the real dependent.
@@ -289,7 +321,7 @@ def test_phased_push_aborts_before_mutation_when_frozen_plan_drifts(
         and "release plan changed" in result.error.message
         for result in results
     )
-    assert mock_repo_manager.git_action.call_count == 0
+    assert _remote_ref(mock_repo_manager, "repo1") is None
     assert len(mock_repo_manager.progress["release_plan_digest"]) == 64
 
 
@@ -340,7 +372,7 @@ def test_phased_push_advances_the_instant_the_downstream_gate_passes(
     monkeypatch.setattr(
         dep_ready,
         "declared_fleet_constraints",
-        lambda *a, **k: [
+        lambda *_args, **_kwargs: [
             dep_ready.DeclaredConstraint(
                 package="epistemic-graph",
                 raw_requirement="epistemic-graph>=2.23.2",
@@ -360,6 +392,12 @@ def test_phased_push_advances_the_instant_the_downstream_gate_passes(
         ]
     )
     monkeypatch.setattr("repository_manager.gates.run_gate_stage", fake_run_gate_stage)
+    original_readiness = dep_ready.await_gate_readiness
+
+    def no_delay_readiness(*args, **kwargs):
+        return original_readiness(*args, **kwargs, sleep=lambda _seconds: None)
+
+    monkeypatch.setattr(dep_ready, "await_gate_readiness", no_delay_readiness)
 
     config = {
         "phases": [
@@ -368,13 +406,13 @@ def test_phased_push_advances_the_instant_the_downstream_gate_passes(
         ]
     }
 
-    with patch("time.sleep"):
-        results = mock_repo_manager.phased_push(
-            start_phase=1, config=config, auto_start=False
-        )
+    results = mock_repo_manager.phased_push(
+        start_phase=1, config=config, auto_start=False
+    )
 
     assert len(fake_run_gate_stage.calls) == 2  # blocked once, then passed
-    assert mock_repo_manager.git_action.call_count == 4  # 2 status + 2 pushes
+    assert _remote_ref(mock_repo_manager, "repo1") is not None
+    assert _remote_ref(mock_repo_manager, "repo2") is not None
     assert all(r.status == "success" for r in results)
 
 
@@ -391,7 +429,7 @@ def test_phased_push_blocks_the_wave_when_the_downstream_gate_keeps_failing(
     monkeypatch.setattr(
         dep_ready,
         "declared_fleet_constraints",
-        lambda *a, **k: [
+        lambda *_args, **_kwargs: [
             dep_ready.DeclaredConstraint(
                 package="epistemic-graph",
                 raw_requirement="epistemic-graph>=2.23.2",
@@ -429,8 +467,8 @@ def test_phased_push_blocks_the_wave_when_the_downstream_gate_keeps_failing(
         start_phase=1, config=config, auto_start=False
     )
 
-    # Phase 1 pushed; phase 2 (repo2) must NEVER be attempted.
-    assert mock_repo_manager.git_action.call_count == 2
+    assert _remote_ref(mock_repo_manager, "repo1") is not None
+    assert _remote_ref(mock_repo_manager, "repo2") is None
     assert len(fake_run_gate_stage.calls) >= 1
     assert any(
         r.status == "error"
@@ -481,8 +519,12 @@ def test_phased_push_bulk_push_excludes_infrastructure_even_when_buildable(
         "https://gitlab.arpa/images/foo.git": ("images",),
         "https://gitlab.arpa/services/bar.git": ("services",),
     }
-    for rel in ("agent-packages/agents/repo1", "images/foo", "services/bar"):
-        _write_release_pyproject(Path(mock_repo_manager.path) / rel)
+    for url, project_path in mock_repo_manager.project_map.items():
+        path = Path(project_path)
+        _initialize_push_project(path, url)
+        _write_release_pyproject(path)
+        _run_git(path, "add", "pyproject.toml")
+        _run_git(path, "commit", "-qm", "add package metadata")
 
     config = {
         "phases": [
@@ -500,7 +542,9 @@ def test_phased_push_bulk_push_excludes_infrastructure_even_when_buildable(
 
     assert len(results) == 1
     assert all(r.status == "success" for r in results)
-    assert mock_repo_manager.git_action.call_count == 2
+    assert _remote_ref(mock_repo_manager, "repo1") is not None
+    assert _remote_ref(mock_repo_manager, "foo") is None
+    assert _remote_ref(mock_repo_manager, "bar") is None
 
 
 @pytest.mark.parametrize(
@@ -534,7 +578,7 @@ def test_phased_push_bulk_metadata_and_category_fail_closed(
     )
 
     assert results == []
-    mock_repo_manager.git_action.assert_not_called()
+    assert _remote_ref(mock_repo_manager, "candidate") is None
 
 
 def test_phased_push_honors_declarative_exclude_pattern(mock_repo_manager):
@@ -556,7 +600,8 @@ def test_phased_push_honors_declarative_exclude_pattern(mock_repo_manager):
         start_phase=1, config=config, auto_start=False
     )
     assert len(results) == 1
-    assert mock_repo_manager.git_action.call_count == 2  # 1 status + 1 push
+    assert _remote_ref(mock_repo_manager, "repo1") is not None
+    assert _remote_ref(mock_repo_manager, "repo2") is None
 
 
 def test_push_projects(mock_repo_manager):
@@ -568,13 +613,6 @@ def test_push_projects(mock_repo_manager):
     )
 
     assert len(results) == 2
-    # 2 status checks + 2 pushes = 4 calls
-    assert mock_repo_manager.git_action.call_count == 4
-    # Verify the push commands called were git push --follow-tags
-    push_calls = [
-        call
-        for call in mock_repo_manager.git_action.call_args_list
-        if "git push --follow-tags"
-        in (call.kwargs.get("command") or (call.args[0] if call.args else ""))
-    ]
-    assert len(push_calls) == 2
+    assert all(result.status == "success" for result in results)
+    assert _remote_ref(mock_repo_manager, "repo1") is not None
+    assert _remote_ref(mock_repo_manager, "repo2") is not None

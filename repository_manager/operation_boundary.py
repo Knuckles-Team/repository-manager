@@ -239,6 +239,7 @@ class PinnedDirectory:
     common_pointer_digest: str | None = None
     common_config_identity: FileIdentity | None = None
     common_config_digest: str | None = None
+    configured_origin: str | None = None
     expected_origin: str | None = None
     boundary_assertion: Callable[[], None] | None = None
     _closed: bool = False
@@ -294,19 +295,8 @@ class PinnedDirectory:
             or argv[1:2] in (["clone"], ["init"])
         ):
             return argv
-        origin_override = (
-            [
-                "-c",
-                f"remote.origin.url={self.expected_origin}",
-                "-c",
-                f"remote.origin.pushurl={self.expected_origin}",
-            ]
-            if self.expected_origin is not None
-            else []
-        )
         return [
             argv[0],
-            *origin_override,
             f"--git-dir=/proc/self/fd/{self.git_fd}",
             f"--work-tree={self.proc_path}",
             *argv[1:],
@@ -314,13 +304,16 @@ class PinnedDirectory:
 
     @staticmethod
     def anchored_git_environment(env: dict[str, str]) -> dict[str, str]:
-        """Remove environment controls that can redirect Git's writes."""
-        return {
+        """Remove redirect controls and disable system and user Git config."""
+        isolated = {
             key: value
             for key, value in env.items()
             if key not in _PINNED_GIT_ENVIRONMENT
             and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
         }
+        isolated["GIT_CONFIG_NOSYSTEM"] = "1"
+        isolated["GIT_CONFIG_GLOBAL"] = os.devnull
+        return isolated
 
     def assert_root_identity(self) -> None:
         """Reject replacement of the lexical root before a child starts."""
@@ -410,7 +403,8 @@ class PinnedDirectory:
             self.common_config_digest,
             config,
         ) = _config_entry_snapshot(self.common_fd)
-        _reject_preexisting_push_origin(config)
+        self.configured_origin = _audit_local_git_config(config)
+        _reject_worktree_config(self.git_fd)
 
     def _assert_git_metadata_identities(self) -> None:
         """Revalidate pinned Git worktree, common directory, and config."""
@@ -423,13 +417,24 @@ class PinnedDirectory:
         current_identity, current_digest, config = _config_entry_snapshot(
             self.common_fd
         )
+        self._assert_git_config_identity(current_identity, current_digest, config)
+        _reject_worktree_config(self.git_fd)
+
+    def _assert_git_config_identity(
+        self,
+        current_identity: FileIdentity | None,
+        current_digest: str | None,
+        config: bytes | None,
+    ) -> None:
+        """Compare both config content and its audited destination identity."""
         _assert_config_snapshot(
             current_identity,
             current_digest,
             self.common_config_identity,
             self.common_config_digest,
         )
-        _reject_preexisting_push_origin(config)
+        if _audit_local_git_config(config) != self.configured_origin:
+            raise OperationBoundaryError("git configured origin identity changed")
 
     def _assert_common_metadata(self) -> None:
         """Re-open the declared common directory and compare its identity."""
@@ -1174,10 +1179,117 @@ def _assert_config_snapshot(
         raise OperationBoundaryError("git common config content identity changed")
 
 
-def _reject_preexisting_push_origin(config: bytes | None) -> None:
-    """Refuse configured push URLs; the manifest owns the sole push endpoint."""
-    if _push_origin_from_git_config(config) is not None:
-        raise OperationBoundaryError("git common config declares remote.origin.pushurl")
+def _audit_local_git_config(config: bytes | None) -> str | None:
+    """Return the sole origin URL after refusing destination rewrite controls."""
+    entries = _git_config_entries(config)
+    origins: list[str] = []
+    for section, subsection, key, value in entries:
+        _reject_config_destination_control(section, subsection, key)
+        if section == "remote" and key in {"url", "pushurl"}:
+            if subsection != "origin" or key == "pushurl":
+                label = f"remote.{subsection or '<unnamed>'}.{key}"
+                raise OperationBoundaryError(
+                    f"git common config declares forbidden {label}"
+                )
+            origins.append(value)
+    if len(origins) > 1:
+        raise OperationBoundaryError("git common config repeats remote.origin.url")
+    return origins[0] if origins else None
+
+
+def _reject_config_destination_control(
+    section: str, subsection: str | None, key: str
+) -> None:
+    """Reject config constructs that can import or rewrite a push destination."""
+    if _is_external_config(section):
+        raise OperationBoundaryError("git common config includes external config")
+    if _is_worktree_config(section, key):
+        raise OperationBoundaryError("git common config enables worktreeConfig")
+    if _is_url_rewrite(section, key):
+        raise OperationBoundaryError("git common config declares URL rewrite")
+    if _is_push_default(section, subsection, key):
+        raise OperationBoundaryError("git common config declares remote.pushDefault")
+    if _is_branch_push_remote(section, key):
+        raise OperationBoundaryError("git common config declares branch.pushRemote")
+
+
+def _is_external_config(section: str) -> bool:
+    """Return whether a section imports another configuration file."""
+    return section in {"include", "includeif"}
+
+
+def _is_worktree_config(section: str, key: str) -> bool:
+    """Return whether a key enables the separate worktree config file."""
+    return (section, key) == ("extensions", "worktreeconfig")
+
+
+def _is_url_rewrite(section: str, key: str) -> bool:
+    """Return whether a key rewrites fetch or push URL prefixes."""
+    return section == "url" and key in {"insteadof", "pushinsteadof"}
+
+
+def _is_push_default(section: str, subsection: str | None, key: str) -> bool:
+    """Return whether a key selects an implicit default push remote."""
+    return (section, subsection, key) == ("remote", None, "pushdefault")
+
+
+def _is_branch_push_remote(section: str, key: str) -> bool:
+    """Return whether a branch key selects an alternate push remote."""
+    return (section, key) == ("branch", "pushremote")
+
+
+def _reject_worktree_config(git_fd: int) -> None:
+    """Refuse per-worktree configuration instead of leaving it outside the pin."""
+    if read_at(git_fd, "config.worktree") is not None:
+        raise OperationBoundaryError("git checkout declares config.worktree")
+
+
+def _git_config_entries(
+    value: bytes | None,
+) -> tuple[tuple[str, str | None, str, str], ...]:
+    """Parse the bounded local config grammar needed for destination auditing."""
+    if value is None:
+        return ()
+    try:
+        text = value.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise OperationBoundaryError("git config is not UTF-8") from exc
+    section: tuple[str, str | None] | None = None
+    entries: list[tuple[str, str | None, str, str]] = []
+    for raw_line in text.splitlines():
+        section, entry = _parse_git_config_line(raw_line, section)
+        if entry is not None:
+            entries.append(entry)
+    return tuple(entries)
+
+
+def _parse_git_config_line(
+    raw_line: str, section: tuple[str, str | None] | None
+) -> tuple[tuple[str, str | None] | None, tuple[str, str | None, str, str] | None]:
+    """Parse one local-config line while retaining its current section."""
+    line = raw_line.strip()
+    if not line or line.startswith(("#", ";")):
+        return section, None
+    if line.startswith("["):
+        return _git_config_section(line), None
+    if section is None:
+        raise OperationBoundaryError("git config contains an unscoped key")
+    match = re.fullmatch(r"([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?", line)
+    if match is None or raw_line.rstrip().endswith("\\"):
+        raise OperationBoundaryError("git config uses unsupported syntax")
+    entry = (*section, match.group(1).lower(), (match.group(2) or "").strip())
+    return section, entry
+
+
+def _git_config_section(line: str) -> tuple[str, str | None]:
+    """Normalize modern and legacy Git section spellings."""
+    match = re.fullmatch(
+        r'\[\s*([A-Za-z][A-Za-z0-9-]*)(?:\.([A-Za-z0-9._-]+)|\s+"([^"\\]*)")?\s*\]',
+        line,
+    )
+    if match is None:
+        raise OperationBoundaryError("git config uses unsupported section syntax")
+    return match.group(1).lower(), (match.group(2) or match.group(3))
 
 
 def _reject_git_path_controls(argv: list[str]) -> None:
@@ -1300,24 +1412,10 @@ def _assert_entry_identity(
 
 def _remote_origin_values(value: bytes | None, key: str) -> tuple[str, ...]:
     """Read every origin remote value for ``key`` across repeated sections."""
-    if value is None:
-        return ()
-    try:
-        text = value.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise OperationBoundaryError("git config is not UTF-8") from exc
-    sections = re.findall(
-        r'(?ims)^[ \t]*\[(?:remote[ \t]+"origin"|remote\.origin)[ \t]*\][ \t]*\n'
-        r"(.*?)(?=^[ \t]*\[|\Z)",
-        text,
-    )
     return tuple(
-        match.strip()
-        for section in sections
-        for match in re.findall(
-            rf"(?im)^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(.*?)\s*$",
-            section,
-        )
+        entry_value
+        for section, subsection, entry_key, entry_value in _git_config_entries(value)
+        if section == "remote" and subsection == "origin" and entry_key == key
     )
 
 
@@ -1369,7 +1467,8 @@ def _metadata_snapshot(
         try:
             common_identity = _identity_from_fd(common_fd, "git common")
             config_identity, config_digest, config = _config_entry_snapshot(common_fd)
-            _reject_preexisting_push_origin(config)
+            _audit_local_git_config(config)
+            _reject_worktree_config(git_fd)
             head = read_at(git_fd, "HEAD")
             return {
                 "entry": entry_identity.as_dict(),

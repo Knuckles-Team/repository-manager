@@ -92,6 +92,30 @@ def _manager_with_project(root: Path) -> Any:
     return manager
 
 
+def _push_fixture(root: Path) -> tuple[Git, Path, Path, Path]:
+    """Create one source plus authorized and attacker bare remotes."""
+    source = _source_repository(root)
+    authorized = root / "authorized.git"
+    attacker = root / "attacker.git"
+    _run(["git", "init", "-q", "--bare", str(authorized)], root)
+    _run(["git", "init", "-q", "--bare", str(attacker)], root)
+    _run(["git", "remote", "add", "origin", str(authorized)], source)
+    manager = Git(path=str(root))
+    manager.gate_before_push = False
+    return manager, source, authorized, attacker
+
+
+def _ref_value(repository: Path, ref: str) -> str | None:
+    """Read an exact ref without treating its absence as a test-process error."""
+    result = subprocess.run(
+        ["git", "--git-dir", str(repository), "rev-parse", "--verify", ref],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
 def test_git_subprocess_uses_an_inherited_descriptor_cwd(tmp_path, monkeypatch):
     root = tmp_path / "workspace"
     root.mkdir()
@@ -446,24 +470,26 @@ def test_push_gate_exception_fails_closed_before_remote_mutation(tmp_path, monke
     )
 
 
-def test_tag_push_failure_fails_overall_push(tmp_path, monkeypatch):
-    manager = _manager_with_project(tmp_path)
-    manager.gate_before_push = False
-    project = next(iter(manager.project_map.values()))
-    tag_error = GitResult(
-        status="error",
-        data="tag denied",
-        error=GitError(message="tag denied", code=1),
-    )
-    monkeypatch.setattr(
-        manager, "_push_release_tag", lambda *_args, **_kwargs: tag_error
-    )
+def test_tag_push_failure_preserves_atomic_branch_refusal(tmp_path):
+    manager, source, authorized, _attacker = _push_fixture(tmp_path)
+    _run(["git", "push", "-q", "origin", "main"], source)
+    old_head = _ref_value(authorized, "refs/heads/main")
+    assert old_head is not None
+    _run(["git", "--git-dir", str(authorized), "tag", "v1.0.0", old_head], tmp_path)
+    (source / "next.txt").write_text("next\n")
+    _run(["git", "add", "next.txt"], source)
+    _run(["git", "commit", "-qm", "next"], source)
+    _run(["git", "tag", "v1.0.0"], source)
+    (source / ".bumpversion.cfg").write_text("current_version = 1.0.0\n")
+    _run(["git", "add", ".bumpversion.cfg"], source)
+    _run(["git", "commit", "-qm", "release config"], source)
+    _run(["git", "tag", "-f", "v1.0.0"], source)
 
-    result = manager.push_project(project)
+    result = manager.push_project(str(source))
 
     assert result.status == "error"
-    assert result.error is not None
-    assert "tag push failed" in result.error.message
+    assert _ref_value(authorized, "refs/heads/main") == old_head
+    assert _ref_value(authorized, "refs/tags/v1.0.0") == old_head
 
 
 def test_git_action_rejects_a_symlinked_git_directory(tmp_path):
@@ -1025,6 +1051,119 @@ def test_git_action_rejects_multiple_preexisting_push_urls(tmp_path):
 
     assert result.status == "error"
     assert "remote.origin.pushurl" in result.data
+
+
+@pytest.mark.parametrize("directive", ["insteadOf", "pushInsteadOf"])
+def test_push_refuses_local_destination_rewrite_before_network(tmp_path, directive):
+    manager, source, authorized, attacker = _push_fixture(tmp_path)
+    with (source / ".git" / "config").open("a", encoding="utf-8") as stream:
+        stream.write(f'\n[url "{attacker}"]\n\t{directive} = {authorized}\n')
+
+    result = manager.push_project(str(source))
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert "URL rewrite" in (result.data or result.error.message)
+    assert _ref_value(authorized, "refs/heads/main") is None
+    assert _ref_value(attacker, "refs/heads/main") is None
+
+
+def test_push_refuses_included_config_and_later_include_drift(tmp_path):
+    manager, source, authorized, attacker = _push_fixture(tmp_path)
+    included = tmp_path / "included.gitconfig"
+    included.write_text(f'[remote "origin"]\n\tpushurl = {attacker}\n')
+    with (source / ".git" / "config").open("a", encoding="utf-8") as stream:
+        stream.write(f"\n[include]\n\tpath = {included}\n")
+
+    first = manager.push_project(str(source))
+    included.write_text(f'[url "{attacker}"]\n\tpushInsteadOf = {authorized}\n')
+    second = manager.push_project(str(source))
+
+    assert first.status == second.status == "error"
+    assert "includes external config" in first.data
+    assert "includes external config" in second.data
+    assert _ref_value(authorized, "refs/heads/main") is None
+    assert _ref_value(attacker, "refs/heads/main") is None
+
+
+def test_push_refuses_config_worktree_before_network(tmp_path):
+    manager, source, authorized, attacker = _push_fixture(tmp_path)
+    (source / ".git" / "config.worktree").write_text(
+        f'[remote "origin"]\n\tpushurl = {attacker}\n'
+    )
+
+    result = manager.push_project(str(source))
+
+    assert result.status == "error"
+    assert "config.worktree" in result.data
+    assert _ref_value(authorized, "refs/heads/main") is None
+    assert _ref_value(attacker, "refs/heads/main") is None
+
+
+@pytest.mark.parametrize(
+    "fragment",
+    [
+        "[extensions]\n\tworktreeConfig = true\n",
+        "[remote]\n\tpushDefault = backup\n",
+        '[branch "main"]\n\tpushRemote = backup\n',
+        '[remote "backup"]\n\turl = https://example.invalid/backup.git\n',
+        '[remote "origin"]\n\turl = https://example.invalid/repeated.git\n',
+        '[includeIf "gitdir:/tmp/**"]\n\tpath = /tmp/attack.gitconfig\n',
+    ],
+)
+def test_push_refuses_ambiguous_local_destination_controls(tmp_path, fragment):
+    manager, source, authorized, attacker = _push_fixture(tmp_path)
+    with (source / ".git" / "config").open("a", encoding="utf-8") as stream:
+        stream.write(f"\n{fragment}")
+
+    result = manager.push_project(str(source))
+
+    assert result.status == "error"
+    assert _ref_value(authorized, "refs/heads/main") is None
+    assert _ref_value(attacker, "refs/heads/main") is None
+
+
+@pytest.mark.parametrize("variable", ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"])
+def test_sealed_push_does_not_inherit_external_git_config(
+    tmp_path, monkeypatch, variable
+):
+    manager, source, authorized, attacker = _push_fixture(tmp_path)
+    external = tmp_path / f"{variable.lower()}.gitconfig"
+    external.write_text(f'[remote "origin"]\n\tpushurl = {attacker}\n')
+    monkeypatch.setenv(variable, str(external))
+
+    result = manager.push_project(str(source))
+
+    assert result.status == "success"
+    assert _ref_value(authorized, "refs/heads/main") == _ref_value(
+        source / ".git", "HEAD"
+    )
+    assert _ref_value(attacker, "refs/heads/main") is None
+
+
+def test_source_config_popen_race_cannot_redirect_sealed_push(tmp_path, monkeypatch):
+    manager, source, authorized, attacker = _push_fixture(tmp_path)
+    original = subprocess.Popen
+    raced = False
+
+    def race_before_push(*args: Any, **kwargs: Any) -> Any:
+        nonlocal raced
+        argv = args[0] if args else kwargs.get("args")
+        if not raced and isinstance(argv, list) and "push" in argv:
+            raced = True
+            with (source / ".git" / "config").open("a", encoding="utf-8") as stream:
+                stream.write(f'\n[remote "origin"]\n\tpushurl = {attacker}\n')
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", race_before_push)
+    result = manager.push_project(str(source))
+
+    assert raced
+    assert result.status == "error"
+    assert result.error is not None
+    assert "config" in (result.data or result.error.message)
+    assert _ref_value(authorized, "refs/heads/main") is not None
+    assert _ref_value(attacker, "refs/heads/main") is None
 
 
 def test_linked_worktree_snapshot_binds_common_config(tmp_path):
