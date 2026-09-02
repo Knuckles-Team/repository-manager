@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,18 @@ from repository_manager.repository_manager import Git, GitResult
 
 def _run(argv: list[str], cwd: Path) -> None:
     subprocess.run(argv, cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def _kernel_mount_id(descriptor: int) -> int | None:
+    """Read Linux's mount ID for an open descriptor without path inference."""
+    try:
+        lines = Path(f"/proc/self/fdinfo/{descriptor}").read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if line.startswith("mnt_id:"):
+            return int(line.partition(":")[2].strip())
+    return None
 
 
 def _config_value(git_dir: Path, key: str) -> str:
@@ -250,6 +263,31 @@ def test_release_receipt_flushes_parent_for_start_and_atomic_completion(
         assert read_release_plan_receipt(root) == {"state": "completed"}
 
     assert len(flushes) == 2
+
+
+def test_mount_identity_matches_the_kernel_descriptor_mount():
+    with open_directory(Path(__file__).resolve().parent) as root:
+        kernel_mount_id = _kernel_mount_id(root.fd)
+        if kernel_mount_id is None:
+            pytest.skip("kernel descriptor mount IDs are unavailable")
+        assert root.identity.mount_id == kernel_mount_id
+
+
+def test_mount_identity_is_read_fresh_after_descriptor_reuse():
+    root_fd = os.open(os.sep, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    proc_fd = os.open("/proc", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        root_mount = _kernel_mount_id(root_fd)
+        proc_mount = _kernel_mount_id(proc_fd)
+        if root_mount is None or proc_mount is None:
+            pytest.skip("kernel descriptor mount IDs are unavailable")
+        assert root_mount != proc_mount
+        assert operation_boundary._mount_id_for_fd(root_fd) == root_mount
+        os.dup2(proc_fd, root_fd)
+        assert operation_boundary._mount_id_for_fd(root_fd) == proc_mount
+    finally:
+        os.close(proc_fd)
+        os.close(root_fd)
 
 
 def test_mount_identity_rebind_is_rejected(tmp_path, monkeypatch):
@@ -930,7 +968,7 @@ def test_release_plan_binds_head_and_git_config_identity(tmp_path):
     assert not manager._release_plan_matches(provenance, {}, phase, options={})
 
 
-def test_release_plan_rejects_push_remote_drift(tmp_path):
+def test_release_plan_rejects_any_preexisting_push_remote(tmp_path):
     manager = _manager_with_project(tmp_path)
     project = Path(next(iter(manager.project_map.values())))
     git_dir = project / ".git"
@@ -940,6 +978,7 @@ def test_release_plan_rejects_push_remote_drift(tmp_path):
         '[remote "origin"]\n'
         "\turl = https://github.com/example/repo.git\n"
         "\tpushurl = https://github.com/example/repo-push.git\n"
+        "\tpushurl = https://github.com/example/second-push.git\n"
     )
     phase = [
         {
@@ -949,13 +988,43 @@ def test_release_plan_rejects_push_remote_drift(tmp_path):
         }
     ]
     provenance = manager._freeze_release_plan("push", {}, phase, options={})
-    (git_dir / "config").write_text(
-        '[remote "origin"]\n'
-        "\turl = https://github.com/example/repo.git\n"
-        "\tpushurl = https://github.com/example/replacement.git\n"
+
+    assert provenance.scope_identity == {
+        "valid": False,
+        "error": "unsafe release scope",
+    }
+    assert not manager._release_plan_matches(provenance, {}, phase, options={})
+
+
+def test_git_action_rejects_multiple_preexisting_push_urls(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    checkout = workspace / "repo"
+    checkout.mkdir()
+    _run(["git", "init", "-q", "-b", "main"], checkout)
+    _run(
+        [
+            "git",
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/fetch.git",
+        ],
+        checkout,
+    )
+    with (checkout / ".git" / "config").open("a", encoding="utf-8") as stream:
+        stream.write(
+            "\n[remote.origin]\n"
+            "\tpushurl = https://example.invalid/first.git\n"
+            "\tpushurl = https://example.invalid/second.git\n"
+        )
+
+    result = Git(path=str(workspace)).git_action(
+        "git status --porcelain", path=str(checkout)
     )
 
-    assert not manager._release_plan_matches(provenance, {}, phase, options={})
+    assert result.status == "error"
+    assert "remote.origin.pushurl" in result.data
 
 
 def test_linked_worktree_snapshot_binds_common_config(tmp_path):
@@ -980,6 +1049,25 @@ def test_linked_worktree_snapshot_binds_common_config(tmp_path):
     ).hexdigest()
     assert metadata["config_digest"] == expected_digest
     assert metadata["common"] != metadata["worktree"]
+
+
+def test_linked_worktree_handle_rejects_common_config_content_append(tmp_path):
+    source = _source_repository(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    checkout = workspace / "repo"
+    _run(["git", "clone", "-q", str(source), str(checkout)], workspace)
+    linked = workspace / "linked"
+    _run(["git", "worktree", "add", "-q", str(linked), "-b", "linked"], checkout)
+
+    with open_directory(workspace) as root, pin_existing(root, linked) as pinned:
+        pinned.assert_operation_identity()
+        with (checkout / ".git" / "config").open("a", encoding="utf-8") as stream:
+            stream.write("\n# post-admission content drift\n")
+        with pytest.raises(
+            OperationBoundaryError, match="config content identity changed"
+        ):
+            pinned.assert_operation_identity()
 
 
 def test_phased_bump_rejects_same_path_replacement_before_bump(tmp_path, monkeypatch):

@@ -1514,6 +1514,7 @@ class Git:
         if not isinstance(actual_git, dict):
             raise OperationBoundaryError("release plan Git identity disappeared")
         normalized = copy.deepcopy(actual_git)
+        self._reject_release_push_origin(expected_git, normalized)
         origin = normalized.get("origin")
         manifest_url = expected.get("url")
         if origin is None:
@@ -1528,6 +1529,17 @@ class Git:
         else:
             normalized["origin_identity"] = "<invalid-origin>"
         return normalized
+
+    @staticmethod
+    def _reject_release_push_origin(
+        expected_git: dict[str, Any], actual_git: dict[str, Any]
+    ) -> None:
+        """Reject old or current snapshots that contain a configured push URL."""
+        values = (expected_git.get("push_origin"), actual_git.get("push_origin"))
+        if any(value is not None for value in values):
+            raise OperationBoundaryError(
+                "release plan refuses configured remote.origin.pushurl"
+            )
 
     def _assert_pinned_release_target(
         self,

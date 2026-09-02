@@ -27,7 +27,6 @@ import json
 import os
 import re
 import stat
-import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -84,99 +83,72 @@ class DirectoryIdentity:
         }
 
 
-def _decode_mountinfo_path(value: str) -> str:
-    """Decode the octal escapes used for paths in ``mountinfo``."""
-    return re.sub(
-        r"\\([0-7]{3})",
-        lambda match: chr(int(match.group(1), 8)),
-        value,
-    )
+@dataclasses.dataclass(frozen=True)
+class FileIdentity:
+    """Stable metadata for a regular file read through one pinned descriptor."""
 
+    device: int
+    inode: int
+    mode: int
+    links: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+    mount_id: int | None = None
 
-_mountinfo_lock = threading.Lock()
-_mountinfo_signature: tuple[int, int, int] | None = None
-_mountinfo_entries: tuple[tuple[int, str, int], ...] = ()
-_mountinfo_path_cache: dict[str, int | None] = {}
-
-
-def _mountinfo_entries_for_process() -> tuple[tuple[int, str, int], ...]:
-    """Return a cached mount table, invalidating it when procfs changes."""
-    global _mountinfo_signature, _mountinfo_entries
-    try:
-        metadata = os.stat("/proc/self/mountinfo")
-        signature = (
-            int(metadata.st_ino),
-            int(metadata.st_mtime_ns),
-            int(metadata.st_ctime_ns),
+    @classmethod
+    def from_stat(cls, result: os.stat_result, mount_id: int | None) -> FileIdentity:
+        """Capture fields that expose replacement or in-place content mutation."""
+        return cls(
+            device=int(result.st_dev),
+            inode=int(result.st_ino),
+            mode=stat.S_IFMT(result.st_mode),
+            links=int(result.st_nlink),
+            size=int(result.st_size),
+            modified_ns=int(result.st_mtime_ns),
+            changed_ns=int(result.st_ctime_ns),
+            mount_id=mount_id,
         )
-    except OSError:
-        return ()
-    with _mountinfo_lock:
-        if signature == _mountinfo_signature:
-            return _mountinfo_entries
-        try:
-            lines = (
-                Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
-            )
-        except (OSError, UnicodeError):
-            _mountinfo_entries = ()
-        else:
-            entries: list[tuple[int, str, int]] = []
-            for line in lines:
-                fields = line.split(" - ", 1)[0].split()
-                if len(fields) < 5:
-                    continue
-                try:
-                    mount_id = int(fields[0])
-                except ValueError:
-                    continue
-                mount_point = os.path.normpath(_decode_mountinfo_path(fields[4]))
-                entries.append((mount_id, mount_point, mount_point.count(os.sep)))
-            _mountinfo_entries = tuple(sorted(entries, key=lambda item: -item[2]))
-        _mountinfo_signature = signature
-        _mountinfo_path_cache.clear()
-        return _mountinfo_entries
+
+    def as_dict(self) -> dict[str, int | None]:
+        """Return a JSON-safe identity payload."""
+        return dataclasses.asdict(self)
 
 
 def _mount_id_for_path(path: Path) -> int | None:
-    """Return Linux's mount ID for one lexical path, when available.
-
-    ``st_dev`` is not sufficient for bind mounts: two mounts can expose the
-    same device and inode while carrying different mount boundaries.  Linux
-    publishes the mount ID in ``/proc/self/mountinfo``; selecting the longest
-    matching mount point detects a mount rebind without requiring privileges.
-    Non-Linux hosts (and restricted proc filesystems) retain the device/inode
-    check and report no optional mount ID.
-    """
+    """Open one lexical directory and read its current kernel mount ID."""
     if os.name != "posix":
         return None
-    candidate = os.path.abspath(os.fspath(path))
-    with _mountinfo_lock:
-        cached = _mountinfo_path_cache.get(candidate, ...)
-    if cached is not ...:
-        return cached
-    entries = _mountinfo_entries_for_process()
-    result: int | None = None
-    for mount_id, mount_point, _depth in entries:
-        if (
-            mount_point == os.sep
-            or candidate == mount_point
-            or candidate.startswith(mount_point + os.sep)
-        ):
-            result = mount_id
-            break
-    with _mountinfo_lock:
-        _mountinfo_path_cache[candidate] = result
-    return result
+    try:
+        descriptor = os.open(path, _directory_flags())
+    except OSError:
+        return None
+    try:
+        return _mount_id_for_fd(descriptor)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
 
 
 def _mount_id_for_fd(fd: int) -> int | None:
-    """Return the mount ID containing an already-open descriptor."""
+    """Read the mount ID attached to an open descriptor, without path inference."""
     try:
-        path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+        lines = Path(f"/proc/self/fdinfo/{fd}").read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return None
-    return _mount_id_for_path(path)
+    return _mount_id_from_fdinfo(lines)
+
+
+def _mount_id_from_fdinfo(lines: list[str]) -> int | None:
+    """Parse one kernel fdinfo payload without inferring from a lexical path."""
+    for line in lines:
+        key, separator, raw_value = line.partition(":")
+        if separator and key == "mnt_id":
+            try:
+                return int(raw_value.strip())
+            except ValueError:
+                return None
+    return None
 
 
 def _identity_for_entry(result: os.stat_result, parent_fd: int) -> DirectoryIdentity:
@@ -265,7 +237,8 @@ class PinnedDirectory:
     common_identity: DirectoryIdentity | None = None
     common_owned_fds: tuple[int, ...] = ()
     common_pointer_digest: str | None = None
-    common_config_identity: DirectoryIdentity | None = None
+    common_config_identity: FileIdentity | None = None
+    common_config_digest: str | None = None
     expected_origin: str | None = None
     boundary_assertion: Callable[[], None] | None = None
     _closed: bool = False
@@ -432,7 +405,12 @@ class PinnedDirectory:
         )
         self.common_owned_fds = tuple(common_owned)
         self.common_identity = _identity_from_fd(self.common_fd, "git common")
-        self.common_config_identity = _config_entry_identity(self.common_fd)
+        (
+            self.common_config_identity,
+            self.common_config_digest,
+            config,
+        ) = _config_entry_snapshot(self.common_fd)
+        _reject_preexisting_push_origin(config)
 
     def _assert_git_metadata_identities(self) -> None:
         """Revalidate pinned Git worktree, common directory, and config."""
@@ -442,9 +420,16 @@ class PinnedDirectory:
         if self.common_fd is None or self.common_identity is None:
             raise OperationBoundaryError("git common identity is missing")
         _assert_fd_identity(self.common_fd, self.common_identity, "git common")
-        current_config_identity = _config_entry_identity(self.common_fd)
-        if current_config_identity != self.common_config_identity:
-            raise OperationBoundaryError("git common config identity changed")
+        current_identity, current_digest, config = _config_entry_snapshot(
+            self.common_fd
+        )
+        _assert_config_snapshot(
+            current_identity,
+            current_digest,
+            self.common_config_identity,
+            self.common_config_digest,
+        )
+        _reject_preexisting_push_origin(config)
 
     def _assert_common_metadata(self) -> None:
         """Re-open the declared common directory and compare its identity."""
@@ -1121,18 +1106,78 @@ def _common_metadata_directory(
     return common_fd, common_owned, common_path, _hash_bytes(commondir)
 
 
-def _config_entry_identity(directory_fd: int) -> DirectoryIdentity | None:
-    """Capture the common Git config entry without following a link."""
-    config = _stat_at(directory_fd, "config")
-    if config is None:
+def _config_entry_snapshot(
+    directory_fd: int,
+) -> tuple[FileIdentity | None, str | None, bytes | None]:
+    """Read common Git config once and bind its metadata plus content digest."""
+    descriptor = _open_config_entry(directory_fd)
+    if descriptor is None:
+        return None, None, None
+    try:
+        identity, value = _read_stable_config(descriptor)
+        _assert_config_entry_identity(directory_fd, identity)
+        return identity, hashlib.sha256(value).hexdigest(), value
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+
+
+def _open_config_entry(directory_fd: int) -> int | None:
+    """Open common Git config without following its final entry."""
+    try:
+        return os.open("config", _read_flags(), dir_fd=directory_fd)
+    except FileNotFoundError:
         return None
-    if (
-        stat.S_ISLNK(config.st_mode)
-        or not stat.S_ISREG(config.st_mode)
-        or config.st_nlink != 1
-    ):
+    except OSError as exc:
+        raise OperationBoundaryError("cannot read git common config safely") from exc
+
+
+def _read_stable_config(descriptor: int) -> tuple[FileIdentity, bytes]:
+    """Read config from one descriptor and reject concurrent content mutation."""
+    mount_id = _mount_id_for_fd(descriptor)
+    before = _regular_file_identity(descriptor, mount_id)
+    chunks: list[bytes] = []
+    while chunk := os.read(descriptor, 1024 * 1024):
+        chunks.append(chunk)
+    after = _regular_file_identity(descriptor, mount_id)
+    if before != after:
+        raise OperationBoundaryError("git common config changed during read")
+    return after, b"".join(chunks)
+
+
+def _regular_file_identity(descriptor: int, mount_id: int | None) -> FileIdentity:
+    """Capture validated regular-file metadata from one open descriptor."""
+    result = os.fstat(descriptor)
+    if not stat.S_ISREG(result.st_mode) or result.st_nlink != 1:
         raise OperationBoundaryError("git common config is not a regular file")
-    return _identity_for_entry(config, directory_fd)
+    return FileIdentity.from_stat(result, mount_id)
+
+
+def _assert_config_entry_identity(directory_fd: int, expected: FileIdentity) -> None:
+    """Prove the config path still names the descriptor that was read."""
+    current = _stat_at(directory_fd, "config")
+    if current is None:
+        raise OperationBoundaryError("git common config disappeared during read")
+    actual = FileIdentity.from_stat(current, expected.mount_id)
+    if actual != expected:
+        raise OperationBoundaryError("git common config changed during read")
+
+
+def _assert_config_snapshot(
+    actual_identity: FileIdentity | None,
+    actual_digest: str | None,
+    expected_identity: FileIdentity | None,
+    expected_digest: str | None,
+) -> None:
+    """Reject metadata or content drift from the admitted common config."""
+    if (actual_identity, actual_digest) != (expected_identity, expected_digest):
+        raise OperationBoundaryError("git common config content identity changed")
+
+
+def _reject_preexisting_push_origin(config: bytes | None) -> None:
+    """Refuse configured push URLs; the manifest owns the sole push endpoint."""
+    if _push_origin_from_git_config(config) is not None:
+        raise OperationBoundaryError("git common config declares remote.origin.pushurl")
 
 
 def _reject_git_path_controls(argv: list[str]) -> None:
@@ -1253,26 +1298,33 @@ def _assert_entry_identity(
         raise OperationBoundaryError(f"{label} metadata entry changed during admission")
 
 
-def _remote_origin_value(value: bytes | None, key: str) -> str | None:
-    """Read the first origin remote value for ``key`` from Git config."""
+def _remote_origin_values(value: bytes | None, key: str) -> tuple[str, ...]:
+    """Read every origin remote value for ``key`` across repeated sections."""
     if value is None:
-        return None
+        return ()
     try:
         text = value.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise OperationBoundaryError("git config is not UTF-8") from exc
-    section = re.search(
-        r'(?ims)^[ \t]*\[remote[ \t]+"origin"[ \t]*\][ \t]*\n'
+    sections = re.findall(
+        r'(?ims)^[ \t]*\[(?:remote[ \t]+"origin"|remote\.origin)[ \t]*\][ \t]*\n'
         r"(.*?)(?=^[ \t]*\[|\Z)",
         text,
     )
-    if section is None:
-        return None
-    urls = re.findall(
-        rf"(?im)^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(\S.*?)\s*$",
-        section.group(1),
+    return tuple(
+        match.strip()
+        for section in sections
+        for match in re.findall(
+            rf"(?im)^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(.*?)\s*$",
+            section,
+        )
     )
-    return urls[0].strip() if urls else None
+
+
+def _remote_origin_value(value: bytes | None, key: str) -> str | None:
+    """Read the first origin remote value for ``key`` from Git config."""
+    values = _remote_origin_values(value, key)
+    return values[0] if values else None
 
 
 def _origin_from_git_config(value: bytes | None) -> str | None:
@@ -1316,14 +1368,14 @@ def _metadata_snapshot(
         )
         try:
             common_identity = _identity_from_fd(common_fd, "git common")
-            config = read_at(common_fd, "config")
+            config_identity, config_digest, config = _config_entry_snapshot(common_fd)
+            _reject_preexisting_push_origin(config)
             head = read_at(git_fd, "HEAD")
-            config_identity = _config_entry_identity(common_fd)
             return {
                 "entry": entry_identity.as_dict(),
                 "worktree": git_identity.as_dict(),
                 "common": common_identity.as_dict(),
-                "config_digest": _hash_bytes(config),
+                "config_digest": config_digest,
                 "config_identity": (
                     config_identity.as_dict() if config_identity is not None else None
                 ),
