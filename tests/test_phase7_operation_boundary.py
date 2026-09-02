@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -12,12 +13,25 @@ import yaml
 from pydantic import ValidationError
 
 from repository_manager import operation_boundary
-from repository_manager.models import SubdirectoryConfig, WorkspaceConfig
+from repository_manager.models import (
+    BootstrapConfig,
+    BootstrapEnvVar,
+    BootstrapHost,
+    GitError,
+    GraphConfig,
+    SubdirectoryConfig,
+    WorkspaceConfig,
+    WorkspaceProfile,
+    WorkspaceSelector,
+)
 from repository_manager.operation_boundary import (
     OperationBoundaryError,
     open_directory,
     pin_existing,
+    read_release_plan_receipt,
+    snapshot_workspace,
     write_at,
+    write_release_plan_receipt,
 )
 from repository_manager.repository_manager import Git, GitResult
 
@@ -219,6 +233,199 @@ def test_write_at_checks_identity_before_truncating_replaced_file(
             write_at(root.fd, "config", b"new\n")
 
     assert target.read_text() == replacement
+
+
+def test_release_receipt_flushes_parent_for_start_and_atomic_completion(
+    tmp_path, monkeypatch
+):
+    flushes: list[int] = []
+    monkeypatch.setattr(
+        operation_boundary,
+        "_fsync_directory",
+        lambda descriptor: flushes.append(descriptor),
+    )
+    with open_directory(tmp_path) as root:
+        write_release_plan_receipt(root, {"state": "started"})
+        write_release_plan_receipt(root, {"state": "completed"}, atomic=True)
+        assert read_release_plan_receipt(root) == {"state": "completed"}
+
+    assert len(flushes) == 2
+
+
+def test_mount_identity_rebind_is_rejected(tmp_path, monkeypatch):
+    with open_directory(tmp_path) as root:
+        mount_id = root.identity.mount_id
+        if mount_id is None:
+            pytest.skip("mount IDs are unavailable on this platform")
+        assert mount_id is not None
+        changed_mount_id = mount_id + 1
+        monkeypatch.setattr(
+            operation_boundary,
+            "_mount_id_for_path",
+            lambda _path: changed_mount_id,
+        )
+        with pytest.raises(OperationBoundaryError, match="identity changed"):
+            root.assert_root_identity()
+
+
+def test_cleanup_refuses_nested_symlink_without_touching_external_file(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    protected = external / "coverage.xml"
+    protected.write_text("must survive\n")
+    target = workspace / "repo"
+    target.mkdir()
+    (target / "nested").symlink_to(external, target_is_directory=True)
+
+    Git(path=str(workspace)).cleanup_artifacts(str(target))
+
+    assert protected.exists()
+
+
+def test_cleanup_refuses_nested_rebind_before_deletion(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    protected = external / "coverage.xml"
+    protected.write_text("must survive\n")
+    target = workspace / "repo"
+    target.mkdir()
+    nested = target / "nested"
+    nested.mkdir()
+    original_file = nested / "coverage.xml"
+    original_file.write_text("also survives\n")
+
+    original_entries = operation_boundary._cleanup_entries
+    swapped = False
+
+    def rebind_after_scan(directory_fd: int, label: str) -> list[tuple[str, Any, Any]]:
+        nonlocal swapped
+        entries = original_entries(directory_fd, label)
+        if not swapped and label == str(target):
+            swapped = True
+            saved = target / "nested-original"
+            nested.rename(saved)
+            nested.symlink_to(external, target_is_directory=True)
+        return entries
+
+    monkeypatch.setattr(operation_boundary, "_cleanup_entries", rebind_after_scan)
+    Git(path=str(workspace)).cleanup_artifacts(str(target))
+
+    assert protected.exists()
+    assert original_file.exists()
+
+
+def test_cleanup_refuses_external_directory_rebind_after_preflight(
+    tmp_path, monkeypatch
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "repo"
+    target.mkdir()
+    nested = target / "nested"
+    nested.mkdir()
+    (nested / "coverage.xml").write_text("original survives\n")
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    replacement_file = replacement / "coverage.xml"
+    replacement_file.write_text("external survives\n")
+
+    original_preflight = operation_boundary._preflight_cleanup_tree
+    swapped = False
+
+    def rebind_after_preflight(
+        directory_fd: int,
+        *,
+        ignored_directory_names: frozenset[str],
+        label: str,
+        relative_path: tuple[str, ...] = (),
+    ) -> dict[tuple[str, ...], Any]:
+        nonlocal swapped
+        plan = original_preflight(
+            directory_fd,
+            ignored_directory_names=ignored_directory_names,
+            label=label,
+            relative_path=relative_path,
+        )
+        if not swapped and label == str(target):
+            swapped = True
+            nested.rename(target / "nested-original")
+            replacement.rename(nested)
+        return plan
+
+    monkeypatch.setattr(
+        operation_boundary, "_preflight_cleanup_tree", rebind_after_preflight
+    )
+    Git(path=str(workspace)).cleanup_artifacts(str(target))
+
+    assert (nested / "coverage.xml").read_text() == "external survives\n"
+
+
+def test_push_status_error_fails_closed_before_remote_mutation(tmp_path):
+    manager = _manager_with_project(tmp_path)
+    project = next(iter(manager.project_map.values()))
+    status_error = GitResult(
+        status="error",
+        data="status unavailable",
+        error=GitError(message="status unavailable", code=1),
+    )
+
+    def status_only(*args: object, **kwargs: object) -> GitResult:
+        command = str(kwargs.get("command", args[0] if args else ""))
+        if command == "git status --porcelain":
+            return status_error
+        raise AssertionError(f"unexpected command after status failure: {command}")
+
+    manager.git_action.side_effect = status_only
+    result = manager.push_project(project)
+
+    assert result.status == "error"
+    assert manager.git_action.call_count == 1
+
+
+def test_push_gate_exception_fails_closed_before_remote_mutation(tmp_path, monkeypatch):
+    manager = _manager_with_project(tmp_path)
+    project = next(iter(manager.project_map.values()))
+    (Path(project) / ".pre-commit-config.yaml").write_text("repos: []\n")
+    manager._has_unpushed_commits = MagicMock(return_value=True)  # type: ignore[method-assign]
+    manager._unpushed_changed_files = MagicMock(return_value=[])  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "repository_manager.repository_manager.run_gate_stage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("gate crashed")),
+    )
+
+    result = manager.push_project(project)
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert "gate did not complete" in result.error.message
+    assert not any(
+        "git push" in str(call.kwargs.get("command", ""))
+        for call in manager.git_action.call_args_list
+    )
+
+
+def test_tag_push_failure_fails_overall_push(tmp_path, monkeypatch):
+    manager = _manager_with_project(tmp_path)
+    manager.gate_before_push = False
+    project = next(iter(manager.project_map.values()))
+    tag_error = GitResult(
+        status="error",
+        data="tag denied",
+        error=GitError(message="tag denied", code=1),
+    )
+    monkeypatch.setattr(
+        manager, "_push_release_tag", lambda *_args, **_kwargs: tag_error
+    )
+
+    result = manager.push_project(project)
+
+    assert result.status == "error"
+    assert result.error is not None
+    assert "tag push failed" in result.error.message
 
 
 def test_git_action_rejects_a_symlinked_git_directory(tmp_path):
@@ -675,6 +882,12 @@ def test_mixed_explicit_bulk_collision_requires_same_canonical_pair(tmp_path):
     [
         (WorkspaceConfig, {"name": "x", "path": ".", "unexpected": True}),
         (SubdirectoryConfig, {"unexpected": True}),
+        (GraphConfig, {"unexpected": True}),
+        (WorkspaceProfile, {"unexpected": True}),
+        (WorkspaceSelector, {"unexpected": True}),
+        (BootstrapEnvVar, {"name": "X", "unexpected": True}),
+        (BootstrapHost, {"name": "host", "unexpected": True}),
+        (BootstrapConfig, {"unexpected": True}),
     ],
 )
 def test_workspace_models_reject_unknown_manifest_fields(model, payload):
@@ -715,6 +928,58 @@ def test_release_plan_binds_head_and_git_config_identity(tmp_path):
     (git_dir / "HEAD").write_text("ref: refs/heads/other\n")
 
     assert not manager._release_plan_matches(provenance, {}, phase, options={})
+
+
+def test_release_plan_rejects_push_remote_drift(tmp_path):
+    manager = _manager_with_project(tmp_path)
+    project = Path(next(iter(manager.project_map.values())))
+    git_dir = project / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    (git_dir / "config").write_text(
+        '[remote "origin"]\n'
+        "\turl = https://github.com/example/repo.git\n"
+        "\tpushurl = https://github.com/example/repo-push.git\n"
+    )
+    phase = [
+        {
+            "phase_num": 1,
+            "name": "one",
+            "projects_to_push": [("repo", str(project))],
+        }
+    ]
+    provenance = manager._freeze_release_plan("push", {}, phase, options={})
+    (git_dir / "config").write_text(
+        '[remote "origin"]\n'
+        "\turl = https://github.com/example/repo.git\n"
+        "\tpushurl = https://github.com/example/replacement.git\n"
+    )
+
+    assert not manager._release_plan_matches(provenance, {}, phase, options={})
+
+
+def test_linked_worktree_snapshot_binds_common_config(tmp_path):
+    source = _source_repository(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    checkout = workspace / "repo"
+    _run(["git", "clone", "-q", str(source), str(checkout)], workspace)
+    linked = workspace / "linked"
+    _run(["git", "worktree", "add", "-q", str(linked), "-b", "linked"], checkout)
+    manager = Git(path=str(workspace))
+    manager.project_map = {"https://github.com/example/repo.git": str(linked)}
+
+    snapshot = snapshot_workspace(
+        workspace,
+        [("https://github.com/example/repo.git", str(linked))],
+    )
+    metadata = snapshot["projects"][0]["git"]
+
+    expected_digest = hashlib.sha256(
+        (checkout / ".git" / "config").read_bytes()
+    ).hexdigest()
+    assert metadata["config_digest"] == expected_digest
+    assert metadata["common"] != metadata["worktree"]
 
 
 def test_phased_bump_rejects_same_path_replacement_before_bump(tmp_path, monkeypatch):

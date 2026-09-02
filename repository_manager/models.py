@@ -218,6 +218,8 @@ class MaintenanceConfig(_StrictMaintenanceModel):
 
 
 class GraphConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     enabled: bool = True
     multimodal: bool = False
     incremental: bool = True
@@ -227,12 +229,16 @@ class GraphConfig(BaseModel):
 class WorkspaceProfile(BaseModel):
     """A named bootstrap profile composed from manifest selectors."""
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     description: str | None = None
     selectors: list[str] = Field(default_factory=list)
 
 
 class WorkspaceSelector(BaseModel):
     """A reusable include/exclude set of workspace-relative repository IDs."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     description: str | None = None
     include: list[str] | None = None
@@ -249,6 +255,8 @@ class BootstrapEnvVar(BaseModel):
     variable own their real default; this is not itself a config loader.
     """
 
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     name: str
     default: str | None = None
     description: str | None = None
@@ -262,6 +270,8 @@ class BootstrapHost(BaseModel):
     is designed but not wired (see GOC-60). This lets the manifest at least
     name the hosts a human currently coordinates by hand.
     """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     name: str
     role: str | None = None
@@ -277,6 +287,8 @@ class BootstrapConfig(BaseModel):
     are unordered relative to each other. See ``rm_workspace(action="setup",
     install=True)`` / ``Git.install_projects`` for the consumer.
     """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     order: list[str] = Field(default_factory=list)
     env: list[BootstrapEnvVar] = Field(default_factory=list)

@@ -80,6 +80,7 @@ from repository_manager.models import (
 from repository_manager.operation_boundary import (
     OperationBoundaryError,
     PinnedDirectory,
+    cleanup_pinned_directory,
     open_directory,
     path_exists,
     pin_creation,
@@ -178,7 +179,7 @@ class _ReleasePlanProvenance:
     operation: Literal["bump", "push"]
     input_digest: str
     plan_digest: str
-    root_identity: dict[str, int] | None = None
+    root_identity: dict[str, int | None] | None = None
     scope_identity: dict[str, Any] | None = None
     registry_digest: str | None = None
 
@@ -631,76 +632,6 @@ _CLEANUP_ROOT_SCRIPT_PATTERNS = [
 ]
 
 
-def _cleanup_matched_dirs(dirpath: str, dirnames: list[str]) -> None:
-    """Remove (and un-descend into) any directory in *dirnames* that matches
-    `_CLEANUP_DIR_PATTERNS`."""
-    for d in list(dirnames):
-        if d in _CLEANUP_DIR_PATTERNS:
-            full_path = os.path.join(dirpath, d)
-            try:
-                shutil.rmtree(full_path)
-                logger.debug("Cleaned up managed directory")
-            except Exception as e:
-                logger.debug("Operation failed: error_type=%s", type(e).__name__)
-            dirnames.remove(d)
-
-
-def _cleanup_root_transient_script(file_path: Path) -> bool:
-    """Remove *file_path* if it matches a root-level transient script pattern.
-
-    Returns True if it matched (and cleanup was attempted), so the caller
-    can skip the non-standard-``.txt`` check for the same file.
-    """
-    for pat in _CLEANUP_ROOT_SCRIPT_PATTERNS:
-        if file_path.match(pat):
-            try:
-                file_path.unlink()
-                logger.info(f"Cleaned up root transient script: {file_path}")
-            except Exception as e:
-                logger.debug(
-                    "Root-script cleanup failed: error_type=%s", type(e).__name__
-                )
-            return True
-    return False
-
-
-def _cleanup_root_nonstandard_txt(file_path: Path) -> None:
-    """Remove *file_path* if it's a root-level ``.txt`` file other than the
-    two standard requirements files."""
-    if file_path.suffix == ".txt" and file_path.name not in (
-        "requirements.txt",
-        "requirements-dev.txt",
-    ):
-        try:
-            file_path.unlink()
-            logger.info(f"Cleaned up root non-standard text file: {file_path}")
-        except Exception as e:
-            logger.debug("Root-text cleanup failed: error_type=%s", type(e).__name__)
-
-
-def _cleanup_root_level_files(dirpath: str, filenames: list[str]) -> None:
-    """Root-only cleanup pass: transient scripts, then non-standard ``.txt``."""
-    for f in filenames:
-        file_path = Path(os.path.join(dirpath, f))
-        if _cleanup_root_transient_script(file_path):
-            continue
-        _cleanup_root_nonstandard_txt(file_path)
-
-
-def _cleanup_matched_files(dirpath: str, filenames: list[str]) -> None:
-    """Remove any file in *filenames* matching `_CLEANUP_FILE_PATTERNS`."""
-    for f in filenames:
-        file_path = Path(os.path.join(dirpath, f))
-        for pat in _CLEANUP_FILE_PATTERNS:
-            if file_path.match(pat):
-                try:
-                    file_path.unlink()
-                    logger.debug("Cleaned up managed file")
-                except Exception as e:
-                    logger.debug("Operation failed: error_type=%s", type(e).__name__)
-                break
-
-
 @dataclasses.dataclass
 class _CommandOutputCapture:
     """Bounded capture of one repository command's interleaved stdout/stderr.
@@ -827,6 +758,8 @@ class _PhaseProgress:
 
 class Git:
     """A class to handle Git operations such as cloning and pulling repositories."""
+
+    _active_cleanup_handle: PinnedDirectory | None = None
 
     def __init__(
         self,
@@ -1915,6 +1848,7 @@ class Git:
                             "state": "completed",
                             "results": receipt_result_payload(results),
                         },
+                        atomic=True,
                     )
         except (OperationBoundaryError, OSError, TypeError, ValueError) as exc:
             # The push may already have had an external side effect.  Do not
@@ -3489,21 +3423,39 @@ class Git:
 
     def cleanup_artifacts(self, target_dir: str) -> None:
         """Removes test artifacts and temporary files from the specified directory."""
-        dir_path = Path(target_dir)
-        if not dir_path.exists():
+        active = getattr(self, "_active_cleanup_handle", None)
+        if active is not None and target_dir == active.proc_path:
+            cleanup_pinned_directory(
+                active,
+                file_patterns=tuple(_CLEANUP_FILE_PATTERNS),
+                directory_names=frozenset(_CLEANUP_DIR_PATTERNS),
+                ignored_directory_names=frozenset(_CLEANUP_IGNORED_DIRS),
+                root_script_patterns=tuple(_CLEANUP_ROOT_SCRIPT_PATTERNS),
+            )
             return
 
-        # Use os.walk with top-down pruning to avoid iterating massive directories
-        for dirpath, dirnames, filenames in os.walk(target_dir, topdown=True):
-            # Prune ignored directories in-place (prevents os.walk from descending)
-            dirnames[:] = [d for d in dirnames if d not in _CLEANUP_IGNORED_DIRS]
-
-            _cleanup_matched_dirs(dirpath, dirnames)
-
-            if dirpath == target_dir:
-                _cleanup_root_level_files(dirpath, filenames)
-
-            _cleanup_matched_files(dirpath, filenames)
+        try:
+            target_path = self._validated_operation_path(
+                target_dir, operation="cleanup_artifacts"
+            )
+            with open_directory(self._workspace_root()) as root:
+                if not path_exists(root, target_path):
+                    return
+                with pin_existing(root, target_path) as pinned:
+                    cleanup_pinned_directory(
+                        pinned,
+                        file_patterns=tuple(_CLEANUP_FILE_PATTERNS),
+                        directory_names=frozenset(_CLEANUP_DIR_PATTERNS),
+                        ignored_directory_names=frozenset(_CLEANUP_IGNORED_DIRS),
+                        root_script_patterns=tuple(_CLEANUP_ROOT_SCRIPT_PATTERNS),
+                    )
+        except (
+            _UnsafeMutationTarget,
+            OperationBoundaryError,
+            OSError,
+            ValueError,
+        ) as exc:
+            logger.error("Artifact cleanup refused: error_type=%s", type(exc).__name__)
 
     def clone_projects(self, projects: list[str] | None = None) -> list[GitResult]:
         """
@@ -4054,8 +4006,8 @@ class Git:
         would reject. Returns a failed ``GitResult`` (caller aborts the push) or
         ``None`` to proceed. No-op when disabled, when the repo has no
         ``.pre-commit-config.yaml``, or when there is nothing to push. The
-        gate-harness failing (tooling/env) never blocks a push — only a real
-        hook failure does.
+        A gate-harness failure (tooling/env) blocks the push because an
+        unverified release must not reach a remote.
 
         Runs ``stage="heavy"`` (``--hook-stage pre-push``) via
         :func:`repository_manager.gates.run_gate_stage` — the fix for the
@@ -4087,8 +4039,10 @@ class Git:
         except OperationBoundaryError as exc:
             return self._path_validation_result("push_project", target_path, exc)
         except Exception as exc:  # pragma: no cover - tooling/env failure
-            logger.warning("Operation failed: error_type=%s", type(exc).__name__)
-            return None
+            logger.error(
+                "Pre-push gate did not complete: error_type=%s", type(exc).__name__
+            )
+            return self._gate_incomplete_result(type(exc).__name__)
 
         if result.success:
             return None
@@ -4203,7 +4157,7 @@ class Git:
 
     def _push_release_tag(
         self, target_path: str, *, pinned: PinnedDirectory | None = None
-    ) -> None:
+    ) -> GitResult | None:
         """Push the CURRENT release tag explicitly after a successful branch push.
 
         ``--follow-tags`` only pushes ANNOTATED tags. bump2version can emit
@@ -4217,7 +4171,7 @@ class Git:
         """
         rel_tag = self._current_release_tag(target_path, pinned=pinned)
         if not rel_tag:
-            return
+            return None
         tag_res = self.git_action(
             command=f"git push origin {rel_tag}",
             path=target_path,
@@ -4225,6 +4179,7 @@ class Git:
         )
         if tag_res.status != "success":
             logger.warning("Branch pushed but the release-tag push failed")
+        return tag_res
 
     def _handle_push_failure(
         self,
@@ -4262,6 +4217,44 @@ class Git:
         # Unknown error — return as-is
         return result
 
+    def _push_preconditions(
+        self, target_path: str, pinned: PinnedDirectory, git_kwargs: dict[str, Any]
+    ) -> GitResult | None:
+        """Verify status and all gates before allowing a remote mutation."""
+        status_check = self.git_action(
+            command="git status --porcelain",
+            path=target_path,
+            quiet=True,
+            **git_kwargs,
+        )
+        if status_check.status != "success":
+            logger.error("Push refused because repository status could not be verified")
+            return status_check
+        if status_check.data.strip():
+            logger.warning("Push refused because the configured project is dirty")
+            return self._dirty_push_refusal(target_path)
+        return self._gate_before_push(target_path, pinned=pinned)
+
+    def _complete_successful_push(
+        self, target_path: str, pinned: PinnedDirectory, result: GitResult
+    ) -> GitResult:
+        """Require the explicit release-tag push to succeed as part of the push."""
+        tag_result = self._push_release_tag(target_path, pinned=pinned)
+        if tag_result is None or tag_result.status == "success":
+            return result
+        return GitResult(
+            status="error",
+            data=tag_result.data,
+            error=GitError(
+                message=(
+                    "Branch push succeeded, but the release-tag push "
+                    "failed; the overall push is incomplete."
+                ),
+                code=tag_result.error.code if tag_result.error else 1,
+            ),
+            metadata=tag_result.metadata or result.metadata,
+        )
+
     def _push_project_with_handle(
         self, target_path: str, pinned: PinnedDirectory
     ) -> GitResult:
@@ -4269,20 +4262,9 @@ class Git:
         pinned.assert_path_identity()
         git_kwargs = self._pinned_git_kwargs(pinned)
         logger.info("Checking configured project for uncommitted changes")
-
-        status_check = self.git_action(
-            command="git status --porcelain",
-            path=target_path,
-            quiet=True,
-            **git_kwargs,
-        )
-        if status_check.status == "success" and status_check.data.strip():
-            logger.warning("Push refused because the configured project is dirty")
-            return self._dirty_push_refusal(target_path)
-
-        gate = self._gate_before_push(target_path, pinned=pinned)
-        if gate is not None:
-            return gate
+        precondition = self._push_preconditions(target_path, pinned, git_kwargs)
+        if precondition is not None:
+            return precondition
 
         logger.info("Pushing latest changes and tags for configured project")
         pinned.assert_path_identity()
@@ -4292,8 +4274,7 @@ class Git:
             **git_kwargs,
         )
         if result.status == "success":
-            self._push_release_tag(target_path, pinned=pinned)
-            return result
+            return self._complete_successful_push(target_path, pinned, result)
         return self._handle_push_failure(target_path, result, pinned=pinned)
 
     @_exclusive_repo_mutation
@@ -4896,9 +4877,15 @@ class Git:
         """Run pre-commit while retaining the descriptor-pinned checkout."""
         pinned.assert_operation_identity()
 
-        # Cleanup is a mutation too.  The proc-fd path remains anchored even
-        # if a lexical workspace component is swapped while the walk runs.
-        self.cleanup_artifacts(pinned.proc_path)
+        # Cleanup is a mutation too.  Keep the compatibility callback surface
+        # while making the active proc-fd path resolve only to this pinned
+        # handle; untrusted proc-fd strings are rejected by cleanup_artifacts.
+        previous_cleanup = getattr(self, "_active_cleanup_handle", None)
+        self._active_cleanup_handle = pinned
+        try:
+            self.cleanup_artifacts(pinned.proc_path)
+        finally:
+            self._active_cleanup_handle = previous_cleanup
 
         # ``read_at`` refuses a symlinked pre-commit configuration; allowing
         # one would let the hook runner execute an external file after the

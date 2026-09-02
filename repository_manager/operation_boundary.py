@@ -21,11 +21,13 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import fnmatch
 import hashlib
 import json
 import os
 import re
 import stat
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -58,23 +60,128 @@ class DirectoryIdentity:
     device: int
     inode: int
     mode: int
+    mount_id: int | None = None
 
     @classmethod
-    def from_stat(cls, result: os.stat_result) -> DirectoryIdentity:
+    def from_stat(
+        cls, result: os.stat_result, mount_id: int | None = None
+    ) -> DirectoryIdentity:
         """Capture the identity fields relevant to a directory boundary."""
         return cls(
             device=int(result.st_dev),
             inode=int(result.st_ino),
             mode=stat.S_IFMT(result.st_mode),
+            mount_id=mount_id,
         )
 
-    def as_dict(self) -> dict[str, int]:
+    def as_dict(self) -> dict[str, int | None]:
         """Return a JSON-safe identity payload."""
         return {
             "device": self.device,
             "inode": self.inode,
             "mode": self.mode,
+            "mount_id": self.mount_id,
         }
+
+
+def _decode_mountinfo_path(value: str) -> str:
+    """Decode the octal escapes used for paths in ``mountinfo``."""
+    return re.sub(
+        r"\\([0-7]{3})",
+        lambda match: chr(int(match.group(1), 8)),
+        value,
+    )
+
+
+_mountinfo_lock = threading.Lock()
+_mountinfo_signature: tuple[int, int, int] | None = None
+_mountinfo_entries: tuple[tuple[int, str, int], ...] = ()
+_mountinfo_path_cache: dict[str, int | None] = {}
+
+
+def _mountinfo_entries_for_process() -> tuple[tuple[int, str, int], ...]:
+    """Return a cached mount table, invalidating it when procfs changes."""
+    global _mountinfo_signature, _mountinfo_entries
+    try:
+        metadata = os.stat("/proc/self/mountinfo")
+        signature = (
+            int(metadata.st_ino),
+            int(metadata.st_mtime_ns),
+            int(metadata.st_ctime_ns),
+        )
+    except OSError:
+        return ()
+    with _mountinfo_lock:
+        if signature == _mountinfo_signature:
+            return _mountinfo_entries
+        try:
+            lines = (
+                Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+            )
+        except (OSError, UnicodeError):
+            _mountinfo_entries = ()
+        else:
+            entries: list[tuple[int, str, int]] = []
+            for line in lines:
+                fields = line.split(" - ", 1)[0].split()
+                if len(fields) < 5:
+                    continue
+                try:
+                    mount_id = int(fields[0])
+                except ValueError:
+                    continue
+                mount_point = os.path.normpath(_decode_mountinfo_path(fields[4]))
+                entries.append((mount_id, mount_point, mount_point.count(os.sep)))
+            _mountinfo_entries = tuple(sorted(entries, key=lambda item: -item[2]))
+        _mountinfo_signature = signature
+        _mountinfo_path_cache.clear()
+        return _mountinfo_entries
+
+
+def _mount_id_for_path(path: Path) -> int | None:
+    """Return Linux's mount ID for one lexical path, when available.
+
+    ``st_dev`` is not sufficient for bind mounts: two mounts can expose the
+    same device and inode while carrying different mount boundaries.  Linux
+    publishes the mount ID in ``/proc/self/mountinfo``; selecting the longest
+    matching mount point detects a mount rebind without requiring privileges.
+    Non-Linux hosts (and restricted proc filesystems) retain the device/inode
+    check and report no optional mount ID.
+    """
+    if os.name != "posix":
+        return None
+    candidate = os.path.abspath(os.fspath(path))
+    with _mountinfo_lock:
+        cached = _mountinfo_path_cache.get(candidate, ...)
+    if cached is not ...:
+        return cached
+    entries = _mountinfo_entries_for_process()
+    result: int | None = None
+    for mount_id, mount_point, _depth in entries:
+        if (
+            mount_point == os.sep
+            or candidate == mount_point
+            or candidate.startswith(mount_point + os.sep)
+        ):
+            result = mount_id
+            break
+    with _mountinfo_lock:
+        _mountinfo_path_cache[candidate] = result
+    return result
+
+
+def _mount_id_for_fd(fd: int) -> int | None:
+    """Return the mount ID containing an already-open descriptor."""
+    try:
+        path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+    except (OSError, UnicodeError):
+        return None
+    return _mount_id_for_path(path)
+
+
+def _identity_for_entry(result: os.stat_result, parent_fd: int) -> DirectoryIdentity:
+    """Capture an entry identity plus the mount containing its parent."""
+    return DirectoryIdentity.from_stat(result, _mount_id_for_fd(parent_fd))
 
 
 def _directory_flags() -> int:
@@ -153,6 +260,12 @@ class PinnedDirectory:
     git_identity: DirectoryIdentity | None = None
     git_entry_identity: DirectoryIdentity | None = None
     git_owned_fds: tuple[int, ...] = ()
+    common_fd: int | None = None
+    common_path: Path | None = None
+    common_identity: DirectoryIdentity | None = None
+    common_owned_fds: tuple[int, ...] = ()
+    common_pointer_digest: str | None = None
+    common_config_identity: DirectoryIdentity | None = None
     expected_origin: str | None = None
     boundary_assertion: Callable[[], None] | None = None
     _closed: bool = False
@@ -183,14 +296,20 @@ class PinnedDirectory:
     def pass_fds(self) -> tuple[int, ...]:
         """Descriptors that must survive long enough for the child to chdir."""
         values = list(self.owned_fds)
-        if self.root_fd not in values:
-            values.append(self.root_fd)
-        if self.target_fd is not None and self.target_fd not in values:
-            values.append(self.target_fd)
-        for descriptor in self.git_owned_fds:
-            if descriptor not in values:
-                values.append(descriptor)
+        self._append_unique_descriptors(values, (self.root_fd, self.target_fd))
+        self._append_unique_descriptors(
+            values, (*self.git_owned_fds, *self.common_owned_fds)
+        )
         return tuple(values)
+
+    @staticmethod
+    def _append_unique_descriptors(
+        values: list[int], descriptors: tuple[int | None, ...]
+    ) -> None:
+        """Append open descriptors once, ignoring optional absent descriptors."""
+        for descriptor in descriptors:
+            if descriptor is not None and descriptor not in values:
+                values.append(descriptor)
 
     def anchored_git_command(self, argv: list[str]) -> list[str]:
         """Anchor a direct Git command to the admitted descriptors."""
@@ -259,32 +378,97 @@ class PinnedDirectory:
             if self.git_fd is not None:
                 raise OperationBoundaryError("checkout .git entry disappeared")
             return None
+        self._validate_git_entry(git_entry)
+        entry_identity = _identity_for_entry(git_entry, self.fd)
+        self._assert_git_entry_identity(entry_identity)
+        if self.git_fd is None:
+            self._initialize_git_metadata(git_entry, entry_identity)
+        else:
+            self._assert_common_metadata()
+        self._assert_git_metadata_identities()
+        return self.git_fd
+
+    @staticmethod
+    def _validate_git_entry(git_entry: os.stat_result) -> None:
+        """Reject linked or multiply-linked checkout metadata."""
         if stat.S_ISLNK(git_entry.st_mode):
             raise OperationBoundaryError("checkout .git entry is a symlink")
         if stat.S_ISREG(git_entry.st_mode) and git_entry.st_nlink != 1:
             raise OperationBoundaryError("checkout .git entry is a hard link")
-        entry_identity = DirectoryIdentity.from_stat(git_entry)
-        if (
-            self.git_entry_identity is not None
-            and entry_identity != self.git_entry_identity
-        ):
+
+    def _assert_git_entry_identity(self, identity: DirectoryIdentity) -> None:
+        """Reject replacement of the checkout's Git entry."""
+        if self.git_entry_identity is not None and identity != self.git_entry_identity:
             raise OperationBoundaryError("checkout .git entry identity changed")
-        if self.git_fd is None:
-            git_fd, owned, metadata_path = _metadata_directory(
-                self.fd,
-                git_entry,
-                str(self.path),
-                root_fd=self.root_fd,
-                root_path=self.root_path,
-                checkout_path=self.path,
-            )
-            self.git_fd = git_fd
-            self.git_path = metadata_path
-            self.git_owned_fds = tuple(owned)
-            self.git_identity = _identity_from_fd(git_fd, "git worktree")
-            self.git_entry_identity = entry_identity
+
+    def _initialize_git_metadata(
+        self, git_entry: os.stat_result, entry_identity: DirectoryIdentity
+    ) -> None:
+        """Open and pin worktree, common directory, and common config identities."""
+        git_fd, owned, metadata_path = _metadata_directory(
+            self.fd,
+            git_entry,
+            str(self.path),
+            root_fd=self.root_fd,
+            root_path=self.root_path,
+            checkout_path=self.path,
+        )
+        self.git_fd = git_fd
+        self.git_path = metadata_path
+        self.git_owned_fds = tuple(owned)
+        self.git_identity = _identity_from_fd(git_fd, "git worktree")
+        self.git_entry_identity = entry_identity
+        (
+            self.common_fd,
+            common_owned,
+            self.common_path,
+            self.common_pointer_digest,
+        ) = _common_metadata_directory(
+            git_fd,
+            metadata_path,
+            self.root_fd,
+            self.root_path,
+            str(self.path),
+        )
+        self.common_owned_fds = tuple(common_owned)
+        self.common_identity = _identity_from_fd(self.common_fd, "git common")
+        self.common_config_identity = _config_entry_identity(self.common_fd)
+
+    def _assert_git_metadata_identities(self) -> None:
+        """Revalidate pinned Git worktree, common directory, and config."""
+        if self.git_fd is None or self.git_identity is None:
+            raise OperationBoundaryError("git worktree identity is missing")
         _assert_fd_identity(self.git_fd, self.git_identity, "git worktree")
-        return self.git_fd
+        if self.common_fd is None or self.common_identity is None:
+            raise OperationBoundaryError("git common identity is missing")
+        _assert_fd_identity(self.common_fd, self.common_identity, "git common")
+        current_config_identity = _config_entry_identity(self.common_fd)
+        if current_config_identity != self.common_config_identity:
+            raise OperationBoundaryError("git common config identity changed")
+
+    def _assert_common_metadata(self) -> None:
+        """Re-open the declared common directory and compare its identity."""
+        if self.git_fd is None or self.common_fd is None or self.common_path is None:
+            raise OperationBoundaryError("git common metadata is missing")
+        candidate_fd, candidate_owned, _candidate_path, pointer_digest = (
+            _common_metadata_directory(
+                self.git_fd,
+                self.git_path or self.path,
+                self.root_fd,
+                self.root_path,
+                str(self.path),
+            )
+        )
+        try:
+            candidate_identity = _identity_from_fd(candidate_fd, "git common")
+            if candidate_identity != self.common_identity:
+                raise OperationBoundaryError("git common directory identity changed")
+            if pointer_digest != self.common_pointer_digest:
+                raise OperationBoundaryError("git common pointer changed")
+        finally:
+            for descriptor in reversed(candidate_owned):
+                with contextlib.suppress(OSError):
+                    os.close(descriptor)
 
     def clear_boundary_assertion(self) -> None:
         """Stop plan checks after an operation intentionally changes metadata."""
@@ -301,7 +485,7 @@ class PinnedDirectory:
             raise OperationBoundaryError("clone target disappeared before handoff")
         if stat.S_ISLNK(result.st_mode):
             raise OperationBoundaryError("clone target became a symlink")
-        actual = DirectoryIdentity.from_stat(result)
+        actual = _identity_for_entry(result, self.fd)
         if actual != self.target_identity:
             raise OperationBoundaryError("clone target changed before handoff")
 
@@ -329,7 +513,7 @@ class PinnedDirectory:
             # a subsequent operation outside the root.
             raise
         self.target_fd = target_fd
-        self.target_identity = DirectoryIdentity.from_stat(os.fstat(target_fd))
+        self.target_identity = _identity_from_fd(target_fd, "clone target")
 
     def close(self) -> None:
         """Close only descriptors owned by this handle, once."""
@@ -337,17 +521,30 @@ class PinnedDirectory:
             return
         self._closed = True
         self.boundary_assertion = None
-        for descriptor in reversed(self.owned_fds):
+        self._close_descriptor_group(self.owned_fds)
+        self._close_descriptor_group(self.git_owned_fds, self.owned_fds)
+        self._close_descriptor_group(
+            self.common_owned_fds, self.owned_fds, self.git_owned_fds
+        )
+        if self.target_fd is not None:
+            self._close_descriptor_group(
+                (self.target_fd,),
+                self.owned_fds,
+                self.git_owned_fds,
+                self.common_owned_fds,
+            )
+
+    @staticmethod
+    def _close_descriptor_group(
+        descriptors: tuple[int, ...], *already_closed: tuple[int, ...]
+    ) -> None:
+        """Close descriptors unless an earlier ownership group already did."""
+        excluded = {descriptor for group in already_closed for descriptor in group}
+        for descriptor in reversed(descriptors):
+            if descriptor in excluded:
+                continue
             with contextlib.suppress(OSError):
                 os.close(descriptor)
-        for descriptor in reversed(self.git_owned_fds):
-            if descriptor not in self.owned_fds:
-                with contextlib.suppress(OSError):
-                    os.close(descriptor)
-        if self.target_fd is not None and self.target_fd not in self.owned_fds:
-            if self.target_fd not in self.git_owned_fds:
-                with contextlib.suppress(OSError):
-                    os.close(self.target_fd)
 
 
 def _identity_from_fd(fd: int, label: str) -> DirectoryIdentity:
@@ -358,7 +555,7 @@ def _identity_from_fd(fd: int, label: str) -> DirectoryIdentity:
         raise OperationBoundaryError(f"cannot inspect {label} descriptor") from exc
     if not stat.S_ISDIR(result.st_mode):
         raise OperationBoundaryError(f"{label} is not a directory")
-    return DirectoryIdentity.from_stat(result)
+    return DirectoryIdentity.from_stat(result, _mount_id_for_fd(fd))
 
 
 def _assert_fd_identity(
@@ -384,7 +581,7 @@ def _assert_path_identity(path: Path, expected: DirectoryIdentity, label: str) -
     for the child process.
     """
     result = _stat_path_without_symlinks(path, label)
-    actual = DirectoryIdentity.from_stat(result)
+    actual = DirectoryIdentity.from_stat(result, _mount_id_for_path(path))
     if actual != expected:
         raise OperationBoundaryError(f"{label} identity changed")
 
@@ -747,9 +944,14 @@ def _assert_writable_fd(fd: int, existing: os.stat_result | None, name: str) -> 
     actual = os.fstat(fd)
     if not stat.S_ISREG(actual.st_mode) or actual.st_nlink != 1:
         raise OperationBoundaryError(f"{name!r} changed before it was written")
-    if existing is not None and (actual.st_dev, actual.st_ino) != (
+    if existing is not None and (
+        actual.st_dev,
+        actual.st_ino,
+        actual.st_ctime_ns,
+    ) != (
         existing.st_dev,
         existing.st_ino,
+        existing.st_ctime_ns,
     ):
         raise OperationBoundaryError(f"{name!r} changed before it was written")
 
@@ -769,7 +971,7 @@ def stat_at(directory_fd: int, name: str) -> DirectoryIdentity | None:
     result = _stat_at(directory_fd, name)
     if result is None:
         return None
-    return DirectoryIdentity.from_stat(result)
+    return _identity_for_entry(result, directory_fd)
 
 
 def _hash_bytes(value: bytes | None) -> str | None:
@@ -888,6 +1090,51 @@ def _metadata_pointer_target(
     return _bounded_metadata_target(root_path, metadata_base, pointer_path, label)
 
 
+def _common_metadata_directory(
+    git_fd: int,
+    metadata_path: Path,
+    root_fd: int,
+    root_path: Path,
+    label: str,
+) -> tuple[int, list[int], Path, str | None]:
+    """Open a linked worktree's common Git directory without links."""
+    commondir = read_at(git_fd, "commondir")
+    if commondir is None:
+        return git_fd, [], metadata_path, None
+    try:
+        raw_common = commondir.decode("utf-8").strip()
+    except UnicodeDecodeError as exc:
+        raise OperationBoundaryError("git commondir is not UTF-8") from exc
+    if not raw_common:
+        raise OperationBoundaryError("git commondir is empty")
+    common_components, common_path = _bounded_metadata_target(
+        root_path,
+        metadata_path,
+        Path(raw_common),
+        "git common",
+    )
+    common_fd, common_owned = _open_relative_directory(
+        root_fd,
+        common_components,
+        label,
+    )
+    return common_fd, common_owned, common_path, _hash_bytes(commondir)
+
+
+def _config_entry_identity(directory_fd: int) -> DirectoryIdentity | None:
+    """Capture the common Git config entry without following a link."""
+    config = _stat_at(directory_fd, "config")
+    if config is None:
+        return None
+    if (
+        stat.S_ISLNK(config.st_mode)
+        or not stat.S_ISREG(config.st_mode)
+        or config.st_nlink != 1
+    ):
+        raise OperationBoundaryError("git common config is not a regular file")
+    return _identity_for_entry(config, directory_fd)
+
+
 def _reject_git_path_controls(argv: list[str]) -> None:
     """Reject Git options that could override descriptor-pinned paths."""
     if not argv or os.path.basename(argv[0]) != "git":
@@ -1000,14 +1247,14 @@ def _assert_entry_identity(
 ) -> None:
     """Reject a final-entry replacement observed during metadata admission."""
     actual = _stat_at(parent_fd, name)
-    if actual is None or DirectoryIdentity.from_stat(
-        actual
-    ) != DirectoryIdentity.from_stat(expected):
+    if actual is None or _identity_for_entry(actual, parent_fd) != _identity_for_entry(
+        expected, parent_fd
+    ):
         raise OperationBoundaryError(f"{label} metadata entry changed during admission")
 
 
-def _origin_from_git_config(value: bytes | None) -> str | None:
-    """Read the first ``remote \"origin\"`` URL from a git config blob."""
+def _remote_origin_value(value: bytes | None, key: str) -> str | None:
+    """Read the first origin remote value for ``key`` from Git config."""
     if value is None:
         return None
     try:
@@ -1021,8 +1268,21 @@ def _origin_from_git_config(value: bytes | None) -> str | None:
     )
     if section is None:
         return None
-    urls = re.findall(r"(?im)^[ \t]*url[ \t]*=[ \t]*(\S.*?)\s*$", section.group(1))
+    urls = re.findall(
+        rf"(?im)^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(\S.*?)\s*$",
+        section.group(1),
+    )
     return urls[0].strip() if urls else None
+
+
+def _origin_from_git_config(value: bytes | None) -> str | None:
+    """Read the first ``remote \"origin\"`` fetch URL from Git config."""
+    return _remote_origin_value(value, "url")
+
+
+def _push_origin_from_git_config(value: bytes | None) -> str | None:
+    """Read the first ``remote \"origin\"`` push URL from Git config."""
+    return _remote_origin_value(value, "pushurl")
 
 
 def _metadata_snapshot(
@@ -1032,7 +1292,7 @@ def _metadata_snapshot(
     """Capture exact checkout metadata while its directory fd is pinned."""
     if git_entry is None:
         return None
-    entry_identity = DirectoryIdentity.from_stat(git_entry)
+    entry_identity = _identity_for_entry(git_entry, checkout.fd)
     if stat.S_ISLNK(git_entry.st_mode):
         raise OperationBoundaryError("checkout .git entry is a symlink")
     git_fd, owned, metadata_path = _metadata_directory(
@@ -1045,39 +1305,31 @@ def _metadata_snapshot(
     )
     try:
         git_identity = _identity_from_fd(git_fd, "git worktree")
-        common_fd = git_fd
-        common_owned: list[int] = []
-        commondir = read_at(git_fd, "commondir")
-        if commondir is not None:
-            try:
-                raw_common = commondir.decode("utf-8").strip()
-            except UnicodeDecodeError as exc:
-                raise OperationBoundaryError("git commondir is not UTF-8") from exc
-            if not raw_common:
-                raise OperationBoundaryError("git commondir is empty")
-            common_path = Path(raw_common)
-            common_components, _common_target = _bounded_metadata_target(
-                checkout.root_path,
+        common_fd, common_owned, _common_path, _common_pointer_digest = (
+            _common_metadata_directory(
+                git_fd,
                 metadata_path,
-                common_path,
-                "git common",
-            )
-            common_fd, common_owned = _open_relative_directory(
                 checkout.root_fd,
-                common_components,
-                "git common",
+                checkout.root_path,
+                str(checkout.path),
             )
+        )
         try:
             common_identity = _identity_from_fd(common_fd, "git common")
-            config = read_at(git_fd, "config")
+            config = read_at(common_fd, "config")
             head = read_at(git_fd, "HEAD")
+            config_identity = _config_entry_identity(common_fd)
             return {
                 "entry": entry_identity.as_dict(),
                 "worktree": git_identity.as_dict(),
                 "common": common_identity.as_dict(),
                 "config_digest": _hash_bytes(config),
+                "config_identity": (
+                    config_identity.as_dict() if config_identity is not None else None
+                ),
                 "head_digest": _hash_bytes(head),
                 "origin": _origin_from_git_config(config),
+                "push_origin": _push_origin_from_git_config(config),
             }
         finally:
             for descriptor in reversed(common_owned):
@@ -1159,10 +1411,351 @@ def read_release_plan_receipt(root: PinnedDirectory) -> dict[str, Any] | None:
     return value
 
 
-def write_release_plan_receipt(root: PinnedDirectory, value: dict[str, Any]) -> None:
-    """Persist one bounded release-plan receipt using a no-follow root fd."""
+def _fsync_directory(directory_fd: int) -> None:
+    """Durably flush a directory after an entry create, replace, or remove."""
+    try:
+        os.fsync(directory_fd)
+    except OSError as exc:
+        raise OperationBoundaryError("cannot durably flush receipt directory") from exc
+
+
+def _atomic_write_at(
+    directory_fd: int, name: str, value: bytes, *, mode: int = 0o600
+) -> None:
+    """Write a regular entry through a durable same-directory replacement."""
+    if not name or Path(name).name != name or name in {".", ".."}:
+        raise OperationBoundaryError("anchored file name must be one path component")
+    temporary = f".{name}.{os.getpid()}.{id(value):x}.tmp"
+    temporary_fd: int | None = None
+    try:
+        temporary_fd = _open_write_entry(
+            directory_fd,
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+            mode,
+        )
+        _assert_writable_fd(temporary_fd, None, temporary)
+        _write_all(temporary_fd, value, temporary)
+        os.fsync(temporary_fd)
+        os.close(temporary_fd)
+        temporary_fd = None
+        existing = _stat_at(directory_fd, name)
+        if existing is not None and (
+            stat.S_ISLNK(existing.st_mode)
+            or not stat.S_ISREG(existing.st_mode)
+            or existing.st_nlink != 1
+        ):
+            raise OperationBoundaryError(f"{name!r} is not a regular file")
+        try:
+            os.replace(
+                temporary,
+                name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
+        except OSError as exc:
+            raise OperationBoundaryError(f"cannot replace {name!r} safely") from exc
+        _fsync_directory(directory_fd)
+    finally:
+        if temporary_fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(temporary_fd)
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temporary, dir_fd=directory_fd)
+
+
+def _write_receipt_start_at(directory_fd: int, name: str, value: bytes) -> None:
+    """Create the initial receipt marker and durably flush its parent."""
+    write_at(directory_fd, name, value, mode=0o600)
+    _fsync_directory(directory_fd)
+
+
+def write_release_plan_receipt(
+    root: PinnedDirectory, value: dict[str, Any], *, atomic: bool = False
+) -> None:
+    """Persist one bounded release-plan receipt using a no-follow root fd.
+
+    The initial consumption marker is created and parent-directory flushed;
+    completion records use an atomic same-directory replacement before the
+    parent directory is flushed.
+    """
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    write_at(root.fd, _receipt_name(), encoded, mode=0o600)
+    writers = {False: _write_receipt_start_at, True: _atomic_write_at}
+    writers[atomic](root.fd, _receipt_name(), encoded)
+
+
+def _cleanup_entry_identity(
+    directory_fd: int, name: str, result: os.stat_result, label: str
+) -> DirectoryIdentity:
+    """Capture an entry identity, including a mounted child directory's ID."""
+    if not stat.S_ISDIR(result.st_mode):
+        return _identity_for_entry(result, directory_fd)
+    child_fd = _open_directory_at(directory_fd, name)
+    try:
+        identity = _identity_from_fd(child_fd, f"cleanup {label}/{name}")
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(child_fd)
+    plain = DirectoryIdentity.from_stat(result)
+    if (identity.device, identity.inode, identity.mode) != (
+        plain.device,
+        plain.inode,
+        plain.mode,
+    ):
+        raise OperationBoundaryError(
+            f"cleanup {label}/{name} changed during inspection"
+        )
+    return identity
+
+
+def _cleanup_entries(
+    directory_fd: int, label: str
+) -> list[tuple[str, os.stat_result, DirectoryIdentity]]:
+    """List stable no-follow entries, rejecting links and unsupported nodes."""
+    try:
+        with os.scandir(directory_fd) as iterator:
+            names = sorted(entry.name for entry in iterator)
+    except OSError as exc:
+        raise OperationBoundaryError(
+            f"cannot scan {label} without following links"
+        ) from exc
+    entries: list[tuple[str, os.stat_result, DirectoryIdentity]] = []
+    for name in names:
+        result = _stat_at(directory_fd, name)
+        if result is None:
+            continue
+        if stat.S_ISLNK(result.st_mode):
+            raise OperationBoundaryError(f"cleanup refuses symlink entry {name!r}")
+        if not (stat.S_ISDIR(result.st_mode) or stat.S_ISREG(result.st_mode)):
+            raise OperationBoundaryError(f"cleanup refuses unsupported entry {name!r}")
+        entries.append(
+            (name, result, _cleanup_entry_identity(directory_fd, name, result, label))
+        )
+    return entries
+
+
+def _assert_cleanup_entry(
+    directory_fd: int,
+    name: str,
+    expected_identity: DirectoryIdentity,
+    label: str,
+) -> os.stat_result:
+    """Recheck one entry immediately before a descriptor-relative mutation."""
+    current = _stat_at(directory_fd, name)
+    if (
+        current is None
+        or _cleanup_entry_identity(directory_fd, name, current, label)
+        != expected_identity
+    ):
+        raise OperationBoundaryError(f"cleanup {label} was replaced before mutation")
+    return current
+
+
+def _assert_cleanup_child_fd(
+    child_fd: int, expected_identity: DirectoryIdentity, label: str
+) -> None:
+    """Prove an opened child still names the entry admitted by its parent."""
+    if _identity_from_fd(child_fd, f"cleanup {label}") != expected_identity:
+        raise OperationBoundaryError(f"cleanup {label} was rebound before descent")
+
+
+def _assert_cleanup_plan(
+    entries: list[tuple[str, os.stat_result, DirectoryIdentity]],
+    plan: dict[tuple[str, ...], DirectoryIdentity],
+    relative_path: tuple[str, ...],
+    label: str,
+) -> None:
+    """Reject additions or replacements since the cleanup preflight."""
+    for name, _result, identity in entries:
+        expected = plan.get((*relative_path, name))
+        if expected is None or expected != identity:
+            raise OperationBoundaryError(
+                f"cleanup {label}/{name} changed after preflight"
+            )
+
+
+def _preflight_cleanup_tree(
+    directory_fd: int,
+    *,
+    ignored_directory_names: frozenset[str],
+    label: str,
+    relative_path: tuple[str, ...] = (),
+) -> dict[tuple[str, ...], DirectoryIdentity]:
+    """Inspect the complete mutable cleanup tree before deleting anything."""
+    plan: dict[tuple[str, ...], DirectoryIdentity] = {}
+    for name, result, identity in _cleanup_entries(directory_fd, label):
+        entry_path = (*relative_path, name)
+        plan[entry_path] = identity
+        if not stat.S_ISDIR(result.st_mode) or name in ignored_directory_names:
+            continue
+        child_fd = _open_directory_at(directory_fd, name)
+        try:
+            _assert_cleanup_child_fd(child_fd, identity, f"{label}/{name}")
+            _assert_cleanup_entry(directory_fd, name, identity, label)
+            plan.update(
+                _preflight_cleanup_tree(
+                    child_fd,
+                    ignored_directory_names=ignored_directory_names,
+                    label=f"{label}/{name}",
+                    relative_path=entry_path,
+                )
+            )
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(child_fd)
+    return plan
+
+
+def _remove_cleanup_tree(
+    directory_fd: int,
+    name: str,
+    expected_identity: DirectoryIdentity,
+    *,
+    label: str,
+    plan: dict[tuple[str, ...], DirectoryIdentity],
+    relative_path: tuple[str, ...],
+) -> None:
+    """Remove one already-preflighted subtree through parent dirfds only."""
+    _assert_cleanup_entry(directory_fd, name, expected_identity, label)
+    child_fd = _open_directory_at(directory_fd, name)
+    try:
+        _assert_cleanup_child_fd(child_fd, expected_identity, label)
+        child_entries = _cleanup_entries(child_fd, label)
+        _assert_cleanup_plan(child_entries, plan, relative_path, label)
+        for child_name, child_result, child_identity in child_entries:
+            if stat.S_ISDIR(child_result.st_mode):
+                _remove_cleanup_tree(
+                    child_fd,
+                    child_name,
+                    child_identity,
+                    label=f"{label}/{child_name}",
+                    plan=plan,
+                    relative_path=(*relative_path, child_name),
+                )
+            else:
+                _assert_cleanup_entry(child_fd, child_name, child_identity, label)
+                try:
+                    os.unlink(child_name, dir_fd=child_fd)
+                except OSError as exc:
+                    raise OperationBoundaryError(
+                        f"cannot remove cleanup file {child_name!r} safely"
+                    ) from exc
+        _assert_cleanup_entry(directory_fd, name, expected_identity, label)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(child_fd)
+    try:
+        os.rmdir(name, dir_fd=directory_fd)
+    except OSError as exc:
+        raise OperationBoundaryError(
+            f"cannot remove cleanup directory {name!r} safely"
+        ) from exc
+
+
+def cleanup_pinned_directory(
+    directory: PinnedDirectory,
+    *,
+    file_patterns: tuple[str, ...],
+    directory_names: frozenset[str],
+    ignored_directory_names: frozenset[str],
+    root_script_patterns: tuple[str, ...],
+) -> None:
+    """Clean one pinned directory with a no-follow, descriptor-only walk.
+
+    The complete tree is preflighted first.  Every later descent and removal
+    rechecks the no-follow entry identity and uses ``dir_fd`` operations, so a
+    nested symlink or directory rebind cannot redirect deletion outside the
+    pinned tree.
+    """
+    directory.assert_operation_identity()
+    cleanup_plan = _preflight_cleanup_tree(
+        directory.fd,
+        ignored_directory_names=ignored_directory_names,
+        label=str(directory.path),
+    )
+
+    def matches(name: str, patterns: tuple[str, ...]) -> bool:
+        return any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns)
+
+    def remove_files(
+        parent_fd: int,
+        entries: list[tuple[str, os.stat_result, DirectoryIdentity]],
+        *,
+        is_root: bool,
+    ) -> None:
+        for name, result, identity in entries:
+            if not stat.S_ISREG(result.st_mode):
+                continue
+            root_match = is_root and (
+                matches(name, root_script_patterns)
+                or (
+                    name.endswith(".txt")
+                    and name
+                    not in {
+                        "requirements.txt",
+                        "requirements-dev.txt",
+                    }
+                )
+            )
+            if root_match or matches(name, file_patterns):
+                _assert_cleanup_entry(parent_fd, name, identity, "file")
+                try:
+                    os.unlink(name, dir_fd=parent_fd)
+                except OSError as exc:
+                    raise OperationBoundaryError(
+                        f"cannot remove cleanup file {name!r} safely"
+                    ) from exc
+
+    def remove_at(
+        parent_fd: int,
+        *,
+        is_root: bool,
+        label: str,
+        relative_path: tuple[str, ...],
+    ) -> None:
+        entries = _cleanup_entries(parent_fd, label)
+        _assert_cleanup_plan(entries, cleanup_plan, relative_path, label)
+        remove_files(parent_fd, entries, is_root=is_root)
+        for name, result, identity in entries:
+            if not stat.S_ISDIR(result.st_mode):
+                continue
+            if name in ignored_directory_names:
+                continue
+            if name in directory_names:
+                _remove_cleanup_tree(
+                    parent_fd,
+                    name,
+                    identity,
+                    label=f"{label}/{name}",
+                    plan=cleanup_plan,
+                    relative_path=(*relative_path, name),
+                )
+            else:
+                _assert_cleanup_entry(parent_fd, name, identity, "directory")
+                child_fd = _open_directory_at(parent_fd, name)
+                try:
+                    _assert_cleanup_child_fd(child_fd, identity, f"{label}/{name}")
+                    remove_at(
+                        child_fd,
+                        is_root=False,
+                        label=f"{label}/{name}",
+                        relative_path=(*relative_path, name),
+                    )
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.close(child_fd)
+
+    remove_at(
+        directory.fd,
+        is_root=True,
+        label=str(directory.path),
+        relative_path=(),
+    )
+    directory.assert_operation_identity()
 
 
 def receipt_result_payload(results: list[Any]) -> list[dict[str, Any]]:
