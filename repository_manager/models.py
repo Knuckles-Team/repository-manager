@@ -168,6 +168,8 @@ class RepositoryConfig(BaseModel):
 
 
 class SubdirectoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     description: str | None = None
     repositories: list[RepositoryConfig] = Field(default_factory=list)
     subdirectories: dict[str, "SubdirectoryConfig"] = Field(default_factory=dict)
@@ -281,7 +283,29 @@ class BootstrapConfig(BaseModel):
     build_hosts: list[BootstrapHost] = Field(default_factory=list)
 
 
+class ServiceConfig(BaseModel):
+    """One containerized service declaration in the workspace manifest."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    name: str
+    url: str
+    domain: str | None = None
+    description: str | None = None
+
+
+class ServicesConfig(BaseModel):
+    """The manifest's service catalog, kept strict like repository entries."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    description: str | None = None
+    items: list[ServiceConfig] = Field(default_factory=list)
+
+
 class WorkspaceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     name: str
     path: str
     description: str | None = None
@@ -292,6 +316,7 @@ class WorkspaceConfig(BaseModel):
     maintenance: MaintenanceConfig | None = None
     graph: GraphConfig | None = None
     bootstrap: BootstrapConfig | None = None
+    services: ServicesConfig | None = None
 
 
 class ProjectResult(BaseModel):

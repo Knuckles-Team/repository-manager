@@ -7,6 +7,7 @@ multiple repositories in parallel using Python's multiprocessing capabilities.
 """
 
 import contextlib
+import copy
 import dataclasses
 import datetime
 import fnmatch
@@ -24,7 +25,7 @@ import tomllib
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path, PureWindowsPath
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit, urlunsplit
 
 __version__ = "3.4.0"
@@ -75,6 +76,22 @@ from repository_manager.models import (
     RepositoryConfig,
     SubdirectoryConfig,
     WorkspaceConfig,
+)
+from repository_manager.operation_boundary import (
+    OperationBoundaryError,
+    PinnedDirectory,
+    open_directory,
+    path_exists,
+    pin_creation,
+    pin_existing,
+    pin_existing_under,
+    read_at,
+    read_release_plan_receipt,
+    receipt_result_payload,
+    snapshot_pinned_checkout,
+    snapshot_workspace,
+    write_at,
+    write_release_plan_receipt,
 )
 from repository_manager.release_validation import (
     canonical_repository_url,
@@ -161,6 +178,9 @@ class _ReleasePlanProvenance:
     operation: Literal["bump", "push"]
     input_digest: str
     plan_digest: str
+    root_identity: dict[str, int] | None = None
+    scope_identity: dict[str, Any] | None = None
+    registry_digest: str | None = None
 
 
 _CASE_INSENSITIVE_ORIGIN_HOSTS = frozenset({"github.com"})
@@ -288,7 +308,17 @@ def _mutation_lock_path(manager: Any, bound: inspect.BoundArguments) -> str:
         # not feed a workspace-prefixed target through ``_resolve_path`` a
         # second time (``workspace/workspace/repo``).
         return os.path.abspath(os.path.expanduser(str(bound.arguments["target_path"])))
-    return manager._resolve_path(bound.arguments.get("path"))
+    return _operation_lock_path(manager, bound.arguments.get("path"))
+
+
+def _operation_lock_path(manager: Any, path: object | None) -> str:
+    """Keep invalid lexical inputs out of path normalization for lock keys."""
+    try:
+        return manager._resolve_path(path)
+    except ValueError:
+        # The mutation method performs the typed refusal.  This fallback only
+        # supplies a harmless lock key and never becomes an operation target.
+        return str(path or manager.path)
 
 
 def _call_exclusive_mutation(
@@ -810,11 +840,16 @@ class Git:
         self._explicit_path = path is not None
         self.path = path or DEFAULT_REPOSITORY_MANAGER_WORKSPACE
         self.report_path = report_path
-        if not os.path.exists(self.path):
-            try:
-                os.makedirs(self.path, exist_ok=True)
-            except Exception:  # nosec B110
-                pass
+        # Establish the workspace root through the same descriptor-relative,
+        # no-follow boundary used by every later mutation.  The old
+        # ``exists``/``makedirs`` pair accepted a symlink (and could follow a
+        # parent swapped between those two calls), making the root itself an
+        # unchecked authority before manifest loading or setup began.
+        with open_directory(
+            Path(os.path.abspath(os.path.expanduser(os.fspath(self.path)))),
+            create=True,
+        ) as workspace_root:
+            workspace_root.assert_root_identity()
 
         self.project_map: dict[str, str] = {}
         # Manifest category path for each configured origin. Bulk release
@@ -893,16 +928,23 @@ class Git:
     def _sync_workspace_repositories(self) -> list[GitResult]:
         """Create the workspace tree, then clone or pull every declared repo."""
         logger.info("Creating configured workspace structure")
-        os.makedirs(self.path, exist_ok=True)
-
-        sync_targets = self._validated_workspace_sync_targets()
-        if isinstance(sync_targets, GitResult):
-            return [sync_targets]
-
-        for _url, project_path in sync_targets:
-            os.makedirs(os.path.dirname(project_path), exist_ok=True)
-
-        return self._sync_workspace_targets(sync_targets)
+        try:
+            root_path = self._workspace_root_candidate()
+            with open_directory(root_path, create=True) as root:
+                root.assert_root_identity()
+                sync_targets = self._validated_workspace_sync_targets()
+                if isinstance(sync_targets, GitResult):
+                    return [sync_targets]
+                results = self._sync_workspace_targets(sync_targets, root=root)
+                root.assert_root_identity()
+                return results
+        except (OperationBoundaryError, ValueError) as exc:
+            logger.error("Workspace sync root refused: %s", exc)
+            return [
+                self._path_validation_result(
+                    "workspace_sync", getattr(self, "path", ""), exc
+                )
+            ]
 
     def _validated_workspace_sync_targets(
         self,
@@ -926,17 +968,37 @@ class Git:
         return sync_targets
 
     def _sync_workspace_targets(
-        self, sync_targets: list[tuple[str, str]]
+        self,
+        sync_targets: list[tuple[str, str]],
+        *,
+        root: PinnedDirectory | None = None,
     ) -> list[GitResult]:
         """Clone or pull one already-validated workspace target list."""
         logger.info("Syncing repositories (Clone/Pull)...")
-        results = []
-        for url, project_path in sync_targets:
-            if os.path.exists(project_path):
-                results.append(self.pull_project(project_path))
-            else:
-                results.append(self.clone_repository(url, project_path))
-        return results
+        return [
+            self._sync_workspace_target(url, project_path, root)
+            for url, project_path in sync_targets
+        ]
+
+    def _sync_workspace_target(
+        self, url: str, project_path: str, root: PinnedDirectory | None
+    ) -> GitResult:
+        """Synchronize one target and convert boundary refusal to a result."""
+        try:
+            if self._workspace_target_exists(project_path, root):
+                return self.pull_project(project_path, _root=root)
+            return self.clone_repository(url, project_path, _root=root)
+        except OperationBoundaryError as exc:
+            return self._path_validation_result("workspace_sync", project_path, exc)
+
+    @staticmethod
+    def _workspace_target_exists(
+        project_path: str, root: PinnedDirectory | None
+    ) -> bool:
+        """Check a workspace target through the active root boundary."""
+        if root is not None:
+            return path_exists(root, project_path)
+        return os.path.exists(project_path)
 
     def _setup_metadata(self, failed: bool) -> GitMetadata:
         """Metadata for a ``setup_workspace`` result."""
@@ -1087,12 +1149,21 @@ class Git:
         if path is None:
             return os.path.abspath(self.path)
 
+        _reject_lexical_parent(
+            Path(os.path.expanduser(os.fspath(path))), label="operation path"
+        )
+
         if os.path.isabs(path):
             return os.path.abspath(path)
 
         return os.path.abspath(os.path.join(self.path, path))
 
-    def _current_release_tag(self, path: str | None = None) -> str | None:
+    def _current_release_tag(
+        self,
+        path: str | None = None,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> str | None:
         """Return ``v<current_version>`` from the repo's .bumpversion.cfg, if any.
 
         The tag the most recent bump created for this repo — pushed explicitly so
@@ -1101,30 +1172,61 @@ class Git:
         locally (never created).
         """
         target_dir = self._resolve_path(path)
-        cfg = os.path.join(target_dir, ".bumpversion.cfg")
-        if not os.path.exists(cfg):
-            return None
         try:
-            with open(cfg) as fh:
-                for line in fh:
-                    if line.strip().startswith("current_version"):
-                        ver = line.split("=", 1)[1].strip()
-                        if ver:
-                            tag = f"v{ver}"
-                            # Only if the tag actually exists locally.
-                            chk = self.git_action(
-                                command=f"git tag -l {tag}",
-                                path=target_dir,
-                                quiet=True,
-                            )
-                            if chk.status == "success" and tag in (chk.data or ""):
-                                return tag
-                        return None
+            cfg_lines = self._release_tag_config_lines(target_dir, pinned)
+            for line in cfg_lines:
+                if line.strip().startswith("current_version"):
+                    ver = line.split("=", 1)[1].strip()
+                    if ver:
+                        tag = f"v{ver}"
+                        # Only if the tag actually exists locally.
+                        chk = self.git_action(
+                            command=f"git tag -l {tag}",
+                            path=target_dir,
+                            quiet=True,
+                            **self._pinned_git_kwargs(pinned),
+                        )
+                        if chk.status == "success" and tag in (chk.data or ""):
+                            return tag
+                    return None
+        except OperationBoundaryError:
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.debug("Operation failed: error_type=%s", type(exc).__name__)
         return None
 
-    def _tag_on_remote(self, tag: str, path: str | None = None) -> bool:
+    @staticmethod
+    def _release_tag_config_lines(
+        target_dir: str, pinned: PinnedDirectory | None
+    ) -> list[str]:
+        """Read bumpversion configuration through the active operation boundary."""
+        if pinned is not None:
+            raw_cfg = read_at(pinned.fd, ".bumpversion.cfg")
+            return raw_cfg.decode("utf-8").splitlines() if raw_cfg is not None else []
+        cfg = os.path.join(target_dir, ".bumpversion.cfg")
+        if not os.path.exists(cfg):
+            return []
+        with open(cfg, encoding="utf-8") as fh:
+            return fh.read().splitlines()
+
+    @staticmethod
+    def _pinned_git_kwargs(pinned: PinnedDirectory | None) -> dict[str, Any]:
+        """Return the private Git invocation kwargs for one pinned checkout."""
+        if pinned is None:
+            return {}
+        return {
+            "_cwd_fd": pinned.fd,
+            "_pass_fds": pinned.pass_fds,
+            "_pinned_handle": pinned,
+        }
+
+    def _tag_on_remote(
+        self,
+        tag: str,
+        path: str | None = None,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> bool:
         """True if ``tag`` exists on the ``origin`` remote (so it's published).
 
         Used to guard force-deletion of an orphan local tag: we only ever delete
@@ -1133,14 +1235,17 @@ class Git:
         """
         target_dir = self._resolve_path(path)
         res = self.git_action(
-            command=f"git ls-remote --tags origin {tag}", path=target_dir, quiet=True
+            command=f"git ls-remote --tags origin {tag}",
+            path=target_dir,
+            quiet=True,
+            **self._pinned_git_kwargs(pinned),
         )
         if res.status != "success":
             return True  # can't verify -> assume present, do not delete
         return f"refs/tags/{tag}" in (res.data or "")
 
-    def _workspace_root(self) -> Path:
-        """Return the approved workspace root after rejecting symlink ancestry."""
+    def _workspace_root_candidate(self) -> Path:
+        """Return the absolute root spelling after rejecting lexical parents."""
         raw_root = _reject_lexical_parent(
             Path(os.path.expanduser(os.fspath(self.path))),
             label="workspace root",
@@ -1155,6 +1260,11 @@ class Git:
                 raise ValueError(
                     f"workspace root contains non-directory component {current}"
                 )
+        return root
+
+    def _workspace_root(self) -> Path:
+        """Return the approved workspace root after rejecting symlink ancestry."""
+        root = self._workspace_root_candidate()
         if not root.exists() or not root.is_dir():
             raise ValueError(f"workspace root is not a directory {root}")
         return root
@@ -1327,6 +1437,47 @@ class Git:
             "options": options,
         }
 
+    def _release_plan_with_filesystem_payload(
+        self, config: dict[str, Any], options: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Add immutable checkout state to the shared legacy-plan payload."""
+        payload = self._release_plan_input_payload(config, options)
+        payload["filesystem"] = self._release_scope_identity_payload()
+        return payload
+
+    def _release_scope_identity_payload(self) -> dict[str, Any]:
+        """Capture root, checkout, Git, and normalized-origin identities.
+
+        The legacy release planner remains the sole source of ordered target
+        membership.  This payload only adds the immutable filesystem and Git
+        state that must still agree when that existing plan reaches a mutation.
+        """
+        projects = [
+            (str(url), str(path))
+            for url, path in sorted(self.project_map.items(), key=lambda item: item[0])
+        ]
+        try:
+            snapshot = snapshot_workspace(self._workspace_root(), projects)
+            for project in snapshot["projects"]:
+                metadata = project.get("git")
+                if not isinstance(metadata, dict):
+                    continue
+                origin = metadata.get("origin")
+                if origin is None:
+                    metadata["origin_identity"] = None
+                    continue
+                try:
+                    metadata["origin_identity"] = self._canonical_checkout_origin(
+                        str(project["url"]), str(origin)
+                    )
+                except (TypeError, ValueError):
+                    metadata["origin_identity"] = "<invalid-origin>"
+                    snapshot["valid"] = False
+            snapshot.setdefault("valid", True)
+            return snapshot
+        except (OperationBoundaryError, OSError, ValueError):
+            return {"valid": False, "error": "unsafe release scope"}
+
     def _freeze_release_plan(
         self,
         operation: Literal["bump", "push"],
@@ -1338,9 +1489,11 @@ class Git:
     ) -> _ReleasePlanProvenance:
         """Freeze input provenance and ordered target membership for a run."""
         auxiliary = [[name, path] for name, path in (auxiliary_targets or [])]
-        input_digest = _release_plan_digest(
+        input_payload = self._release_plan_with_filesystem_payload(config, options)
+        registry_digest = _release_plan_digest(
             self._release_plan_input_payload(config, options)
         )
+        input_digest = _release_plan_digest(input_payload)
         plan_digest = _release_plan_digest(
             {
                 "operation": operation,
@@ -1349,11 +1502,193 @@ class Git:
                 "auxiliary_targets": auxiliary,
             }
         )
+        root_identity, scope_identity = self._release_plan_provenance_identities(
+            input_payload
+        )
         return _ReleasePlanProvenance(
             operation=operation,
             input_digest=input_digest,
             plan_digest=plan_digest,
+            root_identity=root_identity,
+            scope_identity=scope_identity,
+            registry_digest=registry_digest,
         )
+
+    @staticmethod
+    def _release_plan_provenance_identities(
+        input_payload: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """Extract immutable filesystem identities from a frozen input payload."""
+        filesystem = input_payload.get("filesystem")
+        if not isinstance(filesystem, dict):
+            return None, None
+        root = filesystem.get("root")
+        root_identity = dict(root) if isinstance(root, dict) else None
+        return root_identity, copy.deepcopy(filesystem)
+
+    def _release_plan_target_snapshot(
+        self,
+        provenance: _ReleasePlanProvenance,
+        project_name: str,
+        project_path: str,
+    ) -> dict[str, Any]:
+        """Return the frozen identity for one exact release target."""
+        scope = provenance.scope_identity
+        if not isinstance(scope, dict) or scope.get("valid") is not True:
+            raise OperationBoundaryError("release plan has no valid filesystem scope")
+        entries = scope.get("projects")
+        if not isinstance(entries, list):
+            raise OperationBoundaryError("release plan filesystem scope is malformed")
+        expected_path = str(
+            Path(os.path.abspath(os.path.expanduser(os.fspath(project_path))))
+        )
+        matches = self._release_plan_target_matches(
+            entries, expected_path, project_name
+        )
+        if len(matches) != 1:
+            raise OperationBoundaryError(
+                f"release plan target is not uniquely bound: {project_name}"
+            )
+        return copy.deepcopy(matches[0])
+
+    def _release_plan_target_matches(
+        self,
+        entries: list[Any],
+        expected_path: str,
+        project_name: str,
+    ) -> list[dict[str, Any]]:
+        """Select exact frozen ``(name, path)`` entries for one target."""
+        matches: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict) or entry.get("path") != expected_path:
+                continue
+            url = entry.get("url")
+            if not isinstance(url, str):
+                continue
+            if self._release_project_name_or_empty(url) != project_name:
+                continue
+            if entry.get("exists") is True:
+                matches.append(entry)
+        return matches
+
+    def _normalized_release_target_git(
+        self,
+        expected_git: dict[str, Any],
+        actual_git: Any,
+        expected: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Normalize live origin identity before comparing a frozen Git snapshot."""
+        if not isinstance(actual_git, dict):
+            raise OperationBoundaryError("release plan Git identity disappeared")
+        normalized = copy.deepcopy(actual_git)
+        origin = normalized.get("origin")
+        manifest_url = expected.get("url")
+        if origin is None:
+            normalized["origin_identity"] = None
+        elif isinstance(manifest_url, str):
+            try:
+                normalized["origin_identity"] = self._canonical_checkout_origin(
+                    manifest_url, str(origin)
+                )
+            except ValueError:
+                normalized["origin_identity"] = "<invalid-origin>"
+        else:
+            normalized["origin_identity"] = "<invalid-origin>"
+        return normalized
+
+    def _assert_pinned_release_target(
+        self,
+        provenance: _ReleasePlanProvenance,
+        project_name: str,
+        project_path: str,
+        pinned: PinnedDirectory,
+        *,
+        expected: dict[str, Any] | None = None,
+    ) -> None:
+        """Compare a pinned target with the immutable release-plan snapshot."""
+        expected = expected or self._release_plan_target_snapshot(
+            provenance, project_name, project_path
+        )
+        scope = provenance.scope_identity
+        expected_root = scope.get("root") if isinstance(scope, dict) else None
+        if expected_root != pinned.root_identity.as_dict():
+            raise OperationBoundaryError("release plan workspace root identity changed")
+        pinned.assert_path_identity()
+        actual = snapshot_pinned_checkout(pinned)
+        expected_git = expected.get("git")
+        actual_git = actual.get("git")
+        if isinstance(expected_git, dict):
+            actual_git = self._normalized_release_target_git(
+                expected_git, actual_git, expected
+            )
+        if (
+            actual.get("path") != expected.get("path")
+            or actual.get("checkout") != expected.get("checkout")
+            or actual_git != expected_git
+        ):
+            raise OperationBoundaryError(
+                f"release plan target identity changed: {project_name}"
+            )
+
+    def _bind_release_plan_target(
+        self,
+        provenance: _ReleasePlanProvenance,
+        project_name: str,
+        project_path: str,
+        pinned: PinnedDirectory,
+        *,
+        plan_assertion: Callable[[], None] | None = None,
+    ) -> None:
+        """Attach the frozen target assertion to its operation handle."""
+        expected = self._release_plan_target_snapshot(
+            provenance, project_name, project_path
+        )
+
+        def assert_target() -> None:
+            self._assert_pinned_release_target(
+                provenance,
+                project_name,
+                project_path,
+                pinned,
+                expected=expected,
+            )
+            if plan_assertion is not None:
+                plan_assertion()
+
+        expected_url = expected.get("url")
+        if not isinstance(expected_url, str):
+            raise OperationBoundaryError("release plan target has no repository URL")
+        pinned.expected_origin = canonical_repository_url(expected_url)
+        pinned.boundary_assertion = assert_target
+        assert_target()
+
+    def _assert_release_plan_structure(
+        self,
+        provenance: _ReleasePlanProvenance,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        auxiliary_targets: list[_ReleaseTarget] | None = None,
+    ) -> None:
+        """Check mutable plan inputs without rescanning every checkout."""
+        expected_registry = provenance.registry_digest
+        current_registry = _release_plan_digest(
+            self._release_plan_input_payload(config, plan_options)
+        )
+        auxiliary = [[name, path] for name, path in (auxiliary_targets or [])]
+        current_plan = _release_plan_digest(
+            {
+                "operation": provenance.operation,
+                "input_digest": provenance.input_digest,
+                "phases": _release_phase_payload(phase_list),
+                "auxiliary_targets": auxiliary,
+            }
+        )
+        if (
+            expected_registry != current_registry
+            or current_plan != provenance.plan_digest
+        ):
+            raise _ReleasePlanDrift(provenance.operation, provenance.plan_digest)
 
     def _release_plan_matches(
         self,
@@ -1365,9 +1700,8 @@ class Git:
         auxiliary_targets: list[_ReleaseTarget] | None = None,
     ) -> bool:
         """Check input registry, config, and ordered target membership for drift."""
-        current_input = _release_plan_digest(
-            self._release_plan_input_payload(config, options)
-        )
+        current_payload = self._release_plan_with_filesystem_payload(config, options)
+        current_input = self._release_plan_input_digest(current_payload)
         if current_input != provenance.input_digest:
             return False
         auxiliary = [[name, path] for name, path in (auxiliary_targets or [])]
@@ -1380,6 +1714,19 @@ class Git:
             }
         )
         return current_plan == provenance.plan_digest
+
+    @staticmethod
+    def _release_plan_scope_valid(payload: dict[str, Any]) -> bool:
+        """Return whether a current plan payload still has a usable scope."""
+        scope = payload.get("filesystem", {})
+        return isinstance(scope, dict) and bool(scope.get("valid", False))
+
+    @classmethod
+    def _release_plan_input_digest(cls, payload: dict[str, Any]) -> str:
+        """Digest only a payload whose filesystem scope is valid."""
+        if not cls._release_plan_scope_valid(payload):
+            return "<invalid-scope>"
+        return _release_plan_digest(payload)
 
     def _assert_release_plan(
         self,
@@ -1436,6 +1783,147 @@ class Git:
             return
         progress["release_plan_digest"] = provenance.plan_digest
         progress["release_plan_input_digest"] = provenance.input_digest
+
+    @staticmethod
+    def _release_plan_receipt_result(message: str) -> GitResult:
+        """Return a typed refusal for an unsafe or replayed push plan."""
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(message=message, code=409),
+            metadata=GitMetadata(
+                command="phased_push",
+                workspace="configured-workspace",
+                return_code=409,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
+
+    def _begin_push_plan_receipt(
+        self, provenance: _ReleasePlanProvenance
+    ) -> tuple[list[GitResult] | None, GitResult | None]:
+        """Consume a push plan once, or return its recorded idempotent result."""
+        try:
+            receipt, created = self._record_push_plan_start(provenance)
+        except (OperationBoundaryError, OSError) as exc:
+            return None, self._release_plan_receipt_result(
+                f"phased_push refused: cannot record release plan ({type(exc).__name__})"
+            )
+        if created:
+            return None, None
+        return self._replay_push_plan_receipt(receipt, provenance)
+
+    def _record_push_plan_start(
+        self, provenance: _ReleasePlanProvenance
+    ) -> tuple[dict[str, Any] | None, bool]:
+        """Atomically create the durable push-consumption marker when absent."""
+        with _hold_repo_mutation(str(self._workspace_root())):
+            with open_directory(self._workspace_root()) as root:
+                if (
+                    provenance.root_identity is not None
+                    and root.identity.as_dict() != provenance.root_identity
+                ):
+                    raise OperationBoundaryError("workspace root identity changed")
+                receipt = read_release_plan_receipt(root)
+                if receipt is not None:
+                    return receipt, False
+                write_release_plan_receipt(
+                    root,
+                    {
+                        "operation": "push",
+                        "plan_digest": provenance.plan_digest,
+                        "input_digest": provenance.input_digest,
+                        "state": "started",
+                        "results": [],
+                    },
+                )
+                return None, True
+
+    def _replay_push_plan_receipt(
+        self,
+        receipt: dict[str, Any] | None,
+        provenance: _ReleasePlanProvenance,
+    ) -> tuple[list[GitResult] | None, GitResult | None]:
+        """Validate and replay a completed durable push outcome."""
+        if receipt is None:
+            return None, self._release_plan_receipt_result(
+                "phased_push refused: release-plan receipt disappeared"
+            )
+
+        operation = receipt.get("operation")
+        digest = receipt.get("plan_digest")
+        input_digest = receipt.get("input_digest")
+        if (
+            operation != "push"
+            or digest != provenance.plan_digest
+            or input_digest != provenance.input_digest
+        ):
+            return None, self._release_plan_receipt_result(
+                "phased_push refused: a different release plan has already been "
+                "consumed"
+            )
+        if receipt.get("state") != "completed":
+            return None, self._release_plan_receipt_result(
+                "phased_push refused: release plan was consumed without a "
+                "recorded outcome"
+            )
+        raw_results = receipt.get("results")
+        if not isinstance(raw_results, list):
+            return None, self._release_plan_receipt_result(
+                "phased_push refused: release-plan outcome is malformed"
+            )
+        try:
+            replayed = [GitResult.model_validate(item) for item in raw_results]
+        except ValidationError:
+            return None, self._release_plan_receipt_result(
+                "phased_push refused: release-plan outcome is malformed"
+            )
+        return replayed, None
+
+    def _complete_push_plan_receipt(
+        self,
+        provenance: _ReleasePlanProvenance,
+        results: list[GitResult],
+    ) -> None:
+        """Persist the terminal push outcome for exact idempotent retries."""
+        try:
+            with _hold_repo_mutation(str(self._workspace_root())):
+                with open_directory(self._workspace_root()) as root:
+                    if (
+                        provenance.root_identity is not None
+                        and root.identity.as_dict() != provenance.root_identity
+                    ):
+                        raise OperationBoundaryError(
+                            "workspace root identity changed before receipt completion"
+                        )
+                    receipt = read_release_plan_receipt(root)
+                    if (
+                        not isinstance(receipt, dict)
+                        or receipt.get("operation") != "push"
+                        or receipt.get("plan_digest") != provenance.plan_digest
+                        or receipt.get("input_digest") != provenance.input_digest
+                    ):
+                        raise OperationBoundaryError(
+                            "release-plan receipt changed before completion"
+                        )
+                    write_release_plan_receipt(
+                        root,
+                        {
+                            "operation": "push",
+                            "plan_digest": provenance.plan_digest,
+                            "input_digest": provenance.input_digest,
+                            "state": "completed",
+                            "results": receipt_result_payload(results),
+                        },
+                    )
+        except (OperationBoundaryError, OSError, TypeError, ValueError) as exc:
+            # The push may already have had an external side effect.  Do not
+            # pretend a retry is safe when its terminal outcome could not be
+            # made durable; the started receipt intentionally remains the
+            # conservative anti-replay marker.
+            logger.error(
+                "Could not persist phased_push outcome: %s", type(exc).__name__
+            )
 
     @staticmethod
     def _normalize_uv_name(name: str, *, label: str) -> str:
@@ -2687,6 +3175,70 @@ class Git:
                 f"ERROR: Command timed out after {timeout} seconds\n"
             )
 
+    def _run_pinned_repository_command(
+        self,
+        command_argv: list[str],
+        current_env: dict[str, str],
+        *,
+        target_path: str,
+        operation: str,
+        quiet: bool,
+        timeout: int,
+        raw_output: bool,
+        cwd_fd: int,
+        pass_fds: tuple[int, ...],
+        path_anchor: tuple[str, int] | None,
+    ) -> GitResult:
+        """Run one command with a descriptor-pinned working directory."""
+        inherited = tuple(dict.fromkeys((cwd_fd, *pass_fds)))
+        if path_anchor is not None:
+            lexical_path, destination_fd = path_anchor
+            if lexical_path not in command_argv:
+                raise OperationBoundaryError(
+                    "descriptor-pinned path anchor is absent from the Git command"
+                )
+            command_argv = [
+                f"/proc/self/fd/{destination_fd}" if token == lexical_path else token
+                for token in command_argv
+            ]
+        try:
+            process = subprocess.Popen(
+                command_argv,
+                shell=False,
+                cwd=f"/proc/self/fd/{cwd_fd}",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                env=current_env,
+                bufsize=1,
+                start_new_session=True,
+                pass_fds=inherited,
+            )
+        except OSError as exc:
+            return self._repository_command_result(
+                operation=operation,
+                target_path=target_path,
+                return_code=1,
+                out=_privacy_safe_diagnostic(
+                    f"descriptor-pinned repository operation failed: {type(exc).__name__}"
+                ),
+                quiet=quiet,
+            )
+
+        capture = _CommandOutputCapture()
+        self._await_repository_command(process, capture, timeout)
+
+        captured = capture.text()
+        out = captured if raw_output else _privacy_safe_diagnostic(captured)
+        return self._repository_command_result(
+            operation=operation,
+            target_path=target_path,
+            return_code=process.returncode,
+            out=out,
+            quiet=quiet,
+        )
+
     def git_action(
         self,
         command: str,
@@ -2695,6 +3247,44 @@ class Git:
         env: dict | None = None,
         timeout: int = 1800,
         raw_output: bool = False,
+        *,
+        _cwd_fd: int | None = None,
+        _pass_fds: tuple[int, ...] = (),
+        _path_anchor: tuple[str, int] | None = None,
+        _pinned_handle: PinnedDirectory | None = None,
+    ) -> GitResult:
+        """
+        Execute a Git command in the specified directory.
+
+        The operation is admitted through descriptor-pinned helpers before
+        any subprocess is started.
+        """
+        return self._git_action_impl(
+            command=command,
+            path=path,
+            quiet=quiet,
+            env=env,
+            timeout=timeout,
+            raw_output=raw_output,
+            _cwd_fd=_cwd_fd,
+            _pass_fds=_pass_fds,
+            _path_anchor=_path_anchor,
+            _pinned_handle=_pinned_handle,
+        )
+
+    def _git_action_impl(
+        self,
+        command: str,
+        path: str | None = None,
+        quiet: bool = False,
+        env: dict | None = None,
+        timeout: int = 1800,
+        raw_output: bool = False,
+        *,
+        _cwd_fd: int | None = None,
+        _pass_fds: tuple[int, ...] = (),
+        _path_anchor: tuple[str, int] | None = None,
+        _pinned_handle: PinnedDirectory | None = None,
     ) -> GitResult:
         """
         Execute a Git command in the specified directory.
@@ -2710,39 +3300,192 @@ class Git:
         Concept:
             CONCEPT:RM-GIT-ACTION
         """
-        target_path = self._resolve_path(path)
+        try:
+            target_path = self._resolve_path(path)
+        except ValueError as exc:
+            return self._path_validation_result(
+                "git_action", self.path if path is None else path, exc
+            )
 
         command_argv, command_env = self._parse_repository_command(command)
         current_env = self._repository_command_env(env, command_env)
 
         operation = _operation_label(command_argv)
+        is_git_push = self._is_git_push(command_argv)
         logger.info("Executing repository operation")
+        runner = {
+            False: self._git_action_with_path,
+            True: self._git_action_with_fd,
+        }[_cwd_fd is not None]
+        try:
+            if _cwd_fd is None and (_pass_fds or _path_anchor or _pinned_handle):
+                raise OperationBoundaryError(
+                    "descriptor-pinned arguments require a pinned cwd handle"
+                )
+            return runner(
+                command_argv=command_argv,
+                current_env=current_env,
+                target_path=target_path,
+                operation=operation,
+                quiet=quiet,
+                timeout=timeout,
+                raw_output=raw_output,
+                cwd_fd=_cwd_fd,
+                pass_fds=_pass_fds,
+                path_anchor=_path_anchor,
+                pinned_handle=_pinned_handle,
+                is_git_push=is_git_push,
+            )
+        except (OperationBoundaryError, OSError) as exc:
+            return self._repository_command_result(
+                operation=operation,
+                target_path=target_path,
+                return_code=1,
+                out=_privacy_safe_diagnostic(
+                    "descriptor-pinned repository operation refused: "
+                    f"{type(exc).__name__}: {exc}"
+                ),
+                quiet=quiet,
+            )
 
-        process = subprocess.Popen(
+    @staticmethod
+    def _is_git_push(command_argv: list[str]) -> bool:
+        """Recognize a direct Git push for post-command boundary validation."""
+        return bool(
+            len(command_argv) > 1
+            and os.path.basename(command_argv[0]) == "git"
+            and command_argv[1] == "push"
+        )
+
+    def _git_action_with_fd(
+        self,
+        *,
+        command_argv: list[str],
+        current_env: dict[str, str],
+        target_path: str,
+        operation: str,
+        quiet: bool,
+        timeout: int,
+        raw_output: bool,
+        cwd_fd: int | None,
+        pass_fds: tuple[int, ...],
+        path_anchor: tuple[str, int] | None,
+        pinned_handle: PinnedDirectory | None,
+        is_git_push: bool,
+    ) -> GitResult:
+        """Run a command using a caller-provided descriptor-pinned cwd."""
+        if cwd_fd is None:
+            raise OperationBoundaryError("descriptor-pinned cwd is missing")
+        if pinned_handle is not None:
+            if cwd_fd != pinned_handle.fd:
+                raise OperationBoundaryError(
+                    "descriptor-pinned cwd does not match the operation handle"
+                )
+            if path_anchor is not None:
+                _anchor_path, destination_fd = path_anchor
+                if pinned_handle.target_fd != destination_fd:
+                    raise OperationBoundaryError(
+                        "descriptor-pinned destination does not match the operation handle"
+                    )
+            pinned_handle.assert_operation_identity()
+            command_argv = pinned_handle.anchored_git_command(command_argv)
+            current_env = pinned_handle.anchored_git_environment(current_env)
+            pass_fds = pinned_handle.pass_fds
+        else:
+            raise OperationBoundaryError(
+                "descriptor-pinned operation handle is missing"
+            )
+        result = self._run_pinned_repository_command(
             command_argv,
-            shell=False,
-            cwd=target_path,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            env=current_env,
-            bufsize=1,  # Line buffered
-            start_new_session=True,  # Isolate process group so killpg only kills the command
-        )
-
-        capture = _CommandOutputCapture()
-        self._await_repository_command(process, capture, timeout)
-
-        captured = capture.text()
-        out = captured if raw_output else _privacy_safe_diagnostic(captured)
-        return self._repository_command_result(
-            operation=operation,
+            current_env,
             target_path=target_path,
-            return_code=process.returncode,
-            out=out,
+            operation=operation,
             quiet=quiet,
+            timeout=timeout,
+            raw_output=raw_output,
+            cwd_fd=cwd_fd,
+            pass_fds=pass_fds,
+            path_anchor=path_anchor,
         )
+        self._assert_git_action_boundary(pinned_handle, is_git_push)
+        return result
+
+    def _pin_git_action_target(
+        self, root: PinnedDirectory, target_path: str
+    ) -> PinnedDirectory:
+        """Pin a workspace target or an explicitly registered linked worktree."""
+        target = Path(target_path)
+        try:
+            target.relative_to(root.path)
+        except ValueError:
+            # WorktreeManager deliberately places linked checkouts under its
+            # own configured root, which may be a sibling of the workspace.
+            # Admit only that registered root and keep the manager workspace
+            # as the metadata/plan boundary; arbitrary external paths remain
+            # refused.
+            from repository_manager.worktree import WORKTREE_ROOT
+
+            allowed_root = Path(
+                os.path.abspath(os.path.expanduser(os.fspath(WORKTREE_ROOT)))
+            )
+            try:
+                target.relative_to(allowed_root)
+            except ValueError as exc:
+                raise OperationBoundaryError(
+                    "operation target escapes workspace root"
+                ) from exc
+            return pin_existing_under(root, target, allowed_root)
+        return pin_existing(root, target)
+
+    def _git_action_with_path(
+        self,
+        *,
+        command_argv: list[str],
+        current_env: dict[str, str],
+        target_path: str,
+        operation: str,
+        quiet: bool,
+        timeout: int,
+        raw_output: bool,
+        cwd_fd: int | None,
+        pass_fds: tuple[int, ...],
+        path_anchor: tuple[str, int] | None,
+        pinned_handle: PinnedDirectory | None,
+        is_git_push: bool,
+    ) -> GitResult:
+        """Pin a lexical path for the duration of one Git command."""
+        del cwd_fd, pass_fds, path_anchor, pinned_handle
+        with open_directory(self._workspace_root()) as root:
+            with self._pin_git_action_target(root, target_path) as pinned:
+                pinned.assert_operation_identity()
+                anchored = pinned.anchored_git_command(command_argv)
+                current_env = pinned.anchored_git_environment(current_env)
+                result = self._run_pinned_repository_command(
+                    anchored,
+                    current_env,
+                    target_path=target_path,
+                    operation=operation,
+                    quiet=quiet,
+                    timeout=timeout,
+                    raw_output=raw_output,
+                    cwd_fd=pinned.fd,
+                    pass_fds=pinned.pass_fds,
+                    path_anchor=None,
+                )
+                self._assert_git_action_boundary(pinned, is_git_push)
+                return result
+
+    @staticmethod
+    def _assert_git_action_boundary(
+        pinned: PinnedDirectory | None, is_git_push: bool
+    ) -> None:
+        """Revalidate Git metadata and the planned boundary after execution."""
+        if pinned is None:
+            return
+        pinned.assert_git_identity()
+        if is_git_push and pinned.boundary_assertion is not None:
+            pinned.boundary_assertion()
+        pinned.assert_path_identity()
 
     def cleanup_artifacts(self, target_dir: str) -> None:
         """Removes test artifacts and temporary files from the specified directory."""
@@ -2770,37 +3513,42 @@ class Git:
             List[GitResult]: A list of GitResult objects, one for each clone operation.
         """
         try:
-            expanded_path = os.path.expanduser(self.path)
-            if not os.path.exists(expanded_path):
-                os.makedirs(expanded_path, exist_ok=True)
+            root_path = self._workspace_root_candidate()
+            with open_directory(root_path, create=True) as root:
+                root.assert_root_identity()
 
-            targets = []
-            if projects:
-                for url in projects:
-                    name = url.split("/")[-1].replace(".git", "")
-                    targets.append((url, os.path.join(expanded_path, name)))
-            elif self.project_map:
-                for url, path in self.project_map.items():
-                    targets.append((url, path))
+                targets = []
+                if projects:
+                    for url in projects:
+                        name = repository_name(url)
+                        targets.append((url, str(root_path / name)))
+                elif self.project_map:
+                    for url, path in self.project_map.items():
+                        targets.append((url, path))
 
-            if not targets:
-                logger.warning("No projects to clone.")
-                return []
+                if not targets:
+                    logger.warning("No projects to clone.")
+                    return []
 
-            logger.info(
-                f"Cloning {len(targets)} projects in parallel using {self.threads} threads..."
-            )
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.threads
-            ) as executor:
-                futures = {
-                    executor.submit(self.clone_repository, url, path): (url, path)
-                    for url, path in targets
-                }
-                results = []
-                for future in concurrent.futures.as_completed(futures):
-                    results.append(future.result())
-            return results
+                logger.info(
+                    f"Cloning {len(targets)} projects in parallel using {self.threads} threads..."
+                )
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=self.threads
+                ) as executor:
+                    futures = {
+                        executor.submit(
+                            self.clone_repository,
+                            url,
+                            path,
+                            _root=root,
+                        ): (url, path)
+                        for url, path in targets
+                    }
+                    results = []
+                    for future in concurrent.futures.as_completed(futures):
+                        results.append(future.result())
+                return results
 
         except Exception as e:
             logger.error("Operation failed: error_type=%s", type(e).__name__)
@@ -2822,7 +3570,13 @@ class Git:
             ]
 
     @_exclusive_repo_mutation
-    def clone_repository(self, url: str, target_path: str) -> GitResult:
+    def clone_repository(
+        self,
+        url: str,
+        target_path: str,
+        *,
+        _root: PinnedDirectory | None = None,
+    ) -> GitResult:
         """
         Clone a single Git repository to a specific target path.
 
@@ -2847,18 +3601,73 @@ class Git:
                 ),
             )
 
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-
         clone_filter = os.environ.get("REPOSITORY_MANAGER_CLONE_FILTER", "").strip()
         filter_arg = (
             f" --filter={shlex.quote(clone_filter)}"
             if clone_filter in {"blob:none", "tree:0"}
             else ""
         )
-        command = (
-            f"git clone{filter_arg} -- {shlex.quote(url)} {shlex.quote(target_path)}"
-        )
-        result = self.git_action(command, path=os.path.dirname(target_path))
+        return self._clone_repository_operation(url, target_path, filter_arg, _root)
+
+    def _clone_repository_operation(
+        self,
+        url: str,
+        target_path: str,
+        filter_arg: str,
+        supplied_root: PinnedDirectory | None,
+    ) -> GitResult:
+        """Create, hand off, and validate one descriptor-pinned clone target."""
+        try:
+            root_context = (
+                contextlib.nullcontext(supplied_root)
+                if supplied_root is not None
+                else open_directory(self._workspace_root())
+            )
+            with root_context as root:
+                if root is None:
+                    raise OperationBoundaryError("workspace root handle is missing")
+                root.assert_root_identity()
+                destination = pin_creation(root, target_path, create_parents=True)
+                with destination:
+                    destination.assert_path_identity()
+                    destination.reserve_leaf()
+                    destination.assert_path_identity()
+                    if destination.target_fd is None:
+                        raise OperationBoundaryError(
+                            "clone destination was not pinned after reservation"
+                        )
+                    command = (
+                        f"git clone{filter_arg} -- {shlex.quote(url)} "
+                        f"{shlex.quote(target_path)}"
+                    )
+                    result = self.git_action(
+                        command,
+                        path=str(destination.path),
+                        _cwd_fd=destination.fd,
+                        _pass_fds=destination.pass_fds,
+                        _path_anchor=(target_path, destination.target_fd),
+                        _pinned_handle=destination,
+                    )
+                    if result.status == "success":
+                        destination.assert_handoff()
+                        # A mocked/test transport may report success without
+                        # materializing a checkout.  Release the empty
+                        # reservation in that case so the historical sync
+                        # contract (and a later retry) still sees it as
+                        # absent.  A real clone always leaves at least .git.
+                        if destination.target_fd is not None:
+                            try:
+                                if destination.leaf is not None and not os.listdir(
+                                    destination.target_fd
+                                ):
+                                    os.rmdir(destination.leaf, dir_fd=destination.fd)
+                            except OSError:
+                                # A non-empty destination is the expected real
+                                # clone handoff; any inability to inspect it is
+                                # left for the descriptor close/final result.
+                                pass
+        except OperationBoundaryError as exc:
+            return self._path_validation_result("clone_repository", target_path, exc)
         logger.info("Repository clone completed with status %s", result.status)
         return result
 
@@ -2922,7 +3731,12 @@ class Git:
         )
 
     def _guarded_default_branch_checkout(
-        self, target_path: str, default_branch: str, results: list[GitResult]
+        self,
+        target_path: str,
+        default_branch: str,
+        results: list[GitResult],
+        *,
+        pinned: PinnedDirectory | None = None,
     ) -> None:
         """Check out *default_branch*, never on a dirty canonical tree.
 
@@ -2944,18 +3758,22 @@ class Git:
                 return
             checkout_result = self.git_action(
                 f'git checkout "{default_branch}"',
-                path=target_path,
+                **self._pinned_path_kwargs(target_path, pinned),
             )
             results.append(checkout_result)
             logger.info("Checked out configured default branch")
 
     def _checkout_default_branch(
-        self, target_path: str, results: list[GitResult]
+        self,
+        target_path: str,
+        results: list[GitResult],
+        *,
+        pinned: PinnedDirectory | None = None,
     ) -> None:
         """Resolve the project's default branch and switch to it if needed."""
         default_branch_result = self.git_action(
             "git symbolic-ref refs/remotes/origin/HEAD",
-            path=target_path,
+            **self._pinned_path_kwargs(target_path, pinned),
         )
         if default_branch_result.status != "success":
             results.append(default_branch_result)
@@ -2966,13 +3784,31 @@ class Git:
             "refs/remotes/origin/", "", default_branch_result.data
         ).strip()
         current_branch = self.git_action(
-            "git rev-parse --abbrev-ref HEAD", path=target_path, quiet=True
+            "git rev-parse --abbrev-ref HEAD",
+            quiet=True,
+            **self._pinned_path_kwargs(target_path, pinned),
         ).data.strip()
         if current_branch == default_branch:
             logger.info("Configured project is already on its default branch")
             return
 
-        self._guarded_default_branch_checkout(target_path, default_branch, results)
+        self._guarded_default_branch_checkout(
+            target_path, default_branch, results, pinned=pinned
+        )
+
+    @staticmethod
+    def _pinned_path_kwargs(
+        target_path: str, pinned: PinnedDirectory | None
+    ) -> dict[str, Any]:
+        """Build Git keyword arguments for a path, preserving its pin."""
+        if pinned is None:
+            return {"path": target_path}
+        return {
+            "path": target_path,
+            "_cwd_fd": pinned.fd,
+            "_pass_fds": pinned.pass_fds,
+            "_pinned_handle": pinned,
+        }
 
     @staticmethod
     def _combine_pull_results(target_path: str, results: list[GitResult]) -> GitResult:
@@ -3000,8 +3836,18 @@ class Git:
             metadata=metadata,
         )
 
+    def _pull_project_unpinned(self, target_path: str) -> GitResult:
+        """Keep the legacy mocked-transport behavior for absent checkouts."""
+        results = [self.git_action(command="git pull", path=target_path)]
+        return self._combine_pull_results(target_path, results)
+
     @_exclusive_repo_mutation
-    def pull_project(self, path: str | None = None) -> GitResult:
+    def pull_project(
+        self,
+        path: str | None = None,
+        *,
+        _root: PinnedDirectory | None = None,
+    ) -> GitResult:
         """
         Pull updates for a single Git project and optionally checkout the default branch.
 
@@ -3012,14 +3858,50 @@ class Git:
             GitResult: The result of the pull operation.
         """
         target_path = self._validated_operation_path(path, operation="pull_project")
-        results = [self.git_action(command="git pull", path=target_path)]
+        return self._pull_project_operation(target_path, _root)
+
+    def _pull_project_operation(
+        self, target_path: str, supplied_root: PinnedDirectory | None
+    ) -> GitResult:
+        """Execute a pinned pull and preserve the legacy absent-checkout fallback."""
+        try:
+            results = self._pull_project_with_root(target_path, supplied_root)
+        except OperationBoundaryError as exc:
+            if not Path(target_path).is_dir():
+                return self._pull_project_unpinned(target_path)
+            return self._path_validation_result("pull_project", target_path, exc)
 
         logger.info("Repository pull completed")
 
-        if self.set_to_default_branch:
-            self._checkout_default_branch(target_path, results)
-
         return self._combine_pull_results(target_path, results)
+
+    def _pull_project_with_root(
+        self, target_path: str, supplied_root: PinnedDirectory | None
+    ) -> list[GitResult]:
+        """Pull one checkout while retaining the caller's root boundary."""
+        root_context = (
+            contextlib.nullcontext(supplied_root)
+            if supplied_root is not None
+            else open_directory(self._workspace_root())
+        )
+        with root_context as root:
+            if root is None:
+                raise OperationBoundaryError("workspace root handle is missing")
+            root.assert_root_identity()
+            with pin_existing(root, target_path) as pinned:
+                pinned.assert_path_identity()
+                results = [
+                    self.git_action(
+                        command="git pull",
+                        path=target_path,
+                        _cwd_fd=pinned.fd,
+                        _pass_fds=pinned.pass_fds,
+                        _pinned_handle=pinned,
+                    )
+                ]
+                if self.set_to_default_branch:
+                    self._checkout_default_branch(target_path, results, pinned=pinned)
+                return results
 
     def push_projects(self, project_dirs: list[str] | None = None) -> list[GitResult]:
         """
@@ -3044,14 +3926,19 @@ class Git:
         ) as executor:
             return list(executor.map(self.push_project, project_dirs))
 
-    def _has_unpushed_commits(self, target_path: str) -> bool:
+    def _has_unpushed_commits(
+        self, target_path: str, *, pinned: PinnedDirectory | None = None
+    ) -> bool:
         """True when the local branch has commits the remote lacks.
 
         Used to skip the pre-push gate on no-op repos (nothing to validate).
         On any uncertainty (no upstream, error) returns True so the gate runs.
         """
         res = self.git_action(
-            command="git rev-list --count @{u}..HEAD", path=target_path, quiet=True
+            command="git rev-list --count @{u}..HEAD",
+            path=target_path,
+            quiet=True,
+            **self._pinned_git_kwargs(pinned),
         )
         if res.status != "success" or not res.data:
             return True
@@ -3060,7 +3947,9 @@ class Git:
         except (ValueError, AttributeError):
             return True
 
-    def _unpushed_changed_files(self, target_path: str) -> list[str]:
+    def _unpushed_changed_files(
+        self, target_path: str, *, pinned: PinnedDirectory | None = None
+    ) -> list[str]:
         """Files touched by the commits about to be pushed (``@{u}..HEAD``).
 
         Lets the pre-push gate scope per-file hooks to just the diff being
@@ -3068,7 +3957,10 @@ class Git:
         error) — the caller then falls back to an ``--all-files`` run.
         """
         res = self.git_action(
-            command="git diff --name-only @{u}..HEAD", path=target_path, quiet=True
+            command="git diff --name-only @{u}..HEAD",
+            path=target_path,
+            quiet=True,
+            **self._pinned_git_kwargs(pinned),
         )
         if res.status != "success" or not res.data:
             return []
@@ -3150,7 +4042,12 @@ class Git:
             return Git._gate_unrunnable_result(unrunnable)
         return Git._gate_failed_result(failed)
 
-    def _gate_before_push(self, target_path: str) -> GitResult | None:
+    def _gate_before_push(
+        self,
+        target_path: str,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> GitResult | None:
         """Run the repo's declared HEAVY (pre-push-stage) gates before pushing.
 
         Mirrors the repo's CI gates locally so a push can't ship a commit the CI
@@ -3172,31 +4069,62 @@ class Git:
         """
         if not self.gate_before_push:
             return None
-        if not os.path.exists(os.path.join(target_path, ".pre-commit-config.yaml")):
-            return None
-        if not self._has_unpushed_commits(target_path):
-            return None
-
-        # Scope per-file hooks to the diff being pushed; always_run guardrail
-        # gates still run fully. Falls back to --all-files if the diff is empty.
-        changed = self._unpushed_changed_files(target_path)
-        scope = f"{len(changed)} changed file(s)" if changed else "all files"
-        logger.info("Running pre-push (HEAVY) gate over %s", scope)
         try:
-            result = run_gate_stage(
-                target_path,
-                "heavy",
-                files=changed or None,
-                trigger="pre-push",
-                colocated=True,
+            gate_path, has_precommit_config = self._push_gate_target(
+                target_path, pinned
             )
-        except Exception as e:  # pragma: no cover - tooling/env failure
-            logger.warning("Operation failed: error_type=%s", type(e).__name__)
+            if not has_precommit_config:
+                return None
+            if not self._has_unpushed_commits(target_path, pinned=pinned):
+                return None
+
+            # Scope per-file hooks to the diff being pushed; always_run guardrail
+            # gates still run fully. Falls back to --all-files if the diff is empty.
+            changed = self._unpushed_changed_files(target_path, pinned=pinned)
+            scope = f"{len(changed)} changed file(s)" if changed else "all files"
+            logger.info("Running pre-push (HEAVY) gate over %s", scope)
+            result = self._run_push_gate(gate_path, changed, pinned)
+        except OperationBoundaryError as exc:
+            return self._path_validation_result("push_project", target_path, exc)
+        except Exception as exc:  # pragma: no cover - tooling/env failure
+            logger.warning("Operation failed: error_type=%s", type(exc).__name__)
             return None
 
         if result.success:
             return None
         return self._pre_push_gate_refusal(result)
+
+    @staticmethod
+    def _push_gate_target(
+        target_path: str, pinned: PinnedDirectory | None
+    ) -> tuple[str, bool]:
+        """Return the gate path and config presence through the active boundary."""
+        if pinned is not None:
+            pinned.assert_operation_identity()
+            return pinned.proc_path, read_at(
+                pinned.fd, ".pre-commit-config.yaml"
+            ) is not None
+        return target_path, os.path.exists(
+            os.path.join(target_path, ".pre-commit-config.yaml")
+        )
+
+    def _run_push_gate(
+        self,
+        gate_path: str,
+        changed: list[str],
+        pinned: PinnedDirectory | None,
+    ) -> Any:
+        """Run the heavy gate and retain its descriptor boundary."""
+        result = run_gate_stage(
+            gate_path,
+            "heavy",
+            files=changed or None,
+            trigger="pre-push",
+            colocated=True,
+        )
+        if pinned is not None:
+            pinned.assert_operation_identity()
+        return result
 
     @staticmethod
     def _dirty_push_refusal(target_path: str) -> GitResult:
@@ -3273,7 +4201,9 @@ class Git:
             error_text += " " + result.data
         return error_text
 
-    def _push_release_tag(self, target_path: str) -> None:
+    def _push_release_tag(
+        self, target_path: str, *, pinned: PinnedDirectory | None = None
+    ) -> None:
         """Push the CURRENT release tag explicitly after a successful branch push.
 
         ``--follow-tags`` only pushes ANNOTATED tags. bump2version can emit
@@ -3285,16 +4215,24 @@ class Git:
         for old versions).
         (CONCEPT:RM-BUMP tag-publish correctness)
         """
-        rel_tag = self._current_release_tag(target_path)
+        rel_tag = self._current_release_tag(target_path, pinned=pinned)
         if not rel_tag:
             return
         tag_res = self.git_action(
-            command=f"git push origin {rel_tag}", path=target_path
+            command=f"git push origin {rel_tag}",
+            path=target_path,
+            **self._pinned_git_kwargs(pinned),
         )
         if tag_res.status != "success":
             logger.warning("Branch pushed but the release-tag push failed")
 
-    def _handle_push_failure(self, target_path: str, result: GitResult) -> GitResult:
+    def _handle_push_failure(
+        self,
+        target_path: str,
+        result: GitResult,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> GitResult:
         """Translate a failed ``git push`` into an actionable result."""
         error_text = self._push_error_text(result)
 
@@ -3315,13 +4253,56 @@ class Git:
         # Tag already exists on remote — retry without tags
         if "tag already exists" in error_text:
             logger.warning("Tag conflict detected; retrying without follow-tags")
-            return self.git_action(command="git push origin main", path=target_path)
+            return self.git_action(
+                command="git push origin main",
+                path=target_path,
+                **self._pinned_git_kwargs(pinned),
+            )
 
         # Unknown error — return as-is
         return result
 
+    def _push_project_with_handle(
+        self, target_path: str, pinned: PinnedDirectory
+    ) -> GitResult:
+        """Run one push while retaining its descriptor-pinned checkout."""
+        pinned.assert_path_identity()
+        git_kwargs = self._pinned_git_kwargs(pinned)
+        logger.info("Checking configured project for uncommitted changes")
+
+        status_check = self.git_action(
+            command="git status --porcelain",
+            path=target_path,
+            quiet=True,
+            **git_kwargs,
+        )
+        if status_check.status == "success" and status_check.data.strip():
+            logger.warning("Push refused because the configured project is dirty")
+            return self._dirty_push_refusal(target_path)
+
+        gate = self._gate_before_push(target_path, pinned=pinned)
+        if gate is not None:
+            return gate
+
+        logger.info("Pushing latest changes and tags for configured project")
+        pinned.assert_path_identity()
+        result = self.git_action(
+            command="git push --follow-tags origin",
+            path=target_path,
+            **git_kwargs,
+        )
+        if result.status == "success":
+            self._push_release_tag(target_path, pinned=pinned)
+            return result
+        return self._handle_push_failure(target_path, result, pinned=pinned)
+
     @_exclusive_repo_mutation
-    def push_project(self, path: str | None = None) -> GitResult:
+    def push_project(
+        self,
+        path: str | None = None,
+        *,
+        _pinned: PinnedDirectory | None = None,
+    ) -> GitResult:
         """
         Push committed updates and tags for a single clean Git project.
 
@@ -3331,33 +4312,20 @@ class Git:
         - Tag conflicts: falls back to pushing without --follow-tags
         """
         target_path = self._validated_operation_path(path, operation="push_project")
-        logger.info("Checking configured project for uncommitted changes")
-
-        status_check = self.git_action(
-            command="git status --porcelain", path=target_path, quiet=True
-        )
-        if status_check.status == "success" and status_check.data.strip():
-            logger.warning("Push refused because the configured project is dirty")
-            return self._dirty_push_refusal(target_path)
-
-        # Fast pre-push gate: run the repo's own pre-commit gates (minus the
-        # slow full pytest suite) so a push can't ship a commit the repo's CI
-        # would reject. Aborts this repo's push on a real gate failure.
-        gate = self._gate_before_push(target_path)
-        if gate is not None:
-            return gate
-
-        logger.info("Pushing latest changes and tags for configured project")
-
-        max_attempts = 1
-        for _attempt in range(1, max_attempts + 1):
-            result = self.git_action(command="git push --follow-tags", path=target_path)
-            if result.status == "success":
-                self._push_release_tag(target_path)
-                return result
-            return self._handle_push_failure(target_path, result)
-
-        return result
+        try:
+            if _pinned is not None:
+                _pinned.assert_path_identity()
+                if Path(target_path) != _pinned.path:
+                    raise OperationBoundaryError(
+                        "pinned push target does not match the requested path"
+                    )
+                return self._push_project_with_handle(target_path, _pinned)
+            with open_directory(self._workspace_root()) as root:
+                root.assert_root_identity()
+                with pin_existing(root, target_path) as pinned:
+                    return self._push_project_with_handle(target_path, pinned)
+        except OperationBoundaryError as exc:
+            return self._path_validation_result("push_project", target_path, exc)
 
     def add_projects(self, project_dirs: list[str] | None = None) -> list[GitResult]:
         """
@@ -3383,16 +4351,57 @@ class Git:
             return list(executor.map(self.add_project, project_dirs))
 
     @_exclusive_repo_mutation
-    def add_project(self, path: str | None = None) -> GitResult:
+    def add_project(
+        self,
+        path: str | None = None,
+        *,
+        _pinned: PinnedDirectory | None = None,
+    ) -> GitResult:
         """
         Stage all changes (git add -A) for a single Git project.
         """
         target_path = self._validated_operation_path(path, operation="add_project")
+        return self._add_project_operation(target_path, _pinned)
+
+    def _add_project_operation(
+        self, target_path: str, pinned: PinnedDirectory | None
+    ) -> GitResult:
+        """Stage one project after validating an optional pinned handle."""
+        try:
+            self._assert_optional_pinned_target(
+                target_path, pinned, operation="add_project"
+            )
+        except OperationBoundaryError as exc:
+            return self._path_validation_result("add_project", target_path, exc)
         logger.info("Staging all changes for configured project")
-        return self.git_action(command="git add -A", path=target_path)
+        return self.git_action(
+            command="git add -A",
+            path=target_path,
+            **self._pinned_git_kwargs(pinned),
+        )
+
+    @staticmethod
+    def _assert_optional_pinned_target(
+        target_path: str,
+        pinned: PinnedDirectory | None,
+        *,
+        operation: str,
+    ) -> None:
+        """Ensure an optional handle still denotes the requested operation path."""
+        if pinned is None:
+            return
+        pinned.assert_path_identity()
+        if Path(target_path) != pinned.path:
+            raise OperationBoundaryError(
+                f"pinned {operation} target does not match the requested path"
+            )
 
     def commit_projects(
-        self, message: str, project_dirs: list[str] | None = None
+        self,
+        message: str,
+        project_dirs: list[str] | None = None,
+        *,
+        _pinned_targets: dict[str, PinnedDirectory] | None = None,
     ) -> list[GitResult]:
         """
         Commit staged changes for multiple projects in parallel.
@@ -3413,21 +4422,45 @@ class Git:
         )
         from functools import partial
 
-        commit_func = partial(self.commit_project, message)
+        commit_func: Callable[[str], GitResult] = partial(
+            self._commit_project_dispatch,
+            message,
+            pinned_targets=_pinned_targets,
+        )
+
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.threads
         ) as executor:
             return list(executor.map(commit_func, project_dirs))
 
-    @_exclusive_repo_mutation
-    def commit_project(self, message: str, path: str | None = None) -> GitResult:
-        """
-        Commit staged changes (git commit -m "{message}") for a single Git project.
-        """
-        target_path = self._validated_operation_path(path, operation="commit_project")
+    def _commit_project_dispatch(
+        self,
+        message: str,
+        project_path: str,
+        *,
+        pinned_targets: dict[str, PinnedDirectory] | None,
+    ) -> GitResult:
+        """Commit one path using its frozen handle when a release owns it."""
+        pinned = (
+            pinned_targets.get(project_path) if pinned_targets is not None else None
+        )
+        return self.commit_project(message, project_path, _pinned=pinned)
+
+    def _commit_project_with_handle(
+        self,
+        message: str,
+        target_path: str,
+        pinned: PinnedDirectory,
+    ) -> GitResult:
+        """Commit staged changes while retaining the pinned checkout."""
+        pinned.assert_path_identity()
 
         # Check if there are staged changes to commit
-        status_res = self.git_action(command="git status --porcelain", path=target_path)
+        status_res = self.git_action(
+            command="git status --porcelain",
+            path=target_path,
+            **self._pinned_git_kwargs(pinned),
+        )
         if status_res.status == "success":
             # Check porcelain output for staged changes
             has_staged = False
@@ -3457,7 +4490,86 @@ class Git:
         from shlex import quote
 
         safe_msg = quote(message)
-        return self.git_action(command=f"git commit -m {safe_msg}", path=target_path)
+        pinned.assert_path_identity()
+        return self.git_action(
+            command=f"git commit -m {safe_msg}",
+            path=target_path,
+            **self._pinned_git_kwargs(pinned),
+        )
+
+    def _commit_project_unpinned(self, message: str, target_path: str) -> GitResult:
+        """Preserve the legacy missing-directory seam for mocked transports.
+
+        The real ``git_action`` still performs its own no-follow descriptor
+        admission.  This fallback exists only when the target cannot be pinned
+        (for example a unit-test transport that does not materialize clones),
+        so it does not create a new filesystem mutation path.
+        """
+        status_res = self.git_action(
+            command="git status --porcelain",
+            path=target_path,
+        )
+        if status_res.status == "success":
+            has_staged = any(
+                line and not line.startswith("?") and line[0] not in (" ", "?")
+                for line in status_res.data.splitlines()
+            )
+            if not has_staged:
+                metadata = GitMetadata(
+                    command="git commit",
+                    workspace=_project_label(target_path),
+                    return_code=0,
+                    timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+                )
+                return GitResult(
+                    status="success",
+                    data="No staged changes to commit (skipped)",
+                    error=None,
+                    metadata=metadata,
+                )
+        from shlex import quote
+
+        return self.git_action(
+            command=f"git commit -m {quote(message)}",
+            path=target_path,
+        )
+
+    @_exclusive_repo_mutation
+    def commit_project(
+        self,
+        message: str,
+        path: str | None = None,
+        *,
+        _pinned: PinnedDirectory | None = None,
+    ) -> GitResult:
+        """
+        Commit staged changes (git commit -m "{message}") for a single Git project.
+        """
+        target_path = self._validated_operation_path(path, operation="commit_project")
+        try:
+            if _pinned is not None:
+                _pinned.assert_path_identity()
+                if Path(target_path) != _pinned.path:
+                    raise OperationBoundaryError(
+                        "pinned commit target does not match the requested path"
+                    )
+                return self._commit_project_with_handle(
+                    message,
+                    target_path,
+                    _pinned,
+                )
+            with open_directory(self._workspace_root()) as root:
+                root.assert_root_identity()
+                with pin_existing(root, target_path) as pinned:
+                    return self._commit_project_with_handle(
+                        message,
+                        target_path,
+                        pinned,
+                    )
+        except OperationBoundaryError as exc:
+            if not Path(target_path).is_dir():
+                return self._commit_project_unpinned(message, target_path)
+            return self._path_validation_result("commit_project", target_path, exc)
 
     @staticmethod
     def _commit_code_skip(target_path: str, reason: str) -> GitResult:
@@ -3662,7 +4774,13 @@ class Git:
         )
         return env
 
-    def _run_precommit_autoupdate(self, target_path: str, env: dict) -> GitResult:
+    def _run_precommit_autoupdate(
+        self,
+        target_path: str,
+        env: dict,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> GitResult:
         """``pre-commit autoupdate``, then stage whatever it rewrote.
 
         Returns the first error encountered, or the autoupdate result itself.
@@ -3672,16 +4790,25 @@ class Git:
             path=target_path,
             env=env,
             timeout=600,
+            **self._pinned_git_kwargs(pinned),
         )
         if result.status == "error":
             return result
-        staged = self.git_action(command="git add -A", path=target_path)
+        staged = self.git_action(
+            command="git add -A",
+            path=target_path,
+            **self._pinned_git_kwargs(pinned),
+        )
         if staged.status == "error":
             return staged
         return result
 
     def _run_precommit_hooks(
-        self, target_path: str, env: dict
+        self,
+        target_path: str,
+        env: dict,
+        *,
+        pinned: PinnedDirectory | None = None,
     ) -> tuple[GitResult, bool]:
         """Stage, run the FAST-tier hooks, and retry once after reformatting.
 
@@ -3689,7 +4816,11 @@ class Git:
         which the caller must surface verbatim without the branch-lock
         post-processing that applies to hook results.
         """
-        staged = self.git_action(command="git add -A", path=target_path)
+        staged = self.git_action(
+            command="git add -A",
+            path=target_path,
+            **self._pinned_git_kwargs(pinned),
+        )
         if staged.status == "error":
             return staged, True
 
@@ -3700,19 +4831,35 @@ class Git:
         hook_stage = HOOK_STAGE_BY_GATE_STAGE["fast"]
         hook_command = f"pre-commit run --hook-stage {hook_stage} --all-files --verbose"
         result = self.git_action(
-            command=hook_command, path=target_path, env=env, timeout=600
+            command=hook_command,
+            path=target_path,
+            env=env,
+            timeout=600,
+            **self._pinned_git_kwargs(pinned),
         )
         if result.status == "error":
             # Hooks may have reformatted files. Stage those bounded changes
             # and run once more, without a shell retry expression.
-            restaged = self.git_action(command="git add -A", path=target_path)
+            restaged = self.git_action(
+                command="git add -A",
+                path=target_path,
+                **self._pinned_git_kwargs(pinned),
+            )
             if restaged.status == "error":
                 return restaged, True
             result = self.git_action(
-                command=hook_command, path=target_path, env=env, timeout=600
+                command=hook_command,
+                path=target_path,
+                env=env,
+                timeout=600,
+                **self._pinned_git_kwargs(pinned),
             )
 
-        self.git_action(command="git add -A", path=target_path)
+        self.git_action(
+            command="git add -A",
+            path=target_path,
+            **self._pinned_git_kwargs(pinned),
+        )
         return result, False
 
     @staticmethod
@@ -3738,27 +4885,25 @@ class Git:
             metadata=result.metadata,
         )
 
-    @_exclusive_repo_mutation
-    def pre_commit(
+    def _pre_commit_with_handle(
         self,
-        run: bool = True,
-        autoupdate: bool = False,
-        path: str | None = None,
+        *,
+        target_path: str,
+        run: bool,
+        autoupdate: bool,
+        pinned: PinnedDirectory,
     ) -> GitResult:
-        """
-        Execute pre-commit commands in the specified path.
+        """Run pre-commit while retaining the descriptor-pinned checkout."""
+        pinned.assert_operation_identity()
 
-        Args:
-            run (bool): Whether to run 'pre-commit run --all-files'. Default True.
-            autoupdate (bool): Whether to run 'pre-commit autoupdate'. Default False.
-            path (str, optional): Path to run in. Defaults to self.path.
-        """
-        target_path = self._validated_operation_path(path, operation="pre_commit")
+        # Cleanup is a mutation too.  The proc-fd path remains anchored even
+        # if a lexical workspace component is swapped while the walk runs.
+        self.cleanup_artifacts(pinned.proc_path)
 
-        # Clean artifacts before running pre-commit
-        self.cleanup_artifacts(target_path)
-
-        if not os.path.exists(os.path.join(target_path, ".pre-commit-config.yaml")):
+        # ``read_at`` refuses a symlinked pre-commit configuration; allowing
+        # one would let the hook runner execute an external file after the
+        # target was admitted.
+        if read_at(pinned.fd, ".pre-commit-config.yaml") is None:
             return self._precommit_skipped(
                 target_path, "No .pre-commit-config.yaml found."
             )
@@ -3772,18 +4917,29 @@ class Git:
 
         result: GitResult | None = None
         if autoupdate:
-            result = self._run_precommit_autoupdate(target_path, env)
+            pinned.assert_operation_identity()
+            result = self._run_precommit_autoupdate(
+                target_path,
+                env,
+                pinned=pinned,
+            )
             if result.status == "error":
                 return result
 
         if run:
-            result, is_final = self._run_precommit_hooks(target_path, env)
+            pinned.assert_operation_identity()
+            result, is_final = self._run_precommit_hooks(
+                target_path,
+                env,
+                pinned=pinned,
+            )
             if is_final:
                 return result
 
         if result is None:
             raise RuntimeError("pre-commit operation produced no result")
 
+        pinned.assert_path_identity()
         if self._is_branch_lock_only_failure(result):
             logger.info(
                 f"Ignoring safe pre-commit failure (branch lock) in {target_path}"
@@ -3791,6 +4947,50 @@ class Git:
             return self._branch_lock_success(result)
 
         return result
+
+    @_exclusive_repo_mutation
+    def pre_commit(
+        self,
+        run: bool = True,
+        autoupdate: bool = False,
+        path: str | None = None,
+        *,
+        _pinned: PinnedDirectory | None = None,
+    ) -> GitResult:
+        """
+        Execute pre-commit commands in the specified path.
+
+        Args:
+            run (bool): Whether to run 'pre-commit run --all-files'. Default True.
+            autoupdate (bool): Whether to run 'pre-commit autoupdate'. Default False.
+            path (str, optional): Path to run in. Defaults to self.path.
+        """
+        target_path = self._validated_operation_path(path, operation="pre_commit")
+        try:
+            if _pinned is not None:
+                _pinned.assert_path_identity()
+                if Path(target_path) != _pinned.path:
+                    raise OperationBoundaryError(
+                        "pinned pre-commit target does not match the requested path"
+                    )
+                return self._pre_commit_with_handle(
+                    target_path=target_path,
+                    run=run,
+                    autoupdate=autoupdate,
+                    pinned=_pinned,
+                )
+
+            with open_directory(self._workspace_root()) as root:
+                root.assert_root_identity()
+                with pin_existing(root, target_path) as pinned:
+                    return self._pre_commit_with_handle(
+                        target_path=target_path,
+                        run=run,
+                        autoupdate=autoupdate,
+                        pinned=pinned,
+                    )
+        except OperationBoundaryError as exc:
+            return self._path_validation_result("pre_commit", target_path, exc)
 
     def _run_project_test(
         self, cmd: str, path: str, env: dict, timeout: int
@@ -4018,19 +5218,49 @@ class Git:
         ]
 
     def _run_precommit_pool(
-        self, project_dirs: list[str], run: bool, autoupdate: bool
+        self,
+        project_dirs: list[str],
+        run: bool,
+        autoupdate: bool,
+        *,
+        pinned_targets: dict[str, PinnedDirectory] | None = None,
     ) -> list[GitResult]:
         """Run pre-commit across *project_dirs* in parallel."""
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.threads
         ) as executor:
             futures = {
-                executor.submit(self.pre_commit, run, autoupdate, d): d
+                self._submit_precommit_future(
+                    executor,
+                    run,
+                    autoupdate,
+                    d,
+                    pinned_targets,
+                ): d
                 for d in project_dirs
             }
             return [
                 future.result() for future in concurrent.futures.as_completed(futures)
             ]
+
+    def _submit_precommit_future(
+        self,
+        executor: concurrent.futures.ThreadPoolExecutor,
+        run: bool,
+        autoupdate: bool,
+        project_dir: str,
+        pinned_targets: dict[str, PinnedDirectory] | None,
+    ) -> "concurrent.futures.Future":
+        """Submit one pre-commit run with its optional pinned target."""
+        if pinned_targets is None:
+            return executor.submit(self.pre_commit, run, autoupdate, project_dir)
+        return executor.submit(
+            self.pre_commit,
+            run,
+            autoupdate,
+            project_dir,
+            _pinned=pinned_targets[project_dir],
+        )
 
     def _precommit_projects_error(self, exc: Exception) -> GitResult:
         """The failure record for a parallel pre-commit sweep that blew up."""
@@ -4054,6 +5284,8 @@ class Git:
         run: bool = True,
         autoupdate: bool = False,
         projects: list[str] | None = None,
+        *,
+        _pinned_targets: dict[str, PinnedDirectory] | None = None,
     ) -> list[GitResult]:
         """
         Execute pre-commit commands for all projects in parallel.
@@ -4070,7 +5302,12 @@ class Git:
             if not project_dirs:
                 return []
 
-            return self._run_precommit_pool(project_dirs, run, autoupdate)
+            return self._run_precommit_pool(
+                project_dirs,
+                run,
+                autoupdate,
+                pinned_targets=_pinned_targets,
+            )
 
         except Exception as e:
             logger.error("Parallel pre-commit failed: error_type=%s", type(e).__name__)
@@ -4180,7 +5417,12 @@ class Git:
                 ),
             )
 
-    def _bump_skip_reason(self, project_dir: str) -> str | None:
+    def _bump_skip_reason(
+        self,
+        project_dir: str,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> str | None:
         """Why a bump should be skipped for this repo, or ``None`` if it needs one.
 
         Returns a human-readable reason when no (further) bump is warranted:
@@ -4197,7 +5439,11 @@ class Git:
         fix narrows the skip to genuine no-ops, it does not suppress real bumps.
         (CONCEPT:RM-BUMP idempotency)
         """
-        status_check = self.git_action("git status", path=project_dir)
+        status_check = self.git_action(
+            "git status",
+            path=project_dir,
+            **self._pinned_git_kwargs(pinned),
+        )
         data_lower = status_check.data.lower() if status_check.data else ""
         clean = "nothing to commit" in data_lower
         up_to_date = "your branch is up to date" in data_lower
@@ -4205,14 +5451,22 @@ class Git:
             return "no code changes detected (use force=True to override)"
         if clean and not up_to_date:
             head_subj = self.git_action(
-                "git log -1 --pretty=%s", path=project_dir, quiet=True
+                "git log -1 --pretty=%s",
+                path=project_dir,
+                quiet=True,
+                **self._pinned_git_kwargs(pinned),
             )
             subject = (head_subj.data or "").strip().lower()
             if subject.startswith("bump version:"):
                 return "already bumped, awaiting push (avoids double-bump)"
         return None
 
-    def _repo_has_pending_work(self, project_dir: str) -> bool:
+    def _repo_has_pending_work(
+        self,
+        project_dir: str,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> bool:
         """True when a repo has anything to bump or push.
 
         A repo that is both clean and in sync with origin has no uncommitted
@@ -4221,7 +5475,12 @@ class Git:
         no-op test :meth:`_bump_skip_reason` uses; anything else (dirty tree,
         ahead of origin) is treated as pending work.
         """
-        status_check = self.git_action("git status", path=project_dir, quiet=True)
+        status_check = self.git_action(
+            "git status",
+            path=project_dir,
+            quiet=True,
+            **self._pinned_git_kwargs(pinned),
+        )
         data_lower = status_check.data.lower() if status_check.data else ""
         clean = "nothing to commit" in data_lower
         up_to_date = "your branch is up to date" in data_lower
@@ -4260,13 +5519,92 @@ class Git:
 
     def _phase_target_has_pending_work(self, name: str, path: str) -> bool:
         """Check one canonical target for work without widening its scope."""
-        _, validated_path = self._revalidate_release_target(
-            name,
-            path,
-            operation="auto-start",
-        )
-        return os.path.isdir(validated_path) and self._repo_has_pending_work(
-            validated_path
+        return self._phase_target_pending_probe(name, path)
+
+    def _phase_target_pending_probe(self, name: str, path: str) -> bool:
+        """Run the descriptor-pinned pending-work probe for one target."""
+        try:
+            _, validated_path = self._revalidate_release_target(
+                name,
+                path,
+                operation="auto-start",
+            )
+            with open_directory(self._workspace_root()) as root:
+                root.assert_root_identity()
+                with pin_existing(root, validated_path) as pinned:
+                    pinned.assert_path_identity()
+                    pending_method = self._repo_has_pending_work
+                    pending = self._pending_work_probe(
+                        pending_method, validated_path, pinned
+                    )
+                    pinned.assert_path_identity()
+                    return pending
+        except (OperationBoundaryError, ValueError) as exc:
+            logger.warning(
+                "Auto-start refused unsafe target %s: %s",
+                name,
+                type(exc).__name__,
+            )
+            return False
+
+    @staticmethod
+    def _pending_work_probe(
+        pending_method: Callable[..., bool],
+        validated_path: str,
+        pinned: PinnedDirectory,
+    ) -> bool:
+        """Invoke an injected pending-work probe while preserving pin support."""
+        if "pinned" in inspect.signature(pending_method).parameters:
+            return pending_method(validated_path, pinned=pinned)
+        # Keep the small private seam compatible with callers that inject a
+        # read-only pending-work probe; the real implementation remains pinned.
+        return pending_method(validated_path)
+
+    def _bump_version_with_handle(
+        self,
+        *,
+        target_dir: str,
+        part: str,
+        allow_dirty: bool,
+        dry_run: bool,
+        verbose: bool,
+        force: bool,
+        pinned: PinnedDirectory,
+    ) -> GitResult:
+        """Run one version bump while retaining its pinned checkout handle."""
+        pinned.assert_path_identity()
+        validation_error = self._bump_version_validate_target(target_dir, part)
+        if validation_error is not None:
+            return validation_error
+
+        if not self._project_has_bumpversion_config(target_dir, pinned=pinned):
+            return self._bump_version_fallback(
+                target_dir,
+                dry_run,
+                pinned=pinned,
+            )
+
+        command = self._build_bump2version_command(part, allow_dirty, dry_run, verbose)
+
+        if not dry_run:
+            preflight_result = self._bump_version_preflight_tag_check(
+                target_dir,
+                part,
+                allow_dirty,
+                force,
+                pinned=pinned,
+            )
+            if preflight_result is not None:
+                return preflight_result
+            command += " --list"
+
+        pinned.assert_path_identity()
+        return self._run_bump2version(
+            command,
+            target_dir,
+            part,
+            dry_run,
+            pinned=pinned,
         )
 
     @_exclusive_repo_mutation
@@ -4278,6 +5616,8 @@ class Git:
         dry_run: bool = False,
         verbose: bool = False,
         force: bool = False,
+        *,
+        _pinned: PinnedDirectory | None = None,
     ) -> GitResult:
         """
         Bump the version of the project using bump2version.
@@ -4297,25 +5637,37 @@ class Git:
             GitResult: Result of the operation.
         """
         target_dir = self._validated_operation_path(path, operation="bump_version")
+        try:
+            if _pinned is not None:
+                _pinned.assert_path_identity()
+                if Path(target_dir) != _pinned.path:
+                    raise OperationBoundaryError(
+                        "pinned bump target does not match the requested path"
+                    )
+                return self._bump_version_with_handle(
+                    target_dir=target_dir,
+                    part=part,
+                    allow_dirty=allow_dirty,
+                    dry_run=dry_run,
+                    verbose=verbose,
+                    force=force,
+                    pinned=_pinned,
+                )
 
-        validation_error = self._bump_version_validate_target(target_dir, part)
-        if validation_error is not None:
-            return validation_error
-
-        if not self._project_has_bumpversion_config(target_dir):
-            return self._bump_version_fallback(target_dir, dry_run)
-
-        command = self._build_bump2version_command(part, allow_dirty, dry_run, verbose)
-
-        if not dry_run:
-            preflight_result = self._bump_version_preflight_tag_check(
-                target_dir, part, allow_dirty, force
-            )
-            if preflight_result is not None:
-                return preflight_result
-            command += " --list"
-
-        return self._run_bump2version(command, target_dir, part, dry_run)
+            with open_directory(self._workspace_root()) as root:
+                root.assert_root_identity()
+                with pin_existing(root, target_dir) as pinned:
+                    return self._bump_version_with_handle(
+                        target_dir=target_dir,
+                        part=part,
+                        allow_dirty=allow_dirty,
+                        dry_run=dry_run,
+                        verbose=verbose,
+                        force=force,
+                        pinned=pinned,
+                    )
+        except OperationBoundaryError as exc:
+            return self._path_validation_result("bump_version", target_dir, exc)
 
     def _bump_version_validate_target(
         self, target_dir: str, part: str
@@ -4356,25 +5708,57 @@ class Git:
             )
         return None
 
-    def _project_has_bumpversion_config(self, target_dir: str) -> bool:
+    def _project_has_bumpversion_config(
+        self,
+        target_dir: str,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> bool:
         """Whether *target_dir* declares a bump2version configuration
         (``.bumpversion.cfg``, or a ``[bumpversion]`` section in
         ``setup.cfg``)."""
-        has_cfg = os.path.exists(os.path.join(target_dir, ".bumpversion.cfg"))
-        if not has_cfg and os.path.exists(os.path.join(target_dir, "setup.cfg")):
-            try:
-                with open(os.path.join(target_dir, "setup.cfg"), encoding="utf-8") as f:
-                    if "[bumpversion]" in f.read():
-                        has_cfg = True
-            except Exception as e:
-                logger.debug("Operation failed: error_type=%s", type(e).__name__)
-        return has_cfg
+        reader = self._bumpversion_config_reader(target_dir, pinned)
+        cfg = reader(".bumpversion.cfg")
+        if cfg is not None:
+            return True
+        setup = reader("setup.cfg")
+        if setup is None:
+            return False
+        try:
+            return b"[bumpversion]" in setup
+        except TypeError:
+            return False
 
-    def _bump_version_fallback(self, target_dir: str, dry_run: bool) -> GitResult:
+    @staticmethod
+    def _bumpversion_config_reader(
+        target_dir: str, pinned: PinnedDirectory | None
+    ) -> Callable[[str], bytes | None]:
+        """Return a descriptor-relative or lexical config reader."""
+        if pinned is not None:
+            return lambda name: read_at(pinned.fd, name)
+
+        def read_config(name: str) -> bytes | None:
+            config_path = Path(target_dir) / name
+            if not config_path.exists() or not config_path.is_file():
+                return None
+            return config_path.read_bytes()
+
+        return read_config
+
+    def _bump_version_fallback(
+        self,
+        target_dir: str,
+        dry_run: bool,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> GitResult:
         """Fallback behavior for a project with no bump2version config: stage
         all changes and commit them as "phased bump"."""
         status_check = self.git_action(
-            command="git status --porcelain", path=target_dir, quiet=True
+            command="git status --porcelain",
+            path=target_dir,
+            quiet=True,
+            **self._pinned_git_kwargs(pinned),
         )
         if status_check.status != "success":
             return status_check
@@ -4408,13 +5792,19 @@ class Git:
                 ),
             )
 
-        add_res = self.git_action(command="git add -u", path=target_dir)
+        add_res = self.git_action(
+            command="git add -u",
+            path=target_dir,
+            **self._pinned_git_kwargs(pinned),
+        )
         if add_res.status != "success":
             logger.error("Failed to add changes for configured project")
             return add_res
 
         commit_res = self.git_action(
-            command='git commit -m "phased bump"', path=target_dir
+            command='git commit -m "phased bump"',
+            path=target_dir,
+            **self._pinned_git_kwargs(pinned),
         )
         if commit_res.status != "success":
             logger.error("Failed to commit fallback changes")
@@ -4447,7 +5837,13 @@ class Git:
         return command
 
     def _bump_version_preflight_tag_check(
-        self, target_dir: str, part: str, allow_dirty: bool, force: bool
+        self,
+        target_dir: str,
+        part: str,
+        allow_dirty: bool,
+        force: bool,
+        *,
+        pinned: PinnedDirectory | None = None,
     ) -> GitResult | None:
         """Pre-flight check for an existing tag on the version bump2version
         would produce. Returns a GitResult to short-circuit `bump_version`
@@ -4457,7 +5853,12 @@ class Git:
         pre_cmd = f"bump2version {part} --dry-run --list"
         if allow_dirty:
             pre_cmd += " --allow-dirty"
-        pre_result = self.git_action(command=pre_cmd, path=target_dir, quiet=True)
+        pre_result = self.git_action(
+            command=pre_cmd,
+            path=target_dir,
+            quiet=True,
+            **self._pinned_git_kwargs(pinned),
+        )
         if pre_result.status != "success":
             return None
 
@@ -4470,11 +5871,16 @@ class Git:
             command=f"git tag -l v{new_version}",
             path=target_dir,
             quiet=True,
+            **self._pinned_git_kwargs(pinned),
         )
         if not (tag_check.status == "success" and f"v{new_version}" in tag_check.data):
             return None
 
-        if force and not self._tag_on_remote(f"v{new_version}", target_dir):
+        if force and not self._tag_on_remote(
+            f"v{new_version}",
+            target_dir,
+            pinned=pinned,
+        ):
             # Orphan local tag from a prior partial bump (version
             # file never updated). Delete it locally and re-bump so
             # the version actually advances. Never touch a remote
@@ -4490,6 +5896,7 @@ class Git:
                 command=f"git tag -d v{new_version}",
                 path=target_dir,
                 quiet=True,
+                **self._pinned_git_kwargs(pinned),
             )
             return None
 
@@ -4509,20 +5916,51 @@ class Git:
         )
 
     def _run_bump2version(
-        self, command: str, target_dir: str, part: str, dry_run: bool
+        self,
+        command: str,
+        target_dir: str,
+        part: str,
+        dry_run: bool,
+        *,
+        pinned: PinnedDirectory | None = None,
     ) -> GitResult:
+        return self._run_bump2version_operation(
+            command, target_dir, part, dry_run, pinned
+        )
+
+    def _run_bump2version_operation(
+        self,
+        command: str,
+        target_dir: str,
+        part: str,
+        dry_run: bool,
+        pinned: PinnedDirectory | None,
+    ) -> GitResult:
+        """Run bump2version and translate ordinary failures to a result."""
         try:
-            result = self.git_action(command=command, path=target_dir)
+            result = self._run_bump2version_command(command, target_dir, pinned)
 
             if result.status == "success":
                 logger.info("Bumped configured project version: part=%s", part)
 
                 if not dry_run:
-                    self._finalize_successful_bump(target_dir, result)
+                    # bump2version commits and advances HEAD as part of its
+                    # successful command.  The immutable plan was checked
+                    # immediately before that mutation; subsequent cleanup
+                    # commands remain descriptor-pinned but must not compare
+                    # their now-intended HEAD against the pre-bump snapshot.
+                    self._clear_bump_boundary(pinned)
+                    self._finalize_successful_bump(
+                        target_dir,
+                        result,
+                        pinned=pinned,
+                    )
             else:
                 logger.error("Failed to bump configured project version")
 
             return result
+        except OperationBoundaryError:
+            raise
         except Exception as e:
             logger.error("Operation failed: error_type=%s", type(e).__name__)
             return GitResult(
@@ -4537,7 +5975,34 @@ class Git:
                 ),
             )
 
-    def _finalize_successful_bump(self, target_dir: str, result: GitResult) -> None:
+    def _run_bump2version_command(
+        self,
+        command: str,
+        target_dir: str,
+        pinned: PinnedDirectory | None,
+    ) -> GitResult:
+        """Run bump2version after checking the retained checkout boundary."""
+        if pinned is not None:
+            pinned.assert_path_identity()
+        return self.git_action(
+            command=command,
+            path=target_dir,
+            **self._pinned_git_kwargs(pinned),
+        )
+
+    @staticmethod
+    def _clear_bump_boundary(pinned: PinnedDirectory | None) -> None:
+        """Allow post-bump cleanup after bump2version intentionally advances HEAD."""
+        if pinned is not None:
+            pinned.clear_boundary_assertion()
+
+    def _finalize_successful_bump(
+        self,
+        target_dir: str,
+        result: GitResult,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> None:
         """Post-success sequence for a real bump2version run: sync uv.lock,
         stage everything, and -- IF there is anything staged -- fold it into
         the bump commit (``commit --amend``) and re-point the tag. Step order
@@ -4546,16 +6011,26 @@ class Git:
         failure where bump2version stages everything and then fails to
         commit, leaving a half-applied bump with no tag)."""
         # Synchronize uv.lock after pyproject.toml version bump
-        uv_lock_path = os.path.join(target_dir, "uv.lock")
-        if os.path.exists(uv_lock_path):
-            self.git_action(command="uv lock", path=target_dir, quiet=True)
+        if self._has_uv_lock(target_dir, pinned):
+            self.git_action(
+                command="uv lock",
+                path=target_dir,
+                quiet=True,
+                **self._pinned_git_kwargs(pinned),
+            )
 
         # Stage all changes (staged and uncommitted/unstaged changes) in the workspace
-        self.git_action(command="git add -u", path=target_dir, quiet=True)
+        self.git_action(
+            command="git add -u",
+            path=target_dir,
+            quiet=True,
+            **self._pinned_git_kwargs(pinned),
+        )
         status_check = self.git_action(
             command="git status --porcelain",
             path=target_dir,
             quiet=True,
+            **self._pinned_git_kwargs(pinned),
         )
         if status_check.data.strip():
             # Commit all staged changes (including version bump, uv.lock, and other files) into the bump commit
@@ -4563,6 +6038,7 @@ class Git:
                 command="SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build git commit --amend --no-edit",
                 path=target_dir,
                 quiet=True,
+                **self._pinned_git_kwargs(pinned),
             )
 
             # Move the tag to point to the newly amended commit
@@ -4573,7 +6049,15 @@ class Git:
                     command=f"git tag -f v{new_version}",
                     path=target_dir,
                     quiet=True,
+                    **self._pinned_git_kwargs(pinned),
                 )
+
+    @staticmethod
+    def _has_uv_lock(target_dir: str, pinned: PinnedDirectory | None) -> bool:
+        """Check for uv.lock without following a mutable path when pinned."""
+        if pinned is not None:
+            return read_at(pinned.fd, "uv.lock") is not None
+        return os.path.exists(os.path.join(target_dir, "uv.lock"))
 
     def bulk_bump(
         self,
@@ -4604,7 +6088,15 @@ class Git:
         return results
 
     def update_dependency(
-        self, file_path: str, package_name: str, new_version: str, dry_run: bool = False
+        self,
+        file_path: str,
+        package_name: str,
+        new_version: str,
+        dry_run: bool = False,
+        *,
+        _directory_fd: int | None = None,
+        _file_name: str | None = None,
+        _boundary_assertion: Callable[[], None] | None = None,
     ) -> bool:
         """Update a package's pinned version in a deps file (pyproject OR requirements).
 
@@ -4622,10 +6114,10 @@ class Git:
         (CONCEPT:RM-BUMP cross-dependency propagation)
         """
         target_file = Path(self._resolve_path(file_path))
-        if not target_file.exists() or not target_file.is_file():
+        file_name = _file_name or target_file.name
+        content = self._read_dependency_content(target_file, _directory_fd, file_name)
+        if content is None:
             return False
-
-        content = target_file.read_text()
         pattern = (
             rf'(["\']?{re.escape(package_name)}(?:\[[^\]]*\])?\s*'
             r"(?:==|>=|<=|~=|!=|>|<)\s*)\d+\.\d+\.\d+"
@@ -4634,14 +6126,69 @@ class Git:
 
         new_content, count = re.subn(pattern, replacement, content)
         if count > 0:
-            if not dry_run:
-                target_file.write_text(new_content)
+            self._apply_dependency_update(
+                target_file,
+                _directory_fd,
+                file_name,
+                new_content,
+                dry_run=dry_run,
+                boundary_assertion=_boundary_assertion,
+            )
             logger.info(
                 f"{'[DRY RUN] Would update' if dry_run else 'Updated'} "
                 f"{package_name} -> {new_version} ({count}x) in {target_file}"
             )
             return True
         return False
+
+    def _apply_dependency_update(
+        self,
+        target_file: Path,
+        directory_fd: int | None,
+        file_name: str,
+        content: str,
+        *,
+        dry_run: bool,
+        boundary_assertion: Callable[[], None] | None,
+    ) -> None:
+        """Commit one dependency rewrite only after its active boundary check."""
+        if dry_run:
+            return
+        if boundary_assertion is not None:
+            boundary_assertion()
+        self._write_dependency_content(target_file, directory_fd, file_name, content)
+
+    @staticmethod
+    def _read_dependency_content(
+        target_file: Path, directory_fd: int | None, file_name: str
+    ) -> str | None:
+        """Read a dependency file through its pinned directory when available."""
+        if directory_fd is not None:
+            raw_content = read_at(directory_fd, file_name)
+            if raw_content is None:
+                return None
+            try:
+                return raw_content.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise OperationBoundaryError(
+                    f"dependency file {file_name!r} is not UTF-8"
+                ) from exc
+        if not target_file.exists() or not target_file.is_file():
+            return None
+        return target_file.read_text()
+
+    @staticmethod
+    def _write_dependency_content(
+        target_file: Path,
+        directory_fd: int | None,
+        file_name: str,
+        content: str,
+    ) -> None:
+        """Write a dependency file through its pinned directory when available."""
+        if directory_fd is not None:
+            write_at(directory_fd, file_name, content.encode())
+            return
+        target_file.write_text(content)
 
     @classmethod
     def _project_phase_index(cls, config: dict) -> tuple[dict[str, int], int]:
@@ -4732,6 +6279,9 @@ class Git:
         start_phase: int,
         single_phase: bool,
         targets: list[_ReleaseTarget] | None = None,
+        _secure: bool = False,
+        provenance: _ReleasePlanProvenance | None = None,
+        plan_assertion: Callable[[], None] | None = None,
     ) -> list[GitResult]:
         """Run pre-commit (with autoupdate) and commit the resulting formatting."""
         targets = self._resolve_bump_pre_commit_targets(
@@ -4741,20 +6291,100 @@ class Git:
             single_phase=single_phase,
             targets=targets,
         )
+        project_dirs = self._pre_commit_target_dirs(targets)
+        runner = {
+            False: self._run_legacy_bump_pre_commit_stage,
+            True: self._run_secure_bump_pre_commit_stage,
+        }[_secure]
+        return cast(Callable[..., list[GitResult]], runner)(
+            project_dirs=project_dirs,
+            targets=targets,
+            provenance=provenance,
+            plan_assertion=plan_assertion,
+        )
+
+    def _run_legacy_bump_pre_commit_stage(
+        self,
+        *,
+        project_dirs: list[str],
+        targets: list[_ReleaseTarget] | None,
+        provenance: _ReleasePlanProvenance | None,
+        plan_assertion: Callable[[], None] | None,
+    ) -> list[GitResult]:
+        """Run the compatibility pre-commit path without pinned handles."""
+        del targets, provenance, plan_assertion
         results = list(
             self.pre_commit_projects(
                 run=True,
                 autoupdate=True,
-                projects=self._pre_commit_target_dirs(targets),
+                projects=project_dirs,
             )
         )
         results.extend(
             self.commit_projects(
                 message="chore: pre-commit autoupdate and formatting",
-                project_dirs=self._pre_commit_target_dirs(targets),
+                project_dirs=project_dirs,
             )
         )
         return results
+
+    def _run_secure_bump_pre_commit_stage(
+        self,
+        *,
+        project_dirs: list[str],
+        targets: list[_ReleaseTarget] | None,
+        provenance: _ReleasePlanProvenance | None,
+        plan_assertion: Callable[[], None] | None,
+    ) -> list[GitResult]:
+        """Run pre-commit and commits while retaining exact target handles."""
+        secure_results: list[GitResult] = []
+        handles: list[PinnedDirectory] = []
+        try:
+            with open_directory(self._workspace_root()) as root:
+                root.assert_root_identity()
+                pinned_targets: dict[str, PinnedDirectory] = {}
+                names_by_path = {path: name for name, path in (targets or [])}
+                for project_dir in project_dirs:
+                    pinned = pin_existing(root, project_dir)
+                    pinned.assert_path_identity()
+                    if provenance is not None:
+                        project_name = names_by_path.get(project_dir)
+                        if project_name is None:
+                            raise OperationBoundaryError(
+                                "pre-commit target is not in the release plan"
+                            )
+                        self._bind_release_plan_target(
+                            provenance,
+                            project_name,
+                            project_dir,
+                            pinned,
+                            plan_assertion=plan_assertion,
+                        )
+                    handles.append(pinned)
+                    pinned_targets[project_dir] = pinned
+                secure_results.extend(
+                    self.pre_commit_projects(
+                        run=True,
+                        autoupdate=True,
+                        projects=project_dirs,
+                        _pinned_targets=pinned_targets,
+                    )
+                )
+                secure_results.extend(
+                    self.commit_projects(
+                        message="chore: pre-commit autoupdate and formatting",
+                        project_dirs=project_dirs,
+                        _pinned_targets=pinned_targets,
+                    )
+                )
+        except OperationBoundaryError as exc:
+            secure_results.append(
+                self._path_validation_result("pre_commit", self.path, exc)
+            )
+        finally:
+            for pinned in reversed(handles):
+                pinned.close()
+        return secure_results
 
     def _resolve_bump_pre_commit_targets(
         self,
@@ -4860,6 +6490,7 @@ class Git:
         dry_run: bool,
         force: bool,
         all_results: list[GitResult],
+        _pinned: PinnedDirectory | None = None,
     ) -> str | None:
         """Bump one project's version.
 
@@ -4869,24 +6500,81 @@ class Git:
         entry / never-cloned repo) must not crash the whole phased bump, so it
         is skipped with a warning and the rest of the topology proceeds.
         """
+        runner = {
+            False: self._bump_one_project_unpinned,
+            True: self._bump_one_project_pinned,
+        }[_pinned is not None]
+        return cast(Callable[..., str | None], runner)(
+            project_name=project_name,
+            project_dir=project_dir,
+            part=part,
+            dry_run=dry_run,
+            force=force,
+            all_results=all_results,
+            pinned=_pinned,
+        )
+
+    def _bump_one_project_unpinned(
+        self,
+        *,
+        project_name: str,
+        project_dir: str,
+        part: str,
+        dry_run: bool,
+        force: bool,
+        all_results: list[GitResult],
+        pinned: PinnedDirectory | None,
+    ) -> str | None:
+        """Pin a standalone bump target before running the common operation."""
+        del pinned
+        try:
+            with open_directory(self._workspace_root()) as root:
+                root.assert_root_identity()
+                with pin_existing(root, project_dir) as operation_pinned:
+                    return self._bump_one_project_pinned(
+                        project_name=project_name,
+                        project_dir=project_dir,
+                        part=part,
+                        dry_run=dry_run,
+                        force=force,
+                        all_results=all_results,
+                        pinned=operation_pinned,
+                    )
+        except OperationBoundaryError as exc:
+            logger.warning(
+                "Skipping bump for unsafe target %s: %s",
+                project_name,
+                type(exc).__name__,
+            )
+            return None
+
+    def _bump_one_project_pinned(
+        self,
+        *,
+        project_name: str,
+        project_dir: str,
+        part: str,
+        dry_run: bool,
+        force: bool,
+        all_results: list[GitResult],
+        pinned: PinnedDirectory,
+    ) -> str | None:
+        """Run the bump logic against one retained descriptor-pinned checkout."""
+        pinned.assert_path_identity()
         _, validated_path = self._revalidate_release_target(
             project_name,
             project_dir,
             operation="bump",
         )
-        if not os.path.isdir(validated_path):
-            logger.warning(
-                "Skipping bump for %s: project directory missing (%s)",
-                project_name,
-                validated_path,
-            )
-            return None
+        if Path(validated_path) != pinned.path:
+            raise OperationBoundaryError("pinned bump target changed during validation")
         project_dir = validated_path
 
-        if not force and self._bump_skip_reason(project_dir):
+        if not force and self._bump_skip_reason(project_dir, pinned=pinned):
             logger.info("Skipping project version bump")
             return "skipped"
 
+        pinned.assert_path_identity()
         result = self.bump_version(
             part=part,
             allow_dirty=True,
@@ -4894,6 +6582,7 @@ class Git:
             dry_run=dry_run,
             force=force,
             verbose=dry_run or not dry_run,
+            _pinned=pinned,
         )
         all_results.append(result)
         if result.status != "success":
@@ -4917,7 +6606,13 @@ class Git:
         )
 
     def _update_dependency_files(
-        self, *, path: str, project_name: str, new_version: str, dry_run: bool
+        self,
+        *,
+        path: str,
+        project_name: str,
+        new_version: str,
+        dry_run: bool,
+        _pinned: PinnedDirectory | None = None,
     ) -> list[GitResult]:
         """Repin *project_name* in every dependency-declaring file under *path*.
 
@@ -4925,27 +6620,112 @@ class Git:
         package (often ``==``) and would otherwise go stale.
         (CONCEPT:RM-BUMP cross-dependency propagation)
         """
-        path = str(
-            self._validate_workspace_path(
-                path,
-                label=f"dependency update project {project_name!r}",
-            )
+        runner = {
+            False: self._update_dependency_files_unpinned,
+            True: self._update_dependency_files_pinned,
+        }[_pinned is not None]
+        return cast(Callable[..., list[GitResult]], runner)(
+            path=path,
+            project_name=project_name,
+            new_version=new_version,
+            dry_run=dry_run,
+            pinned=_pinned,
         )
+
+    def _update_dependency_files_unpinned(
+        self,
+        *,
+        path: str,
+        project_name: str,
+        new_version: str,
+        dry_run: bool,
+        pinned: PinnedDirectory | None,
+    ) -> list[GitResult]:
+        """Pin an unbound dependency-update target before editing it."""
+        del pinned
+        try:
+            with open_directory(self._workspace_root()) as root:
+                root.assert_root_identity()
+                with pin_existing(root, path) as operation_pinned:
+                    return self._update_dependency_files_pinned(
+                        path=path,
+                        project_name=project_name,
+                        new_version=new_version,
+                        dry_run=dry_run,
+                        pinned=operation_pinned,
+                    )
+        except OperationBoundaryError as exc:
+            return [self._path_validation_result("update_dependency", path, exc)]
+
+    def _update_dependency_files_pinned(
+        self,
+        *,
+        path: str,
+        project_name: str,
+        new_version: str,
+        dry_run: bool,
+        pinned: PinnedDirectory,
+    ) -> list[GitResult]:
+        """Repin every dependency file through one retained descriptor."""
+        pinned.assert_path_identity()
+        validated_path = self._validate_workspace_path(
+            path,
+            label=f"dependency update project {project_name!r}",
+        )
+        path = str(validated_path)
+        if Path(path) != pinned.path:
+            raise OperationBoundaryError(
+                "pinned dependency-update target changed during validation"
+            )
+        return self._update_dependency_files_for_pinned_path(
+            path, project_name, new_version, dry_run, pinned
+        )
+
+    def _update_dependency_files_for_pinned_path(
+        self,
+        path: str,
+        project_name: str,
+        new_version: str,
+        dry_run: bool,
+        pinned: PinnedDirectory,
+    ) -> list[GitResult]:
+        """Update each supported dependency document under one pinned checkout."""
         results: list[GitResult] = []
         for dep_file_name in ("pyproject.toml", "requirements.txt"):
-            dep_file = Path(path) / dep_file_name
-            if not dep_file.exists():
-                continue
-            if not self.update_dependency(
-                str(dep_file), project_name, new_version, dry_run
-            ):
-                continue
-            results.append(
-                self._dependency_update_result(
-                    path, project_name, new_version, dep_file_name
-                )
+            result = self._update_one_dependency_file(
+                path, project_name, new_version, dry_run, dep_file_name, pinned
             )
+            if result is not None:
+                results.append(result)
         return results
+
+    def _update_one_dependency_file(
+        self,
+        path: str,
+        project_name: str,
+        new_version: str,
+        dry_run: bool,
+        dep_file_name: str,
+        pinned: PinnedDirectory,
+    ) -> GitResult | None:
+        """Update one dependency document and return its audit record."""
+        pinned.assert_operation_identity()
+        if read_at(pinned.fd, dep_file_name) is None:
+            return None
+        updated = self.update_dependency(
+            str(Path(path) / dep_file_name),
+            project_name,
+            new_version,
+            dry_run,
+            _directory_fd=pinned.fd,
+            _file_name=dep_file_name,
+            _boundary_assertion=pinned.assert_operation_identity,
+        )
+        if not updated:
+            return None
+        return self._dependency_update_result(
+            path, project_name, new_version, dep_file_name
+        )
 
     def _propagate_bump_to_dependents(
         self,
@@ -4956,27 +6736,117 @@ class Git:
         phase_of: Callable[[str], int],
         dry_run: bool,
         all_results: list[GitResult],
+        provenance: _ReleasePlanProvenance | None = None,
+        plan_assertion: Callable[[], None] | None = None,
+        allowed_targets: set[tuple[str, str]] | None = None,
     ) -> None:
         """Repin the just-bumped project across every same-or-later-phase repo.
 
         Earlier phases are skipped so a later bump cannot circle back and dirty
         a phase that has already been released.
         """
-        for path in self.project_map.values():
-            other_project_name = os.path.basename(path)
-            other_phase = phase_of(other_project_name)
-            if other_phase < phase_num:
-                logger.info(
-                    f"Skipping dependency update for {project_name} in {other_project_name} "
-                    f"to avoid circular updates of earlier phase (Phase {other_phase} < Phase {phase_num})"
+        planned_names_by_path = self._planned_dependency_names(allowed_targets)
+        with self._dependency_propagation_root(provenance) as root:
+            for path in self.project_map.values():
+                self._propagate_bump_for_path(
+                    path=path,
+                    project_name=project_name,
+                    new_version=new_version,
+                    phase_num=phase_num,
+                    phase_of=phase_of,
+                    dry_run=dry_run,
+                    all_results=all_results,
+                    provenance=provenance,
+                    plan_assertion=plan_assertion,
+                    root=root,
+                    planned_names_by_path=planned_names_by_path,
                 )
-                continue
+
+    @staticmethod
+    def _planned_dependency_names(
+        allowed_targets: set[tuple[str, str]] | None,
+    ) -> dict[str, set[str]] | None:
+        """Map each normalized planned path to its exact release names."""
+        if allowed_targets is None:
+            return None
+        names_by_path: dict[str, set[str]] = {}
+        for name, planned_path in allowed_targets:
+            names_by_path.setdefault(
+                str(Path(os.path.abspath(planned_path))), set()
+            ).add(name)
+        return names_by_path
+
+    def _dependency_propagation_root(
+        self, provenance: _ReleasePlanProvenance | None
+    ) -> contextlib.AbstractContextManager[PinnedDirectory | None]:
+        """Open a root pin only for release-plan-bound propagation."""
+        if provenance is not None:
+            return open_directory(self._workspace_root())
+        return contextlib.nullcontext(None)
+
+    def _propagate_bump_for_path(
+        self,
+        *,
+        path: str,
+        project_name: str,
+        new_version: str,
+        phase_num: int,
+        phase_of: Callable[[str], int],
+        dry_run: bool,
+        all_results: list[GitResult],
+        provenance: _ReleasePlanProvenance | None,
+        plan_assertion: Callable[[], None] | None,
+        root: PinnedDirectory | None,
+        planned_names_by_path: dict[str, set[str]] | None,
+    ) -> None:
+        """Apply one dependency propagation to one exact registry path."""
+        normalized_path = str(Path(os.path.abspath(path)))
+        if provenance is not None and planned_names_by_path is not None:
+            planned_names = planned_names_by_path.get(normalized_path, set())
+            if len(planned_names) != 1:
+                # A service or an otherwise unplanned checkout must never become
+                # a dependency target merely because its basename collides.
+                return
+            other_project_name = next(iter(planned_names))
+        else:
+            other_project_name = os.path.basename(path)
+        if other_project_name == project_name:
+            return
+        other_phase = phase_of(other_project_name)
+        if other_phase < phase_num:
+            logger.info(
+                f"Skipping dependency update for {project_name} in {other_project_name} "
+                f"to avoid circular updates of earlier phase (Phase {other_phase} < Phase {phase_num})"
+            )
+            return
+        if provenance is None:
             all_results.extend(
                 self._update_dependency_files(
                     path=path,
                     project_name=project_name,
                     new_version=new_version,
                     dry_run=dry_run,
+                )
+            )
+            return
+        if root is None:
+            raise OperationBoundaryError("dependency update root handle is missing")
+        root.assert_root_identity()
+        with pin_existing(root, path) as pinned:
+            self._bind_release_plan_target(
+                provenance,
+                other_project_name,
+                path,
+                pinned,
+                plan_assertion=plan_assertion,
+            )
+            all_results.extend(
+                self._update_dependency_files(
+                    path=path,
+                    project_name=project_name,
+                    new_version=new_version,
+                    dry_run=dry_run,
+                    _pinned=pinned,
                 )
             )
 
@@ -5087,13 +6957,18 @@ class Git:
         plan_options: dict[str, Any],
         precommit_targets: list[_ReleaseTarget] | None,
     ) -> None:
-        """Recheck bump input provenance at one operation boundary."""
-        self._assert_release_plan(
+        """Check bump plan structure at one descriptor-boundary admission.
+
+        Each target's root/checkout/Git identity is checked through its pinned
+        handle.  A full workspace rescan here would be a separate sequential
+        check rather than part of the mutation boundary.
+        """
+        self._assert_release_plan_structure(
             provenance,
             config,
             phase_list,
-            options=plan_options,
-            auxiliary_targets=precommit_targets,
+            plan_options,
+            precommit_targets,
         )
 
     def _bump_plan_one(
@@ -5115,14 +6990,67 @@ class Git:
         self._assert_bump_plan(
             provenance, config, phase_list, plan_options, precommit_targets
         )
-        return self._bump_one_project(
-            project_name=project_name,
-            project_dir=project_path,
+        return self._bump_plan_one_operation(
+            project_name,
+            project_path,
+            provenance=provenance,
+            config=config,
+            phase_list=phase_list,
+            plan_options=plan_options,
+            precommit_targets=precommit_targets,
             part=part,
             dry_run=dry_run,
             force=force,
             all_results=all_results,
         )
+
+    def _bump_plan_one_operation(
+        self,
+        project_name: str,
+        project_path: str,
+        *,
+        provenance: _ReleasePlanProvenance,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        precommit_targets: list[_ReleaseTarget] | None,
+        part: str,
+        dry_run: bool,
+        force: bool,
+        all_results: list[GitResult],
+    ) -> str | None:
+        """Pin and execute one frozen bump, converting refusal to a result."""
+        try:
+            with open_directory(self._workspace_root()) as root:
+                root.assert_root_identity()
+                with pin_existing(root, project_path) as pinned:
+                    pinned.assert_path_identity()
+                    self._bind_release_plan_target(
+                        provenance,
+                        project_name,
+                        project_path,
+                        pinned,
+                        plan_assertion=functools.partial(
+                            self._assert_release_plan_structure,
+                            provenance,
+                            config,
+                            phase_list,
+                            plan_options,
+                            precommit_targets,
+                        ),
+                    )
+                    return self._bump_one_project(
+                        project_name=project_name,
+                        project_dir=project_path,
+                        part=part,
+                        dry_run=dry_run,
+                        force=force,
+                        all_results=all_results,
+                        _pinned=pinned,
+                    )
+        except (OperationBoundaryError, ValueError) as exc:
+            all_results.append(self._path_validation_result("bump", project_path, exc))
+            return None
 
     def _propagate_bump_plan(
         self,
@@ -5143,14 +7071,64 @@ class Git:
         self._assert_bump_plan(
             provenance, config, phase_list, plan_options, precommit_targets
         )
-        self._propagate_bump_to_dependents(
-            project_name=project_name,
-            new_version=new_version,
-            phase_num=phase_num,
+        return self._propagate_bump_plan_operation(
+            project_name,
+            new_version,
+            phase_num,
+            provenance=provenance,
+            config=config,
+            phase_list=phase_list,
+            plan_options=plan_options,
+            precommit_targets=precommit_targets,
             phase_of=phase_of,
             dry_run=dry_run,
             all_results=all_results,
         )
+
+    def _propagate_bump_plan_operation(
+        self,
+        project_name: str,
+        new_version: str,
+        phase_num: int,
+        *,
+        provenance: _ReleasePlanProvenance,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        precommit_targets: list[_ReleaseTarget] | None,
+        phase_of: Callable[[str], int],
+        dry_run: bool,
+        all_results: list[GitResult],
+    ) -> None:
+        """Propagate one bump across only exact frozen release targets."""
+        try:
+            allowed_targets = {
+                (name, path)
+                for phase in phase_list
+                for name, path in phase.get("targets", [])
+            }
+            self._propagate_bump_to_dependents(
+                project_name=project_name,
+                new_version=new_version,
+                phase_num=phase_num,
+                phase_of=phase_of,
+                dry_run=dry_run,
+                all_results=all_results,
+                provenance=provenance,
+                plan_assertion=functools.partial(
+                    self._assert_release_plan_structure,
+                    provenance,
+                    config,
+                    phase_list,
+                    plan_options,
+                    precommit_targets,
+                ),
+                allowed_targets=allowed_targets,
+            )
+        except (OperationBoundaryError, ValueError) as exc:
+            all_results.append(
+                self._path_validation_result("dependency_update", project_name, exc)
+            )
 
     def _record_release_plan_abort(
         self,
@@ -5178,6 +7156,36 @@ class Git:
         all_results: list[GitResult],
     ) -> bool:
         """Run the guarded pre-commit stage, returning false on plan drift."""
+        return self._run_bump_precommit_plan_operation(
+            allow_pre_commit=allow_pre_commit,
+            config=config,
+            filter_set=filter_set,
+            start_phase=start_phase,
+            single_phase=single_phase,
+            precommit_targets=precommit_targets,
+            provenance=provenance,
+            phase_list=phase_list,
+            plan_options=plan_options,
+            tracker=tracker,
+            all_results=all_results,
+        )
+
+    def _run_bump_precommit_plan_operation(
+        self,
+        *,
+        allow_pre_commit: bool,
+        config: dict[str, Any],
+        filter_set: set[str] | None,
+        start_phase: int,
+        single_phase: bool,
+        precommit_targets: list[_ReleaseTarget] | None,
+        provenance: _ReleasePlanProvenance,
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> bool:
+        """Run the guarded pre-commit stage and convert boundary failures."""
         if not allow_pre_commit:
             return True
         try:
@@ -5191,10 +7199,24 @@ class Git:
                     start_phase=start_phase,
                     single_phase=single_phase,
                     targets=precommit_targets,
+                    _secure=True,
+                    provenance=provenance,
+                    plan_assertion=functools.partial(
+                        self._assert_release_plan_structure,
+                        provenance,
+                        config,
+                        phase_list,
+                        plan_options,
+                        precommit_targets,
+                    ),
                 )
             )
         except _ReleasePlanDrift as drift:
             self._record_release_plan_abort(drift, tracker, all_results)
+            return False
+        except (OperationBoundaryError, ValueError) as exc:
+            all_results.append(self._path_validation_result("bump", self.path, exc))
+            tracker.note("ABORTED — unsafe bump operation")
             return False
         return True
 
@@ -5262,21 +7284,51 @@ class Git:
         )
         processed_paths: set[str] = set()
         try:
-            for p_info in phase_list:
-                self._assert_bump_plan(
-                    provenance, config, phase_list, plan_options, precommit_targets
-                )
-                self._run_bump_phase(
-                    p_info=p_info,
-                    tracker=tracker,
-                    processed_paths=processed_paths,
-                    bump_one=bump_one,
-                    propagate=propagate,
-                )
+            self._run_guarded_bump_phases(
+                phase_list=phase_list,
+                provenance=provenance,
+                config=config,
+                plan_options=plan_options,
+                precommit_targets=precommit_targets,
+                tracker=tracker,
+                processed_paths=processed_paths,
+                bump_one=bump_one,
+                propagate=propagate,
+            )
         except _ReleasePlanDrift as drift:
             self._record_release_plan_abort(drift, tracker, all_results)
             return False
+        except (OperationBoundaryError, ValueError) as exc:
+            all_results.append(self._path_validation_result("bump", self.path, exc))
+            tracker.note("ABORTED — unsafe bump operation")
+            return False
         return True
+
+    def _run_guarded_bump_phases(
+        self,
+        *,
+        phase_list: list[dict[str, Any]],
+        provenance: _ReleasePlanProvenance,
+        config: dict[str, Any],
+        plan_options: dict[str, Any],
+        precommit_targets: list[_ReleaseTarget] | None,
+        tracker: "_PhaseProgress",
+        processed_paths: set[str],
+        bump_one: Callable[[str, str], str | None],
+        propagate: Callable[[str, str, int], None],
+    ) -> None:
+        """Run every phase with a structural admission immediately beforehand."""
+        for p_info in phase_list:
+            self._assert_bump_plan(
+                provenance, config, phase_list, plan_options, precommit_targets
+            )
+            self._run_bump_phase(
+                p_info=p_info,
+                tracker=tracker,
+                processed_paths=processed_paths,
+                bump_one=bump_one,
+                propagate=propagate,
+            )
 
     def phased_bumpversion(
         self,
@@ -5699,8 +7751,19 @@ class Git:
                 filter_set=filter_set,
                 claimed=claimed,
             ):
-                candidates[name] = self._explicit_release_target(name)[1]
+                explicit_name, explicit_path = self._explicit_release_target(name)
+                self._merge_release_candidate(candidates, explicit_name, explicit_path)
         return candidates
+
+    @staticmethod
+    def _merge_release_candidate(
+        candidates: dict[str, str], name: str, path: str
+    ) -> None:
+        """Merge one explicit target only when its canonical path agrees."""
+        existing_path = candidates.get(name)
+        if existing_path is not None and existing_path != path:
+            raise ValueError(f"explicit and bulk release targets disagree for {name!r}")
+        candidates[name] = path
 
     def _explicit_candidate_is_selected(
         self,
@@ -5713,8 +7776,7 @@ class Git:
     ) -> bool:
         """Whether an explicit name still needs an exact target resolution."""
         return bool(
-            name not in candidates
-            and name not in claimed
+            name not in claimed
             and (filter_set is None or name in filter_set)
             and not self._phase_excludes_name(phase, name)
         )
@@ -5923,6 +7985,28 @@ class Git:
         tracker: "_PhaseProgress",
         all_results: list[GitResult],
         before_mutation: Callable[[str, str], None] | None = None,
+        provenance: _ReleasePlanProvenance | None = None,
+        plan_assertion: Callable[[], None] | None = None,
+    ) -> bool:
+        """Push one release phase through the descriptor-boundary operation."""
+        return self._execute_push_phase_operation(
+            p_info=p_info,
+            tracker=tracker,
+            all_results=all_results,
+            before_mutation=before_mutation,
+            provenance=provenance,
+            plan_assertion=plan_assertion,
+        )
+
+    def _execute_push_phase_operation(
+        self,
+        *,
+        p_info: dict[str, Any],
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+        before_mutation: Callable[[str, str], None] | None = None,
+        provenance: _ReleasePlanProvenance | None = None,
+        plan_assertion: Callable[[], None] | None = None,
     ) -> bool:
         """Push one phase's projects in parallel; return whether anything landed."""
         phase_name = p_info["name"]
@@ -5934,23 +8018,63 @@ class Git:
         )
 
         phase_had_pushes = False
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.threads
-        ) as executor:
-            future_to_proj = {}
-            for proj_name, p_path in projects_to_push:
-                validated_path = self._validated_push_phase_target(
-                    proj_name, p_path, before_mutation
-                )
-                tracker.begin_item(phase_name, proj_name)
-                future = executor.submit(self.push_project, path=validated_path)
-                future_to_proj[future] = proj_name
+        try:
+            with open_directory(self._workspace_root()) as root:
+                root.assert_root_identity()
+                pinned_targets: list[PinnedDirectory] = []
+                try:
+                    with concurrent.futures.ThreadPoolExecutor(
+                        max_workers=self.threads
+                    ) as executor:
+                        future_to_proj = {}
+                        for proj_name, p_path in projects_to_push:
+                            try:
+                                validated_path = self._validated_push_phase_target(
+                                    proj_name, p_path, before_mutation
+                                )
+                                pinned = pin_existing(root, validated_path)
+                                pinned.assert_path_identity()
+                                if provenance is not None:
+                                    self._bind_release_plan_target(
+                                        provenance,
+                                        proj_name,
+                                        validated_path,
+                                        pinned,
+                                        plan_assertion=plan_assertion,
+                                    )
+                            except _ReleasePlanDrift:
+                                raise
+                            except (OperationBoundaryError, ValueError) as exc:
+                                all_results.append(
+                                    self._path_validation_result("push", p_path, exc)
+                                )
+                                tracker.note(
+                                    f"ABORTED — unsafe push target {proj_name}"
+                                )
+                                return False
+                            pinned_targets.append(pinned)
+                            tracker.begin_item(phase_name, proj_name)
+                            future = executor.submit(
+                                self.push_project,
+                                path=validated_path,
+                                _pinned=pinned,
+                            )
+                            future_to_proj[future] = proj_name
 
-            for future in concurrent.futures.as_completed(future_to_proj):
-                proj_name = future_to_proj[future]
-                status_str, pushed = self._collect_push_result(future, all_results)
-                phase_had_pushes = phase_had_pushes or pushed
-                tracker.finish_item(phase_name, proj_name, status_str)
+                        for future in concurrent.futures.as_completed(future_to_proj):
+                            proj_name = future_to_proj[future]
+                            status_str, pushed = self._collect_push_result(
+                                future, all_results
+                            )
+                            phase_had_pushes = phase_had_pushes or pushed
+                            tracker.finish_item(phase_name, proj_name, status_str)
+                finally:
+                    for pinned in reversed(pinned_targets):
+                        pinned.close()
+        except OperationBoundaryError as exc:
+            all_results.append(self._path_validation_result("push", self.path, exc))
+            tracker.note(f"ABORTED — unsafe push phase {phase_name}")
+            return False
 
         tracker.end_phase(phase_name)
         return phase_had_pushes
@@ -6090,12 +8214,17 @@ class Git:
         phase_list: list[dict[str, Any]],
         plan_options: dict[str, Any],
     ) -> None:
-        """Recheck push provenance immediately before one target mutation."""
-        self._assert_release_plan(
+        """Check push plan structure immediately before one target mutation.
+
+        Filesystem identity belongs to the descriptor-bound target assertion;
+        rescanning every checkout here would recreate the sequential
+        check-then-use boundary this operation layer is meant to remove.
+        """
+        self._assert_release_plan_structure(
             provenance,
             config,
             phase_list,
-            options=plan_options,
+            plan_options,
         )
 
     def _execute_frozen_push_plan(
@@ -6116,6 +8245,13 @@ class Git:
             phase_list=phase_list,
             plan_options=plan_options,
         )
+        plan_assertion = functools.partial(
+            self._assert_release_plan_structure,
+            provenance,
+            config,
+            phase_list,
+            plan_options,
+        )
         try:
             for phase_idx, p_info in enumerate(phase_list):
                 self._assert_release_plan(
@@ -6126,6 +8262,8 @@ class Git:
                     tracker=tracker,
                     all_results=all_results,
                     before_mutation=before_mutation,
+                    provenance=provenance,
+                    plan_assertion=plan_assertion,
                 )
                 if not self._settle_phase_barrier(
                     p_info=p_info,
@@ -6211,7 +8349,7 @@ class Git:
             [(p["name"], [n for n, _ in p["projects_to_push"]]) for p in phase_list],
         )
 
-        if not self._execute_frozen_push_plan(
+        if not self._execute_phased_push_plan(
             config=config,
             phase_list=phase_list,
             plan_options=plan_options,
@@ -6223,6 +8361,39 @@ class Git:
 
         tracker.finish("Pushes Completed")
         return all_results
+
+    def _execute_phased_push_plan(
+        self,
+        *,
+        config: dict[str, Any],
+        phase_list: list[dict[str, Any]],
+        plan_options: dict[str, Any],
+        provenance: _ReleasePlanProvenance,
+        tracker: "_PhaseProgress",
+        all_results: list[GitResult],
+    ) -> bool:
+        """Consume the durable receipt and execute one frozen push plan."""
+        if phase_list:
+            replayed, refusal = self._begin_push_plan_receipt(provenance)
+            if refusal is not None:
+                tracker.nothing_to_do("Push refused — release plan already consumed")
+                all_results.append(refusal)
+                return False
+            if replayed is not None:
+                tracker.nothing_to_do("Pushes replayed from recorded outcome")
+                all_results.extend(replayed)
+                return False
+        completed = self._execute_frozen_push_plan(
+            config=config,
+            phase_list=phase_list,
+            plan_options=plan_options,
+            provenance=provenance,
+            tracker=tracker,
+            all_results=all_results,
+        )
+        if phase_list:
+            self._complete_push_plan_receipt(provenance, all_results)
+        return completed
 
     def _phase_published_packages(
         self, projects_to_push: list[tuple[str, str]]
@@ -6416,6 +8587,10 @@ class Git:
             else:
                 self.path = os.path.abspath(os.path.join(yaml_dir, yaml_config_path))
 
+            # Validate the root independently of the project map.  A manifest
+            # with an empty map must not be able to admit a symlink root that
+            # later redirects setup writes outside the configured tree.
+            self._validate_manifest_root_ancestry(self._manifest_workspace_root())
             logger.info("Workspace root resolved")
 
             seen_repository_urls: set[str] = set()
