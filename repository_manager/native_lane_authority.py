@@ -120,7 +120,7 @@ class WorkItemLifecycleClaimer(Protocol):
     Kept as an injected seam (mirroring RMDD-08's ``NativeFenceCodec``) so a
     focused test can supply a deterministic fake. :class:`AgentUtilitiesWorkItemClaimer`
     is the real production implementation, built on
-    ``agent_utilities.orchestration.work_item``.
+    ``agent_utilities.knowledge_graph.core.work_durability``.
     """
 
     def claim_lifecycle(
@@ -167,7 +167,7 @@ class AgentUtilitiesWorkItemClaimer:
         lane_intent: Mapping[str, Any],
         now: datetime,
     ) -> Mapping[str, Any]:
-        from agent_utilities.orchestration.work_item import (
+        from agent_utilities.knowledge_graph.core.work_durability import (
             claim_specific,
             submit_work_item_atomic,
         )

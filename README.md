@@ -117,7 +117,7 @@ This table is auto-generated from the live server — do not edit by hand.
 | `repository_manager_pre_commit_projects` | `GITTOOL` | Execute pre-commit commands for all projects in parallel. |
 | `repository_manager_pull_project` | `GITTOOL` | Pull updates for a single Git project and optionally checkout the default branch. |
 | `repository_manager_pull_projects` | `GITTOOL` | Pull updates for multiple projects in parallel. |
-| `repository_manager_push_project` | `GITTOOL` | Push committed updates and tags for a single clean Git project. |
+| `repository_manager_push_project` | `GITTOOL` | Atomically publish a clean checkout's exact current branch and release tag. |
 | `repository_manager_push_projects` | `GITTOOL` | Push updates for multiple projects in parallel. |
 | `repository_manager_save_workspace_config` | `GITTOOL` | Saves the current or provided WorkspaceConfig to a YAML file. |
 | `repository_manager_set_threads` | `GITTOOL` | Set the number of threads for parallel processing. |

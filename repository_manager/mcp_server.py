@@ -974,7 +974,7 @@ def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
         client_cls=Git,
         get_client=lambda: Git(),
         service="repository-manager",
-        tool_registry=MCP_TOOL_REGISTRY,
+        tool_registry=list(MCP_TOOL_REGISTRY),
     )
 
     for mw in middlewares:

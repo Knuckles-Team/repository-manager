@@ -4152,7 +4152,7 @@ class Git:
                 code=1,
             ),
             metadata=GitMetadata(
-                command="git push --follow-tags",
+                command="git push --atomic <authorized-destination> <exact-refs>",
                 workspace=_project_label(target_path),
                 return_code=1,
                 timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
@@ -4570,12 +4570,13 @@ class Git:
         _pinned: PinnedDirectory | None = None,
     ) -> GitResult:
         """
-        Push committed updates and tags for a single clean Git project.
+        Atomically publish a clean checkout's exact current branch and release tag.
 
-        Handles common failure modes:
-        - Non-fast-forward: fails closed for an explicit reviewed sync
-        - GitHub secret scanning (GH013): returns actionable error with unblock URL
-        - Tag conflicts: falls back to pushing without --follow-tags
+        Publication runs from a sealed private admin repository, uses only the
+        authorized direct destination, and reads every remote ref back before
+        reporting success. Dirty state, gate failure, identity/config drift,
+        non-fast-forward updates, tag collisions, and partial atomic updates all
+        refuse publication; GitHub push protection returns an actionable error.
         """
         target_path = self._validated_operation_path(path, operation="push_project")
         try:

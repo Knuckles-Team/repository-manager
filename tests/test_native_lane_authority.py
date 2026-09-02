@@ -9,10 +9,12 @@ not asserted, per the RMDD-28 lane brief's required method.
 
 from __future__ import annotations
 
+import sys
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
 
 import pytest
@@ -26,6 +28,7 @@ from repository_manager.lane_registry import (
     StaleLaneFence,
 )
 from repository_manager.native_lane_authority import (
+    AgentUtilitiesWorkItemClaimer,
     DevelopmentLaneTransport,
     NativeLaneAuthority,
     NativeLaneAuthorityUnavailable,
@@ -241,6 +244,48 @@ class FakeWorkItemClaimer:
             "lease_epoch": 1,
             "fencing_token": 1,
         }
+
+
+def test_production_claimer_uses_canonical_work_durability(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    def submit(engine: object, **kwargs: object) -> tuple[str, bool]:
+        calls.append(("submit", engine))
+        assert kwargs["kind"] == "repository.lane.lifecycle"
+        return str(kwargs["work_item_id"]), True
+
+    def claim(engine: object, item_id: str, *, now: float) -> dict[str, object]:
+        calls.append(("claim", engine))
+        return {
+            "work_item_id": item_id,
+            "lease_owner": "owner:one",
+            "attempt": 1,
+            "lease_epoch": 1,
+            "fencing_token": 1,
+            "claimed_at": now,
+        }
+
+    work_durability = ModuleType(
+        "agent_utilities.knowledge_graph.core.work_durability"
+    )
+    canonical_contract = cast(Any, work_durability)
+    canonical_contract.submit_work_item_atomic = submit
+    canonical_contract.claim_specific = claim
+    monkeypatch.setitem(sys.modules, work_durability.__name__, work_durability)
+    engine = object()
+    claimed = AgentUtilitiesWorkItemClaimer(engine).claim_lifecycle(
+        lane_id="lane:one",
+        request_key="request:one",
+        repository_id="repository:one",
+        owner_id="owner:one",
+        session_id="session:one",
+        tenant_ref="tenant:one",
+        lane_intent={"branch": "main"},
+        now=NOW,
+    )
+
+    assert claimed["work_item_id"] == lane_work_item_id("lane:one")
+    assert calls == [("submit", engine), ("claim", engine)]
 
 
 def _native_authority() -> NativeLaneAuthority:
