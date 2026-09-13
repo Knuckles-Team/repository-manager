@@ -25,7 +25,10 @@ from repository_manager.cli_commands.differential_selection import (
 from repository_manager.cli_commands.docs_readiness import run_docs_readiness_cli
 from repository_manager.cli_commands.lane import run_lane_cli
 from repository_manager.cli_commands.merge_queue import run_merge_queue_cli
-from repository_manager.cli_commands.phase_direction import run_phase_direction_cli
+from repository_manager.cli_commands.phase_direction import (
+    run_phase_direction_cli,
+    run_phase_direction_here_cli,
+)
 from repository_manager.cli_commands.remote_workers import run_remote_workers_cli
 
 
@@ -692,6 +695,29 @@ Examples:
         default=None,
         help="Repository name or manifest identifier to check (repeatable; default: all).",
     )
+    group_phase_direction.add_argument(
+        "--phase-direction-here",
+        action="store_true",
+        help=(
+            "Infer which -f/--file manifest repository the current checkout "
+            "(or the linked git worktree it is running from) is -- by "
+            "matching its git remote against the manifest's repository "
+            "URLs, falling back to the canonical -w/--workspace layout -- "
+            "and run the same check as --phase-direction against ONLY that "
+            "repository's own on-disk source. An unresolvable repository is "
+            "a hard error. For a repository's own pre-push hook; see the "
+            "packaged 'phase-direction' pre-commit hook."
+        ),
+    )
+    group_phase_direction.add_argument(
+        "--phase-direction-start",
+        type=str,
+        default=None,
+        help=(
+            "Directory to resolve the repository from for "
+            "--phase-direction-here (default: the current working directory)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -733,11 +759,26 @@ Examples:
     return _cli_return_code(has_errors)
 
 
-def _dispatch_phase_direction_verb(args: argparse.Namespace) -> None:
+def _dispatch_phase_direction(args: argparse.Namespace) -> None:
     """``--phase-direction``: a read-only workspace check that exits the process."""
+    if not args.phase_direction:
+        return
+    sys.exit(run_phase_direction_cli(args))
 
-    if args.phase_direction:
-        sys.exit(run_phase_direction_cli(args))
+
+def _dispatch_phase_direction_here(args: argparse.Namespace) -> None:
+    """``--phase-direction-here``: a read-only, inferred-repository check that
+    exits the process."""
+    if not args.phase_direction_here:
+        return
+    sys.exit(run_phase_direction_here_cli(args))
+
+
+def _dispatch_phase_direction_verb(args: argparse.Namespace) -> None:
+    """``--phase-direction``/``--phase-direction-here``: read-only checks that
+    exit the process."""
+    _dispatch_phase_direction(args)
+    _dispatch_phase_direction_here(args)
 
 
 def _dispatch_immediate_verb(args: argparse.Namespace) -> None:

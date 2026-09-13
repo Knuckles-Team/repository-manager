@@ -111,6 +111,8 @@ import logging
 import math
 import os
 import re
+import shutil
+import subprocess  # nosec B404 - fixed argv only, never shell=True
 import sys
 import time
 import tomllib
@@ -121,6 +123,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
+from urllib.parse import urlsplit
 
 import requests  # transitively pinned by agent-utilities>=2.0.0 (requests>=2.34.2)
 import yaml  # type: ignore[import-untyped]
@@ -129,6 +132,7 @@ from packaging.specifiers import SpecifierSet
 from packaging.utils import (
     InvalidSdistFilename,
     InvalidWheelFilename,
+    NormalizedName,
     canonicalize_name,
     parse_sdist_filename,
     parse_wheel_filename,
@@ -169,6 +173,7 @@ __all__ = [
     "PhaseEdge",
     "PhaseRepository",
     "check_phase_direction",
+    "check_phase_direction_here",
     "check_constraint",
     "check_tree",
     "cross_check_targets",
@@ -1207,6 +1212,164 @@ def _find_workspace_manifest(
 #: The subdirectory a projectless (bulk) maintenance phase owns.
 BULK_PHASE_SUBDIRECTORY = "agents"
 
+#: Resolved once, like every other module in this package that shells out to
+#: git (``build_queue._TRUSTED_GIT``, ``destructive_guard._TRUSTED_GIT``, ...):
+#: avoids a bandit B607 partial-executable-path finding.
+_TRUSTED_GIT = shutil.which("git") or "git"
+
+#: Env vars a git hook invocation sets that git honors OVER an explicit
+#: ``-C <path>`` -- this repository's own pre-push hook runs this module AS a
+#: child of a real ``git push``, which exports ``GIT_DIR``/``GIT_INDEX_FILE``/
+#: etc. into the hook's process. A bare ``subprocess.run(["git", "-C",
+#: checkout, ...])`` inherits them silently and resolves against the WRONG
+#: repository regardless of ``-C`` (confirmed: ``GIT_DIR=real/.git git -C tmp
+#: config core.bare true`` mutates ``real``, not ``tmp``). Same defect class as
+#: ``agent-utilities/scripts/_git_subprocess_env.py``'s
+#: ``strip_inherited_git_repository_env``/``sanitized_git_env`` and this
+#: repo's own ``tests/conftest.py`` ``isolated_git_subprocess_env`` -- a
+#: parallel copy, not an import, because both of those live outside this
+#: package (one in a sibling repo, one in test-only code this module must not
+#: depend on to stay importable in a real hook).
+_GIT_REPOSITORY_POINTER_ENV_NAMES = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+)
+_GIT_REPOSITORY_POINTER_ENV_PREFIXES = ("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG")
+
+
+def _sanitized_git_subprocess_env() -> dict[str, str]:
+    """A copy of the process environment with git-repository-redirecting
+    vars stripped, for every ``git`` subprocess this module starts."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _GIT_REPOSITORY_POINTER_ENV_NAMES
+        and not key.startswith(_GIT_REPOSITORY_POINTER_ENV_PREFIXES)
+    }
+
+
+def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str] | None:
+    """Run one sanitized, bounded git command; ``None`` on any failure to
+    start it (not a git repository, git missing, timeout, ...) -- callers
+    treat that as "could not resolve", never as a false positive/negative."""
+    try:
+        return subprocess.run(  # nosec B603 - fixed argv, absolute git path
+            [_TRUSTED_GIT, "-C", str(cwd), *args],
+            capture_output=True,
+            text=True,
+            env=_sanitized_git_subprocess_env(),
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _git_toplevel(start: Path) -> Path | None:
+    """The real working-tree root of ``start`` -- the canonical checkout's own
+    directory, or a linked worktree's own directory (never the main
+    worktree's), matching how a pre-push hook actually runs: from wherever
+    ``git push`` was invoked."""
+    result = _run_git(["rev-parse", "--show-toplevel"], start)
+    if result is None or result.returncode != 0:
+        return None
+    output = result.stdout.strip()
+    return Path(output).resolve() if output else None
+
+
+def _git_remote_names(checkout: Path) -> list[str]:
+    result = _run_git(["remote"], checkout)
+    if result is None or result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _git_remote_url(checkout: Path, remote: str) -> str | None:
+    result = _run_git(["remote", "get-url", remote], checkout)
+    if result is None or result.returncode != 0:
+        return None
+    output = result.stdout.strip()
+    return output or None
+
+
+def _git_remote_urls_preferring_origin(checkout: Path) -> list[str]:
+    """Every remote URL configured on ``checkout``, ``origin`` first (the
+    conventional single-remote case) -- a linked worktree shares its main
+    worktree's remotes, which is exactly why matching on the remote resolves
+    a worktree to its canonical repository identity."""
+    names = _git_remote_names(checkout)
+    ordered = (
+        ["origin", *(name for name in names if name != "origin")]
+        if "origin" in names
+        else names
+    )
+    urls = []
+    for name in ordered:
+        url = _git_remote_url(checkout, name)
+        if url:
+            urls.append(url)
+    return urls
+
+
+_SCP_LIKE_GIT_URL = re.compile(r"^[\w.-]*@[^/:]+:(?P<path>.+)$")
+
+
+def _repository_basename_from_remote_url(raw: str) -> str | None:
+    """The trailing path segment of a git remote URL, minus ``.git`` -- the
+    same identity :func:`_manifest_repository_name` derives from a manifest
+    URL, so the two sides compare directly without a second URL parser.
+    Accepts scp-like (``git@host:owner/repo.git``), ``ssh://``, ``git://`` and
+    ``http(s)://`` remote forms; ``None`` when no usable segment exists."""
+    value = raw.strip()
+    if not value:
+        return None
+    scp_match = _SCP_LIKE_GIT_URL.fullmatch(value) if "://" not in value else None
+    path = scp_match.group("path") if scp_match else urlsplit(value).path
+    segment = path.rstrip("/").rsplit("/", 1)[-1]
+    if segment.endswith(".git"):
+        segment = segment[: -len(".git")]
+    return segment or None
+
+
+def _resolve_repository_identity(
+    checkout: Path,
+    workspace_root: Path,
+    manifest_repositories: list[_ManifestRepository],
+) -> _ManifestRepository | None:
+    """Match ``checkout`` (a real git toplevel: a canonical checkout or one of
+    its linked worktrees) to the ONE manifest repository it is.
+
+    Primary: its git remotes' URL-derived basename against every manifest
+    repository's own URL-derived name (case/separator-insensitively, via
+    :func:`canonicalize_name` -- the same comparator the rest of this module
+    uses for package identity). Fallback, only when no remote matches: the
+    checkout sits exactly at the canonical ``workspace_root/<identifier>``
+    layout. ``None`` when neither resolves -- the caller MUST treat that as a
+    hard error, never a silent pass.
+    """
+    by_name = {canonicalize_name(repo.name): repo for repo in manifest_repositories}
+    for url in _git_remote_urls_preferring_origin(checkout):
+        name = _repository_basename_from_remote_url(url)
+        if name is None:
+            continue
+        matched = by_name.get(canonicalize_name(name))
+        if matched is not None:
+            return matched
+    resolved_checkout = checkout.resolve()
+    for repo in manifest_repositories:
+        if repo.identifier and (workspace_root / repo.identifier).resolve() == (
+            resolved_checkout
+        ):
+            return repo
+    return None
+
+
 #: Build output, caches and vendored environments — never scanned for imports.
 _IMPORT_SCAN_SKIPPED_DIRECTORIES = frozenset(
     {"__pycache__", "build", "dist", "node_modules", "site-packages", "venv"}
@@ -1330,8 +1493,10 @@ class _ManifestPhase:
 
 @dataclass(frozen=True)
 class _PhaseScope:
-    package_phases: dict[str, int]  # canonical package -> owning phase
-    import_roots: dict[str, str]  # top-level import name -> canonical package
+    package_phases: dict[NormalizedName, int]  # canonical package -> owning phase
+    import_roots: dict[
+        str, NormalizedName
+    ]  # top-level import name -> canonical package
 
 
 @dataclass(frozen=True)
@@ -1725,7 +1890,7 @@ def _source_import_edges(
     source: Path,
     target: _PhaseTarget,
     scope: _PhaseScope,
-    roots: dict[str, str],
+    roots: dict[str, NormalizedName],
 ) -> list[PhaseEdge]:
     relative = source.relative_to(target.checkout)
     edge_class: PhaseEdgeClass = (
@@ -1824,6 +1989,111 @@ def check_phase_direction(
     scope = _phase_scope(owners)
     for repository in selected:
         _check_phase_repository(report, repository, owners, scope, root)
+    return report
+
+
+def _resolve_here(
+    begin: Path,
+    workspace_root: Path,
+    manifest_repositories: list[_ManifestRepository],
+) -> tuple[Path, _ManifestRepository] | InvalidDependencyMetadata:
+    """The identity half of :func:`check_phase_direction_here`: ``begin``'s
+    real git toplevel and which manifest repository it is. A typed error when
+    either cannot be resolved -- the caller MUST treat that as a hard error,
+    never a silent pass."""
+    checkout = _git_toplevel(begin)
+    if checkout is None:
+        return InvalidDependencyMetadata(
+            declared_by=str(begin),
+            detail=(
+                "not inside a git checkout or worktree -- cannot infer "
+                "which manifest repository to check"
+            ),
+        )
+    matched = _resolve_repository_identity(
+        checkout, workspace_root, manifest_repositories
+    )
+    if matched is None:
+        return InvalidDependencyMetadata(
+            declared_by=str(checkout),
+            detail=(
+                "checkout resolves to no workspace.yml repository -- its "
+                "git remote matched no manifest repository URL and its "
+                "path is not a canonical workspace_root/<identifier> "
+                "checkout"
+            ),
+        )
+    return checkout, matched
+
+
+def check_phase_direction_here(
+    workspace_yml_path: str | Path,
+    *,
+    workspace_root: str | Path | None = None,
+    start: str | Path | None = None,
+) -> PhaseDirectionReport:
+    """:func:`check_phase_direction`, but for exactly ONE repository: whichever
+    one ``start`` (default: the current working directory) actually is.
+
+    This is the per-repository pre-push-hook mode RF-ADR-009 §3 calls for:
+    a repository's own hook cannot name itself by manifest identifier (it does
+    not know where it lives in the manifest tree, and a linked git worktree
+    -- see ``AGENTS.md``/``../../AGENTS.md`` "Branching & isolation" -- does
+    not even live under the workspace path at all). So instead of selecting a
+    named repository out of ``workspace_root``'s canonical layout the way
+    :func:`check_phase_direction` does, this infers the identity from
+    ``start``'s own git remotes (see :func:`_resolve_repository_identity`)
+    and then scans ``start``'s OWN on-disk checkout -- the code actually about
+    to be pushed, canonical or worktree -- never the canonical checkout's
+    copy, which a worktree lane may have left stale or divergent.
+
+    ``workspace_root`` still anchors the identity-resolution fallback and the
+    report's ``workspace_root`` field (default: the manifest's own directory,
+    matching :func:`check_phase_direction`); it does NOT change where source
+    is scanned. Failing to resolve an identity -- an unmatched remote AND a
+    non-canonical path -- is appended to ``report.errors`` (``report.ok`` is
+    then ``False``): a hard error, never a silent pass. A resolved repository
+    with no owning maintenance phase is likewise blocking, via the same
+    ``unknown_phase`` status :func:`check_phase_direction` already uses.
+    """
+    manifest = Path(workspace_yml_path)
+    root = Path(workspace_root) if workspace_root is not None else manifest.parent
+    begin = Path(start) if start is not None else Path.cwd()
+    report = PhaseDirectionReport(manifest=str(manifest), workspace_root=str(root))
+    plan = _phase_plan(manifest)
+    if isinstance(plan, InvalidDependencyMetadata):
+        report.errors.append(plan)
+        return report
+    manifest_repositories, phases = plan
+    resolved = _resolve_here(begin, root, manifest_repositories)
+    if isinstance(resolved, InvalidDependencyMetadata):
+        report.errors.append(resolved)
+        return report
+    checkout, matched = resolved
+    owners = _phase_owners(phases, manifest_repositories)
+    scope = _phase_scope(owners)
+    phase = owners.get(matched.name)
+    status: PhaseRepositoryStatus = "checked" if phase is not None else "unknown_phase"
+    identity = matched.identifier or matched.name
+    report.repositories.append(
+        PhaseRepository(
+            repository=identity, name=matched.name, phase=phase, status=status
+        )
+    )
+    if status != "checked" or phase is None:
+        return report
+    target = _PhaseTarget(
+        repository=identity,
+        phase=phase,
+        checkout=checkout,
+        own_packages=frozenset({canonicalize_name(matched.name)}),
+    )
+    for edges, errors in (
+        _declared_phase_edges(target, scope),
+        _import_phase_edges(target, scope),
+    ):
+        report.edges.extend(edges)
+        report.errors.extend(errors)
     return report
 
 
@@ -2838,9 +3108,21 @@ def _dispatch_phase_direction(kwargs: dict[str, Any]) -> dict[str, Any]:
     ).as_dict()
 
 
+def _dispatch_phase_direction_here(kwargs: dict[str, Any]) -> dict[str, Any]:
+    manifest = kwargs.get("manifest_path")
+    if not manifest:
+        return {"ok": False, "error": "phase_direction_here requires manifest_path"}
+    return check_phase_direction_here(
+        manifest,
+        workspace_root=kwargs.get("workspace_root"),
+        start=kwargs.get("start"),
+    ).as_dict()
+
+
 _DISPATCH_ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "check": _dispatch_check,
     "phase_direction": _dispatch_phase_direction,
+    "phase_direction_here": _dispatch_phase_direction_here,
 }
 
 
@@ -2850,7 +3132,9 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
 
     ``check``: this repo's readiness (``path``). ``phase_direction``:
     :func:`check_phase_direction` (``manifest_path``, ``workspace_root``,
-    ``repositories``)."""
+    ``repositories``). ``phase_direction_here``: :func:`check_phase_direction_here`
+    (``manifest_path``, ``workspace_root``, ``start``) -- infers which
+    manifest repository the caller is running from and checks only it."""
     handler = _DISPATCH_ACTIONS.get(action)
     if handler is None:
         return {"ok": False, "error": f"unknown action: {action}"}

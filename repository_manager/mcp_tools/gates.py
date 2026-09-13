@@ -168,7 +168,9 @@ def register_gates_tools(
             "'xdist_apply' (perform that rollout; dry-run unless dry_run=False), "
             "'phase_direction' (fail when a repository declares or imports a "
             "fleet package owned by a LATER workspace.yml maintenance phase; "
-            "'repos' narrows it)."
+            "'repos' narrows it), 'phase_direction_here' (the same check, "
+            "but for exactly the repository this call is running against -- "
+            "inferred from its git remote, not a 'repos' selector)."
         ),
         fleet: bool = Field(
             default=False,
@@ -199,6 +201,14 @@ def register_gates_tools(
             description=(
                 "Comma-separated repo names or absolute paths to target. "
                 "Omit for 'run'/'retest' to target the whole workspace."
+            ),
+        ),
+        start: str | None = Field(
+            default=None,
+            description=(
+                "For 'phase_direction_here': directory to resolve the "
+                "repository from (default: this process's current working "
+                "directory)."
             ),
         ),
         threads: int | None = Field(default=None, description="Parallel workers."),
@@ -276,6 +286,7 @@ def register_gates_tools(
             "xdist_plan",
             "xdist_apply",
             "phase_direction",
+            "phase_direction_here",
         ):
             return gate_runner.dispatch(
                 action,
@@ -284,6 +295,7 @@ def register_gates_tools(
                 dry_run=dry_run,
                 manifest_path=adapter_context.default_workspace_yml,
                 workspace_root=adapter_context.default_workspace,
+                start=start,
             )
 
         return gate_runner.dispatch(

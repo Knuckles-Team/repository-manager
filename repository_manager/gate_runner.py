@@ -109,6 +109,7 @@ GATE_RUNNER_ACTIONS: tuple[str, ...] = (
     "xdist_plan",
     "xdist_apply",
     "phase_direction",
+    "phase_direction_here",
 )
 
 #: The job-store ``action`` tag every gate job (run OR retest OR escalation)
@@ -434,6 +435,23 @@ def _dispatch_phase_direction(kwargs: dict[str, Any]) -> dict[str, Any]:
         manifest_path=kwargs.get("manifest_path"),
         workspace_root=kwargs.get("workspace_root"),
         repositories=repositories,
+    )
+
+
+def _dispatch_phase_direction_here(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """RF-ADR-009 §3, inferred: check ONLY the repository this call is running
+    against (or the linked worktree it was invoked from) -- resolved by git
+    remote, never a named selector. ``start`` overrides where the repository
+    is resolved from (default: the current working directory). See
+    :func:`repository_manager.dependency_readiness.check_phase_direction_here`.
+    """
+    from repository_manager import dependency_readiness
+
+    return dependency_readiness.dispatch(
+        "phase_direction_here",
+        manifest_path=kwargs.get("manifest_path"),
+        workspace_root=kwargs.get("workspace_root"),
+        start=kwargs.get("start"),
     )
 
 
@@ -941,4 +959,5 @@ _GATE_DISPATCH_TABLE: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "xdist_plan": _dispatch_xdist_plan,
     "xdist_apply": _dispatch_xdist_apply,
     "phase_direction": _dispatch_phase_direction,
+    "phase_direction_here": _dispatch_phase_direction_here,
 }

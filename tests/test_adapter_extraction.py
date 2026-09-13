@@ -60,8 +60,12 @@ EXPECTED_TOOL_NAMES = (
 # ``phase_direction`` to ``RM_GATES_ACTIONS`` (routed to
 # ``dependency_readiness.check_phase_direction``) and names it in ``rm_gates``'
 # ``action`` description; no parameter was added.
+# Recomputed again for RF-ADR-009 §3's repository-inferring mode, which adds
+# ``phase_direction_here`` to ``RM_GATES_ACTIONS`` (routed to
+# ``dependency_readiness.check_phase_direction_here``), names it in
+# ``rm_gates``'s ``action`` description, and adds the ``start`` parameter.
 BASELINE_CATALOG_SHA256 = (
-    "fc6851b9c154683f1aece8996c239b7823723acafa7e0021afd76e6f2deb6fe8"
+    "54956a5dd92b419f1179b1ff959237f514a18262b8733506114f3ad25334a50d"
 )
 
 

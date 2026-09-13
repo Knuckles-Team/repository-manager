@@ -73,6 +73,7 @@ RM_GATES_ACTIONS = (
     "xdist_plan",
     "xdist_apply",
     "phase_direction",
+    "phase_direction_here",
 )
 
 RM_DOCS_READINESS_ACTIONS = (

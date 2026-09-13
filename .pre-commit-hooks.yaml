@@ -1,0 +1,35 @@
+# Hook definitions this repository provides to OTHER repositories' own
+# `.pre-commit-config.yaml` (the standard pre-commit "hook repository"
+# convention -- see https://pre-commit.com/#creating-new-hooks). Adopting a
+# hook here means adding a `- repo: <this repo's URL>` entry elsewhere; it
+# does NOT enable anything in repository-manager's own `.pre-commit-config.yaml`.
+#
+# `phase-direction`: RF-ADR-009 §3's maintenance-phase dependency-direction
+# order, enforced per-repository. `repository_manager.dependency_readiness.
+# check_phase_direction` (the workspace-wide form) already exists; this hook
+# runs `check_phase_direction_here` instead -- it infers which workspace.yml
+# repository the checkout (or a linked git worktree of it) actually is from
+# its own git remote, then checks ONLY that repository's own on-disk source
+# against the canonical manifest. A repository cannot name itself by manifest
+# identifier in its own hook, so inference -- not a `--phase-direction-repository`
+# selector -- is the only way this can be a per-repository hook at all.
+#
+# `stages: [pre-push]`: this is a HEAVY check (an AST import scan over the
+# whole checkout plus a `pyproject.toml` read), matching this repo's own
+# two-tier convention of keeping expensive checks off the fast pre-commit
+# path (see `.pre-commit-config.yaml`'s own `dependency-readiness` hook,
+# staged identically). `pass_filenames: false` / `always_run: true`: the
+# check depends on which repository this is and its maintenance-phase
+# ownership, never on which files happen to be staged.
+- id: phase-direction
+  name: RF-ADR-009 maintenance-phase dependency direction (this repository)
+  description: >-
+    Fail when this repository (or the linked git worktree it is running
+    from) declares or imports a fleet package owned by a LATER workspace.yml
+    maintenance phase than its own. Repository identity is inferred from the
+    checkout's git remote, never configured per adopting repository.
+  entry: repository-manager --phase-direction-here
+  language: python
+  stages: [pre-push]
+  pass_filenames: false
+  always_run: true
