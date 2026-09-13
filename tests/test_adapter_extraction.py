@@ -56,9 +56,12 @@ EXPECTED_TOOL_NAMES = (
 # same lane for the three gate-CONFIGURATION actions (``audit_fail_fast``,
 # ``xdist_plan``, ``xdist_apply``), which route to
 # ``fail_fast_audit``/``xdist_rollout`` and add the ``fleet``/``dry_run``
-# parameters to the tool signature.
+# parameters to the tool signature. Recomputed for RF-ADR-009 §3, which adds
+# ``phase_direction`` to ``RM_GATES_ACTIONS`` (routed to
+# ``dependency_readiness.check_phase_direction``) and names it in ``rm_gates``'
+# ``action`` description; no parameter was added.
 BASELINE_CATALOG_SHA256 = (
-    "a4dfbbf1489be28501953e84ba2b6d77c1cdcf445dc3542640ed9f5f4cde9d04"
+    "fc6851b9c154683f1aece8996c239b7823723acafa7e0021afd76e6f2deb6fe8"
 )
 
 

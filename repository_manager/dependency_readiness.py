@@ -105,6 +105,7 @@ line, so that verdict is explicable rather than a bare "nothing available".
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import math
@@ -113,11 +114,13 @@ import re
 import sys
 import time
 import tomllib
-from collections.abc import Sequence
+import warnings
+from collections import Counter
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 import requests  # transitively pinned by agent-utilities>=2.0.0 (requests>=2.34.2)
 import yaml  # type: ignore[import-untyped]
@@ -160,6 +163,12 @@ __all__ = [
     "fleet_package_names",
     "declared_fleet_constraints",
     "hook_declared",
+    "BULK_PHASE_SUBDIRECTORY",
+    "PHASE_EDGE_CLASSES",
+    "PhaseDirectionReport",
+    "PhaseEdge",
+    "PhaseRepository",
+    "check_phase_direction",
     "check_constraint",
     "check_tree",
     "cross_check_targets",
@@ -620,8 +629,25 @@ def _manifest_repository_name(
             )
 
 
-def _collect_manifest_repo_names(
-    node: dict[str, Any], names: set[str], manifest: Path
+@dataclass(frozen=True)
+class _ManifestRepository:
+    """One manifest repository entry and where the manifest nests it.
+
+    ``identifier`` is the workspace-relative checkout path the manifest implies
+    (``agent-packages/agents/github-agent``); ``parent`` is the immediate
+    subdirectory name (``""`` for a top-level repository).
+    """
+
+    identifier: str
+    name: str
+    parent: str
+
+
+def _collect_manifest_repositories(
+    node: dict[str, Any],
+    parents: tuple[str, ...],
+    found: list[_ManifestRepository],
+    manifest: Path,
 ) -> InvalidDependencyMetadata | None:
     repositories = node.get("repositories", _MISSING)
     if repositories is _MISSING:
@@ -634,20 +660,28 @@ def _collect_manifest_repo_names(
         name = _manifest_repository_name(repo.get("url"), manifest)
         if isinstance(name, InvalidDependencyMetadata):
             return name
-        names.add(name)
+        found.append(
+            _ManifestRepository(
+                identifier="/".join((*parents, name)),
+                name=name,
+                parent=parents[-1] if parents else "",
+            )
+        )
     return None
 
 
-def _walk_manifest_repo_names_strict(
+def _walk_manifest_repositories_strict(
     node: Any,
-    names: set[str],
+    found: list[_ManifestRepository],
     *,
     manifest: Path,
     skip_keys: frozenset[str] = frozenset(),
+    parents: tuple[str, ...] = (),
 ) -> InvalidDependencyMetadata | None:
+    """The ONE strict manifest walker: fleet names and phase ownership share it."""
     if type(node) is not dict:
         return _invalid_manifest(manifest, "subdirectories entries must be tables")
-    collected = _collect_manifest_repo_names(node, names, manifest)
+    collected = _collect_manifest_repositories(node, parents, found, manifest)
     if collected is not None:
         return collected
     subdirectories = node.get("subdirectories", _MISSING)
@@ -660,15 +694,20 @@ def _walk_manifest_repo_names_strict(
             return _invalid_manifest(manifest, "subdirectory names must be strings")
         if key in skip_keys:
             continue
-        walked = _walk_manifest_repo_names_strict(
+        walked = _walk_manifest_repositories_strict(
             sub,
-            names,
+            found,
             manifest=manifest,
             skip_keys=skip_keys,
+            parents=(*parents, key),
         )
         if walked is not None:
             return walked
     return None
+
+
+def _repository_names(repositories: list[_ManifestRepository]) -> set[str]:
+    return {repository.name for repository in repositories}
 
 
 def _walk_manifest_repo_names(
@@ -679,12 +718,15 @@ def _walk_manifest_repo_names(
     skip_keys: frozenset[str] = frozenset(),
 ) -> InvalidDependencyMetadata | None:
     """Walk the manifest through the strict shape-validating implementation."""
-    return _walk_manifest_repo_names_strict(
+    found: list[_ManifestRepository] = []
+    walked = _walk_manifest_repositories_strict(
         node,
-        names,
+        found,
         manifest=manifest,
         skip_keys=skip_keys,
     )
+    names.update(_repository_names(found))
+    return walked
 
 
 def _manifest_project_name(
@@ -743,19 +785,29 @@ def _manifest_phase_names(
     return names
 
 
-def _collect_manifest_phase_names(
-    data: dict[str, Any], names: set[str], manifest: Path
-) -> InvalidDependencyMetadata | None:
+def _manifest_phase_tables(
+    data: dict[str, Any], manifest: Path
+) -> list[Any] | InvalidDependencyMetadata:
+    """The raw ``maintenance.phases`` list, shape-checked (``[]`` when absent)."""
     maintenance = data.get("maintenance", _MISSING)
     if maintenance is _MISSING:
-        return None
+        return []
     if type(maintenance) is not dict:
         return _invalid_manifest(manifest, "maintenance must be a table")
     phases = maintenance.get("phases", _MISSING)
     if phases is _MISSING:
-        return None
+        return []
     if type(phases) is not list:
         return _invalid_manifest(manifest, "maintenance.phases must be a list")
+    return phases
+
+
+def _collect_manifest_phase_names(
+    data: dict[str, Any], names: set[str], manifest: Path
+) -> InvalidDependencyMetadata | None:
+    phases = _manifest_phase_tables(data, manifest)
+    if isinstance(phases, InvalidDependencyMetadata):
+        return phases
     for phase in phases:
         phase_names = _manifest_phase_names(phase, manifest)
         if isinstance(phase_names, InvalidDependencyMetadata):
@@ -764,16 +816,16 @@ def _collect_manifest_phase_names(
     return None
 
 
-def _load_fleet_package_names(
-    workspace_yml_path: str | Path,
-) -> set[str] | InvalidDependencyMetadata:
-    path = Path(workspace_yml_path)
+def _load_manifest_table(
+    path: Path,
+) -> dict[str, Any] | InvalidDependencyMetadata | None:
+    """Read the manifest document; ``None`` means the file does not exist."""
     if _path_has_symlink_component(path):
         return _invalid_manifest(
             path, "manifest must not be a symlink or contain symlink components"
         )
     if not path.exists():
-        return set()
+        return None
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
@@ -781,6 +833,18 @@ def _load_fleet_package_names(
     data = {} if loaded is None else loaded
     if type(data) is not dict:
         return _invalid_manifest(path, "top-level document must be a table")
+    return data
+
+
+def _load_fleet_package_names(
+    workspace_yml_path: str | Path,
+) -> set[str] | InvalidDependencyMetadata:
+    path = Path(workspace_yml_path)
+    data = _load_manifest_table(path)
+    if data is None:
+        return set()
+    if isinstance(data, InvalidDependencyMetadata):
+        return data
 
     names: set[str] = set()
     walked = _walk_manifest_repo_names(
@@ -1098,6 +1162,669 @@ def _find_workspace_manifest(
             break
         current = current.parent
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Phase direction — no repository may depend on a LATER maintenance phase.
+#
+# RF-ADR-009 §3/§8 (CONCEPT:RM-DEP-READY). ``maintenance.phases`` is the order
+# ``phased_push`` publishes in; a repository in phase N that declares or imports
+# a fleet package owned by phase M > N inverts that order (its push would have
+# to wait for something published AFTER it). The rule is one comparison over
+# the SAME manifest walker and the SAME pyproject validators the readiness gate
+# above uses — not a second manifest parser or a second dependency reader.
+#
+# Documented rules (rules, never lists of accepted violations):
+#
+# * Phase ownership: a phase's ``projects``/``project`` names own those
+#   repositories. A phase naming no projects (today: phase 7, the bulk agents
+#   phase) owns every manifest repository whose immediate parent subdirectory
+#   is :data:`BULK_PHASE_SUBDIRECTORY`; an explicit name always wins.
+# * Scope: every manifest repository outside ``images``/``services``
+#   (:data:`NON_PACKAGE_SUBDIRECTORY_KEYS`) plus every phase-named project. One
+#   with no owning phase is ``unknown_phase`` — a hard error, never a skip. A
+#   phase-named project missing from the manifest is ``not_in_manifest`` (also
+#   blocking). An owned repository with no checkout is ``no_checkout``
+#   (reported, not blocking: there is nothing to scan).
+# * Package identity: a fleet package's canonical name is its repository name;
+#   its top-level import name is that name with ``-`` replaced by ``_``
+#   (``agent-utilities`` -> ``agent_utilities``). A repository's edges to its
+#   own package are ignored.
+# * Edge classes: ``runtime`` (``project.dependencies``), ``optional``
+#   (``project.optional-dependencies``), ``dependency-group`` (PEP 735
+#   ``[dependency-groups]`` and ``tool.uv.dev-dependencies``), ``import``
+#   (production source) and ``test-import`` (a file under a ``test``/``tests``
+#   directory, ``test_*.py``, ``*_test.py`` or ``conftest.py``). Every class
+#   pointing later is reported; all but ``test-import`` block.
+# * Import scan: ``import``/``from`` statements read from the AST (relative
+#   imports are local by definition). Hidden directories, cargo ``target``/
+#   ``target-*`` trees, ``*.egg-info``, :data:`_IMPORT_SCAN_SKIPPED_DIRECTORIES`,
+#   symlinks and nested git checkouts are not this repository's source. A file
+#   whose bytes never mention a fleet import name cannot import one and is not
+#   parsed; one that does and cannot be parsed is a blocking error.
+# --------------------------------------------------------------------------- #
+
+#: The subdirectory a projectless (bulk) maintenance phase owns.
+BULK_PHASE_SUBDIRECTORY = "agents"
+
+#: Build output, caches and vendored environments — never scanned for imports.
+_IMPORT_SCAN_SKIPPED_DIRECTORIES = frozenset(
+    {"__pycache__", "build", "dist", "node_modules", "site-packages", "venv"}
+)
+
+#: Directory names that make every Python file beneath them test code.
+_TEST_DIRECTORY_NAMES = frozenset({"test", "tests"})
+
+PhaseEdgeClass = Literal[
+    "runtime", "optional", "dependency-group", "import", "test-import"
+]
+PHASE_EDGE_CLASSES: tuple[PhaseEdgeClass, ...] = (
+    "runtime",
+    "optional",
+    "dependency-group",
+    "import",
+    "test-import",
+)
+PhaseRepositoryStatus = Literal[
+    "checked", "no_checkout", "unknown_phase", "not_in_manifest"
+]
+_BLOCKING_REPOSITORY_STATUSES = frozenset({"unknown_phase", "not_in_manifest"})
+
+
+@dataclass(frozen=True)
+class PhaseEdge:
+    """One intra-fleet dependency edge, resolved to both ends' phases."""
+
+    from_repository: str
+    from_phase: int
+    to_package: str
+    to_phase: int
+    edge_class: PhaseEdgeClass
+    group: str | None  # the optional extra / dependency group, when declared
+    location: str  # workspace-relative ``pyproject.toml`` or ``file.py:line``
+
+    @property
+    def violates(self) -> bool:
+        """The edge points at a LATER phase than the repository declaring it."""
+        return self.to_phase > self.from_phase
+
+    @property
+    def blocking(self) -> bool:
+        """A violation fails the check unless it is a test-only import."""
+        return self.violates and self.edge_class != "test-import"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {**asdict(self), "blocking": self.blocking}
+
+
+@dataclass(frozen=True)
+class PhaseRepository:
+    """How one in-scope repository was classified before any edge was read."""
+
+    repository: str
+    name: str
+    phase: int | None
+    status: PhaseRepositoryStatus
+
+
+@dataclass
+class PhaseDirectionReport:
+    """Machine-readable result of :func:`check_phase_direction`."""
+
+    manifest: str
+    workspace_root: str
+    repositories: list[PhaseRepository] = field(default_factory=list)
+    edges: list[PhaseEdge] = field(default_factory=list)
+    errors: list[InvalidDependencyMetadata] = field(default_factory=list)
+
+    @property
+    def violations(self) -> list[PhaseEdge]:
+        return [edge for edge in self.edges if edge.violates]
+
+    @property
+    def ok(self) -> bool:
+        return (
+            not self.errors
+            and not any(edge.blocking for edge in self.edges)
+            and not any(
+                repository.status in _BLOCKING_REPOSITORY_STATUSES
+                for repository in self.repositories
+            )
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return _phase_report_payload(self)
+
+
+def _phase_report_payload(report: PhaseDirectionReport) -> dict[str, Any]:
+    """The JSON shape the CLI, ``dispatch`` and ``rm_gates`` all return."""
+    violations = report.violations
+    return {
+        "ok": report.ok,
+        "manifest": report.manifest,
+        "workspace_root": report.workspace_root,
+        "edge_counts": _count_edges_by_class(report.edges),
+        "violation_counts": _count_edges_by_class(violations),
+        "blocking_violation_count": sum(1 for edge in violations if edge.blocking),
+        "repository_counts": dict(
+            Counter(repository.status for repository in report.repositories)
+        ),
+        "repositories": [asdict(repository) for repository in report.repositories],
+        "violations": [edge.as_dict() for edge in violations],
+        "errors": [asdict(error) for error in report.errors],
+    }
+
+
+def _count_edges_by_class(edges: list[PhaseEdge]) -> dict[str, int]:
+    return {
+        edge_class: sum(1 for edge in edges if edge.edge_class == edge_class)
+        for edge_class in PHASE_EDGE_CLASSES
+    }
+
+
+@dataclass(frozen=True)
+class _ManifestPhase:
+    number: int
+    projects: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _PhaseScope:
+    package_phases: dict[str, int]  # canonical package -> owning phase
+    import_roots: dict[str, str]  # top-level import name -> canonical package
+
+
+@dataclass(frozen=True)
+class _PhaseTarget:
+    repository: str  # workspace-relative manifest identifier
+    phase: int
+    checkout: Path
+    own_packages: frozenset[str]
+
+
+@dataclass(frozen=True)
+class _ClassifiedRequirement:
+    raw: str
+    edge_class: PhaseEdgeClass
+    group: str | None
+
+
+def _manifest_phase(
+    table: object, manifest: Path
+) -> _ManifestPhase | InvalidDependencyMetadata:
+    names = _manifest_phase_names(table, manifest)
+    if isinstance(names, InvalidDependencyMetadata):
+        return names
+    number = cast(dict[str, Any], table).get("phase")
+    if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+        return _invalid_manifest(
+            manifest, "maintenance phase numbers must be positive integers"
+        )
+    return _ManifestPhase(number=number, projects=tuple(names))
+
+
+def _phase_set_problem(phases: list[_ManifestPhase]) -> str | None:
+    numbers = [phase.number for phase in phases]
+    projects = [name for phase in phases for name in phase.projects]
+    if not phases:
+        return "maintenance.phases declares no phases; there is no order to enforce"
+    if len(set(numbers)) != len(numbers):
+        return "duplicate maintenance phase number"
+    if len(set(projects)) != len(projects):
+        return "a maintenance project is listed in more than one phase"
+    if sum(1 for phase in phases if not phase.projects) > 1:
+        return (
+            "more than one maintenance phase names no projects (ambiguous bulk phase)"
+        )
+    return None
+
+
+def _manifest_phases(
+    data: dict[str, Any], manifest: Path
+) -> list[_ManifestPhase] | InvalidDependencyMetadata:
+    tables = _manifest_phase_tables(data, manifest)
+    if isinstance(tables, InvalidDependencyMetadata):
+        return tables
+    phases: list[_ManifestPhase] = []
+    for table in tables:
+        phase = _manifest_phase(table, manifest)
+        if isinstance(phase, InvalidDependencyMetadata):
+            return phase
+        phases.append(phase)
+    problem = _phase_set_problem(phases)
+    if problem is not None:
+        return _invalid_manifest(manifest, problem)
+    return sorted(phases, key=lambda phase: phase.number)
+
+
+def _phase_plan(
+    manifest: Path,
+) -> tuple[list[_ManifestRepository], list[_ManifestPhase]] | InvalidDependencyMetadata:
+    data = _load_manifest_table(manifest)
+    if data is None:
+        return _invalid_manifest(manifest, "manifest does not exist")
+    if isinstance(data, InvalidDependencyMetadata):
+        return data
+    found: list[_ManifestRepository] = []
+    walked = _walk_manifest_repositories_strict(
+        data, found, manifest=manifest, skip_keys=NON_PACKAGE_SUBDIRECTORY_KEYS
+    )
+    if walked is not None:
+        return walked
+    names = [repository.name for repository in found]
+    if len(set(names)) != len(names):
+        return _invalid_manifest(
+            manifest, "a repository name appears more than once (ambiguous phase owner)"
+        )
+    phases = _manifest_phases(data, manifest)
+    if isinstance(phases, InvalidDependencyMetadata):
+        return phases
+    return found, phases
+
+
+def _phase_owners(
+    phases: list[_ManifestPhase], repositories: list[_ManifestRepository]
+) -> dict[str, int]:
+    owners = {name: phase.number for phase in phases for name in phase.projects}
+    bulk = [phase.number for phase in phases if not phase.projects]
+    for repository in repositories:
+        if bulk and repository.parent == BULK_PHASE_SUBDIRECTORY:
+            owners.setdefault(repository.name, bulk[0])
+    return owners
+
+
+def _phase_universe(
+    repositories: list[_ManifestRepository], phases: list[_ManifestPhase]
+) -> list[_ManifestRepository]:
+    """Manifest repositories plus phase projects the manifest never lists.
+
+    An unlisted phase project has no manifest location, marked by an empty
+    ``identifier``.
+    """
+    listed = {repository.name for repository in repositories}
+    unlisted = [
+        _ManifestRepository(identifier="", name=name, parent="")
+        for phase in phases
+        for name in phase.projects
+        if name not in listed
+    ]
+    return [*repositories, *unlisted]
+
+
+def _selected_universe(
+    universe: list[_ManifestRepository],
+    requested: Sequence[str] | None,
+    manifest: Path,
+) -> list[_ManifestRepository] | InvalidDependencyMetadata:
+    if requested is None:
+        return universe
+    wanted = set(requested)
+    selected = [
+        repository
+        for repository in universe
+        if repository.name in wanted or repository.identifier in wanted
+    ]
+    matched = {repository.name for repository in selected} | {
+        repository.identifier for repository in selected
+    }
+    missing = sorted(wanted - matched)
+    if missing:
+        return InvalidDependencyMetadata(
+            declared_by=str(manifest),
+            detail=f"requested repositories are not in the manifest or its phases: {missing}",
+        )
+    return selected
+
+
+def _phase_repository(
+    repository: _ManifestRepository, owners: dict[str, int], workspace_root: Path
+) -> PhaseRepository:
+    phase = owners.get(repository.name)
+    status: PhaseRepositoryStatus
+    if not repository.identifier:
+        status = "not_in_manifest"
+    elif phase is None:
+        status = "unknown_phase"
+    elif (workspace_root / repository.identifier).is_dir():
+        status = "checked"
+    else:
+        status = "no_checkout"
+    return PhaseRepository(
+        repository=repository.identifier or repository.name,
+        name=repository.name,
+        phase=phase,
+        status=status,
+    )
+
+
+def _phase_scope(owners: dict[str, int]) -> _PhaseScope:
+    packages = {canonicalize_name(name): phase for name, phase in owners.items()}
+    return _PhaseScope(
+        package_phases=packages,
+        import_roots={package.replace("-", "_"): package for package in packages},
+    )
+
+
+def _dependency_group_entry(
+    item: object, group: str, pyproject_path: Path
+) -> _ClassifiedRequirement | InvalidDependencyMetadata | None:
+    """A PEP 735 entry: a requirement string, or an ``include-group`` table
+    naming another group that is classified on its own."""
+    if isinstance(item, str):
+        return _ClassifiedRequirement(item, "dependency-group", group)
+    if isinstance(item, dict) and set(item) == {"include-group"}:
+        return None
+    return _invalid_dependency_metadata(
+        pyproject_path,
+        f"dependency group {group!r} entries must be requirement strings "
+        "or include-group tables",
+    )
+
+
+def _dependency_group_entries(
+    items: object, group: str, pyproject_path: Path
+) -> list[_ClassifiedRequirement] | InvalidDependencyMetadata:
+    if not isinstance(items, list):
+        return _invalid_dependency_metadata(
+            pyproject_path, f"dependency group {group!r} must be a list"
+        )
+    entries: list[_ClassifiedRequirement] = []
+    for item in items:
+        entry = _dependency_group_entry(item, group, pyproject_path)
+        if isinstance(entry, InvalidDependencyMetadata):
+            return entry
+        if entry is not None:
+            entries.append(entry)
+    return entries
+
+
+def _uv_dev_dependencies(data: dict[str, Any]) -> object:
+    tool = data.get("tool")
+    uv = tool.get("uv") if isinstance(tool, dict) else None
+    return uv.get("dev-dependencies", []) if isinstance(uv, dict) else []
+
+
+def _dependency_group_requirements(
+    data: dict[str, Any], pyproject_path: Path
+) -> list[_ClassifiedRequirement] | InvalidDependencyMetadata:
+    groups = data.get("dependency-groups", {})
+    if not isinstance(groups, dict):
+        return _invalid_dependency_metadata(
+            pyproject_path, "[dependency-groups] must be a table"
+        )
+    tables = [(str(group), items) for group, items in groups.items()]
+    tables.append(("tool.uv.dev-dependencies", _uv_dev_dependencies(data)))
+    requirements: list[_ClassifiedRequirement] = []
+    for group, items in tables:
+        entries = _dependency_group_entries(items, group, pyproject_path)
+        if isinstance(entries, InvalidDependencyMetadata):
+            return entries
+        requirements.extend(entries)
+    return requirements
+
+
+def _classified_requirements(
+    data: dict[str, Any], pyproject_path: Path
+) -> tuple[str, list[_ClassifiedRequirement]] | InvalidDependencyMetadata:
+    """Every declared requirement with its edge class, through the same
+    ``[project]`` validators :func:`declared_fleet_constraints` uses."""
+    project = _dependency_project_table(data, pyproject_path)
+    if isinstance(project, InvalidDependencyMetadata):
+        return project
+    required = _dependency_required_fields(project, pyproject_path)
+    if isinstance(required, InvalidDependencyMetadata):
+        return required
+    optional = _dependency_optional_groups(project, pyproject_path)
+    if isinstance(optional, InvalidDependencyMetadata):
+        return optional
+    groups = _dependency_group_requirements(data, pyproject_path)
+    if isinstance(groups, InvalidDependencyMetadata):
+        return groups
+    name, dependencies = required
+    classified = [_ClassifiedRequirement(raw, "runtime", None) for raw in dependencies]
+    classified.extend(
+        _ClassifiedRequirement(raw, "optional", extra)
+        for extra, items in optional.items()
+        for raw in items
+    )
+    return canonicalize_name(name), [*classified, *groups]
+
+
+def _declared_phase_edge(
+    requirement: _ClassifiedRequirement,
+    target: _PhaseTarget,
+    scope: _PhaseScope,
+    pyproject_path: Path,
+) -> PhaseEdge | InvalidDependencyMetadata | None:
+    try:
+        package = canonicalize_name(Requirement(requirement.raw).name)
+    except InvalidRequirement:
+        return _invalid_dependency_metadata(
+            pyproject_path, f"invalid dependency requirement: {requirement.raw!r}"
+        )
+    to_phase = scope.package_phases.get(package)
+    if to_phase is None or package in target.own_packages:
+        return None
+    return PhaseEdge(
+        from_repository=target.repository,
+        from_phase=target.phase,
+        to_package=package,
+        to_phase=to_phase,
+        edge_class=requirement.edge_class,
+        group=requirement.group,
+        location=f"{target.repository}/{_PYPROJECT_NAME}",
+    )
+
+
+def _declared_phase_edges(
+    target: _PhaseTarget, scope: _PhaseScope
+) -> tuple[list[PhaseEdge], list[InvalidDependencyMetadata]]:
+    pyproject_path = target.checkout / _PYPROJECT_NAME
+    if not _dependency_path_present(pyproject_path):
+        return [], []
+    data = _load_pyproject_toml(pyproject_path)
+    classified = (
+        data
+        if isinstance(data, InvalidDependencyMetadata)
+        else _classified_requirements(data, pyproject_path)
+    )
+    if isinstance(classified, InvalidDependencyMetadata):
+        return [], [classified]
+    own_package, requirements = classified
+    owned = _PhaseTarget(
+        repository=target.repository,
+        phase=target.phase,
+        checkout=target.checkout,
+        own_packages=target.own_packages | {own_package},
+    )
+    edges: list[PhaseEdge] = []
+    errors: list[InvalidDependencyMetadata] = []
+    for requirement in requirements:
+        edge = _declared_phase_edge(requirement, owned, scope, pyproject_path)
+        if isinstance(edge, InvalidDependencyMetadata):
+            errors.append(edge)
+        elif edge is not None:
+            edges.append(edge)
+    return edges, errors
+
+
+def _is_skipped_source_directory(path: Path) -> bool:
+    name = path.name
+    return (
+        name.startswith(".")
+        or name in _IMPORT_SCAN_SKIPPED_DIRECTORIES
+        or name == "target"
+        or name.startswith("target-")
+        or name.endswith(".egg-info")
+        or path.is_symlink()
+        or (path / ".git").exists()
+    )
+
+
+def _python_sources(checkout: Path) -> Iterator[Path]:
+    for root, directories, files in os.walk(checkout):
+        base = Path(root)
+        directories[:] = sorted(
+            directory
+            for directory in directories
+            if not _is_skipped_source_directory(base / directory)
+        )
+        yield from (
+            base / name
+            for name in sorted(files)
+            if name.endswith(".py") and not (base / name).is_symlink()
+        )
+
+
+def _is_test_source(relative: Path) -> bool:
+    name = relative.name
+    return (
+        bool(_TEST_DIRECTORY_NAMES.intersection(relative.parts[:-1]))
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+        or name == "conftest.py"
+    )
+
+
+def _imported_roots(tree: ast.AST) -> Iterator[tuple[str, int]]:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            yield from (
+                (alias.name.partition(".")[0], node.lineno) for alias in node.names
+            )
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            yield node.module.partition(".")[0], node.lineno
+
+
+def _parsed_source(
+    path: Path, needles: tuple[bytes, ...]
+) -> ast.AST | InvalidDependencyMetadata | None:
+    """The file's AST; ``None`` when its bytes cannot name a fleet import."""
+    try:
+        source = path.read_bytes()
+    except OSError as exc:
+        return InvalidDependencyMetadata(
+            declared_by=str(path),
+            detail=f"python source is unreadable: {type(exc).__name__}",
+        )
+    if not any(needle in source for needle in needles):
+        return None
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            return ast.parse(source, filename=str(path))
+    except (SyntaxError, ValueError, RecursionError) as exc:
+        return InvalidDependencyMetadata(
+            declared_by=str(path),
+            detail=f"python source does not parse: {type(exc).__name__}",
+        )
+
+
+def _source_import_edges(
+    tree: ast.AST,
+    source: Path,
+    target: _PhaseTarget,
+    scope: _PhaseScope,
+    roots: dict[str, str],
+) -> list[PhaseEdge]:
+    relative = source.relative_to(target.checkout)
+    edge_class: PhaseEdgeClass = (
+        "test-import" if _is_test_source(relative) else "import"
+    )
+    return [
+        PhaseEdge(
+            from_repository=target.repository,
+            from_phase=target.phase,
+            to_package=roots[root],
+            to_phase=scope.package_phases[roots[root]],
+            edge_class=edge_class,
+            group=None,
+            location=f"{target.repository}/{relative.as_posix()}:{line}",
+        )
+        for root, line in _imported_roots(tree)
+        if root in roots
+    ]
+
+
+def _import_phase_edges(
+    target: _PhaseTarget, scope: _PhaseScope
+) -> tuple[list[PhaseEdge], list[InvalidDependencyMetadata]]:
+    roots = {
+        root: package
+        for root, package in scope.import_roots.items()
+        if package not in target.own_packages
+    }
+    needles = tuple(root.encode() for root in roots)
+    edges: list[PhaseEdge] = []
+    errors: list[InvalidDependencyMetadata] = []
+    for source in _python_sources(target.checkout):
+        parsed = _parsed_source(source, needles)
+        if isinstance(parsed, InvalidDependencyMetadata):
+            errors.append(parsed)
+        elif parsed is not None:
+            edges.extend(_source_import_edges(parsed, source, target, scope, roots))
+    return edges, errors
+
+
+def _check_phase_repository(
+    report: PhaseDirectionReport,
+    repository: _ManifestRepository,
+    owners: dict[str, int],
+    scope: _PhaseScope,
+    workspace_root: Path,
+) -> None:
+    classified = _phase_repository(repository, owners, workspace_root)
+    report.repositories.append(classified)
+    if classified.status != "checked" or classified.phase is None:
+        return
+    target = _PhaseTarget(
+        repository=repository.identifier,
+        phase=classified.phase,
+        checkout=workspace_root / repository.identifier,
+        own_packages=frozenset({canonicalize_name(repository.name)}),
+    )
+    for edges, errors in (
+        _declared_phase_edges(target, scope),
+        _import_phase_edges(target, scope),
+    ):
+        report.edges.extend(edges)
+        report.errors.extend(errors)
+
+
+def check_phase_direction(
+    workspace_yml_path: str | Path,
+    *,
+    workspace_root: str | Path | None = None,
+    repositories: Sequence[str] | None = None,
+) -> PhaseDirectionReport:
+    """Fail when any repository depends on a fleet package of a LATER phase.
+
+    ``workspace_yml_path`` is the manifest whose ``maintenance.phases`` define
+    the order; ``workspace_root`` is where its repositories are checked out
+    (default: the manifest's own directory, the canonical layout).
+    ``repositories`` narrows the scan to those names or manifest identifiers —
+    a requested repository the manifest does not know is an error. See the
+    section comment above for every classification rule.
+    """
+    manifest = Path(workspace_yml_path)
+    root = Path(workspace_root) if workspace_root is not None else manifest.parent
+    report = PhaseDirectionReport(manifest=str(manifest), workspace_root=str(root))
+    plan = _phase_plan(manifest)
+    if isinstance(plan, InvalidDependencyMetadata):
+        report.errors.append(plan)
+        return report
+    manifest_repositories, phases = plan
+    selected = _selected_universe(
+        _phase_universe(manifest_repositories, phases), repositories, manifest
+    )
+    if isinstance(selected, InvalidDependencyMetadata):
+        report.errors.append(selected)
+        return report
+    owners = _phase_owners(phases, manifest_repositories)
+    scope = _phase_scope(owners)
+    for repository in selected:
+        _check_phase_repository(report, repository, owners, scope, root)
+    return report
 
 
 # --------------------------------------------------------------------------- #
@@ -2096,13 +2823,38 @@ def await_gate_readiness(
 # --------------------------------------------------------------------------- #
 
 
+def _dispatch_check(kwargs: dict[str, Any]) -> dict[str, Any]:
+    return check_tree(kwargs.get("path")).as_dict()
+
+
+def _dispatch_phase_direction(kwargs: dict[str, Any]) -> dict[str, Any]:
+    manifest = kwargs.get("manifest_path")
+    if not manifest:
+        return {"ok": False, "error": "phase_direction requires manifest_path"}
+    return check_phase_direction(
+        manifest,
+        workspace_root=kwargs.get("workspace_root"),
+        repositories=kwargs.get("repositories"),
+    ).as_dict()
+
+
+_DISPATCH_ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
+    "check": _dispatch_check,
+    "phase_direction": _dispatch_phase_direction,
+}
+
+
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
-    """One action core, mirroring ``parse_gate.dispatch`` — a future MCP tool
-    dispatches into this instead of a second implementation."""
-    if action == "check":
-        report = check_tree(kwargs.get("path"))
-        return report.as_dict()
-    return {"ok": False, "error": f"unknown action: {action}"}
+    """One action core, mirroring ``parse_gate.dispatch`` — the CLI and the
+    ``rm_gates`` MCP tool dispatch into this instead of a second implementation.
+
+    ``check``: this repo's readiness (``path``). ``phase_direction``:
+    :func:`check_phase_direction` (``manifest_path``, ``workspace_root``,
+    ``repositories``)."""
+    handler = _DISPATCH_ACTIONS.get(action)
+    if handler is None:
+        return {"ok": False, "error": f"unknown action: {action}"}
+    return handler(kwargs)
 
 
 def _print_human_report(report: Any) -> None:

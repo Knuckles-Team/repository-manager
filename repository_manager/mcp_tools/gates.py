@@ -165,7 +165,10 @@ def register_gates_tools(
             "would stop at the first failure -- DETECTION only, it cannot "
             "rewrite a repo's own opaque entry text), 'xdist_plan' (which "
             "repos could run pytest in parallel and why the rest cannot), "
-            "'xdist_apply' (perform that rollout; dry-run unless dry_run=False)."
+            "'xdist_apply' (perform that rollout; dry-run unless dry_run=False), "
+            "'phase_direction' (fail when a repository declares or imports a "
+            "fleet package owned by a LATER workspace.yml maintenance phase; "
+            "'repos' narrows it)."
         ),
         fleet: bool = Field(
             default=False,
@@ -268,12 +271,19 @@ def register_gates_tools(
                 escalate=escalate,
             )
 
-        if action in ("audit_fail_fast", "xdist_plan", "xdist_apply"):
+        if action in (
+            "audit_fail_fast",
+            "xdist_plan",
+            "xdist_apply",
+            "phase_direction",
+        ):
             return gate_runner.dispatch(
                 action,
                 repos=repos,
                 fleet=fleet,
                 dry_run=dry_run,
+                manifest_path=adapter_context.default_workspace_yml,
+                workspace_root=adapter_context.default_workspace,
             )
 
         return gate_runner.dispatch(

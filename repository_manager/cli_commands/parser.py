@@ -25,6 +25,7 @@ from repository_manager.cli_commands.differential_selection import (
 from repository_manager.cli_commands.docs_readiness import run_docs_readiness_cli
 from repository_manager.cli_commands.lane import run_lane_cli
 from repository_manager.cli_commands.merge_queue import run_merge_queue_cli
+from repository_manager.cli_commands.phase_direction import run_phase_direction_cli
 from repository_manager.cli_commands.remote_workers import run_remote_workers_cli
 
 
@@ -673,7 +674,28 @@ Examples:
         help="Confirm the exact repository apply requested by --docs-readiness apply.",
     )
 
+    group_phase_direction = parser.add_argument_group(
+        "Maintenance Phase Dependency Direction"
+    )
+    group_phase_direction.add_argument(
+        "--phase-direction",
+        action="store_true",
+        help=(
+            "Fail when any repository declares or imports a fleet package owned "
+            "by a LATER maintenance phase of -f/--file (repositories checked out "
+            "under -w/--workspace). Prints a JSON report; exits 1 on a violation."
+        ),
+    )
+    group_phase_direction.add_argument(
+        "--phase-direction-repository",
+        action="append",
+        default=None,
+        help="Repository name or manifest identifier to check (repeatable; default: all).",
+    )
+
     args = parser.parse_args()
+
+    _dispatch_phase_direction_verb(args)
 
     # Handled before every other verb and returns immediately: the queue drives a
     # SINGLE named repository and must not be combined with the workspace-wide
@@ -709,6 +731,13 @@ Examples:
     has_errors = _dispatch_maintain(runtime, git, args, has_errors)
     has_errors = _dispatch_push(runtime, git, args, has_errors)
     return _cli_return_code(has_errors)
+
+
+def _dispatch_phase_direction_verb(args: argparse.Namespace) -> None:
+    """``--phase-direction``: a read-only workspace check that exits the process."""
+
+    if args.phase_direction:
+        sys.exit(run_phase_direction_cli(args))
 
 
 def _dispatch_immediate_verb(args: argparse.Namespace) -> None:

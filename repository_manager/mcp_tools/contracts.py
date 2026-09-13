@@ -72,6 +72,7 @@ RM_GATES_ACTIONS = (
     "audit_fail_fast",
     "xdist_plan",
     "xdist_apply",
+    "phase_direction",
 )
 
 RM_DOCS_READINESS_ACTIONS = (

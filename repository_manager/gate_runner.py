@@ -108,6 +108,7 @@ GATE_RUNNER_ACTIONS: tuple[str, ...] = (
     "audit_fail_fast",
     "xdist_plan",
     "xdist_apply",
+    "phase_direction",
 )
 
 #: The job-store ``action`` tag every gate job (run OR retest OR escalation)
@@ -412,6 +413,28 @@ def _dispatch_xdist_apply(kwargs: dict[str, Any]) -> dict[str, Any]:
     from repository_manager import xdist_rollout
 
     return xdist_rollout.dispatch("apply", **_fleet_config_kwargs(kwargs))
+
+
+def _dispatch_phase_direction(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """RF-ADR-009 §3: no repository may depend on a later maintenance phase.
+
+    ``repos`` (comma-separated names or manifest identifiers) narrows the scan;
+    omitted, every in-scope manifest repository is checked.
+    """
+    from repository_manager import dependency_readiness
+
+    repos = kwargs.get("repos")
+    repositories = (
+        [part.strip() for part in str(repos).split(",") if part.strip()]
+        if repos
+        else None
+    )
+    return dependency_readiness.dispatch(
+        "phase_direction",
+        manifest_path=kwargs.get("manifest_path"),
+        workspace_root=kwargs.get("workspace_root"),
+        repositories=repositories,
+    )
 
 
 def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
@@ -917,4 +940,5 @@ _GATE_DISPATCH_TABLE: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "audit_fail_fast": _dispatch_audit_fail_fast,
     "xdist_plan": _dispatch_xdist_plan,
     "xdist_apply": _dispatch_xdist_apply,
+    "phase_direction": _dispatch_phase_direction,
 }
