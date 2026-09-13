@@ -99,6 +99,37 @@ _OUTPUT_ROOTS = frozenset(
 _WELL_KNOWN_LEAF = "agent-skills.json"
 _GIT_EXECUTABLE = shutil.which("git")
 
+#: mkdocs's own default when a repository's mkdocs.yml does not declare
+#: docs_dir. This mirrors mkdocs's behavior exactly rather than introducing
+#: a second, competing default -- see `_content_source` below and the
+#: pipelines `pages_pipeline.yml` `content_source` input, which is the same
+#: declared authority read the same way (RF-ADR-009 Phase D, lane
+#: PAGES-FOUNDATION).
+DEFAULT_CONTENT_SOURCE = "docs"
+
+
+class _MkdocsConfigLoader(yaml.SafeLoader):
+    """A `yaml.SafeLoader` tolerant of mkdocs' pymdownx custom Python tags.
+
+    Real fleet `mkdocs.yml` files commonly declare markdown extensions such
+    as ``format: !!python/name:pymdownx.superfences.fence_code_format`` for
+    Mermaid superfences. Plain `yaml.safe_load` raises `ConstructorError` on
+    these (confirmed against the live fleet, e.g.
+    `agent-packages/agents/clarity-api/mkdocs.yml`), so reading only
+    `docs_dir` out of an arbitrary repository's `mkdocs.yml` requires a
+    loader that recognizes -- without executing -- these tags. The
+    constructors below return the tag's plain-text suffix; they never
+    import, call, or otherwise execute anything.
+    """
+
+
+_MkdocsConfigLoader.add_multi_constructor(
+    "tag:yaml.org,2002:python/name:", lambda loader, suffix, node: suffix
+)
+_MkdocsConfigLoader.add_multi_constructor(
+    "tag:yaml.org,2002:python/object/apply:", lambda loader, suffix, node: suffix
+)
+
 
 class DocsReadinessError(ValueError):
     """Raised when a readiness action cannot be admitted safely."""
@@ -532,8 +563,40 @@ def _canonical_generator() -> Generator:
     return cast(Generator, authority.module.generate)
 
 
+def _content_source(root: Path) -> str:
+    """Return the repository's declared documentation content source.
+
+    ``mkdocs.yml``'s own ``docs_dir`` is the single authority -- it is what
+    mkdocs itself already builds from, and it is the same declared value the
+    pipelines ``pages_pipeline.yml`` reusable workflow's ``content_source``
+    input is validated against (RF-ADR-009 Phase D, lane PAGES-FOUNDATION).
+    Repository Manager reads it directly from the checkout rather than
+    duplicating a second default: absent an explicit ``docs_dir``, or absent
+    a readable/parseable ``mkdocs.yml`` at all, mkdocs's own convention
+    (``docs``) applies -- this mirrors mkdocs's real behavior instead of
+    guessing a different one.
+    """
+
+    mkdocs_path = root / "mkdocs.yml"
+    try:
+        text = mkdocs_path.read_text(encoding="utf-8")
+    except OSError:
+        return DEFAULT_CONTENT_SOURCE
+    try:
+        config = yaml.load(text, Loader=_MkdocsConfigLoader)  # nosec B506
+    except yaml.YAMLError:
+        return DEFAULT_CONTENT_SOURCE
+    if not isinstance(config, dict):
+        return DEFAULT_CONTENT_SOURCE
+    docs_dir = config.get("docs_dir", DEFAULT_CONTENT_SOURCE)
+    if not isinstance(docs_dir, str) or not docs_dir.strip():
+        return DEFAULT_CONTENT_SOURCE
+    return docs_dir
+
+
 def _input_preflight(path: Path) -> None:
-    _contained_path(path, "docs/agent-readiness.json", "applicability")
+    content_source = _content_source(path)
+    _contained_path(path, f"{content_source}/agent-readiness.json", "applicability")
     _contained_path(path, "mkdocs.yml", "mkdocs")
 
 
@@ -591,8 +654,11 @@ def _generator_result(
     root: Path,
 ) -> dict[str, Any]:
     check = action != "apply"
+    applicability = root / _content_source(root) / "agent-readiness.json"
     try:
-        raw = generator(root, check=check, adopt_existing=False)
+        raw = generator(
+            root, check=check, adopt_existing=False, applicability=applicability
+        )
     except Exception as exc:  # noqa: BLE001 - third-party generator boundary
         del exc
         return {"ok": False, "error_code": "generator-failed"}
@@ -800,11 +866,13 @@ def _verify_current_staged(
 ) -> dict[str, Any]:
     staging.mkdir()
     actual_before = _artifact_files(root)
+    applicability = root / _content_source(root) / "agent-readiness.json"
     raw = generator(
         root,
         output_dir=staging,
         check=False,
         adopt_existing=True,
+        applicability=applicability,
     )
     if not isinstance(raw, Mapping):
         return {"ok": False, "error_code": "generator-result-invalid"}

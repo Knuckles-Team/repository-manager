@@ -92,7 +92,9 @@ def _fake_generator(calls: list[tuple[Path, bool]]):
         check: bool,
         adopt_existing: bool,
         output_dir: Path | None = None,
+        applicability: Path | None = None,
     ) -> dict[str, Any]:
+        del applicability
         assert adopt_existing is (output_dir is not None)
         calls.append((root, check))
         if not check:
@@ -315,6 +317,78 @@ def test_missing_applicability_is_a_privacy_safe_block(
     assert str(repo) not in json.dumps(result)
 
 
+@pytest.fixture
+def pages_layout_fixture_workspace(tmp_path: Path) -> tuple[Path, Path]:
+    """A repository declaring the new pages/ content source explicitly.
+
+    Mirrors ``fixture_workspace`` but with ``docs_dir: pages`` declared in
+    mkdocs.yml -- the single authority `_content_source` reads (RF-ADR-009
+    Phase D, lane PAGES-FOUNDATION) -- and its readiness artifacts under
+    ``pages/`` instead of ``docs/``.
+    """
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    repo = root / "agent-packages" / "agents" / "provider"
+    repo.mkdir(parents=True)
+    (repo / "pages").mkdir()
+    (repo / "pages" / "index.md").write_text(
+        "# Home\n\nFixture pages.\n", encoding="utf-8"
+    )
+    (repo / "pages" / "agent-readiness.json").write_text(
+        json.dumps(_valid_readiness()) + "\n", encoding="utf-8"
+    )
+    (repo / "skills" / "fixture").mkdir(parents=True)
+    (repo / "skills" / "fixture" / "SKILL.md").write_text(
+        "---\nname: fixture\ndescription: Fixture skill\n---\n", encoding="utf-8"
+    )
+    (repo / "mkdocs.yml").write_text(
+        "site_name: Fixture\nsite_url: https://docs.example.invalid/\n"
+        "docs_dir: pages\n"
+        "nav:\n  - Home: index.md\n"
+        "markdown_extensions:\n"
+        "  - pymdownx.superfences:\n"
+        "      custom_fences:\n"
+        "        - name: mermaid\n"
+        "          class: mermaid\n"
+        "          format: !!python/name:pymdownx.superfences.fence_code_format\n",
+        encoding="utf-8",
+    )
+    _init_repo(repo)
+    _manifest(root)
+    return root, repo
+
+
+def test_pages_layout_content_source_is_read_from_mkdocs_docs_dir(
+    pages_layout_fixture_workspace: tuple[Path, Path],
+) -> None:
+    """A repository whose mkdocs.yml declares docs_dir: pages is not blocked.
+
+    ``mkdocs.yml``'s ``docs_dir`` is the one authority; a repository need not
+    also carry a ``docs/agent-readiness.json`` it will never use. The
+    ``!!python/name:`` pymdownx tag in this fixture's mkdocs.yml (the same
+    tag real fleet mkdocs.yml files use for Mermaid superfences) must not
+    break the read.
+    """
+
+    root, _ = pages_layout_fixture_workspace
+
+    result = _fixture_dispatch(
+        workspace_root=root,
+        repository="agent-packages/agents/provider",
+    )
+
+    assert result["ok"] is True
+    row = result["repositories"][0]
+    assert row["status"] == "planned"
+
+
+def test_content_source_defaults_to_docs_when_mkdocs_yml_is_silent() -> None:
+    """`_content_source` mirrors mkdocs's own default, not a competing one."""
+
+    assert docs_readiness.DEFAULT_CONTENT_SOURCE == "docs"
+
+
 def test_manifest_secret_fields_are_refused_before_selection(
     fixture_workspace: tuple[Path, Path],
 ) -> None:
@@ -400,8 +474,14 @@ def test_generator_exception_cannot_publish_paths_or_exception_text(
 ) -> None:
     root, _ = fixture_workspace
 
-    def fail(root: Path, *, check: bool, adopt_existing: bool) -> dict[str, Any]:
-        del check, adopt_existing
+    def fail(
+        root: Path,
+        *,
+        check: bool,
+        adopt_existing: bool,
+        applicability: Path | None = None,
+    ) -> dict[str, Any]:
+        del check, adopt_existing, applicability
         raise ValueError(f"{root}/credential-value")
 
     result = _fixture_dispatch(
@@ -428,7 +508,9 @@ def test_verify_requires_current_idempotent_generator_plan(
         check: bool,
         adopt_existing: bool,
         output_dir: Path | None = None,
+        applicability: Path | None = None,
     ) -> dict[str, Any]:
+        del applicability
         assert check is False
         assert adopt_existing is (output_dir is not None)
         destination = output_dir or generator_root
@@ -465,9 +547,13 @@ def test_apply_failure_rolls_back_only_owned_artifacts(
     before_manifest = (repo / "agent-readiness-manifest.json").read_bytes()
 
     def fail(
-        generator_root: Path, *, check: bool, adopt_existing: bool
+        generator_root: Path,
+        *,
+        check: bool,
+        adopt_existing: bool,
+        applicability: Path | None = None,
     ) -> dict[str, Any]:
-        del check, adopt_existing
+        del check, adopt_existing, applicability
         (generator_root / "llms.txt").write_bytes(b"partial publication\n")
         (generator_root / "agent-readiness-manifest.json").write_bytes(
             b"partial publication\n"
@@ -486,12 +572,15 @@ def test_apply_failure_rolls_back_only_owned_artifacts(
     assert result["repositories"][0]["reason"] == "generator-failed"
     assert (repo / "llms.txt").read_bytes() == before_llms
     assert (repo / "agent-readiness-manifest.json").read_bytes() == before_manifest
-    assert subprocess.run(
-        ["git", "-C", str(repo), "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout == ""
+    assert (
+        subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        == ""
+    )
 
 
 def test_generator_output_escape_is_rejected_without_durable_path(
@@ -499,8 +588,14 @@ def test_generator_output_escape_is_rejected_without_durable_path(
 ) -> None:
     root, _ = fixture_workspace
 
-    def escape(root: Path, *, check: bool, adopt_existing: bool) -> dict[str, Any]:
-        del root, check, adopt_existing
+    def escape(
+        root: Path,
+        *,
+        check: bool,
+        adopt_existing: bool,
+        applicability: Path | None = None,
+    ) -> dict[str, Any]:
+        del root, check, adopt_existing, applicability
         return {
             "generated": ["../secret.txt"],
             "planned": [],
@@ -621,7 +716,9 @@ def test_verify_uses_bounded_staging_and_does_not_copy_or_mutate_source(
         output_dir: Path,
         check: bool,
         adopt_existing: bool,
+        applicability: Path | None = None,
     ) -> dict[str, Any]:
+        del applicability
         assert generator_root == repo
         assert output_dir != generator_root
         assert check is False and adopt_existing is True
@@ -659,8 +756,9 @@ def test_verify_refuses_generator_source_tree_mutation(
         output_dir: Path,
         check: bool,
         adopt_existing: bool,
+        applicability: Path | None = None,
     ) -> dict[str, Any]:
-        del check, adopt_existing
+        del check, adopt_existing, applicability
         (generator_root / "README.md").write_text("unexpected\n", encoding="utf-8")
         (output_dir / "llms.txt").write_text("fixture\n", encoding="utf-8")
         (output_dir / "agent-readiness-manifest.json").write_text(
@@ -689,8 +787,9 @@ def test_verify_rejects_undeclared_staging_output(
         output_dir: Path,
         check: bool,
         adopt_existing: bool,
+        applicability: Path | None = None,
     ) -> dict[str, Any]:
-        del generator_root, check, adopt_existing
+        del generator_root, check, adopt_existing, applicability
         (output_dir / "secret.txt").write_text("not an artifact\n", encoding="utf-8")
         return {
             "generated": ["llms.txt"],
@@ -720,8 +819,9 @@ def test_verify_requires_exact_declared_staging_outputs(
         output_dir: Path,
         check: bool,
         adopt_existing: bool,
+        applicability: Path | None = None,
     ) -> dict[str, Any]:
-        del generator_root, check, adopt_existing
+        del generator_root, check, adopt_existing, applicability
         for relative in written:
             (output_dir / relative).write_text("fixture\n", encoding="utf-8")
         return {
