@@ -22,6 +22,12 @@ subdirectories:
       description: Desktop Cockpit for AI agents.
     - url: https://github.com/Knuckles-Team/epistemic-graph.git
       description: Local Knowledge Graph for AI agents.
+    - url: https://github.com/Knuckles-Team/agent-connector-sdk.git
+      description: 'Connector SDK: MCP server scaffolding, provisioning packs, and
+        the source sync runner that feeds epistemic-graph (RF-ADR-009).'
+    - url: https://github.com/Knuckles-Team/graph-os.git
+      description: 'graph-os host: MCP server, REST gateway, control plane, fleet
+        gateway and agent-webui hosting (RF-ADR-009).'
     subdirectories:
       skills:
         description: Agent capabilities, skill graphs, and tool definitions.
@@ -548,13 +554,23 @@ maintenance:
     projects:
     - epistemic-graph
     wait_minutes: 30
-  - name: 'Phase 3: agent-utilities'
+  - name: 'Phase 3: agent-connector-sdk'
     phase: 3
+    projects:
+    - agent-connector-sdk
+    wait_minutes: 30
+  - name: 'Phase 4: agent-utilities'
+    phase: 4
     projects:
     - agent-utilities
     wait_minutes: 30
-  - name: 'Phase 4: Core Tools and UIs'
-    phase: 4
+  - name: 'Phase 5: graph-os'
+    phase: 5
+    projects:
+    - graph-os
+    wait_minutes: 30
+  - name: 'Phase 6: Core Tools and UIs'
+    phase: 6
     projects:
     - universal-skills
     - skill-graphs
@@ -562,8 +578,8 @@ maintenance:
     - agent-terminal-ui
     - geniusbot
     wait_minutes: 0
-  - name: 'Phase 5: Agents'
-    phase: 5
+  - name: 'Phase 7: Agents'
+    phase: 7
     bulk_bump: true
     bulk_push: true
 services:

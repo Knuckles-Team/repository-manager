@@ -18,7 +18,7 @@ from repository_manager.mcp_tools.docs_readiness import (
     register_docs_readiness_tools,
 )
 
-PRODUCTION_FLEET_COUNT = 78
+PRODUCTION_FLEET_COUNT = 80
 
 
 def _init_repo(path: Path) -> None:
@@ -528,7 +528,7 @@ def test_default_fleet_is_exact_manifest_agent_packages_scope() -> None:
     )
     selected_ids = {item.identifier for item in selected}
 
-    assert len(selected) == 78
+    assert len(selected) == PRODUCTION_FLEET_COUNT
     assert selected_ids == {
         item.identifier
         for item in identities
