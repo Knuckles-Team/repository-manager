@@ -389,6 +389,57 @@ def test_content_source_defaults_to_docs_when_mkdocs_yml_is_silent() -> None:
     assert docs_readiness.DEFAULT_CONTENT_SOURCE == "docs"
 
 
+def test_content_source_tolerates_the_real_fleet_pymdownx_tag_with_no_docs_dir(
+    tmp_path: Path,
+) -> None:
+    """The real fleet's `!!python/name:` tag never reaches a constructor.
+
+    `_content_source` reads `docs_dir` via `yaml.compose`, which runs only
+    the parser/composer stage -- it never calls a constructor, so this tag
+    (copied verbatim from `agent-packages/agents/clarity-api/mkdocs.yml`)
+    stays an inert `ScalarNode` and cannot execute anything. No `docs_dir`
+    key is declared, so mkdocs's own "docs" default applies.
+    """
+
+    (tmp_path / "mkdocs.yml").write_text(
+        "site_name: Fixture\n"
+        "markdown_extensions:\n"
+        "  - pymdownx.highlight:\n"
+        "      anchor_linenums: true\n"
+        "  - pymdownx.superfences:\n"
+        "      custom_fences:\n"
+        "        - name: mermaid\n"
+        "          class: mermaid\n"
+        "          format: !!python/name:pymdownx.superfences.fence_code_format\n",
+        encoding="utf-8",
+    )
+
+    assert docs_readiness._content_source(tmp_path) == "docs"
+
+
+def test_content_source_missing_docs_dir_key_is_the_mkdocs_default(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "mkdocs.yml").write_text(
+        "site_name: Fixture\nnav:\n  - Home: index.md\n", encoding="utf-8"
+    )
+
+    assert docs_readiness._content_source(tmp_path) == "docs"
+
+
+def test_content_source_non_scalar_docs_dir_fails_loudly(tmp_path: Path) -> None:
+    """A `docs_dir` that isn't a plain string is a named error, not a guess."""
+
+    (tmp_path / "mkdocs.yml").write_text(
+        "site_name: Fixture\ndocs_dir:\n  - pages\n  - docs\n", encoding="utf-8"
+    )
+
+    with pytest.raises(
+        docs_readiness.DocsReadinessError, match="mkdocs-docs-dir-invalid"
+    ):
+        docs_readiness._content_source(tmp_path)
+
+
 def test_manifest_secret_fields_are_refused_before_selection(
     fixture_workspace: tuple[Path, Path],
 ) -> None:

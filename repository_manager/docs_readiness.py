@@ -108,29 +108,6 @@ _GIT_EXECUTABLE = shutil.which("git")
 DEFAULT_CONTENT_SOURCE = "docs"
 
 
-class _MkdocsConfigLoader(yaml.SafeLoader):
-    """A `yaml.SafeLoader` tolerant of mkdocs' pymdownx custom Python tags.
-
-    Real fleet `mkdocs.yml` files commonly declare markdown extensions such
-    as ``format: !!python/name:pymdownx.superfences.fence_code_format`` for
-    Mermaid superfences. Plain `yaml.safe_load` raises `ConstructorError` on
-    these (confirmed against the live fleet, e.g.
-    `agent-packages/agents/clarity-api/mkdocs.yml`), so reading only
-    `docs_dir` out of an arbitrary repository's `mkdocs.yml` requires a
-    loader that recognizes -- without executing -- these tags. The
-    constructors below return the tag's plain-text suffix; they never
-    import, call, or otherwise execute anything.
-    """
-
-
-_MkdocsConfigLoader.add_multi_constructor(
-    "tag:yaml.org,2002:python/name:", lambda loader, suffix, node: suffix
-)
-_MkdocsConfigLoader.add_multi_constructor(
-    "tag:yaml.org,2002:python/object/apply:", lambda loader, suffix, node: suffix
-)
-
-
 class DocsReadinessError(ValueError):
     """Raised when a readiness action cannot be admitted safely."""
 
@@ -563,6 +540,42 @@ def _canonical_generator() -> Generator:
     return cast(Generator, authority.module.generate)
 
 
+def _mkdocs_document(root: Path) -> yaml.Node | None:
+    """Compose ``mkdocs.yml`` into a node tree without constructing anything.
+
+    `yaml.compose` runs only the parser/composer stage (it calls
+    `Loader.get_single_node`, never `get_single_data`), so it never
+    constructs a Python object for any node -- a scalar value is read as a
+    `ScalarNode.value` string, and an `!!python/name:...`/
+    `!!python/object/apply:...` tag elsewhere in the document (real fleet
+    `mkdocs.yml` files declare these for pymdownx's Mermaid superfences,
+    e.g. `agent-packages/agents/clarity-api/mkdocs.yml`) stays an inert node
+    carrying that tag string. Nothing importable, callable, or constructible
+    is ever produced from untrusted YAML. Returns ``None`` for a missing or
+    unreadable file, or one that fails to parse.
+    """
+
+    try:
+        text = (root / "mkdocs.yml").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        return yaml.compose(text, Loader=yaml.SafeLoader)
+    except yaml.YAMLError:
+        return None
+
+
+def _docs_dir_node(document: yaml.Node | None) -> yaml.Node | None:
+    """Return the mapping's declared ``docs_dir`` value node, if any."""
+
+    if not isinstance(document, yaml.MappingNode):
+        return None
+    for key_node, value_node in document.value:
+        if isinstance(key_node, yaml.ScalarNode) and key_node.value == "docs_dir":
+            return value_node
+    return None
+
+
 def _content_source(root: Path) -> str:
     """Return the repository's declared documentation content source.
 
@@ -574,24 +587,16 @@ def _content_source(root: Path) -> str:
     duplicating a second default: absent an explicit ``docs_dir``, or absent
     a readable/parseable ``mkdocs.yml`` at all, mkdocs's own convention
     (``docs``) applies -- this mirrors mkdocs's real behavior instead of
-    guessing a different one.
+    guessing a different one. A declared ``docs_dir`` that isn't a plain
+    scalar string fails loudly rather than silently falling back.
     """
 
-    mkdocs_path = root / "mkdocs.yml"
-    try:
-        text = mkdocs_path.read_text(encoding="utf-8")
-    except OSError:
+    node = _docs_dir_node(_mkdocs_document(root))
+    if node is None:
         return DEFAULT_CONTENT_SOURCE
-    try:
-        config = yaml.load(text, Loader=_MkdocsConfigLoader)  # nosec B506
-    except yaml.YAMLError:
-        return DEFAULT_CONTENT_SOURCE
-    if not isinstance(config, dict):
-        return DEFAULT_CONTENT_SOURCE
-    docs_dir = config.get("docs_dir", DEFAULT_CONTENT_SOURCE)
-    if not isinstance(docs_dir, str) or not docs_dir.strip():
-        return DEFAULT_CONTENT_SOURCE
-    return docs_dir
+    if not isinstance(node, yaml.ScalarNode) or not node.value.strip():
+        raise DocsReadinessError("mkdocs-docs-dir-invalid")
+    return node.value
 
 
 def _input_preflight(path: Path) -> None:
