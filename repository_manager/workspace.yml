@@ -548,6 +548,8 @@ maintenance:
     phase: 1
     projects:
     - pipelines
+    - gitlab-pipelines
+    - plans
     wait_minutes: 0
   - name: 'Phase 2: Epistemic Graph'
     phase: 2
