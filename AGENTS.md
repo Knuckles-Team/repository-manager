@@ -368,10 +368,10 @@ Level 0: Root Graph (18 Orchestration Nodes)
 └── research_joiner, execution_joiner (fan-in)
 
 Level 1: Superstates - Specialist Agents
-├── 21 Hardcoded Agents (NODE_SKILL_MAP: python_programmer, typescript_programmer, ...)
-│   Each loads: dedicated prompt + filtered skills + filtered MCP toolsets
-└── N Dynamic MCP Agents (from NODE_AGENTS.md: branches, commits, projects, ...)
-    Each loads: generated prompt + scoped MCP toolset for one tag
+├── Prompt specialists discovered from the Knowledge Graph registry
+│   Each loads: canonical JSON prompt + resolved skills + filtered tools
+└── MCP-bound and external A2A agents discovered from ingested metadata
+    Each loads: registered capabilities + governed MCP tools or network-policy-bounded A2A delegation
 
 Level 2: Substates - Agent Internal Loop
 └── Pydantic AI Agent.run() = UserPromptNode → ModelRequestNode → CallToolsNode → ...
@@ -382,19 +382,23 @@ Level 3: Leaf States - MCP Tool Execution
     Atomic operations: get_project(), list_branches(), run_cypher_query(), etc.
 ```
 
-### Maintaining the Specialist Registry (`NODE_SKILL_MAP`)
+### Maintaining the Specialist Registry
 
-The **Universal Skills** and **Skill Graphs** are dynamically embedded into Graph Agents via the `NODE_SKILL_MAP` (located in `agent_utilities/graph/config_helpers.py`). This forms the primary routing capability and specialized proficiency of each node in the cluster.
+The Knowledge Graph discovery registry is the metadata authority for specialist
+prompts, capability and skill assignments, MCP bindings, and external A2A
+agents. Skill content remains in the installed workspace, universal-skill, and
+skill-graph directories. The old `NODE_SKILL_MAP` and `NODE_AGENTS.md` registry
+are retired.
 
 **How it works**
-1. Each key in `NODE_SKILL_MAP` (e.g. `python_programmer`, `ui_ux_designer`) matches directly to a `.md` markdown file located in `agent_utilities/prompts/`.
-2. When the `builder.py` Graph generator spawns the orchestrator, it reads the keys from `NODE_SKILL_MAP`, bypassing the need to hardcode `GraphBuilder.step()` edges.
-3. The specified array of string skill tags will be automatically linked via the skill installer to grant those specific external capabilities to that internal superstate node.
+1. `agent_utilities/agent/registry_builder.py` ingests canonical JSON prompt blueprints from the packaged base, fleet `prompt_providers`, and the operator XDG overlay as `PromptNode` records, using provider namespaces where applicable.
+2. `agent_utilities/core/config.py` exposes the discovery registry used by the graph builder, router, planner, and executor.
+3. `agent_utilities/graph/executor.py` reads capability and skill tags from that registry, resolves matching installed skill content, then binds governed MCP tools or the network-policy-bounded A2A delegation surface selected for the specialist.
 
 **Future Enhancements & Best Practices**
-- When adding a new role, you **must** create the correspondng `[role].md` based on `_template.md` in the `prompts/` directory.
-- Add the exact filename without the `.md` extension as a new key to the `NODE_SKILL_MAP`.
-- Assign 100% of newly developed universal-skills proportionally among agents to prevent orphaned skills. Check documentation to ensure each agent is capable of fulfilling their domain successfully before assigning entirely new skills.
+- Author new roles as schema-valid JSON prompts with the `prompt-builder` skill and declare their skills, tools, and capabilities in the prompt or provider metadata.
+- Contribute package prompts through the `agent_utilities.prompt_providers` entry point; reserve the packaged base and XDG overlay for their documented precedence layers.
+- Validate that newly developed skills resolve to at least one registered agent capability so they do not become orphaned.
 - The `agent-webui` interface will naturally ingest the new node ID and emit it via the graph activity viewer. Keep role IDs in `snake_case`.
 
 ### Concept Mapping
@@ -402,8 +406,8 @@ The **Universal Skills** and **Skill Graphs** are dynamically embedded into Grap
 |--------------------------------|-----------------------|-------------------------------|
 | Root graph                     | Root state machine    | 18 Orchestration nodes        |
 | Router → Planner → Dispatcher  | Top-level transitions | Sequential pipeline           |
-| `NODE_SKILL_MAP` agents        | Superstates (L1)      | 21 hardcoded domains          |
-| MCP dynamic agents             | Superstates (L1)      | N from `mcp_config.json`      |
+| KG registry agents             | Superstates (L1)      | Prompt, MCP, and A2A agents   |
+| MCP dynamic agents             | Superstates (L1)      | From ingested MCP metadata    |
 | `_execute_specialized_step()`  | Enter superstate      | Loads prompt + skills         |
 | `_execute_dynamic_mcp_agent()` | Enter superstate      | Loads prompt + MCP tools      |
 | `Agent.run()` internal loop    | Substates (L2)        | Model request/tool cycles     |
@@ -462,41 +466,30 @@ pip install -e .      # Install in editable mode
 pip install -e .[all] # Install with all optional extras
 
 ## Project Structure Quick Reference
-- `agent_utilities/agent/` → Agent templates and `IDENTITY.md` definitions.
-- `agent_utilities/agent_utilities.py` → Main entry point for `create_agent` and `create_agent_server`.
-- `agent_utilities/agent_factory.py` → CLI factory for creating agents with argparse.
-- `agent_utilities/mcp_utilities.py` → Utilities for FastMCP and MCP tool registration.
+- `agent_utilities/__init__.py` → Public lazy-export facade for `create_agent`, `create_agent_server`, and the supported package API.
+- `agent_utilities/agent/` → Agent construction, discovery, sampling profiles, and prompt-to-KG registry synchronization.
+- `agent_utilities/agent/factory.py` → `create_agent_parser()` and `create_agent()` implementations.
+- `agent_utilities/server/` → `create_agent_server()` and the FastAPI application boundary.
+- `agent_utilities/mcp/` → FastMCP server construction, graph-os tools, fleet loading, and governed dispatch.
 - `agent_utilities/base_utilities.py` → Generic helpers for file handling, type conversions, and CLI flags.
 - `agent_utilities/tools/` → Built-in agent tools (developer_tools, git_tools, workspace_tools).
-- `agent_utilities/embedding_utilities.py` → Vector DB and embedding integration (LlamaIndex based).
+- `agent_utilities/core/` → Configuration, workspace, model, scheduling, persistence, embedding, and other foundational utilities.
 - `agent_utilities/api_utilities.py` → Generic API helpers
-- `agent_utilities/models.py` → Shared Pydantic models (`GraphResponse`, `GraphPlan`, `MCPAgent`, etc.)
-- `agent_utilities/chat_persistence.py` → Chat history persistence utilities
-- `agent_utilities/config.py` → Configuration management
-- `agent_utilities/custom_observability.py` → Custom observability and tracing utilities
-- `agent_utilities/decorators.py` → Utility decorators for caching, retries, etc.
-- `agent_utilities/exceptions.py` → Custom exception classes
+- `agent_utilities/models/` → Shared Pydantic request, graph, registry, and execution models.
+- `agent_utilities/observability/` → Tracing, metrics, Langfuse export, and audit utilities.
+- `agent_utilities/core/decorators.py` → Authentication guard decorators used by API wrappers.
 - `agent_utilities/graph/` → **Graph orchestration subpackage** (the core engine):
   - `graph/builder.py` → `initialize_graph_from_workspace()`, per-server resilient MCP loading
-  - `graph/runner.py` → `run_graph()` with sequential MCP connect + clear failure reporting
-  - `graph/steps.py` → All graph node step functions (router, dispatcher, verifier, etc.)
+  - `graph/protocol_agnostic_execution.py` → Unified graph execution and streaming entry points
+  - `graph/nodes.py` and `graph/_router_impl.py` → Graph nodes and routing implementation
   - `graph/executor.py` → Specialist execution with unified result storage (`results_registry`)
   - `graph/state.py` → `GraphState`, `GraphDeps` Pydantic models
   - `graph/hsm.py` → HSM/BT entry/exit hooks, preconditions, static routing
-  - `graph/config_helpers.py` → `load_mcp_agents_registry()`, `NODE_SKILL_MAP`, emit helpers
-- `agent_utilities/model_factory.py` → Factory for creating LLM models
-- `agent_utilities/memory.py` → Memory management for agents
-- `agent_utilities/middlewares.py` → HTTP middleware utilities
-- `agent_utilities/persistence.py` → General persistence utilities
-- `agent_utilities/prompt_builder.py` → Prompt construction utilities
-- `agent_utilities/scheduler.py` → Task scheduling utilities
-- `agent_utilities/server.py` → HTTP server implementation
-- `agent_utilities/tool_filtering.py` → Tool filtering utilities for tag-based access control
-- `agent_utilities/tool_guard.py` → Universal tool guard implementation
-- `agent_utilities/workspace.py` → Workspace management utilities
-- `agent_utilities/a2a.py` → Agent-to-Agent communication utilities
-- `agent_utilities/prompts/` → Prompt templates (one `.md` per specialist role)
-- `agent_utilities/agent_data/` → Workspace data files (IDENTITY.md, MEMORY.md, NODE_AGENTS.md, etc.)
+- `agent_utilities/knowledge_graph/memory/` → Agent memory, distillation, lifecycle, and optimization.
+- `agent_utilities/prompting/` → Canonical prompt schema, composition, and rendering.
+- `agent_utilities/security/tool_guard.py` → Universal tool guard implementation.
+- `agent_utilities/protocols/a2a.py` → Agent-to-Agent protocol adapter.
+- `agent_utilities/prompts/` → Schema-validated JSON specialist prompt blueprints.
 - `repository_manager/graph/` → **Hybrid Workspace Graph Engine** (NetworkX + LadybugDB)
   - `graph/engine.py` → Multi-faceted Search Engine (Semantic Vector + Structural Cypher)
   - `graph/schema.py` → Unified graph schema for workspace symbols and cross-repo dependencies
@@ -558,7 +551,7 @@ except ImportError:
 
 **Do:**
 - Use `create_agent` for all new agent instances to ensure consistent workspace setup.
-- Use `create_agent_factory` for CLI agent creation with argparse.
+- Use `create_agent_parser` from `agent_utilities/agent/factory.py` for CLI argument parsing.
 - Register tools with descriptive docstrings as they are parsed by the LLM.
 - Keep `base_utilities` free of heavy dependencies.
 - Utilize lazy imports for optional dependencies like FastAPI and LlamaIndex.
@@ -640,24 +633,19 @@ async def book_table(restaurant: str, ctx: Context) -> str:
 4.  **Response**: User submits, backend resolves the `Future`, and the tool call resumes with the data.
 
 ## When Stuck
-- Refer to `agent_utilities.py` for the implementation details of `create_agent`.
-- Refer to `agent_factory.py` for CLI agent creation implementation.
-- Review `mcp_utilities.py` for how tools are being registered and exposed to MCP.
-- Review `graph_orchestration.py` for graph-based agent orchestration.
+- Refer to `agent_utilities/agent/factory.py` for `create_agent` and CLI parser implementation details.
+- Review `agent_utilities/mcp/server_factory.py` and `agent_utilities/mcp/kg_server.py` for MCP server construction and graph-os tool exposure.
+- Review `agent_utilities/graph/` for graph construction, routing, execution, and state.
 - Ask for clarification if the multi-agent supervisor logic is unclear.
 
-## Agent Data Files
+## Runtime Workspace Files
 
-The `agent_utilities/agent_data/` directory contains important workspace files:
-- `IDENTITY.md` - Defines the agent's identity, purpose, and behavior guidelines
-- `MEMORY.md` - Persistent memory for the agent across sessions
-- `USER.md` - Information about the current user
-- `A2A_AGENTS.md` - Agent-to-Agent communication protocols
-- `CRON.md` - Scheduled task definitions
-- `CRON_LOG.md` - Execution logs for cron tasks
-- `HEARTBEAT.md` - Agent health and status indicators
-
-These files are automatically managed by the workspace system and should be referenced when building agents that need to maintain state or identity.
+`agent_utilities/core/workspace.py` resolves the operator workspace and manages
+`main_agent.json` plus `mcp_config.json`. Workspace and XDG files can remain
+runtime inputs for memory, schedules, and related configuration; the platform
+projects those inputs into Knowledge Graph records where the corresponding
+ingestion path applies. There is no packaged `agent_utilities/agent_data/`
+directory.
 
 ## Adding New Modules
 
