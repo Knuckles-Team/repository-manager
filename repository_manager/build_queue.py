@@ -72,7 +72,6 @@ from agent_utilities.governance.lanes import (
     LeaseUnavailable,
     hold_lease,
     lane_scope,
-    partitioned_paths,
 )
 
 from repository_manager import task_queue as tq
@@ -90,6 +89,12 @@ from repository_manager.merge_queue import (
     _require_git,
     _run_git,
     materialized,
+)
+from repository_manager.resource_guard import (
+    ResourceGuardError,
+    default_guard_paths,
+    prepare_command,
+    run_guarded,
 )
 from repository_manager.test_commands import ensure_no_fail_fast
 
@@ -1609,24 +1614,36 @@ def _run_build_command(tree: Path, spec: BuildSpec) -> None:
     # `--no-fail-fast` to a cargo-test-shaped command a caller's declared
     # spec omitted it from. Neither is representable in the argv/env that
     # actually reaches `subprocess.run` below.
-    parts = partitioned_paths(tree)
+    target_dir, tmp_dir = default_guard_paths(tree, "build-queue")
     env = dict(os.environ)
-    env["CARGO_TARGET_DIR"] = str(parts.cargo_target_dir)
-    env["TMPDIR"] = str(parts.scratch_dir)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    env["TMPDIR"] = str(tmp_dir)
     argv = ensure_no_fail_fast(list(spec.command))
-    proc = subprocess.run(  # noqa: S603 - fixed argv, no shell
-        argv,
-        cwd=str(workdir),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=spec.timeout,
-        env=env,
-    )
+    try:
+        guarded = prepare_command(
+            argv,
+            workdir=workdir,
+            target_dir=target_dir,
+            tmp_dir=tmp_dir,
+            profile_name=spec.resource_class,
+            timeout=spec.timeout,
+            env=env,
+        )
+        guarded_result = run_guarded(guarded)
+    except ResourceGuardError as exc:
+        evidence = getattr(exc, "evidence", {})
+        detail = json.dumps(evidence, sort_keys=True)[-4_000:] if evidence else ""
+        raise BuildQueueError(
+            f"build spec {spec.name!r} was refused by the host resource guard: "
+            f"{exc}{(': ' + detail) if detail else ''}"
+        ) from exc
+    proc = guarded_result.completed
     if proc.returncode != 0:
         raise BuildQueueError(
             f"build spec {spec.name!r} failed (exit {proc.returncode}): "
-            f"{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}"
+            f"{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}\n"
+            f"resource evidence: "
+            f"{json.dumps(guarded_result.evidence(), sort_keys=True)[-4000:]}"
         )
 
 

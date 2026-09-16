@@ -14,6 +14,7 @@ does not know what a gate IS — and it is checked, not asserted.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -31,6 +33,33 @@ from unittest.mock import MagicMock
 import pytest
 
 from repository_manager import merge_queue as mq
+
+
+@pytest.fixture(autouse=True)
+def _bypass_queue_resource_guard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exempt this file's direct ``run_queue``/``dispatch("run")`` calls from
+    the supervised-runner admission boundary (CONCEPT:RM-RESOURCE-GUARD).
+
+    Every test here calls the generic queue entrypoint directly, as a plain
+    pytest child process -- never as the installed ``merge-queue-runner``
+    systemd service `_queue_resource_guard` requires. That is deliberate: this
+    file is about queue MECHANISM (git object math, gate dispatch, landing),
+    which is orthogonal to the separate admission boundary
+    (``repository_manager.resource_guard`` / ``_queue_runner_handoff_valid``)
+    already covered end to end by ``tests/test_resource_guard.py`` (host
+    admission refusal, cgroup containment, the runner-handoff shape check
+    itself). Bypassing it here is the same "isolate the unit under test from
+    an orthogonal precondition" pattern ``test_resource_guard.py`` itself uses
+    to stub out ``_admit``/``capture_host_evidence`` while exercising other
+    logic -- it does not weaken that boundary, which stays fully exercised by
+    its own dedicated tests.
+    """
+
+    @contextlib.contextmanager
+    def _no_admission(_repo: Path) -> Iterator[None]:
+        yield
+
+    monkeypatch.setattr(mq, "_queue_resource_guard", _no_admission)
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_PYTHON = ".venv/bin/python"

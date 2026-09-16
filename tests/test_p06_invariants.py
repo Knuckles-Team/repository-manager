@@ -148,16 +148,28 @@ def test_timed_run_injects_no_fail_fast_before_spawning(
 
     captured: dict[str, object] = {}
 
-    def _fake_run(argv, **kwargs):  # noqa: ANN001 - test double signature
-        captured["argv"] = list(argv)
-        return subprocess.CompletedProcess(argv, 0, "", "")
+    class _Process:
+        returncode = 0
 
-    monkeypatch.setattr(mq.subprocess, "run", _fake_run)
+        def communicate(self, *, timeout: int) -> tuple[bytes, bytes]:
+            captured["timeout"] = timeout
+            return b"", b""
+
+    class _Supervisor:
+        def spawn(self, argv, **kwargs):  # noqa: ANN001 - test double signature
+            captured["argv"] = list(argv)
+            captured["kwargs"] = kwargs
+            return _Process()
+
+    monkeypatch.setattr(mq, "_queue_gate_supervisor", lambda: _Supervisor())
     mq._timed_run(
         ["cargo", "test", "--all-features"],
         tmp_path,
         timeout=5,
-        env={},
+        env={
+            "CARGO_TARGET_DIR": str(tmp_path / "target"),
+            "TMPDIR": str(tmp_path / "tmp"),
+        },
     )
     assert captured["argv"] == [
         "cargo",
@@ -172,12 +184,29 @@ def test_timed_run_does_not_touch_a_non_test_gate(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def _fake_run(argv, **kwargs):  # noqa: ANN001 - test double signature
-        captured["argv"] = list(argv)
-        return subprocess.CompletedProcess(argv, 0, "", "")
+    class _Process:
+        returncode = 0
 
-    monkeypatch.setattr(mq.subprocess, "run", _fake_run)
-    mq._timed_run(["cargo", "check", "--all-features"], tmp_path, timeout=5, env={})
+        def communicate(self, *, timeout: int) -> tuple[bytes, bytes]:
+            captured["timeout"] = timeout
+            return b"", b""
+
+    class _Supervisor:
+        def spawn(self, argv, **kwargs):  # noqa: ANN001 - test double signature
+            captured["argv"] = list(argv)
+            captured["kwargs"] = kwargs
+            return _Process()
+
+    monkeypatch.setattr(mq, "_queue_gate_supervisor", lambda: _Supervisor())
+    mq._timed_run(
+        ["cargo", "check", "--all-features"],
+        tmp_path,
+        timeout=5,
+        env={
+            "CARGO_TARGET_DIR": str(tmp_path / "target"),
+            "TMPDIR": str(tmp_path / "tmp"),
+        },
+    )
     assert captured["argv"] == ["cargo", "check", "--all-features"]
 
 

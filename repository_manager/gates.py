@@ -68,6 +68,13 @@ from typing import Any, Literal, cast
 
 from repository_manager import build_queue, gate_ledger, merge_queue, task_queue
 from repository_manager.execution.process_supervisor import ProcessSupervisor
+from repository_manager.resource_guard import (
+    ResourceGuardError,
+    default_guard_paths,
+    prepare_command,
+    run_guarded,
+    verified_inherited_admission,
+)
 from repository_manager.scan_models import HookResult, RepoScanResult
 
 logger = logging.getLogger(__name__)
@@ -193,6 +200,27 @@ def _run_gate_subprocess(
 ) -> subprocess.CompletedProcess[str]:
     """Run a gate in its own process group and clean up the group on timeout."""
 
+    inherited_admission = verified_inherited_admission()
+    if env.get("RM_RESOURCE_GUARD") == "heavy" and inherited_admission is None:
+        repo = Path(repo_path)
+        target_dir, tmp_dir = default_guard_paths(repo, "gates")
+        guarded = prepare_command(
+            argv,
+            workdir=repo,
+            target_dir=target_dir,
+            tmp_dir=tmp_dir,
+            profile_name="rust-build" if (repo / _CARGO_MANIFEST).exists() else "pre-commit",
+            timeout=timeout,
+            env=env,
+            force_heavy=True,
+            force_cargo=(repo / _CARGO_MANIFEST).exists(),
+        )
+        result = run_guarded(guarded)
+        # CompletedProcess accepts extension attributes.  Preserve admission
+        # and outcome evidence for callers that need to retain the raw run.
+        result.completed.resource_evidence = result.evidence()  # type: ignore[attr-defined]
+        return result.completed
+
     process = cast(
         subprocess.Popen[bytes],
         _GATE_PROCESS_SUPERVISOR.spawn(argv, cwd=Path(repo_path), env=env),
@@ -248,6 +276,12 @@ def _run_pre_commit(
     named hook in isolation).
     """
     env = precommit_gate_environment(hook_stage)
+    # Hook-stage labels are declarations, not trustworthy process shapes.  A
+    # fast-labelled pre-commit invocation in a Rust tree may still contain a
+    # local Cargo hook, so the presence of Cargo.toml selects containment.
+    if hook_stage == "pre-push" or Path(repo_path, _CARGO_MANIFEST).exists():
+        _apply_heavy_gate_limits(env)
+        env["RM_RESOURCE_GUARD"] = "heavy"
 
     scope = ["--files", *files] if files else ["--all-files"]
     argv = [
@@ -587,19 +621,24 @@ def _gate_execution_exception_result(
 ) -> RepoScanResult:
     """Map execution/configuration exceptions without growing runner complexity."""
 
-    error = (
-        f"Invalid gate resource configuration: {exc}"
-        if isinstance(exc, GateResourceConfigurationError)
-        else (
+    if isinstance(exc, GateResourceConfigurationError):
+        error = f"Invalid gate resource configuration: {exc}"
+    elif isinstance(exc, ResourceGuardError):
+        error = (
+            "DEFERRED, not a verdict: the host resource guard refused the "
+            f"{invocation.stage!r} ({invocation.hook_stage}) gate: {exc}"
+        )
+    else:
+        error = (
             f"Error executing the {invocation.stage!r} "
             f"({invocation.hook_stage}) gate: {type(exc).__name__}"
         )
-    )
     return RepoScanResult(
         repo_path=invocation.repo_path,
         success=False,
         exit_code=-1,
         error=error,
+        deferred=isinstance(exc, ResourceGuardError),
         stage=invocation.stage,
         duration_s=time.monotonic() - started,
     )

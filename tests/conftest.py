@@ -4,11 +4,68 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 import pytest
 from agent_utilities.knowledge_graph.core.session import GraphSession, use_session
 from agent_utilities.security.actor_identity import ActorType
 from agent_utilities.security.brain_context import ActorContext, use_actor
+
+#: Several fleet hosts mount ``/tmp`` as ``tmpfs`` (workspace CLAUDE.md /
+#: ``tmp-is-tmpfs-use-var-tmp.md``: bulk temp use there eats RAM instead of
+#: disk). ``resource_guard._prepare_paths`` enforces the platform's own
+#: "TMPDIR must be disk-backed" contract (CONCEPT:RM-RESOURCE-GUARD) -- which
+#: means any test that hands pytest's default ``tmp_path``/``tmp_path_factory``
+#: fixture to a ``GuardedCommand`` as its TMPDIR fails whenever
+#: ``tempfile.gettempdir()`` happens to resolve onto that tmpfs mount. That
+#: host-dependent flake was previously worked around by hand-deselecting the
+#: affected tests instead of fixing the fixture -- the exact "environment
+#: fact masquerading as a code defect" anti-pattern the guard itself exists
+#: to catch. Redirect pytest's basetemp onto a disk-backed root before any
+#: ``tmp_path`` is allocated, matching ``resource_guard``'s own
+#: ``RM_RESOURCE_GUARD_ROOT`` default of ``/var/tmp/...``, unless the caller
+#: already chose an explicit ``--basetemp``.
+_TMPFS_FILESYSTEMS = {"tmpfs", "ramfs"}
+
+
+def _mount_fstype(path: Path) -> str:
+    """Return the filesystem type of the longest mount prefix for ``path``."""
+
+    try:
+        lines = Path("/proc/mounts").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    resolved = str(path.resolve())
+    best: tuple[int, str] | None = None
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        mount_point = parts[1].replace("\\040", " ")
+        fstype = parts[2]
+        if resolved == mount_point or resolved.startswith(
+            mount_point.rstrip("/") + "/"
+        ):
+            candidate = (len(mount_point), fstype)
+            if best is None or candidate[0] > best[0]:
+                best = candidate
+    return best[1] if best else ""
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Force pytest's temp root off a tmpfs mount before tests allocate it."""
+
+    if config.option.basetemp is not None:
+        return
+    default_root = Path(tempfile.gettempdir())
+    if _mount_fstype(default_root) not in _TMPFS_FILESYSTEMS:
+        return
+    fallback_root = Path(
+        os.environ.get("RM_TEST_TMPDIR", "/var/tmp/repository-manager-pytest")
+    )
+    fallback_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    config.option.basetemp = fallback_root / f"pytest-{os.getpid()}"
 
 #: Env vars a git hook invocation sets that git honors over a subprocess's
 #: `cwd=` -- this repo's own `pre-commit` runs pytest as a `language: system`

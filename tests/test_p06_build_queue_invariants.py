@@ -17,7 +17,36 @@ from types import SimpleNamespace
 import pytest
 
 from repository_manager import build_queue as bq
+from repository_manager import resource_guard
 from repository_manager.disk_policy import DiskDecisionCode
+from repository_manager.resource_guard import FilesystemEvidence, HostEvidence
+
+
+def _healthy_guard_evidence() -> HostEvidence:
+    filesystems = tuple(
+        FilesystemEvidence(
+            purpose=name,
+            path=f"/{name}",
+            filesystem="xfs",
+            free_bytes=200 * 1024**3,
+            free_inodes=200_000,
+            required_free_bytes=1024**3,
+            required_free_inodes=50_000,
+        )
+        for name in ("target", "tmpdir", "home", "system-tmp")
+    )
+    return HostEvidence(
+        captured_unix_ns=1,
+        memory_available_bytes=200 * 1024**3,
+        swap_free_bytes=8 * 1024**3,
+        memory_psi_some_avg10=0.0,
+        memory_psi_full_avg10=0.0,
+        cgroup_path="/user.slice/test",
+        cgroup_memory_current=1024**3,
+        cgroup_memory_max=240 * 1024**3,
+        cgroup_oom_events=0,
+        filesystems=filesystems,
+    )
 
 
 def _run(cmd: str, cwd: Path) -> str:
@@ -71,6 +100,13 @@ def test_run_build_command_overrides_a_leaked_cargo_target_dir_and_tmpdir(
     hazard_tmp = "/tmp"
     monkeypatch.setenv("CARGO_TARGET_DIR", hazard_target)
     monkeypatch.setenv("TMPDIR", hazard_tmp)
+    guard_root = tree / "guarded-runtime"
+    monkeypatch.setenv("RM_RESOURCE_GUARD_ROOT", str(guard_root))
+    evidence = _healthy_guard_evidence()
+    monkeypatch.setattr(resource_guard, "_admit", lambda _command: evidence)
+    monkeypatch.setattr(
+        resource_guard, "capture_host_evidence", lambda _command: evidence
+    )
 
     spec = bq.BuildSpec(
         name="envcheck",
@@ -83,9 +119,11 @@ def test_run_build_command_overrides_a_leaked_cargo_target_dir_and_tmpdir(
     written = out_file.read_text().splitlines()
     observed_target, observed_tmp = written[0], written[1]
     assert observed_target != hazard_target
-    assert Path(observed_target) == tree / "target-isolated"
+    assert Path(observed_target).is_relative_to(guard_root / "build-queue")
+    assert Path(observed_target).name == "target"
     assert observed_tmp != hazard_tmp
-    assert len(observed_tmp) < 60  # short by construction — see PartitionedPaths
+    assert Path(observed_tmp).is_relative_to(guard_root / "build-queue")
+    assert Path(observed_tmp).name == "tmp"
 
 
 def test_run_build_command_injects_no_fail_fast(
@@ -93,11 +131,19 @@ def test_run_build_command_injects_no_fail_fast(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def _fake_run(argv, **kwargs):  # noqa: ANN001 - test double signature
+    def _fake_prepare(argv, **kwargs):  # noqa: ANN001 - test double signature
         captured["argv"] = list(argv)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return object()
 
-    monkeypatch.setattr(bq.subprocess, "run", _fake_run)
+    monkeypatch.setattr(bq, "prepare_command", _fake_prepare)
+    monkeypatch.setattr(
+        bq,
+        "run_guarded",
+        lambda _command: SimpleNamespace(
+            completed=SimpleNamespace(returncode=0, stdout="", stderr=""),
+            evidence=lambda: {},
+        ),
+    )
     spec = bq.BuildSpec(
         name="cargo-test", command=("cargo", "test", "--all-features"), timeout=30
     )
@@ -181,6 +227,11 @@ def test_request_self_heals_via_gc_when_reclaiming_frees_enough_space(
         return next(observations)
 
     monkeypatch.setattr(bq.shutil, "disk_usage", _fake_disk_usage)
+    evidence = _healthy_guard_evidence()
+    monkeypatch.setattr(resource_guard, "_admit", lambda _command: evidence)
+    monkeypatch.setattr(
+        resource_guard, "capture_host_evidence", lambda _command: evidence
+    )
     result = bq.request(repo_path=disk_repo, colocated=True)
     assert result["ok"] is True
 

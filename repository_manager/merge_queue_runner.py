@@ -30,6 +30,7 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
+from repository_manager.resource_guard import default_guard_paths, process_start_time
 from repository_manager.workspace_manifest import (
     WorkspaceManifestError,
     select_repositories,
@@ -858,6 +859,28 @@ def _launch_process(
         ) from exc
 
 
+def _queue_child_environment(repository: DeclaredRepository) -> dict[str, str]:
+    """Pass the disk-backed AU temp root and bounded pytest fanout to a child."""
+
+    target_dir, tmp_dir = default_guard_paths(repository.path, "merge-queue")
+    # The generic merge-queue entrypoint repeats the same values before it
+    # admits work.  Supplying them here also keeps wrappers and early imports
+    # from observing an operator's unrelated temporary or xdist settings.
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "CARGO_TARGET_DIR": str(target_dir),
+            "AU_LANE_TEMP_ROOT": str(tmp_dir.parents[2]),
+            "TMPDIR": str(tmp_dir),
+            "RUNNER_TEMP": str(tmp_dir),
+            "PYTEST_XDIST_AUTO_NUM_WORKERS": "2",
+            "RM_MERGE_QUEUE_SUPERVISOR_PID": str(os.getpid()),
+            "RM_MERGE_QUEUE_SUPERVISOR_START_TIME": str(process_start_time()),
+        }
+    )
+    return environment
+
+
 def _timeout_output(exc: subprocess.TimeoutExpired) -> str:
     """Normalize partial output returned by a timed-out text subprocess."""
 
@@ -934,7 +957,9 @@ def drain_repository(
         )
     command = _runner_command(repository, executable, lease_ttl_seconds)
     expected_cgroup = _process_cgroup(os.getpid())
-    process = _launch_process(command, repository)
+    process = _launch_process(
+        command, repository, env=_queue_child_environment(repository)
+    )
     try:
         output, returncode, violations = _run_monitored_process(
             process, repository, expected_cgroup, deadline_seconds

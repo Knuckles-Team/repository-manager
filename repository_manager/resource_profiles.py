@@ -59,23 +59,62 @@ class ResourceProfile:
     default_priority: int = 0
     default_fairness_group: str = "default"
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    # Runtime containment.  These values are enforced by ``resource_guard``;
+    # they are deliberately separate from the scheduler's admission weights.
+    memory_high_mib: int = 2_048
+    memory_max_mib: int = 4_096
+    memory_swap_max_mib: int = 1_024
+    cpu_quota_percent: int = 100
+    tasks_max: int = 256
+    runtime_max_seconds: int = 3_600
+    cargo_jobs: int = 2
+    minimum_target_free_mib: int = 2_048
+    minimum_tmp_free_mib: int = 2_048
+    minimum_home_free_mib: int = 5_120
+    minimum_system_tmp_free_mib: int = 1_024
+    minimum_free_inodes: int = 50_000
+    managed_oom_preference: str = ""
 
     def _validate_name(self) -> None:
         if not self.name or self.name.strip() != self.name:
             raise ResourceProfileError("profile name must be non-blank")
 
     def _validate_version(self) -> None:
-        if self.profile_version < 1:
+        if type(self.profile_version) is not int or self.profile_version < 1:
             raise ResourceProfileError("profile_version must be positive")
 
     def _validate_positive_integers(self) -> None:
-        for field_name in ("cpu_weight", "memory_mib", "disk_mib", "process_slots"):
+        for field_name in (
+            "cpu_weight",
+            "memory_mib",
+            "disk_mib",
+            "process_slots",
+            "memory_high_mib",
+            "memory_max_mib",
+            "cpu_quota_percent",
+            "tasks_max",
+            "runtime_max_seconds",
+            "cargo_jobs",
+            "minimum_target_free_mib",
+            "minimum_tmp_free_mib",
+            "minimum_home_free_mib",
+            "minimum_system_tmp_free_mib",
+            "minimum_free_inodes",
+        ):
             value = getattr(self, field_name)
-            if isinstance(value, bool) or value < 1:
+            if type(value) is not int or value < 1:
                 raise ResourceProfileError(f"{field_name} must be a positive integer")
+        if type(self.memory_swap_max_mib) is not int or self.memory_swap_max_mib < 0:
+            raise ResourceProfileError(
+                "memory_swap_max_mib must be a non-negative integer"
+            )
+        if self.memory_high_mib > self.memory_max_mib:
+            raise ResourceProfileError("memory_high_mib must not exceed memory_max_mib")
 
     def _validate_concurrency_limit(self) -> None:
-        if self.concurrency_limit is not None and self.concurrency_limit < 1:
+        if self.concurrency_limit is not None and (
+            type(self.concurrency_limit) is not int or self.concurrency_limit < 1
+        ):
             raise ResourceProfileError("concurrency_limit must be positive")
 
     def _validate_disk_watermarks(self) -> None:
@@ -113,6 +152,12 @@ class ResourceProfile:
         if not self.default_fairness_group.strip():
             raise ResourceProfileError("default_fairness_group must be non-blank")
 
+    def _validate_oom_preference(self) -> None:
+        if self.managed_oom_preference not in {"", "none", "avoid", "omit"}:
+            raise ResourceProfileError(
+                "managed_oom_preference must be none, avoid, omit, or blank"
+            )
+
     def __post_init__(self) -> None:
         self._validate_name()
         self._validate_version()
@@ -122,6 +167,7 @@ class ResourceProfile:
         self._normalize_label_fields()
         self._normalize_concurrency_key()
         self._validate_fairness_group()
+        self._validate_oom_preference()
 
     def request_defaults(self) -> ResourceRequest:
         """Return the profile's typed minimum request."""
@@ -275,6 +321,13 @@ def default_resource_profiles() -> ResourceProfileRegistry:
             disk_mib=256,
             process_slots=1,
             concurrency_key="light-check",
+            memory_high_mib=2_048,
+            memory_max_mib=4_096,
+            memory_swap_max_mib=1_024,
+            cpu_quota_percent=100,
+            tasks_max=256,
+            runtime_max_seconds=3_600,
+            cargo_jobs=2,
         ),
         ResourceProfile(
             "frontend-build",
@@ -285,6 +338,18 @@ def default_resource_profiles() -> ResourceProfileRegistry:
             concurrency_key="frontend-build",
             concurrency_limit=1,
             anti_affinity=("frontend-build",),
+            memory_high_mib=20_480,
+            memory_max_mib=24_576,
+            memory_swap_max_mib=4_096,
+            cpu_quota_percent=400,
+            tasks_max=1_024,
+            runtime_max_seconds=7_200,
+            cargo_jobs=2,
+            minimum_target_free_mib=20_480,
+            minimum_tmp_free_mib=8_192,
+            minimum_home_free_mib=10_240,
+            minimum_system_tmp_free_mib=2_048,
+            minimum_free_inodes=100_000,
         ),
         ResourceProfile(
             "rust-build",
@@ -293,6 +358,19 @@ def default_resource_profiles() -> ResourceProfileRegistry:
             disk_mib=16_384,
             process_slots=2,
             concurrency_key="rust-build",
+            concurrency_limit=1,
+            memory_high_mib=32_768,
+            memory_max_mib=49_152,
+            memory_swap_max_mib=8_192,
+            cpu_quota_percent=200,
+            tasks_max=4_096,
+            runtime_max_seconds=14_400,
+            cargo_jobs=2,
+            minimum_target_free_mib=102_400,
+            minimum_tmp_free_mib=20_480,
+            minimum_home_free_mib=10_240,
+            minimum_system_tmp_free_mib=2_048,
+            minimum_free_inodes=100_000,
         ),
         ResourceProfile(
             "pre-commit",
@@ -301,6 +379,13 @@ def default_resource_profiles() -> ResourceProfileRegistry:
             disk_mib=1_024,
             process_slots=2,
             concurrency_key="pre-commit",
+            memory_high_mib=8_192,
+            memory_max_mib=12_288,
+            memory_swap_max_mib=2_048,
+            cpu_quota_percent=200,
+            tasks_max=1_024,
+            runtime_max_seconds=7_200,
+            cargo_jobs=2,
         ),
         ResourceProfile(
             "merge-drain",
@@ -312,6 +397,13 @@ def default_resource_profiles() -> ResourceProfileRegistry:
             concurrency_limit=1,
             repository_exclusive=True,
             branch_exclusive=True,
+            memory_high_mib=4_096,
+            memory_max_mib=6_144,
+            memory_swap_max_mib=1_024,
+            cpu_quota_percent=200,
+            tasks_max=256,
+            runtime_max_seconds=180,
+            cargo_jobs=2,
         ),
         ResourceProfile(
             "workspace-release",

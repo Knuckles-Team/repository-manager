@@ -8,6 +8,7 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=@PYTHON_EXECUTABLE@ @RUNNER_PATH@ --workspace-root @WORKSPACE_ROOT@ --max-age-seconds @MAX_AGE_SECONDS@ --drain-deadline-seconds @DRAIN_DEADLINE_SECONDS@ --global-deadline-seconds @GLOBAL_DRAIN_DEADLINE_SECONDS@
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTEST_XDIST_AUTO_NUM_WORKERS=2
 TimeoutStartSec=@SERVICE_TIMEOUT_SECONDS@s
 TimeoutStopSec=60s
 KillMode=control-group
