@@ -93,7 +93,7 @@ import shutil
 import subprocess  # nosec B404 - fixed argv, never shell=True
 import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -132,6 +132,18 @@ from repository_manager.config_schema import (
 from repository_manager.development import RepositoryIdentity, TargetPolicy
 from repository_manager.generation_coalescing import seal_generation, select_batches
 from repository_manager.lane_record import repository_id_for
+from repository_manager.resource_guard import (
+    ResourceGuardError,
+    admit_inherited,
+    current_cgroup_path,
+    default_guard_paths,
+    is_cargo_shaped,
+    prepare_command,
+    prepare_environment,
+    process_start_time,
+    verified_inherited_admission,
+)
+from repository_manager.resource_profiles import DEFAULT_RESOURCE_PROFILES
 from repository_manager.test_commands import ensure_no_fail_fast
 
 #: The per-repository gate declaration. Its ABSENCE is a refusal, not a default:
@@ -175,6 +187,12 @@ DEFAULT_MERGE_LEASE_TTL_SECONDS = 14_400
 MAX_MERGE_LEASE_TTL_SECONDS = 86_400
 MERGE_LEASE_TTL_ENV = "MERGE_QUEUE_LEASE_TTL_SECONDS"
 _LOGGER = logging.getLogger(__name__)
+_QUEUE_SUPERVISOR_PID_ENV = "RM_MERGE_QUEUE_SUPERVISOR_PID"
+_QUEUE_SUPERVISOR_START_ENV = "RM_MERGE_QUEUE_SUPERVISOR_START_TIME"
+#: Bound on the post-kill ``communicate()`` call that drains a timed-out
+#: gate's already-closed pipes. Not a wait on the process itself -- see the
+#: call site in ``_timed_run`` for why this cannot be ``0``.
+_GATE_CLEANUP_DRAIN_SECONDS = 5
 
 #: pytest exit codes under which the ``-rfE`` short summary can be trusted to
 #: enumerate every failing id: 0 green, 1 tests failed, 5 nothing collected (an
@@ -1544,7 +1562,7 @@ def materialized(repo: Path, commit: str, *, scope: LaneScope) -> Iterator[Path]
     (D-OB-17). It lives under this lane's **partitioned** scratch dir, so two
     runners can never materialize into the same path.
     """
-    root = partitioned_paths(scope.tree).scratch_dir / "merge-queue-verify"
+    root = _materialization_root(scope)
     root.mkdir(parents=True, exist_ok=True)
     target = Path(tempfile.mkdtemp(prefix=f"{commit[:12]}-", dir=root))
     target.rmdir()
@@ -1554,6 +1572,26 @@ def materialized(repo: Path, commit: str, *, scope: LaneScope) -> Iterator[Path]
         yield target
     finally:
         _cleanup_materialized(repo, target)
+
+
+def _materialization_root(scope: LaneScope) -> Path:
+    """Use the queue admission's TMPDIR for materialized gate worktrees."""
+
+    configured_root = os.environ.get("AU_LANE_TEMP_ROOT")
+    if not configured_root:
+        return partitioned_paths(scope.tree).scratch_dir / "merge-queue-verify"
+    raw_tmp = os.environ.get("TMPDIR")
+    if not raw_tmp:
+        raise ResourceGuardError(
+            "AU_LANE_TEMP_ROOT requires guarded TMPDIR for materialization"
+        )
+    admitted_root = Path(configured_root).resolve()
+    temporary = Path(raw_tmp).resolve()
+    if not temporary.is_relative_to(admitted_root):
+        raise ResourceGuardError(
+            "materialized queue worktree escapes the admitted AU_LANE_TEMP_ROOT"
+        )
+    return temporary / "merge-queue-verify"
 
 
 def _registered_worktrees(repo: Path) -> frozenset[Path]:
@@ -1692,22 +1730,161 @@ def _timed_run(argv: list[str], cwd: Path, *, timeout: int, env: dict) -> tuple:
     missing, before the process is ever spawned (CONCEPT:RM-TEST-COMMANDS).
     """
     argv = ensure_no_fail_fast(argv)
+    env = _prepare_gate_environment(argv, cwd, timeout, env)
     start = time.monotonic()
+    supervisor = _queue_gate_supervisor()
     try:
-        proc = subprocess.run(  # noqa: S603 - argv from repo-declared config, no shell
-            argv,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-            env=env,
-        )
-    except subprocess.TimeoutExpired:
-        return None, time.monotonic() - start
-    except OSError as exc:
+        process = supervisor.spawn(argv, cwd=cwd, env=env)
+        process_io = cast(Any, process)
+        try:
+            stdout, stderr = process_io.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                cleanup_ok = _queue_gate_terminate(process)
+            except (OSError, subprocess.SubprocessError):
+                cleanup_ok = False
+            pipes_closed = True
+            try:
+                # The supervisor has already terminated and reaped the process
+                # group (verified by ``cleanup_ok`` above), so this call only
+                # drains whatever is already sitting in the closed pipes'
+                # kernel buffers -- never an unbounded wait on a live escaped
+                # descendant. ``timeout=0`` looks like the tightest bound for
+                # that, but CPython's own ``Popen.communicate()`` needs a
+                # sliver of positive budget to run its internal reap/read
+                # bookkeeping even when the process is already dead; passing
+                # exactly zero raises ``TimeoutExpired`` deterministically
+                # (reproduced locally) and would misreport a clean kill as a
+                # stuck one. `_GATE_CLEANUP_DRAIN_SECONDS` is a short bound on
+                # already-finished work, not a wait for the process itself.
+                process_io.communicate(timeout=_GATE_CLEANUP_DRAIN_SECONDS)
+            except (OSError, subprocess.SubprocessError):
+                pipes_closed = False
+            if not cleanup_ok or not pipes_closed:
+                _retain_admission_after_failed_cleanup()
+                return OSError(
+                    "timed-out gate process cleanup did not complete; "
+                    "resource admission remains unsafe"
+                ), time.monotonic() - start
+            return None, time.monotonic() - start
+    except (OSError, subprocess.SubprocessError) as exc:
         return exc, time.monotonic() - start
-    return proc, time.monotonic() - start
+    return (
+        subprocess.CompletedProcess(
+            argv,
+            process.returncode,
+            _decode_process_output(stdout),
+            _decode_process_output(stderr),
+        ),
+        time.monotonic() - start,
+    )
+
+
+def _queue_gate_supervisor() -> Any:
+    """Reuse the gate module's process-group supervisor for queue commands."""
+
+    # ``gates`` imports this module, so keep the import inside the call to
+    # avoid a module cycle while sharing one lifecycle primitive at runtime.
+    from repository_manager.gates import _GATE_PROCESS_SUPERVISOR
+
+    return _GATE_PROCESS_SUPERVISOR
+
+
+def _cargo_declares_target_dir(argv: Sequence[str]) -> bool:
+    """Return whether *argv* names an explicit Cargo ``--target-dir``.
+
+    Mirrors ``resource_guard._validate_cargo_target``'s own scan -- kept
+    separate so ``_prepare_gate_environment`` can decide, cheaply, whether it
+    needs a cwd-relative recompute at all before doing one.
+    """
+
+    for index, part in enumerate(argv):
+        if part == "--target-dir" and index + 1 < len(argv):
+            return True
+        if part.startswith("--target-dir="):
+            return True
+    return False
+
+
+def _prepare_gate_environment(
+    argv: Sequence[str], cwd: Path, timeout: int, env: Mapping[str, str]
+) -> dict[str, str]:
+    """Validate Cargo's declared target/jobs before the gate is spawned."""
+
+    prepared = dict(env)
+    if not is_cargo_shaped(argv):
+        return prepared
+    if Path(argv[0]).name.lower() not in {"cargo", "cargo.exe"}:
+        raise ResourceGuardError(
+            "Cargo queue gates must use direct fixed argv for target/job validation"
+        )
+    raw_target = prepared.get("CARGO_TARGET_DIR")
+    if not os.environ.get("AU_LANE_TEMP_ROOT") and _cargo_declares_target_dir(argv):
+        # A gate's ``env`` carries ONE ``CARGO_TARGET_DIR``, computed once for
+        # the caller's own scope tree, but the SAME gate command runs against
+        # several DIFFERENT throwaway ``git worktree add --detach`` copies
+        # over its lifecycle -- the merged tree here, then a separate one per
+        # ``compute_gate_baseline`` call. A command declaring the ordinary
+        # relative ``--target-dir target-isolated`` convention resolves that
+        # against THIS ``cwd``, not the scope tree the stale env value was
+        # computed for, so validating against the stale value refuses a
+        # perfectly safe, already-isolated target with "differs from the
+        # guarded target directory". Recompute it fresh against the actual
+        # ``cwd`` instead -- `materialized()` always hands back a real git
+        # worktree, so `partitioned_paths` resolves it the same way it would
+        # any other lane. A ``cwd`` that is not a real lane (e.g. a bare
+        # fixture directory) falls back to the original admitted value
+        # instead of raising -- that case has nothing to recompute against,
+        # and the unmodified value is exactly what the below validation
+        # needs to still catch a genuinely unsafe absolute override.
+        try:
+            raw_target = str(partitioned_paths(cwd).cargo_target_dir)
+        except LaneArbitrationError:
+            pass
+    raw_tmp = prepared.get("TMPDIR")
+    if not raw_target or not raw_tmp:
+        raise ResourceGuardError(
+            "Cargo queue gates require admitted CARGO_TARGET_DIR and TMPDIR"
+        )
+    command = prepare_command(
+        argv,
+        workdir=cwd,
+        target_dir=raw_target,
+        tmp_dir=raw_tmp,
+        profile_name="merge-drain",
+        timeout=timeout,
+        env=prepared,
+    )
+    return prepare_environment(command)
+
+
+def _queue_gate_terminate(process: Any) -> bool:
+    """Reuse the queue runner's descendant-tree cleanup on a gate timeout."""
+
+    from repository_manager.merge_queue_runner import _kill_process_group
+
+    return _kill_process_group(process)
+
+
+def _retain_admission_after_failed_cleanup() -> None:
+    """Keep the host reservation fenced until an un-reaped child is gone."""
+
+    try:
+        admission = verified_inherited_admission()
+    except ResourceGuardError:
+        return
+    if admission is not None:
+        admission.retain_reservation_on_release()
+
+
+def _decode_process_output(value: object) -> str:
+    """Normalize byte streams returned by the shared process supervisor."""
+
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    return ""
 
 
 def _filter_kept_lines(lines: list[str], patterns: tuple[str, ...]) -> list[str]:
@@ -2272,6 +2449,30 @@ def run_gate(
     return _compare_gate(gate, proc, tree, baseline, seconds)
 
 
+def _queue_gate_paths(parts: Any | None) -> tuple[Path, Path]:
+    """Use the admitted AU lane paths when a queue guard supplied them."""
+
+    configured_root = os.environ.get("AU_LANE_TEMP_ROOT")
+    if not configured_root:
+        if parts is None:
+            raise ResourceGuardError("queue gate partitioned paths are unavailable")
+        return parts.cargo_target_dir, parts.scratch_dir
+    raw_target = os.environ.get("CARGO_TARGET_DIR")
+    raw_tmp = os.environ.get("TMPDIR")
+    if not raw_target or not raw_tmp:
+        raise ResourceGuardError(
+            "AU_LANE_TEMP_ROOT requires guarded CARGO_TARGET_DIR and TMPDIR"
+        )
+    root = Path(configured_root).resolve()
+    target = Path(raw_target).resolve()
+    temporary = Path(raw_tmp).resolve()
+    if not target.is_relative_to(root) or not temporary.is_relative_to(root):
+        raise ResourceGuardError(
+            "queue gate paths escape the admitted AU_LANE_TEMP_ROOT"
+        )
+    return target, temporary
+
+
 def run_fast_gates(
     tree: Path,
     *,
@@ -2298,13 +2499,18 @@ def run_fast_gates(
     # lane-scoped allocator `lane_doctor.lane_exports()` uses, so every gate
     # command this queue runs gets an allocation identical in shape to what a
     # lane doctoring itself would compute — never a value the caller chose.
-    parts = partitioned_paths(scope.tree)
-    env["CARGO_TARGET_DIR"] = str(parts.cargo_target_dir)
-    env["TMPDIR"] = str(parts.scratch_dir)
+    parts = (
+        None
+        if os.environ.get("AU_LANE_TEMP_ROOT")
+        else partitioned_paths(scope.tree)
+    )
+    target_dir, tmp_dir = _queue_gate_paths(parts)
+    env["CARGO_TARGET_DIR"] = str(target_dir)
+    env["TMPDIR"] = str(tmp_dir)
     # D-ORC-37: even though every tree gated here is a throwaway checkout, give
     # any pre-commit a store of its own so a crash can never orphan or lock
     # against another lane's. One line, both hazards.
-    env["PRE_COMMIT_HOME"] = str(parts.scratch_dir / "merge-queue-precommit")
+    env["PRE_COMMIT_HOME"] = str(tmp_dir / "merge-queue-precommit")
     checks: list[Check] = []
     dropped = _dropped_gates(config, base_config)
     if dropped:
@@ -3350,6 +3556,139 @@ def _run_queue_summary(
     }
 
 
+@contextmanager
+def _queue_resource_guard(repo: Path) -> Iterator[None]:
+    """Admit one generic queue drain in its existing service cgroup.
+
+    The runner service supplies the cgroup envelope.  This boundary is also
+    used by direct ``merge_queue run`` callers, so queue work cannot bypass the
+    host reservation or health/storage checks merely by skipping the timer.
+    """
+
+    if not _queue_runner_handoff_valid():
+        raise ResourceGuardError(
+            "direct merge-queue drains require the supervised queue runner "
+            "with its real per-repository deadline"
+        )
+    target_dir, tmp_dir = default_guard_paths(repo, "merge-queue")
+    environment = dict(os.environ)
+    environment["CARGO_TARGET_DIR"] = str(target_dir)
+    environment["AU_LANE_TEMP_ROOT"] = str(tmp_dir.parents[2])
+    environment["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "2"
+    command = prepare_command(
+        ("repository-manager", "--merge-queue", "run", "--repo-path", str(repo)),
+        workdir=repo,
+        target_dir=target_dir,
+        tmp_dir=tmp_dir,
+        profile_name="merge-drain",
+        timeout=180,
+        env=environment,
+    )
+    with admit_inherited(command, expected_cgroup=current_cgroup_path()) as admission:
+        environment_keys = {
+            "TMPDIR": admission.environment["TMPDIR"],
+            "RUNNER_TEMP": admission.environment["RUNNER_TEMP"],
+            "CARGO_TARGET_DIR": str(target_dir),
+            "AU_LANE_TEMP_ROOT": environment["AU_LANE_TEMP_ROOT"],
+            "PYTEST_XDIST_AUTO_NUM_WORKERS": "2",
+        }
+        previous = {name: os.environ.get(name) for name in environment_keys}
+        os.environ.update(environment_keys)
+        try:
+            yield
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+
+def _queue_runner_handoff_valid() -> bool:
+    """Verify that this drain was launched by the deadline-owning runner.
+
+    The generic queue API is intentionally not an unsupervised worker.  The
+    timer runner supplies the parent PID and its procfs start fence; checking
+    the live parent command line prevents an arbitrary caller from opting in by
+    setting a marker in its own environment.  The resource admission below is
+    still the sole host-capacity boundary.
+    """
+
+    raw_pid = os.environ.get(_QUEUE_SUPERVISOR_PID_ENV)
+    raw_start = os.environ.get(_QUEUE_SUPERVISOR_START_ENV)
+    try:
+        supervisor_pid = int(raw_pid or "")
+        supervisor_start = int(raw_start or "")
+    except ValueError:
+        return False
+    if supervisor_pid < 1 or os.getppid() != supervisor_pid:
+        return False
+    try:
+        if process_start_time(supervisor_pid) != supervisor_start:
+            return False
+        command_line = Path(f"/proc/{supervisor_pid}/cmdline").read_bytes()
+    except (OSError, ResourceGuardError):
+        return False
+    argv = [os.fsdecode(part) for part in command_line.split(b"\0") if part]
+    return _queue_runner_argv_is_authorized(argv)
+
+
+def _queue_runner_argv_is_authorized(argv: Sequence[str]) -> bool:
+    """Recognize only the installed runner's structured entrypoint argv."""
+
+    if not argv:
+        return False
+    executable = Path(argv[0]).name.lower()
+    if not executable.startswith("python"):
+        return False
+    known_runner_paths = {
+        Path(__file__).resolve().with_name("merge_queue_runner.py"),
+        (Path.home() / ".local" / "bin" / "repository-manager-merge-queue-runner").resolve(),
+    }
+    script_entry = len(argv) >= 2 and Path(argv[1]).resolve() in known_runner_paths
+    module_entry = (
+        len(argv) >= 3
+        and argv[1] == "-m"
+        and argv[2] == "repository_manager.merge_queue_runner"
+    )
+    if not (script_entry or module_entry):
+        return False
+    if "--phased-push" in argv:
+        return False
+    required_options = (
+        "--workspace-root",
+        "--drain-deadline-seconds",
+        "--global-deadline-seconds",
+    )
+    values = {option: _runner_option_value(argv, option) for option in required_options}
+    if any(value is None for value in values.values()):
+        return False
+    try:
+        drain_seconds = int(values["--drain-deadline-seconds"] or "")
+        global_seconds = int(values["--global-deadline-seconds"] or "")
+    except ValueError:
+        return False
+    if global_seconds < 1:
+        return False
+    max_seconds = DEFAULT_RESOURCE_PROFILES.resolve(
+        "merge-drain"
+    ).runtime_max_seconds
+    return 0 < drain_seconds <= max_seconds
+
+
+def _runner_option_value(argv: Sequence[str], option: str) -> str | None:
+    """Read one required runner option in either argparse spelling."""
+
+    values: list[str] = []
+    for index, value in enumerate(argv):
+        if value == option:
+            if index + 1 < len(argv):
+                values.append(argv[index + 1])
+        elif value.startswith(f"{option}="):
+            values.append(value.split("=", 1)[1])
+    return values[0] if len(values) == 1 and values[0] else None
+
+
 def run_queue(
     *,
     base: str = "",
@@ -3374,9 +3713,10 @@ def run_queue(
     repo = scope.main_tree
     git = _resolve_git_client(git, repo)
     started = time.monotonic()
-    outcomes, early, config, lease_receipts = _drain_batch_under_lease(
-        scope, repo, base, batch_size, git, prune, lease_ttl_seconds, push
-    )
+    with _queue_resource_guard(repo):
+        outcomes, early, config, lease_receipts = _drain_batch_under_lease(
+            scope, repo, base, batch_size, git, prune, lease_ttl_seconds, push
+        )
     if early is not None:
         return early
     return _run_queue_summary(
@@ -3474,6 +3814,8 @@ def main(argv: list[str] | None = None) -> int:
 
     from agent_utilities.governance.lanes import LeaseUnavailable
 
+    from repository_manager.resource_guard import ResourceGuardError
+
     p = argparse.ArgumentParser(prog="python -m repository_manager.merge_queue")
     p.add_argument(
         "action",
@@ -3516,6 +3858,18 @@ def main(argv: list[str] | None = None) -> int:
     except LaneArbitrationError as exc:
         print(json.dumps({"refused": str(exc)}))
         return 1
+    except ResourceGuardError as exc:
+        print(
+            json.dumps(
+                {
+                    "deferred": True,
+                    "resource_guard": getattr(exc, "evidence", {}),
+                    "error": str(exc),
+                },
+                default=str,
+            )
+        )
+        return 75
     print(json.dumps(out, default=str, indent=2))
     return 1 if out.get("rejected") or out.get("ok") is False else 0
 

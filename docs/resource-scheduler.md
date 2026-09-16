@@ -11,19 +11,76 @@ filesystem lease.
 `repository_manager.resource_profiles.default_resource_profiles()` registers
 the conservative v1 classes:
 
-| Profile | CPU weight | Memory MiB | Disk MiB | Process slots | Concurrency |
+| Profile | CPU weight | Admission memory MiB | Runtime high/max MiB | Process slots | Concurrency |
 | --- | ---: | ---: | ---: | ---: | --- |
-| `light-check` | 1 | 256 | 256 | 1 | independent |
-| `frontend-build` | 8 | 8,192 | 4,096 | 1 | one `frontend-build` producer |
-| `rust-build` | 8 | 16,384 | 16,384 | 2 | weighted host capacity |
-| `pre-commit` | 4 | 2,048 | 1,024 | 2 | weighted host capacity |
-| `merge-drain` | 2 | 1,024 | 512 | 1 | repository/branch exclusive |
-| `workspace-release` | 4 | 4,096 | 2,048 | 2 | repository exclusive |
+| `light-check` | 1 | 256 | 2,048 / 4,096 | 1 | independent |
+| `frontend-build` | 8 | 8,192 | 20,480 / 24,576 | 1 | one heavy producer |
+| `rust-build` | 8 | 16,384 | 32,768 / 49,152 | 2 | one heavy producer |
+| `pre-commit` | 4 | 2,048 | 8,192 / 12,288 | 2 | weighted host capacity |
+| `merge-drain` | 2 | 1,024 | 4,096 / 6,144 | 1 | repository/branch exclusive |
+| `workspace-release` | 4 | 4,096 | 2,048 / 4,096 | 2 | repository exclusive |
 
 Profiles are versioned and unknown names refuse.  A request can ask for more
 than the profile minimum, but never less.  The profile owns its concurrency
 key; a caller cannot accidentally turn a frontend build into a `light-check`
 reservation by relying on the default request value.
+
+## Local process resource guard
+
+`repository_manager.resource_guard` is the local execution boundary used by
+the build broker, gate runner, and generic Repository Manager merge-queue drain.
+It mirrors the admission and containment rules used by the fleet build
+dispatcher while leaving remote transport to the dispatcher. A command whose
+shape invokes Cargo always receives `rust-build` limits, even if its manifest
+says `light-check` or the gate is labelled fast.
+
+Before process creation the guard atomically reserves the single host-user
+heavy slot in the same reservation authority used by `dispatch_build.sh`, then
+records memory PSI, available memory, free swap, user-cgroup
+headroom and OOM counters. It also checks free bytes and free inodes for the
+explicit target, disk-backed `TMPDIR`, and the configured workspace and system
+temporary probes. A high watermark
+closes admission and the guard reopens only after the low PSI watermark is
+reached. Refusal is a deferral and never a code-quality verdict.
+
+Admitted build and gate commands run in a transient user systemd scope with
+`MemoryHigh`, `MemoryMax`, `MemorySwapMax`, CPU quota, task count, runtime, and
+`OOMPolicy` limits. The guard records each scope's systemd control group and
+releases its host reservation only after the scope is empty; if systemd removes
+the empty group first, its terminal inactive/dead state is checked. Missing or
+uncertain closure retains the reservation, and stale recovery requires a
+concrete empty control group. A merge-queue drain keeps its child in the installed
+service cgroup instead of creating a sibling scope; admission verifies finite
+memory, swap, CPU, and task controls across that cgroup's ancestors, and the
+runner continues to monitor every descendant for cgroup escape. Cargo receives
+`CARGO_BUILD_JOBS=2`, `CARGO_INCREMENTAL=0`, the guarded target directory, and
+bounded thread-pool settings. Targets and temporary files default under
+`/var/tmp/repository-manager-resource-guard`; operators may point
+`RM_RESOURCE_GUARD_ROOT` at another local disk-backed filesystem. Queue child
+processes receive `AU_LANE_TEMP_ROOT` and `PYTEST_XDIST_AUTO_NUM_WORKERS=2` so
+the agent-utilities lane resolver owns disk-backed temporary paths and pytest
+fanout; when that root is present, the generic queue verifies that the actual
+gate environment's `CARGO_TARGET_DIR` and `TMPDIR` remain below it instead of
+silently replacing the admitted paths with another allocator. Both the
+materialized merged worktree and its gate scratch directory stay below that
+same admitted `TMPDIR`; Cargo gate argv is checked before spawn so an explicit
+`--target-dir` or `-j` value cannot escape the admitted target or job cap. Both the
+admission and completion observations travel with the result
+for guarded build and gate commands; queue admission refusals carry their
+pre-launch evidence in the deferred error. Stdout and stderr are drained
+concurrently and retain only a 64 KiB
+terminal tail; byte counts, truncation state, and SHA-256 digests preserve
+useful proof without letting verbose compilers grow the Repository Manager
+process memory.
+
+The generic `repository-manager --merge-queue run` entrypoint is the admission
+boundary used by the supervised timer child. An unsupervised direct CLI/API
+drain is refused before any queue work because only the runner supplies the
+real per-repository wall-clock deadline (bounded by the `merge-drain` profile)
+and descendant cleanup. The separate
+native agent-utilities queue implementation remains outside this package's
+dependency boundary and must apply its own equivalent admission policy before
+invoking other work.
 
 ## Admission and fencing
 

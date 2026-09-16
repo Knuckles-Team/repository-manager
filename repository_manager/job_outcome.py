@@ -42,9 +42,18 @@ import subprocess  # nosec B404 - fixed argv, no shell
 import time
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
+
+from repository_manager.resource_guard import (
+    ResourceGuardError,
+    default_guard_paths,
+    is_cargo_shaped,
+    prepare_command,
+    run_guarded,
+)
+from repository_manager.resource_profiles import DEFAULT_RESOURCE_PROFILES
 
 __all__ = [
     "COMPLETED",
@@ -85,8 +94,12 @@ class ResourceProfile:
     """
 
     memory_max: str = ""
+    memory_high: str = ""
+    memory_swap_max: str = ""
     cpu_quota: str = ""
     jobs: int = 0
+    tasks_max: int = 0
+    runtime_max_seconds: int = 0
     #: systemd's OOM preference. Deliberately optional and OFF by default:
     #: ``ManagedOOMPreference`` is unsupported on some systemd builds in this
     #: fleet, where passing it makes the unit fail to start AT ALL — turning a
@@ -102,6 +115,59 @@ class ResourceProfile:
         if self.oom_preference:
             args += ["-p", f"ManagedOOMPreference={self.oom_preference}"]
         return args
+
+    @staticmethod
+    def _mib(value: str, default: int, *, allow_zero: bool = False) -> int:
+        if value == "":
+            return default
+        if not isinstance(value, str):
+            raise ValueError(f"invalid memory limit {value!r}")
+        match = re.fullmatch(r"(\d+)([KMGT]?)", value.strip(), re.IGNORECASE)
+        if match is None:
+            raise ValueError(f"invalid memory limit {value!r}")
+        amount = int(match.group(1))
+        multiplier = {"": 1 / (1024**2), "K": 1 / 1024, "M": 1, "G": 1024, "T": 1024**2}[
+            match.group(2).upper()
+        ]
+        result = int(amount * multiplier)
+        if result < (0 if allow_zero else 1):
+            raise ValueError(f"memory limit is below one MiB: {value!r}")
+        return result
+
+    @staticmethod
+    def _percent(value: str, default: int) -> int:
+        if not value:
+            return default
+        raw = value.removesuffix("%")
+        if not raw.isdigit() or int(raw) < 1:
+            raise ValueError(f"invalid CPU quota {value!r}")
+        return int(raw)
+
+    def guard_profile(self, *, cargo: bool):
+        """Project the compatibility declaration onto the canonical profile."""
+
+        base = DEFAULT_RESOURCE_PROFILES.resolve("rust-build" if cargo else "pre-commit")
+        memory_max = self._mib(self.memory_max, base.memory_max_mib)
+        memory_high = self._mib(
+            self.memory_high, min(base.memory_high_mib, memory_max)
+        )
+        return replace(
+            base,
+            memory_high_mib=min(memory_high, memory_max),
+            memory_max_mib=memory_max,
+            memory_swap_max_mib=self._mib(
+                self.memory_swap_max, base.memory_swap_max_mib, allow_zero=True
+            ),
+            cpu_quota_percent=self._percent(
+                self.cpu_quota, base.cpu_quota_percent
+            ),
+            cargo_jobs=self.jobs or base.cargo_jobs,
+            tasks_max=self.tasks_max or base.tasks_max,
+            runtime_max_seconds=(
+                self.runtime_max_seconds or base.runtime_max_seconds
+            ),
+            managed_oom_preference=self.oom_preference,
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -188,32 +254,6 @@ def _oom_evidence(unit: str) -> dict[str, Any]:
     return evidence
 
 
-def _stage_argv(
-    wrapped: str,
-    *,
-    unit: str,
-    workdir: Path,
-    profile: ResourceProfile,
-    environ: Mapping[str, str],
-    use_systemd: bool,
-) -> list[str]:
-    if not use_systemd:
-        return ["bash", "-c", wrapped]
-    return [
-        "systemd-run",
-        "--user",
-        "--collect",
-        "--wait",
-        f"--unit={unit}",
-        f"--working-directory={workdir}",
-        *profile.unit_args(),
-        *[f"--setenv={k}={v}" for k, v in environ.items()],
-        "bash",
-        "-c",
-        wrapped,
-    ]
-
-
 def _run_one_stage(
     name: str,
     command: str,
@@ -232,26 +272,37 @@ def _run_one_stage(
     # which is precisely the signal we want.
     wrapped = (
         f"{command} > {shlex.quote(str(log_path))} 2>&1; "
-        f'echo "{_SENTINEL}=$?" >> {shlex.quote(str(log_path))}'
+        f'printf "\\n{_SENTINEL}=$?\\n" >> {shlex.quote(str(log_path))}'
     )
-    argv = _stage_argv(
-        wrapped,
-        unit=unit,
-        workdir=workdir,
-        profile=profile,
-        environ=environ,
-        use_systemd=use_systemd,
-    )
-
     started = time.monotonic()
     try:
-        subprocess.run(  # nosec B603 - fixed argv, no shell
-            argv,
-            cwd=str(workdir),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        if use_systemd:
+            cargo = is_cargo_shaped(("bash", "-c", command))
+            target_dir, tmp_dir = default_guard_paths(workdir, "job-outcome")
+            guarded = prepare_command(
+                ("bash", "-c", wrapped),
+                workdir=workdir,
+                target_dir=target_dir,
+                tmp_dir=tmp_dir,
+                profile_name="rust-build" if cargo else "pre-commit",
+                timeout=profile.runtime_max_seconds or 3_600,
+                env=environ,
+                force_heavy=cargo,
+                force_cargo=cargo,
+                profile_override=profile.guard_profile(cargo=cargo),
+            )
+            guarded_result = run_guarded(guarded)
+            unit = guarded_result.unit
+            run_evidence = guarded_result.evidence()
+        else:
+            subprocess.run(  # nosec B603 - compatibility mode, fixed bash argv
+                ["bash", "-c", wrapped],
+                cwd=str(workdir),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            run_evidence = {}
     except (OSError, subprocess.SubprocessError) as exc:
         return StageOutcome(
             name=name,
@@ -260,6 +311,15 @@ def _run_one_stage(
             termination=f"runner error: {exc}",
             duration_seconds=time.monotonic() - started,
         )
+    except (ResourceGuardError, ValueError) as exc:
+        return StageOutcome(
+            name=name,
+            status=KILLED,
+            log_path=str(log_path),
+            termination=f"resource guard refusal: {exc}",
+            duration_seconds=time.monotonic() - started,
+            evidence=getattr(exc, "evidence", {}),
+        )
 
     duration = time.monotonic() - started
     try:
@@ -267,17 +327,26 @@ def _run_one_stage(
     except OSError:
         text = ""
     status, code = classify_log(text)
+    if (
+        use_systemd
+        and status == COMPLETED
+        and guarded_result.completed.returncode != 0
+    ):
+        status, code = KILLED, None
     outcome = StageOutcome(
         name=name,
         status=status,
         exit_code=code,
         duration_seconds=duration,
         log_path=str(log_path),
+        evidence=run_evidence,
     )
     if status == KILLED:
         evidence = _oom_evidence(unit) if use_systemd else {}
-        outcome.termination = evidence.get("termination", "no completion sentinel")
-        outcome.evidence = evidence
+        outcome.termination = evidence.get(
+            "termination", "guarded scope did not prove successful completion"
+        )
+        outcome.evidence = {**run_evidence, **evidence}
     return outcome
 
 
@@ -301,7 +370,8 @@ def run_stages(
     workdir = Path(workdir).resolve()
     log_dir = Path(log_dir).resolve()
     log_dir.mkdir(parents=True, exist_ok=True)
-    environ = dict(env or {})
+    environ = dict(os.environ)
+    environ.update(env or {})
 
     outcomes = [
         _run_one_stage(

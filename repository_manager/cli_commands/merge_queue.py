@@ -11,6 +11,7 @@ def run_merge_queue_cli(args: Any) -> int:
     from agent_utilities.governance.lanes import LaneArbitrationError, LeaseUnavailable
 
     from repository_manager import merge_queue
+    from repository_manager.resource_guard import ResourceGuardError
 
     try:
         result = merge_queue.dispatch(
@@ -30,6 +31,18 @@ def run_merge_queue_cli(args: Any) -> int:
     except LaneArbitrationError as exc:
         print(json.dumps({"refused": str(exc)}))
         return 1
+    except ResourceGuardError as exc:
+        print(
+            json.dumps(
+                {
+                    "deferred": True,
+                    "resource_guard": getattr(exc, "evidence", {}),
+                    "error": str(exc),
+                },
+                default=str,
+            )
+        )
+        return 75
     print(json.dumps(result, default=str, indent=2))
     if result.get("ok") is False:
         return 1

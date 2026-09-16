@@ -16,6 +16,7 @@ from repository_manager.merge_queue_runner import (
     DeclaredRepository,
     MergeQueueRunnerError,
     _phased_push_command,
+    _queue_child_environment,
     _runner_command,
     _runner_settings,
     build_parser,
@@ -24,6 +25,7 @@ from repository_manager.merge_queue_runner import (
     drain_repository,
     run_phased_push,
 )
+from repository_manager.resource_guard import default_guard_paths
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 
@@ -468,6 +470,23 @@ def test_drain_passes_an_explicit_lease_ttl_without_using_a_wrapper(
         "--queue-lease-ttl-seconds",
         "20",
     ]
+
+
+def test_queue_child_environment_uses_guard_root_and_two_pytest_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("RM_RESOURCE_GUARD_ROOT", str(tmp_path / "var-tmp"))
+    repository = DeclaredRepository("fixture", "fixture", tmp_path)
+    environment = _queue_child_environment(repository)
+
+    target_dir, _tmp_dir = default_guard_paths(repository.path, "merge-queue")
+    assert Path(environment["CARGO_TARGET_DIR"]) == target_dir
+    assert environment["PYTEST_XDIST_AUTO_NUM_WORKERS"] == "2"
+    assert Path(environment["AU_LANE_TEMP_ROOT"]) == tmp_path / "var-tmp"
+    assert Path(environment["TMPDIR"]) == _tmp_dir
+    assert Path(environment["RUNNER_TEMP"]) == _tmp_dir
+    assert environment["RM_MERGE_QUEUE_SUPERVISOR_PID"].isdigit()
+    assert environment["RM_MERGE_QUEUE_SUPERVISOR_START_TIME"].isdigit()
 
 
 def test_runner_lease_ttl_is_independent_but_must_outlive_deadline(
