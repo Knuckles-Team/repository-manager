@@ -212,6 +212,8 @@ subdirectories:
             Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/uptime-kuma-agent.git
           description: Agent for interacting with Uptime Kuma API
+        - url: https://github.com/Knuckles-Team/vaultwarden-mcp.git
+          description: Vaultwarden API + Bitwarden vault MCP Server and A2A Agent for Agentic AI!
         - url: https://github.com/Knuckles-Team/vector-mcp.git
           description: Integrate RAG into AI Agents via MCP Server. Supports multiple
             Vector database technologies.
@@ -477,6 +479,8 @@ subdirectories:
       description: WeTTY terminal over HTTP/HTTPS browser client.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/vaultwarden.git
       description: Lightweight vaultwarden credential manager server.
+    - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/vaultwarden-mcp.git
+      description: Kubernetes deployment for the vaultwarden-mcp MCP server.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/uptime-kuma.git
       description: Self-hosted service status and heartbeat monitoring system.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/stable-diffusion.git
@@ -661,6 +665,10 @@ services:
     url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/vaultwarden.git
     domain: vaultwarden.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
     description: Bitwarden-compatible secure password manager backend.
+  - name: vaultwarden-mcp
+    url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/vaultwarden-mcp.git
+    domain: vaultwarden-mcp.arpa
+    description: Vaultwarden API + Bitwarden vault MCP server.
   - name: wger
     url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/wger.git
     domain: wger.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
