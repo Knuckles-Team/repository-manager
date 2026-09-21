@@ -202,6 +202,59 @@ def test_merge_v2_has_stage_paths_resources_baseline_and_artifacts() -> None:
     assert gate.artifact_dependencies == ("wheel",)
 
 
+def test_merge_timeout_recheck_contract_is_typed_and_fail_closed() -> None:
+    config = mq.parse_config(
+        {
+            "schema_version": 2,
+            "gates": [
+                {
+                    "name": "aggregate",
+                    "command": ["python3", "runner.py"],
+                    "compare": "lines",
+                    "timeout_recheck_pattern": r"^TIMEOUT (?P<item>checks/[^ ]+\.py)$",
+                    "timeout_recheck_command": ["python3", "{item}"],
+                    "timeout_recheck_timeout": 15,
+                }
+            ],
+        },
+        source="v2.mergequeue.yaml",
+    )
+    gate = config.gates[0]
+    assert gate.timeout_recheck_pattern.startswith("^TIMEOUT")
+    assert gate.timeout_recheck_command == ("python3", "{item}")
+    assert gate.timeout_recheck_timeout == 15
+
+    incomplete = {
+        "schema_version": 2,
+        "gates": [
+            {
+                "name": "aggregate",
+                "command": ["true"],
+                "compare": "lines",
+                "timeout_recheck_pattern": r"^TIMEOUT (?P<item>.+)$",
+            }
+        ],
+    }
+    with pytest.raises(mq.MergeQueueError, match="requires timeout_recheck_pattern"):
+        mq.parse_config(incomplete, source="v2.mergequeue.yaml")
+
+    no_named_capture = {
+        "schema_version": 2,
+        "gates": [
+            {
+                "name": "aggregate",
+                "command": ["true"],
+                "compare": "lines",
+                "timeout_recheck_pattern": r"^TIMEOUT (.+)$",
+                "timeout_recheck_command": ["python3", "{item}"],
+                "timeout_recheck_timeout": 15,
+            }
+        ],
+    }
+    with pytest.raises(mq.MergeQueueError, match="named.*item"):
+        mq.parse_config(no_named_capture, source="v2.mergequeue.yaml")
+
+
 def test_migration_preview_apply_is_idempotent_atomic_and_reversible(
     tmp_path: Path,
 ) -> None:

@@ -164,6 +164,9 @@ class GateSchema:
     keep_lines: tuple[str, ...] = ()
     ignore_lines: tuple[str, ...] = ()
     on_timeout: str = "fail"
+    timeout_recheck_pattern: str = ""
+    timeout_recheck_command: tuple[str, ...] = ()
+    timeout_recheck_timeout: int = 0
     source: str = ""
 
     @property
@@ -966,6 +969,9 @@ def _normalize_merge(data: Mapping[str, Any], *, source: str) -> dict[str, Any]:
             "keep_lines",
             "ignore_lines",
             "on_timeout",
+            "timeout_recheck_pattern",
+            "timeout_recheck_command",
+            "timeout_recheck_timeout",
             "resource_class",
             "resources",
             "artifact_dependencies",
@@ -1186,6 +1192,11 @@ def parse_merge_config(
         )
         if on_timeout not in TIMEOUT_POLICIES:
             raise _error(source, f"{path}.on_timeout", "must be fail or defer")
+        (
+            timeout_recheck_pattern,
+            timeout_recheck_command,
+            timeout_recheck_timeout,
+        ) = _timeout_recheck_config(gate, compare=compare, source=source, path=path)
         gates.append(
             GateSchema(
                 name=name,
@@ -1222,6 +1233,9 @@ def parse_merge_config(
                     gate.get("ignore_lines"), source=source, path=f"{path}.ignore_lines"
                 ),
                 on_timeout=on_timeout,
+                timeout_recheck_pattern=timeout_recheck_pattern,
+                timeout_recheck_command=timeout_recheck_command,
+                timeout_recheck_timeout=timeout_recheck_timeout,
                 source=source,
             )
         )
@@ -1272,6 +1286,82 @@ def parse_merge_config(
         generated=GeneratedFileContract(files=files, regenerate=regenerate),
         source=source,
     )
+
+
+def _timeout_recheck_config(
+    gate: Mapping[str, Any], *, compare: str, source: str, path: str
+) -> tuple[str, tuple[str, ...], int]:
+    """Parse and validate one aggregate-timeout direct-recheck declaration."""
+
+    pattern = _string(
+        gate.get("timeout_recheck_pattern", ""),
+        source=source,
+        path=f"{path}.timeout_recheck_pattern",
+        allow_empty=True,
+    )
+    command = (
+        _argv(
+            gate.get("timeout_recheck_command"),
+            source=source,
+            path=f"{path}.timeout_recheck_command",
+        )
+        if gate.get("timeout_recheck_command") is not None
+        else ()
+    )
+    timeout = _integer(
+        gate.get("timeout_recheck_timeout"),
+        source=source,
+        path=f"{path}.timeout_recheck_timeout",
+        default=0,
+        minimum=0,
+    )
+    enabled = (bool(pattern), bool(command), timeout > 0)
+    if any(enabled) and not all(enabled):
+        raise _error(
+            source,
+            path,
+            "timeout recheck requires timeout_recheck_pattern, "
+            "timeout_recheck_command, and a positive timeout_recheck_timeout",
+        )
+    if all(enabled):
+        _validate_timeout_recheck(
+            pattern, command, compare=compare, source=source, path=path
+        )
+    return pattern, command, timeout
+
+
+def _validate_timeout_recheck(
+    pattern: str,
+    command: tuple[str, ...],
+    *,
+    compare: str,
+    source: str,
+    path: str,
+) -> None:
+    if compare != "lines":
+        raise _error(
+            source, path, "timeout recheck is supported only with compare: lines"
+        )
+    try:
+        compiled = re.compile(pattern)
+    except re.error as exc:
+        raise _error(
+            source,
+            f"{path}.timeout_recheck_pattern",
+            f"invalid regular expression: {exc}",
+        ) from exc
+    if "item" not in compiled.groupindex:
+        raise _error(
+            source,
+            f"{path}.timeout_recheck_pattern",
+            "must define a named (?P<item>...) capture",
+        )
+    if command.count("{item}") != 1:
+        raise _error(
+            source,
+            f"{path}.timeout_recheck_command",
+            "must contain exactly one standalone {item} argv element",
+        )
 
 
 def runtime_tier(stage: str) -> str:

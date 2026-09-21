@@ -37,6 +37,13 @@ gates:
     timeout: 60
     baseline_timeout: 180
     compare: lines
+    # The aggregate runner has a shared deadline, so worker scheduling can move
+    # the TIMEOUT marker between otherwise-fast children. Candidate-only timeout
+    # identities are run directly and accepted only when that exact script exits
+    # zero within its own small bound. New genuinely-slow checks still block.
+    timeout_recheck_pattern: '^TIMEOUT (?P<item>scripts/security/[^ ]+\.py)$'
+    timeout_recheck_command: ["env", "AGENT_UTILITIES_TESTING=true", ".venv/bin/python", "{item}"]
+    timeout_recheck_timeout: 15
 
   # ── the au queue's `targeted-tests` step ─────────────────────────────────
   # `compare: pytest-ids` is the ID-level differential: a failing id is permitted

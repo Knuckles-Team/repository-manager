@@ -118,6 +118,10 @@ gates:
     ignore_lines: ['generated [0-9]+ warnings?']
     when_changed: ['**/*.rs', 'Cargo.toml']
     on_timeout: fail        # fail | defer
+    # Optional for line-oriented aggregate runners with one shared deadline:
+    timeout_recheck_pattern: '^TIMEOUT (?P<item>scripts/check_[^ ]+\.py)$'
+    timeout_recheck_command: [python3, "{item}"]
+    timeout_recheck_timeout: 15
 
 generated_files: [docs/index.md]
 regenerate: [["python3", "scripts/gen.py"]]
@@ -140,6 +144,16 @@ regenerate: [["python3", "scripts/gen.py"]]
 * **`exit`** — **script granularity**, for a tool that prints one static message
   (or nothing) regardless of *why* it failed. Reported as exactly that much
   precision, never dressed up as more.
+
+An aggregate `lines` gate may opt into the three `timeout_recheck_*` fields when
+its children share one wall-clock deadline and therefore the identity of the
+last timed-out child can vary with scheduler order. The pattern must expose one
+named `item` capture and the command must contain one standalone `{item}` argv
+element. Only a candidate-new timeout item is re-run. The queue discards that
+item's timeout marker and partial diagnostics only after the direct, bounded
+recheck exits zero; an unsafe path, failed launch, non-zero exit, or second
+timeout blocks. This preserves fail-closed timeout handling while preventing
+worker-order noise from being misclassified as a source regression.
 
 ### `environment_signature` and the baseline cache
 

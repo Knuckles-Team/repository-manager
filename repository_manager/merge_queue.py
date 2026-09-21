@@ -339,6 +339,14 @@ class GateSpec:
     #: queue that gets bypassed. Exceeding the BASELINE budget is always a
     #: refusal regardless — see point 1 in the module docstring.
     on_timeout: str = "fail"
+    #: Optional fail-closed repair for a line-oriented aggregate gate whose
+    #: children share one wall-clock deadline. The pattern identifies a timed-out
+    #: child with a named ``item`` capture; the fixed argv template re-runs only
+    #: candidate-new timeout items. A successful direct recheck proves scheduler
+    #: ordering noise. A failed or timed-out recheck remains a blocking failure.
+    timeout_recheck_pattern: str = ""
+    timeout_recheck_command: tuple[str, ...] = ()
+    timeout_recheck_timeout: int = 0
     #: Explicit v2 validation stage. ``tier`` remains the compatibility
     #: projection used by the current queue; staged consumers use this field.
     stage: str = "integration"
@@ -432,6 +440,9 @@ def parse_config(data: dict[str, Any], *, source: str = "") -> QueueConfig:
             keep_lines=gate.keep_lines,
             ignore_lines=gate.ignore_lines,
             on_timeout=gate.on_timeout,
+            timeout_recheck_pattern=gate.timeout_recheck_pattern,
+            timeout_recheck_command=gate.timeout_recheck_command,
+            timeout_recheck_timeout=gate.timeout_recheck_timeout,
             stage=gate.stage,
             baseline_mode=gate.baseline_mode,
             path_exclude=gate.path_selection.exclude,
@@ -1824,7 +1835,16 @@ def _baseline_cache_path(
         return None
     digest = hashlib.sha256(
         "\n".join(
-            [base_sha, gate.name, " ".join(gate.command), gate.compare, environment]
+            [
+                base_sha,
+                gate.name,
+                " ".join(gate.command),
+                gate.compare,
+                gate.timeout_recheck_pattern,
+                " ".join(gate.timeout_recheck_command),
+                str(gate.timeout_recheck_timeout),
+                environment,
+            ]
         ).encode()
     ).hexdigest()
     return (
@@ -2107,8 +2127,29 @@ def _compare_signal_gate(
     baseline: GateBaseline,
     seconds: float,
     base_label: str,
+    env: dict[str, str],
+) -> Check:
+    return _compare_rechecked_signal_gate(
+        gate, proc, tree, baseline, seconds, base_label, env
+    )
+
+
+def _compare_rechecked_signal_gate(
+    gate: GateSpec,
+    proc: Any,
+    tree: Path,
+    baseline: GateBaseline,
+    seconds: float,
+    base_label: str,
+    env: dict[str, str],
 ) -> Check:
     merged = _signals(proc, tree, gate)
+    recheck = _recheck_candidate_new_timeouts(
+        gate, tree, merged, baseline.signals, seconds=seconds, env=env
+    )
+    if isinstance(recheck, Check):
+        return recheck
+    merged, recovered = recheck
     new = sorted(merged - baseline.signals)
     pre_existing = sorted(merged & baseline.signals)
     fixed = sorted(baseline.signals - merged)
@@ -2120,11 +2161,157 @@ def _compare_signal_gate(
     if new:
         return _new_signals_result(gate, seconds, new, pre_existing, fixed, base_label)
 
-    return _clean_signals_result(gate, proc, seconds, pre_existing, fixed, base_label)
+    result = _clean_signals_result(gate, proc, seconds, pre_existing, fixed, base_label)
+    if recovered:
+        recovered_detail = _fmt(
+            "candidate-only timeout(s) that passed deterministic direct recheck",
+            sorted(recovered),
+        )
+        return replace(
+            result,
+            detail=(result.detail + "\n" + recovered_detail).strip(),
+        )
+    return result
+
+
+def _timeout_items(signals: frozenset[str], gate: GateSpec) -> dict[str, str]:
+    """Map configured aggregate-timeout lines to their child identities."""
+
+    if not gate.timeout_recheck_pattern:
+        return {}
+    pattern = re.compile(gate.timeout_recheck_pattern)
+    items: dict[str, str] = {}
+    for signal in signals:
+        match = pattern.search(signal)
+        if match is not None:
+            item = match.group("item").strip()
+            if item:
+                items[item] = signal
+    return items
+
+
+def _safe_timeout_item(tree: Path, item: str) -> bool:
+    """Return whether an output-derived item is a file inside the gate tree."""
+
+    path = Path(item)
+    if path.is_absolute() or ".." in path.parts:
+        return False
+    try:
+        target = (tree / path).resolve(strict=True)
+        target.relative_to(tree.resolve())
+    except (OSError, ValueError):
+        return False
+    return target.is_file()
+
+
+def _strip_recovered_timeout_signals(
+    signals: frozenset[str], items: dict[str, str], recovered: set[str]
+) -> frozenset[str]:
+    """Drop a recovered timeout marker and its item-prefixed partial output."""
+
+    return frozenset(
+        signal
+        for signal in signals
+        if not any(
+            signal == items[item] or signal.startswith(f"{item} ") for item in recovered
+        )
+    )
+
+
+def _recheck_candidate_new_timeouts(
+    gate: GateSpec,
+    tree: Path,
+    merged: frozenset[str],
+    baseline: frozenset[str],
+    *,
+    seconds: float,
+    env: dict[str, str],
+) -> tuple[frozenset[str], set[str]] | Check:
+    """Resolve timeout identity drift without treating a timeout as success.
+
+    Aggregate runners with a shared deadline can report a different subset of
+    timed-out children solely because worker completion order changed. Only a
+    candidate-new timeout identity is re-run, with fixed argv and its own bound.
+    The line is ignored only after that exact child exits zero. Thus scheduling
+    drift stops masquerading as a source regression while a genuinely new slow
+    or failing child remains fail-closed.
+    """
+
+    candidate_items = _timeout_items(merged, gate)
+    if not candidate_items:
+        return merged, set()
+    baseline_items = _timeout_items(baseline, gate)
+    new_items = sorted(set(candidate_items) - set(baseline_items))
+    recovered: set[str] = set()
+    for item in new_items:
+        failure = _recheck_timeout_item(gate, tree, item, seconds=seconds, env=env)
+        if failure is not None:
+            return failure
+        recovered.add(item)
+    return _strip_recovered_timeout_signals(
+        merged, candidate_items, recovered
+    ), recovered
+
+
+def _recheck_timeout_item(
+    gate: GateSpec,
+    tree: Path,
+    item: str,
+    *,
+    seconds: float,
+    env: dict[str, str],
+) -> Check | None:
+    if not _safe_timeout_item(tree, item):
+        return Check(
+            gate.name,
+            ok=False,
+            seconds=seconds,
+            detail=(
+                f"candidate-new timeout item {item!r} is not a safe file inside "
+                "the merged tree; refused without executing output-derived argv"
+            ),
+        )
+    argv = [item if part == "{item}" else part for part in gate.timeout_recheck_command]
+    proc, recheck_seconds = _timed_run(
+        argv, tree, timeout=gate.timeout_recheck_timeout, env=env
+    )
+    if proc is None:
+        return Check(
+            gate.name,
+            ok=False,
+            seconds=seconds + recheck_seconds,
+            detail=(
+                f"candidate-new timeout item {item!r} exceeded its deterministic "
+                f"{gate.timeout_recheck_timeout}s direct recheck; this is a real "
+                "unresolved timeout, not scheduler-order drift"
+            ),
+        )
+    if isinstance(proc, OSError) or proc.returncode != 0:
+        diagnostic = (
+            str(proc)
+            if isinstance(proc, OSError)
+            else (proc.stderr or proc.stdout).strip()[:1500]
+        )
+        return Check(
+            gate.name,
+            ok=False,
+            seconds=seconds + recheck_seconds,
+            detail=(
+                f"candidate-new timeout item {item!r} failed deterministic direct "
+                f"recheck: {diagnostic}"
+            ),
+        )
+    return None
 
 
 def _compare_gate(
-    gate: GateSpec, proc: Any, tree: Path, baseline: GateBaseline, seconds: float
+    gate: GateSpec,
+    proc: Any,
+    tree: Path,
+    baseline: GateBaseline,
+    seconds: float,
+    *,
+    env: dict[str, str],
 ) -> Check:
     """Turn one merged-tree run + its baseline into a verdict — behaviour 1.
 
@@ -2157,7 +2344,7 @@ def _compare_gate(
 
     if gate.compare == "exit":
         return _compare_exit_gate(gate, proc, baseline, seconds, base_label)
-    return _compare_signal_gate(gate, proc, tree, baseline, seconds, base_label)
+    return _compare_signal_gate(gate, proc, tree, baseline, seconds, base_label, env)
 
 
 def _when_changed_skip(gate: GateSpec, changed: list[str]) -> Check | None:
@@ -2269,7 +2456,7 @@ def run_gate(
             seconds=seconds,
             detail=f"clean (improvement delta unavailable: {baseline.detail})",
         )
-    return _compare_gate(gate, proc, tree, baseline, seconds)
+    return _compare_gate(gate, proc, tree, baseline, seconds, env=env)
 
 
 def run_fast_gates(

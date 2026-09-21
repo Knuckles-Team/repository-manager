@@ -433,6 +433,110 @@ def test_a_baseline_timeout_is_a_refusal_not_an_empty_baseline(tmp_path: Path) -
     assert "never silently treated as 'no pre-existing failures'" in detail
 
 
+def _timeout_drift_repo(tmp_path: Path, *, slow_recheck: bool = False) -> Path:
+    repo = _init_repo(
+        tmp_path / ("timeout-drift-slow" if slow_recheck else "timeout-drift")
+    )
+    (repo / "checks").mkdir()
+    (repo / "checks" / "old.sh").write_text("#!/bin/sh\nexit 0\n")
+    (repo / "checks" / "new.sh").write_text(
+        "#!/bin/sh\nsleep 30\n" if slow_recheck else "#!/bin/sh\nexit 0\n"
+    )
+    (repo / "aggregate.sh").write_text(
+        "#!/bin/sh\n"
+        "if [ -f candidate ]; then\n"
+        "  echo 'TIMEOUT checks/new.sh'\n"
+        "  echo 'checks/new.sh diagnostic: child produced no output'\n"
+        "else\n"
+        "  echo 'TIMEOUT checks/old.sh'\n"
+        "  echo 'checks/old.sh diagnostic: child produced no output'\n"
+        "fi\n"
+        "exit 1\n"
+    )
+    os.chmod(repo / "aggregate.sh", 0o755)
+    _write_config(
+        repo,
+        """
+        schema_version: 2
+        base: main
+        gates:
+          - name: aggregate
+            command: ["./aggregate.sh"]
+            timeout: 10
+            baseline_timeout: 10
+            compare: lines
+            timeout_recheck_pattern: '^TIMEOUT (?P<item>checks/[^ ]+\\.sh)$'
+            timeout_recheck_command: ["/bin/sh", "{item}"]
+            timeout_recheck_timeout: 1
+        """,
+    )
+    _commit(repo, "aggregate baseline")
+    _branch_with(repo, "feat/candidate", {"candidate": "yes\n"}, "candidate")
+    return repo
+
+
+def test_candidate_only_child_timeout_that_passes_direct_recheck_is_not_regression(
+    tmp_path: Path,
+) -> None:
+    """Worker-order identity drift is accepted only after exact-child proof."""
+
+    repo = _timeout_drift_repo(tmp_path)
+    mq.enqueue("feat/candidate", path=repo)
+    result = mq.run_queue(
+        path=repo,
+        prune=False,
+        git=FakeGit(str(tmp_path), {"x": str(repo)}),
+    )
+    outcome = result["outcomes"][0]
+    assert outcome["landed"] is True, outcome
+    check = outcome["gate"]["checks"][0]
+    assert "passed deterministic direct recheck" in check["detail"]
+    assert "checks/new.sh" in check["detail"]
+
+
+def test_candidate_only_child_timeout_that_retimes_out_remains_blocking(
+    tmp_path: Path,
+) -> None:
+    """A genuinely new slow child never gets laundered as scheduler drift."""
+
+    repo = _timeout_drift_repo(tmp_path, slow_recheck=True)
+    mq.enqueue("feat/candidate", path=repo)
+    result = mq.run_queue(
+        path=repo,
+        prune=False,
+        git=FakeGit(str(tmp_path), {"x": str(repo)}),
+    )
+    outcome = result["outcomes"][0]
+    assert outcome["landed"] is False, outcome
+    detail = outcome["gate"]["checks"][0]["detail"]
+    assert "exceeded its deterministic 1s direct recheck" in detail
+    assert "real unresolved timeout" in detail
+
+
+def test_timeout_recheck_refuses_output_derived_path_escape(tmp_path: Path) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    gate = mq.GateSpec(
+        name="aggregate",
+        command=("true",),
+        compare="lines",
+        timeout_recheck_pattern=r"^TIMEOUT (?P<item>.+)$",
+        timeout_recheck_command=("/bin/sh", "{item}"),
+        timeout_recheck_timeout=1,
+    )
+    result = mq._recheck_candidate_new_timeouts(
+        gate,
+        tree,
+        frozenset({"TIMEOUT ../../outside.sh"}),
+        frozenset(),
+        seconds=0.1,
+        env=dict(os.environ),
+    )
+    assert isinstance(result, mq.Check)
+    assert result.ok is False
+    assert "not a safe file" in result.detail
+
+
 # ---------------------------------------------------------------------------
 # Behaviour 2 — fold by recorded_at, not by lane-name sort order
 # ---------------------------------------------------------------------------
