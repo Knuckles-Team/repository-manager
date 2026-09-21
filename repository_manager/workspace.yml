@@ -212,11 +212,12 @@ subdirectories:
             Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/uptime-kuma-agent.git
           description: Agent for interacting with Uptime Kuma API
-        - url: https://github.com/Knuckles-Team/vaultwarden-mcp.git
-          description: Vaultwarden API + Bitwarden vault MCP Server and A2A Agent for Agentic AI!
         - url: https://github.com/Knuckles-Team/vector-mcp.git
           description: Integrate RAG into AI Agents via MCP Server. Supports multiple
             Vector database technologies.
+        - url: https://github.com/Knuckles-Team/vaultwarden-mcp.git
+          description: Vaultwarden and Bitwarden-compatible REST API, MCP server,
+            and A2A agent.
         - url: https://github.com/Knuckles-Team/wger-agent.git
           description: Wger Workout Manager — exercise database, workout routines,
             nutrition plans, body measurements, and progress tracking.
@@ -480,7 +481,7 @@ subdirectories:
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/vaultwarden.git
       description: Lightweight vaultwarden credential manager server.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/vaultwarden-mcp.git
-      description: Kubernetes deployment for the vaultwarden-mcp MCP server.
+      description: Kubernetes deployment for the Vaultwarden MCP and A2A service.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/uptime-kuma.git
       description: Self-hosted service status and heartbeat monitoring system.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/stable-diffusion.git
@@ -545,6 +546,186 @@ subdirectories:
       description: Private local Docker image registry.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/gitlab.git
       description: Local GitLab server hosting git repositories and runners.
+selectors:
+  all-repositories:
+    include:
+    - '*'
+  agent-connectors:
+    include:
+    - agent-packages/agents/ansible-tower-mcp
+    - agent-packages/agents/archimate-mcp
+    - agent-packages/agents/aris-mcp
+    - agent-packages/agents/jena-mcp
+    - agent-packages/agents/lakekeeper-mcp
+    - agent-packages/agents/kafka-mcp
+    - agent-packages/agents/archivebox-api
+    - agent-packages/agents/arr-mcp
+    - agent-packages/agents/atlassian-agent
+    - agent-packages/agents/audio-transcriber
+    - agent-packages/agents/caddy-mcp
+    - agent-packages/agents/clarity-api
+    - agent-packages/agents/camunda-mcp
+    - agent-packages/agents/container-manager-mcp
+    - agent-packages/agents/data-science-mcp
+    - agent-packages/agents/dockerhub-api
+    - agent-packages/agents/documentdb-mcp
+    - agent-packages/agents/egeria-mcp
+    - agent-packages/agents/emerald-exchange
+    - agent-packages/agents/erpnext-agent
+    - agent-packages/agents/fan-manager
+    - agent-packages/agents/genius-agent
+    - agent-packages/agents/github-agent
+    - agent-packages/agents/gitlab-api
+    - agent-packages/agents/ciso-assistant-api
+    - agent-packages/agents/home-assistant-agent
+    - agent-packages/agents/hdhomerun-mcp
+    - agent-packages/agents/jellyfin-mcp
+    - agent-packages/agents/keycloak-agent
+    - agent-packages/agents/langfuse-agent
+    - agent-packages/agents/leanix-agent
+    - agent-packages/agents/legal-peripherals-mcp
+    - agent-packages/agents/lgtm-mcp
+    - agent-packages/agents/listmonk-api
+    - agent-packages/agents/mattermost-mcp
+    - agent-packages/agents/mealie-mcp
+    - agent-packages/agents/media-downloader
+    - agent-packages/agents/microsoft-agent
+    - agent-packages/agents/nextcloud-agent
+    - agent-packages/agents/objectstore-mcp
+    - agent-packages/agents/okta-agent
+    - agent-packages/agents/openbao-mcp
+    - agent-packages/agents/opensearch-mcp
+    - agent-packages/agents/owncast-agent
+    - agent-packages/agents/plane-agent
+    - agent-packages/agents/portainer-agent
+    - agent-packages/agents/postiz-agent
+    - agent-packages/agents/qbittorrent-agent
+    - agent-packages/agents/repository-manager
+    - agent-packages/agents/rom-manager
+    - agent-packages/agents/salesforce-agent
+    - agent-packages/agents/pulselink-mcp
+    - agent-packages/agents/scholarx
+    - agent-packages/agents/searxng-mcp
+    - agent-packages/agents/servicenow-api
+    - agent-packages/agents/onetrust-api
+    - agent-packages/agents/spark-mcp
+    - agent-packages/agents/sql-mcp
+    - agent-packages/agents/stirlingpdf-agent
+    - agent-packages/agents/systems-manager
+    - agent-packages/agents/technitium-dns-mcp
+    - agent-packages/agents/twenty-mcp
+    - agent-packages/agents/audiobookshelf-mcp
+    - agent-packages/agents/firefly-iii-mcp
+    - agent-packages/agents/freshrss-agent
+    - agent-packages/agents/paperless-ngx-mcp
+    - agent-packages/agents/gramps-mcp
+    - agent-packages/agents/tunnel-manager
+    - agent-packages/agents/uptime-kuma-agent
+    - agent-packages/agents/vector-mcp
+    - agent-packages/agents/vaultwarden-mcp
+    - agent-packages/agents/wger-agent
+  service-codebases:
+    include:
+    - services/gramps
+    - services/wger-mcp
+    - services/vector-mcp
+    - services/uptime-mcp
+    - services/tunnel-manager-mcp
+    - services/systems-manager-mcp
+    - services/servicenow-mcp
+    - services/searxng-mcp
+    - services/repository-manager-mcp
+    - services/portainer-mcp
+    - services/paperless
+    - services/nextcloud-mcp
+    - services/microsoft-mcp
+    - services/media-downloader-mcp
+    - services/mealie-mcp
+    - services/keycloak-mcp
+    - services/jellyfin-mcp
+    - services/gitlab-mcp
+    - services/github-mcp
+    - services/erpnext-mcp
+    - services/documentdb-mcp
+    - services/kafka-mcp
+    - services/container-manager-mcp
+    - services/audio-transcriber-mcp
+    - services/arr-mcp
+    - services/archivebox-mcp
+    - services/vllm
+    - services/technitium-dns
+    - services/eunomia
+    - services/caddy
+    - services/mattermost
+    - services/lgtm
+    - services/erpnext
+    - services/twenty
+    - services/openbao
+    - services/keycloak
+    - services/langfuse
+    - services/ciso-assistant
+    - services/plane
+    - services/flux.2
+    - services/xtts
+    - services/hunyuanvideo
+    - services/sglang
+    - services/faster-whisper
+    - services/borgbackup
+    - services/documentdb
+    - services/kafka
+    - services/lakehouse-seaweedfs
+    - services/lakekeeper-db
+    - services/lakekeeper
+    - services/trino
+    - services/spark
+    - services/netboot-xyz
+    - services/romm
+    - services/postiz
+    - services/drop
+    - services/stirling-pdf
+    - services/rust-desk
+    - services/owncast
+    - services/code-server
+    - services/reitti
+    - services/pairdrop
+    - services/wger
+    - services/whats-up-docker
+    - services/wireguard
+    - services/wetty
+    - services/vaultwarden
+    - services/vaultwarden-mcp
+    - services/uptime-kuma
+    - services/stable-diffusion
+    - services/server-fan-speed
+    - services/searxng
+    - services/regclient
+    - services/portainer
+    - services/paperless-ngx
+    - services/nextcloud
+    - services/mealie
+    - services/jellyfin
+    - services/jdownloader
+    - services/it-tools
+    - services/immich
+    - services/home-assistant
+    - services/heimdall
+    - services/grafana
+    - services/frigate
+    - services/freshrss
+    - services/firefly-iii
+    - services/dozzle
+    - services/ddclient
+    - services/cloudflare-connector
+    - services/calibre
+    - services/audiobookshelf
+    - services/arr-stack
+    - services/archivebox
+    - services/adminer
+    - services/2fauth
+    - services/gitlab-runner
+    - services/github-runner
+    - services/docker-registry
+    - services/gitlab
 maintenance:
   description: Phased update sequence for the agent ecosystem.
   phases:
@@ -570,22 +751,26 @@ maintenance:
     projects:
     - agent-utilities
     wait_minutes: 30
-  - name: 'Phase 5: graph-os'
+  - name: 'Phase 5: agent-webui'
     phase: 5
+    projects:
+    - agent-webui
+    wait_minutes: 30
+  - name: 'Phase 6: graph-os'
+    phase: 6
     projects:
     - graph-os
     wait_minutes: 30
-  - name: 'Phase 6: Core Tools and UIs'
-    phase: 6
+  - name: 'Phase 7: Core Tools and UIs'
+    phase: 7
     projects:
     - universal-skills
     - skill-graphs
-    - agent-webui
     - agent-terminal-ui
     - geniusbot
     wait_minutes: 0
-  - name: 'Phase 7: Agents'
-    phase: 7
+  - name: 'Phase 8: Agents'
+    phase: 8
     bulk_bump: true
     bulk_push: true
 services:
@@ -667,8 +852,8 @@ services:
     description: Bitwarden-compatible secure password manager backend.
   - name: vaultwarden-mcp
     url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/vaultwarden-mcp.git
-    domain: vaultwarden-mcp.arpa
-    description: Vaultwarden API + Bitwarden vault MCP server.
+    domain: vaultwarden-mcp.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
+    description: MCP and A2A interface for the Vaultwarden service.
   - name: wger
     url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/wger.git
     domain: wger.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}
@@ -721,4 +906,25 @@ graph:
   enabled: true
   multimodal: true
   incremental: true
-  groups: []
+  groups:
+  - name: all-repositories
+    selectors:
+    - all-repositories
+    modalities:
+    - structural-code
+    - docs-vector
+    - ontology
+  - name: agent-connectors
+    selectors:
+    - agent-connectors
+    modalities:
+    - structural-code
+    - docs-vector
+    - ontology
+  - name: service-codebases
+    selectors:
+    - service-codebases
+    modalities:
+    - structural-code
+    - docs-vector
+    - ontology

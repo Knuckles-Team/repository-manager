@@ -51,6 +51,25 @@ def _paths(tmp_path: Path) -> tuple[Path, Path, Path]:
     return source, runtime, seed
 
 
+def test_packaged_seed_release_order_matches_dependency_publication_dag():
+    """Keep release consumers behind the packages they resolve from PyPI."""
+
+    seed = yaml.safe_load(
+        workspace_manifest.default_packaged_seed_path().read_text(encoding="utf-8")
+    )
+    phases = seed["maintenance"]["phases"]
+
+    assert [phase["phase"] for phase in phases] == list(range(1, 9))
+    assert [phase.get("projects") for phase in phases[3:7]] == [
+        ["agent-utilities"],
+        ["agent-webui"],
+        ["graph-os"],
+        ["universal-skills", "skill-graphs", "agent-terminal-ui", "geniusbot"],
+    ]
+    assert phases[7]["bulk_bump"] is True
+    assert phases[7]["bulk_push"] is True
+
+
 def test_realistic_manifest_projects_private_values_without_leaking_them(tmp_path):
     source, runtime, seed = _paths(tmp_path)
 
