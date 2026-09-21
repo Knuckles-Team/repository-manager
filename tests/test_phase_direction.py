@@ -280,6 +280,53 @@ def test_later_phase_import_fails_in_production_but_is_test_class_in_tests(
     assert report.as_dict()["violation_counts"]["test-import"] == 2
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import importlib\nimportlib.import_module("graph_os.gateway")\n',
+        'import importlib as il\nil.import_module("graph_os.gateway")\n',
+        'from importlib import import_module as load\nload("graph_os.gateway")\n',
+        'import importlib\nimportlib.util.find_spec("graph_os.gateway")\n',
+        'import importlib.util as iu\niu.find_spec("graph_os.gateway")\n',
+        'from importlib.util import find_spec as probe\nprobe("graph_os.gateway")\n',
+        'import_client("graph_os", "Client")\n',
+        'loader.import_client("graph_os", "Client")\n',
+    ],
+)
+def test_literal_dynamic_import_of_later_phase_fails(
+    tmp_path: Path, source: str
+) -> None:
+    manifest = _manifest(tmp_path)
+    _pyproject(tmp_path, AU, "agent-utilities")
+    _source(tmp_path, f"{AU}/agent_utilities/host.py", source)
+
+    report = _check(tmp_path, manifest, "agent-utilities")
+
+    assert report.ok is False
+    assert report.errors == []
+    violations = [edge for edge in report.violations if edge.to_package == "graph-os"]
+    assert len(violations) == 1
+    assert violations[0].edge_class == "import"
+    assert violations[0].blocking is True
+
+
+def test_nonliteral_dynamic_import_is_not_invented_as_an_edge(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    _pyproject(tmp_path, AU, "agent-utilities")
+    _source(
+        tmp_path,
+        f"{AU}/agent_utilities/host.py",
+        "import importlib\n"
+        'module_name = "graph_" + "os"\n'
+        "importlib.import_module(module_name)\n",
+    )
+
+    report = _check(tmp_path, manifest, "agent-utilities")
+
+    assert report.ok is True, report.as_dict()
+    assert report.edges == []
+
+
 def test_unparseable_source_naming_a_fleet_package_is_blocking(tmp_path: Path) -> None:
     manifest = _manifest(tmp_path)
     _pyproject(tmp_path, AU, "agent-utilities")

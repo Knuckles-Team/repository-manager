@@ -1201,7 +1201,8 @@ def _find_workspace_manifest(
 #   (production source) and ``test-import`` (a file under a ``test``/``tests``
 #   directory, ``test_*.py``, ``*_test.py`` or ``conftest.py``). Every class
 #   pointing later is reported; all but ``test-import`` block.
-# * Import scan: ``import``/``from`` statements read from the AST (relative
+# * Import scan: ``import``/``from`` statements and literal dynamic-import
+#   probes read from the AST (relative
 #   imports are local by definition). Hidden directories, cargo ``target``/
 #   ``target-*`` trees, ``*.egg-info``, :data:`_IMPORT_SCAN_SKIPPED_DIRECTORIES`,
 #   symlinks and nested git checkouts are not this repository's source. A file
@@ -1851,14 +1852,70 @@ def _is_test_source(relative: Path) -> bool:
     )
 
 
-def _imported_roots(tree: ast.AST) -> Iterator[tuple[str, int]]:
+def _static_imported_roots(tree: ast.AST) -> Iterator[tuple[str, int]]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            yield from (
-                (alias.name.partition(".")[0], node.lineno) for alias in node.names
-            )
+            for alias in node.names:
+                yield alias.name.partition(".")[0], node.lineno
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             yield node.module.partition(".")[0], node.lineno
+
+
+def _dynamic_aliases_from_node(node: ast.AST) -> dict[str, str]:
+    if isinstance(node, ast.Import):
+        return {
+            alias.asname or alias.name: alias.name
+            for alias in node.names
+            if alias.name in {"importlib", "importlib.util"}
+        }
+    if not isinstance(node, ast.ImportFrom) or node.module not in {
+        "importlib",
+        "importlib.util",
+    }:
+        return {}
+    return {
+        alias.asname or alias.name: f"{node.module}.{alias.name}"
+        for alias in node.names
+    }
+
+
+def _dynamic_import_aliases(tree: ast.AST) -> dict[str, str]:
+    aliases = {"importlib": "importlib"}
+    for node in ast.walk(tree):
+        aliases.update(_dynamic_aliases_from_node(node))
+    return aliases
+
+
+def _qualified_call_name(node: ast.expr, aliases: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Name):
+        return aliases.get(node.id, node.id)
+    if not isinstance(node, ast.Attribute):
+        return None
+    owner = _qualified_call_name(node.value, aliases)
+    return f"{owner}.{node.attr}" if owner else None
+
+
+def _literal_dynamic_import_roots(tree: ast.AST) -> Iterator[tuple[str, int]]:
+    aliases = _dynamic_import_aliases(tree)
+    importlib_calls = {"importlib.import_module", "importlib.util.find_spec"}
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        module = node.args[0]
+        if not isinstance(module, ast.Constant) or not isinstance(module.value, str):
+            continue
+        function = _qualified_call_name(node.func, aliases)
+        if (
+            function in importlib_calls
+            or (function or "").split(".")[-1] == "import_client"
+        ):
+            yield module.value.partition(".")[0], node.lineno
+
+
+def _imported_roots(tree: ast.AST) -> Iterator[tuple[str, int]]:
+    yield from _static_imported_roots(tree)
+    yield from _literal_dynamic_import_roots(tree)
 
 
 def _parsed_source(
