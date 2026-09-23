@@ -275,12 +275,28 @@ def plan_or_apply(filepath: Path, *, apply: bool, resync: bool = False) -> Sweep
     return SweepResult(str(filepath), "would-append-new-block")
 
 
+#: Config filenames a repo's pre-commit hooks can live under. Most of the
+#: fleet uses the standard `.pre-commit-config.yaml`; a handful of core
+#: repos (epistemic-graph, agent-utilities, agent-connector-sdk, agent-webui
+#: -- each documenting an "explicit-path tool configuration" convention in
+#: their own AGENTS.md) use `.config/pre-commit.yaml` instead, invoked via
+#: `pre-commit run --config .config/pre-commit.yaml`. Discovered live
+#: (EH-173 follow-up): the original single-filename glob silently never
+#: scanned any of these four repos, so they never received the fleet
+#: rollout OR any `--resync` fix at all despite genuinely carrying the hook.
+_HOOK_CONFIG_FILENAMES = (".pre-commit-config.yaml", ".config/pre-commit.yaml")
+
+
 def sweep(root: Path, *, apply: bool, resync: bool = False) -> list[SweepResult]:
     results: list[SweepResult] = []
-    for filepath in sorted(root.rglob(".pre-commit-config.yaml")):
-        if ".git" in filepath.parts:
-            continue
-        results.append(plan_or_apply(filepath, apply=apply, resync=resync))
+    seen: set[Path] = set()
+    for filename in _HOOK_CONFIG_FILENAMES:
+        for filepath in root.rglob(filename):
+            if ".git" in filepath.parts or filepath in seen:
+                continue
+            seen.add(filepath)
+            results.append(plan_or_apply(filepath, apply=apply, resync=resync))
+    results.sort(key=lambda result: result.path)
     return results
 
 

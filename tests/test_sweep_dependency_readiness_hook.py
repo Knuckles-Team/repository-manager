@@ -124,6 +124,39 @@ def test_sweep_walks_a_tree_of_repos(tmp_path):
     assert all(r.action == "would-inject-into-local-block" for r in results)
 
 
+def test_sweep_also_finds_the_dot_config_pre_commit_yaml_convention(tmp_path):
+    """EH-173 follow-up: epistemic-graph/agent-utilities/agent-connector-sdk/
+    agent-webui use `.config/pre-commit.yaml` instead of the fleet's usual
+    `.pre-commit-config.yaml` -- the original single-filename glob silently
+    never scanned any of them."""
+    standard = tmp_path / "standard-repo"
+    standard.mkdir()
+    (standard / ".pre-commit-config.yaml").write_text(_STALE_INLINE_CONFIG)
+
+    alt = tmp_path / "core-repo"
+    (alt / ".config").mkdir(parents=True)
+    (alt / ".config" / "pre-commit.yaml").write_text(_STALE_INLINE_CONFIG)
+
+    results = sweep_mod.sweep(tmp_path, apply=True, resync=True)
+    assert len(results) == 2
+    assert {Path(r.path).name for r in results} == {
+        ".pre-commit-config.yaml",
+        "pre-commit.yaml",
+    }
+    assert all(r.action == "resynced-entry" for r in results)
+
+
+def test_sweep_never_double_counts_when_both_filenames_coexist(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".pre-commit-config.yaml").write_text(_STALE_INLINE_CONFIG)
+    (repo / ".config").mkdir()
+    (repo / ".config" / "pre-commit.yaml").write_text(_STALE_INLINE_CONFIG)
+
+    results = sweep_mod.sweep(tmp_path, apply=False, resync=True)
+    assert len(results) == 2  # each real file counted exactly once
+
+
 # --------------------------------------------------------------------------- #
 # EH-173: --resync rewrites an ALREADY-PRESENT hook's `entry:` to the
 # worktree/ambient-env-safe resolver (anchored at `git rev-parse
