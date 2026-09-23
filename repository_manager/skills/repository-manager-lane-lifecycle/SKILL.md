@@ -97,7 +97,7 @@ names what to do instead.
 canonical tree once discarded ~20 minutes of a lane's work. The `lane-guard`
 pre-commit hook **refuses** a non-merge commit authored there; the only carve-outs
 are structural (a merge/rebase/cherry-pick in progress, and a pure version bump
-whose every staged file is declared in `.bumpversion.cfg`).
+whose every staged file is declared in the bumpversion config, `.config/bumpversion.cfg` or `.bumpversion.cfg`).
 
 → Work in the worktree `--lane start` gave you.
 

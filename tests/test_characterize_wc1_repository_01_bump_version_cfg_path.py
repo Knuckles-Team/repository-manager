@@ -279,3 +279,51 @@ def test_bump_version_exception_is_caught_and_returns_error(configured_project):
     assert res.status == "error"
     assert res.error is not None
     assert res.error.message == "RuntimeError"
+
+
+@pytest.fixture
+def relocated_project(tmp_path):
+    """A project whose bump2version config lives at ``.config/bumpversion.cfg``."""
+    git = Git(path=str(tmp_path))
+    proj_dir = tmp_path / "proj"
+    (proj_dir / ".config").mkdir(parents=True)
+    (proj_dir / ".config" / "bumpversion.cfg").write_text(
+        "[bumpversion]\ncurrent_version = 1.0.0\n"
+    )
+    return git, proj_dir
+
+
+def test_relocated_config_is_passed_explicitly_to_every_bump2version_call(
+    relocated_project,
+):
+    git, proj_dir = relocated_project
+    calls = []
+
+    def fake_git_action(command, path, **kwargs):
+        calls.append(command)
+        if command.startswith("git tag -l "):
+            return GitResult(status="success", data="", metadata=_meta(command))
+        return GitResult(
+            status="success", data="new_version=1.0.1", metadata=_meta(command)
+        )
+
+    with patch.object(Git, "git_action", side_effect=fake_git_action):
+        res = git.bump_version(part="patch", path=str(proj_dir))
+
+    assert res.status == "success"
+    bumps = [command for command in calls if "bump2version" in command]
+    assert bumps == [
+        "bump2version --config-file .config/bumpversion.cfg patch --dry-run --list",
+        "SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build "
+        "bump2version --config-file .config/bumpversion.cfg patch --list",
+    ]
+
+
+def test_relocated_config_supplies_the_release_tag(relocated_project):
+    git, proj_dir = relocated_project
+
+    def fake_git_action(command, path, **kwargs):
+        return GitResult(status="success", data="v1.0.0\n", metadata=_meta(command))
+
+    with patch.object(Git, "git_action", side_effect=fake_git_action):
+        assert git._current_release_tag(str(proj_dir)) == "v1.0.0"
