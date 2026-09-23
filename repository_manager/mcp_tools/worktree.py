@@ -147,7 +147,18 @@ def register_worktree_tools(
 
     adapter_context = context or from_server()
 
-    @mcp.tool(tags={"workspace_management", "project_manager"})
+    @mcp.tool(
+        tags={"workspace_management", "project_manager"},
+        annotations={
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
+        meta={
+            "eg.annotations": {"modalities_in": ["text"], "modalities_out": ["text"]}
+        },
+    )
     async def rm_worktree(
         action: Literal[
             "add",
