@@ -9,6 +9,7 @@ trigger). Each test pins the repository-neutral replacement.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ from repository_manager.governance import cli as gov_cli
 from repository_manager.governance import concept_allocator as ca
 from repository_manager.governance import concept_hierarchy as ch
 from repository_manager.governance import concept_lineage as cl
-from repository_manager.governance import lane_guard
+from repository_manager.governance import lane_guard, promotion
 
 
 def _package(root: Path, name: str) -> Path:
@@ -99,3 +100,47 @@ def test_console_script_is_declared() -> None:
         'repository-manager-governance = "repository_manager.governance.cli:main"'
         in text
     )
+
+
+def _git(args: list[str], cwd: Path) -> str:
+    proc = subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
+    )
+    return proc.stdout.strip()
+
+
+@pytest.fixture
+def canonical(tmp_path: Path) -> Path:
+    root = tmp_path / "canonical"
+    root.mkdir()
+    _git(["init", "-q", "-b", "main"], root)
+    _git(["config", "user.email", "promotion@test"], root)
+    _git(["config", "user.name", "Promotion Test"], root)
+    (root / "a.txt").write_text("a\n", encoding="utf-8")
+    _git(["add", "a.txt"], root)
+    _git(["commit", "-qm", "base"], root)
+    return root
+
+
+def test_promotion_reports_an_undecoupled_fleet_as_undecoupled(
+    canonical: Path,
+) -> None:
+    state = promotion.promotion_state(canonical)
+    assert state["decoupled"] is False
+    assert "armed deploy" in state["reason"]
+
+
+def test_promotion_counts_merges_not_yet_promoted(
+    canonical: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _git(["update-ref", promotion.PROMOTION_REF, "main"], canonical)
+    (canonical / "b.txt").write_text("b\n", encoding="utf-8")
+    _git(["add", "b.txt"], canonical)
+    _git(["commit", "-qm", "merged, not promoted"], canonical)
+
+    assert gov_cli.main(["promotion", "--path", str(canonical)]) == 0
+    state = json.loads(capsys.readouterr().out)
+    assert state["decoupled"] is True
+    assert state["unpromoted_commits"] == 1
+    # The deployed ref did NOT move: merging is not deploying.
+    assert state["deployed"] != state["main"]

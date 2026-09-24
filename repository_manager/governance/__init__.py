@@ -12,6 +12,8 @@ Moved here from ``agent_utilities.governance`` by operator ruling OQ-3
   append-only ledger fragments;
 * :mod:`.concept_reservation` — the separate-host authority port, which fails
   closed when the native graph authority is unavailable;
+* :mod:`.lane_guard` — the fleet lane-guard pre-commit gate;
+* :mod:`.promotion` — how far the deployed ref lags ``main`` (merge is not deploy);
 * :mod:`.cli` — the ``repository-manager-governance`` command surface.
 
 The merge queue that also lived in ``agent_utilities.governance`` was not
