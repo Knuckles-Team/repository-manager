@@ -28,7 +28,7 @@ import os
 import re
 import stat
 from collections.abc import Callable, Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 _PINNED_GIT_ENVIRONMENT = frozenset(
@@ -878,6 +878,31 @@ def read_at(directory_fd: int, name: str) -> bytes | None:
         return b"".join(chunks)
     finally:
         os.close(fd)
+
+
+def read_below_at(directory_fd: int, relative: str) -> bytes | None:
+    """Read a regular file at a relative path below a pinned directory.
+
+    Every intermediate directory is opened with ``O_NOFOLLOW`` (a symlinked
+    component is refused, never followed) and a missing component reads as
+    ``None``, exactly like a missing final entry in :func:`read_at`.
+    """
+    *parents, name = PurePosixPath(relative).parts
+    if not name or any(part in {"", ".", ".."} for part in (*parents, name)):
+        raise OperationBoundaryError(
+            "relative path must name entries below the directory"
+        )
+    descriptors: list[int] = []
+    current = directory_fd
+    try:
+        for component in parents:
+            if _stat_at(current, component) is None:
+                return None
+            current = _open_directory_at(current, component)
+            descriptors.append(current)
+        return read_at(current, name)
+    finally:
+        _close_descriptors(descriptors)
 
 
 def write_at(directory_fd: int, name: str, value: bytes, *, mode: int = 0o644) -> None:

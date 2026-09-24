@@ -1273,3 +1273,29 @@ def test_auto_start_rejects_checkout_swap_after_pending_probe(tmp_path, monkeypa
     config = {"phases": [{"phase": 1, "name": "one", "projects": ["repo"]}]}
 
     assert manager._auto_start_phase(config, operation="bump") is None
+
+
+def test_read_below_at_reads_nested_files_and_refuses_symlinked_components(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / ".config").mkdir()
+    (tmp_path / ".config" / "bumpversion.cfg").write_text(
+        "[bumpversion]\n", encoding="utf-8"
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "bumpversion.cfg").write_text("[bumpversion]\n", encoding="utf-8")
+    (tmp_path / "linked").symlink_to(outside)
+    with operation_boundary.open_directory(tmp_path) as pinned:
+        assert (
+            operation_boundary.read_below_at(pinned.fd, ".config/bumpversion.cfg")
+            == b"[bumpversion]\n"
+        )
+        assert (
+            operation_boundary.read_below_at(pinned.fd, "missing/bumpversion.cfg")
+            is None
+        )
+        with pytest.raises(operation_boundary.OperationBoundaryError):
+            operation_boundary.read_below_at(pinned.fd, "linked/bumpversion.cfg")
+        with pytest.raises(operation_boundary.OperationBoundaryError):
+            operation_boundary.read_below_at(pinned.fd, "../outside/bumpversion.cfg")

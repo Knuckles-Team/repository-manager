@@ -88,6 +88,7 @@ from repository_manager.operation_boundary import (
     pin_existing,
     pin_existing_under,
     read_at,
+    read_below_at,
     read_release_plan_receipt,
     receipt_result_payload,
     snapshot_pinned_checkout,
@@ -411,6 +412,13 @@ _STRUCTURAL_OPERATION_LABELS: dict[tuple[str, str], str] = {
     ("pre-commit", "run"): "pre-commit run",
 }
 
+#: bump2version configuration locations, the relocated ``.config/`` file first;
+#: the root ``.bumpversion.cfg`` remains supported for unmigrated repositories.
+BUMPVERSION_CONFIG_PATHS: tuple[str, ...] = (
+    ".config/bumpversion.cfg",
+    ".bumpversion.cfg",
+)
+
 #: Executable-basename alone is enough — no subcommand position exists.
 _SINGLE_TOKEN_OPERATION_LABELS: dict[str, str] = {
     "bump2version": "bump2version",
@@ -465,6 +473,17 @@ def _project_label(path: object) -> str:
     if not clean or "[REDACTED_" in clean:
         return "configured-workspace"
     return re.sub(r"[^A-Za-z0-9._-]+", "-", clean).strip("-") or "configured-workspace"
+
+
+def _bump2version_invocation(config_file: str | None) -> str:
+    """``bump2version`` bound to the repository's config file.
+
+    A root ``.bumpversion.cfg`` is bump2version's own default, so only the
+    relocated ``.config/bumpversion.cfg`` needs an explicit ``--config-file``.
+    """
+    if config_file is None or config_file == BUMPVERSION_CONFIG_PATHS[-1]:
+        return "bump2version"
+    return f"bump2version --config-file {config_file}"
 
 
 def _uv_extra_flag(extra: str | None) -> str:
@@ -1123,7 +1142,7 @@ class Git:
         *,
         pinned: PinnedDirectory | None = None,
     ) -> str | None:
-        """Return ``v<current_version>`` from the repo's .bumpversion.cfg, if any.
+        """Return ``v<current_version>`` from the repo's bumpversion config, if any.
 
         The tag the most recent bump created for this repo — pushed explicitly so
         lightweight tags reach the remote without dragging along stale historical
@@ -1159,14 +1178,12 @@ class Git:
         target_dir: str, pinned: PinnedDirectory | None
     ) -> list[str]:
         """Read bumpversion configuration through the active operation boundary."""
-        if pinned is not None:
-            raw_cfg = read_at(pinned.fd, ".bumpversion.cfg")
-            return raw_cfg.decode("utf-8").splitlines() if raw_cfg is not None else []
-        cfg = os.path.join(target_dir, ".bumpversion.cfg")
-        if not os.path.exists(cfg):
-            return []
-        with open(cfg, encoding="utf-8") as fh:
-            return fh.read().splitlines()
+        reader = Git._bumpversion_config_reader(target_dir, pinned)
+        for name in BUMPVERSION_CONFIG_PATHS:
+            raw_cfg = reader(name)
+            if raw_cfg is not None:
+                return raw_cfg.decode("utf-8").splitlines()
+        return []
 
     @staticmethod
     def _pinned_git_kwargs(pinned: PinnedDirectory | None) -> dict[str, Any]:
@@ -5857,7 +5874,10 @@ class Git:
                 pinned=pinned,
             )
 
-        command = self._build_bump2version_command(part, allow_dirty, dry_run, verbose)
+        config_file = self._bumpversion_config_file(target_dir, pinned=pinned)
+        command = self._build_bump2version_command(
+            part, allow_dirty, dry_run, verbose, config_file=config_file
+        )
 
         if not dry_run:
             preflight_result = self._bump_version_preflight_tag_check(
@@ -5866,6 +5886,7 @@ class Git:
                 allow_dirty,
                 force,
                 pinned=pinned,
+                config_file=config_file,
             )
             if preflight_result is not None:
                 return preflight_result
@@ -5988,12 +6009,11 @@ class Git:
         pinned: PinnedDirectory | None = None,
     ) -> bool:
         """Whether *target_dir* declares a bump2version configuration
-        (``.bumpversion.cfg``, or a ``[bumpversion]`` section in
-        ``setup.cfg``)."""
-        reader = self._bumpversion_config_reader(target_dir, pinned)
-        cfg = reader(".bumpversion.cfg")
-        if cfg is not None:
+        (``.config/bumpversion.cfg``, ``.bumpversion.cfg``, or a
+        ``[bumpversion]`` section in ``setup.cfg``)."""
+        if self._bumpversion_config_file(target_dir, pinned=pinned) is not None:
             return True
+        reader = self._bumpversion_config_reader(target_dir, pinned)
         setup = reader("setup.cfg")
         if setup is None:
             return False
@@ -6002,13 +6022,30 @@ class Git:
         except TypeError:
             return False
 
+    def _bumpversion_config_file(
+        self,
+        target_dir: str,
+        *,
+        pinned: PinnedDirectory | None = None,
+    ) -> str | None:
+        """The repository-relative bump2version config file, if one exists.
+
+        ``bump2version`` only discovers a root ``.bumpversion.cfg`` on its own,
+        so the chosen file is always passed explicitly as ``--config-file``.
+        """
+        reader = self._bumpversion_config_reader(target_dir, pinned)
+        return next(
+            (name for name in BUMPVERSION_CONFIG_PATHS if reader(name) is not None),
+            None,
+        )
+
     @staticmethod
     def _bumpversion_config_reader(
         target_dir: str, pinned: PinnedDirectory | None
     ) -> Callable[[str], bytes | None]:
         """Return a descriptor-relative or lexical config reader."""
         if pinned is not None:
-            return lambda name: read_at(pinned.fd, name)
+            return lambda name: read_below_at(pinned.fd, name)
 
         def read_config(name: str) -> bytes | None:
             config_path = Path(target_dir) / name
@@ -6096,10 +6133,17 @@ class Git:
         )
 
     def _build_bump2version_command(
-        self, part: str, allow_dirty: bool, dry_run: bool, verbose: bool
+        self,
+        part: str,
+        allow_dirty: bool,
+        dry_run: bool,
+        verbose: bool,
+        *,
+        config_file: str | None = None,
     ) -> str:
         command = (
-            f"SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build bump2version {part}"
+            "SKIP=no-commit-to-branch,uv-lock,pytest,pnpm-build "
+            f"{_bump2version_invocation(config_file)} {part}"
         )
         if allow_dirty:
             command += " --allow-dirty"
@@ -6117,13 +6161,14 @@ class Git:
         force: bool,
         *,
         pinned: PinnedDirectory | None = None,
+        config_file: str | None = None,
     ) -> GitResult | None:
         """Pre-flight check for an existing tag on the version bump2version
         would produce. Returns a GitResult to short-circuit `bump_version`
         (tag exists and is not force-deletable), or None to proceed with the
         real bump2version invocation (including after deleting an orphan
         local tag under ``force``)."""
-        pre_cmd = f"bump2version {part} --dry-run --list"
+        pre_cmd = f"{_bump2version_invocation(config_file)} {part} --dry-run --list"
         if allow_dirty:
             pre_cmd += " --allow-dirty"
         pre_result = self.git_action(
