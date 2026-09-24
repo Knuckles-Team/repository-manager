@@ -423,7 +423,6 @@ _SINGLE_TOKEN_OPERATION_LABELS: dict[str, str] = {
 #: `python -m <module>` invocations, keyed by the module path (argv[2]).
 _MODULE_OPERATION_LABELS: dict[str, str] = {
     "repository_manager.mcp_server": "mcp_server --help",
-    "repository_manager.agent_server": "agent_server --help",
 }
 
 
