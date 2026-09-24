@@ -51,7 +51,8 @@ stalls, edits a shared checkout, or reports unverified work as done.
   writes `core.bare = true` into the *shared* config and every linked worktree of that repo
   starts failing `git status`/`git commit` invisibly.
 - **Do not push.** Commit locally; leave the branch for the orchestrator.
-- **Never `--no-verify`.** A scoped `SKIP=<hook-ids>` is allowed only for whole-repo,
+- **`--no-verify` only when the orchestrator owns the gates** (lane commits in a coordinated
+  program; the orchestrator's landing gate runs the full suite on the merged tree). Otherwise never. A scoped `SKIP=<hook-ids>` is allowed only for whole-repo,
   non-differential gates failing on pre-existing state, and only with evidence in the commit
   message that the diff touches none of the implicated paths.
 - **Do not park on a background watcher.** Waiting on a notification that never fires is the
