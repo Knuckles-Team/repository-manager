@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-commit gate (`python3 -m repository_manager.governance.lane_guard`, formerly
   agent-utilities' `scripts/check_lane_guard.py`). The former `agent-utilities lane …`
   and `agent-utilities concept …` verbs are `repository-manager-governance lane …` /
-  `… concept …`, same flags, output and exit codes. Every internal import of
+  `… concept …`, same flags, output and exit codes; the retired agent-utilities queue's
+  `merge-queue promotion` (merge is not deploy) is `repository-manager-governance promotion`. Every internal import of
   `agent_utilities.governance` now resolves here. The allocator's concept-marker scan
   roots are derived from the repository's own packages (and `crates/`), and the
   registry/lineage paths are supplied by the governed repository instead of being

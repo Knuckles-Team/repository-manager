@@ -144,6 +144,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="`-- <command>` to run while holding the lease (omit to just report)",
     )
 
+    promotion = sub.add_parser(
+        "promotion", help="how far the deployed ref lags main (merge != deploy)"
+    )
+    promotion.add_argument("--path", default="", help="working tree (default: cwd)")
     return p
 
 
@@ -507,9 +511,16 @@ def _lane(args: argparse.Namespace) -> dict[str, Any]:
     return handler()
 
 
+def _promotion(args: argparse.Namespace) -> dict[str, Any]:
+    from repository_manager.governance.promotion import promotion_state
+
+    return promotion_state(args.path or None)
+
+
 _COMMAND_HANDLERS: dict[str, Callable[[argparse.Namespace], dict[str, Any]]] = {
     "concept": _concept,
     "lane": _lane,
+    "promotion": _promotion,
 }
 
 
