@@ -120,6 +120,9 @@ A shared cargo target dir does not merely *serialize* concurrent worktree builds
 cargo build --target-dir ./target-isolated     # and prune it when you are done
 ```
 
+For `epistemic-graph`, do not build on the shared development host at all: submit
+Rust builds to a dedicated build host (see `graphos-ecosystem-development`).
+
 `agent-utilities lane bind-cargo` writes `.cargo/config.toml` so the partition
 **binds** structurally and needs no export at all.
 
@@ -157,7 +160,9 @@ Exit **75** means another lane holds it — defer, do not retry in a loop.
 ### Commit early and often
 Commits are the only thing a working-tree reset cannot take. Necessary, not
 sufficient: the unrecoverable window (mid-pre-commit) is the one you cannot
-commit from, which is why the rules above exist. **Never `--no-verify`.**
+commit from, which is why the rules above exist. **Never `--no-verify`** to get past
+a red gate. The one exception: a lane in a coordinated program commits with
+`--no-verify` because the orchestrator's landing gate runs the full suite on the merged tree (see `graphos-ecosystem-development`).
 
 ## 3. When something behaves impossibly, run the doctor
 
@@ -225,7 +230,8 @@ If it is rejected, the rejection names its evidence — take it to
   it is telling you the work is not actually contained in the base.
 - **Never merge into the shared base by hand** because the queue is slow. That is
   how two lanes' resolutions orphan each other.
-- **Never `--no-verify`**, and never mask a gate to make it green (`noqa`,
+- **Never `--no-verify`** outside a coordinated program's lane commits (where
+  the orchestrator's landing gate runs the full suite on the merged tree), and never mask a gate to make it green (`noqa`,
   `type: ignore`, `nosec`, `skip`, `xfail` added to a diff is a red flag a
   reviewer will grep for).
 - **Never hand-edit a generated view** (`docs/concept_reservations.yaml`,

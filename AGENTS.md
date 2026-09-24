@@ -5,6 +5,24 @@
 
 This document provides an overview of the Repository Manager agent, its architecture, and how to use it.
 
+## Developing here
+
+The development workflow lives in skills; load them before editing:
+
+- `graphos-ecosystem-development` — architecture boundaries, the lane protocol
+  (own `git worktree add` worktree, explicit staging, never `git stash`/`git add -A`/
+  harness worktree isolation), dedicated build hosts, gate caps, contract
+  regeneration, landing (the release-workflow gate fanned out across hosts by
+  default) and the decisions protocol. A private homelab overlay skill, when
+  installed, supplies host and tooling specifics. In a coordinated program lanes run targeted checks and
+  commit with `--no-verify`; the full suite runs once on the merged tree at landing.
+- `repository-manager-*` skills — this package's own surfaces: lanes, worktrees,
+  gates, merge queue, builds and fleet-scale operations.
+
+Standalone work runs the full pre-commit suite before landing and fixes what it
+reports, including pre-existing findings — no `noqa`, `type: ignore`, `SKIP=`,
+baselines or bypassed hooks.
+
 ## Tech Stack & Architecture
 - **Language**: Python 3.11–3.14
 - **Core Framework**: [Pydantic AI](https://ai.pydantic.dev) & [Pydantic Graph](https://ai.pydantic.dev/pydantic-graph/)
@@ -684,88 +702,12 @@ When adding new utility modules to the agent_utilities package:
 - Consider if heavy dependencies should be lazy-loaded
 - Follow semantic versioning for dependencies when possible
 
-## Gate Execution — the ledger, `retest`, and the fast development loop
+## Gate-support modules
 
-**Stop validating a fix by re-running the whole wave.** On 2026-08-21 a single
-`epistemic-graph` push cost roughly **six hours** because every one of six
-failing pre-commit hooks was re-proven, on every fix, by re-running the
-repo's entire 90-minute heavy wave — there was no way to ask "just the hooks
-that were failing." The same push's integration suite was independently
-reporting ~500 timeout errors that turned out to be **one** cold `cargo
-build` blowing a 60-second per-test fixture timeout, which hid **17 real
-failures** underneath the noise. Both gaps are now closed, and the loop an
-agent should actually run is:
-
-```
-rm_gates(action="run", stage=<fast|heavy>)        # populate the ledger
-# ... fix what failed ...
-rm_gates(action="retest", stage=<fast|heavy>)      # only what failed, re-run
-# all requested hooks pass -> automatic full-wave escalation, submitted
-# from inside the retest job itself, the instant it returns
-rm_gates(action="profile")                         # find the slow hooks fleet-wide
-```
-
-CLI equivalents: `repository-manager --gate fast|heavy` /
-`--gate-retest fast|heavy [--same-node]`. Both the MCP tool and the CLI call
-the exact same `repository_manager.gate_runner.dispatch(action, **kwargs)` —
-one chokepoint, so the two front ends can never quietly diverge on what "run
-the gate" or "retest" means (`run`/`status`/`explain`/`profile`/`retest`).
-
-### `gate_ledger` — durable memory of what a gate actually found
-
-`repository_manager.gate_ledger.GateLedger` is a local SQLite projection at
-`${XDG_STATE_HOME}/repository-manager/gate_ledger.sqlite3` (same shape as
-`LaneRegistry`/`CapacityStore`: WAL, `synchronous=FULL`, monotonic
-`version`). It replaces the old process-local `dict` job store, which died
-with the process and could never answer "what failed last time" across a
-restart. Semantics that are easy to get wrong, because getting them wrong is
-silent:
-
-- **It is a FAILURE ledger, not a pass matrix.** `pytest -q` prints no line
-  per passing test, so `test_results` only records what *failed*. "Not
-  present" means "not observed failing" — it is never the same claim as
-  "observed passing." Every consumer has to be written against that
-  distinction.
-- **Clear-on-improve.** When a hook re-runs, any `test_latest` row for that
-  `(repo, stage, hook)` whose test id is absent from the new failing set is
-  deleted. Upsert-only would leave a fixed test marked failed forever.
-- **`unrunnable` hooks are never retest candidates.** A hook whose executable
-  was missing found nothing about the code; re-running it in the same broken
-  environment will find nothing again. Treating a missing toolchain as "still
-  failing, retry it" is exactly how a missing tool masquerades as a code
-  defect — `LedgerHook.failed` deliberately excludes it.
-- **`is_shippable()` requires a `full_wave` row at the CURRENT sha.** A
-  narrowed `retest` pass alone never certifies a repo shippable — by
-  construction it cannot observe an interaction that only appears when the
-  whole suite runs together. Only a `scope="full_wave"` run recorded at the
-  exact commit sha on disk counts; anything at a different sha is reported
-  **stale**, and staleness is a status returned to the caller, never a
-  silent reuse.
-- **It is a local, best-effort projection — never an authority.** A ledger
-  outage must never look like a gate failure (every write is swallowed on a
-  storage error), and nothing may treat a ledger row as permission to skip
-  work it would otherwise do.
-
-### `rm_gates action=retest` — narrow the re-run to what actually failed
-
-Reads the ledger for the target repo/stage and decides what to run:
-
-- **No prior run recorded** → nothing to narrow against, so it degrades to a
-  **full wave** and says so plainly (`"baseline": "missing"`). Treating
-  "never ran" as "ran clean" would fabricate evidence.
-- **Prior run, nothing failing** → no job submitted.
-- **Prior run, hooks failing** → only those hook ids are requested.
-- **Baseline stale** (ledger rows recorded against a different sha than HEAD
-  right now) → never trusted; degrades to the full wave exactly like
-  "missing," and the response says which case it was.
-
-On an all-pass narrowed retest (`escalate=True`, the default), a **second**
-job — the full wave, `trigger="retest-escalate"`, `scope="full_wave"` — is
-submitted automatically, from inside the first job's own background thread
-the instant its subprocess returns. A narrowed pass by itself is never
-sufficient evidence of shippability; see `GateLedger.is_shippable`'s
-docstring for the deadlock that survived 95 clean isolated runs before this
-existed.
+The gate development loop (`rm_gates run` → fix → `retest` → automatic full-wave
+escalation → `profile`) and the gate ledger's semantics are documented in the
+`repository-manager-gate-execution` skill. The modules below are its supporting
+pieces.
 
 ### `ensure_no_fail_fast` now strips as well as adds
 
@@ -861,32 +803,6 @@ exploratory call. Like `fail_fast_audit`, it is not yet wired into `rm_gates`
 or a CLI flag — call `repository_manager.xdist_rollout.dispatch("plan"|
 "apply", ...)` directly.
 
-### Three environment traps that produce FALSE verdicts — agents keep rediscovering these
-
-- **`systemd-run --user` gives a minimal `PATH`.** A hook fails with
-  "executable not found" for a tool that IS installed — the process just
-  can't see it. Don't conclude the tool is missing from the box; check the
-  unit's actual `PATH` first.
-- **`pip install` silently no-ops when a stale same-version package already
-  sits in `~/.local`.** A July 2026 build once produced 16 fabricated
-  failures this way — the "installed" package was never actually updated,
-  so every test ran against old code and failed for reasons that didn't
-  exist in the fix. Force-reinstall or check the installed version, don't
-  trust exit code 0 alone.
-- **Bare `python3`/`uv run pytest` can pick the wrong interpreter.** Use
-  `python scripts/run_agent_utilities_gate.py --module pytest -- ...` (or
-  the workspace's equivalent per-repo gate runner) rather than a bare
-  interpreter invocation, and print `sys.executable` when a result looks
-  suspicious.
-
-## Recent Changes
-- **Gate ledger + `rm_gates action=retest`**: `repository_manager.gate_ledger` durably records what a gate wave found (SQLite, `${XDG_STATE_HOME}/repository-manager/gate_ledger.sqlite3`), and `retest` narrows a re-run to whatever it last recorded failing instead of re-running the whole wave, escalating to a full wave on an all-pass. Closes the measured 2026-08-21 incident (~6h push validated by full 90-minute waves per fix). See "Gate Execution" above for the full contract, plus the sibling additions landed alongside it: `test_commands.ensure_no_fail_fast` now strips pytest/go fail-fast flags as well as adding cargo's; `fail_fast_audit` statically detects (never fixes) fail-fast flags hiding in `.pre-commit-config.yaml` `entry:` text; `forge_status` abstracts CI-run status over GitHub/GitLab; `dependency_readiness` gained a targets cross-check, partial-publish detection, and a CI-run barrier; `xdist_rollout` is dry-run-by-default plan/apply for the fleet's `pytest-xdist` rollout.
-- **Consistent nested-path resolution for git sub-actions**: `rm_git` pull/push/add/commit now resolve a bare repo name through the workspace `project_map` (`_resolve_repo_dir`) instead of flat-joining `git.path + name`. Fixes `[Errno 2] No such file or directory` failures on nested repos (e.g. `push projects=agent-utilities` looked for `<ws>/agent-utilities` while the repo lives at `<ws>/agent-packages/agent-utilities`), making the git actions agree with `validate`. Absolute paths and existing flat repos are unchanged; unknown names keep the prior fallback.
-- **Cascade-deadlock root causes eliminated** (`633ffd4`): `_latest_jobs()` collapses repo-scoped jobs to the most-recent per repo so a fixed+re-validated repo drops out of `failed_projects`; `_reap_stale_jobs()` (env `RM_JOB_STALE_SECONDS`, default 1800) self-heals wedged `running` jobs. Note: a long-lived RM-MCP process must be **restarted** to pick these up — they are loaded at import time.
-- **Consolidated Architecture**: Centralized core repo logic into the `Git` class (`repository_manager.py`), refactoring `mcp_server.py` into a thin client.
-- **Enhanced Hybrid Graph Intelligence**: Implemented a multi-faceted graph search defaulting to `hybrid` mode, which merges structural NetworkX data with semantic vector results for higher precision.
-- **Modernized Documentation**: Updated `README.md` and `AGENTS.md` to reflect the streamlined CLI toolset and hybrid search capabilities.
-
 ## Testing with Timeout
 
 To run tests with a timeout to prevent hanging, use the `pytest-timeout` plugin. You can combine it with the `-k` flag to run specific tests:
@@ -936,49 +852,6 @@ and erodes a pristine codebase.
 `~/workspace/reports/` (command output); tests go in `tests/` (pytest).
 Before finishing a task, run `git status` and confirm no stray root files were added.
 
-## Working Discipline — think, simplify, stay surgical, verify
-
-These four habits cut the most common LLM coding mistakes. For trivial tasks, use
-judgment; the bias here is correctness over speed.
-
-- **Think before coding.** State your assumptions explicitly. If a request has more than
-  one reasonable reading, surface the options instead of silently picking one. If a
-  simpler approach exists, say so and push back when warranted. When something is
-  genuinely unclear, stop and name what's confusing — ask, don't guess.
-- **Simplicity first.** Write the minimum code that solves the stated problem — no
-  speculative features, no abstraction for single-use code, no configurability that
-  wasn't requested, no error handling for impossible states. If you wrote 200 lines and
-  it could be 50, rewrite it. (Name code from its purpose, never `wave0`/`phase2`/`v2`.)
-- **Stay surgical.** Every changed line should trace directly to the task. Don't refactor,
-  reformat, or "improve" working code adjacent to your change; match the existing style
-  even where you'd do it differently. Remove only the imports/symbols your own change
-  orphaned; if you spot unrelated dead code, mention it rather than deleting it inline.
-  *Exception — the Quality Bar below:* lint/format/type errors the pre-commit gate flags
-  get fixed regardless of who introduced them. In short: **surgical on behavior, clean on
-  lint.**
-- **Verify against a goal.** Turn the task into a checkable outcome before you start:
-  "fix the bug" → "write a failing test that reproduces it, then make it pass"; "add
-  validation" → "tests for the invalid inputs pass". For multi-step work, state the short
-  plan and the check for each step, then loop until the checks pass.
-
-## Quality Bar — Leave the Codebase Clean (REQUIRED)
-
-After completing any code change, run the project's pre-commit suite and drive it
-**fully green** before committing:
-
-```bash
-pre-commit run --all-files
-```
-
-Resolve **every** issue it reports — failures, lint errors, type errors, and
-warnings — **including problems that pre-date your change and were not caused by
-your edits**. The standing goal is a clean, working codebase with **no errors and
-no warnings**. Do not silence checks (`# noqa`, `# type: ignore`, `SKIP=`,
-`--no-verify`) to force green unless the exception is already documented in this
-file as a known, unavoidable limitation. Only commit once `pre-commit run
---all-files` passes cleanly; if a check legitimately cannot pass, stop and explain
-why rather than bypassing it.
-
 ## Working with Git Worktrees (multi-session)
 
 Multiple agents/sessions work the `agent-packages/*` repos concurrently. **Do not
@@ -1013,30 +886,10 @@ This is the concrete lease/marker primitive offered to the workspace's general
 concurrent-development protocol (PARTITION / APPEND-ONLY / LEASE / READ-ONLY)
 to generalize — see the coordination note below.
 
-```bash
-# preferred — repository-manager MCP:
-rm_worktree add <repo> <your-branch>      # -> $REPOSITORY_MANAGER_WORKTREE_ROOT/<repo>/<your-branch>
-
-# raw-git fallback:
-git -C agent-packages/<repo> checkout main
-git -C agent-packages/<repo> worktree add "$REPOSITORY_MANAGER_WORKTREE_ROOT/<repo>/<branch>" -b <branch>
-```
-
-Work in the worktree and **commit often** (commits survive a working-tree reset).
-Each session must use a **distinct branch** — git allows a branch in only one
-worktree, which is what keeps concurrent sessions from colliding. Worktrees live
-under `$REPOSITORY_MANAGER_WORKTREE_ROOT` (outside the workspace scan, so the sync leaves them
-alone).
-
-**Finishing work in a worktree** — run this sequence before calling it done:
-1. **Pre-commit green** — `pre-commit run --all-files`; resolve every issue per the
-   Quality Bar above (including pre-existing), no `--no-verify`.
-2. **Commit** in the worktree.
-3. **Merge to main locally** — `rm_worktree merge <repo> <branch> --into main`
-   (or `git merge --no-ff`). Push only when the user asks.
-4. **Clean up** — remove the worktree and delete the merged branch:
-   `rm_worktree remove <repo> <branch> --delete-branch`; `rm_worktree prune` clears
-   stale entries. (Raw-git: `git worktree remove <path> && git branch -d <branch>`.)
+Create worktrees with `rm_worktree add <repo> <branch>` (or a real
+`git worktree add`); the full isolation, commit and landing protocol is in the
+`graphos-ecosystem-development` and `repository-manager-worktree-orchestration`
+skills.
 
 **The prune guard (CONCEPT:RM-PRUNE-GUARD, `repository_manager/prune_guard.py`):**
 `rm_worktree audit --prune-merged` used to treat a `merged` classification as
@@ -1113,7 +966,7 @@ subsequent `git status`/`add`/`commit`/`diff` in that worktree until repaired
 **Build/CI hosts should never mount a live git repository over NFS at
 all** — not even with the worktree isolation convention above, which only
 addresses concurrent *local* sessions on one checkout, not a repository
-shared as a mutable mount across *hosts*. 2026-08-13's R820 incident (an
+shared as a mutable mount across *hosts*. 2026-08-13's build-host incident (an
 NFSv4 client livelock — 555,965 stuck delegations pinning a kernel thread
 at ~98% CPU for hours, wedging that host's whole load average) traced
 directly back to build/test I/O against `/home/apps/workspace`/
@@ -1125,7 +978,7 @@ onto the build host's own **local** disk over SSH (`git clone`/`fetch`/
 in kind from what a human does when they `git clone` a repo onto a new
 machine. See `docs/architecture/nfs-buildhost-migration.md` for the full
 diagnosis, the rsync-vs-git-vs-NFS tradeoff, and the migration steps —
-validated live against R820 during that same incident.
+validated live against that build host during the same incident.
 
 <!-- BEGIN concept-coordination (generated) -->
 ## Concept-ID Coordination (multi-session)

@@ -234,7 +234,8 @@ plausible-looking code goes unexecuted.
 ## After the resolution
 
 ```bash
-git add -A && git commit                 # never --no-verify
+git status --short                       # stage only the paths you resolved
+git add -- <resolved paths> && git commit
 repository-manager --lane doctor --lane-path .
 repository-manager --merge-queue enqueue --repo-path .
 ```
