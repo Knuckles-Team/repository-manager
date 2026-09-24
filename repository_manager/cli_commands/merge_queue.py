@@ -8,9 +8,11 @@ from typing import Any
 
 def run_merge_queue_cli(args: Any) -> int:
     """Marshal merge-queue flags onto the shared dispatch core."""
-    from agent_utilities.governance.lanes import LaneArbitrationError, LeaseUnavailable
-
     from repository_manager import merge_queue
+    from repository_manager.governance.lanes import (
+        LaneArbitrationError,
+        LeaseUnavailable,
+    )
 
     try:
         result = merge_queue.dispatch(

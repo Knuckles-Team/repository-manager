@@ -64,8 +64,11 @@ EXPECTED_TOOL_NAMES = (
 # ``phase_direction_here`` to ``RM_GATES_ACTIONS`` (routed to
 # ``dependency_readiness.check_phase_direction_here``), names it in
 # ``rm_gates``'s ``action`` description, and adds the ``start`` parameter.
+# Recomputed for EH-217's ``rm_worktree`` tool annotations and OQ-3, which
+# moved the concept authority the ``rm_concepts`` description names to
+# ``repository_manager.governance.concept_reservation``.
 BASELINE_CATALOG_SHA256 = (
-    "54956a5dd92b419f1179b1ff959237f514a18262b8733506114f3ad25334a50d"
+    "20394791150f6922e5eb9c243ed2b379a5576ce4046e46c585f1ba32c1420a75"
 )
 
 

@@ -159,32 +159,16 @@ async def test_mcp_and_cli_list_refusal_are_identical(tmp_path, capsys):
     assert exit_code == 1
 
 
-def test_concept_authority_refusal_names_module_and_preserves_cause(tmp_path):
+def test_concept_authority_refusal_names_the_module(tmp_path):
     """Refusal proof: no injected authority -> named refusal (H-12).
 
     ``resolve_default_authority`` (``repository_manager/concept_coordination/
-    client.py``) always refuses when nothing is injected, by design, in
-    either of two states of the agent-utilities checkout under test (see
-    that module's "Why this always refuses today" docstring):
-
-    * the RMDD-16 authority module (``agent_utilities.governance.
-      concept_reservation``) is absent -> refusal chains the ``ImportError``
-      as its cause;
-    * the module merged to *some* agent-utilities checkout (it lives on
-      integration branches before landing on ``main``) but RMDD-17
-      deliberately never constructs a live authority itself -> refusal
-      names the module with no exception to chain (nothing was raised).
-
-    Branch on which state actually holds here rather than assuming the
-    first, so this test is correct on either an agent-utilities ``main``
-    checkout or one of the integration branches the docstring names.
+    client.py``) always refuses when nothing is injected: the RMDD-16 authority
+    module is part of this package, but RMDD-17 deliberately never constructs
+    a live authority itself, so the refusal names the module with no exception
+    to chain.
     """
-    import importlib.util
-
     from repository_manager.concept_coordination import ConceptCoordinationActions
-    from repository_manager.concept_coordination.client import AUTHORITY_MODULE
-
-    module_present = importlib.util.find_spec(AUTHORITY_MODULE) is not None
 
     actions = ConceptCoordinationActions(
         repo_root=tmp_path, tenant_ref="t", lane_ref="l"
@@ -192,29 +176,16 @@ def test_concept_authority_refusal_names_module_and_preserves_cause(tmp_path):
     with pytest.raises(ConceptAuthorityUnavailable) as excinfo:
         actions.get("concept-reservation:t:1")
 
-    assert "agent_utilities.governance.concept_reservation" in str(excinfo.value)
-    if module_present:
-        assert excinfo.value.__cause__ is None
-        assert "RMDD-17 does not construct a live authority" in str(excinfo.value)
-    else:
-        assert excinfo.value.__cause__ is not None
-        assert isinstance(excinfo.value.__cause__, ImportError)
+    assert "repository_manager.governance.concept_reservation" in str(excinfo.value)
+    assert excinfo.value.__cause__ is None
+    assert "RMDD-17 does not construct a live authority" in str(excinfo.value)
 
 
-def test_import_mcp_server_without_concept_reservation_authority():
-    """``import repository_manager.mcp_server`` never hard-depends on the authority.
+def test_import_mcp_server_in_a_fresh_process():
+    """``import repository_manager.mcp_server`` succeeds in a fresh interpreter.
 
-    Run in a fresh subprocess to prove the *base install* imports cleanly
-    regardless of whether ``agent_utilities.governance.concept_reservation``
-    happens to be present on the agent-utilities checkout under test (it
-    lives on integration branches before landing on ``main`` -- see
-    ``repository_manager/concept_coordination/client.py``'s "Why this
-    always refuses today" docstring) -- a module-level import of it anywhere
-    in the package would abort collection whenever it's absent, exactly the
-    RMDD-19 revert class this lane must not repeat. This does not assert the
-    module's absence as a precondition (unlike an earlier version of this
-    test): that would make the proof depend on which agent-utilities branch
-    happens to be checked out, which is not this lane's concern.
+    Run in a subprocess so no module another test already imported can mask a
+    broken import chain — the RMDD-19 revert class this lane must not repeat.
     """
 
     completed = subprocess.run(

@@ -32,7 +32,7 @@ from git's refusal, not from our earlier scan agreeing with itself.
 
 **Occupancy comes from the lane protocol, not a new mechanism.**
 :func:`guarded_worktree_prune` routes through
-``agent_utilities.governance.lanes.guarded_tree_mutation`` — the same repo-scoped
+``repository_manager.governance.lanes.guarded_tree_mutation`` — the same repo-scoped
 lease in the shared ``--git-common-dir`` and the same ``require_resettable_tree``
 refusal every other global actor in this workspace must consult — and reads
 occupancy from facts git and that protocol already record: a merge/rebase in
@@ -57,17 +57,7 @@ from collections.abc import Iterator
 
 logger = logging.getLogger(__name__)
 
-try:
-    from agent_utilities.governance import lanes
-except ImportError as exc:  # pragma: no cover - exercised only on an older au
-    lanes = None  # type: ignore[assignment]
-    _LANES_UNAVAILABLE = (
-        "the lane arbitration protocol "
-        "(agent_utilities.governance.lanes) is unavailable, so an active lane "
-        f"cannot be distinguished from an abandoned one: {exc}"
-    )
-else:
-    _LANES_UNAVAILABLE = ""
+from repository_manager.governance import lanes
 
 
 def _live_lease_hold(scope) -> str | None:
@@ -104,8 +94,6 @@ def lane_hold(worktree_path: str) -> str | None:
     Every signal is one git or lane-protocol already records; none of them is a
     marker a lane has to remember to place.
     """
-    if lanes is None:  # pragma: no cover - exercised only on an older au
-        return _LANES_UNAVAILABLE
     if lanes.current_tree(worktree_path) is None:
         # Not a working tree at all (a stale admin pointer): no lane can be in it.
         return None
@@ -134,9 +122,6 @@ def guarded_worktree_prune(
     and its removal happen inside the same arbitration window rather than either
     side of it.
     """
-    if lanes is None:  # pragma: no cover - exercised only on an older au
-        yield _LANES_UNAVAILABLE
-        return
     held = lane_hold(worktree_path)
     if held is not None:
         logger.warning(

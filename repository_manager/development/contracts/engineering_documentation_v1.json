@@ -5,9 +5,9 @@
   "contract_version": "1",
   "owner": "repository-manager",
   "concept_authority": {
-    "owner": "agent-utilities",
+    "owner": "repository-manager",
     "rule_id": "RMDD-16",
-    "module": "agent_utilities.governance.concept_reservation",
+    "module": "repository_manager.governance.concept_reservation",
     "mode": "reference-only",
     "allocates_ids": false
   },

@@ -22,7 +22,7 @@ metadata:
 # Repository Manager — Concept Coordination
 
 `rm_concepts` is repository-manager's thin, MCP/CLI-neutral consumer of RMDD-16's
-central concept-id claim authority (`agent_utilities.governance.
+central concept-id claim authority (`repository_manager.governance.
 concept_reservation`). Repository-manager **never allocates a concept id itself** —
 every action here is a claim/verification call against an injected authority port.
 

@@ -52,7 +52,7 @@ written down, in prose, in front of the actor who broke it.
 
 Every shared resource belongs to exactly one class, and each class has exactly one
 mechanism. The classification is data, not code, in
-`agent_utilities/governance/lane_resources.yaml` — adding a resource is a row,
+`repository_manager/governance/lane_resources.yaml` — adding a resource is a row,
 never a new mechanism. Read it with `agent-utilities lane classify`.
 
 | Class | Rule | Mechanism |
@@ -237,4 +237,4 @@ If it is rejected, the rejection names its evidence — take it to
 - Workspace-wide worktree sweeps → `repository-manager-fleet-scale-operations`
 - Raw worktree verbs → `repository-manager-worktree-orchestration`
 - Mechanism: `repository_manager/lane_doctor.py`,
-  `agent_utilities/governance/lanes.py`, `lane_resources.yaml`
+  `repository_manager/governance/lanes.py`, `lane_resources.yaml`
