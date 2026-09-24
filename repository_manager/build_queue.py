@@ -67,14 +67,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agent_utilities.governance.lanes import (
-    LaneArbitrationError,
-    LeaseUnavailable,
-    hold_lease,
-    lane_scope,
-    partitioned_paths,
-)
-
 from repository_manager import task_queue as tq
 from repository_manager.config_schema import (
     ArtifactContract,
@@ -85,6 +77,13 @@ from repository_manager.config_schema import (
     parse_build_config,
 )
 from repository_manager.disk_policy import DiskDecision, DiskPolicy, DiskWatermarks
+from repository_manager.governance.lanes import (
+    LaneArbitrationError,
+    LeaseUnavailable,
+    hold_lease,
+    lane_scope,
+    partitioned_paths,
+)
 from repository_manager.merge_queue import (
     _now,  # reuse the same UTC-isoformat timestamp helper merge_queue uses
     _require_git,

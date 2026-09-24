@@ -5,7 +5,7 @@ immutable base tree, using this ecosystem's ``CONCEPT:<ID>`` marker
 convention. Two marker grammars are live on ``main`` today (verified by
 reading both live files, not assumed):
 
-* dotted OKF style — ``agent_utilities.governance.concept_hierarchy.OKF_MARKER_RE``,
+* dotted OKF style — ``repository_manager.governance.concept_hierarchy.OKF_MARKER_RE``,
   e.g. ``CONCEPT:AU-OS.governance.cross-host-concept-reservation-authority``
   and this repository's own ``CONCEPT:RM-OS.governance.rm``;
 * flat slug-only style, no digits at all, also in this repository's

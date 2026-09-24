@@ -2,7 +2,7 @@
 
 Every test drives a REAL git repository (the ledger's per-repo store lives
 under that repo's shared ``--git-common-dir``) and REAL ``fcntl`` leases via
-``agent_utilities.governance.lanes`` — the mechanism under test is file-backed
+``repository_manager.governance.lanes`` — the mechanism under test is file-backed
 mutual exclusion plus fold ordering, and a mock of either would prove
 nothing about it.
 """
@@ -197,7 +197,7 @@ def test_exclusive_lease_backed_class_works_when_colocated_is_proven(repo: Path)
 
 
 def test_exclusive_class_second_holder_is_refused_while_first_holds(repo: Path):
-    from agent_utilities.governance.lanes import LeaseUnavailable
+    from repository_manager.governance.lanes import LeaseUnavailable
 
     with tq.acquire("merge-drain", operation="x", path=repo, colocated=True):
         with pytest.raises(LeaseUnavailable):

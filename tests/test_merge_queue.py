@@ -1071,7 +1071,7 @@ def test_repository_queue_config_uses_exact_queue_owned_test_census() -> None:
 def test_materialized_snapshot_attaches_only_an_existing_ignored_venv(
     tmp_path: Path,
 ) -> None:
-    from agent_utilities.governance.lanes import lane_scope
+    from repository_manager.governance.lanes import lane_scope
 
     repo = _init_repo(tmp_path / "repo")
     (repo / ".gitignore").write_text(".venv\n", encoding="utf-8")
@@ -1183,7 +1183,7 @@ def test_the_queue_gives_any_precommit_gate_its_own_store(shell_repo: Path) -> N
     One change fixes both hazards: a crash can never orphan another lane's patch,
     and the store's SQLite ``db.db`` can never lock against another lane's.
     """
-    from agent_utilities.governance.lanes import lane_scope, partitioned_paths
+    from repository_manager.governance.lanes import lane_scope, partitioned_paths
 
     seen: dict[str, str] = {}
     real = mq._timed_run
@@ -1413,7 +1413,7 @@ def test_the_cli_returns_75_when_the_lease_is_held(
     Any scheduler driving this queue chains on it; a plain 1 would read as a
     failed drain and invite a retry that races the holder.
     """
-    from agent_utilities.governance.lanes import LeaseUnavailable
+    from repository_manager.governance.lanes import LeaseUnavailable
 
     from repository_manager import repository_manager as rm_mod
 
@@ -1753,7 +1753,7 @@ def test_shadow_generation_lease_serializes_callers_and_cleans_up(
 ) -> None:
     """One caller owns the existing merge lease; replay is stable after release."""
 
-    from agent_utilities.governance.lanes import LeaseUnavailable, lease_status
+    from repository_manager.governance.lanes import LeaseUnavailable, lease_status
 
     _branch_with(shell_repo, "feat/lease", {"lease.txt": "lease\n"}, "lease")
     mq.enqueue("feat/lease", path=shell_repo)
@@ -1799,7 +1799,7 @@ def test_shadow_generation_lease_serializes_callers_and_cleans_up(
 def test_shadow_generation_lease_cleans_up_after_failure(shell_repo: Path) -> None:
     """A failed snapshot cannot strand the shared merge lease."""
 
-    from agent_utilities.governance.lanes import lease_status
+    from repository_manager.governance.lanes import lease_status
 
     _branch_with(shell_repo, "feat/failure", {"failure.txt": "failure\n"}, "failure")
     mq.enqueue("feat/failure", path=shell_repo)

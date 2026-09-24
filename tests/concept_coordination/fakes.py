@@ -2,7 +2,7 @@
 
 **This is test scaffolding, never production code.** It behaviorally mirrors
 the documented contract of RMDD-16's own
-``agent_utilities.governance.concept_reservation.FixtureConceptReservationAuthority``
+``repository_manager.governance.concept_reservation.FixtureConceptReservationAuthority``
 (create-if-absent uniqueness, request-key idempotency scoped to
 ``(tenant_ref, request_key_ref, concept_id)``, fenced same-owner-idempotent
 transitions, the RESERVED/MATERIALIZED/LANDED/RELEASED/EXPIRED/TOMBSTONED
