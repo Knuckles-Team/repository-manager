@@ -11,9 +11,10 @@ The development workflow lives in skills; load them before editing:
 
 - `graphos-ecosystem-development` — architecture boundaries, the lane protocol
   (own `git worktree add` worktree, explicit staging, never `git stash`/`git add -A`/
-  harness worktree isolation), build hosts (`eg-lane-run`), gate caps, contract
-  regeneration, landing (`eg-land-gate --fanout` by default for the engine) and
-  the decisions protocol. In a coordinated program lanes run targeted checks and
+  harness worktree isolation), dedicated build hosts, gate caps, contract
+  regeneration, landing (the release-workflow gate fanned out across hosts by
+  default) and the decisions protocol. A private homelab overlay skill, when
+  installed, supplies host and tooling specifics. In a coordinated program lanes run targeted checks and
   commit with `--no-verify`; the full suite runs once on the merged tree at landing.
 - `repository-manager-*` skills — this package's own surfaces: lanes, worktrees,
   gates, merge queue, builds and fleet-scale operations.
@@ -965,7 +966,7 @@ subsequent `git status`/`add`/`commit`/`diff` in that worktree until repaired
 **Build/CI hosts should never mount a live git repository over NFS at
 all** — not even with the worktree isolation convention above, which only
 addresses concurrent *local* sessions on one checkout, not a repository
-shared as a mutable mount across *hosts*. 2026-08-13's R820 incident (an
+shared as a mutable mount across *hosts*. 2026-08-13's build-host incident (an
 NFSv4 client livelock — 555,965 stuck delegations pinning a kernel thread
 at ~98% CPU for hours, wedging that host's whole load average) traced
 directly back to build/test I/O against `/home/apps/workspace`/
@@ -977,7 +978,7 @@ onto the build host's own **local** disk over SSH (`git clone`/`fetch`/
 in kind from what a human does when they `git clone` a repo onto a new
 machine. See `docs/architecture/nfs-buildhost-migration.md` for the full
 diagnosis, the rsync-vs-git-vs-NFS tradeoff, and the migration steps —
-validated live against R820 during that same incident.
+validated live against that build host during the same incident.
 
 <!-- BEGIN concept-coordination (generated) -->
 ## Concept-ID Coordination (multi-session)

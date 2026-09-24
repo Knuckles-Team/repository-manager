@@ -121,7 +121,7 @@ cargo build --target-dir ./target-isolated     # and prune it when you are done
 ```
 
 For `epistemic-graph`, do not build on the shared development host at all: submit
-Rust builds to a build host with `eg-lane-run` (see `graphos-ecosystem-development`).
+Rust builds to a dedicated build host (see `graphos-ecosystem-development`).
 
 `agent-utilities lane bind-cargo` writes `.cargo/config.toml` so the partition
 **binds** structurally and needs no export at all.
