@@ -1063,7 +1063,7 @@ can forget to set:
   this branch contributed. A worktree at base reports `at_base` and classifies
   `active`.
 - **Occupancy comes from the lane protocol, not a new mechanism.** Each removal
-  runs inside `agent_utilities.governance.lanes.guarded_tree_mutation` (the
+  runs inside `repository_manager.governance.lanes.guarded_tree_mutation` (the
   repo-scoped lease in the shared `--git-common-dir`, plus
   `require_resettable_tree`), and `_branch_state` is re-derived *inside* that
   lease, so a classification that went stale during the audit scan is caught

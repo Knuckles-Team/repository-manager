@@ -47,7 +47,7 @@ scopes:
 and arbitrated under one of three policies:
 
 * ``EXCLUSIVE`` — one holder at a time. Wraps
-  :func:`agent_utilities.governance.lanes.hold_lease` directly; this module
+  :func:`repository_manager.governance.lanes.hold_lease` directly; this module
   does not reimplement leasing, it names when to reach for it.
 * ``POOL``      — up to *N* concurrent holders. *N* identical requests should
   serialise (they would step on the same target dir); *N* **different**
@@ -113,7 +113,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from agent_utilities.governance.lanes import (
+from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
+
+from repository_manager.governance.lanes import (
     DEFAULT_LEASE_TTL_SECONDS,
     FragmentStore,
     LaneArbitrationError,
@@ -126,7 +128,6 @@ from agent_utilities.governance.lanes import (
     partitioned_paths,
     workspace_arbitration_dir,
 )
-from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
 
 _LEASE_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -375,7 +376,7 @@ class ExecutionClass:
 
 
 #: The declared execution classes this ledger arbitrates. Adding a resource is
-#: a row here, mirroring ``agent_utilities/governance/lane_resources.yaml``'s
+#: a row here, mirroring ``repository_manager/governance/lane_resources.yaml``'s
 #: own convention for file/tree-level PARTITION resources — this registry is
 #: its sibling for orchestration-level *operations* (things you RUN, not
 #: paths you own), so it lives in repository-manager rather than duplicating
@@ -607,7 +608,7 @@ def _global_lease_dir() -> Path:
     ``ExecutionClass(scope=Scope.GLOBAL)`` declares a resource contended by
     every worktree of every repository on the host (the shared dependency
     cache, in the ``"uv-sync"`` case) — but
-    ``agent_utilities.governance.lanes.hold_lease(path=...)`` only escapes its
+    ``repository_manager.governance.lanes.hold_lease(path=...)`` only escapes its
     default PER-REPOSITORY lease directory (``lane_scope(path).arbitration_dir``,
     that repo's own ``--git-common-dir``) for a lease NAME registered
     ``scope: workspace`` in that package's ``lane_resources.yaml``. This
@@ -626,7 +627,7 @@ def _global_lease_dir() -> Path:
     (silently wrong again the next time ``pool_size`` changes or a new
     GLOBAL class is declared), GLOBAL leases are stored directly under
     agent-utilities' own host-wide arbitration root
-    (:func:`agent_utilities.governance.lanes.workspace_arbitration_dir`) — the
+    (:func:`repository_manager.governance.lanes.workspace_arbitration_dir`) — the
     SAME directory the ``dependency-lock`` resource (a genuinely
     ``scope: workspace`` row) already uses — bypassing the name-classification
     lookup entirely for this always-host-wide case.
@@ -637,7 +638,7 @@ def _global_lease_dir() -> Path:
 
 
 def _global_holder_alive(holder: dict[str, Any]) -> bool:
-    """Same liveness rule as ``agent_utilities.governance.lanes._holder_is_live``
+    """Same liveness rule as ``repository_manager.governance.lanes._holder_is_live``
     (unexpired, and — for a same-host holder — its process still running);
     the expiry/host logic is duplicated locally because that check is
     private to a module whose directory-selection logic this function
@@ -758,7 +759,7 @@ def acquire(
     """Acquire a :class:`Reservation` for the declared execution class *name*.
 
     Raises rather than blocks — same convention as
-    :func:`agent_utilities.governance.lanes.hold_lease`: the caller is forced
+    :func:`repository_manager.governance.lanes.hold_lease`: the caller is forced
     to make deferral explicit (retry, queue, or give up), never silently wait
     on a resource under contention.
 

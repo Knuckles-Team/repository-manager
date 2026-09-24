@@ -29,8 +29,9 @@ from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from agent_utilities.governance.lanes import lane_scope
 from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
+
+from repository_manager.governance.lanes import lane_scope
 
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
 MANIFEST_NAME = "manifest.json"

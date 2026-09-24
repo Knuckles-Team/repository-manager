@@ -63,9 +63,10 @@ repository-manager = "repository_manager.repository_manager:main"
 repository-manager-mcp = "repository_manager.mcp_server:mcp_server"
 repository-manager-agent = "repository_manager.agent_server:agent_server"
 repository-manager-install-merge-queue-runner = "repository_manager.merge_queue_runner_install:main"
+repository-manager-governance = "repository_manager.governance.cli:main"
 
 [tool.setuptools.package-data]
-repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "docs_readiness_fleet_manifest.json", "prompts/**", "skills/**", "ontology/**", "connectors/**", "development/contracts/*.json", "mergequeue_presets/*.yaml", "buildcache_presets/*.yaml", "systemd/*.service", "systemd/*.timer",]
+repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "docs_readiness_fleet_manifest.json", "prompts/**", "skills/**", "ontology/**", "connectors/**", "development/contracts/*.json", "mergequeue_presets/*.yaml", "governance/*.yaml", "buildcache_presets/*.yaml", "systemd/*.service", "systemd/*.timer",]
 
 [tool.uv]
 managed = true

@@ -11,14 +11,11 @@ or an authority of its own, so MCP and CLI can never diverge in behavior
 real RMDD-16 authority and injects it into ``ConceptCoordinationActions``"
 the RMDD-17 lane brief asked RMDD-20 to write. It is a best-effort attempt,
 never a fabrication: RMDD-16's authority module
-(``agent_utilities.governance.concept_reservation``) is not an ancestor of
-agent-utilities ``main`` as of this lane (verified 2026-08-10; see
-``repository_manager/concept_coordination/client.py`` for the full account
-of exactly which commit and which branches carry it), so today this always
-returns ``None`` in this environment and every caller falls through to
-``ConceptCoordinationActions``'s own ``resolve_default_authority()`` — which
-raises a named ``ConceptAuthorityUnavailable`` preserving the real
-``ImportError`` as ``__cause__`` (H-12: never discard an exception cause).
+(``repository_manager.governance.concept_reservation``) exposes no
+live-construction entrypoint (a live authority needs an engine handle and a
+namespace policy), so today this returns ``None`` and every caller falls
+through to ``ConceptCoordinationActions``'s own ``resolve_default_authority()``
+— which raises a named ``ConceptAuthorityUnavailable``.
 No fixture, in-memory allocator, or fabricated authority is ever substituted
 for the real one in this module.
 """
@@ -68,11 +65,11 @@ def build_default_concept_authority() -> ConceptAuthorityPort | None:
     that construction raises for any reason — it never fabricates a
     fixture/local allocator as a substitute (repository-manager AGENTS.md
     "optional dependency" guardrail: ``try/except ImportError`` only, no
-    module-level import of ``agent_utilities.governance.concept_reservation``
+    module-level import of ``repository_manager.governance.concept_reservation``
     anywhere in this module). ``None`` is a legitimate, honest result: the
     caller (``concept_actions_for``) passes it straight through to
     ``ConceptCoordinationActions``, whose own ``resolve_default_authority()``
-    re-attempts the same import and raises the named refusal.
+    raises the named refusal.
     """
 
     try:

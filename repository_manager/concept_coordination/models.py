@@ -5,7 +5,7 @@ These reuse repository-manager's existing typed primitives
 ``OpaqueId``, ``GitSha``, ``GitRef``, ``UtcDateTime`` — frozen, additively
 versioned, C-01-shaped) unmodified rather than inventing a second set. The
 field names deliberately mirror RMDD-16's
-``agent_utilities.governance.concept_reservation.ConceptReservationRequest``/
+``repository_manager.governance.concept_reservation.ConceptReservationRequest``/
 ``ConceptReservationRecord`` (``tenant_ref``, ``concept_id``, ``namespace``,
 ``repository_ref``, ``lane_ref``, ``owner_ref``, ``request_key_ref``,
 ``design_ref``, ``created_at``, ``expires_at``) so a future adapter maps

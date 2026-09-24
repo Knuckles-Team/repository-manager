@@ -2,9 +2,9 @@
 
 Mirrors the append-only-fragment / folded-generated-view pattern already
 established for concept markers in
-``agent_utilities.governance.concept_allocator`` (per-lane fragment +
+``repository_manager.governance.concept_allocator`` (per-lane fragment +
 ``regenerate_view()``) and for merge-queue records via
-``agent_utilities.governance.lanes.FragmentStore``. Repository-manager has no
+``repository_manager.governance.lanes.FragmentStore``. Repository-manager has no
 concept-claim ledger of its own on ``main`` today (verified: no
 ``docs/concept_reservations*`` path exists in this repository — only
 agent-utilities has one, for its own markers), so this module creates one

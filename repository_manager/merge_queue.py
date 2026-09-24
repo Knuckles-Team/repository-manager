@@ -75,7 +75,7 @@ checkout of a committed object — clean by construction.
 
 No new arbitration class is introduced. Serialization is the existing
 ``reconciliation-merge`` LEASE, the candidate store is a
-:class:`~agent_utilities.governance.lanes.FragmentStore` in the repository's own
+:class:`~repository_manager.governance.lanes.FragmentStore` in the repository's own
 shared ``--git-common-dir``, and scratch/basetemp come from
 ``partitioned_paths()`` — all repo-scoped already, so two repositories' queues
 are independent by construction rather than by convention.
@@ -100,16 +100,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from agent_utilities.governance.lanes import (
-    FragmentStore,
-    LaneArbitrationError,
-    LaneScope,
-    guarded_tree_mutation,
-    hold_lease,
-    lane_scope,
-    partitioned_paths,
-)
-
 from repository_manager.candidate_generation import (
     CandidateGenerationError,
     CandidateSnapshot,
@@ -131,6 +121,15 @@ from repository_manager.config_schema import (
 )
 from repository_manager.development import RepositoryIdentity, TargetPolicy
 from repository_manager.generation_coalescing import seal_generation, select_batches
+from repository_manager.governance.lanes import (
+    FragmentStore,
+    LaneArbitrationError,
+    LaneScope,
+    guarded_tree_mutation,
+    hold_lease,
+    lane_scope,
+    partitioned_paths,
+)
 from repository_manager.lane_record import repository_id_for
 from repository_manager.test_commands import ensure_no_fail_fast
 
@@ -3549,7 +3548,7 @@ def run_queue(
 ) -> dict[str, Any]:
     """Drain up to *batch_size* candidates for ONE repository, under the lease.
 
-    Raises :class:`~agent_utilities.governance.lanes.LeaseUnavailable` when
+    Raises :class:`~repository_manager.governance.lanes.LeaseUnavailable` when
     another runner holds ``reconciliation-merge`` for this repository — deferring
     is the correct outcome and the caller must make it explicit, exactly as every
     other LEASE-class resource here. The lease is repo-scoped, so draining
@@ -3659,7 +3658,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     import argparse
 
-    from agent_utilities.governance.lanes import LeaseUnavailable
+    from repository_manager.governance.lanes import LeaseUnavailable
 
     p = argparse.ArgumentParser(prog="python -m repository_manager.merge_queue")
     p.add_argument(

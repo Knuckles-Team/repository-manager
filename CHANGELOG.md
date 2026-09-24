@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Development governance moved in from agent-utilities (OQ-3, AUD-29, EH-512)** —
+  `repository_manager/governance/` now owns lane arbitration (`lanes` +
+  `lane_resources.yaml`), the OKF-CIS concept-id grammar and vocabularies
+  (`concept_hierarchy`, `domain_vocab.yaml`, `slug_registry.yaml`), concept lineage
+  rules (`concept_lineage`), same-host concept reservation (`concept_allocator`), the
+  separate-host concept authority (`concept_reservation`), and the fleet lane-guard
+  pre-commit gate (`python3 -m repository_manager.governance.lane_guard`, formerly
+  agent-utilities' `scripts/check_lane_guard.py`). The former `agent-utilities lane …`
+  and `agent-utilities concept …` verbs are `repository-manager-governance lane …` /
+  `… concept …`, same flags, output and exit codes. Every internal import of
+  `agent_utilities.governance` now resolves here. The allocator's concept-marker scan
+  roots are derived from the repository's own packages (and `crates/`), and the
+  registry/lineage paths are supplied by the governed repository instead of being
+  resolved relative to the tool's install location. The agent-utilities merge queue was
+  not moved: `repository_manager.merge_queue` is its generalized successor.
 - **Dependency-readiness gate (CONCEPT:RM-DEP-READY)** — `repository_manager/dependency_readiness.py`,
   a pluggable artifact-availability predicate (`IndexBackend` protocol; `PyPISimpleIndexBackend`
   default, over the PEP 503/691 Simple Repository API — never a hardcoded `pypi.org`, honors

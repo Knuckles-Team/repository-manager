@@ -107,7 +107,7 @@ edges:
 
 - **`rm_concepts` (step 1) refuses every mutating action** with a named
   `ConceptAuthorityUnavailable` refusal, because RMDD-16's concept-reservation
-  authority (`agent_utilities.governance.concept_reservation`) is not present on
+  authority (`repository_manager.governance.concept_reservation`) is not present on
   `agent-utilities` `main` as of this lane. This is not a bug in
   repository-manager — it is a real, honest refusal preserving the original
   `ImportError` as its cause (never a fabricated local allocation). See

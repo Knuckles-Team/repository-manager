@@ -306,6 +306,14 @@ strictly additive and reversible, and each step is independently valuable:
 | 5 | Cut over: `agent_utilities.governance.merge_queue` becomes a thin shim delegating to `repository_manager.merge_queue` **when importable**, keeping its current implementation as the fallback. Note the dependency direction — repository-manager depends on agent-utilities, so au importing repository-manager must stay optional (that asymmetry is exactly what D-ORC-21 recorded). | medium — do this only after step 4 agrees |
 | 6 | Retire the au implementation once the shim has landed real batches, per *No Legacy* (migrate-and-delete, no deprecation window). | — |
 
+**Superseded by OQ-3 (2026-09-24).** The operator ruled that development
+governance belongs to repository-manager, so steps 5–6 collapse into one
+migrate-and-delete: agent-utilities deleted `agent_utilities.governance.merge_queue`
+(and its `agent-utilities merge-queue` verb) outright, with no shim, and
+agent-utilities drives this generic queue through its root `.mergequeue.yaml`.
+The lane arbitration it was built on moved here as
+`repository_manager.governance.lanes` (see `repository_manager/governance/`).
+
 **Do not skip to step 5.** Placing `.mergequeue.yaml` in a repository is what
 switches that repository over, so the presets shipped here are inert until
 copied — which is what makes steps 1-2 zero-risk.
