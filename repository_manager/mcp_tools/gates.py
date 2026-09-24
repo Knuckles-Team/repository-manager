@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from agent_utilities.mcp.action_dispatch import resolve_action
+from agent_connector_sdk.mcp.action_dispatch import resolve_action
 from fastmcp import Context, FastMCP
 from pydantic import Field
 

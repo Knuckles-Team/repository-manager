@@ -47,7 +47,10 @@ import shutil
 import signal
 
 import yaml  # type: ignore[import-untyped]
-from agent_utilities.base_utilities import get_library_file_path, to_boolean
+from agent_connector_sdk.utilities import to_boolean
+from agent_utilities.base_utilities import (
+    get_library_file_path,  # SDK-GAPS.md: no SDK equivalent
+)
 from pydantic import ValidationError
 
 try:
@@ -59,7 +62,7 @@ except ImportError:
 
 from importlib.resources import files
 
-from agent_utilities.base_utilities import get_logger
+from agent_connector_sdk.utilities import get_logger
 
 from repository_manager import dependency_readiness
 from repository_manager.canonical_guard import guarded_canonical_mutation
