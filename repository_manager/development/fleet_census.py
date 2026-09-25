@@ -17,7 +17,9 @@ from typing import Any, Literal
 
 import yaml
 
-SourceKind = Literal["python_project", "python_source", "compose", "frontend_package"]
+SourceKind = Literal[
+    "python_project", "python_source", "compose", "frontend_package", "raw_manifest"
+]
 EdgeClass = Literal[
     "production_runtime_package", "development_test", "deployment_composition"
 ]
@@ -275,6 +277,7 @@ _EXTRACTORS: dict[SourceKind, Any] = {
     "python_source": _python_source,
     "compose": _compose,
     "frontend_package": _frontend_package,
+    "raw_manifest": lambda path, raw: (),
 }
 
 
@@ -306,7 +309,9 @@ def capture_census(
         key=lambda item: (item.source_path, item.selector, item.target_id or "")
     )
     missing: tuple[SourceKind, ...] = tuple(
-        kind for kind in _EXTRACTORS if kind not in {s.kind for s in sources}
+        kind
+        for kind in _EXTRACTORS
+        if kind != "raw_manifest" and kind not in {s.kind for s in sources}
     )
     unresolved = sum(edge.resolution == "unresolved" for edge in observations)
     payload = {
