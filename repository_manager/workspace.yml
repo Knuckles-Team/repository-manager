@@ -14,7 +14,7 @@ subdirectories:
     repositories:
     - url: https://github.com/Knuckles-Team/agent-utilities.git
       description: Shared utility functions, base classes, and server common code.
-    - url: https://github.com/Knuckles-Team/agent-webui.git
+    - url: https://github.com/Knuckles-Team/graph-os-webui.git
       description: Standard web UI component library for agents.
     - url: https://github.com/Knuckles-Team/agent-terminal-ui.git
       description: Standard terminal UI component library for agents.
@@ -27,7 +27,7 @@ subdirectories:
         the source sync runner that feeds epistemic-graph (RF-ADR-009).'
     - url: https://github.com/Knuckles-Team/graph-os.git
       description: 'graph-os host: MCP server, REST gateway, control plane, fleet
-        gateway and agent-webui hosting (RF-ADR-009).'
+        gateway and GraphOS WebUI hosting (RF-ADR-009).'
     subdirectories:
       skills:
         description: Agent capabilities, skill graphs, and tool definitions.
@@ -751,10 +751,10 @@ maintenance:
     projects:
     - agent-utilities
     wait_minutes: 30
-  - name: 'Phase 5: agent-webui'
+  - name: 'Phase 5: graph-os-webui'
     phase: 5
     projects:
-    - agent-webui
+    - graph-os-webui
     wait_minutes: 30
   - name: 'Phase 6: graph-os'
     phase: 6
