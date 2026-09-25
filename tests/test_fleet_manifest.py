@@ -7,6 +7,7 @@ import pytest
 from repository_manager.development.fleet_manifest import (
     capture_manifest_census,
     load_fleet_manifest,
+    parse_fleet_manifest,
 )
 
 REVISION = "b" * 40
@@ -98,3 +99,25 @@ def test_manifest_refuses_foreign_identity_and_source_escape(tmp_path: Path) -> 
     )
     with pytest.raises(ValueError, match="unsafe repository source path"):
         load_fleet_manifest(tmp_path)
+
+
+def test_explicit_unknown_metadata_keeps_scope_unresolved(tmp_path: Path) -> None:
+    _workspace(
+        tmp_path,
+        second_metadata=(
+            "        id: repo:ui/app\n"
+            "        path: ui/app\n"
+            "        plane: frontend\n"
+            "        layer: unknown\n"
+            "        fleet_ordinal: unknown\n"
+            "        provides: []\n"
+            "        consumes: []\n"
+            "        dependency_classes: []\n"
+            "        manifests: [package.json]\n"
+            "        metadata_state: unresolved\n"
+            "        unresolved_fields: [layer, fleet_ordinal, dependency_classes]\n"
+        ),
+    )
+    scope = parse_fleet_manifest((tmp_path / "workspace.yml").read_bytes())
+    assert scope.unresolved_repository_ids == ("repo:ui/app",)
+    assert scope.declared_repository_count == 2

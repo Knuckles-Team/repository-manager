@@ -34,6 +34,7 @@ class FleetRepository:
     dependency_classes: tuple[str, ...]
     manifests: tuple[str, ...]
     discovery_sources: tuple[str, ...]
+    unresolved_fields: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,7 @@ class FleetManifestClosure:
     sources: tuple[CensusSource, ...]
     manifest_sha256: str
     declared_repository_count: int
+    unresolved_repository_ids: tuple[str, ...]
 
 
 _FIELDS = (
@@ -159,15 +161,25 @@ def _parse_repository(path: str, repo: dict[str, Any]) -> FleetRepository:
         if not isinstance(repo[field], str) or not repo[field]:
             raise ValueError(f"repository {path} has invalid {field}")
     values = {field: _strings(repo, field) for field in _LIST_FIELDS}
-    if not values["manifests"]:
+    unresolved = _strings(repo, "unresolved_fields")
+    if set(unresolved) - set((*_FIELDS, "discovery_sources")):
+        raise ValueError(f"repository {path} has invalid unresolved fields")
+    if repo.get("metadata_state", "resolved") not in {"resolved", "unresolved"}:
+        raise ValueError(f"repository {path} has invalid metadata state")
+    if bool(unresolved) != (repo.get("metadata_state", "resolved") == "unresolved"):
+        raise ValueError(f"repository {path} has inconsistent metadata state")
+    if not values["manifests"] and "manifests" not in unresolved:
         raise ValueError(f"repository {path} has no source manifests")
-    if repo["fleet_ordinal"] not in _ORDINALS:
+    if repo["fleet_ordinal"] not in _ORDINALS and not (
+        repo["fleet_ordinal"] == "unknown" and "fleet_ordinal" in unresolved
+    ):
         raise ValueError(f"repository {path} has invalid fleet ordinal")
-    if (
-        not values["dependency_classes"]
-        or set(values["dependency_classes"]) - _DEPENDENCY_CLASSES
+    if set(values["dependency_classes"]) - _DEPENDENCY_CLASSES or (
+        not values["dependency_classes"] and "dependency_classes" not in unresolved
     ):
         raise ValueError(f"repository {path} has invalid dependency classes")
+    if repo["layer"] == "unknown" and "layer" not in unresolved:
+        raise ValueError(f"repository {path} has unresolved layer without marker")
     for local in (*values["manifests"], *values["discovery_sources"]):
         _safe_source_path(path, local)
     return FleetRepository(
@@ -181,20 +193,13 @@ def _parse_repository(path: str, repo: dict[str, Any]) -> FleetRepository:
         values["dependency_classes"],
         values["manifests"],
         values["discovery_sources"],
+        unresolved,
     )
 
 
-def load_fleet_manifest(
-    root: Path, manifest: str = "workspace.yml"
-) -> FleetManifestClosure:
-    """Require metadata and a source list for every repository in the workspace."""
+def parse_fleet_manifest(raw: bytes) -> FleetManifestClosure:
+    """Validate every nested repo and retain explicit unknown metadata."""
 
-    manifest_path = root / manifest
-    if manifest_path.is_symlink() or not manifest_path.resolve().is_relative_to(
-        root.resolve()
-    ):
-        raise ValueError("workspace manifest escapes root")
-    raw = manifest_path.read_bytes()
     document = yaml.safe_load(raw)
     entries = _repo_entries(document)
     paths = [path for path, _ in entries]
@@ -221,7 +226,21 @@ def load_fleet_manifest(
         tuple(sorted(sources, key=lambda item: item.path)),
         hashlib.sha256(raw).hexdigest(),
         len(entries),
+        tuple(repo.repository_id for repo in repositories if repo.unresolved_fields),
     )
+
+
+def load_fleet_manifest(
+    root: Path, manifest: str = "workspace.yml"
+) -> FleetManifestClosure:
+    """Read the canonical workspace source and validate its fleet metadata."""
+
+    manifest_path = root / manifest
+    if manifest_path.is_symlink() or not manifest_path.resolve().is_relative_to(
+        root.resolve()
+    ):
+        raise ValueError("workspace manifest escapes root")
+    return parse_fleet_manifest(manifest_path.read_bytes())
 
 
 def capture_manifest_census(
