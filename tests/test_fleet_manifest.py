@@ -112,7 +112,7 @@ def test_explicit_unknown_metadata_keeps_scope_unresolved(tmp_path: Path) -> Non
             "        fleet_ordinal: unknown\n"
             "        provides: []\n"
             "        consumes: []\n"
-            "        dependency_classes: []\n"
+            "        dependency_classes: [package]\n"
             "        manifests: [package.json]\n"
             "        metadata_state: unresolved\n"
             "        unresolved_fields: [layer, fleet_ordinal, dependency_classes]\n"
@@ -121,3 +121,4 @@ def test_explicit_unknown_metadata_keeps_scope_unresolved(tmp_path: Path) -> Non
     scope = parse_fleet_manifest((tmp_path / "workspace.yml").read_bytes())
     assert scope.unresolved_repository_ids == ("repo:ui/app",)
     assert scope.declared_repository_count == 2
+    assert scope.repositories[-1].dependency_classes == ("package",)
