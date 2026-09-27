@@ -31,6 +31,7 @@ class McpToolContext:
     jobs_lock: RLock
     default_workspace: str
     default_workspace_yml: str
+    fleet_preflight_provider: Callable[[Any], Any] | None = None
 
 
 def from_server() -> McpToolContext:

@@ -42,6 +42,7 @@ from .workspace_release import (
     DependencySpec,
     Ecosystem,
     EdgeConfidence,
+    FleetOrderReceipt,
     PackageKey,
     PackageRecord,
     PackageReference,
@@ -52,6 +53,7 @@ from .workspace_release import (
     WorkspaceReleaseError,
     _canonical_json,
     build_dependency_graph,
+    validate_fleet_order_receipt,
 )
 from .workspace_selection import (
     InclusionMode,
@@ -156,6 +158,8 @@ FrozenPlanCode = ReleasePlanCode
 class StageKind(StrEnum):
     """Declarative stage kinds; these names do not select an executor."""
 
+    SETUP = "setup"
+    INSTALL = "install"
     VALIDATE = "validate"
     BUMP = "bump"
     LOCAL_LAND = "local-land"
@@ -1699,6 +1703,8 @@ def _stage_dependency_ids(
     """Return the frozen dependency stage ids for one (kind, project) stage."""
 
     predecessor_of: dict[StageKind, StageKind] = {
+        StageKind.INSTALL: StageKind.SETUP,
+        StageKind.VALIDATE: StageKind.INSTALL,
         StageKind.BUMP: StageKind.VALIDATE,
         StageKind.LOCAL_LAND: StageKind.BUMP,
         StageKind.BUILD: StageKind.LOCAL_LAND,
@@ -1706,13 +1712,13 @@ def _stage_dependency_ids(
         StageKind.PUSH: StageKind.PACKAGE,
     }
     peer_of: dict[StageKind, StageKind] = {
+        StageKind.SETUP: StageKind.SETUP,
+        StageKind.INSTALL: StageKind.INSTALL,
         StageKind.BUMP: StageKind.BUMP,
         StageKind.PUSH: StageKind.PUSH,
     }
     predecessor = predecessor_of.get(kind)
-    if predecessor is None:
-        return ()
-    dependencies = [stage_by_key[(predecessor, project_id)].stage_id]
+    dependencies = _predecessor_stage_ids(predecessor, project_id, stage_by_key)
     peer = peer_of.get(kind)
     if peer is not None:
         dependencies.extend(
@@ -1720,6 +1726,28 @@ def _stage_dependency_ids(
             for dependency in sorted(project_dependencies[project_id])
         )
     return tuple(sorted(set(dependencies)))
+
+
+def _predecessor_stage_ids(
+    predecessor: StageKind | None,
+    project_id: str,
+    stage_by_key: dict[tuple[StageKind, str], StagePreview],
+) -> list[str]:
+    if predecessor is None or (predecessor, project_id) not in stage_by_key:
+        return []
+    return [stage_by_key[(predecessor, project_id)].stage_id]
+
+
+def _stage_kinds(include_bootstrap: bool) -> tuple[StageKind, ...]:
+    bootstrap = (StageKind.SETUP, StageKind.INSTALL) if include_bootstrap else ()
+    return (
+        *bootstrap,
+        StageKind.VALIDATE,
+        StageKind.BUMP,
+        StageKind.LOCAL_LAND,
+        StageKind.BUILD,
+        StageKind.PACKAGE,
+    )
 
 
 def _emit_stage_group(
@@ -1781,6 +1809,7 @@ def _derive_stage_sequence(
     build: dict[str, ProfileBinding],
     decision_context: ReleaseDecisionContext,
     consent: PushConsentReference | None,
+    include_bootstrap: bool = False,
 ) -> tuple[StagePreview, ...]:
     """Derive the only accepted stage composition from frozen source fields."""
 
@@ -1801,13 +1830,7 @@ def _derive_stage_sequence(
         "decision_context": decision_context,
     }
     stage_by_key: dict[tuple[StageKind, str], StagePreview] = {}
-    stage_order: tuple[StageKind, ...] = (
-        StageKind.VALIDATE,
-        StageKind.BUMP,
-        StageKind.LOCAL_LAND,
-        StageKind.BUILD,
-        StageKind.PACKAGE,
-    )
+    stage_order = _stage_kinds(include_bootstrap)
     for kind in stage_order:
         _emit_stage_group(
             kind=kind,
@@ -1832,6 +1855,17 @@ def _derive_stage_sequence(
     stages = _ordered_stages(stage_by_key, stage_order, groups)
     _validate_stage_dag(stages)
     return stages
+
+
+def _bootstrap_payload(include_bootstrap: bool) -> dict[str, object]:
+    return {"include_bootstrap": True} if include_bootstrap else {}
+
+
+def _validate_bootstrap_flag(include_bootstrap: object) -> None:
+    if type(include_bootstrap) is not bool:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT, "bootstrap inclusion must be boolean"
+        )
 
 
 def _plan_payload(
@@ -1874,6 +1908,7 @@ def _plan_payload(
         if plan.push_consent
         else None,
     }
+    payload.update(_bootstrap_payload(plan.include_bootstrap))
     if include_digest:
         payload["plan_digest"] = plan.plan_digest
     return payload
@@ -1902,6 +1937,7 @@ class FrozenReleasePlan:
     selection: SelectedChangeClosure
     decision_context: ReleaseDecisionContext
     push_consent: PushConsentReference | None = None
+    include_bootstrap: bool = False
     plan_digest: str = ""
     contract_version: int = C11_FROZEN_PLAN_VERSION
 
@@ -3150,6 +3186,7 @@ def _validate_frozen_plan_fields_inner(
 
     if type(plan) is not FrozenReleasePlan:
         raise _fail(ReleasePlanCode.INVALID_INPUT, "frozen plan type is unsupported")
+    _validate_bootstrap_flag(plan.include_bootstrap)
     (
         workspace_id,
         source_sha,
@@ -3212,6 +3249,7 @@ def _validate_frozen_plan_fields_inner(
         build=build,
         decision_context=decision_context,
         consent=consent,
+        include_bootstrap=plan.include_bootstrap,
     )
     _validate_frozen_plan_digest(
         plan,
@@ -3235,6 +3273,7 @@ def _validate_frozen_plan_fields_inner(
         source_selection=source_selection,
         decision_context=decision_context,
         consent=consent,
+        include_bootstrap=plan.include_bootstrap,
     )
 
 
@@ -3645,6 +3684,7 @@ def _validate_frozen_plan_expected_stage_sequence(
     build: tuple[ProfileBinding, ...],
     decision_context: ReleaseDecisionContext,
     consent: PushConsentReference | None,
+    include_bootstrap: bool,
 ) -> None:
     expected_stages = _derive_stage_sequence(
         selected=selected,
@@ -3662,6 +3702,7 @@ def _validate_frozen_plan_expected_stage_sequence(
         build=_profile_map(build, ProfileKind.BUILD),
         decision_context=decision_context,
         consent=consent,
+        include_bootstrap=include_bootstrap,
     )
     if stages != expected_stages:
         raise _fail(
@@ -3693,6 +3734,7 @@ def _validate_frozen_plan_digest(
     source_selection: SelectedChangeClosure,
     decision_context: ReleaseDecisionContext,
     consent: PushConsentReference | None,
+    include_bootstrap: bool,
 ) -> None:
     # Build the digest preimage only from the exact, reconstructed evidence
     # above.  Never canonicalize the caller's stage objects here: an exact
@@ -3719,6 +3761,7 @@ def _validate_frozen_plan_digest(
         "selection": source_selection,
         "decision_context": decision_context,
         "push_consent": consent,
+        "include_bootstrap": include_bootstrap,
         "plan_digest": "",
         "contract_version": C11_FROZEN_PLAN_VERSION,
     }
@@ -3824,6 +3867,7 @@ class FrozenReleasePlanInput:
     push_consent: PushConsentReference | None = None
     include_push: bool | None = None
     allow_push: bool | None = None
+    include_bootstrap: bool = False
     decision_context: ReleaseDecisionContext | None = None
 
     def _snapshot_input_models(self) -> VersionPlan:
@@ -3922,6 +3966,10 @@ class FrozenReleasePlanInput:
         object.__setattr__(self, "build_profiles", build)
 
     def __post_init__(self) -> None:
+        if type(self.include_bootstrap) is not bool:
+            raise _fail(
+                ReleasePlanCode.INVALID_INPUT, "bootstrap inclusion must be boolean"
+            )
         frozen_version_plan = self._snapshot_input_models()
         self._normalize_input_identity()
         self._normalize_input_push_and_decisions()
@@ -3952,6 +4000,7 @@ class FrozenReleasePlanInput:
             else None,
             "include_push": self.include_push,
             "allow_push": self.allow_push,
+            "include_bootstrap": self.include_bootstrap,
             "decision_context": (
                 self.decision_context.canonical_payload()
                 if self.decision_context is not None
@@ -3985,6 +4034,7 @@ def freeze_release_plan(
     consent_ref: PushConsentReference | None = None,
     include_push: bool | None = None,
     allow_push: bool | None = None,
+    include_bootstrap: bool = False,
     decision_context: ReleaseDecisionContext | None = None,
     release_profile: object | None = None,
     target_branch: object | None = None,
@@ -4028,11 +4078,13 @@ def freeze_release_plan(
                 push_consent=request.push_consent,
                 include_push=request.include_push,
                 allow_push=request.allow_push,
+                include_bootstrap=request.include_bootstrap,
                 decision_context=request.decision_context,
             )
         graph, selection, version_plan = _freeze_validate_graph_selection_version(
             graph, selection, version_plan
         )
+        _validate_bootstrap_flag(include_bootstrap)
         workspace, source, base, generation = _freeze_scalar_ids(
             workspace_id, source_sha, base_sha, generation_id
         )
@@ -4085,6 +4137,7 @@ def freeze_release_plan(
             build_map=build_map,
             decisions=decisions,
             accepted_consent=accepted_consent,
+            include_bootstrap=include_bootstrap,
         )
         return _freeze_build_plan(
             workspace=workspace,
@@ -4105,6 +4158,7 @@ def freeze_release_plan(
             decisions=decisions,
             stages=stages,
             accepted_consent=accepted_consent,
+            include_bootstrap=include_bootstrap,
         )
     except ReleasePlanError:
         raise
@@ -4342,6 +4396,7 @@ def _freeze_build_stages(
     build_map: dict[str, ProfileBinding],
     decisions: ReleaseDecisionContext,
     accepted_consent: PushConsentReference | None,
+    include_bootstrap: bool,
 ) -> tuple[tuple[StagePreview, ...], tuple[str, ...], tuple[str, ...]]:
     version_digests = tuple(
         sorted(_preview_digest(preview) for preview in version_plan.version_previews)
@@ -4365,6 +4420,7 @@ def _freeze_build_stages(
         build=build_map,
         decision_context=decisions,
         consent=accepted_consent,
+        include_bootstrap=include_bootstrap,
     )
     return stages, version_digests, floor_digests
 
@@ -4389,6 +4445,7 @@ def _freeze_build_plan(
     decisions: ReleaseDecisionContext,
     stages: tuple[StagePreview, ...],
     accepted_consent: PushConsentReference | None,
+    include_bootstrap: bool,
 ) -> FrozenReleasePlan:
     # Constructing the plan itself requires a digest.  Compute from an
     # equivalent object with a temporary impossible digest is avoided by
@@ -4426,6 +4483,7 @@ def _freeze_build_plan(
         if accepted_consent
         else None,
     }
+    preimage.update(_bootstrap_payload(include_bootstrap))
     digest = _digest_payload(preimage)
     return FrozenReleasePlan(
         workspace_id=workspace,
@@ -4447,6 +4505,7 @@ def _freeze_build_plan(
         selection=selection,
         decision_context=decisions,
         push_consent=accepted_consent,
+        include_bootstrap=include_bootstrap,
         plan_digest=digest,
     )
 
@@ -4519,6 +4578,73 @@ def plan_digest(plan: FrozenReleasePlan) -> str:
 frozen_plan_digest = plan_digest
 
 
+@dataclass(frozen=True, slots=True)
+class FleetReleaseBinding:
+    """Pure identity joining a frozen package plan to a fleet-wide order."""
+
+    plan_digest: str
+    fleet_order_digest: str
+    graph_digest: str
+    manifest_digest: str
+    digest: str
+
+    def canonical_payload(self) -> dict[str, str]:
+        return {
+            "plan_digest": self.plan_digest,
+            "fleet_order_digest": self.fleet_order_digest,
+            "graph_digest": self.graph_digest,
+            "manifest_digest": self.manifest_digest,
+        }
+
+
+def bind_fleet_release_plan(
+    plan: FrozenReleasePlan, order: FleetOrderReceipt
+) -> FleetReleaseBinding:
+    """Refuse a stale/forged fleet order before carrying its plan identity.
+
+    The returned binding is only preflight evidence. Live operation adapters
+    must require and retain its digest; this function performs no effects.
+    """
+
+    if type(plan) is not FrozenReleasePlan or type(order) is not FleetOrderReceipt:
+        raise _fail(
+            ReleasePlanCode.INVALID_INPUT, "fleet release inputs are unsupported"
+        )
+    validate_frozen_release_plan(plan)
+    if order.digest != _digest_payload(order.canonical_payload()):
+        raise _fail(
+            ReleasePlanCode.DIGEST, "fleet order digest does not match contents"
+        )
+    try:
+        validate_fleet_order_receipt(plan.graph, order)
+    except WorkspaceReleaseError:
+        raise _fail(
+            ReleasePlanCode.GRAPH_DRIFT, "fleet order receipt is invalid"
+        ) from None
+    if (
+        order.graph_digest != plan.graph_digest
+        or order.graph_digest != plan.graph.digest
+    ):
+        raise _fail(
+            ReleasePlanCode.GRAPH_DRIFT, "fleet order graph does not match plan"
+        )
+    if order.project_ids != tuple(
+        project.project_id for project in plan.graph.projects
+    ):
+        raise _fail(
+            ReleasePlanCode.GRAPH_DRIFT, "fleet order membership does not match plan"
+        )
+    if not set(plan.graph.project_edges).issubset(order.project_edges):
+        raise _fail(ReleasePlanCode.GRAPH_DRIFT, "fleet order omitted package edges")
+    preimage = {
+        "plan_digest": plan.plan_digest,
+        "fleet_order_digest": order.digest,
+        "graph_digest": order.graph_digest,
+        "manifest_digest": order.manifest_digest,
+    }
+    return FleetReleaseBinding(**preimage, digest=_digest_payload(preimage))
+
+
 __all__ = [
     "BuildProfile",
     "BuildProfileBinding",
@@ -4538,6 +4664,7 @@ __all__ = [
     "FrozenPlanInput",
     "FrozenReleasePlan",
     "FrozenReleasePlanInput",
+    "FleetReleaseBinding",
     "FrozenWorkspaceReleasePlan",
     "ImmutableDigestReference",
     "OpaqueDigestReference",
@@ -4569,6 +4696,7 @@ __all__ = [
     "ValidationProfile",
     "ValidationProfileBinding",
     "build_frozen_release_plan",
+    "bind_fleet_release_plan",
     "build_stage_dag_preview",
     "freeze_release_plan",
     "freeze_plan",

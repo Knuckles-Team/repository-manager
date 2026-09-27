@@ -37,3 +37,12 @@ def test_cli_install(mock_git, mock_sys_argv):
     with mock_sys_argv(["--install"]):
         main()
         mock_git.install_projects.assert_called_once()
+
+
+def test_cli_fleet_evidence_refuses_before_git_construction(tmp_path, mock_sys_argv):
+    reference = tmp_path / "reference.json"
+    reference.write_text("{}")
+    with patch("repository_manager.repository_manager.Git") as git_factory:
+        with mock_sys_argv(["--fleet-evidence-check", str(reference), "--push"]):
+            assert main() == 2
+        git_factory.assert_not_called()
