@@ -18,6 +18,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+_SYSTEM_SCRIPTS = {
+    Path("scripts/check_no_legacy_markers.py"),
+    Path("scripts/check_stubs.py"),
+    Path("scripts/mermaid_linter.py"),
+    Path("scripts/check_lockfile_version_mirrors.py"),
+}
+
 
 def _is_agent_utilities_root(path: Path) -> bool:
     """Return whether *path* contains the framework and its gate scripts."""
@@ -112,9 +119,8 @@ def _build_command(
     return command
 
 
-def main() -> int:
-    """Execute a framework module or script in this project's locked environment."""
-
+def _parse_options() -> tuple[argparse.ArgumentParser, argparse.Namespace]:
+    """Validate a requested locked or dependency-free framework gate."""
     parser = argparse.ArgumentParser()
     target = parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--module")
@@ -125,30 +131,51 @@ def main() -> int:
         default=[],
         help="select a repository extra for the locked invocation (repeatable)",
     )
+    parser.add_argument(
+        "--system-script",
+        action="store_true",
+        help="run an allowlisted static AU gate with the current Python, without uv sync",
+    )
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args()
 
-    repository_root = Path(__file__).resolve().parents[1]
-    try:
-        framework_root = _agent_utilities_root(repository_root)
-    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
-        parser.error(str(exc))
+    if options.system_script and (
+        options.module or options.extra or options.script not in _SYSTEM_SCRIPTS
+    ):
+        parser.error("--system-script requires an allowlisted --script and no extras")
+    return parser, options
 
+
+def _script_path(
+    parser: argparse.ArgumentParser,
+    framework_root: Path,
+    requested: Path | None,
+) -> Path | None:
+    """Resolve a script under the selected framework checkout."""
+    if requested is None:
+        return None
+    script = framework_root / requested
+    if not script.is_file():
+        parser.error(f"Agent Utilities script was not found: {requested}")
+    return script
+
+
+def _locked_gate_command(
+    parser: argparse.ArgumentParser,
+    options: argparse.Namespace,
+    repository_root: Path,
+    framework_root: Path,
+    script: Path | None,
+) -> list[str]:
+    """Build the existing fully locked command for runtime-dependent gates."""
     try:
         _materialize_agent_utilities_source(repository_root, framework_root)
     except OSError as exc:
         parser.error(f"cannot materialize agent-utilities source: {exc}")
-
     uv = shutil.which("uv")
     if uv is None:
         parser.error("uv is required to run Agent Utilities pre-commit gates")
-
-    script = None
-    if options.script:
-        script = framework_root / options.script
-        if not script.is_file():
-            parser.error(f"Agent Utilities script was not found: {options.script}")
-    command = _build_command(
+    return _build_command(
         uv,
         repository_root,
         framework_root,
@@ -157,6 +184,28 @@ def main() -> int:
         extras=options.extra,
         arguments=options.arguments,
     )
+
+
+def main() -> int:
+    """Execute the requested framework gate from the selected checkout."""
+    parser, options = _parse_options()
+    repository_root = Path(__file__).resolve().parents[1]
+    try:
+        framework_root = _agent_utilities_root(repository_root)
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as exc:
+        parser.error(str(exc))
+
+    script = _script_path(parser, framework_root, options.script)
+    arguments = (
+        options.arguments[1:] if options.arguments[:1] == ["--"] else options.arguments
+    )
+    if options.system_script:
+        assert script is not None
+        command = [sys.executable, str(script), *arguments]
+    else:
+        command = _locked_gate_command(
+            parser, options, repository_root, framework_root, script
+        )
 
     # A caller's PYTHONPATH can point at a different checkout and make a
     # hermetic locked gate report evidence for the wrong source tree.  The

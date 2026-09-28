@@ -105,3 +105,68 @@ def test_rm_pytest_hook_selects_local_tests_and_declared_test_extra() -> None:
     assert 'test_target="tests"' in entry
     assert "agent-utilities/tests" not in entry
     assert "AGENT_UTILITIES_ROOT" not in entry
+
+
+def test_static_framework_gate_uses_system_python_without_sync(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A source-only gate does not install AU, SDK, or EG."""
+
+    framework = tmp_path / "agent-utilities"
+    (framework / "agent_utilities").mkdir(parents=True)
+    (framework / "scripts").mkdir()
+    (framework / "pyproject.toml").write_text("[project]\nname = 'agent-utilities'\n")
+    script = framework / "scripts/check_no_legacy_markers.py"
+    script.write_text("pass\n")
+    calls: list[dict[str, object]] = []
+
+    def fake_run(command, *, cwd, env):
+        calls.append({"command": command, "cwd": cwd, "env": env})
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setenv("AGENT_UTILITIES_ROOT", str(framework))
+    monkeypatch.setenv("PYTHONPATH", "/foreign/checkout")
+    monkeypatch.setattr(_LAUNCHER.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        _LAUNCHER,
+        "_materialize_agent_utilities_source",
+        lambda *_: (_ for _ in ()).throw(AssertionError("unexpected uv source")),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_agent_utilities_gate.py",
+            "--system-script",
+            "--script",
+            "scripts/check_no_legacy_markers.py",
+            "--",
+            ".",
+        ],
+    )
+
+    assert _LAUNCHER.main() == 0
+    [call] = calls
+    assert call["command"] == [sys.executable, str(script), "."]
+    assert call["cwd"] == _ROOT
+    assert cast(dict[str, str], call["env"]).get("PYTHONPATH") is None
+
+
+def test_docs_hooks_avoid_locked_runtime_but_python_changes_keep_pytest() -> None:
+    """The config keeps semantic static gates and defers runtime sync for docs."""
+
+    config = (_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    okf = config.split("  - id: okf-no-legacy-concepts\n", 1)[1].split(
+        "  - id: check-mermaid\n", 1
+    )[0]
+    mermaid = config.split("  - id: check-mermaid\n", 1)[1].split(
+        "  - id: lane-guard\n", 1
+    )[0]
+    pytest_hook = config.split("  - id: pytest\n", 1)[1].split(
+        "  - id: dependency-readiness\n", 1
+    )[0]
+    assert "--system-script" in okf and "always_run: true" in okf
+    assert "--system-script" in mermaid and "files: \\.md$" in mermaid
+    assert "always_run: true" not in pytest_hook
+    assert "repository_manager/" in pytest_hook and "uv\\.lock$" not in pytest_hook
+    assert "gate-launcher-tests" in config

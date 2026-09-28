@@ -106,13 +106,13 @@ repos:
     always_run: true
   - id: okf-no-legacy-concepts
     name: OKF-CIS — no legacy CONCEPT ids
-    entry: python scripts/run_agent_utilities_gate.py --script scripts/check_no_legacy_markers.py -- .
+    entry: python scripts/run_agent_utilities_gate.py --system-script --script scripts/check_no_legacy_markers.py -- .
     language: system
     pass_filenames: false
     always_run: true
   - id: check-mermaid
     name: Check Mermaid syntax
-    entry: python scripts/run_agent_utilities_gate.py --script scripts/mermaid_linter.py --
+    entry: python scripts/run_agent_utilities_gate.py --system-script --script scripts/mermaid_linter.py --
     language: system
     files: \.md$
     pass_filenames: true
@@ -124,7 +124,7 @@ repos:
     always_run: true
   - id: check-stubs
     name: Check for Active Stubs and TODOs
-    entry: python scripts/run_agent_utilities_gate.py --script scripts/check_stubs.py --
+    entry: python scripts/run_agent_utilities_gate.py --system-script --script scripts/check_stubs.py --
     language: system
     types: [python]
   - id: mermaid-validate
@@ -147,7 +147,7 @@ repos:
       bash -c 'for f in $(find . -type f \( -name "mcp_server.py" -o -name "agent_server.py" \) -not -path "*/\.venv/*" -not -path "*/__pycache__/*"); do mod=$(echo "$f" | sed -e "s/^\.\///" -e "s/\.py$//" -e "s/\//./g"); python scripts/run_agent_utilities_gate.py --extra agent --module "$mod" -- --help >/dev/null || exit 1; done'
     language: system
     pass_filenames: false
-    always_run: true
+    files: ^(repository_manager/|pyproject\.toml$|uv\.lock$)
   - id: mcp-readme-table
     name: sync MCP tools table in README
     entry: |-
@@ -189,10 +189,16 @@ repos:
     # agent-utilities floor with nothing catching it, because the fleet's
     # version/lockfile edict only ever named uv.lock).
     entry: |-
-      bash -c 'if [ -f ".bumpversion.cfg" ]; then bump2version patch --dry-run --allow-dirty; fi && python scripts/run_agent_utilities_gate.py --script scripts/check_lockfile_version_mirrors.py -- .'
+      bash -c 'if [ -f ".bumpversion.cfg" ]; then bump2version patch --dry-run --allow-dirty; fi && python scripts/run_agent_utilities_gate.py --system-script --script scripts/check_lockfile_version_mirrors.py -- .'
     language: system
     pass_filenames: false
-    always_run: true
+    files: ^(\.bumpversion\.cfg$|pyproject\.toml$|requirements\.txt$|uv\.lock$|scripts/run_agent_utilities_gate\.py$|\.pre-commit-config\.yaml$)
+  - id: gate-launcher-tests
+    name: Lightweight framework gate launcher tests
+    entry: python -m pytest -q tests/test_run_agent_utilities_gate.py
+    language: system
+    pass_filenames: false
+    files: ^(scripts/run_agent_utilities_gate\.py$|tests/test_run_agent_utilities_gate\.py$|\.pre-commit-config\.yaml$)
   - id: complexity-staged
     name: Complexity (cccc) - no NEW function over cyclomatic 10 / cognitive 15, none regressed
     entry: python3 scripts/check_complexity_staged.py
@@ -209,9 +215,9 @@ repos:
     # never changes the collection root to the sibling checkout.
     entry: bash -c 'test_target="tests"; for d in tests/unit test/unit tests test; do if [ -d "$d" ]; then test_target="$d"; break; fi; done; python scripts/run_agent_utilities_gate.py --extra test --module pytest -- "$test_target" -q --tb=short -m "not slow and not integration" --timeout=60'
     language: system
-    types: [python]
+    types: [file]
     pass_filenames: false
-    always_run: true
+    files: ^(repository_manager/|tests/(?!test_run_agent_utilities_gate\.py$)|scripts/(?!run_agent_utilities_gate\.py$)|pyproject\.toml$|requirements\.txt$)
   - id: dependency-readiness
     name: Dependency readiness — every declared intra-fleet constraint is installable
     # Network-touching (queries the configured package index), so it belongs
