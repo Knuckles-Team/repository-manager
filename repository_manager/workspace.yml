@@ -221,6 +221,13 @@ subdirectories:
         - url: https://github.com/Knuckles-Team/wger-agent.git
           description: Wger Workout Manager — exercise database, workout routines,
             nutrition plans, body measurements, and progress tracking.
+        - url: https://github.com/Knuckles-Team/market-data-mcp.git
+          description: Crypto discovery/caps (CoinMarketCap), Fed macro series
+            with point-in-time vintages (FRED/ALFRED), and the FOMC decision
+            calendar. MCP Server for Agentic AI!
+        - url: https://github.com/Knuckles-Team/world-reference-mcp.git
+          description: World-reference data (taxonomy, OBO terms, nutrition,
+            observations, Wikidata alignment) MCP Server for Agentic AI!
   images:
     description: Container images for the homelab
     repositories:
@@ -624,6 +631,8 @@ selectors:
     - agent-packages/agents/vector-mcp
     - agent-packages/agents/vaultwarden-mcp
     - agent-packages/agents/wger-agent
+    - agent-packages/agents/market-data-mcp
+    - agent-packages/agents/world-reference-mcp
   service-codebases:
     include:
     - services/gramps
