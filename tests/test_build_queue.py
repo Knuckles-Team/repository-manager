@@ -60,6 +60,24 @@ def _counter_spec(counter_path: Path) -> str:
     )
 
 
+@pytest.fixture(autouse=True)
+def _healthy_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the host disk to a healthy state.
+
+    These tests exercise caching and dedup, not disk admission (covered with
+    explicit usage in test_p06_build_queue_invariants.py), so they must not
+    pass or fail with how full the machine running them happens to be.
+    """
+
+    total = 1024 * 1024 * 1024 * 1024
+    monkeypatch.setattr(bq, "_DISK_POLICY", None)
+    monkeypatch.setattr(
+        bq.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=total, used=total // 10, free=total - total // 10),
+    )
+
+
 @pytest.fixture
 def counter(tmp_path: Path) -> Path:
     return tmp_path / "counter.txt"

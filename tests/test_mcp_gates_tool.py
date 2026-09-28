@@ -22,6 +22,7 @@ this layer:
 4. ``status``/``explain`` read back real per-repo results.
 """
 
+import concurrent.futures
 import shlex
 import subprocess
 import time
@@ -433,6 +434,12 @@ async def test_rm_gates_run_is_parallel_and_stage_scoped(tmp_path, monkeypatch):
     # the shared writer entirely; confirmed 0 failures across repeated
     # runs at load ~76-90 after this change (was reproducible before it).
     monkeypatch.setenv("PRE_COMMIT_HOME", str(tmp_path / "pre-commit-home"))
+    # The production pool is sized from a share of the host (one worker on a
+    # 4-CPU runner); this test proves the tool fans repos out concurrently, so
+    # it supplies a pool wide enough for every repo instead of depending on
+    # the size of the machine it runs on.
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=_EXPECTED_HEAVY_REPOS)
+    monkeypatch.setattr("repository_manager.mcp_server._executor", executor)
 
     repo_names = ["repo-a", "repo-b", "repo-c"]
     barrier_dir = tmp_path / "barrier"

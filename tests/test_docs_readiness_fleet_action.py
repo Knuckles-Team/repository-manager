@@ -18,7 +18,6 @@ from repository_manager.mcp_tools.docs_readiness import (
     register_docs_readiness_tools,
 )
 
-PRODUCTION_FLEET_COUNT = 83
 
 
 def _init_repo(path: Path) -> None:
@@ -174,7 +173,7 @@ def fixture_workspace(tmp_path: Path) -> tuple[Path, Path]:
 
 @pytest.fixture(autouse=True)
 def _one_repository_fleet_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep small fixtures explicit while production remains pinned to 75."""
+    """Keep small fixtures explicit independent of the production manifest."""
 
     monkeypatch.setattr(docs_readiness, "EXPECTED_AGENT_FLEET_COUNT", 1)
 
@@ -665,16 +664,17 @@ def test_generator_output_escape_is_rejected_without_durable_path(
 
 
 def test_default_fleet_is_exact_manifest_agent_packages_scope() -> None:
+    """The default fleet is derived from the manifest, never a hand-kept count."""
+
     root = Path(__file__).resolve().parents[1]
     identities = docs_readiness._manifest_repositories(
         root / "repository_manager" / "workspace.yml", root
     )
     selected = docs_readiness._select_repositories(
-        identities, None, expected_count=PRODUCTION_FLEET_COUNT
+        identities, None, expected_count=None
     )
     selected_ids = {item.identifier for item in selected}
 
-    assert len(selected) == PRODUCTION_FLEET_COUNT
     assert selected_ids == {
         item.identifier
         for item in identities
@@ -692,9 +692,8 @@ def test_manifest_selection_drift_fails_closed_before_generator(
 ) -> None:
     root, _ = fixture_workspace
     calls: list[tuple[Path, bool]] = []
-    monkeypatch.setattr(
-        docs_readiness, "EXPECTED_AGENT_FLEET_COUNT", PRODUCTION_FLEET_COUNT
-    )
+    # The one-repository fixture selected under a two-repository contract.
+    monkeypatch.setattr(docs_readiness, "EXPECTED_AGENT_FLEET_COUNT", 2)
 
     result = _fixture_dispatch(
         workspace_root=root,
