@@ -9,9 +9,20 @@ CONCEPT:AU-KG.ingest.enterprise-source-extractor.
 from __future__ import annotations
 
 import pytest
-from agent_utilities.knowledge_graph.memory.native_ingest import NativeIngestError
 
-from repository_manager.kg_ingest import (
+# agent_utilities.knowledge_graph.memory eagerly imports the compiled
+# epistemic-graph numeric kernel, which the default bootstrap does not build.
+# The default gates deselect `native`; `scripts/bootstrap.sh --native` builds
+# the kernel so `pytest -m native` runs these.
+pytestmark = pytest.mark.native
+_native_ingest = pytest.importorskip(
+    "agent_utilities.knowledge_graph.memory.native_ingest",
+    reason="needs the native epistemic-graph kernel (scripts/bootstrap.sh --native)",
+    exc_type=ImportError,
+)
+NativeIngestError = _native_ingest.NativeIngestError
+
+from repository_manager.kg_ingest import (  # noqa: E402
     ingest_entities,
     ingest_projects,
     ingest_repositories,
