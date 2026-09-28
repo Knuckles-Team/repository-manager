@@ -446,24 +446,44 @@ The principle: *graphs decide where you are; BT-style logic decides what to do n
 
 **Design rule:** If logic chooses between options → BT concept. If logic defines long-lived phases → HSM concept.
 
+## Setup
+
+From a fresh clone (locally, in CI, or in a Claude Code cloud session, where
+`.claude/hooks/session-start.sh` runs it automatically):
+
+```bash
+scripts/bootstrap.sh            # uv >= 0.9, pinned Python, pinned siblings, .venv, git hooks
+scripts/bootstrap.sh --native   # also build the epistemic-graph kernel (slow; `pytest -m native` only)
+```
+
+The sibling checkouts `uv.lock` installs editable (agent-utilities, the
+connector SDK, epistemic-graph) are cloned under the ignored
+`.uv-workspace-siblings/` at the commits in `scripts/siblings.lock`, the only
+place those pins live. A symlink there, or `AGENT_UTILITIES_ROOT`, points the
+gates at your own checkout instead.
+
 ## Commands (run these exactly)
 
-# Development & Quality
-ruff check --fix .
-ruff format .
-pytest
+```bash
+uvx pre-commit run --all-files                     # every commit-stage gate (CI runs the same)
+uvx pre-commit run --all-files --hook-stage manual # plus the manual release/census hooks
+uv run --frozen --no-sync pytest tests -m "not slow and not integration and not native"
+uv run --frozen --no-sync pytest tests/test_example.py::test_function_name
+```
 
-# Running a single test
-# To run a specific test file:
-#   pytest tests/test_example.py
-# To run a specific test function in a file:
-#   pytest tests/test_example.py::test_function_name
-# To run tests matching a keyword:
-#   pytest -k "keyword"
+A gate that needs a missing tool, the project environment, or a sibling
+checkout prints `SKIPPED (<gate>): <reason>` and passes locally; with `CI` set it
+exits 2 (`CANNOT RUN`) instead, because CI bootstraps everything first.
+Gates test behaviour or a contract, never a hand-kept count, pin, or golden
+copy of source text, and no gate calls an external service.
 
-# Installation
-pip install -e .      # Install in editable mode
-pip install -e .[all] # Install with all optional extras
+## Branches and pull requests
+
+Work on a topic branch (`no-commit-to-branch` refuses commits to `main`), one
+logical change per commit, and push with `git push -u origin <branch>`. Open
+the pull request against `main`; the `CI` workflow runs `scripts/bootstrap.sh`
+and then this repository's own `.pre-commit-config.yaml`, so a branch that
+passes `uvx pre-commit run --all-files` locally passes the same gates there.
 
 ## Project Structure Quick Reference
 - `agent_utilities/__init__.py` → Public lazy-export facade for `create_agent`, `create_agent_server`, and the supported package API.
@@ -915,7 +935,8 @@ uv run pytest --timeout=60 -k "test_name_pattern"
 
 **The repository ROOT must contain only canonical project files** (packaging,
 config, docs, lockfiles). The only hidden directories allowed at root are
-`.git/`, `.github/`, and `.specify/` (plus a local, git-ignored `.venv/`).
+`.git/`, `.github/`, `.claude/` (the cloud-session hook), `.security/`, and
+`.specify/` (plus the git-ignored `.venv/` and `.uv-workspace-siblings/`).
 
 **NEVER write any of the following — anywhere in the repo, and ESPECIALLY at the root:**
 - One-off / debug / migration scripts: `fix_*.py`, `migrate_*.py`, `refactor_*.py`,
