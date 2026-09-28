@@ -28,6 +28,9 @@ subdirectories:
     - url: https://github.com/Knuckles-Team/graph-os.git
       description: 'graph-os host: MCP server, REST gateway, control plane, fleet
         gateway and agent-webui hosting (RF-ADR-009).'
+    - url: https://github.com/Knuckles-Team/.github.git
+      description: Public Graph OS ecosystem entrypoint, contribution guidance, and
+        cross-repository specification status.
     subdirectories:
       skills:
         description: Agent capabilities, skill graphs, and tool definitions.
