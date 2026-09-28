@@ -57,3 +57,11 @@ corresponding gates actually pass. Use the [universal-skills spec-generator](htt
 and [task-planner](https://github.com/Knuckles-Team/universal-skills/tree/main/universal_skills/development/task-planner)
 and the [graph-os-development](https://github.com/Knuckles-Team/graph-os/blob/main/graph_os/skills/graph-os-development/SKILL.md)
 bootstrap skill, together with the [SDD full lifecycle](https://github.com/Knuckles-Team/universal-skills/tree/main/universal_skills/development-workflows/sdd-full-lifecycle) workflow.
+
+## Local specifications
+
+- [`EH-349`](EH-349/spec.md) — governed proposal to Git materialization.
+- [`EH-465`](EH-465/spec.md) — repository history and migration receipts.
+- [`EH-483`](EH-483/spec.md) — connector boundary migration.
+- [`EH-512`](EH-512/spec.md) — repository development governance.
+- [`RF-016`](RF-016/spec.md) — dependency aware fleet release.
