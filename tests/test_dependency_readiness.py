@@ -549,8 +549,41 @@ def _gate_result(*, success: bool, detail: str = "") -> RepoScanResult:
         success=success,
         exit_code=0 if success else 1,
         hooks=[HookResult(hook_id=dr.HOOK_ID, passed=success, output=output)],
-        stage="heavy",
+        stage="manual",
     )
+
+
+def test_release_barrier_runs_manual_readiness_hook(monkeypatch):
+    """Release checks the index explicitly; an ordinary pre-push does not."""
+    from repository_manager import gates
+
+    calls = []
+    expected = _gate_result(success=True)
+
+    def run_gate(repo_path, stage, *, hook_ids):
+        calls.append((repo_path, stage, hook_ids))
+        return expected
+
+    monkeypatch.setattr(gates, "run_gate_stage", run_gate)
+    assert dr._default_run_gate("/release/repo") is expected
+    assert calls == [("/release/repo", "manual", [dr.HOOK_ID])]
+
+
+def test_repository_readiness_hook_is_manual_only():
+    """A routine push cannot become a package-index availability check."""
+    from pathlib import Path
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    config = yaml.safe_load((root / ".pre-commit-config.yaml").read_text())
+    hook = next(
+        hook
+        for repo in config["repos"]
+        for hook in repo.get("hooks", [])
+        if hook["id"] == dr.HOOK_ID
+    )
+    assert hook["stages"] == ["manual"]
 
 
 def test_await_gate_readiness_resumes_early_once_satisfied(monkeypatch):

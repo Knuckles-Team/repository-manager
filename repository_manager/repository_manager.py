@@ -8714,17 +8714,16 @@ class Git:
         ``time.sleep(wait_minutes * 60)`` (slow when a publish took 4 minutes,
         silently wrong when it never landed) and over the poll-the-index
         barrier that briefly replaced it (a second implementation of exactly
-        what the pre-push gate already checks): **a phase transition is
-        decided by RUNNING the next phase's repos' own pre-push gates.**
-        Those gates already include the ``dependency-readiness`` hook
-        (Layer 1, ``[manual, pre-push]``), which fails closed when a declared
-        intra-fleet constraint is unsatisfiable — that hook IS the oracle, so
+        what the release readiness hook already checks): **a phase transition is
+        decided by RUNNING the next phase's repos' own manual release hooks.**
+        Those hooks include ``dependency-readiness`` (Layer 1, ``[manual]``),
+        which fails closed when a declared intra-fleet constraint is unsatisfiable —
+        that hook IS the oracle, so
         this method's only job is retry/backoff/deadline orchestration around
         calling it (:func:`repository_manager.dependency_readiness.await_gate_readiness`,
-        which in turn calls :func:`repository_manager.gates.run_gate_stage` —
-        the SAME function ``Git._gate_before_push`` calls before that repo's
-        own real push). One mechanism decides both "is this phase transition
-        ready" and "will this repo's own push succeed".
+        which in turn calls :func:`repository_manager.gates.run_gate_stage`).
+        The release hook is the single source of package-index readiness;
+        routine pushes do not query the external index.
 
         Determines which package(s) THIS phase just published (each pushed
         project's own declared name, via :meth:`_phase_published_packages`),
@@ -8770,7 +8769,7 @@ class Git:
             )
         else:
             logger.info(
-                "Phase %s published %s; running the pre-push gate for %d downstream "
+                "Phase %s published %s; running the release readiness hook for %d downstream "
                 "repo(s) (%s), retrying every %.0fs up to a %.0f-minute ceiling, "
                 "abort-and-never-silently-advance if still failing.",
                 phase_num,

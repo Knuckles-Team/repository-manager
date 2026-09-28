@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sweep the ``dependency-readiness`` pre-push hook across the fleet.
+"""Sweep the manual release ``dependency-readiness`` hook across the fleet.
 
 CONCEPT:RM-DEP-READY (Layer 1 fleet rollout)
 
@@ -59,7 +59,7 @@ HOOK_LINES = [
     "language: system",
     "pass_filenames: false",
     "always_run: true",
-    "stages: [manual, pre-push]",
+    "stages: [manual]",
 ]
 
 NEW_REPO_BLOCK = (

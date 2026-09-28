@@ -350,6 +350,17 @@ def test_stage_heavy_fires_the_pre_push_only_hook(tmp_path):
     assert "fast-only" not in ran
 
 
+def test_manual_stage_runs_only_explicit_release_hook(tmp_path):
+    """Manual readiness remains runnable after routine pre-push excludes it."""
+    _init_repo_with_tiered_hooks(tmp_path)
+    result = gates.run_gate_stage(
+        str(tmp_path), "manual", hook_ids=["heavy-only"], record=False
+    )
+    assert result.success
+    assert {hook.hook_id for hook in result.hooks} == {"heavy-only"}
+    assert "HEAVY_ONLY_RAN" in result.raw_output
+
+
 # ---------------------------------------------------------------------------
 # Live proof: `hook_ids` narrows a run to specific declared hooks -- the exact
 # mechanism `dependency_readiness.await_gate_readiness` (CONCEPT:RM-DEP-READY

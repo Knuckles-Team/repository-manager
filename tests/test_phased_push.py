@@ -329,13 +329,13 @@ def _fake_run_gate_stage_factory(script):
     """Returns a ``gates.run_gate_stage``-shaped callable that pops one
     ``RepoScanResult`` off ``script`` per call (repeating the last entry once
     exhausted), and asserts every call is scoped to the HOOK_ID hook at the
-    heavy tier — exactly what ``dependency_readiness._default_run_gate``
+    manual release tier — exactly what ``dependency_readiness._default_run_gate``
     should be calling."""
     calls: list[tuple[str, str]] = []
 
     def fake(repo_path, stage, *, files=None, hook_ids=None, timeout=600):
         calls.append((repo_path, stage))
-        assert stage == "heavy"
+        assert stage == "manual"
         assert hook_ids == [dep_ready.HOOK_ID]
         result = script[len(calls) - 1] if len(calls) <= len(script) else script[-1]
         return result
@@ -351,7 +351,7 @@ def _hook_result(success: bool, detail: str = "") -> RepoScanResult:
         success=success,
         exit_code=0 if success else 1,
         hooks=[HookResult(hook_id=dep_ready.HOOK_ID, passed=success, output=output)],
-        stage="heavy",
+        stage="manual",
     )
 
 

@@ -72,7 +72,7 @@ from repository_manager.scan_models import HookResult, RepoScanResult
 
 logger = logging.getLogger(__name__)
 
-GateStage = Literal["fast", "heavy"]
+GateStage = Literal["fast", "heavy", "manual"]
 
 #: Maps the tool-facing tier name to pre-commit's own ``--hook-stage`` value.
 #: This dict IS the two-tier contract at the execution layer -- the one place
@@ -80,6 +80,7 @@ GateStage = Literal["fast", "heavy"]
 HOOK_STAGE_BY_GATE_STAGE: dict[str, str] = {
     "fast": "pre-commit",
     "heavy": "pre-push",
+    "manual": "manual",
 }
 
 _HOOK_LINE = re.compile(r"^(.+?)\.{5,}(Passed|Failed|Skipped)\s*$")
@@ -91,7 +92,7 @@ _DURATION_LINE = re.compile(r"^-\s*duration:\s*([\d.]+)\s*s?\s*$", re.IGNORECASE
 # epistemic-graph) legitimately exceeds ten minutes -- a 600s ceiling there is not
 # a safety net, it is a guaranteed timeout that reports as a gate FAILURE and so
 # is indistinguishable from the gate actually finding a defect.
-_DEFAULT_TIMEOUT_BY_STAGE = {"fast": 600, "heavy": 5400}
+_DEFAULT_TIMEOUT_BY_STAGE = {"fast": 600, "heavy": 5400, "manual": 600}
 _TIMEOUT_ENV_VAR = "RM_GATE_TIMEOUT_SECONDS"
 _MAX_WORKERS_ENV_VAR = "RM_GATE_MAX_WORKERS"
 _HEAVY_GATE_MAX_WORKERS = 2
@@ -701,7 +702,8 @@ def run_gate_stage(
     (via ``Git._gate_before_push``), and ``Git.phased_push``'s gate-driven
     phase-transition barrier (via ``dependency_readiness.await_gate_readiness``
     -- CONCEPT:RM-DEP-READY). ``stage="fast"`` passes ``--hook-stage
-    pre-commit``; ``stage="heavy"`` passes ``--hook-stage pre-push``.
+    pre-commit``; ``stage="heavy"`` passes ``--hook-stage pre-push``;
+    ``stage="manual"`` runs explicitly selected release hooks only.
 
     ``hook_ids`` (non-empty) narrows the run to those specific declared hook
     ids instead of every hook at ``stage`` -- e.g. the phase-transition
@@ -752,7 +754,9 @@ def run_gate_stage(
       ledger outage never changes ``success``/``exit_code``/``hooks`` below.
     """
     if stage not in HOOK_STAGE_BY_GATE_STAGE:
-        raise ValueError(f"unknown gate stage {stage!r}; expected 'fast' or 'heavy'")
+        raise ValueError(
+            f"unknown gate stage {stage!r}; expected fast, heavy, or manual"
+        )
 
     if not os.path.exists(os.path.join(repo_path, ".pre-commit-config.yaml")):
         return RepoScanResult(

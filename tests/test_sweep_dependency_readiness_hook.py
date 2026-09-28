@@ -38,7 +38,7 @@ repos:
     language: system
     pass_filenames: false
     always_run: true
-    stages: [manual, pre-push]
+    stages: [manual]
 """
 
 
@@ -72,7 +72,7 @@ def test_apply_injects_valid_yaml_at_matching_indentation(tmp_path):
         for h in repo.get("hooks", [])
         if h["id"] == "dependency-readiness"
     )
-    assert injected["stages"] == ["manual", "pre-push"]
+    assert injected["stages"] == ["manual"]
     assert "repository-manager" in injected["entry"]
 
 

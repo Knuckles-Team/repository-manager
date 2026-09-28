@@ -147,7 +147,7 @@ repos:
       bash -c 'for f in $(find . -type f \( -name "mcp_server.py" -o -name "agent_server.py" \) -not -path "*/\.venv/*" -not -path "*/__pycache__/*"); do mod=$(echo "$f" | sed -e "s/^\.\///" -e "s/\.py$//" -e "s/\//./g"); python scripts/run_agent_utilities_gate.py --extra agent --module "$mod" -- --help >/dev/null || exit 1; done'
     language: system
     pass_filenames: false
-    files: ^(repository_manager/|pyproject\.toml$|uv\.lock$)
+    files: ^(repository_manager/|pyproject\.toml$)
   - id: mcp-readme-table
     name: sync MCP tools table in README
     entry: |-
@@ -220,10 +220,8 @@ repos:
     files: ^(repository_manager/|tests/(?!test_run_agent_utilities_gate\.py$)|scripts/(?!run_agent_utilities_gate\.py$)|pyproject\.toml$|requirements\.txt$)
   - id: dependency-readiness
     name: Dependency readiness — every declared intra-fleet constraint is installable
-    # Network-touching (queries the configured package index), so it belongs
-    # at the HEAVY/pre-push tier, never pre-commit -- matches the fleet's
-    # two-tier convention (default_stages: [pre-commit]; heavy hooks staged
-    # [manual, pre-push], see agent-utilities' .pre-commit-config.yaml).
+    # Network-touching: invoked explicitly by phased_push's release barrier
+    # and by operators, never by an ordinary commit or push.
     # CONCEPT:RM-DEP-READY -- see repository_manager/dependency_readiness.py
     # for the live instance this closes (agent-utilities declaring
     # epistemic-graph>=2.23.2 while PyPI held only 2.23.0).
@@ -231,7 +229,7 @@ repos:
     language: system
     pass_filenames: false
     always_run: true
-    stages: [manual, pre-push]
+    stages: [manual]
 - repo: https://github.com/AleksaC/hadolint-py
   rev: 458cb25edf664682e3e856a53a2f9af33e068297 # v2.14.0
   hooks:

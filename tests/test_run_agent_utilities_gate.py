@@ -170,3 +170,13 @@ def test_docs_hooks_avoid_locked_runtime_but_python_changes_keep_pytest() -> Non
     assert "always_run: true" not in pytest_hook
     assert "repository_manager/" in pytest_hook and "uv\\.lock$" not in pytest_hook
     assert "gate-launcher-tests" in config
+
+
+def test_lock_only_changes_do_not_invoke_cli_runtime() -> None:
+    """A lock refresh cannot trigger an editable EG/AU CLI build."""
+    config = (_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+    cli_hook = config.split("  - id: check-cli-help\n", 1)[1].split(
+        "  - id: mcp-readme-table\n", 1
+    )[0]
+    assert "uv\\.lock$" not in cli_hook
+    assert "repository_manager/" in cli_hook

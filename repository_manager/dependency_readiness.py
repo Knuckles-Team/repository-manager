@@ -16,23 +16,21 @@ in this fleet detected.
 This module is the ONE artifact-availability primitive both layers of the fix
 share (never two parallel implementations of "is this constraint satisfiable"):
 
-* **Layer 1 — repo-level pre-push hook.** ``check_tree`` reads *one repo's own*
+* **Layer 1 — repo-level manual release hook.** ``check_tree`` reads *one repo's own*
   declared dependencies (``pyproject.toml``), keeps only the ones naming another
   fleet package, and checks each declared constraint against the configured
-  index. Wired into ``.pre-commit-config.yaml`` as a ``[pre-push, manual]``
-  local hook, so it runs through the SAME machinery as every other heavy gate
-  (:func:`repository_manager.gates.run_gate_stage` / ``_gate_before_push`` /
-  the ``rm_gates`` MCP tool) — no second gate runner.
+  index. Wired into ``.pre-commit-config.yaml`` at the ``manual`` stage and
+  run explicitly during a release wave. Routine pushes do not query an
+  external package index.
 * **Layer 2 — the ``phased_push`` wave barrier.** :func:`await_gate_readiness`
-  decides a phase transition by RUNNING each downstream repo's own pre-push
-  gate (:func:`repository_manager.gates.run_gate_stage`, the exact call a real
-  ``git push`` on that repo would make) with retry/backoff up to a
+  decides a phase transition by RUNNING each downstream repo's manual release
+  gate (:func:`repository_manager.gates.run_gate_stage`) with retry/backoff up to a
   ``wait_minutes`` ceiling — never a second, parallel "ask the index myself"
   implementation. Layer 1's hook already fails closed on an unsatisfiable
   constraint; Layer 2's only job is retry/backoff/deadline orchestration
   around calling it, so there is exactly one mechanism that decides both
-  "is this phase transition ready" and "will this repo's own push succeed" —
-  they are the same call. Supersedes an earlier poll-the-index-directly
+  "is this phase transition ready" while ordinary pushes remain local.
+  Supersedes an earlier poll-the-index-directly
   ``await_constraints`` design (removed): that duplicated Layer 1's own check
   in a second implementation, and could report "ready" while the actual gate
   a push would run still failed for a reason the poll didn't know about.
@@ -2713,7 +2711,7 @@ def _default_run_gate(repo_path: str) -> Any:
     # unless the gate-driven barrier is actually used.
     from repository_manager.gates import run_gate_stage
 
-    return run_gate_stage(repo_path, "heavy", hook_ids=[HOOK_ID])
+    return run_gate_stage(repo_path, "manual", hook_ids=[HOOK_ID])
 
 
 def _hook_failure_lines(hook_failures: list[Any]) -> str:
@@ -3213,7 +3211,7 @@ def _print_human_report(report: Any) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     """``python -m repository_manager.dependency_readiness [path]`` — the
-    ``[pre-push, manual]`` local hook entry. Exit 1 on any unsatisfiable
+    ``[manual]`` release hook entry. Exit 1 on any unsatisfiable
     intra-fleet constraint (0 if overridden — see :data:`OVERRIDE_ENV_VAR`)."""
     import argparse
 

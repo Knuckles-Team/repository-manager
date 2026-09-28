@@ -18,7 +18,7 @@ from repository_manager.mcp_tools.docs_readiness import (
     register_docs_readiness_tools,
 )
 
-PRODUCTION_FLEET_COUNT = 81
+PRODUCTION_FLEET_COUNT = 83
 
 
 def _init_repo(path: Path) -> None:
