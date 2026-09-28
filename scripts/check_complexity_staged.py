@@ -102,13 +102,19 @@ def _resolve_cccc() -> str:
     found = shutil.which("cccc")
     if found:
         return found
-    _fail_env(
-        "`cccc` not found. Looked at $CCCC_BIN, ~/.local/bin/cccc, "
-        "/usr/local/bin/cccc and $PATH. Build it with `cargo build --release` in "
-        "open-source-libraries/cccc and copy the binary to ~/.local/bin/. This "
-        "gate never installs anything itself -- resolving a gate's tool from a "
-        "package index at hook time is how a previous fleet sweep shipped a hook "
-        "that could not pass anywhere (69 push failures across 226 repos)."
+    # A missing tool is an environment fact, never a pass: SKIPPED locally,
+    # CANNOT RUN (exit 2) in CI. This gate never installs anything itself --
+    # resolving a gate's tool from a package index at hook time is how a
+    # previous fleet sweep shipped a hook that could not pass anywhere.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from gate_env import unavailable
+
+    raise SystemExit(
+        unavailable(
+            "complexity-staged",
+            "`cccc` not found ($CCCC_BIN, ~/.local/bin, /usr/local/bin, $PATH); "
+            "build it with `cargo build --release` in open-source-libraries/cccc",
+        )
     )
 
 

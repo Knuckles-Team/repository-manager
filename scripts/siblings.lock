@@ -1,0 +1,11 @@
+# Sibling source checkouts required by uv.lock's editable path sources.
+#
+# scripts/bootstrap.sh (local setup, Claude Code cloud sessions and hosted CI)
+# clones each entry at exactly this commit; no other file pins a sibling. To
+# move a sibling: change its SHA here, re-run scripts/bootstrap.sh, and run
+# `uv lock` if the sibling's metadata changed.
+#
+# Columns: <name> <git-url> <full-commit-sha> <path relative to repo root>
+agent-utilities      https://github.com/Knuckles-Team/agent-utilities.git      e848be61f9f090f9c540703145c3e932aea4ae74 .uv-workspace-siblings/agent-utilities
+agent-connector-sdk  https://github.com/Knuckles-Team/agent-connector-sdk.git  50d0ba5360407c2f6395a39bc5e8608d42fc365b .uv-workspace-siblings/agent-utilities/.uv-workspace-siblings/agent-connector-sdk
+epistemic-graph      https://github.com/Knuckles-Team/epistemic-graph.git      6a795577dff539da06c52f467220422bf23e0b03 .uv-workspace-siblings/agent-utilities/.uv-workspace-siblings/epistemic-graph
