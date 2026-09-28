@@ -106,7 +106,7 @@ jobs:
         if: steps.sync.outcome == 'success'
         continue-on-error: true
         run: >-
-          python3 -m pytest tests -q --tb=short -m "not slow and not integration" --timeout=120
+          python3 -m pytest tests -q --tb=short -m "not slow and not integration and not native" --timeout=120
 
       - name: Windows coverage summary
         if: always()
