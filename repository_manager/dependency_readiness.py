@@ -141,7 +141,10 @@ from packaging.version import InvalidVersion, Version
 # not a second optional-import guard here (it has no hard external deps of
 # its own; ITS optional forge clients are guarded inside it).
 from repository_manager import forge_status
-from repository_manager.release_validation import release_repository_name
+from repository_manager.release_validation import (
+    release_repository_name,
+    repository_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -587,6 +590,10 @@ _MANIFEST_ENV_ORIGIN = re.compile(
     r"^\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)(?P<path>/.*)$"
 )
 _MISSING = object()
+# PEP 508 distribution-name syntax.
+_DISTRIBUTION_NAME = re.compile(
+    r"^([A-Z0-9]|[A-Z0-9][A-Z0-9._-]*[A-Z0-9])$", re.IGNORECASE
+)
 
 
 def _path_has_symlink_component(path: Path) -> bool:
@@ -599,6 +606,24 @@ def _invalid_manifest(manifest: Path, detail: str) -> InvalidDependencyMetadata:
         declared_by=str(manifest),
         detail=f"workspace manifest is malformed: {detail}",
     )
+
+
+def _fleet_repository_name(url: str) -> str:
+    """Return a repository's fleet name from a canonical manifest URL.
+
+    A canonical URL whose ASCII basename cannot be a Python distribution name
+    at all (for example the organization ``.github`` repository) is still a
+    valid manifest entry; it simply can never be the target of an intra-fleet
+    dependency. A name that looks like a distribution but is not normalized,
+    and any non-canonical URL, still raises ``ValueError``.
+    """
+    try:
+        return release_repository_name(url)
+    except ValueError:
+        name = repository_name(url)
+        if not name.isascii() or _DISTRIBUTION_NAME.fullmatch(name):
+            raise
+        return name
 
 
 def _manifest_repository_name(
@@ -614,7 +639,7 @@ def _manifest_repository_name(
         return _invalid_manifest(manifest, "repository url must be a non-empty string")
     raw = value
     try:
-        return release_repository_name(raw)
+        return _fleet_repository_name(raw)
     except ValueError as exc:
         match = _MANIFEST_ENV_ORIGIN.fullmatch(raw)
         if match is None:
@@ -622,7 +647,7 @@ def _manifest_repository_name(
                 manifest, f"repository url is invalid: {type(exc).__name__}"
             )
         try:
-            return release_repository_name(
+            return _fleet_repository_name(
                 f"https://manifest.invalid{match.group('path')}"
             )
         except ValueError as substituted_exc:

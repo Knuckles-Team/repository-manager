@@ -338,6 +338,27 @@ def test_malformed_manifest_is_typed_blocking_state(
     assert dr.check_constraint(invalid, index_urls=[]).status == "invalid_metadata"
 
 
+def test_non_distribution_repository_is_a_valid_manifest_entry(tmp_path) -> None:
+    """An org ``.github`` repository is tracked but can never be a dependency."""
+
+    manifest = tmp_path / "workspace.yml"
+    manifest.write_text(
+        "subdirectories:\n"
+        "  agent-packages:\n"
+        "    repositories:\n"
+        "      - url: https://example.invalid/org/.github.git\n"
+        "      - url: https://example.invalid/org/epistemic-graph.git\n"
+    )
+
+    assert dr.fleet_package_names(manifest) == {".github", "epistemic-graph"}
+    assert not any(
+        isinstance(item, dr.InvalidDependencyMetadata)
+        for item in dr.declared_fleet_constraints(
+            tmp_path, workspace_yml_path=manifest
+        )
+    )
+
+
 def test_external_and_broken_pyproject_symlinks_are_typed_blockers(tmp_path) -> None:
     external = tmp_path / "external-pyproject.toml"
     external.write_text("[project]\nname='repo'\ndependencies=[]\n")
