@@ -1223,3 +1223,10 @@ this repo (fleet-wide edict, propagated from `agent-utilities/AGENTS.md`).
    default-on unless it genuinely costs compute, in which case it is policy-selected,
    never flag-gated. An opt-in extra or a dependency-conflict fork is an interim state
    that must carry a written plan to become the default, never a resting place.
+
+## Central release hook ownership
+
+`repository_manager/release_readiness_hook.py` is the strict manual adapter for
+the existing fleet checker; `scripts/sweep_dependency_readiness_hook.py` owns
+recognized legacy rollout. See [central rollout](docs/central-release-readiness.md)
+and the linked pipelines contract. Preserve independent wheel/runtime proofs.
