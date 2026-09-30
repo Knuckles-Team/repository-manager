@@ -11,13 +11,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agent_utilities.knowledge_graph.memory.native_ingest import (
-    ingest_documents as _native_ingest_documents,
-)
-from agent_utilities.knowledge_graph.memory.native_ingest import (
-    ingest_entities as _native_ingest_entities,
-)
-
 logger = logging.getLogger("repository_manager.kg")
 
 _SOURCE = "repository-manager"
@@ -34,6 +27,10 @@ def ingest_entities(
     graph: str | None = None,
 ) -> dict[str, int]:
     """Write canonical typed nodes and relationships in one native transaction."""
+    from agent_utilities.knowledge_graph.memory.native_ingest import (
+        ingest_entities as _native_ingest_entities,
+    )
+
     return _native_ingest_entities(
         entities,
         relationships,
@@ -53,6 +50,10 @@ def ingest_documents(
     graph: str | None = None,
 ) -> dict[str, int]:
     """Write text records as canonical Document nodes."""
+    from agent_utilities.knowledge_graph.memory.native_ingest import (
+        ingest_documents as _native_ingest_documents,
+    )
+
     return _native_ingest_documents(
         documents, source=source, domain=domain, client=client, graph=graph
     )
