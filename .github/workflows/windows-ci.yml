@@ -4,24 +4,6 @@ name: Windows coverage
 # Setup, import, and test failures must fail this job; release policy is separate.
 
 on:
-#   * The import-safety step below is currently expected to FAIL: this
-#     package's own core module (repository_manager/repository_manager.py)
-#     eagerly imports repository_manager.canonical_guard, which has an
-#     unguarded top-level `import fcntl` -- so `import repository_manager`
-#     fails OUTRIGHT on a real Windows interpreter, before a single test
-#     can even collect. Five more files share the identical unguarded
-#     top-level `import fcntl` (fairness.py, task_queue.py,
-#     reservations.py, canonical_guard.py, stash_guard.py), plus 4 more
-#     lazy (function-body) sites in build_artifacts.py invisible to a
-#     static import walk. See .pre-commit-config.yaml's check-import-safety
-#     hook for the same finding at commit time. Left unexcluded and RED on
-#     purpose -- the tool that runs the FLEET's gates currently cannot be
-#     imported on Windows at all, and a job that went green by skipping
-#     that would be exactly the "gate reporting coverage it does not have"
-#     failure this program exists to catch.
-# ─────────────────────────────────────────────────────────────────────────
-
-on:
   pull_request:
     paths:
       - 'repository_manager/**'
