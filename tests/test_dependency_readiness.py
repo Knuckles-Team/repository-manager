@@ -323,7 +323,7 @@ def test_malformed_manifest_is_typed_blocking_state(
     tmp_path, manifest_body: str
 ) -> None:
     manifest = tmp_path / "workspace.yml"
-    manifest.write_text(manifest_body)
+    manifest.write_text(manifest_body, encoding="utf-8")
 
     assert dr.fleet_package_names(manifest) == set()
     constraints = dr.declared_fleet_constraints(
