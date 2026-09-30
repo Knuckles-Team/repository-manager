@@ -31,6 +31,7 @@ import yaml
 from repository_manager.workspace_manifest import (
     WorkspaceManifestError,
     _manifest_content,
+    _ManifestRepository,
     _repository_entries,
     _validate_no_secrets,
 )
@@ -40,7 +41,6 @@ MAX_REPOSITORIES = 512
 MAX_OUTPUTS = 256
 MAX_OUTPUT_BYTES = 8_000_000
 MAX_GIT_STATUS_BYTES = 1_000_000
-EXPECTED_AGENT_FLEET_COUNT = 83
 _AGENT_PACKAGES_PREFIX = "agent-packages/"
 _ERROR_PREFIXES = frozenset(
     {
@@ -269,16 +269,19 @@ def _resolve_manifest_entry(
     return RepositoryIdentity(identifier=identifier, name=entry.name, path=resolved)
 
 
-def _manifest_repositories(
-    manifest_path: Path, root: Path
-) -> tuple[RepositoryIdentity, ...]:
+def _manifest_entries(manifest_path: Path) -> list[_ManifestRepository]:
     try:
         content, data = _manifest_content(manifest_path)
         del content
         _validate_no_secrets(data)
-        entries = _repository_entries(data)
+        return _repository_entries(data)
     except (OSError, WorkspaceManifestError, yaml.YAMLError) as exc:
         raise DocsReadinessError("workspace-manifest-invalid") from exc
+
+
+def _manifest_repositories(
+    entries: list[_ManifestRepository], root: Path
+) -> tuple[RepositoryIdentity, ...]:
     # Fleet selection is identity-driven: only repositories declared beneath
     # the exact agent-packages manifest subtree are in scope.  Do not discover
     # siblings from the filesystem and do not validate unrelated services or
@@ -300,12 +303,23 @@ def _is_non_publishable(identifier: str) -> bool:
     return identifier in NON_PUBLISHABLE_IDENTITIES
 
 
-def _fleet_count_invalid(expected_count: int, actual_count: int) -> bool:
-    return (
-        type(expected_count) is not int
-        or expected_count < 0
-        or expected_count > MAX_REPOSITORIES
-        or actual_count != expected_count
+def _expected_fleet_identities(entries: list[_ManifestRepository]) -> frozenset[str]:
+    """Derive the contract from canonical declarations, before path resolution."""
+
+    return frozenset(
+        entry.identifier
+        for entry in entries
+        if entry.identifier.startswith(_AGENT_PACKAGES_PREFIX)
+        and not _is_non_publishable(entry.identifier)
+    )
+
+
+def _fleet_identities_invalid(
+    selected: tuple[RepositoryIdentity, ...], expected_identities: frozenset[str]
+) -> bool:
+    selected_ids = [item.identifier for item in selected]
+    return frozenset(selected_ids) != expected_identities or len(selected_ids) != len(
+        set(selected_ids)
     )
 
 
@@ -316,17 +330,15 @@ def _fleet_paths_invalid(selected: tuple[RepositoryIdentity, ...]) -> bool:
 def _validate_fleet_selection(
     identities: tuple[RepositoryIdentity, ...],
     *,
-    expected_count: int | None,
+    expected_identities: frozenset[str],
     validate_paths: bool,
 ) -> tuple[RepositoryIdentity, ...]:
     """Return the manifest-owned publishable fleet or refuse selection drift.
 
-    The manifest is the sole selection authority.  The count is intentionally
-    pinned for the production fleet so an added, removed, or accidentally
-    reclassified manifest entry cannot cause a partial rollout.  A missing
-    checkout is the same class of drift: it is reported before any generator
-    invocation rather than silently processing a subset.  Unlisted filesystem
-    siblings are never consulted.
+    Expected identities come from the canonical manifest entries before path
+    resolution and selection. Compare membership, not cardinality, so a missing
+    identity cannot be masked by an extra one. Unlisted filesystem siblings are
+    never consulted; missing fleet checkouts block even a single-repo action.
     """
 
     agent_fleet = tuple(
@@ -337,9 +349,7 @@ def _validate_fleet_selection(
     selected = tuple(
         item for item in agent_fleet if not _is_non_publishable(item.identifier)
     )
-    if expected_count is not None and _fleet_count_invalid(
-        expected_count, len(selected)
-    ):
+    if _fleet_identities_invalid(selected, expected_identities):
         raise DocsReadinessError("fleet-selection-drift")
     if validate_paths and _fleet_paths_invalid(selected):
         raise DocsReadinessError("fleet-selection-drift")
@@ -350,12 +360,12 @@ def _select_repositories(
     identities: tuple[RepositoryIdentity, ...],
     repository: object,
     *,
-    expected_count: int | None = None,
+    expected_identities: frozenset[str],
     validate_paths: bool = False,
 ) -> tuple[RepositoryIdentity, ...]:
     agent_fleet = _validate_fleet_selection(
         identities,
-        expected_count=expected_count,
+        expected_identities=expected_identities,
         validate_paths=validate_paths,
     )
     if repository is None:
@@ -1119,11 +1129,13 @@ def _resolve_selection(
             manifest_value if manifest_value is not None else root / "workspace.yml",
             "workspace-manifest",
         )
-        identities = _manifest_repositories(manifest, root)
+        entries = _manifest_entries(manifest)
+        expected_identities = _expected_fleet_identities(entries)
+        identities = _manifest_repositories(entries, root)
         selected = _select_repositories(
             identities,
             kwargs.get("repository"),
-            expected_count=EXPECTED_AGENT_FLEET_COUNT,
+            expected_identities=expected_identities,
             validate_paths=True,
         )
         return selected, None
@@ -1189,7 +1201,6 @@ def dispatch(action: str = "preview", **kwargs: Any) -> dict[str, Any]:
 
 __all__ = [
     "ACTIONS",
-    "EXPECTED_AGENT_FLEET_COUNT",
     "NON_PUBLISHABLE_IDENTITIES",
     "NON_PUBLISHABLE_PREFIXES",
     "dispatch",
