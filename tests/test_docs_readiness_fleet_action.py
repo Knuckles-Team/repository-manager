@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import subprocess
 from argparse import Namespace
 from pathlib import Path
@@ -169,13 +170,6 @@ def fixture_workspace(tmp_path: Path) -> tuple[Path, Path]:
     _init_repo(repo)
     _manifest(root)
     return root, repo
-
-
-@pytest.fixture(autouse=True)
-def _one_repository_fleet_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep small fixtures explicit independent of the production manifest."""
-
-    monkeypatch.setattr(docs_readiness, "EXPECTED_AGENT_FLEET_COUNT", 1)
 
 
 def _fixture_dispatch(action: str = "preview", **kwargs: Any) -> dict[str, Any]:
@@ -663,43 +657,77 @@ def test_generator_output_escape_is_rejected_without_durable_path(
     assert str(root) not in json.dumps(result)
 
 
-def test_default_fleet_is_exact_manifest_agent_packages_scope() -> None:
-    """The default fleet is derived from the manifest, never a hand-kept count."""
-
-    root = Path(__file__).resolve().parents[1]
-    identities = docs_readiness._manifest_repositories(
-        root / "repository_manager" / "workspace.yml", root
+@pytest.fixture
+def fleet_workspace(fixture_workspace: tuple[Path, Path]) -> tuple[Path, set[str]]:
+    root, repo = fixture_workspace
+    manifest = root / "workspace.yml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "      agents:",
+            "      skills:\n        repositories:\n"
+            "          - url: https://example.invalid/universal-skills.git\n"
+            "          - url: https://example.invalid/skill-graphs.git\n"
+            "      agents:",
+        ).replace(
+            "            description: provider",
+            "            description: provider\n"
+            "          - url: https://example.invalid/tests.git",
+        ),
+        encoding="utf-8",
     )
-    selected = docs_readiness._select_repositories(
-        identities, None, expected_count=None
-    )
-    selected_ids = {item.identifier for item in selected}
-
-    assert selected_ids == {
-        item.identifier
-        for item in identities
-        if item.identifier.startswith("agent-packages/")
-        and item.identifier != "agent-packages/agents/tests"
+    expected = {
+        "agent-packages/agents/provider",
+        "agent-packages/skills/universal-skills",
+        "agent-packages/skills/skill-graphs",
     }
-    assert "agent-packages/skills/universal-skills" in selected_ids
-    assert "agent-packages/skills/skill-graphs" in selected_ids
-    assert "agent-packages/agents/tests" not in selected_ids
+    for identifier in expected - {"agent-packages/agents/provider"}:
+        shutil.copytree(repo, root / identifier)
+    (root / "agent-packages/agents/unlisted").mkdir()
+    return root, expected
 
 
-def test_manifest_selection_drift_fails_closed_before_generator(
-    fixture_workspace: tuple[Path, Path],
-    monkeypatch: pytest.MonkeyPatch,
+def test_default_fleet_is_exact_manifest_agent_packages_scope(
+    fleet_workspace: tuple[Path, set[str]],
 ) -> None:
-    root, _ = fixture_workspace
+    root, expected = fleet_workspace
     calls: list[tuple[Path, bool]] = []
-    # The one-repository fixture selected under a two-repository contract.
-    monkeypatch.setattr(docs_readiness, "EXPECTED_AGENT_FLEET_COUNT", 2)
-
-    result = _fixture_dispatch(
-        workspace_root=root,
-        _generator=_fake_generator(calls),
+    result = docs_readiness.dispatch(
+        workspace_root=root, _generator=_fake_generator(calls)
     )
+    assert result["ok"] is True
+    assert {row["repository"] for row in result["repositories"]} == expected
+    assert {path.relative_to(root).as_posix() for path, _ in calls} == expected
+    assert result["selected_count"] == len(expected)
 
+
+@pytest.mark.parametrize("drift", ["missing", "extra", "substitution", "duplicate"])
+def test_manifest_selection_drift_fails_closed_before_generator(
+    fleet_workspace: tuple[Path, set[str]],
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    root, _ = fleet_workspace
+    calls: list[tuple[Path, bool]] = []
+    resolve = docs_readiness._manifest_repositories
+
+    def altered(entries, workspace):
+        identities = resolve(entries, workspace)
+        provider = next(item for item in identities if item.name == "provider")
+        extra = docs_readiness.RepositoryIdentity(
+            "agent-packages/agents/extra", "extra", provider.path
+        )
+        if drift == "missing":
+            return tuple(item for item in identities if item != provider)
+        if drift == "extra":
+            return (*identities, extra)
+        if drift == "duplicate":
+            return (*identities, provider)
+        return tuple(extra if item == provider else item for item in identities)
+
+    monkeypatch.setattr(docs_readiness, "_manifest_repositories", altered)
+    result = docs_readiness.dispatch(
+        workspace_root=root, _generator=_fake_generator(calls)
+    )
     assert result == {
         "ok": False,
         "action": "preview",
@@ -708,8 +736,10 @@ def test_manifest_selection_drift_fails_closed_before_generator(
     assert calls == []
 
 
+@pytest.mark.parametrize("repository", [None, "agent-packages/agents/provider"])
 def test_manifest_checkout_drift_fails_closed_before_generator(
     fixture_workspace: tuple[Path, Path],
+    repository: str | None,
 ) -> None:
     root, repo = fixture_workspace
     repo.rename(repo.with_name("provider-parked"))
@@ -717,6 +747,7 @@ def test_manifest_checkout_drift_fails_closed_before_generator(
 
     result = _fixture_dispatch(
         workspace_root=root,
+        repository=repository,
         _generator=_fake_generator(calls),
     )
 
@@ -742,8 +773,13 @@ def test_default_fleet_does_not_discover_unlisted_sibling(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    identities = docs_readiness._manifest_repositories(manifest, root)
-    selected = docs_readiness._select_repositories(identities, None)
+    identities = docs_readiness._manifest_repositories(
+        docs_readiness._manifest_entries(manifest), root
+    )
+    selected = docs_readiness._select_repositories(
+        identities, None,
+        expected_identities=frozenset({"agent-packages/agents/provider"}),
+    )
 
     assert [item.identifier for item in selected] == ["agent-packages/agents/provider"]
 
@@ -950,3 +986,39 @@ def test_mcp_and_cli_register_one_shared_action_surface(
     names = {tool.name for tool in asyncio.run(mcp.list_tools())}
     assert "rm_docs_readiness" in names
     assert observed[0][0] == "preview"
+
+
+def test_missing_other_fleet_checkout_blocks_exact_repository(
+    fleet_workspace: tuple[Path, set[str]],
+) -> None:
+    root, _ = fleet_workspace
+    shutil.rmtree(root / "agent-packages/skills/skill-graphs")
+    calls: list[tuple[Path, bool]] = []
+    result = docs_readiness.dispatch(
+        workspace_root=root,
+        repository="agent-packages/agents/provider",
+        _generator=_fake_generator(calls),
+    )
+    assert result["error_code"] == "fleet-selection-drift"
+    assert calls == []
+
+
+def test_duplicate_canonical_manifest_identity_is_rejected(
+    fixture_workspace: tuple[Path, Path],
+) -> None:
+    root, _ = fixture_workspace
+    manifest = root / "workspace.yml"
+    manifest.write_text(
+        manifest.read_text().replace(
+            "            description: provider",
+            "            description: provider\n"
+            "          - url: https://example.invalid/provider.git",
+        ),
+        encoding="utf-8",
+    )
+    calls: list[tuple[Path, bool]] = []
+    result = docs_readiness.dispatch(
+        workspace_root=root, _generator=_fake_generator(calls)
+    )
+    assert result["error_code"] == "workspace-manifest-duplicate"
+    assert calls == []

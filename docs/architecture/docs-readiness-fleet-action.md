@@ -34,10 +34,13 @@ explicitly adopted before rollout; this action does not create that
 configuration or make every repository rollout-ready.
 
 The default fleet is the exact set of manifest-declared identities beneath
-`agent-packages/` (75 publishable entries in the current manifest), including
+`agent-packages/`, including
 both shared skill repositories. Only `agent-packages/agents/tests` is
-non-publishable when that identity is present. RM fails closed if the pinned
-publishable count changes or a selected checkout is missing; it does not
+non-publishable when that identity is present. Expected identities are derived
+from the supplied canonical manifest before checkout resolution. RM compares
+the selected fleet against that set and rejects missing, extra, substituted,
+or duplicate identities before invoking the builder. A missing fleet checkout
+blocks even an exact-repository action; it does not
 silently process a partial fleet. No filesystem discovery expands or changes
 the selection. Every selected identity remains subject to the same exact-root,
 symlink, Git-cleanliness, applicability, output-containment, and provenance
