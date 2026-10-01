@@ -177,7 +177,7 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     preserves its cause (H-12).
     """
 
-    from agent_utilities.mcp.action_dispatch import resolve_action
+    from agent_connector_sdk.mcp.action_dispatch import resolve_action
 
     resolved = resolve_action(
         action, REMOTE_WORKER_ACTIONS, service="repository-manager-remote-workers"

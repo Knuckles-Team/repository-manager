@@ -2716,6 +2716,7 @@ name = "repository-manager"
 version = "3.4.0"
 source = { editable = "." }
 dependencies = [
+    { name = "agent-connector-sdk" },
     { name = "agent-utilities", extra = ["mcp"] },
 ]
 
@@ -2757,6 +2758,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-connector-sdk", editable = ".uv-workspace-siblings/agent-connector-sdk" },
     { name = "agent-utilities", extras = ["agent-runtime", "logfire"], marker = "extra == 'agent'", editable = ".uv-workspace-siblings/agent-utilities" },
     { name = "agent-utilities", extras = ["agent-runtime", "logfire"], marker = "extra == 'all'", editable = ".uv-workspace-siblings/agent-utilities" },
     { name = "agent-utilities", extras = ["graphos", "mcp"], marker = "extra == 'test'", editable = ".uv-workspace-siblings/agent-utilities" },

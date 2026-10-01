@@ -36,7 +36,7 @@ import re
 from pathlib import Path
 
 import pytest
-from agent_utilities.mcp.action_dispatch import DISCOVERY_ACTIONS
+from agent_connector_sdk.mcp.action_dispatch import DISCOVERY_ACTIONS
 
 from repository_manager.concept_actions import CONCEPT_ACTIONS
 from repository_manager.lane_doctor import ACTIONS as RM_LANE_ACTIONS

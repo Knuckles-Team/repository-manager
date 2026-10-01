@@ -128,7 +128,7 @@ def test_live_client_uses_agent_config_tls_profile_and_cleans_it():
     with (
         patch.object(
             vcs_enumerator,
-            "resolve_configured_tls_profile",
+            "resolve_tls_profile",
             return_value=profile,
         ) as resolver,
         patch.object(vcs_enumerator.httpx, "Client", return_value=client) as factory,

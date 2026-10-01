@@ -29,10 +29,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_utilities.core.transport_security import (
-    ResolvedTLSProfile,
-    resolve_configured_tls_profile,
-)
+from agent_connector_sdk.tls.profile import ResolvedTLSProfile
+from agent_connector_sdk.tls.resolve import resolve_tls_profile
 
 try:  # optional at import — only needed for the live (non-injected) path
     import httpx
@@ -99,7 +97,7 @@ def _ensure_client(
     if owns_client:
         if not _HTTPX:
             return None, owns_client, owns_profile, tls_profile
-        tls_profile = tls_profile or resolve_configured_tls_profile(service)
+        tls_profile = tls_profile or resolve_tls_profile(service)
         client = httpx.Client(timeout=30.0, **tls_profile.httpx_kwargs())
     return client, owns_client, owns_profile, tls_profile
 
