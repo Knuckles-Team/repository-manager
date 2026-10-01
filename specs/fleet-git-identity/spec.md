@@ -8,7 +8,7 @@ An authorized maintainer can preview and, after explicit approval, rewrite autho
 
 ## Canonical identity policy
 
-The approved identity manifest declares exact old-email/name match rules and the canonical identity for three classes: human operator, Claude, and Codex. Claude variants map to `Claude <noreply@anthropic.com>`; Codex variants map to `Codex <codex@users.noreply.github.com>`. Unclassified identities require a review decision before rewriting; the historical request proposed mapping them to the operator, but doing so may misattribute external contributions. The operator's canonical name/email and exact alias list must be reviewed and checked into this repository's public policy before execution. Never infer identity from a fuzzy name match or private inventory.
+The approved identity manifest declares exact old-email/name match rules and the canonical identity for three classes: human operator, Claude, and Codex. Claude variants map to `Claude <noreply@anthropic.com>`; Codex variants map to `Codex <noreply@openai.com>`. Unclassified identities require a review decision before rewriting; the historical request proposed mapping them to the operator, but doing so may misattribute external contributions. The operator's canonical name/email and exact alias list must be reviewed and checked into this repository's public policy before execution. Never infer identity from a fuzzy name match or private inventory.
 
 ## Requirements
 
