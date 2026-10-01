@@ -24,5 +24,3 @@ Git is authoritative for source bytes and history; repository-manager owns workt
 ## Trace and status
 
 Stable ID **RM-MATERIALIZE-R001** covers this materialization boundary. Related public specs in other repositories may describe approval storage and orchestration, but all RM acceptance is here. Mark LANDED after exact source commit reaches main; mark ACCEPTED after negative tests, full gates, a queue rehearsal, and the receipt is independently verified against Git at that commit. A design document or draft receipt never counts as built or accepted.
-
-Requirement IDs are defined in [requirements.md](requirements.md); delivery state per ID is in `status.json`.

@@ -25,5 +25,3 @@ This spec governs development activity and Git bytes. Agent orchestration may re
 ## Trace and evidence
 
 Stable IDs: RM-GOVERNANCE-R001 is this authority move; RM-CONNECTOR-R001 is the dependent repository-manager connector import migration. The latter is not covered merely by moving governance modules. Source import and a local commit are BUILDING/BUILT evidence only. Record exact main commit and CI run to mark LANDED; mark ACCEPTED only after the tests here, live entry point import checks, queue rehearsal, and quality gates pass at that commit.
-
-Requirement IDs are defined in [requirements.md](requirements.md); delivery state per ID is in `status.json`.
