@@ -19,6 +19,21 @@ from repository_manager import build_queue as bq
 from repository_manager import task_queue as tq
 
 
+@pytest.fixture(autouse=True)
+def healthy_build_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep broker behavior tests independent of the host's changing disk usage.
+
+    Disk admission itself is characterized in test_p06_build_queue_invariants.py.
+    """
+    gib = 1024**3
+    monkeypatch.setattr(
+        bq.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(total=100 * gib, used=10 * gib, free=90 * gib),
+    )
+    bq._disk_policy().reset("local")
+
+
 def _run(cmd: str, cwd: Path) -> str:
     proc = subprocess.run(
         cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, check=True

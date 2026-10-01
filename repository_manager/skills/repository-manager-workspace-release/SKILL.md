@@ -46,7 +46,7 @@ how a push actually executes (`repository-manager-bulk-git-operations`).
 ## Tools & actions
 | Condensed tool | Actions relevant here |
 |----------------|---------|
-| `rm_workspace` | `maintain`, `maintain_status`, `list`, `list_branches`, `setup`, `template`, `save` |
+| `rm_workspace` | `fleet_evidence_check`, `maintain`, `maintain_status`, `list`, `list_branches`, `setup`, `template`, `save` |
 | `rm_projects` | `validate`, `validate_status` (the consented bump/push chain lives here — see below) |
 
 CLI: `repository-manager --maintain --bump {patch,minor,major} [--phase N]

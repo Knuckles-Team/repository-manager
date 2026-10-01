@@ -10,6 +10,12 @@ from agent_utilities.mcp.concurrency import run_blocking
 from fastmcp import Context, FastMCP
 from pydantic import Field
 
+from repository_manager.development.fleet_release_gate import (
+    FleetReleaseGateError,
+    authorize_fleet_evidence_reference,
+    parse_fleet_evidence_reference,
+    require_legacy_release_route,
+)
 from repository_manager.mcp_tools.context import McpToolContext, from_server
 from repository_manager.mcp_tools.contracts import RM_WORKSPACE_ACTIONS
 from repository_manager.models import GitError, GitResult, WorkspaceConfig
@@ -41,11 +47,13 @@ class _WorkspaceActionRequest:
     use_default: bool
     job_id: str | None
     summary: bool
+    fleet_evidence_json: str | None = None
 
 
 async def _setup_workspace_action(
     git: Any, request: _WorkspaceActionRequest
 ) -> GitResult | Any:
+    require_legacy_release_route("setup")
     if not request.yml_path:
         return GitResult(
             status="error",
@@ -98,6 +106,7 @@ async def _save_workspace_action(
 def _maintain_workspace_action(
     git: Any, adapter_context: McpToolContext, request: _WorkspaceActionRequest
 ) -> dict[str, Any]:
+    require_legacy_release_route("maintain")
     progress = {
         "current_phase": "Initializing Bumps",
         "progress": 0,
@@ -139,6 +148,43 @@ async def _run_workspace_action(
     tool function so only the thin signature/normalization wrapper stays
     decorated.
     """
+    if action == "fleet_evidence_check":
+        return _check_workspace_fleet_evidence(adapter_context, request)
+    return await _run_non_fleet_workspace_action(action, git, adapter_context, request)
+
+
+def _check_workspace_fleet_evidence(
+    adapter_context: McpToolContext, request: _WorkspaceActionRequest
+) -> GitResult | dict[str, Any]:
+    try:
+        if request.fleet_evidence_json is None:
+            raise FleetReleaseGateError("fleet evidence JSON is required")
+        reference = parse_fleet_evidence_reference(
+            request.fleet_evidence_json.encode("utf-8")
+        )
+        provider = adapter_context.fleet_preflight_provider
+        if provider is None:
+            raise FleetReleaseGateError("fleet preflight provider is unavailable")
+        permit = authorize_fleet_evidence_reference(provider(reference), reference)
+        return {
+            "status": "ok",
+            "stage_id": permit.stage_id,
+            "fleet_binding_digest": permit.fleet_binding_digest,
+        }
+    except FleetReleaseGateError:
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(message="Fleet evidence preflight refused", code=1),
+        )
+
+
+async def _run_non_fleet_workspace_action(
+    action: str,
+    git: Any,
+    adapter_context: McpToolContext,
+    request: _WorkspaceActionRequest,
+) -> list[str] | str | GitResult | dict[str, Any]:
     if action == "list":
         return git.get_workspace_projects()
     if action == "list_branches":
@@ -166,7 +212,10 @@ def register_workspace_management_tools(
     @mcp.tool(tags={"workspace_management"})
     async def rm_workspace(
         action: str = Field(
-            description="Action: 'list', 'list_branches', 'setup', 'template', 'save', 'maintain', 'maintain_status'"
+            description=(
+                "Action: 'list', 'list_branches', 'setup', 'template', 'save', "
+                "'maintain', 'maintain_status', 'fleet_evidence_check'"
+            )
         ),
         yml_path: str | None = Field(
             default=None,
@@ -241,6 +290,10 @@ def register_workspace_management_tools(
                 "repos. Set False for the full per-repo detail."
             ),
         ),
+        fleet_evidence_json: str | None = Field(
+            default=None,
+            description="Bounded immutable reference JSON for fleet_evidence_check.",
+        ),
         ctx: Context | None = Field(
             description="MCP context for progress reporting", default=None
         ),
@@ -253,14 +306,13 @@ def register_workspace_management_tools(
         if not isinstance(auto_start, bool):
             auto_start = True
 
-        git = adapter_context.get_git_instance()
-
         resolved = resolve_action(
             action, RM_WORKSPACE_ACTIONS, service="repository-manager"
         )
         if isinstance(resolved, dict):
             return resolved
         action = resolved
+        git = _workspace_git_for_action(adapter_context, action)
 
         return await _run_workspace_action(
             action,
@@ -279,5 +331,13 @@ def register_workspace_management_tools(
                 use_default=use_default,
                 job_id=job_id,
                 summary=summary,
+                fleet_evidence_json=fleet_evidence_json,
             ),
         )
+
+
+def _workspace_git_for_action(adapter_context: McpToolContext, action: str) -> Any:
+    """The fleet evidence read has no Git workspace side effects."""
+    return (
+        None if action == "fleet_evidence_check" else adapter_context.get_git_instance()
+    )

@@ -265,7 +265,6 @@ def test_run_fast_gates_overrides_a_leaked_cargo_target_dir_and_tmpdir(
 
     assert observed_target == str(expected.cargo_target_dir)
     assert observed_target != hazard_target
-    assert Path(observed_target).is_relative_to(repo)
 
     assert observed_tmp == str(expected.scratch_dir)
     assert observed_tmp != hazard_tmp

@@ -20,6 +20,7 @@ class CliRuntime:
     logger: Any
     synchronize_workspace_manifest: Callable[..., Any]
     manifest_error: type[Exception]
+    fleet_preflight_provider: Callable[[Any], Any] | None = None
 
 
 def runtime_from_module() -> CliRuntime:

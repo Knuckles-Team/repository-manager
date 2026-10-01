@@ -18,6 +18,9 @@ from fastmcp import Context, FastMCP
 from fastmcp.utilities.logging import get_logger
 from pydantic import Field
 
+from repository_manager.development.fleet_release_gate import (
+    require_legacy_release_route,
+)
 from repository_manager.mcp_tools.context import McpToolContext, from_server
 from repository_manager.mcp_tools.contracts import RM_GIT_ACTIONS
 from repository_manager.models import GitError, GitResult
@@ -134,6 +137,7 @@ async def _handle_pull(
 async def _handle_push(
     adapter_context: McpToolContext, git: Any, args: GitActionArgs
 ) -> Any:
+    require_legacy_release_route("push")
     dirs = _resolve_project_dirs(adapter_context, git, args.projects)
     return adapter_context.submit_job("push", git.push_projects, project_dirs=dirs)
 
@@ -206,6 +210,7 @@ async def _handle_commit_code(
 async def _handle_phased_push(
     adapter_context: McpToolContext, git: Any, args: GitActionArgs
 ) -> Any:
+    require_legacy_release_route("push")
     phased = args.phased or PhasedPushArgs(
         phase=1, target_project=None, auto_start=True
     )

@@ -168,7 +168,9 @@ def _fixture() -> tuple[DependencyGraph, SelectedChangeClosure, VersionPlan]:
     return graph, selection, version_plan
 
 
-def _plan(*, push: PushConsentReference | None = None) -> FrozenReleasePlan:
+def _plan(
+    *, push: PushConsentReference | None = None, bootstrap: bool = False
+) -> FrozenReleasePlan:
     graph, selection, version_plan = _fixture()
     profiles = {
         project_id: BuildProfile(f"build-{index}", (str(index + 1) * 64)[:64])
@@ -190,7 +192,36 @@ def _plan(*, push: PushConsentReference | None = None) -> FrozenReleasePlan:
         validation_profile="validation-fixture",
         build_profiles=profiles,
         push_consent=push,
+        include_bootstrap=bootstrap,
     )
+
+
+def test_bootstrap_stages_are_frozen_and_dependency_first() -> None:
+    legacy = _plan()
+    plan = _plan(bootstrap=True)
+    assert plan.digest != legacy.digest
+    assert plan.include_bootstrap is True
+    assert len(plan.stages) == len(legacy.stages) + 2 * len(plan.selected_projects)
+    stages = {(stage.kind, stage.project_id): stage for stage in plan.stages}
+    for project_id in plan.selected_projects:
+        setup = stages[(StageKind.SETUP, project_id)]
+        install = stages[(StageKind.INSTALL, project_id)]
+        validate = stages[(StageKind.VALIDATE, project_id)]
+        assert setup.stage_id in install.depends_on
+        assert install.stage_id in validate.depends_on
+    dependent = "repo:packages/b"
+    dependency = "repo:packages/a"
+    assert (
+        stages[(StageKind.SETUP, dependency)].stage_id
+        in stages[(StageKind.SETUP, dependent)].depends_on
+    )
+    assert (
+        stages[(StageKind.INSTALL, dependency)].stage_id
+        in stages[(StageKind.INSTALL, dependent)].depends_on
+    )
+    validate_frozen_release_plan(plan)
+    with pytest.raises(ReleasePlanError, match="stage composition"):
+        replace(plan, include_bootstrap=False)
 
 
 def test_diamond_stage_dag_keeps_independent_projects_parallel() -> None:
