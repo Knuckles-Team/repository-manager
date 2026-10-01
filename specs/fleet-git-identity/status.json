@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "spec_id": "RM-IDENTITY-001",
+  "owner_repo": "repository-manager",
+  "requirement_ids": [
+    "RM-IDENTITY-R001",
+    "RM-IDENTITY-01",
+    "RM-IDENTITY-02",
+    "RM-IDENTITY-03",
+    "RM-IDENTITY-04",
+    "RM-IDENTITY-05",
+    "RM-IDENTITY-06",
+    "RM-IDENTITY-07",
+    "RM-IDENTITY-R002"
+  ],
+  "delivery_state": "SPECIFIED",
+  "acceptance_state": "NOT_AUDITED",
+  "evidence": [],
+  "requirements": [
+    {
+      "id": "RM-IDENTITY-R001",
+      "title": "Rewrite commit identities across public repositories with approval and rollback",
+      "delivery_state": "SPECIFIED",
+      "evidence": []
+    },
+    {
+      "id": "RM-IDENTITY-01",
+      "title": "Complete ref and tag discovery before rewrite",
+      "delivery_state": "SPECIFIED",
+      "evidence": []
+    },
+    {
+      "id": "RM-IDENTITY-02",
+      "title": "Deterministic dry-run identity rewrite plan",
+      "delivery_state": "SPECIFIED",
+      "evidence": []
+    },
+    {
+      "id": "RM-IDENTITY-03",
+      "title": "Signed approval required before any rewrite",
+      "delivery_state": "SPECIFIED",
+      "evidence": []
+    },
+    {
+      "id": "RM-IDENTITY-04",
+      "title": "Byte-identical trees and preserved history topology",
+      "delivery_state": "SPECIFIED",
+      "evidence": []
+    },
+    {
+      "id": "RM-IDENTITY-05",
+      "title": "Quarantined staging with backup refs before ref update",
+      "delivery_state": "SPECIFIED",
+      "evidence": []
+    },
+    {
+      "id": "RM-IDENTITY-06",
+      "title": "Lease-protected per-remote publication receipts",
+      "delivery_state": "SPECIFIED",
+      "evidence": []
+    },
+    {
+      "id": "RM-IDENTITY-07",
+      "title": "Coordinated merge-queue pause and resync during rewrite",
+      "delivery_state": "SPECIFIED",
+      "evidence": []
+    },
+    {
+      "id": "RM-IDENTITY-R002",
+      "title": "Reconcile diverged history before identity rewrite",
+      "delivery_state": "UNKNOWN",
+      "evidence": []
+    }
+  ]
+}

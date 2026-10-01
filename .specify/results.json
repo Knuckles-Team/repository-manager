@@ -2380,7 +2380,7 @@
           ".env:12"
         ],
         "defaults": [
-          "http://langfuse.arpa/api/public/otel"
+          "http://localhost:3000/api/public/otel"
         ],
         "source_types": [
           "dotenv"

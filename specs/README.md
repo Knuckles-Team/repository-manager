@@ -10,7 +10,11 @@ Delivery status is recorded here with exact merged revision and test evidence.
 
 Create `specs/<stable-id>/` with `spec.md` (user outcome, requirements, acceptance), `plan.md`
 (architecture, reuse, interfaces, live wiring, decisions), `test-spec.md` (positive, negative,
-integration, quality and release proof), and `tasks.md` (ordered implementation and verification), plus `status.json` (machine-readable delivery, acceptance, and public receipts).
+integration, quality and release proof), `tasks.md` (ordered implementation and verification),
+`requirements.md` (the register defining every requirement ID this spec owns, one row per ID),
+and `status.json` (machine-readable delivery and acceptance, with a `requirements` array giving
+each requirement ID its own `delivery_state` and evidence, alongside the spec-wide
+`acceptance_state` and `evidence` array).
 Start from [`_template/`](_template/). Keep status and evidence explicit; a planned or tested item
 is not a landed item. Put durable evidence links in the spec directory, never local scratch output.
 This follows GitHub Spec Kit's specify/plan/tasks flow with an explicit test contract. The tracked [constitution](../.specify/memory/constitution.md) records this repository's governing principles.
@@ -34,7 +38,10 @@ or `IN REVIEW` may describe current work, but they do not prove delivery.
 `LANDED` requires a public merged-head receipt for the exact owning-repository revision.
 `ACCEPTED` additionally requires the checked-in test and consumer or release receipts.
 Record public issue, PR, check, and commit links in the owner spec and evidence array.
-An obligation can be landed while acceptance remains open.
+An obligation can be landed while acceptance remains open. The same rule applies per
+requirement: each entry in `status.json`'s `requirements` array counts as delivered only once
+its evidence cites a commit merged to the repository's default branch, not a branch tip or a
+local build.
 
 ## Graph OS owner map
 
@@ -60,8 +67,8 @@ bootstrap skill, together with the [SDD full lifecycle](https://github.com/Knuck
 
 ## Local specifications
 
-- [`EH-349`](EH-349/spec.md) — governed proposal to Git materialization.
-- [`EH-465`](EH-465/spec.md) — repository history and migration receipts.
-- [`EH-483`](EH-483/spec.md) — connector boundary migration.
-- [`EH-512`](EH-512/spec.md) — repository development governance.
-- [`RF-016`](RF-016/spec.md) — dependency aware fleet release.
+- [`RM-MATERIALIZE-001`](proposal-materialization/spec.md) — governed proposal to Git materialization.
+- [`RM-IDENTITY-001`](fleet-git-identity/spec.md) — repository history and migration receipts.
+- [`RM-CONNECTOR-001`](connector-boundary/spec.md) — connector boundary migration.
+- [`RM-GOVERNANCE-001`](development-governance/spec.md) — repository development governance.
+- [`RM-RELEASE-001`](fleet-release/spec.md) — dependency aware fleet release.
