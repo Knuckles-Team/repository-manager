@@ -6,7 +6,8 @@ approved base, applies only the approved paths, runs the declared
 validation, commits through :func:`repository_manager.safe_commit.safe_commit`
 with an explicit path allowlist, and submits the result to the existing
 merge queue -- never claiming it landed. See ``specs/proposal-materialization/``
-for the full contract.
+for the full contract. Test doubles for the three pluggable ports live under
+``tests/materialization/fakes.py``, never in this package.
 """
 
 from __future__ import annotations
@@ -19,15 +20,12 @@ from repository_manager.materialization.models import (
     MaterializationReceipt,
     MaterializationState,
 )
-from repository_manager.materialization.patch import PatchRejected, apply_patch
+from repository_manager.materialization.patch import PatchRejected, apply_patch, run_git
 from repository_manager.materialization.ports import (
     ApprovalAuthority,
     ApprovalAuthorityUnavailable,
     ApprovalVerdict,
-    FakeApprovalAuthority,
-    FakeMergeQueuePort,
     GitMergeQueueAdapter,
-    InMemoryReceiptStore,
     MaterializationReceiptStore,
     MergeQueuePort,
     MergeQueueUnavailable,
@@ -47,10 +45,7 @@ __all__ = [
     "ApprovalProof",
     "ApprovalVerdict",
     "ChangeProposal",
-    "FakeApprovalAuthority",
-    "FakeMergeQueuePort",
     "GitMergeQueueAdapter",
-    "InMemoryReceiptStore",
     "MaterializationErrorCode",
     "MaterializationReceipt",
     "MaterializationReceiptStore",
@@ -64,4 +59,5 @@ __all__ = [
     "RepositoryManagerUnavailable",
     "apply_patch",
     "check_binding",
+    "run_git",
 ]

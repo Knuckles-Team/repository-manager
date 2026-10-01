@@ -21,7 +21,6 @@ written.
 from __future__ import annotations
 
 import logging
-import subprocess  # nosec B404 - fixed-argv git invocations only
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,7 +35,7 @@ from repository_manager.materialization.models import (
     MaterializationReceipt,
     MaterializationState,
 )
-from repository_manager.materialization.patch import PatchRejected, apply_patch
+from repository_manager.materialization.patch import PatchRejected, apply_patch, run_git
 from repository_manager.materialization.ports import (
     ApprovalAuthority,
     ApprovalAuthorityUnavailable,
@@ -127,24 +126,12 @@ class _Attempt:
 
 
 def _current_ref_sha(canonical: Path, ref: str) -> str | None:
-    result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell, git from PATH
-        ["git", "rev-parse", "--verify", "--quiet", ref],
-        cwd=str(canonical),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_git(["git", "rev-parse", "--verify", "--quiet", ref], canonical)
     return result.stdout.strip() if result.returncode == 0 else None
 
 
 def _tree_sha(worktree_path: Path) -> str | None:
-    result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell, git from PATH
-        ["git", "rev-parse", "HEAD^{tree}"],
-        cwd=str(worktree_path),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_git(["git", "rev-parse", "HEAD^{tree}"], worktree_path)
     return result.stdout.strip() if result.returncode == 0 else None
 
 

@@ -27,9 +27,6 @@ from repository_manager.development.serialization import (
 from repository_manager.materialization import (
     ApprovalProof,
     ChangeProposal,
-    FakeApprovalAuthority,
-    FakeMergeQueuePort,
-    InMemoryReceiptStore,
     MaterializationErrorCode,
     MaterializationReceipt,
     MaterializationService,
@@ -39,6 +36,11 @@ from repository_manager.materialization import (
     check_binding,
 )
 from repository_manager.worktree import WorktreeManager
+from tests.materialization.fakes import (
+    FakeApprovalAuthority,
+    FakeMergeQueuePort,
+    InMemoryReceiptStore,
+)
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 FUTURE = NOW + timedelta(hours=1)

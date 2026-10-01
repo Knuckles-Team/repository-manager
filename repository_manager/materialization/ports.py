@@ -2,28 +2,26 @@
 
 :mod:`repository_manager.materialization.service` depends on these three
 abstract boundaries rather than on a live approval service, a live receipt
-store, or the real merge queue directly, so that:
+store, or the real merge queue directly, so that callers can supply their own
+implementation without a second Git-mutating path, and so RM-MATERIALIZE-06
+(no direct Git fallback when a dependency is unavailable) is a fault a caller
+can inject by raising the matching ``*Unavailable`` error from their own
+implementation.
 
-* ``repository_manager``'s own test suite can qualify every acceptance rule
-  (RM-MATERIALIZE-01 through 06) against disposable Git fixtures and the
-  fakes below, with no live service required (plan.md's "Implementations
-  must not require a particular operator environment"); and
-* RM-MATERIALIZE-06 (no direct Git fallback when a dependency is
-  unavailable) is a fault *you can inject*: raise the matching
-  ``*Unavailable`` error from a fake and assert the service never reaches a
-  Git mutation.
-
-The real adapters at the bottom wire the ports to this package's existing
-merge queue (:mod:`repository_manager.merge_queue`); a live approval
-authority and a durable receipt store are intentionally left to whatever
-composes this service in production (a graph client, a KV store, ...) --
-inventing one here would be the "second... registry or policy path" the
-build-lane instructions warn against.
+Only :class:`GitMergeQueueAdapter` below is a real implementation -- it wires
+:class:`MergeQueuePort` to this package's existing merge queue
+(:mod:`repository_manager.merge_queue`). There is today no real, non-test
+:class:`ApprovalAuthority` or :class:`MaterializationReceiptStore` in this
+repository or its dependencies (see
+``tests/materialization/fakes.py``'s module docstring for exactly what a real
+one would need to call). Test doubles for all three ports live under
+``tests/materialization/fakes.py``, never here: this module holds the
+contracts and the one real adapter only.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Protocol
@@ -39,9 +37,7 @@ __all__ = [
     "ApprovalAuthority",
     "ApprovalAuthorityUnavailable",
     "ApprovalVerdict",
-    "FakeApprovalAuthority",
     "GitMergeQueueAdapter",
-    "InMemoryReceiptStore",
     "MaterializationReceiptStore",
     "MergeQueuePort",
     "MergeQueueUnavailable",
@@ -83,58 +79,12 @@ class ApprovalAuthority(Protocol):
     ) -> ApprovalVerdict: ...
 
 
-@dataclass
-class FakeApprovalAuthority:
-    """Deterministic authority for tests: an allowlist of accepted signatures.
-
-    ``accepted_signatures=None`` accepts any structurally-complete signature
-    (useful when a test is only exercising the service's own binding checks).
-    ``raise_unavailable=True`` makes every call raise
-    :class:`ApprovalAuthorityUnavailable`, for RM-MATERIALIZE-06 fault
-    injection.
-    """
-
-    accepted_signatures: frozenset[str] | None = None
-    raise_unavailable: bool = False
-
-    def verify(
-        self, proposal: ChangeProposal, approval: ApprovalProof, *, now: datetime
-    ) -> ApprovalVerdict:
-        del proposal, now
-        if self.raise_unavailable:
-            raise ApprovalAuthorityUnavailable("fake approval authority is unavailable")
-        if (
-            self.accepted_signatures is None
-            or approval.signature in self.accepted_signatures
-        ):
-            return ApprovalVerdict(valid=True)
-        return ApprovalVerdict(valid=False, reasons=("signature not recognized",))
-
-
 class MaterializationReceiptStore(Protocol):
     """Durable, idempotency-keyed storage for :class:`MaterializationReceipt`."""
 
     def get(self, idempotency_key: str) -> MaterializationReceipt | None: ...
 
     def put(self, idempotency_key: str, receipt: MaterializationReceipt) -> None: ...
-
-
-@dataclass
-class InMemoryReceiptStore:
-    """Process-local receipt store: the real shape for tests, never for prod."""
-
-    raise_unavailable: bool = False
-    _rows: dict[str, MaterializationReceipt] = field(default_factory=dict)
-
-    def get(self, idempotency_key: str) -> MaterializationReceipt | None:
-        if self.raise_unavailable:
-            raise ReceiptStoreUnavailable("fake receipt store is unavailable")
-        return self._rows.get(idempotency_key)
-
-    def put(self, idempotency_key: str, receipt: MaterializationReceipt) -> None:
-        if self.raise_unavailable:
-            raise ReceiptStoreUnavailable("fake receipt store is unavailable")
-        self._rows[idempotency_key] = receipt
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,28 +104,6 @@ class MergeQueuePort(Protocol):
     ) -> QueueSubmission: ...
 
     def status(self, *, worktree_path: str, branch: str) -> str: ...
-
-
-@dataclass
-class FakeMergeQueuePort:
-    """Deterministic queue port for tests: accept/reject/raise on demand."""
-
-    accept: bool = True
-    detail: str = ""
-    raise_unavailable: bool = False
-    reconciled_status: str = merge_queue.QUEUED
-
-    def submit(self, *, worktree_path: str, branch: str, base: str) -> QueueSubmission:
-        del worktree_path, branch, base
-        if self.raise_unavailable:
-            raise MergeQueueUnavailable("fake merge queue is unavailable")
-        return QueueSubmission(accepted=self.accept, detail=self.detail)
-
-    def status(self, *, worktree_path: str, branch: str) -> str:
-        del worktree_path, branch
-        if self.raise_unavailable:
-            raise MergeQueueUnavailable("fake merge queue is unavailable")
-        return self.reconciled_status
 
 
 @dataclass
