@@ -103,7 +103,10 @@ class FakeApprovalAuthority:
         del proposal, now
         if self.raise_unavailable:
             raise ApprovalAuthorityUnavailable("fake approval authority is unavailable")
-        if self.accepted_signatures is None or approval.signature in self.accepted_signatures:
+        if (
+            self.accepted_signatures is None
+            or approval.signature in self.accepted_signatures
+        ):
             return ApprovalVerdict(valid=True)
         return ApprovalVerdict(valid=False, reasons=("signature not recognized",))
 
@@ -188,7 +191,10 @@ class GitMergeQueueAdapter:
     def submit(self, *, worktree_path: str, branch: str, base: str) -> QueueSubmission:
         try:
             result = merge_queue.enqueue(
-                branch, base=base, worktree=Path(worktree_path), path=Path(worktree_path)
+                branch,
+                base=base,
+                worktree=Path(worktree_path),
+                path=Path(worktree_path),
             )
         except merge_queue.MergeQueueError as exc:
             raise MergeQueueUnavailable(str(exc)) from exc

@@ -14,6 +14,7 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -70,7 +71,9 @@ class FakeGit:
         )
 
 
-def _git(args: list[str], cwd: Path, *, check: bool = True) -> subprocess.CompletedProcess:
+def _git(
+    args: list[str], cwd: Path, *, check: bool = True
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=check
     )
@@ -117,7 +120,9 @@ def _make_patch(
                 target.symlink_to(content)
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(content.encode("latin-1") if binary else content.encode())
+                target.write_bytes(
+                    content.encode("latin-1") if binary else content.encode()
+                )
         diff_args = ["diff", "--no-color"] + (["--binary"] if binary else [])
         diff = _git(diff_args, scratch, check=False)
         return diff.stdout
@@ -149,8 +154,8 @@ def _proposal(
     )
 
 
-def _approval(proposal: ChangeProposal, **overrides: object) -> ApprovalProof:
-    fields = {
+def _approval(proposal: ChangeProposal, **overrides: Any) -> ApprovalProof:
+    fields: dict[str, Any] = {
         "approval_id": "approval-1",
         "proposal_digest": proposal.digest,
         "repository_id": proposal.repository_id,
@@ -248,7 +253,9 @@ def test_approval_authority_rejection_is_unauthorized(tmp_path, monkeypatch):
     repo = _repo(tmp_path, monkeypatch)
     proposal = _proposal(repo, patch_text=_simple_patch(repo, tmp_path))
     approval = _approval(proposal)
-    service, _ = _service(repo, authority=FakeApprovalAuthority(accepted_signatures=frozenset()))
+    service, _ = _service(
+        repo, authority=FakeApprovalAuthority(accepted_signatures=frozenset())
+    )
 
     receipt = service.materialize(proposal, approval, now=NOW)
 
@@ -461,7 +468,9 @@ def test_queue_acceptance_is_reported_as_queued_never_merged(tmp_path, monkeypat
     repo = _repo(tmp_path, monkeypatch)
     proposal = _proposal(repo, patch_text=_simple_patch(repo, tmp_path))
     approval = _approval(proposal)
-    service, _ = _service(repo, gate=lambda path: True, queue=FakeMergeQueuePort(accept=True))
+    service, _ = _service(
+        repo, gate=lambda path: True, queue=FakeMergeQueuePort(accept=True)
+    )
 
     receipt = service.materialize(proposal, approval, now=NOW)
 
@@ -501,7 +510,9 @@ def test_reconcile_promotes_a_landed_candidate_to_merged(tmp_path, monkeypatch):
     reconciled = service.reconcile(receipt.idempotency_key)
 
     assert reconciled.state is MaterializationState.MERGED
-    assert store.get(receipt.idempotency_key).state is MaterializationState.MERGED
+    stored = store.get(receipt.idempotency_key)
+    assert stored is not None
+    assert stored.state is MaterializationState.MERGED
 
 
 def test_reconcile_reports_a_rejected_candidate_as_refused(tmp_path, monkeypatch):
@@ -532,7 +543,9 @@ def test_a_replayed_request_returns_the_same_receipt_without_a_second_commit(
     service, _ = _service(repo, gate=lambda path: True)
 
     first = service.materialize(proposal, approval, now=NOW, idempotency_key="same-key")
-    second = service.materialize(proposal, approval, now=NOW, idempotency_key="same-key")
+    second = service.materialize(
+        proposal, approval, now=NOW, idempotency_key="same-key"
+    )
 
     assert first == second
     assert _base_sha(repo) == base_before  # nothing landed on `main`
@@ -548,14 +561,20 @@ def test_an_altered_replay_under_the_same_key_is_rejected(tmp_path, monkeypatch)
     proposal_a = _proposal(repo, patch_text=patch_a, proposal_id="proposal-a")
     approval_a = _approval(proposal_a)
     service, _ = _service(repo, gate=lambda path: True)
-    first = service.materialize(proposal_a, approval_a, now=NOW, idempotency_key="shared-key")
+    first = service.materialize(
+        proposal_a, approval_a, now=NOW, idempotency_key="shared-key"
+    )
     assert first.state is MaterializationState.QUEUED
 
-    patch_b = _make_patch(repo, tmp_path, {"allowed.txt": "a different change\n"}, label="altered")
+    patch_b = _make_patch(
+        repo, tmp_path, {"allowed.txt": "a different change\n"}, label="altered"
+    )
     proposal_b = _proposal(repo, patch_text=patch_b, proposal_id="proposal-b")
     approval_b = _approval(proposal_b)
 
-    second = service.materialize(proposal_b, approval_b, now=NOW, idempotency_key="shared-key")
+    second = service.materialize(
+        proposal_b, approval_b, now=NOW, idempotency_key="shared-key"
+    )
 
     assert second.state is MaterializationState.REFUSED
     assert second.error_code is MaterializationErrorCode.UNAUTHORIZED
@@ -576,22 +595,23 @@ def test_materialization_receipt_contract_round_trips_through_canonical_serializ
 
     assert restored == receipt
     assert restored.digest == receipt.digest
+    assert receipt.commit_sha is not None
     # The receipt's commit_sha is independently verifiable against real Git.
-    assert _git(
-        ["cat-file", "-e", receipt.commit_sha], repo, check=False
-    ).returncode == 0
+    assert (
+        _git(["cat-file", "-e", receipt.commit_sha], repo, check=False).returncode == 0
+    )
 
 
 # ── RM-MATERIALIZE-06: no direct Git fallback when a dependency is down ────
 
 
-def test_unavailable_approval_authority_leaves_the_request_pending(tmp_path, monkeypatch):
+def test_unavailable_approval_authority_leaves_the_request_pending(
+    tmp_path, monkeypatch
+):
     repo = _repo(tmp_path, monkeypatch)
     proposal = _proposal(repo, patch_text=_simple_patch(repo, tmp_path))
     approval = _approval(proposal)
-    service, _ = _service(
-        repo, authority=FakeApprovalAuthority(raise_unavailable=True)
-    )
+    service, _ = _service(repo, authority=FakeApprovalAuthority(raise_unavailable=True))
 
     receipt = service.materialize(proposal, approval, now=NOW)
 
@@ -615,7 +635,9 @@ def test_unavailable_receipt_store_leaves_the_request_pending(tmp_path, monkeypa
     assert not Path(wt_mod.WORKTREE_ROOT).exists()
 
 
-def test_unavailable_merge_queue_leaves_a_committed_candidate_pending(tmp_path, monkeypatch):
+def test_unavailable_merge_queue_leaves_a_committed_candidate_pending(
+    tmp_path, monkeypatch
+):
     repo = _repo(tmp_path, monkeypatch)
     base_before = _base_sha(repo)
     proposal = _proposal(repo, patch_text=_simple_patch(repo, tmp_path))

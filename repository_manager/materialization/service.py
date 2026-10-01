@@ -127,7 +127,7 @@ class _Attempt:
 
 
 def _current_ref_sha(canonical: Path, ref: str) -> str | None:
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+    result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell, git from PATH
         ["git", "rev-parse", "--verify", "--quiet", ref],
         cwd=str(canonical),
         capture_output=True,
@@ -138,7 +138,7 @@ def _current_ref_sha(canonical: Path, ref: str) -> str | None:
 
 
 def _tree_sha(worktree_path: Path) -> str | None:
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+    result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell, git from PATH
         ["git", "rev-parse", "HEAD^{tree}"],
         cwd=str(worktree_path),
         capture_output=True,
@@ -250,7 +250,9 @@ class MaterializationService:
     def _create_worktree(self, attempt: _Attempt) -> None:
         proposal = attempt.proposal
         canonical = self._worktrees.resolve_repo(proposal.repository_id)
-        current = _current_ref_sha(Path(canonical), proposal.base_ref) if canonical else None
+        current = (
+            _current_ref_sha(Path(canonical), proposal.base_ref) if canonical else None
+        )
         if canonical is None or current != proposal.base_sha:
             detail = (
                 f"repository {proposal.repository_id!r} is not registered"
@@ -262,7 +264,9 @@ class MaterializationService:
             )
             raise _MaterializeAbort(MaterializationErrorCode.STALE_BASE, detail)
         branch = f"materialize/{proposal.proposal_id}"
-        added = self._worktrees.add(proposal.repository_id, branch, base=proposal.base_sha)
+        added = self._worktrees.add(
+            proposal.repository_id, branch, base=proposal.base_sha
+        )
         if not added.get("ok"):
             raise RepositoryManagerUnavailable(
                 f"could not create an isolated worktree: {added.get('error', added)}"
@@ -274,10 +278,14 @@ class MaterializationService:
         proposal = attempt.proposal
         assert attempt.worktree_path is not None
         try:
-            apply_patch(attempt.worktree_path, proposal.patch_text, proposal.approved_paths)
+            apply_patch(
+                attempt.worktree_path, proposal.patch_text, proposal.approved_paths
+            )
         except PatchRejected as exc:
             self._abandon_worktree(attempt)
-            raise _MaterializeAbort(MaterializationErrorCode.PATH_REJECTED, str(exc)) from exc
+            raise _MaterializeAbort(
+                MaterializationErrorCode.PATH_REJECTED, str(exc)
+            ) from exc
         message = f"materialize {proposal.proposal_id} (approved by {proposal.decision_identity})"
         result = safe_commit(
             attempt.worktree_path,
@@ -374,11 +382,15 @@ class MaterializationService:
                 error_detail="",
             )
         return self._build_receipt(
-            attempt, state=MaterializationState.REFUSED, error_code=abort.code,
+            attempt,
+            state=MaterializationState.REFUSED,
+            error_code=abort.code,
             error_detail=abort.detail,
         )
 
-    def _pending_receipt(self, attempt: _Attempt, detail: str) -> MaterializationReceipt:
+    def _pending_receipt(
+        self, attempt: _Attempt, detail: str
+    ) -> MaterializationReceipt:
         return self._build_receipt(
             attempt,
             state=MaterializationState.PENDING,
@@ -396,7 +408,9 @@ class MaterializationService:
             logger.warning("could not persist materialization receipt for %s", key)
 
     # ── reconciliation ───────────────────────────────────────────────────
-    def _reconcile_queued(self, receipt: MaterializationReceipt) -> MaterializationReceipt:
+    def _reconcile_queued(
+        self, receipt: MaterializationReceipt
+    ) -> MaterializationReceipt:
         assert receipt.queue_branch is not None
         canonical = self._worktrees.resolve_repo(receipt.repository_id)
         try:
@@ -412,7 +426,10 @@ class MaterializationService:
             )
         if status == merge_queue.LANDED:
             return self._store_updated(
-                receipt, state=MaterializationState.MERGED, error_code=None, error_detail=""
+                receipt,
+                state=MaterializationState.MERGED,
+                error_code=None,
+                error_detail="",
             )
         if status == merge_queue.REJECTED:
             return self._store_updated(

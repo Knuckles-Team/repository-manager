@@ -38,7 +38,9 @@ def _reject_unsafe_paths(paths: tuple[str, ...]) -> None:
             raise PatchRejected(f"patch path contains an unsafe component: {rel!r}")
 
 
-def _reject_outside_allowlist(paths: tuple[str, ...], approved_paths: tuple[str, ...]) -> None:
+def _reject_outside_allowlist(
+    paths: tuple[str, ...], approved_paths: tuple[str, ...]
+) -> None:
     allowed = set(approved_paths)
     extra = sorted(set(paths) - allowed)
     if extra:
@@ -64,7 +66,7 @@ def changed_paths_in_patch(patch_text: str) -> tuple[str, ...]:
 
 
 def _numstat_paths(worktree_path: Path, patch_name: str) -> tuple[str, ...]:
-    result = subprocess.run(  # noqa: S603 - fixed argv, no shell
+    result = subprocess.run(  # nosec B603 B607 - fixed argv, no shell, git from PATH
         ["git", "apply", "--numstat", "--", patch_name],
         cwd=str(worktree_path),
         capture_output=True,
@@ -106,13 +108,15 @@ def apply_patch(
     _reject_unsafe_paths(static_paths)
     _reject_outside_allowlist(static_paths, approved_paths)
     if _SYMLINK_MODE_RE.search(patch_text):
-        raise PatchRejected("patch declares a symlink mode change, which is not permitted")
+        raise PatchRejected(
+            "patch declares a symlink mode change, which is not permitted"
+        )
 
     patch_name = f".materialize-{uuid4().hex}.patch"
     patch_file = worktree_path / patch_name
     patch_file.write_text(patch_text, encoding="utf-8")
     try:
-        check = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        check = subprocess.run(  # nosec B603 B607 - fixed argv, no shell, git from PATH
             ["git", "apply", "--check", "--", patch_name],
             cwd=str(worktree_path),
             capture_output=True,
@@ -125,7 +129,7 @@ def apply_patch(
         _reject_unsafe_paths(dynamic_paths)
         _reject_outside_allowlist(dynamic_paths, approved_paths)
 
-        applied = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        applied = subprocess.run(  # nosec B603 B607 - fixed argv, no shell, git from PATH
             ["git", "apply", "--", patch_name],
             cwd=str(worktree_path),
             capture_output=True,

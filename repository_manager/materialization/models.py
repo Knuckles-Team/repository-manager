@@ -139,7 +139,7 @@ class ChangeProposal(BaseModel):
     )
     @classmethod
     def _validate_identifiers(cls, value: str, info: ValidationInfo) -> str:
-        return _nonblank(value, info.field_name)
+        return _nonblank(value, info.field_name or "field")
 
     @field_validator("base_sha")
     @classmethod
@@ -210,10 +210,12 @@ class ApprovalProof(BaseModel):
     expires_at: datetime
     signature: StrictStr
 
-    @field_validator("approval_id", "repository_id", "tenant_id", "actor_id", "signature")
+    @field_validator(
+        "approval_id", "repository_id", "tenant_id", "actor_id", "signature"
+    )
     @classmethod
     def _validate_identifiers(cls, value: str, info: ValidationInfo) -> str:
-        return _nonblank(value, info.field_name)
+        return _nonblank(value, info.field_name or "field")
 
     @field_validator("proposal_digest")
     @classmethod
@@ -292,13 +294,18 @@ class MaterializationReceipt(BaseModel):
                 raise ValueError("a refused receipt must carry an error_code")
             return self
         if self.state is MaterializationState.PENDING:
-            if self.error_code not in (None, MaterializationErrorCode.UNCERTAIN_DELIVERY):
+            if self.error_code not in (
+                None,
+                MaterializationErrorCode.UNCERTAIN_DELIVERY,
+            ):
                 raise ValueError(
                     "a pending receipt may only carry UNCERTAIN_DELIVERY, if any"
                 )
             return self
         if self.error_code is not None:
-            raise ValueError("only a refused or pending receipt may carry an error_code")
+            raise ValueError(
+                "only a refused or pending receipt may carry an error_code"
+            )
         return self
 
     @property
