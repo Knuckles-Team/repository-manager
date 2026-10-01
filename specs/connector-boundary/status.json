@@ -17,14 +17,14 @@
     {
       "id": "RM-CONNECTOR-R001",
       "title": "Migrate connector imports to the public SDK boundary",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "b64d1252b115cfb4f06c4a3e20b4a62946fc70cd",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/b64d1252b115cfb4f06c4a3e20b4a62946fc70cd",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "d00c0834551ecb859b617b4171aadde229d82b31",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d00c0834551ecb859b617b4171aadde229d82b31",
+          "description": "Implemented on the default branch; exercised by tests/test_action_discovery.py"
         }
       ]
     },
@@ -37,14 +37,14 @@
     {
       "id": "RM-CONNECTOR-02",
       "title": "Route connector transport imports through the public SDK",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "0ffe0f9818c98d17cb49dd50091693c093665571",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0ffe0f9818c98d17cb49dd50091693c093665571",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "d00c0834551ecb859b617b4171aadde229d82b31",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d00c0834551ecb859b617b4171aadde229d82b31",
+          "description": "Implemented on the default branch; exercised by tests/test_mcp_registration.py"
         }
       ]
     },
@@ -65,28 +65,28 @@
     {
       "id": "RM-CONNECTOR-04",
       "title": "Preserve MCP/CLI contract during connector migration",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "aa0111ab5decbd2cc4339be894901b4bef56e485",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/aa0111ab5decbd2cc4339be894901b4bef56e485",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "d00c0834551ecb859b617b4171aadde229d82b31",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d00c0834551ecb859b617b4171aadde229d82b31",
+          "description": "Implemented on the default branch; exercised by tests/test_adapter_extraction.py"
         }
       ]
     },
     {
       "id": "RM-CONNECTOR-05",
       "title": "Remove dead connector adapters after cutover",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "b64d1252b115cfb4f06c4a3e20b4a62946fc70cd",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/b64d1252b115cfb4f06c4a3e20b4a62946fc70cd",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "d00c0834551ecb859b617b4171aadde229d82b31",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d00c0834551ecb859b617b4171aadde229d82b31",
+          "description": "Implemented on the default branch."
         }
       ]
     }
