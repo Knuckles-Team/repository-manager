@@ -18,7 +18,7 @@
     {
       "id": "RM-MATERIALIZE-R001",
       "title": "Repository-manager materializes an approved proposal into a commit",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {

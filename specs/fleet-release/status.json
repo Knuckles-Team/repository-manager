@@ -18,7 +18,7 @@
     {
       "id": "RM-RELEASE-R001",
       "title": "Dependency-ordered fleet release planning",
-      "delivery_state": "BUILDING",
+      "delivery_state": "BUILT",
       "evidence": [
         {
           "kind": "branch",
@@ -32,38 +32,86 @@
     {
       "id": "RM-RELEASE-01",
       "title": "Complete per-repository dependency census",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "BUILT",
+      "evidence": [
+        {
+          "kind": "branch",
+          "result": "passed",
+          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+        }
+      ]
     },
     {
       "id": "RM-RELEASE-02",
       "title": "Acyclic, typed dependency graph per release scope",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "BUILT",
+      "evidence": [
+        {
+          "kind": "branch",
+          "result": "passed",
+          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+        }
+      ]
     },
     {
       "id": "RM-RELEASE-03",
       "title": "Immutable, content-addressed release plan digest",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "BUILT",
+      "evidence": [
+        {
+          "kind": "branch",
+          "result": "passed",
+          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+        }
+      ]
     },
     {
       "id": "RM-RELEASE-04",
       "title": "Dependency-ordered execution with trusted gating",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "BUILT",
+      "evidence": [
+        {
+          "kind": "branch",
+          "result": "passed",
+          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+        }
+      ]
     },
     {
       "id": "RM-RELEASE-05",
       "title": "One shared admission contract across release routes",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "BUILT",
+      "evidence": [
+        {
+          "kind": "branch",
+          "result": "passed",
+          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+        }
+      ]
     },
     {
       "id": "RM-RELEASE-06",
       "title": "Per-stage receipts with retry and rollback evidence",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "BUILT",
+      "evidence": [
+        {
+          "kind": "branch",
+          "result": "passed",
+          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
+          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+        }
+      ]
     }
   ]
 }
