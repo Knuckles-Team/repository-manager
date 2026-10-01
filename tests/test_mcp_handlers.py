@@ -1,12 +1,14 @@
 import asyncio
 import concurrent.futures
 import importlib
+import json
 import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 mcp_server_module = importlib.import_module("repository_manager.mcp_server")
+from repository_manager.development.fleet_release_gate import _reference_digest
 from repository_manager.mcp_server import (
     _get_job_status,
     _job_futures,
@@ -706,6 +708,63 @@ async def test_mcp_rm_workspace_tool():
             )
         assert "Unknown action" in str(exc.value)
         assert "list_actions" in str(exc.value)
+
+
+@pytest.mark.anyio
+async def test_mcp_rm_workspace_fleet_evidence_check():
+    """The MCP route shares the same fail-closed admission contract as Git/CLI.
+
+    ``fleet_evidence_check`` is read-only: it must never touch a Git instance,
+    and until a fleet preflight provider is wired (release activation is
+    closed pending independent source-universe proof) every reference is
+    refused rather than silently accepted.
+    """
+    mcp, _, _, _ = get_mcp_instance()
+    tools = await mcp.list_tools()
+    rm_workspace = next(t for t in tools if t.name == "rm_workspace")
+
+    with patch("repository_manager.mcp_server.get_git_instance") as mock_get_git:
+        # Missing fleet_evidence_json refuses before any Git instance is touched.
+        res = await rm_workspace.fn(
+            action="fleet_evidence_check",
+            yml_path=None,
+            config_dict=None,
+            part="patch",
+            phase=1,
+            dry_run=False,
+            use_default=True,
+            fleet_evidence_json=None,
+            ctx=None,
+        )
+        assert res.status == "error"
+        mock_get_git.assert_not_called()
+
+        # A well-formed, self-consistent reference is still refused: no fleet
+        # preflight provider is configured until release activation opens.
+        payload = {
+            "schema": "fleet_evidence_reference/v1",
+            "plan_digest": "a" * 64,
+            "order_digest": "b" * 64,
+            "census_digest": "c" * 64,
+            "universe_digest": "d" * 64,
+            "stage_id": "stage:fixture",
+            "kind": "setup",
+            "project_id": "repo:fixture",
+        }
+        reference_json = json.dumps({**payload, "digest": _reference_digest(payload)})
+        res = await rm_workspace.fn(
+            action="fleet_evidence_check",
+            yml_path=None,
+            config_dict=None,
+            part="patch",
+            phase=1,
+            dry_run=False,
+            use_default=True,
+            fleet_evidence_json=reference_json,
+            ctx=None,
+        )
+        assert res.status == "error"
+        mock_get_git.assert_not_called()
 
 
 @pytest.mark.anyio
