@@ -34,7 +34,7 @@ __all__ = ["safe_commit"]
 def _lane_name(path: Path) -> str:
     """Resolve a lane name without making Agent Utilities a hard import."""
     try:
-        from agent_utilities.governance.lanes import lane_name
+        from repository_manager.governance.lanes import lane_name
 
         return str(lane_name(path))
     except Exception:  # pragma: no cover - optional dependency/fake trees

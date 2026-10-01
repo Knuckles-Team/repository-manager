@@ -8,9 +8,8 @@ from typing import Any
 
 def run_build_queue_cli(args: Any) -> int:
     """Marshal build-broker flags onto the shared dispatch core."""
-    from agent_utilities.governance.lanes import LaneArbitrationError
-
     from repository_manager import build_queue
+    from repository_manager.governance.lanes import LaneArbitrationError
 
     try:
         result = build_queue.dispatch(

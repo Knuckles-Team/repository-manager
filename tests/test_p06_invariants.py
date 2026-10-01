@@ -12,9 +12,9 @@ import sys
 from pathlib import Path
 
 import pytest
-from agent_utilities.governance.lanes import LaneScope, partitioned_paths
 
 from repository_manager import merge_queue as mq
+from repository_manager.governance.lanes import LaneScope, partitioned_paths
 from repository_manager.test_commands import (
     ensure_no_fail_fast,
     is_go_test_command,
@@ -270,7 +270,7 @@ def test_run_fast_gates_overrides_a_leaked_cargo_target_dir_and_tmpdir(
     assert observed_tmp != hazard_tmp
     # `scratch_dir` (unlike `cargo_target_dir`) is deliberately rooted at a
     # short `$HOME/.al/<token>` path, not the (potentially deep) worktree —
-    # see `agent_utilities.governance.lanes.partitioned_paths`'s own
+    # see `repository_manager.governance.lanes.partitioned_paths`'s own
     # docstring on why: short paths for AF_UNIX sockets. "Short by
     # construction" is what is being proven here, not tree-relativity.
     assert len(observed_tmp) < 60

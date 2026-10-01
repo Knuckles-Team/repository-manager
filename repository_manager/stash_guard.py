@@ -41,7 +41,7 @@ reports its name, so the caller can surface it for manual recovery instead of
 losing the WIP.
 
 **Why this is a sibling of, not a call into,**
-``agent_utilities.governance.lanes`` **(the ecosystem's PARTITION-class
+``repository_manager.governance.lanes`` **(the ecosystem's PARTITION-class
 pattern for exactly this hazard, registry note on ``D-CP-1``).**
 ``lanes.partitioned_paths(path).stash_ref`` (``refs/lane/<lane>/stash``) plus
 ``lanes.park_worktree``/``unpark_worktree`` is the sanctioned "give a lane a
@@ -94,7 +94,7 @@ __all__ = [
     "unpark",
 ]
 
-#: Nested under the same ``refs/lane/`` prefix ``agent_utilities.governance.lanes``
+#: Nested under the same ``refs/lane/`` prefix ``repository_manager.governance.lanes``
 #: uses for its own per-lane stash ref (``refs/lane/<lane>/stash``), so private,
 #: off-the-shared-stack refs are legible under one convention across the
 #: workspace. A distinct sub-path (not ``refs/lane/<lane>/stash`` itself) keeps
@@ -198,7 +198,7 @@ def _lane_ref(tree: str | Path, lane: str | None = None) -> str:
     """
     if lane is None:
         try:
-            from agent_utilities.governance.lanes import lane_name
+            from repository_manager.governance.lanes import lane_name
 
             lane = lane_name(tree)
         except Exception:  # pragma: no cover - optional dependency/fake trees

@@ -15,10 +15,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from agent_utilities.governance.lanes import partitioned_paths
 
 from repository_manager import build_queue as bq
 from repository_manager.disk_policy import DiskDecisionCode
+from repository_manager.governance.lanes import partitioned_paths
 
 
 def _run(cmd: str, cwd: Path) -> str:

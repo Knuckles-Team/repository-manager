@@ -118,15 +118,15 @@ def _resolve_tree(path: Path | str | None) -> Path:
 
 
 def _lane_scope(tree: Path) -> Any:
-    """agent-utilities' lane scope, or ``None`` when it cannot be resolved.
+    """This package's own lane scope, or ``None`` when it cannot be resolved.
 
-    repository-manager depends on agent-utilities, so this import is normally
-    available. It is still defensive because this module must be able to
-    diagnose a tree in an environment where the governance package is broken —
-    that is precisely a moment when a lane needs a doctor.
+    ``repository_manager.governance.lanes`` ships inside this package, so this
+    import is normally available. It is still defensive because this module
+    must be able to diagnose a tree in an environment where the governance
+    module is broken — that is precisely a moment when a lane needs a doctor.
     """
     try:
-        from agent_utilities.governance import lanes
+        from repository_manager.governance import lanes
     except Exception:  # pragma: no cover - environment-dependent
         return None
     try:
@@ -140,7 +140,7 @@ def _lane_temp_root(tree: Path) -> Path | None:
 
     Mirrors what :func:`lane_exports` actually creates
     (:func:`_host_valid_lane_temp_root`, anchored at the worktree — not
-    ``agent_utilities.governance.lanes.partitioned_paths()``'s
+    ``repository_manager.governance.lanes.partitioned_paths()``'s
     ``$HOME``-anchored root) so this hint and the real export never diverge.
     """
     scope = _lane_scope(tree)
@@ -152,7 +152,7 @@ def _lane_temp_root(tree: Path) -> Path | None:
 def _host_valid_lane_temp_root(tree: Path, scope: Any) -> Path:
     """A per-lane temp root that is valid for WHOEVER operates on ``tree``.
 
-    D-CDX-40 — ``agent_utilities.governance.lanes.partitioned_paths()`` roots
+    D-CDX-40 — ``repository_manager.governance.lanes.partitioned_paths()`` roots
     per-lane temp state (pytest basetemp / TMPDIR / pre-commit store) at
     ``Path.home() / ".al" / <token>`` — a deliberate choice for short AF_UNIX
     socket paths (see that function's docstring), correct when the process
@@ -193,7 +193,7 @@ def lane_exports(path: Path | str | None = None) -> dict[str, str]:
 
     The pytest basetemp / TMPDIR / pre-commit store paths are deliberately
     resolved via :func:`_host_valid_lane_temp_root`, NOT
-    ``agent_utilities.governance.lanes.partitioned_paths()`` — see D-CDX-40 in
+    ``repository_manager.governance.lanes.partitioned_paths()`` — see D-CDX-40 in
     that function's docstring. ``CARGO_TARGET_DIR`` is unaffected: it was
     already tree-relative (``tree / "target-isolated"``) and therefore always
     host-valid.
@@ -234,7 +234,7 @@ def _check_not_canonical(tree: Path, scope: Any) -> Check:
             "not-canonical",
             SKIP,
             "lane scope unresolvable — cannot tell a canonical checkout from a worktree",
-            remedy="install agent-utilities so agent_utilities.governance.lanes imports",
+            remedy="reinstall repository-manager so repository_manager.governance.lanes imports",
         )
     if scope.is_canonical:
         return Check(
@@ -785,7 +785,7 @@ def _check_canonical_is_worktree(scope: Any) -> Check:
             "canonical-is-worktree",
             SKIP,
             "lane scope unresolvable — cannot locate the canonical checkout",
-            remedy="install agent-utilities so agent_utilities.governance.lanes imports",
+            remedy="reinstall repository-manager so repository_manager.governance.lanes imports",
         )
     canonical = Path(scope.main_tree)
     try:
