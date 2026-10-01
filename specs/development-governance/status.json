@@ -45,8 +45,8 @@
         {
           "kind": "branch",
           "result": "passed",
-          "commit": "429ad66a04edebb8691290e08e2bfcd1536c5ff0",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/429ad66a04edebb8691290e08e2bfcd1536c5ff0",
+          "commit": "15227b632c59bbd0963a39ebd002fb233bea259d",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/15227b632c59bbd0963a39ebd002fb233bea259d",
           "description": "Implementation commit is published on a branch; not yet merged to the default branch."
         }
       ]
@@ -60,115 +60,144 @@
     {
       "id": "RM-GOVERNANCE-02",
       "title": "Branch allocation tracks ownership, lease, and lifecycle state",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "78c6baf04778e88ebe934ddbf6b6462fe3ced248",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/78c6baf04778e88ebe934ddbf6b6462fe3ced248",
+          "description": "Implemented on the default branch; exercised by tests/test_lane_registry.py::test_restart_heartbeat_and_fence_refusal_with_injected_clock"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-03",
       "title": "Isolated checkouts never corrupt shared Git config",
       "delivery_state": "SPECIFIED",
-      "evidence": []
+      "evidence": [],
+      "remaining": "WorktreeManager.add() uses real `git worktree add` (not the EnterWorktree pattern), but no test asserts the shared repo's core.bare stays false, and no explicit serialization lock guards concurrent `git worktree add` calls against the shared common dir."
     },
     {
       "id": "RM-GOVERNANCE-04",
       "title": "Commits stage only reviewed paths and verified gate identity",
       "delivery_state": "SPECIFIED",
-      "evidence": []
+      "evidence": [],
+      "remaining": "safe_commit()'s own docstring says it stages the COMPLETE working tree (including untracked files and deletions), the opposite of staging only explicitly reviewed paths; no reviewed-path allowlist enforcement was found."
     },
     {
       "id": "RM-GOVERNANCE-05",
       "title": "Merge-queue promotion rechecks identity before reporting success",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "269c661d12faef0fe383d19614a6f00d8c3d61d8",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/269c661d12faef0fe383d19614a6f00d8c3d61d8",
+          "description": "Implemented on the default branch; exercised by tests/test_merge_queue.py::test_a_baseline_timeout_is_a_refusal_not_an_empty_baseline"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-06",
       "title": "Cleanup proves containment before deleting a branch checkout",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "e20bbf7b4ff578ab81fad006c2e84406f038c29e",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/e20bbf7b4ff578ab81fad006c2e84406f038c29e",
+          "description": "Implemented on the default branch; exercised by tests/test_worktree.py::test_delete_merged_branch_refuses_an_unmerged_branch"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-07",
       "title": "Concept reservations are scoped and cannot be silently reused",
       "delivery_state": "SPECIFIED",
-      "evidence": []
+      "evidence": [],
+      "remaining": "ConceptCoordinationActions scaffolding (scoping, lifecycle, reconcile modules) exists, but per concept_actions.py's own comment the real authority (agent_utilities.governance.concept_reservation) is not wired on main, so resolve_default_authority() always raises ConceptAuthorityUnavailable today; du"
     },
     {
       "id": "RM-GOVERNANCE-R002",
       "title": "readme-deploy-block hook must not silently skip",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R003",
       "title": "Cleanup removes isolated checkouts and scratch only after merge",
-      "delivery_state": "UNKNOWN",
-      "evidence": []
+      "delivery_state": "SPECIFIED",
+      "evidence": [],
+      "remaining": "Containment-before-delete for worktree/branch is implemented and tested, but no host-local build-scratch removal, uv-cache-prune step, or distinct 'cleanup run log' artifact was found in repository-manager's own code."
     },
     {
       "id": "RM-GOVERNANCE-R004",
       "title": "Workspace check refuses credential-embedded remote URLs",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R005",
       "title": "Complexity gate scores exhaustive-dispatch functions correctly",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R006",
       "title": "Clone-duplication gate enforces zero new pairs before push",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R007",
       "title": "Routine cleanup prunes merged branches and build caches",
-      "delivery_state": "UNKNOWN",
-      "evidence": []
+      "delivery_state": "SPECIFIED",
+      "evidence": [],
+      "remaining": "Reachability/merge-containment checks before cleanup are implemented and tested; no uv-cache-prune step was found as part of the same routine, and no 'cleanup checklist' document exists in this repository."
     },
     {
       "id": "RM-GOVERNANCE-R008",
       "title": "KISS hook resolves test module path declarations correctly",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R009",
       "title": "Duplication gate fails closed on an empty-change commit",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R010",
       "title": "Reviewed-distinct clone pairs are tracked in a registry",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R011",
       "title": "Status page stays in sync with capability and reservation docs",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R012",
       "title": "Build verification on extracted trees uses content hashes",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R013",
       "title": "A fast rebase must not silently skip the hook suite",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R014",
       "title": "Completion claims require full hook-run logs as proof",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
@@ -180,37 +209,45 @@
     {
       "id": "RM-GOVERNANCE-R016",
       "title": "Cleanup removes leftover backup references and build scratch",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R017",
       "title": "Build submission is asynchronous, not polling-based",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R018",
       "title": "Dependency-readiness hook works from any checkout location",
-      "delivery_state": "UNKNOWN",
-      "evidence": []
+      "delivery_state": "BUILT",
+      "evidence": [
+        {
+          "kind": "branch",
+          "result": "passed",
+          "commit": "fe3e283f0cb0260e0b210253fcc4d15d6f0439e0",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/fe3e283f0cb0260e0b210253fcc4d15d6f0439e0",
+          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-R019",
       "title": "A fix is accepted only when all quality gates pass together",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R020",
       "title": "Duplication gate distinguishes real new duplication from moves",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R021",
       "title": "Secret-history exceptions are digest-pinned and self-checking",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
