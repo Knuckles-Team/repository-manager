@@ -15,7 +15,7 @@ def test_dynamic_attributes_and_imports():
         pass
 
     def mock_import_func(name):
-        if name in ["repository_manager.agent_server", "repository_manager.mcp_server"]:
+        if name == "repository_manager.mcp_server":
             mock_mod = MagicMock()
             mock_mod.SomeClass = MockClass
             return mock_mod
@@ -29,9 +29,10 @@ def test_dynamic_attributes_and_imports():
 
         import repository_manager
 
-        # Check dynamic variables
+        # Check dynamic variables; agent_server was retired fleet-wide, so
+        # _AGENT_AVAILABLE is a permanent False (no such optional module).
         assert repository_manager._MCP_AVAILABLE is True
-        assert repository_manager._AGENT_AVAILABLE is True
+        assert repository_manager._AGENT_AVAILABLE is False
 
         # Test getting attribute from optional module
         val = repository_manager.SomeClass
@@ -47,7 +48,7 @@ def test_dynamic_attributes_import_failure():
     original_import = importlib.import_module
 
     def mock_import_failure(name):
-        if name in ["repository_manager.agent_server", "repository_manager.mcp_server"]:
+        if name == "repository_manager.mcp_server":
             raise ImportError("Mocked import error")
         return original_import(name)
 

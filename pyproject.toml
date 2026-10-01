@@ -61,7 +61,6 @@ remote = [
 [project.scripts]
 repository-manager = "repository_manager.repository_manager:main"
 repository-manager-mcp = "repository_manager.mcp_server:mcp_server"
-repository-manager-agent = "repository_manager.agent_server:agent_server"
 repository-manager-install-merge-queue-runner = "repository_manager.merge_queue_runner_install:main"
 repository-manager-governance = "repository_manager.governance.cli:main"
 
