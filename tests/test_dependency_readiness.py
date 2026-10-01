@@ -1244,9 +1244,10 @@ def test_await_gate_readiness_ci_run_in_progress_waits_then_concludes(monkeypatc
 # resolving a sibling checkout through `uv run --with`) never walks $PWD for
 # a sibling repo -- but _find_workspace_manifest's own upward walk from
 # `start` could still be fooled by an isolated branch checkout living outside
-# the canonical workspace tree (e.g. /var/tmp/repository-worktrees/<repo>/
-# <branch>), if the packaged copy it checks first were ever missing or
-# bypassed. These tests pin that it is not: the packaged copy resolves
+# the canonical workspace tree (a linked git worktree routinely lives under a
+# separate, unrelated scratch directory), if the packaged copy it checks
+# first were ever missing or bypassed. These tests pin that it is not: the
+# packaged copy resolves
 # first, from a `start` that has no workspace.yml anywhere above it.
 # --------------------------------------------------------------------------- #
 
