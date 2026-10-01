@@ -17,8 +17,16 @@
     {
       "id": "RM-CONNECTOR-R001",
       "title": "Migrate connector imports to the public SDK boundary",
-      "delivery_state": "UNKNOWN",
-      "evidence": []
+      "delivery_state": "BUILT",
+      "evidence": [
+        {
+          "kind": "branch",
+          "result": "passed",
+          "commit": "b64d1252b115cfb4f06c4a3e20b4a62946fc70cd",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/b64d1252b115cfb4f06c4a3e20b4a62946fc70cd",
+          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+        }
+      ]
     },
     {
       "id": "RM-CONNECTOR-01",

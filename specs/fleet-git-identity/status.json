@@ -68,7 +68,7 @@
     {
       "id": "RM-IDENTITY-R002",
       "title": "Reconcile diverged history before identity rewrite",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     }
   ]

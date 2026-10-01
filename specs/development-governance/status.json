@@ -45,8 +45,8 @@
         {
           "kind": "branch",
           "result": "passed",
-          "commit": "429ad66a04edebb8691290e08e2bfcd1536c5ff0",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/429ad66a04edebb8691290e08e2bfcd1536c5ff0",
+          "commit": "15227b632c59bbd0963a39ebd002fb233bea259d",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/15227b632c59bbd0963a39ebd002fb233bea259d",
           "description": "Implementation commit is published on a branch; not yet merged to the default branch."
         }
       ]
@@ -96,79 +96,81 @@
     {
       "id": "RM-GOVERNANCE-R002",
       "title": "readme-deploy-block hook must not silently skip",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R003",
       "title": "Cleanup removes isolated checkouts and scratch only after merge",
-      "delivery_state": "UNKNOWN",
-      "evidence": []
+      "delivery_state": "SPECIFIED",
+      "evidence": [],
+      "remaining": "Containment-before-delete for worktree/branch is implemented and tested, but no host-local build-scratch removal, uv-cache-prune step, or distinct 'cleanup run log' artifact was found in repository-manager's own code."
     },
     {
       "id": "RM-GOVERNANCE-R004",
       "title": "Workspace check refuses credential-embedded remote URLs",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R005",
       "title": "Complexity gate scores exhaustive-dispatch functions correctly",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R006",
       "title": "Clone-duplication gate enforces zero new pairs before push",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R007",
       "title": "Routine cleanup prunes merged branches and build caches",
-      "delivery_state": "UNKNOWN",
-      "evidence": []
+      "delivery_state": "SPECIFIED",
+      "evidence": [],
+      "remaining": "Reachability/merge-containment checks before cleanup are implemented and tested; no uv-cache-prune step was found as part of the same routine, and no 'cleanup checklist' document exists in this repository."
     },
     {
       "id": "RM-GOVERNANCE-R008",
       "title": "KISS hook resolves test module path declarations correctly",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R009",
       "title": "Duplication gate fails closed on an empty-change commit",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R010",
       "title": "Reviewed-distinct clone pairs are tracked in a registry",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R011",
       "title": "Status page stays in sync with capability and reservation docs",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R012",
       "title": "Build verification on extracted trees uses content hashes",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R013",
       "title": "A fast rebase must not silently skip the hook suite",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R014",
       "title": "Completion claims require full hook-run logs as proof",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
@@ -180,37 +182,45 @@
     {
       "id": "RM-GOVERNANCE-R016",
       "title": "Cleanup removes leftover backup references and build scratch",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R017",
       "title": "Build submission is asynchronous, not polling-based",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R018",
       "title": "Dependency-readiness hook works from any checkout location",
-      "delivery_state": "UNKNOWN",
-      "evidence": []
+      "delivery_state": "BUILT",
+      "evidence": [
+        {
+          "kind": "branch",
+          "result": "passed",
+          "commit": "fe3e283f0cb0260e0b210253fcc4d15d6f0439e0",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/fe3e283f0cb0260e0b210253fcc4d15d6f0439e0",
+          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-R019",
       "title": "A fix is accepted only when all quality gates pass together",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R020",
       "title": "Duplication gate distinguishes real new duplication from moves",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {
       "id": "RM-GOVERNANCE-R021",
       "title": "Secret-history exceptions are digest-pinned and self-checking",
-      "delivery_state": "UNKNOWN",
+      "delivery_state": "SPECIFIED",
       "evidence": []
     },
     {

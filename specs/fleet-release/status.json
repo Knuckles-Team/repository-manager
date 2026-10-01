@@ -18,7 +18,7 @@
     {
       "id": "RM-RELEASE-R001",
       "title": "Dependency-ordered fleet release planning",
-      "delivery_state": "BUILDING",
+      "delivery_state": "BUILT",
       "evidence": [
         {
           "kind": "branch",
