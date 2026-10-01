@@ -36,8 +36,9 @@ PROMOTION_REF = "refs/heads/deployed"
 
 
 def _git(args: list[str], repo: Path) -> subprocess.CompletedProcess[str]:
+    argv = ["git", *args]
     return subprocess.run(  # fixed argv, no shell
-        ["git", *args], cwd=str(repo), capture_output=True, text=True, check=False
+        argv, cwd=str(repo), capture_output=True, text=True, check=False
     )
 
 

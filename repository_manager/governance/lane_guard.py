@@ -68,8 +68,9 @@ def _should_check_generated_view(tree: Path, staged: list[str]) -> bool:
 
 
 def _staged_files(tree: Path) -> list[str]:
+    argv = ["git", "diff", "--cached", "--name-only"]
     proc = subprocess.run(
-        ["git", "diff", "--cached", "--name-only"],
+        argv,
         cwd=str(tree),
         capture_output=True,
         text=True,

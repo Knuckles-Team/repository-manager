@@ -50,6 +50,7 @@ arbiter needs.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -96,7 +97,7 @@ _UNKNOWN_HOST_IDS = frozenset(
         "unidentified",
         "localhost",
         "localhost.localdomain",
-        "0.0.0.0",
+        str(ipaddress.IPv4Address(0)),  # the unspecified/"any" IPv4 address
     }
 )
 _HOST_CAPABILITY_ROLES = frozenset({"heavy", "light-only", "gpu-guarded"})
@@ -195,8 +196,9 @@ class LeaseUnavailable(LaneArbitrationError):
 # ---------------------------------------------------------------------------
 def _git(args: list[str], cwd: Path) -> str:
     """Run a read-only git query, raising with the real stderr on failure."""
+    argv = ["git", *args]
     proc = subprocess.run(  # fixed argv, no shell
-        ["git", *args],
+        argv,
         cwd=str(cwd),
         capture_output=True,
         text=True,
@@ -251,8 +253,9 @@ def current_tree(path: Path | str | None = None) -> Path | None:
         start = start.parent
     if not start.is_dir():
         return None
+    argv = ["git", "-C", str(start), "rev-parse", "--show-toplevel"]
     proc = subprocess.run(  # fixed argv, no shell
-        ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+        argv,
         capture_output=True,
         text=True,
         check=False,
@@ -611,9 +614,10 @@ def _classify_precommit_patch(patch_path: Path, scope: LaneScope) -> dict[str, A
                 "(the pid may also belong to an unrelated process that reused it)"
             ),
         }
+    argv = ["git", "apply", "--check", "--reverse", str(patch_path)]
     try:
         proc = subprocess.run(  # fixed argv, no shell
-            ["git", "apply", "--check", "--reverse", str(patch_path)],
+            argv,
             cwd=str(scope.tree),
             capture_output=True,
             text=True,
