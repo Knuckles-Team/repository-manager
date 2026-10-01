@@ -317,7 +317,7 @@ class MaterializationService:
                 delete_branch=True,
                 base=proposal.base_ref,
             )
-        except Exception:  # pragma: no cover - best-effort cleanup only
+        except Exception:  # best-effort cleanup: report, never mask the refusal
             logger.warning(
                 "could not remove abandoned materialization worktree %s",
                 attempt.worktree_path,

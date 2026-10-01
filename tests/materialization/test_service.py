@@ -329,6 +329,26 @@ def test_patch_touching_an_unapproved_path_is_rejected(tmp_path, monkeypatch):
     assert _git(["status", "--porcelain"], repo).stdout == ""
 
 
+def test_a_failed_worktree_cleanup_is_logged_and_does_not_mask_the_refusal(
+    tmp_path, monkeypatch, caplog
+):
+    repo = _repo(tmp_path, monkeypatch)
+    patch = _make_patch(repo, tmp_path, {"other.txt": "changed\n"}, label="cleanup")
+    proposal = _proposal(repo, patch_text=patch, approved_paths=("allowed.txt",))
+    service, _ = _service(repo)
+
+    def _refuse_removal(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("worktree is busy")
+
+    monkeypatch.setattr(service._worktrees, "remove", _refuse_removal)
+    with caplog.at_level("WARNING"):
+        receipt = service.materialize(proposal, _approval(proposal), now=NOW)
+
+    assert receipt.state is MaterializationState.REFUSED
+    assert receipt.error_code is MaterializationErrorCode.PATH_REJECTED
+    assert "could not remove abandoned materialization worktree" in caplog.text
+
+
 def test_patch_header_with_traversal_is_rejected_statically():
     traversal_patch = (
         "diff --git a/../outside.txt b/../outside.txt\n"
