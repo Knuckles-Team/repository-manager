@@ -47,7 +47,12 @@ def test_safe_commit_preserves_unstaged_deletion_and_proves_gate_snapshot(
         gate_observations.append(status)
         return not status
 
-    result = safe_commit(repo, "safe deletion", gate=gate)
+    result = safe_commit(
+        repo,
+        "safe deletion",
+        paths=["must-delete.txt", "staged-change.txt"],
+        gate=gate,
+    )
 
     assert result["ok"] is True
     assert result["nothing_left_unstaged"] is True
@@ -86,7 +91,7 @@ def test_safe_commit_supports_an_explicit_configured_gate(tmp_path: Path) -> Non
         called.append(path)
         return {"ok": True}
 
-    result = safe_commit(repo, "configured gate", gate=gate)
+    result = safe_commit(repo, "configured gate", paths=["tracked.txt"], gate=gate)
 
     assert result["status"] == "success"
     assert result["gate_stage"] == "configured"
@@ -100,7 +105,9 @@ def test_safe_commit_can_create_an_explicitly_deferred_snapshot(tmp_path: Path) 
     hook.write_text("#!/bin/sh\nexit 91\n")
     hook.chmod(0o755)
 
-    result = safe_commit(repo, "deferred snapshot", defer_gate=True)
+    result = safe_commit(
+        repo, "deferred snapshot", paths=["tracked.txt"], defer_gate=True
+    )
 
     assert result["ok"] is True
     assert result["gate_deferred"] is True
@@ -117,7 +124,7 @@ def test_successful_commit_records_baseline_for_subsequent_diagnosis(
     repo = _repo(tmp_path / "baseline-after-commit", "main")
     (repo / "tracked.txt").write_text("new baseline\n")
 
-    result = safe_commit(repo, "record baseline")
+    result = safe_commit(repo, "record baseline", paths=["tracked.txt"])
 
     assert result["status"] == "success"
     assert result["baseline_recorded"] is True
@@ -138,7 +145,7 @@ def test_commit_reports_when_baseline_persistence_is_not_confirmed(
         lambda path: {"ok": False, "error": "administrative directory is read-only"},
     )
 
-    result = safe_commit(repo, "report baseline warning")
+    result = safe_commit(repo, "report baseline warning", paths=["tracked.txt"])
 
     assert result["status"] == "success"
     assert result["baseline_recorded"] is False
@@ -150,7 +157,7 @@ def test_safe_commit_refuses_same_tree_lease_interleave(tmp_path: Path) -> None:
     (repo / "tracked.txt").write_text("busy\n")
 
     with stash_guard.hold_tree_mutation_lease(repo, note="test holder"):
-        result = safe_commit(repo, "must wait")
+        result = safe_commit(repo, "must wait", paths=["tracked.txt"])
 
     assert result["status"] == "error"
     assert result["reason"] == "tree-mutation-busy"
@@ -168,6 +175,7 @@ def test_configured_gate_receives_environment_and_timeout(tmp_path: Path) -> Non
     result = safe_commit(
         repo,
         "gate env",
+        paths=["tracked.txt"],
         gate=[sys.executable, str(gate)],
         env={"RMDD_GATE_MARKER": "present"},
         timeout=7,
@@ -190,7 +198,7 @@ def test_two_safe_commits_in_different_worktrees_do_not_interact(
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(
             pool.map(
-                lambda item: safe_commit(item[0], item[1]),
+                lambda item: safe_commit(item[0], item[1], paths=["tracked.txt"]),
                 [(lane_a, "lane A"), (lane_b, "lane B")],
             )
         )
@@ -202,3 +210,38 @@ def test_two_safe_commits_in_different_worktrees_do_not_interact(
     assert (
         _git(["show", "-s", "--format=%s", "HEAD"], lane_b).stdout.strip() == "lane B"
     )
+
+
+def test_safe_commit_refuses_without_explicit_paths(tmp_path: Path) -> None:
+    """No allowlist is a typed refusal, never an implicit whole-tree stage."""
+    repo = _repo(tmp_path / "no-paths", "main")
+    (repo / "tracked.txt").write_text("changed\n")
+    head_before = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+
+    result = safe_commit(repo, "missing allowlist")
+
+    assert result["status"] == "error"
+    assert "explicit" in result["error"]
+    assert result["staged_paths"] == []
+    assert _git(["rev-parse", "HEAD"], repo).stdout.strip() == head_before
+    # Refusing before taking the lease means the change is still exactly
+    # where it was: unstaged, not swept into any index.
+    assert "tracked.txt" in _git(["diff", "--name-only"], repo).stdout
+
+
+def test_safe_commit_stages_only_the_reviewed_paths(tmp_path: Path) -> None:
+    """An unrelated untracked file outside the allowlist stays uncommitted."""
+    repo = _repo(tmp_path / "scoped-allowlist", "main")
+    (repo / "tracked.txt").write_text("reviewed change\n")
+    (repo / "unreviewed.txt").write_text("nobody looked at this\n")
+
+    result = safe_commit(repo, "reviewed change only", paths=["tracked.txt"])
+
+    assert result["status"] == "success"
+    assert result["staged_paths"] == ["tracked.txt"]
+    committed = _git(
+        ["show", "--format=", "--name-only", "HEAD"], repo
+    ).stdout.split()
+    assert committed == ["tracked.txt"]
+    status = _git(["status", "--porcelain"], repo).stdout
+    assert "?? unreviewed.txt" in status
