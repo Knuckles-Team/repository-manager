@@ -101,7 +101,9 @@ def _addable_paths(
     missing = [p for p in paths if p not in on_disk]
     if not missing:
         return list(paths)
-    tracked = _run(["git", "ls-files", "-z", "--", *missing], tree, env=env, timeout=timeout)
+    tracked = _run(
+        ["git", "ls-files", "-z", "--", *missing], tree, env=env, timeout=timeout
+    )
     tracked_names = set(_names(tracked)) if tracked.returncode == 0 else set()
     return [p for p in paths if p in on_disk or p in tracked_names]
 
