@@ -26,20 +26,44 @@
     {
       "id": "RM-IDENTITY-01",
       "title": "Complete ref and tag discovery before rewrite",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "9a933f61ad22207605f7786d51a263541085c557",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/9a933f61ad22207605f7786d51a263541085c557",
+          "description": "Implemented on the default branch; exercised by tests/test_history_identity_discovery.py"
+        }
+      ]
     },
     {
       "id": "RM-IDENTITY-02",
       "title": "Deterministic dry-run identity rewrite plan",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "9a933f61ad22207605f7786d51a263541085c557",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/9a933f61ad22207605f7786d51a263541085c557",
+          "description": "Implemented on the default branch; exercised by tests/test_history_identity_preview.py"
+        }
+      ]
     },
     {
       "id": "RM-IDENTITY-03",
       "title": "Signed approval required before any rewrite",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "9a933f61ad22207605f7786d51a263541085c557",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/9a933f61ad22207605f7786d51a263541085c557",
+          "description": "Implemented on the default branch; exercised by tests/test_history_identity_approval.py"
+        }
+      ]
     },
     {
       "id": "RM-IDENTITY-04",
@@ -68,8 +92,9 @@
     {
       "id": "RM-IDENTITY-R002",
       "title": "Reconcile diverged history before identity rewrite",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "BUILDING",
+      "evidence": [],
+      "remaining": "A history-consistency check and an admission gate that refuses a repository whose branches share no merge base are on the default branch (tests/test_history_identity_consistency.py). Remaining: run it against agent-webui and reconcile that repository's history so it is admitted."
     }
   ]
 }

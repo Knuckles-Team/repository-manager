@@ -148,6 +148,52 @@ def build_parser() -> argparse.ArgumentParser:
         "promotion", help="how far the deployed ref lags main (merge != deploy)"
     )
     promotion.add_argument("--path", default="", help="working tree (default: cwd)")
+
+    # CONCEPT:RM-IDENTITY.read-only-preview-entry-point -- RM-IDENTITY-001's
+    # read-only discovery/preview/approval pipeline (specs/fleet-git-identity).
+    # Mutates nothing: see repository_manager/history_identity/cli.py.
+    hist = sub.add_parser(
+        "history-identity",
+        help="RM-IDENTITY-001: read-only ref discovery, deterministic preview, and approval check",
+    )
+    hist.add_argument(
+        "--repo",
+        dest="repos",
+        action="append",
+        default=[],
+        required=True,
+        help="repository path to discover/preview (repeatable for a multi-repo plan)",
+    )
+    hist.add_argument(
+        "--policy", required=True, help="identity policy JSON file ({version, aliases})"
+    )
+    hist.add_argument(
+        "--allowlist",
+        default="",
+        help="fleet commit-identity allowlist JSON (default: COMMIT_IDENTITY_ALLOWLIST)",
+    )
+    hist.add_argument(
+        "--expiry",
+        required=True,
+        help="ISO 8601 expiry the plan/approval binding is stamped with",
+    )
+    hist.add_argument(
+        "--remote",
+        dest="remotes",
+        action="append",
+        default=[],
+        help="target remote name bound into the plan (repeatable)",
+    )
+    hist.add_argument(
+        "--approval",
+        default="",
+        help="signed approval JSON file to verify against this exact plan",
+    )
+    hist.add_argument(
+        "--approval-key-env",
+        default="RM_HISTORY_IDENTITY_APPROVAL_KEY",
+        help="environment variable holding the approval's hex HMAC key (only read with --approval)",
+    )
     return p
 
 
@@ -517,10 +563,34 @@ def _promotion(args: argparse.Namespace) -> dict[str, Any]:
     return promotion_state(args.path or None)
 
 
+def _history_identity(args: argparse.Namespace) -> dict[str, Any]:
+    import os
+
+    from repository_manager.history_identity.cli import (
+        HistoryIdentityCliError,
+        run_preview,
+    )
+
+    approval_key_hex = os.environ.get(args.approval_key_env) if args.approval else None
+    try:
+        return run_preview(
+            repos=args.repos,
+            policy_path=args.policy,
+            allowlist_path=args.allowlist or None,
+            expiry=args.expiry,
+            remotes=args.remotes,
+            approval_path=args.approval or None,
+            approval_key_hex=approval_key_hex,
+        )
+    except HistoryIdentityCliError as exc:
+        return {"exit_code": 2, "error": str(exc)}
+
+
 _COMMAND_HANDLERS: dict[str, Callable[[argparse.Namespace], dict[str, Any]]] = {
     "concept": _concept,
     "lane": _lane,
     "promotion": _promotion,
+    "history-identity": _history_identity,
 }
 
 
