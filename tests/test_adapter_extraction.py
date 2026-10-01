@@ -67,8 +67,15 @@ EXPECTED_TOOL_NAMES = (
 # The fleet release gate (RM-RELEASE-R001) adds
 # `rm_workspace(action="fleet_evidence_check")` with one bounded
 # `fleet_evidence_json` parameter and includes the action in its public schema.
+# Recomputed for RM-CONNECTOR-04's certification re-check (EH-215): `rm_worktree`'s
+# `action` parameter gains an explicit `Literal[...]` enumeration of
+# `RM_WORKTREE_ACTIONS` (it was a bare `str` before), matching the live
+# connector-certify fingerprint for `rm_worktree`
+# (`fde09a290e9e0d803d6b1e71de6eeb711da12b6b176f41f0b542ca8ab8f0b0f4`, written to
+# `connector_manifest.yml` and `tool_schema_fingerprints.json` by
+# `connector-certify --write`, never hand-edited).
 BASELINE_CATALOG_SHA256 = (
-    "33a98d70926d7f94bb959c0cc721d498580f8410ef83edcb1c5612777dca431c"
+    "564e0e6d2d8c58c71da616150315757bc5e72e1cdec6bacaaa66fe6c36604cf0"
 )
 
 
