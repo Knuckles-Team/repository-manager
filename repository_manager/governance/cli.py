@@ -1,7 +1,7 @@
 """``repository-manager-governance`` — the lane and concept-ID command surface.
 
 Moved from ``agent-utilities lane …`` / ``agent-utilities concept …`` with the
-modules it drives (OQ-3, AUD-29): lane arbitration
+modules it drives: lane arbitration
 (:mod:`repository_manager.governance.lanes`) and same-host concept-ID
 reservation (:mod:`repository_manager.governance.concept_allocator`). The verbs,
 flags, JSON output and exit codes are unchanged — only the program name moved —

@@ -1,6 +1,6 @@
 """Merge is not deploy — CONCEPT:AU-OS.governance.merge-deploy-decoupling.
 
-Moved from agent-utilities' retired merge queue (OQ-3), where it was the
+Moved from agent-utilities' retired merge queue, where it was the
 ``merge-queue promotion`` verb; it is ``repository-manager-governance
 promotion`` now. It needs nothing from a queue: it compares two refs of the
 repository the caller stands in.

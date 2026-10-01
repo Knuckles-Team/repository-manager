@@ -67,7 +67,7 @@ EXPECTED_TOOL_NAMES = (
 # The fleet release gate (RM-RELEASE-R001) adds
 # `rm_workspace(action="fleet_evidence_check")` with one bounded
 # `fleet_evidence_json` parameter and includes the action in its public schema.
-# Recomputed for RM-CONNECTOR-04's certification re-check (EH-215): `rm_worktree`'s
+# Recomputed for RM-CONNECTOR-04's certification re-check: `rm_worktree`'s
 # `action` parameter gains an explicit `Literal[...]` enumeration of
 # `RM_WORKTREE_ACTIONS` (it was a bare `str` before), matching the live
 # connector-certify fingerprint for `rm_worktree`

@@ -2,8 +2,8 @@
 
 repository-manager used to reach ``agent_utilities.governance.lanes`` for lane
 arbitration (the shared-resource arbitration classes every concurrent lane on
-a host depends on: partition, lease, append-only fragment, read-only). OQ-3
-moved that module here as ``repository_manager.governance.lanes``, hosted and
+a host depends on: partition, lease, append-only fragment, read-only). An
+operator ruling moved that module here as ``repository_manager.governance.lanes``, hosted and
 versioned as this package's own governance implementation rather than an
 external dependency's. This test is the source-and-import proof the
 requirement's verification column calls for: a static AST scan confirms no

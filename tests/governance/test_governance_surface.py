@@ -1,4 +1,4 @@
-"""The repository-neutral seams OQ-3 added when governance moved here.
+"""The repository-neutral seams added when governance moved here.
 
 agent-utilities hard-coded itself into these modules (its package directory as
 the only concept-marker root, its install location as the ledger fallback, its

@@ -1031,7 +1031,7 @@ def resource_scope(name: str) -> str:
 
 #: The host state namespace every lease/fragment writer shares. It keeps the
 #: name this module had before it moved from agent-utilities to
-#: repository-manager (OQ-3): a lease is only exclusive while every holder
+#: repository-manager: a lease is only exclusive while every holder
 #: resolves the SAME lock file, so renaming the namespace would split one
 #: arbitration domain into two for as long as an older writer is still running.
 ARBITRATION_STATE_NAMESPACE = "agent-utilities"

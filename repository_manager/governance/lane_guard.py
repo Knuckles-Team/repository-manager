@@ -34,12 +34,12 @@ enforces:
 Exit code 1 = refused. Run it to check the repository containing the cwd (the
 same contract pre-commit itself uses — it always runs hooks with cwd at the repo
 root of the commit being made, so every repository's hook reuses this one gate
-unmodified — see D-CP-3):
+unmodified):
 
     python3 -m repository_manager.governance.lane_guard
 
 Moved from agent-utilities' ``scripts/check_lane_guard.py`` with the lane
-arbitration it enforces (OQ-3).
+arbitration it enforces.
 """
 
 from __future__ import annotations

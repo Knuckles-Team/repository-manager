@@ -1,7 +1,7 @@
 """Development governance: lane arbitration and concept-ID coordination.
 
-Moved here from ``agent_utilities.governance`` by operator ruling OQ-3
-(AUD-29): repository-manager is the development-governance tool, so it owns
+Moved here from ``agent_utilities.governance`` by operator ruling:
+repository-manager is the development-governance tool, so it owns
 
 * :mod:`.lanes` — the shared-resource arbitration classes (partition, lease,
   append-only fragments, guarded tree mutation) every lane on a host shares;
