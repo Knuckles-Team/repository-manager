@@ -18,98 +18,98 @@
     {
       "id": "RM-RELEASE-R001",
       "title": "Dependency-ordered fleet release planning",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "description": "Implemented on the default branch; exercised by tests/test_fleet_release_gate.py"
         }
       ]
     },
     {
       "id": "RM-RELEASE-01",
       "title": "Complete per-repository dependency census",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "description": "Implemented on the default branch; exercised by tests/test_fleet_census.py"
         }
       ]
     },
     {
       "id": "RM-RELEASE-02",
       "title": "Acyclic, typed dependency graph per release scope",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "description": "Implemented on the default branch; exercised by tests/test_fleet_order_receipt.py"
         }
       ]
     },
     {
       "id": "RM-RELEASE-03",
       "title": "Immutable, content-addressed release plan digest",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "description": "Implemented on the default branch; exercised by tests/test_workspace_release_plan.py"
         }
       ]
     },
     {
       "id": "RM-RELEASE-04",
       "title": "Dependency-ordered execution with trusted gating",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "description": "Implemented on the default branch; exercised by tests/test_fleet_release_gate.py"
         }
       ]
     },
     {
       "id": "RM-RELEASE-05",
       "title": "One shared admission contract across release routes",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "d418380165cf89695ee122fd00f2e6c50cc1a1e1",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d418380165cf89695ee122fd00f2e6c50cc1a1e1",
+          "description": "Implemented on the default branch; exercised by tests/test_mcp_handlers.py"
         }
       ]
     },
     {
       "id": "RM-RELEASE-06",
       "title": "Per-stage receipts with retry and rollback evidence",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0e4d015f8e6538e980abd5d9d12b6fe67ae41dcb",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/c930dfd5c01a2e5bb5ebe9465de0e3a329e5aab3",
+          "description": "Implemented on the default branch; exercised by tests/test_fleet_evidence_provider.py"
         }
       ]
     }

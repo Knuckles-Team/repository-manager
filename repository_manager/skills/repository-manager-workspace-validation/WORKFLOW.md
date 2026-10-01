@@ -35,7 +35,7 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
 | Condensed tool | Actions |
 |----------------|---------|
 | `rm_projects` | `install`, `build`, `validate`, `validate_status` |
-| `rm_workspace` | `list`, `list_branches`, `setup`, `template`, `save`, `maintain`, `maintain_status` |
+| `rm_workspace` | `fleet_evidence_check`, `list`, `list_branches`, `setup`, `template`, `save`, `maintain`, `maintain_status` |
 
 ### Key parameters
 - `repositories` — comma-separated project names/paths to scope `rm_projects(action="validate")`;

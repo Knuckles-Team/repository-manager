@@ -18,7 +18,7 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable, Mapping, MutableSequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import PurePosixPath
 from typing import TypeVar, cast
@@ -2345,6 +2345,320 @@ build_graph = build_dependency_graph
 read_phase_manifest = phase_manifest_from_mapping
 
 
+class FleetEvidenceKind(StrEnum):
+    """Non-package sources that can affect a fleet release order."""
+
+    DYNAMIC = "dynamic"
+    RESOLVER = "resolver"
+    DEPLOYMENT = "deployment"
+    FRONTEND = "frontend"
+
+
+@dataclass(frozen=True, slots=True)
+class FleetSCC:
+    """Exact member and internal-edge record for one cyclic component."""
+
+    members: tuple[str, ...]
+    edges: tuple[tuple[str, str], ...]
+    digest: str
+
+
+class FleetCycleError(WorkspaceReleaseError):
+    """Release refusal carrying every nontrivial fleet SCC."""
+
+    def __init__(self, components: tuple[FleetSCC, ...]) -> None:
+        self.components = components
+        super().__init__(f"fleet order has {len(components)} cyclic components")
+
+
+def _fleet_scc_nodes(project_ids: Iterable[str]) -> tuple[str, ...]:
+    raw_nodes = _bounded_sequence(project_ids, "fleet projects", max_items=MAX_PROJECTS)
+    if any(
+        type(node) is not str or canonical_repository_id(node) != node
+        for node in raw_nodes
+    ):
+        raise WorkspaceReleaseError("fleet SCC projects must have canonical IDs")
+    nodes = tuple(sorted(cast(tuple[str, ...], raw_nodes)))
+    if len(nodes) != len(set(nodes)):
+        raise WorkspaceReleaseError("fleet SCC project IDs are duplicated")
+    return nodes
+
+
+def _fleet_scc_edges(
+    project_edges: Iterable[tuple[str, str]], nodes: tuple[str, ...]
+) -> tuple[tuple[tuple[str, str], ...], dict[str, set[str]], dict[str, set[str]]]:
+    raw_edges = _bounded_sequence(
+        project_edges, "fleet project edges", max_items=MAX_EDGES
+    )
+    edges: list[tuple[str, str]] = []
+    adjacent: dict[str, set[str]] = {node: set() for node in nodes}
+    reverse: dict[str, set[str]] = {node: set() for node in nodes}
+    for pair in raw_edges:
+        dependent, dependency = _validated_fleet_scc_edge(pair, adjacent)
+        edges.append((dependent, dependency))
+        adjacent[dependent].add(dependency)
+        reverse[dependency].add(dependent)
+    if len(edges) != len(set(edges)):
+        raise WorkspaceReleaseError("fleet SCC edges are duplicated")
+    return tuple(edges), adjacent, reverse
+
+
+def _validated_fleet_scc_edge(
+    pair: object, adjacent: Mapping[str, set[str]]
+) -> tuple[str, str]:
+    if type(pair) is not tuple or len(pair) != 2:
+        raise WorkspaceReleaseError("fleet SCC edge is invalid")
+    dependent, dependency = pair
+    if type(dependent) is not str or type(dependency) is not str:
+        raise WorkspaceReleaseError("fleet SCC edge endpoints must be strings")
+    if dependent not in adjacent or dependency not in adjacent:
+        raise WorkspaceReleaseError("fleet SCC edge has unknown endpoint")
+    return dependent, dependency
+
+
+def _fleet_scc_finish_order(
+    nodes: tuple[str, ...], adjacent: Mapping[str, set[str]]
+) -> list[str]:
+    seen: set[str] = set()
+    finish: list[str] = []
+    for root in nodes:
+        if root in seen:
+            continue
+        seen.add(root)
+        stack = [(root, iter(sorted(adjacent[root])))]
+        while stack:
+            node, neighbors = stack[-1]
+            next_node = next(neighbors, None)
+            if next_node is None:
+                finish.append(node)
+                stack.pop()
+            elif next_node not in seen:
+                seen.add(next_node)
+                stack.append((next_node, iter(sorted(adjacent[next_node]))))
+    return finish
+
+
+def _fleet_scc_members(
+    root: str, reverse: Mapping[str, set[str]], seen: set[str]
+) -> set[str]:
+    members: set[str] = set()
+    frontier = [root]
+    seen.add(root)
+    while frontier:
+        node = frontier.pop()
+        members.add(node)
+        for next_node in reverse[node]:
+            if next_node not in seen:
+                seen.add(next_node)
+                frontier.append(next_node)
+    return members
+
+
+def _fleet_scc_record(
+    members: set[str], edges: tuple[tuple[str, str], ...]
+) -> FleetSCC:
+    exact_members = tuple(sorted(members))
+    exact_edges = tuple(
+        sorted(pair for pair in edges if pair[0] in members and pair[1] in members)
+    )
+    payload = {"members": exact_members, "edges": exact_edges}
+    return FleetSCC(
+        exact_members,
+        exact_edges,
+        hashlib.sha256(_canonical_json(payload).encode()).hexdigest(),
+    )
+
+
+def find_fleet_sccs(
+    project_ids: Iterable[str], project_edges: Iterable[tuple[str, str]]
+) -> tuple[FleetSCC, ...]:
+    """Return all exact cyclic SCCs with bounded, iterative traversal."""
+
+    nodes = _fleet_scc_nodes(project_ids)
+    edges, adjacent, reverse = _fleet_scc_edges(project_edges, nodes)
+    finish = _fleet_scc_finish_order(nodes, adjacent)
+    seen: set[str] = set()
+    components: list[FleetSCC] = []
+    for root in reversed(finish):
+        if root in seen:
+            continue
+        members = _fleet_scc_members(root, reverse, seen)
+        if len(members) == 1 and (root, root) not in edges:
+            continue
+        components.append(_fleet_scc_record(members, edges))
+    return tuple(sorted(components, key=lambda component: component.members))
+
+
+@dataclass(frozen=True, order=True, slots=True)
+class FleetEdgeObservation:
+    """One resolved, source-attributed consumer-to-provider relationship."""
+
+    kind: FleetEvidenceKind
+    dependent: str
+    dependency: str
+    source_digest: str
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not FleetEvidenceKind:
+            raise WorkspaceReleaseError("fleet evidence kind is unsupported")
+        dependent = canonical_repository_id(self.dependent)
+        dependency = canonical_repository_id(self.dependency)
+        if dependent == dependency:
+            raise WorkspaceReleaseError("fleet observation cannot be a self-edge")
+        digest = _bounded_text(self.source_digest, "fleet source digest", max_length=64)
+        if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise WorkspaceReleaseError("fleet source digest must be SHA-256")
+        object.__setattr__(self, "dependent", dependent)
+        object.__setattr__(self, "dependency", dependency)
+
+
+@dataclass(frozen=True, slots=True)
+class FleetOrderReceipt:
+    """Immutable preflight identity; scanners must supply source coverage receipts."""
+
+    manifest_digest: str
+    graph_digest: str
+    project_ids: tuple[str, ...]
+    observations: tuple[FleetEdgeObservation, ...]
+    coverage_receipts: tuple[tuple[FleetEvidenceKind, str], ...]
+    project_edges: tuple[tuple[str, str], ...]
+    parallel_groups: tuple[tuple[str, ...], ...]
+    digest: str
+
+    def canonical_payload(self) -> dict[str, object]:
+        return {
+            "manifest_digest": self.manifest_digest,
+            "graph_digest": self.graph_digest,
+            "project_ids": self.project_ids,
+            "observations": tuple(
+                (row.kind.value, row.dependent, row.dependency, row.source_digest)
+                for row in self.observations
+            ),
+            "coverage_receipts": tuple(
+                (kind.value, digest) for kind, digest in self.coverage_receipts
+            ),
+            "project_edges": self.project_edges,
+            "parallel_groups": self.parallel_groups,
+        }
+
+
+def _fleet_coverage(
+    manifest_digest: str, coverage_receipts: Mapping[FleetEvidenceKind, str]
+) -> tuple[tuple[FleetEvidenceKind, str], ...]:
+    if not _fleet_digest_valid(manifest_digest):
+        raise WorkspaceReleaseError("fleet manifest digest must be SHA-256")
+    if (
+        type(coverage_receipts) is not dict
+        or any(type(kind) is not FleetEvidenceKind for kind in coverage_receipts)
+        or set(coverage_receipts) != set(FleetEvidenceKind)
+    ):
+        raise WorkspaceReleaseError("fleet coverage requires all four source receipts")
+    coverage = tuple(sorted(coverage_receipts.items(), key=lambda item: item[0].value))
+    if any(
+        type(kind) is not FleetEvidenceKind or not _fleet_digest_valid(digest)
+        for kind, digest in coverage
+    ):
+        raise WorkspaceReleaseError("fleet coverage receipt digest is invalid")
+    return coverage
+
+
+def _fleet_digest_valid(value: object) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _fleet_observations(
+    observations: Iterable[FleetEdgeObservation], projects: tuple[str, ...]
+) -> tuple[FleetEdgeObservation, ...]:
+    rows = _typed_sequence(
+        observations, "fleet observations", FleetEdgeObservation, max_items=MAX_EDGES
+    )
+    rows = tuple(sorted(rows))
+    if len(rows) != len(set(rows)):
+        raise WorkspaceReleaseError("fleet observation is duplicated")
+    known = set(projects)
+    if any(row.dependent not in known or row.dependency not in known for row in rows):
+        raise WorkspaceReleaseError(
+            "fleet observation has an unknown repository endpoint"
+        )
+    return rows
+
+
+def _fleet_order_geometry(
+    graph: DependencyGraph,
+    projects: tuple[str, ...],
+    rows: tuple[FleetEdgeObservation, ...],
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, ...], ...]]:
+    edges = tuple(
+        sorted(
+            set(graph.project_edges) | {(row.dependent, row.dependency) for row in rows}
+        )
+    )
+    components = find_fleet_sccs(projects, edges)
+    if components:
+        raise FleetCycleError(components)
+    groups, diagnostics = _topological_groups(projects, edges)
+    if diagnostics:
+        raise GraphValidationError(diagnostics)
+    return edges, groups
+
+
+def build_fleet_order_receipt(
+    graph: DependencyGraph,
+    *,
+    manifest_digest: str,
+    observations: Iterable[FleetEdgeObservation],
+    coverage_receipts: Mapping[FleetEvidenceKind, str],
+) -> FleetOrderReceipt:
+    """Bind four explicit source scans and all observed edges to one DAG.
+
+    A zero-edge partition still needs its scanner receipt. This pure preflight
+    cannot prove a scanner was complete; its producer and live consumers are
+    separate release gates.
+    """
+
+    if type(graph) is not DependencyGraph:
+        raise WorkspaceReleaseError("fleet order requires a dependency graph")
+    coverage = _fleet_coverage(manifest_digest, coverage_receipts)
+    projects = tuple(project.project_id for project in graph.projects)
+    rows = _fleet_observations(observations, projects)
+    edges, groups = _fleet_order_geometry(graph, projects, rows)
+    receipt = FleetOrderReceipt(
+        manifest_digest=manifest_digest,
+        graph_digest=graph.digest,
+        project_ids=projects,
+        observations=rows,
+        coverage_receipts=coverage,
+        project_edges=edges,
+        parallel_groups=groups,
+        digest="",
+    )
+    return replace(
+        receipt,
+        digest=hashlib.sha256(
+            _canonical_json(receipt.canonical_payload()).encode()
+        ).hexdigest(),
+    )
+
+
+def validate_fleet_order_receipt(
+    graph: DependencyGraph, receipt: FleetOrderReceipt
+) -> None:
+    """Rebuild every order field, so a rehashed forged receipt is refused."""
+
+    if type(receipt) is not FleetOrderReceipt:
+        raise WorkspaceReleaseError("fleet order receipt type is unsupported")
+    if receipt.graph_digest != graph.digest:
+        raise WorkspaceReleaseError("fleet order graph digest does not match source")
+    expected = build_fleet_order_receipt(
+        graph,
+        manifest_digest=receipt.manifest_digest,
+        observations=receipt.observations,
+        coverage_receipts=dict(receipt.coverage_receipts),
+    )
+    if receipt != expected:
+        raise WorkspaceReleaseError("fleet order receipt does not match source")
+
+
 __all__ = [
     "C11_CONTRACT_VERSION",
     "DependencyEdge",
@@ -2354,6 +2668,11 @@ __all__ = [
     "EdgeConfidence",
     "Ecosystem",
     "FloorRewrite",
+    "FleetEdgeObservation",
+    "FleetEvidenceKind",
+    "FleetCycleError",
+    "FleetOrderReceipt",
+    "FleetSCC",
     "GraphDiagnosticCode",
     "GraphValidationError",
     "LegacyPhase",
@@ -2370,7 +2689,10 @@ __all__ = [
     "WorkspaceReleaseError",
     "WorkspaceReleasePlan",
     "build_dependency_graph",
+    "build_fleet_order_receipt",
     "build_graph",
+    "find_fleet_sccs",
+    "validate_fleet_order_receipt",
     "canonical_repository_id",
     "phase_manifest_from_mapping",
     "plan_digest",

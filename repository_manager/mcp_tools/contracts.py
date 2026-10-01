@@ -16,6 +16,7 @@ RM_GIT_ACTIONS = (
 )
 
 RM_WORKSPACE_ACTIONS = (
+    "fleet_evidence_check",
     "list",
     "list_branches",
     "setup",

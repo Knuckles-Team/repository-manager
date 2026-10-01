@@ -63,6 +63,9 @@ from agent_utilities.base_utilities import get_logger
 
 from repository_manager import dependency_readiness
 from repository_manager.canonical_guard import guarded_canonical_mutation
+from repository_manager.development.fleet_release_gate import (
+    require_legacy_release_route,
+)
 from repository_manager.gates import (
     HOOK_STAGE_BY_GATE_STAGE,
     precommit_gate_environment,
@@ -782,6 +785,11 @@ class _PhaseProgress:
         self.state["progress"] = 100
 
 
+def _require_release_preparation(auto_bump: bool, auto_push: bool) -> None:
+    if auto_bump or auto_push:
+        require_legacy_release_route("release_preparation")
+
+
 class Git:
     """A class to handle Git operations such as cloning and pulling repositories."""
 
@@ -1031,6 +1039,7 @@ class Git:
         `setup_from_yaml` returns ``status="error"`` if any project failed to
         install, even though every repository was still cloned/pulled.
         """
+        require_legacy_release_route("setup")
         abs_yaml_path = os.path.abspath(os.path.expanduser(yaml_path))
         if not os.path.exists(abs_yaml_path):
             return GitResult(
@@ -2546,6 +2555,7 @@ class Git:
         self, extra: str = "all", threads: int | None = None, report: bool = True
     ) -> list[GitResult]:
         """Bulk installs Python and Node projects in the workspace."""
+        require_legacy_release_route("install")
         effective_threads = threads if threads is not None else self.threads
         threads = min(effective_threads, self._cpu_aware_threads(20.0))
         if not self.project_map:
@@ -2722,6 +2732,7 @@ class Git:
 
     def build_projects(self, threads: int | None = None) -> list[GitResult]:
         """Build projects serially so compilation cannot exhaust the workstation."""
+        require_legacy_release_route("build")
         del threads
         if not self.project_map:
             logger.warning("No projects to build.")
@@ -2839,6 +2850,7 @@ class Git:
         bump_part: str = "minor",
     ) -> dict[str, Any]:
         """Validate projects in parallel, optionally triggering a release if successful."""
+        _require_release_preparation(auto_bump, auto_push)
         if not self.project_map:
             logger.warning("No projects to validate.")
             return {"passed": False, "validation_results": {}, "release_results": {}}
@@ -3897,6 +3909,7 @@ class Git:
         """
         Push updates for multiple projects in parallel.
         """
+        require_legacy_release_route("push")
         if project_dirs is None:
             if self.project_map:
                 project_dirs = list(self.project_map.values())
@@ -4578,6 +4591,7 @@ class Git:
         non-fast-forward updates, tag collisions, and partial atomic updates all
         refuse publication; GitHub push protection returns an actionable error.
         """
+        require_legacy_release_route("push")
         target_path = self._validated_operation_path(path, operation="push_project")
         try:
             if _pinned is not None:
@@ -5590,6 +5604,7 @@ class Git:
         """
         Install a Python project using pip install -e .[extra].
         """
+        require_legacy_release_route("install")
         target_path = self._resolve_path(path)
 
         command = self._get_pip_command(extra)
@@ -5909,6 +5924,7 @@ class Git:
         Returns:
             GitResult: Result of the operation.
         """
+        require_legacy_release_route("bump")
         target_dir = self._validated_operation_path(path, operation="bump_version")
         try:
             if _pinned is not None:
@@ -6340,6 +6356,7 @@ class Git:
         verbose: bool = False,
     ) -> list[GitResult]:
         """Bumps the version for all projects in the workspace in parallel."""
+        require_legacy_release_route("bump")
         exclude = exclude or []
         results = []
 
@@ -6386,6 +6403,7 @@ class Git:
         Skips transitive ``# via pkg`` comment lines (no operator+version → no match).
         (CONCEPT:RM-BUMP cross-dependency propagation)
         """
+        require_legacy_release_route("bump")
         target_file = Path(self._resolve_path(file_path))
         file_name = _file_name or target_file.name
         content = self._read_dependency_content(target_file, _directory_fd, file_name)
@@ -7631,6 +7649,7 @@ class Git:
         Concept:
             CONCEPT:RM-BUMP
         """
+        require_legacy_release_route("bump")
         if progress is None:
             progress = self.progress
 
@@ -8573,6 +8592,7 @@ class Git:
         Concept:
             CONCEPT:RM-PUSH
         """
+        require_legacy_release_route("push")
         if progress is None:
             progress = self.progress
 

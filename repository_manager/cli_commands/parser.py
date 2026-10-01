@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -30,6 +31,11 @@ from repository_manager.cli_commands.phase_direction import (
     run_phase_direction_here_cli,
 )
 from repository_manager.cli_commands.remote_workers import run_remote_workers_cli
+from repository_manager.development.fleet_release_gate import (
+    FleetReleaseGateError,
+    authorize_fleet_evidence_reference,
+    parse_fleet_evidence_reference,
+)
 
 
 def run(runtime: CliRuntime) -> int:
@@ -83,6 +89,11 @@ Examples:
         "--repositories",
         type=str,
         help="Comma-separated list of repository names to filter operations.",
+    )
+    group_general.add_argument(
+        "--fleet-evidence-check",
+        type=str,
+        help="Read-only check of a bounded fleet evidence reference JSON file.",
     )
 
     group_workspace = parser.add_argument_group("Workspace Management")
@@ -721,6 +732,14 @@ Examples:
 
     args = parser.parse_args()
 
+    if args.fleet_evidence_check:
+        return _check_fleet_evidence(runtime, args)
+    return _run_parsed_command(runtime, parser, args)
+
+
+def _run_parsed_command(
+    runtime: CliRuntime, parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> int:
     _dispatch_phase_direction_verb(args)
 
     # Handled before every other verb and returns immediately: the queue drives a
@@ -757,6 +776,43 @@ Examples:
     has_errors = _dispatch_maintain(runtime, git, args, has_errors)
     has_errors = _dispatch_push(runtime, git, args, has_errors)
     return _cli_return_code(has_errors)
+
+
+def _check_fleet_evidence(runtime: CliRuntime, args: argparse.Namespace) -> int:
+    try:
+        if any(
+            getattr(args, name, False)
+            for name in (
+                "setup",
+                "clone",
+                "pull",
+                "install",
+                "build",
+                "maintain",
+                "push",
+                "bump",
+                "validate",
+                "save",
+                "add",
+                "commit",
+            )
+        ):
+            raise FleetReleaseGateError(
+                "fleet evidence check cannot be combined with a mutation"
+            )
+        path = Path(args.fleet_evidence_check)
+        if path.is_symlink() or path.stat().st_size > 4096:
+            raise FleetReleaseGateError("fleet evidence file is unsafe or oversized")
+        with path.open("rb") as handle:
+            reference = parse_fleet_evidence_reference(handle.read(4097))
+        provider = runtime.fleet_preflight_provider
+        if provider is None:
+            raise FleetReleaseGateError("fleet preflight provider is unavailable")
+        authorize_fleet_evidence_reference(provider(reference), reference)
+    except (OSError, FleetReleaseGateError):
+        runtime.logger.error("Fleet evidence preflight refused")
+        return 2
+    return 0
 
 
 def _dispatch_phase_direction(args: argparse.Namespace) -> None:

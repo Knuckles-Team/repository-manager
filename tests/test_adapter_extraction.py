@@ -64,8 +64,11 @@ EXPECTED_TOOL_NAMES = (
 # ``phase_direction_here`` to ``RM_GATES_ACTIONS`` (routed to
 # ``dependency_readiness.check_phase_direction_here``), names it in
 # ``rm_gates``'s ``action`` description, and adds the ``start`` parameter.
+# The fleet release gate (RM-RELEASE-R001) adds
+# `rm_workspace(action="fleet_evidence_check")` with one bounded
+# `fleet_evidence_json` parameter and includes the action in its public schema.
 BASELINE_CATALOG_SHA256 = (
-    "54956a5dd92b419f1179b1ff959237f514a18262b8733506114f3ad25334a50d"
+    "33a98d70926d7f94bb959c0cc721d498580f8410ef83edcb1c5612777dca431c"
 )
 
 

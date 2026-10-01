@@ -9,9 +9,17 @@ from agent_utilities.mcp.action_dispatch import resolve_action
 from fastmcp import Context, FastMCP
 from pydantic import Field
 
+from repository_manager.development.fleet_release_gate import (
+    require_legacy_release_route,
+)
 from repository_manager.mcp_tools.context import McpToolContext, from_server
 from repository_manager.mcp_tools.contracts import RM_PROJECTS_ACTIONS
 from repository_manager.scan_models import RepoScanResult
+
+
+def _require_project_release_route(action: str) -> None:
+    if action in {"install", "build"}:
+        require_legacy_release_route(action)
 
 
 def _normalize_rm_projects_flags(
@@ -538,6 +546,7 @@ def register_project_tools(
         if isinstance(resolved, dict):
             return resolved
         action = resolved
+        _require_project_release_route(action)
 
         repositories, force_revalidate_override, early_return = (
             _resolve_failed_only_repositories(

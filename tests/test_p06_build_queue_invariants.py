@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from agent_utilities.governance.lanes import partitioned_paths
 
 from repository_manager import build_queue as bq
 from repository_manager.disk_policy import DiskDecisionCode
@@ -83,7 +84,7 @@ def test_run_build_command_overrides_a_leaked_cargo_target_dir_and_tmpdir(
     written = out_file.read_text().splitlines()
     observed_target, observed_tmp = written[0], written[1]
     assert observed_target != hazard_target
-    assert Path(observed_target) == tree / "target-isolated"
+    assert Path(observed_target) == partitioned_paths(tree).cargo_target_dir
     assert observed_tmp != hazard_tmp
     assert len(observed_tmp) < 60  # short by construction — see PartitionedPaths
 
@@ -135,9 +136,7 @@ def disk_repo(tmp_path: Path) -> Path:
 
 def _usage(total_gb: float, free_gb: float) -> SimpleNamespace:
     gib = 1024**3
-    return SimpleNamespace(
-        total=int(total_gb * gib), free=int(free_gb * gib), used=0
-    )
+    return SimpleNamespace(total=int(total_gb * gib), free=int(free_gb * gib), used=0)
 
 
 def test_request_refuses_when_disk_is_over_the_high_watermark_and_gc_cannot_help(
