@@ -60,38 +60,65 @@
     {
       "id": "RM-GOVERNANCE-02",
       "title": "Branch allocation tracks ownership, lease, and lifecycle state",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "78c6baf04778e88ebe934ddbf6b6462fe3ced248",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/78c6baf04778e88ebe934ddbf6b6462fe3ced248",
+          "description": "Implemented on the default branch; exercised by tests/test_lane_registry.py::test_restart_heartbeat_and_fence_refusal_with_injected_clock"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-03",
       "title": "Isolated checkouts never corrupt shared Git config",
       "delivery_state": "SPECIFIED",
-      "evidence": []
+      "evidence": [],
+      "remaining": "WorktreeManager.add() uses real `git worktree add` (not the EnterWorktree pattern), but no test asserts the shared repo's core.bare stays false, and no explicit serialization lock guards concurrent `git worktree add` calls against the shared common dir."
     },
     {
       "id": "RM-GOVERNANCE-04",
       "title": "Commits stage only reviewed paths and verified gate identity",
       "delivery_state": "SPECIFIED",
-      "evidence": []
+      "evidence": [],
+      "remaining": "safe_commit()'s own docstring says it stages the COMPLETE working tree (including untracked files and deletions), the opposite of staging only explicitly reviewed paths; no reviewed-path allowlist enforcement was found."
     },
     {
       "id": "RM-GOVERNANCE-05",
       "title": "Merge-queue promotion rechecks identity before reporting success",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "269c661d12faef0fe383d19614a6f00d8c3d61d8",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/269c661d12faef0fe383d19614a6f00d8c3d61d8",
+          "description": "Implemented on the default branch; exercised by tests/test_merge_queue.py::test_a_baseline_timeout_is_a_refusal_not_an_empty_baseline"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-06",
       "title": "Cleanup proves containment before deleting a branch checkout",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "e20bbf7b4ff578ab81fad006c2e84406f038c29e",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/e20bbf7b4ff578ab81fad006c2e84406f038c29e",
+          "description": "Implemented on the default branch; exercised by tests/test_worktree.py::test_delete_merged_branch_refuses_an_unmerged_branch"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-07",
       "title": "Concept reservations are scoped and cannot be silently reused",
       "delivery_state": "SPECIFIED",
-      "evidence": []
+      "evidence": [],
+      "remaining": "ConceptCoordinationActions scaffolding (scoping, lifecycle, reconcile modules) exists, but per concept_actions.py's own comment the real authority (agent_utilities.governance.concept_reservation) is not wired on main, so resolve_default_authority() always raises ConceptAuthorityUnavailable today; du"
     },
     {
       "id": "RM-GOVERNANCE-R002",
