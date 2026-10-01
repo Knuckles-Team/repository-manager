@@ -513,6 +513,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `PIP_EXTRA_INDEX_URL` | — | optional: space-separated pip fallback extra indexes for the dependency-readiness check |
 | `REPOSITORY_MANAGER_CLONE_FILTER` | — | optional git clone filter: blob:none or tree:0 |
 | `CODE_ENHANCER_SCRIPTS_DIR` | — | optional code-enhancer helper scripts directory |
+| `COMMIT_IDENTITY_ALLOWLIST` | — | path to the fleet commit-identity allowlist JSON (shared with pipelines_hooks' commit gate); read by `repository-manager-governance history-identity` |
 | `GITLAB_URL` | `https://gitlab.com` | GitLab base URL (alias: GITLAB_HOST) |
 | `GITLAB_HOST` | `https://gitlab.com` | legacy alias for GITLAB_URL |
 | `GITLAB_TOKEN` | secret-injected | GitLab access token (alias: GITLAB_PRIVATE_TOKEN) |
@@ -572,7 +573,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | — | Operator-configured model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_70 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_71 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 
