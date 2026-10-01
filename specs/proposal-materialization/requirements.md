@@ -1,10 +1,5 @@
 # RM-MATERIALIZE-001 requirements
 
-Every requirement this specification owns, with the proof that closes it. Delivery state and
-public evidence for each ID are recorded in [`status.json`](status.json); this file defines what
-each ID means. The design is in [`spec.md`](spec.md) and [`plan.md`](plan.md), the test contract
-in [`test-spec.md`](test-spec.md), and the work order in [`tasks.md`](tasks.md).
-
 | ID | Requirement | Verification |
 |---|---|---|
 | `RM-MATERIALIZE-R001` | **Repository-manager materializes an approved proposal into a commit.** Repository-manager alone creates an isolated working copy at the approved base, applies only the approved patch, runs the declared gates, stages the reviewed files explicitly, creates one commit with approved attribution, and submits the result to the existing merge queue rather than reporting it merged directly; it returns an immutable materialization receipt that must be re-ingested before the originating proposal can resolve. | Fault-injection and negative tests confirm no Git mutation occurs without a valid caller-verified approval, and a queue rehearsal with a verified receipt confirms the materialization path. |

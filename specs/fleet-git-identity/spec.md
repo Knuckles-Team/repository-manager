@@ -32,3 +32,5 @@ The approved identity manifest declares exact old-email/name match rules and the
 ## State and evidence
 
 No history rewrite is claimed. `status.json` remains SPECIFIED/NOT_AUDITED until owner and policy decisions are recorded; source code, if built, still requires exact-main commit and test evidence before LANDED, and a fully verified rehearsal/publication receipt before ACCEPTED. Record hashes and public CI/PR URLs here, not machine-specific paths.
+
+Requirement IDs are defined in [requirements.md](requirements.md); delivery state per ID is in `status.json`.

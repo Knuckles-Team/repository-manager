@@ -1,10 +1,5 @@
 # RM-RELEASE-001 requirements
 
-Every requirement this specification owns, with the proof that closes it. Delivery state and
-public evidence for each ID are recorded in [`status.json`](status.json); this file defines what
-each ID means. The design is in [`spec.md`](spec.md) and [`plan.md`](plan.md), the test contract
-in [`test-spec.md`](test-spec.md), and the work order in [`tasks.md`](tasks.md).
-
 | ID | Requirement | Verification |
 |---|---|---|
 | `RM-RELEASE-R001` | **Dependency-ordered fleet release planning.** A maintainer can release a selected set of repositories in an order derived from declared and observed dependency edges, producing a census of each repository's package, version source, and dependency group and rejecting cycles before any mutation. | A fixture with an omitted repository, contradictory metadata, or a dependency cycle yields an incomplete receipt or a typed diagnostic rather than an executable plan. |

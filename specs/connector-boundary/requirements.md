@@ -1,10 +1,5 @@
 # RM-CONNECTOR-001 requirements
 
-Every requirement this specification owns, with the proof that closes it. Delivery state and
-public evidence for each ID are recorded in [`status.json`](status.json); this file defines what
-each ID means. The design is in [`spec.md`](spec.md) and [`plan.md`](plan.md), the test contract
-in [`test-spec.md`](test-spec.md), and the work order in [`tasks.md`](tasks.md).
-
 | ID | Requirement | Verification |
 |---|---|---|
 | `RM-CONNECTOR-R001` | **Migrate connector imports to the public SDK boundary.** repository-manager keeps its existing Git, branch-management, and release tooling in place while migrating the imports under `agents/[p-s]*/**` that reached the shared agent-orchestration package's connector transport so they call the public agent-connector-sdk API instead, keeping direct agent-orchestration imports only at the boundary where an actual orchestration decision is made. | Import and contract tests confirm repository-manager's tool entry points execute through the public SDK API without reaching the retired private connector modules. |

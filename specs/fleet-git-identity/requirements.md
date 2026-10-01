@@ -1,10 +1,5 @@
 # RM-IDENTITY-001 requirements
 
-Every requirement this specification owns, with the proof that closes it. Delivery state and
-public evidence for each ID are recorded in [`status.json`](status.json); this file defines what
-each ID means. The design is in [`spec.md`](spec.md) and [`plan.md`](plan.md), the test contract
-in [`test-spec.md`](test-spec.md), and the work order in [`tasks.md`](tasks.md).
-
 | ID | Requirement | Verification |
 |---|---|---|
 | `RM-IDENTITY-R001` | **Rewrite commit identities across public repositories with approval and rollback.** An authorized maintainer can preview, and after explicit signed approval apply, a rewrite of every commit and tag author/committer identity across a selected set of public repositories, mapping recognized maintainer, Claude (`Claude <noreply@anthropic.com>`), and Codex (`Codex <codex@users.noreply.github.com>`) aliases to their canonical identity while holding unclassified identities for explicit review. The rewrite preserves every commit's tree bytes, covers all branches and tags, creates a recoverable backup of the original refs, and publishes to each configured remote only after preview and approval succeed. | A verification run compares old and new commit tree digests for byte-for-byte equality and confirms the backup refs can restore the original history before any live rewrite is approved. |

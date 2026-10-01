@@ -30,3 +30,5 @@ repository-manager owns census, ordering, Git execution, and receipts. Package m
 ## Trace and evidence
 
 This directory is the complete contribution contract for **RM-RELEASE-R001**. Related public repository contracts may use the same ID, but this spec stands alone. Source implementation is not acceptance. Mark **LANDED** only after the exact code commit reaches `main`; mark **ACCEPTED** only after the tests in [test-spec.md](test-spec.md), full applicable quality gates, and a checked-in release receipt have passed for that commit. Record commit, CI run, and artifact digest here when verified.
+
+Requirement IDs are defined in [requirements.md](requirements.md); delivery state per ID is in `status.json`.

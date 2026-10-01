@@ -1,10 +1,5 @@
 # RM-GOVERNANCE-001 requirements
 
-Every requirement this specification owns, with the proof that closes it. Delivery state and
-public evidence for each ID are recorded in [`status.json`](status.json); this file defines what
-each ID means. The design is in [`spec.md`](spec.md) and [`plan.md`](plan.md), the test contract
-in [`test-spec.md`](test-spec.md), and the work order in [`tasks.md`](tasks.md).
-
 | ID | Requirement | Verification |
 |---|---|---|
 | `RM-GOVERNANCE-R001` | **repository-manager hosts the Git development-governance modules.** repository-manager's codebase contains the merge-queue, isolated-checkout lifecycle, and concept-reservation modules as the package's own governance implementation, consumed internally by its commit and queue tooling rather than duplicated elsewhere. | Verified by source and import tests confirming no parallel Git-governance implementation exists outside repository-manager's own modules. |

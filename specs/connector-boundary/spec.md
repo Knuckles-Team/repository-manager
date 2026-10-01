@@ -19,3 +19,5 @@ The repository-manager agent continues to expose its existing Git, worktree, rel
 ## Failures and boundaries
 
 Missing SDK or orchestration dependency produces a clear startup or call error for the affected capability, not silent substitution with old private modules. Git operation authority is RM; connector transport is SDK; orchestration owns only agent decisions. This spec does not certify the other connector repositories. Record exact main commit, import inventory, package artifact, and CI results before LANDED/ACCEPTED; the existence of a branch or spec is insufficient.
+
+Requirement IDs are defined in [requirements.md](requirements.md); delivery state per ID is in `status.json`.
