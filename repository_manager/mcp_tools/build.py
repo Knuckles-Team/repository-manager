@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_utilities.mcp.action_dispatch import resolve_action
-from agent_utilities.mcp.concurrency import run_blocking
+from agent_connector_sdk.mcp.action_dispatch import resolve_action
+from agent_connector_sdk.mcp.concurrency import run_blocking
 from fastmcp import Context, FastMCP
 from pydantic import Field
 
@@ -97,9 +97,8 @@ def register_build_tools(
         **Arbitration is advisory (D-CP-8)**: an agent running ``cargo build``
         directly bypasses this broker entirely.
         """
-        from agent_utilities.governance.lanes import LaneArbitrationError
-
         from repository_manager import build_queue as build_queue_core
+        from repository_manager.governance.lanes import LaneArbitrationError
 
         resolved = resolve_action(
             action, RM_BUILD_ACTIONS, service="repository-manager"

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from agent_utilities.mcp.action_dispatch import resolve_action
-from agent_utilities.mcp.concurrency import run_blocking
+from agent_connector_sdk.mcp.action_dispatch import resolve_action
+from agent_connector_sdk.mcp.concurrency import run_blocking
 from fastmcp import Context, FastMCP
 from pydantic import Field
 
@@ -149,7 +149,17 @@ def register_worktree_tools(
 
     @mcp.tool(tags={"workspace_management", "project_manager"})
     async def rm_worktree(
-        action: str = Field(
+        action: Literal[
+            "add",
+            "audit",
+            "bulk_add",
+            "list",
+            "merge",
+            "prune",
+            "remove",
+            "reset_branch",
+            "sync",
+        ] = Field(
             description="Action: 'add', 'list', 'remove', 'merge', 'sync', 'prune', 'bulk_add', 'audit', 'reset_branch'."
         ),
         repo: str | None = Field(

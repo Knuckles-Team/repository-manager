@@ -1021,19 +1021,58 @@ class ValidationRunner:
                 f"tree SHA moved before validation: expected {request.tree_sha}, found {head}"
             )
 
+    @classmethod
+    def _dirty_tree_paths(cls, tree: Path) -> tuple[str, ...]:
+        """Every path with a current working-tree difference: tracked change or
+        deletion, plus untracked files.  This validation snapshot's explicit,
+        reviewed allowlist is "whatever this lane tree is currently dirty with"
+        by design -- the snapshot exists to capture the lane's real state
+        before a heavy gate runs, not a hand-picked subset of it -- so this
+        enumerates that state rather than ``safe_commit`` defaulting to it.
+        """
+        tracked = cls._bounded_git(["diff", "--name-only", "-z"], tree)
+        untracked = cls._bounded_git(
+            ["ls-files", "--others", "--exclude-standard", "-z"], tree
+        )
+        if tracked is None or untracked is None:
+            raise ValidationPreparationError(
+                "could not enumerate the dirty tree's paths before snapshot"
+            )
+        names: list[bytes] = []
+        for result in (tracked, untracked):
+            returncode, stdout, stderr = result
+            if returncode != 0:
+                detail = stderr.decode("utf-8", "replace").strip()
+                raise ValidationPreparationError(
+                    f"git status enumeration refused validation: {detail}"
+                )
+            names.extend(name for name in stdout.split(b"\0") if name)
+        paths = tuple(
+            dict.fromkeys(name.decode("utf-8", "surrogateescape") for name in names)
+        )
+        if not paths:
+            raise ValidationPreparationError(
+                "no dirty paths found to snapshot despite a dirty tree status"
+            )
+        return paths
+
     def _take_snapshot(
         self, request: ValidationRequest, tree: Path, has_config: bool
     ) -> tuple[str, bool]:
+        dirty_paths = self._dirty_tree_paths(tree)
         if has_config:
             result = self.safe_commit_fn(
                 tree,
                 f"RMDD-11 validation snapshot {request.request_id}",
+                paths=dirty_paths,
                 defer_gate=True,
             )
             snapshot_gate_deferred = True
         else:
             result = self.safe_commit_fn(
-                tree, f"RMDD-11 validation snapshot {request.request_id}"
+                tree,
+                f"RMDD-11 validation snapshot {request.request_id}",
+                paths=dirty_paths,
             )
             snapshot_gate_deferred = False
         if not result.get("ok"):

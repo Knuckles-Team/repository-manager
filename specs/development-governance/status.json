@@ -40,14 +40,14 @@
     {
       "id": "RM-GOVERNANCE-R001",
       "title": "repository-manager hosts the Git development-governance modules",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "15227b632c59bbd0963a39ebd002fb233bea259d",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/15227b632c59bbd0963a39ebd002fb233bea259d",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "d00c0834551ecb859b617b4171aadde229d82b31",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d00c0834551ecb859b617b4171aadde229d82b31",
+          "description": "Implemented on the default branch; exercised by tests/governance/test_no_parallel_lane_authority.py"
         }
       ]
     },
@@ -81,9 +81,9 @@
     {
       "id": "RM-GOVERNANCE-04",
       "title": "Commits stage only reviewed paths and verified gate identity",
-      "delivery_state": "SPECIFIED",
+      "delivery_state": "BUILDING",
       "evidence": [],
-      "remaining": "safe_commit()'s own docstring says it stages the COMPLETE working tree (including untracked files and deletions), the opposite of staging only explicitly reviewed paths; no reviewed-path allowlist enforcement was found."
+      "remaining": "Commits now stage only an explicit path allowlist and refuse an empty one (tests/test_safe_commit.py). Remaining: prove that the declared local gates run and that the resulting tree and gate identity are bound together, and that merge-queue entry is refused from a dirty or unauthorized checkout."
     },
     {
       "id": "RM-GOVERNANCE-05",
@@ -221,14 +221,14 @@
     {
       "id": "RM-GOVERNANCE-R018",
       "title": "Dependency-readiness hook works from any checkout location",
-      "delivery_state": "BUILT",
+      "delivery_state": "LANDED",
       "evidence": [
         {
-          "kind": "branch",
+          "kind": "merged_head",
           "result": "passed",
-          "commit": "fe3e283f0cb0260e0b210253fcc4d15d6f0439e0",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/fe3e283f0cb0260e0b210253fcc4d15d6f0439e0",
-          "description": "Implementation commit is published on a branch; not yet merged to the default branch."
+          "commit": "d00c0834551ecb859b617b4171aadde229d82b31",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d00c0834551ecb859b617b4171aadde229d82b31",
+          "description": "Implemented on the default branch; exercised by tests/test_dependency_readiness.py"
         }
       ]
     },

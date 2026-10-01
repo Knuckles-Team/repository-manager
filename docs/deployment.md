@@ -163,56 +163,6 @@ docker compose -f docker/mcp.compose.yml up -d
 docker compose -f docker/mcp.compose.yml logs -f
 ```
 
-## Agent server
-
-`repository-manager` ships a second console script, `repository-manager-agent`, that
-runs the integrated Pydantic-AI **graph agent** over the Agent Control Protocol
-(ACP) and the Agent Web UI (AG-UI). It connects to the MCP server it orchestrates via
-`MCP_URL` and listens on port `9047` by default.
-
-```bash
-export MCP_URL=http://localhost:8000/mcp
-export PROVIDER=openai
-export MODEL_ID=gpt-4o
-repository-manager-agent
-```
-
-The repo ships [`docker/agent.compose.yml`](https://github.com/Knuckles-Team/repository-manager/blob/main/docker/agent.compose.yml),
-which provisions the MCP server and the agent server together — the agent reaches the
-MCP server by container name:
-
-```yaml
-services:
-  repository-manager-mcp:
-    image: example/repository-manager@sha256:<digest>
-    hostname: repository-manager-mcp
-    env_file: [../.env]
-    environment:
-      - HOST=0.0.0.0
-      - PORT=8000
-      - TRANSPORT=streamable-http
-    ports: ["8000:8000"]
-
-  repository-manager-agent:
-    image: example/repository-manager@sha256:<digest>
-    depends_on: [repository-manager-mcp]
-    command: ["repository-manager-agent"]
-    env_file: [../.env]
-    environment:
-      - HOST=0.0.0.0
-      - PORT=9047
-      - MCP_URL=http://repository-manager-mcp:8000/mcp
-      - PROVIDER=${PROVIDER:-openai}
-      - MODEL_ID=${MODEL_ID:-gpt-4o}
-      - ENABLE_WEB_UI=True
-      - ENABLE_OTEL=True
-    ports: ["9047:9047"]
-```
-
-```bash
-docker compose -f docker/agent.compose.yml up -d
-```
-
 ## Behind a Caddy reverse proxy
 
 Expose the HTTP server on a hostname with automatic TLS. Add to your `Caddyfile`:

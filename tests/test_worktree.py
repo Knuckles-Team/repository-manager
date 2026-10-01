@@ -679,7 +679,7 @@ def test_prune_skips_a_worktree_whose_lane_holds_a_lease(repo):
     """The D-FE-9 shape: the branch is merged and the tree is clean because the
     lane is blocked inside a long `pre-commit` run — which the lane protocol
     announces as a lease at the scope every lane of this repo shares."""
-    lanes = pytest.importorskip("agent_utilities.governance.lanes")
+    lanes = pytest.importorskip("repository_manager.governance.lanes")
     made = _merged_worktree(repo.wm)
 
     with lanes.hold_lease(
@@ -941,7 +941,7 @@ def test_sync_refuses_when_base_ref_is_not_resolvable_from_the_worktree(repo):
 def test_remove_refuses_an_occupied_worktree_even_with_force(repo):
     """The exact D-CDX-15 shape: a lane just committed (so the worktree is
     clean) and holds a live lease - `force=True` must not bypass it."""
-    lanes = pytest.importorskip("agent_utilities.governance.lanes")
+    lanes = pytest.importorskip("repository_manager.governance.lanes")
     made = repo.wm.add("myrepo", "rm-buildbroker-0802")
     _commit_in(made["path"], "wip.txt", "fresh-wip-commit")
 
@@ -968,7 +968,7 @@ def test_remove_still_works_on_a_genuinely_abandoned_worktree(repo):
 def test_reset_branch_refuses_an_occupied_worktree_with_unmerged_commits(repo):
     """The literal acceptance criterion: an occupied worktree with unmerged
     commits is refused rather than reset."""
-    lanes = pytest.importorskip("agent_utilities.governance.lanes")
+    lanes = pytest.importorskip("repository_manager.governance.lanes")
     made = repo.wm.add("myrepo", "rm-buildbroker-0802")
     _commit_in(made["path"], "wip.txt", "five-wip-commits")
     tip_before = _ref(repo.path, "refs/heads/rm-buildbroker-0802")

@@ -135,7 +135,7 @@ def dispatch(
     is never allowed to propagate as a bare traceback to either adapter.
     """
 
-    from agent_utilities.mcp.action_dispatch import resolve_action
+    from agent_connector_sdk.mcp.action_dispatch import resolve_action
 
     resolved = resolve_action(
         action, CONCEPT_ACTIONS, service="repository-manager-concepts"

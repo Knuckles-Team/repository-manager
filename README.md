@@ -81,7 +81,7 @@ This table is auto-generated from the live server — do not edit by hand.
 #### Verbose 1:1 API-mapped tools (`MCP_TOOL_MODE=verbose` or `both`)
 
 <details>
-<summary>42 per-operation tools — one per public API method (click to expand)</summary>
+<summary>51 per-operation tools — one per public API method (click to expand)</summary>
 
 | MCP Tool | Toggle Env Var | Description |
 |----------|----------------|-------------|
@@ -127,10 +127,19 @@ This table is auto-generated from the live server — do not edit by hand.
 | `repository_manager_validate_and_release` | `GITTOOL` | Validate projects in parallel, optionally triggering a release if successful. |
 | `repository_manager_validate_single_project` | `GITTOOL` | Validates a single repository by running its FAST-tier gates. |
 | `repository_manager_worktree_hygiene` | `GITTOOL` | Audit (and optionally prune) session worktrees as a release-flow step. |
+| `rm_worktree__add` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+| `rm_worktree__audit` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+| `rm_worktree__bulk_add` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+| `rm_worktree__list` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+| `rm_worktree__merge` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+| `rm_worktree__prune` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+| `rm_worktree__remove` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+| `rm_worktree__reset_branch` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+| `rm_worktree__sync` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
 
 </details>
 
-_12 action-routed tool(s) · 42 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
+_12 action-routed tool(s) · 51 verbose 1:1 tool(s). Each is enabled unless its `<DOMAIN>TOOL` toggle is set false; `MCP_TOOL_MODE` selects the surface (**`intent` default** — the six verb-tools, granular set loaded on demand · `condensed` action-routed · `verbose` 1:1 · `both`). Auto-generated — do not edit._
 <!-- MCP-TOOLS-TABLE:END -->
 
 Detailed tool schemas, parameter shapes, and validation constraints are preserved in [docs/usage.md](docs/usage.md).
@@ -538,8 +547,10 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `RM_RAM_FRACTION` | `0.20` | fraction of host RAM budgeted for validation workers |
 | `RM_WORKER_MEM_GB` | `1.5` | assumed RAM per validation worker for auto-sizing |
 | `REPOSITORY_MANAGER_COMMAND` | — | optional executable used by the queue runner |
-| `REPOSITORY_MANAGER_MCP_IMAGE` | — | Both compose files require these; set each to an image@sha256:<digest>. |
-| `REPOSITORY_MANAGER_AGENT_IMAGE` | — |  |
+| `REPOSITORY_MANAGER_MCP_IMAGE` | — | Set to an image@sha256:<digest>. |
+| `AGENT_UTILITIES_HOST_INVENTORY` | — | Canonical host identities and capability roles for cross-host lane/concept scoping, as a JSON document; unset uses no inventory (every host treated as unknown). See repository_manager/governance/lanes.py's _host_inventory(). |
+| `AU_LANE_TEMP_ROOT` | — | Absolute override for the per-lane temp root (pytest basetemp / TMPDIR / pre-commit store / cargo target dir); unset uses the default $HOME/.al/<token> root. See lanes.py's _configured_lane_temp_root(). |
+| `CARGO_TARGET_DIR` | — | Cargo's own target-dir override. lane_guard.py's cargo-target-override check reads this to refuse a shared/global CARGO_TARGET_DIR that would both serialize and corrupt concurrent lane builds; it is not set by this package. |
 
 #### Inherited agent-utilities variables (apply to every connector)
 
@@ -561,7 +572,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | — | Operator-configured model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_68 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_70 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 

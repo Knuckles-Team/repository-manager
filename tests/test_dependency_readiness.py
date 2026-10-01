@@ -11,6 +11,7 @@ separately, out of band, against the real PyPI index.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -1231,3 +1232,53 @@ def test_await_gate_readiness_ci_run_in_progress_waits_then_concludes(monkeypatc
     )
     assert outcome.ok is True
     assert clock.slept  # genuinely waited for the CI run to conclude
+
+
+# --------------------------------------------------------------------------- #
+# RM-GOVERNANCE-R018: path resolution must not depend on running from the
+# primary repository location. repository-manager's own pre-commit/pre-push
+# hook entry (the self-hosting exception documented in
+# scripts/sweep_dependency_readiness_hook.py's module docstring: this repo
+# already has itself installed locally, so its hook invokes
+# `python -m repository_manager.dependency_readiness .` directly rather than
+# resolving a sibling checkout through `uv run --with`) never walks $PWD for
+# a sibling repo -- but _find_workspace_manifest's own upward walk from
+# `start` could still be fooled by an isolated branch checkout living outside
+# the canonical workspace tree (a linked git worktree routinely lives under a
+# separate, unrelated scratch directory), if the packaged copy it checks
+# first were ever missing or bypassed. These tests pin that it is not: the
+# packaged copy resolves
+# first, from a `start` that has no workspace.yml anywhere above it.
+# --------------------------------------------------------------------------- #
+
+
+def test_find_workspace_manifest_resolves_from_a_location_with_no_ancestor_copy(
+    tmp_path,
+):
+    """An isolated checkout's `start` (no workspace.yml anywhere above it,
+    unlike the primary repository location under agent-packages/) still
+    resolves -- the packaged copy next to this installed module is checked
+    before any upward walk from `start`."""
+    outside_any_workspace = tmp_path / "isolated-worktree" / "nested" / "deep"
+    outside_any_workspace.mkdir(parents=True)
+
+    manifest = dr._find_workspace_manifest(outside_any_workspace)
+
+    assert manifest is not None
+    assert manifest == Path(dr.__file__).parent / "workspace.yml"
+    assert manifest.is_file()
+
+
+def test_dependency_readiness_hook_exits_zero_from_an_isolated_worktree(tmp_path):
+    """The actual hook entry point, run with an isolated-checkout-shaped
+    path (not the primary repository location), resolves and reports --
+    never a path-resolution crash. No declared fleet constraint this repo's
+    own pyproject.toml carries is exercised against a live index here (that
+    proof is the documented out-of-band one at the top of this file); an
+    empty constraint set after real path resolution is exit 0."""
+    isolated_worktree = tmp_path / "isolated-worktree"
+    isolated_worktree.mkdir()
+
+    rc = dr.main(["--json", str(isolated_worktree)])
+
+    assert rc == 0

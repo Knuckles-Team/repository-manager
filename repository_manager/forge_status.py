@@ -47,7 +47,7 @@ Two forges, one contract, both real (never a stub):
 
 Both client imports are OPTIONAL, guarded with the fleet's standard
 ``try/except ImportError`` pattern (see e.g.
-``repository_manager.prune_guard``'s guard on ``agent_utilities.governance
+``repository_manager.prune_guard``'s guard on ``repository_manager.governance
 .lanes``): a repository-manager install without the ``github-agent``/
 ``gitlab-api`` extras must still import and run this module — every call
 just degrades to ``state="unknown"`` with a loud ``FORGE_STATUS_UNAVAILABLE``
@@ -77,7 +77,7 @@ __all__ = [
 
 # --------------------------------------------------------------------------- #
 # Optional forge clients — guarded imports, the fleet's standard pattern
-# (see repository_manager.prune_guard's guard on agent_utilities.governance
+# (see repository_manager.prune_guard's guard on repository_manager.governance
 # .lanes): missing/unavailable degrades every call to state="unknown", never
 # an ImportError propagating out of this module at import time or call time.
 # --------------------------------------------------------------------------- #

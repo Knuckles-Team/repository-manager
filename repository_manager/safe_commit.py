@@ -1,18 +1,27 @@
-"""Commit a complete working-tree snapshot before running its gate.
+"""Commit an explicitly reviewed set of paths before running its gate.
 
 ``pre-commit`` has a ``staged_files_only`` context that temporarily removes
 unstaged changes while hooks run.  That context is useful for an ordinary
 staged-only commit, but it is a data-loss boundary when a process is killed
-inside it.  :func:`safe_commit` makes the boundary unreachable: it stages the
-complete tree (including deletions and untracked files), proves that no
-unstaged content remains, runs the configured gate, stages formatter output,
-proves the invariant again, and only then commits.
+inside it.  :func:`safe_commit` makes the boundary unreachable without ever
+staging the whole tree: the caller passes ``paths``, an explicit, reviewed
+allowlist (``git add -A``/``git add .`` equivalents are refused by
+construction -- there is no "stage everything" mode).  Given that allowlist,
+it stages exactly those paths (including a deletion or a new untracked file
+*at one of those paths*), proves no content remains unstaged *within that
+allowlist*, runs the configured gate, re-stages the same allowlist in case
+the gate's formatter touched it, proves the invariant again, and only then
+commits.  A path outside the allowlist -- tracked, untracked, or deleted --
+is never staged and is not inspected by the "nothing left unstaged" proof;
+an unrelated untracked file in the tree stays uncommitted.  Calling without
+``paths`` (or with an empty list) is a typed refusal, not an implicit
+whole-tree stage.
 
 Callers that must create a WIP snapshot before a heavy gate is admitted may
-pass ``defer_gate=True``.  That mode stages and verifies the complete tree,
-commits with ``--no-verify``, and returns ``gate_deferred=True``.  It confers
-no validation evidence; the caller must submit the real gate through the
-common scheduler/executor against the returned immutable SHA.
+pass ``defer_gate=True``.  That mode stages and verifies the same explicit
+``paths``, commits with ``--no-verify``, and returns ``gate_deferred=True``.
+It confers no validation evidence; the caller must submit the real gate
+through the common scheduler/executor against the returned immutable SHA.
 
 CONCEPT:RM-SAFE-COMMIT (C-12)
 """
@@ -34,7 +43,7 @@ __all__ = ["safe_commit"]
 def _lane_name(path: Path) -> str:
     """Resolve a lane name without making Agent Utilities a hard import."""
     try:
-        from agent_utilities.governance.lanes import lane_name
+        from repository_manager.governance.lanes import lane_name
 
         return str(lane_name(path))
     except Exception:  # pragma: no cover - optional dependency/fake trees
@@ -76,10 +85,40 @@ def _names(result: subprocess.CompletedProcess[str]) -> list[str]:
     return [name for name in result.stdout.split("\0") if name]
 
 
-def _unstaged_paths(path: Path) -> list[str]:
-    """Return tracked or untracked paths not represented in the index."""
-    tracked = _run(["git", "diff", "--name-only", "-z"], path)
-    untracked = _run(["git", "ls-files", "--others", "--exclude-standard", "-z"], path)
+def _addable_paths(
+    tree: Path, paths: Sequence[str], *, env: dict[str, str], timeout: int
+) -> list[str]:
+    """Which of *paths* a ``git add`` call can act on right now.
+
+    A path git add can match is one still present on disk (tracked or not) or
+    still tracked in the index.  A path that is neither -- an already-staged
+    deletion, re-checked after the gate ran -- has nothing left to add;
+    passing it through anyway would be an explicit pathspec that matches
+    nothing, and ``git add`` aborts the ENTIRE call (unlike ``-A`` with no
+    pathspec) rather than skipping just that one path.
+    """
+    on_disk = [p for p in paths if (tree / p).exists()]
+    missing = [p for p in paths if p not in on_disk]
+    if not missing:
+        return list(paths)
+    tracked = _run(
+        ["git", "ls-files", "-z", "--", *missing], tree, env=env, timeout=timeout
+    )
+    tracked_names = set(_names(tracked)) if tracked.returncode == 0 else set()
+    return [p for p in paths if p in on_disk or p in tracked_names]
+
+
+def _unstaged_paths_within(path: Path, paths: Sequence[str]) -> list[str]:
+    """Tracked-but-unstaged or untracked paths, scoped to the reviewed *paths*.
+
+    A path outside this allowlist is never inspected: it is not this call's
+    business whether it is dirty, and it must never be swept into the proof.
+    """
+    tracked = _run(["git", "diff", "--name-only", "-z", "--", *paths], path)
+    untracked = _run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z", "--", *paths],
+        path,
+    )
     if tracked.returncode != 0 or untracked.returncode != 0:
         return ["<unable-to-inspect-unstaged-tree>"]
     return _names(tracked) + _names(untracked)
@@ -177,6 +216,7 @@ class _CommitAbort(Exception):
 class _CommitConfig:
     """Bundled per-call parameters threaded through the commit phases."""
 
+    paths: tuple[str, ...] = ()
     allow_empty: bool = False
     gate: Sequence[str] | Callable[[Path], Any] | None = None
     defer_gate: bool = False
@@ -184,37 +224,27 @@ class _CommitConfig:
     timeout: int = 1800
 
 
-def _safe_commit_locked(
-    path: Path | str,
-    message: str,
-    *,
-    allow_empty: bool = False,
-    gate: Sequence[str] | Callable[[Path], Any] | None = None,
-    defer_gate: bool = False,
-    env: dict[str, str] | None = None,
-    timeout: int = 1800,
-) -> dict[str, Any]:
-    """Stage, gate, and commit the complete working tree as one safe operation.
-
-    Args:
-        path: A repository worktree.  It is never interpreted as a shell value.
-        message: Commit message passed as one argv element.
-        allow_empty: Permit an empty commit when the tree has no changes.
-        gate: Optional fixed-argv gate or callable.  By default a repository
-            with ``.pre-commit-config.yaml`` runs ``pre-commit run --all-files``;
-            repositories without that file have no gate to invoke.
-        defer_gate: Stage and commit the complete snapshot without invoking any
-            repository hook.  The commit is made with ``--no-verify`` and the
-            result explicitly records ``gate_deferred=True``; a caller must run
-            the real gate through its admitted executor afterwards.
-        env: Optional environment for the gate and git commands.
-        timeout: Per-command timeout in seconds.
-
-    The returned ``nothing_left_unstaged`` is an assertion made immediately
-    before the gate and again before commit, not an inference from a green gate.
-    """
-    tree = Path(path).expanduser().resolve()
-    lane = _lane_name(tree)
+def _early_refusal(
+    tree: Path,
+    lane: str,
+    paths: Sequence[str],
+    gate: Sequence[str] | Callable[[Path], Any] | None,
+    defer_gate: bool,
+) -> dict[str, Any] | None:
+    """A typed refusal before any lease or git state is touched, or ``None``."""
+    if not paths:
+        return _result(
+            path=tree,
+            lane=lane,
+            status="error",
+            staged_paths=[],
+            gate_stage="none",
+            gate_invoked=False,
+            error=(
+                "safe_commit requires an explicit, non-empty list of reviewed "
+                "paths to stage; refusing to stage the whole working tree"
+            ),
+        )
     if defer_gate and gate is not None:
         return _result(
             path=tree,
@@ -226,10 +256,56 @@ def _safe_commit_locked(
             gate_deferred=True,
             error="defer_gate cannot be combined with an explicit gate",
         )
+    return None
+
+
+def _safe_commit_locked(
+    path: Path | str,
+    message: str,
+    *,
+    paths: Sequence[str] = (),
+    allow_empty: bool = False,
+    gate: Sequence[str] | Callable[[Path], Any] | None = None,
+    defer_gate: bool = False,
+    env: dict[str, str] | None = None,
+    timeout: int = 1800,
+) -> dict[str, Any]:
+    """Stage an explicit, reviewed path list, gate, and commit it.
+
+    Args:
+        path: A repository worktree.  It is never interpreted as a shell value.
+        message: Commit message passed as one argv element.
+        paths: The explicit, reviewed allowlist of repository-relative paths to
+            stage (a tracked change, a deletion, or a new untracked file *at one
+            of these paths*).  Required and non-empty: there is no "stage
+            everything" mode, and an empty/omitted allowlist is refused rather
+            than silently staging the whole tree.
+        allow_empty: Permit an empty commit when the given paths have no changes.
+        gate: Optional fixed-argv gate or callable.  By default a repository
+            with ``.pre-commit-config.yaml`` runs ``pre-commit run --all-files``;
+            repositories without that file have no gate to invoke.
+        defer_gate: Stage and commit the same explicit ``paths`` without
+            invoking any repository hook.  The commit is made with
+            ``--no-verify`` and the result explicitly records
+            ``gate_deferred=True``; a caller must run the real gate through its
+            admitted executor afterwards.
+        env: Optional environment for the gate and git commands.
+        timeout: Per-command timeout in seconds.
+
+    The returned ``nothing_left_unstaged`` is an assertion, scoped to ``paths``,
+    made immediately before the gate and again before commit -- not an
+    inference from a green gate, and never a claim about the rest of the tree.
+    """
+    tree = Path(path).expanduser().resolve()
+    lane = _lane_name(tree)
+    refusal = _early_refusal(tree, lane, paths, gate, defer_gate)
+    if refusal is not None:
+        return refusal
     command_env = os.environ.copy()
     if env is not None:
         command_env.update(env)
     config = _CommitConfig(
+        paths=tuple(paths),
         allow_empty=allow_empty,
         gate=gate,
         defer_gate=defer_gate,
@@ -259,9 +335,9 @@ def _check_tree_exists(tree: Path) -> None:
 
 
 def _initial_status_or_skip(tree: Path, config: _CommitConfig) -> None:
-    """Raise ``skipped`` when the tree is clean, ``error`` when status fails."""
+    """Raise ``skipped`` when the given paths are clean, ``error`` on failure."""
     initial = _run(
-        ["git", "status", "--porcelain", "-z"],
+        ["git", "status", "--porcelain", "-z", "--", *config.paths],
         tree,
         env=config.command_env,
         timeout=config.timeout,
@@ -275,12 +351,21 @@ def _initial_status_or_skip(tree: Path, config: _CommitConfig) -> None:
         )
 
 
-def _stage_all(tree: Path, config: _CommitConfig) -> None:
+def _stage_paths(tree: Path, config: _CommitConfig) -> None:
+    """Stage exactly the reviewed ``config.paths`` allowlist -- never ``-A``."""
+    addable = _addable_paths(
+        tree, config.paths, env=config.command_env, timeout=config.timeout
+    )
+    if not addable:
+        return
     staged = _run(
-        ["git", "add", "-A"], tree, env=config.command_env, timeout=config.timeout
+        ["git", "add", "--", *addable],
+        tree,
+        env=config.command_env,
+        timeout=config.timeout,
     )
     if staged.returncode != 0:
-        raise _CommitAbort(_detail(staged) or "git add -A failed")
+        raise _CommitAbort(_detail(staged) or "git add failed")
 
 
 def _verify_nothing_unstaged(
@@ -290,8 +375,9 @@ def _verify_nothing_unstaged(
     gate_stage: str,
     gate_invoked: bool,
     prefix: str,
+    scoped_paths: Sequence[str],
 ) -> None:
-    unstaged = _unstaged_paths(tree)
+    unstaged = _unstaged_paths_within(tree, scoped_paths)
     if unstaged:
         raise _CommitAbort(
             f"{prefix}: " + ", ".join(unstaged[:20]),
@@ -346,20 +432,30 @@ def _run_configured_gate(
         )
 
 
-def _stage_all_after_gate(
+def _stage_paths_after_gate(
     tree: Path,
     config: _CommitConfig,
     staged_paths: list[str],
     gate_stage: str,
 ) -> None:
-    # A formatter may have changed files during the gate.  Fold that output
-    # into the same snapshot and prove the invariant again.
+    # A formatter may have changed the reviewed paths during the gate.  Fold
+    # that output into the same snapshot (still scoped to the allowlist, never
+    # "-A") and prove the invariant again.  A path already fully staged as a
+    # deletion (gone from both disk and the index) has nothing left to add.
+    addable = _addable_paths(
+        tree, config.paths, env=config.command_env, timeout=config.timeout
+    )
+    if not addable:
+        return
     restaged = _run(
-        ["git", "add", "-A"], tree, env=config.command_env, timeout=config.timeout
+        ["git", "add", "--", *addable],
+        tree,
+        env=config.command_env,
+        timeout=config.timeout,
     )
     if restaged.returncode != 0:
         raise _CommitAbort(
-            _detail(restaged) or "git add -A after gate failed",
+            _detail(restaged) or "git add after gate failed",
             _AbortDetail(
                 staged_paths=staged_paths,
                 gate_stage=gate_stage,
@@ -433,27 +529,29 @@ def _safe_commit_run(
     """Run every ``_safe_commit_locked`` phase; raises ``_CommitAbort`` on error."""
     _check_tree_exists(tree)
     _initial_status_or_skip(tree, config)
-    _stage_all(tree, config)
+    _stage_paths(tree, config)
     staged_paths = _staged_paths(tree)
     _verify_nothing_unstaged(
         tree,
         staged_paths,
         gate_stage="none",
         gate_invoked=False,
-        prefix="git add -A left content unstaged",
+        prefix="git add left a reviewed path unstaged",
+        scoped_paths=config.paths,
     )
 
     gate_stage, configured_gate = _resolve_gate(tree, config.gate, config.defer_gate)
     if configured_gate is not None:
         _run_configured_gate(configured_gate, tree, config, staged_paths, gate_stage)
-        _stage_all_after_gate(tree, config, staged_paths, gate_stage)
+        _stage_paths_after_gate(tree, config, staged_paths, gate_stage)
         staged_paths = _staged_paths(tree)
         _verify_nothing_unstaged(
             tree,
             staged_paths,
             gate_stage=gate_stage,
             gate_invoked=True,
-            prefix="gate left content unstaged",
+            prefix="gate left a reviewed path unstaged",
+            scoped_paths=config.paths,
         )
 
     gate_invoked = configured_gate is not None
@@ -479,19 +577,22 @@ def safe_commit(
     path: Path | str,
     message: str,
     *,
+    paths: Sequence[str] = (),
     allow_empty: bool = False,
     gate: Sequence[str] | Callable[[Path], Any] | None = None,
     defer_gate: bool = False,
     env: dict[str, str] | None = None,
     timeout: int = 1800,
 ) -> dict[str, Any]:
-    """Commit under the per-worktree mutation lease.
+    """Commit an explicit, reviewed path list under the per-worktree mutation lease.
 
-    The lease spans status, complete staging, the configured gate (or an
-    explicitly deferred snapshot), commit, and baseline refresh.  It is
-    deliberately per-worktree, so independent lanes continue to run
+    The lease spans status, staging the ``paths`` allowlist, the configured
+    gate (or an explicitly deferred snapshot), commit, and baseline refresh.
+    It is deliberately per-worktree, so independent lanes continue to run
     concurrently while same-tree callers cannot interleave a check with
-    another mutation.
+    another mutation.  ``paths`` is required and non-empty; omitting it is a
+    typed refusal from :func:`_safe_commit_locked` once the lease is held,
+    same as any other early-refusal condition.
     """
     tree = Path(path).expanduser().resolve()
     from repository_manager import stash_guard
@@ -503,6 +604,7 @@ def safe_commit(
             return _safe_commit_locked(
                 tree,
                 message,
+                paths=paths,
                 allow_empty=allow_empty,
                 gate=gate,
                 defer_gate=defer_gate,

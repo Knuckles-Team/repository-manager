@@ -32,7 +32,7 @@ from git's refusal, not from our earlier scan agreeing with itself.
 
 **Occupancy comes from the lane protocol, not a new mechanism.**
 :func:`guarded_worktree_prune` routes through
-``agent_utilities.governance.lanes.guarded_tree_mutation`` — the same repo-scoped
+``repository_manager.governance.lanes.guarded_tree_mutation`` — the same repo-scoped
 lease in the shared ``--git-common-dir`` and the same ``require_resettable_tree``
 refusal every other global actor in this workspace must consult — and reads
 occupancy from facts git and that protocol already record: a merge/rebase in
@@ -58,12 +58,12 @@ from collections.abc import Iterator
 logger = logging.getLogger(__name__)
 
 try:
-    from agent_utilities.governance import lanes
-except ImportError as exc:  # pragma: no cover - exercised only on an older au
+    from repository_manager.governance import lanes
+except ImportError as exc:  # pragma: no cover - exercised only on a broken install
     lanes = None  # type: ignore[assignment]
     _LANES_UNAVAILABLE = (
         "the lane arbitration protocol "
-        "(agent_utilities.governance.lanes) is unavailable, so an active lane "
+        "(repository_manager.governance.lanes) is unavailable, so an active lane "
         f"cannot be distinguished from an abandoned one: {exc}"
     )
 else:

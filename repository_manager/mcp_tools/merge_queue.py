@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent_utilities.mcp.action_dispatch import resolve_action
-from agent_utilities.mcp.concurrency import run_blocking
+from agent_connector_sdk.mcp.action_dispatch import resolve_action
+from agent_connector_sdk.mcp.concurrency import run_blocking
 from fastmcp import Context, FastMCP
 from pydantic import Field
 
@@ -112,12 +112,11 @@ def register_merge_queue_tools(
         state; check ``push_error`` on the outcome for why. The queue's own
         ``run`` summary also reports ``pushed``/``landed_unpushed`` counts.
         """
-        from agent_utilities.governance.lanes import (
+        from repository_manager import merge_queue as merge_queue_core
+        from repository_manager.governance.lanes import (
             LaneArbitrationError,
             LeaseUnavailable,
         )
-
-        from repository_manager import merge_queue as merge_queue_core
 
         resolved = resolve_action(
             action, RM_MERGE_QUEUE_ACTIONS, service="repository-manager"
