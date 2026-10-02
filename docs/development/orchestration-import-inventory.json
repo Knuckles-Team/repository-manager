@@ -594,16 +594,6 @@
   "unresolved": [
     {
       "path": "repository_manager/__init__.py",
-      "line": 49,
-      "column": 17,
-      "kind": "dynamic",
-      "target": null,
-      "symbol": "",
-      "expression": "importlib.import_module(module_name)",
-      "source_sha256": "68b877d5f3d3a4b1ca1456432830756bafb1109471dcea4d8314879f2bd4a571"
-    },
-    {
-      "path": "repository_manager/__init__.py",
       "line": 59,
       "column": 15,
       "kind": "dynamic",
@@ -611,26 +601,6 @@
       "symbol": "",
       "expression": "importlib.import_module(module_name)",
       "source_sha256": "68b877d5f3d3a4b1ca1456432830756bafb1109471dcea4d8314879f2bd4a571"
-    },
-    {
-      "path": "repository_manager/concept_actions.py",
-      "line": 83,
-      "column": 17,
-      "kind": "dynamic",
-      "target": null,
-      "symbol": "",
-      "expression": "importlib.import_module(AUTHORITY_MODULE)",
-      "source_sha256": "1d54617ac893ad82c50506fd37adcbd26c850c5de797d8e1a586232067df8a03"
-    },
-    {
-      "path": "repository_manager/concept_coordination/client.py",
-      "line": 73,
-      "column": 8,
-      "kind": "dynamic",
-      "target": null,
-      "symbol": "",
-      "expression": "importlib.import_module(AUTHORITY_MODULE)",
-      "source_sha256": "2fb546dab174116dad1596b8859217aef167e53ea29166d279539a97d0ba6472"
     },
     {
       "path": "scripts/check_import_safety.py",
@@ -663,26 +633,6 @@
       "source_sha256": "d10dc64bba4dc12a0945fecf7980459d13e32cd751a959868f2ada57b0994359"
     },
     {
-      "path": "tests/test_concept_actions.py",
-      "line": 27,
-      "column": 13,
-      "kind": "dynamic",
-      "target": null,
-      "symbol": "",
-      "expression": "importlib.import_module(AUTHORITY_MODULE)",
-      "source_sha256": "d38f588ce9c0e4d52158ec062ddefe08f784e559d35595089f9f8b66b0c3e2c3"
-    },
-    {
-      "path": "tests/test_concept_actions.py",
-      "line": 36,
-      "column": 13,
-      "kind": "dynamic",
-      "target": null,
-      "symbol": "",
-      "expression": "importlib.import_module(AUTHORITY_MODULE)",
-      "source_sha256": "d38f588ce9c0e4d52158ec062ddefe08f784e559d35595089f9f8b66b0c3e2c3"
-    },
-    {
       "path": "tests/test_init_dynamics.py",
       "line": 22,
       "column": 15,
@@ -708,7 +658,100 @@
     "Namespaces follow AGENTS.md Package Relationships: current agent_utilities and historic agent_orchestration.",
     "All tracked and nonignored untracked Python source, including tests and scripts. Each imported symbol has a separate disposition.",
     "Initial dispositions by Codex; independent review pending. Categories describe current use, not approval to keep dependencies.",
-    "Unresolved dynamic expressions remain blocking. Their presence in this snapshot is evidence, never a waiver. No runtime evaluation or inferred absence.",
-    "Existing fleet_census and dependency_readiness remain authorities for fleet dependency edges. Their private helpers omit per-symbol classifications and broader aliases, so this standalone stdlib checker does not import the runtime package."
+    "RM-CONNECTOR-01 requires dispositions for dynamic imports, not a finite runtime module list. Six open loader call sites retain target=null and require individually reviewed, full-source-digest-bound classifications. New, changed, missing, duplicate or stale boundary dispositions fail. --discover still exits 1 for runtime-unknown targets; a successful check does not assert static target resolution.",
+    "Existing fleet_census and dependency_readiness remain authorities for fleet dependency edges. Their private helpers omit per-symbol classifications and broader aliases, so this standalone stdlib checker does not import the runtime package.",
+    "Five formerly unknown calls resolve from source: AUTHORITY_MODULE is repository_manager.governance.concept_reservation in concept_coordination/client.py, re-exported by concept_coordination/__init__.py and consumed by concept_actions.py and tests/test_concept_actions.py (four calls); the package initializer iterates CORE_MODULES=[repository_manager.repository_manager] (one call). These targets are outside the orchestration namespaces. Resolver tests cover source changes, shadowing, cycles and unresolved computed values."
+  ],
+  "dynamic_boundaries": [
+    {
+      "path": "repository_manager/__init__.py",
+      "line": 59,
+      "column": 15,
+      "kind": "dynamic",
+      "target": null,
+      "symbol": "",
+      "expression": "importlib.import_module(module_name)",
+      "source_sha256": "68b877d5f3d3a4b1ca1456432830756bafb1109471dcea4d8314879f2bd4a571",
+      "classification": "orchestration",
+      "reviewer": "Codex (initial disposition; independent review pending)",
+      "evidence": "repository_manager/__init__.py:59: _import_module_safely accepts a runtime module_name; current callers select OPTIONAL_MODULES via _module_is_importable and _load_optional_module. This is a lazy package-loading boundary, not proof that arbitrary future inputs exclude orchestration modules.",
+      "boundary": "_import_module_safely accepts a runtime module_name; current callers select OPTIONAL_MODULES via _module_is_importable and _load_optional_module. This is a lazy package-loading boundary, not proof that arbitrary future inputs exclude orchestration modules.",
+      "target_resolution": "runtime-supplied (not statically resolved)"
+    },
+    {
+      "path": "scripts/check_import_safety.py",
+      "line": 412,
+      "column": 14,
+      "kind": "dynamic",
+      "target": null,
+      "symbol": "",
+      "expression": "importlib.import_module(package_name)",
+      "source_sha256": "d10dc64bba4dc12a0945fecf7980459d13e32cd751a959868f2ada57b0994359",
+      "classification": "governance",
+      "reviewer": "Codex (initial disposition; independent review pending)",
+      "evidence": "scripts/check_import_safety.py:412: The import-safety CLI requires --package and discovers its submodules with pkgutil.walk_packages. Package names are intentionally operator/environment-supplied, including possible agent_utilities modules; these calls perform import validation rather than connector transport or agent decisions.",
+      "boundary": "The import-safety CLI requires --package and discovers its submodules with pkgutil.walk_packages. Package names are intentionally operator/environment-supplied, including possible agent_utilities modules; these calls perform import validation rather than connector transport or agent decisions.",
+      "target_resolution": "runtime-supplied (not statically resolved)"
+    },
+    {
+      "path": "scripts/check_import_safety.py",
+      "line": 497,
+      "column": 8,
+      "kind": "dynamic",
+      "target": null,
+      "symbol": "",
+      "expression": "importlib.import_module(package)",
+      "source_sha256": "d10dc64bba4dc12a0945fecf7980459d13e32cd751a959868f2ada57b0994359",
+      "classification": "governance",
+      "reviewer": "Codex (initial disposition; independent review pending)",
+      "evidence": "scripts/check_import_safety.py:497: The import-safety CLI requires --package and discovers its submodules with pkgutil.walk_packages. Package names are intentionally operator/environment-supplied, including possible agent_utilities modules; these calls perform import validation rather than connector transport or agent decisions.",
+      "boundary": "The import-safety CLI requires --package and discovers its submodules with pkgutil.walk_packages. Package names are intentionally operator/environment-supplied, including possible agent_utilities modules; these calls perform import validation rather than connector transport or agent decisions.",
+      "target_resolution": "runtime-supplied (not statically resolved)"
+    },
+    {
+      "path": "scripts/check_import_safety.py",
+      "line": 526,
+      "column": 12,
+      "kind": "dynamic",
+      "target": null,
+      "symbol": "",
+      "expression": "importlib.import_module(name)",
+      "source_sha256": "d10dc64bba4dc12a0945fecf7980459d13e32cd751a959868f2ada57b0994359",
+      "classification": "governance",
+      "reviewer": "Codex (initial disposition; independent review pending)",
+      "evidence": "scripts/check_import_safety.py:526: The import-safety CLI requires --package and discovers its submodules with pkgutil.walk_packages. Package names are intentionally operator/environment-supplied, including possible agent_utilities modules; these calls perform import validation rather than connector transport or agent decisions.",
+      "boundary": "The import-safety CLI requires --package and discovers its submodules with pkgutil.walk_packages. Package names are intentionally operator/environment-supplied, including possible agent_utilities modules; these calls perform import validation rather than connector transport or agent decisions.",
+      "target_resolution": "runtime-supplied (not statically resolved)"
+    },
+    {
+      "path": "tests/test_init_dynamics.py",
+      "line": 22,
+      "column": 15,
+      "kind": "dynamic",
+      "target": null,
+      "symbol": "",
+      "expression": "original_import(name)",
+      "source_sha256": "f1e874fd1bc05b7df07042da8d461eba14b738f6106ae51d505b7142a8d07f28",
+      "classification": "orchestration",
+      "reviewer": "Codex (initial disposition; independent review pending)",
+      "evidence": "tests/test_init_dynamics.py:22: The test patches importlib.import_module while initializing repository_manager. Its wrapper intercepts the MCP module and forwards all other runtime names through original_import. This open test-loader boundary may receive orchestration module names; no finite target set is asserted.",
+      "boundary": "The test patches importlib.import_module while initializing repository_manager. Its wrapper intercepts the MCP module and forwards all other runtime names through original_import. This open test-loader boundary may receive orchestration module names; no finite target set is asserted.",
+      "target_resolution": "runtime-supplied (not statically resolved)"
+    },
+    {
+      "path": "tests/test_init_dynamics.py",
+      "line": 53,
+      "column": 15,
+      "kind": "dynamic",
+      "target": null,
+      "symbol": "",
+      "expression": "original_import(name)",
+      "source_sha256": "f1e874fd1bc05b7df07042da8d461eba14b738f6106ae51d505b7142a8d07f28",
+      "classification": "orchestration",
+      "reviewer": "Codex (initial disposition; independent review pending)",
+      "evidence": "tests/test_init_dynamics.py:53: The test patches importlib.import_module while initializing repository_manager. Its wrapper intercepts the MCP module and forwards all other runtime names through original_import. This open test-loader boundary may receive orchestration module names; no finite target set is asserted.",
+      "boundary": "The test patches importlib.import_module while initializing repository_manager. Its wrapper intercepts the MCP module and forwards all other runtime names through original_import. This open test-loader boundary may receive orchestration module names; no finite target set is asserted.",
+      "target_resolution": "runtime-supplied (not statically resolved)"
+    }
   ]
 }

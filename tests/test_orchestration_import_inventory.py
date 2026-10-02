@@ -41,7 +41,121 @@ def reviewed(actual: dict, category: str = "orchestration") -> dict:
     return result
 
 
+def review_boundaries(actual: dict) -> dict:
+    result = reviewed(actual)
+    result["dynamic_boundaries"] = []
+    for row in actual["unresolved"]:
+        entry = dict(row)
+        entry.update(
+            classification="governance",
+            reviewer="fixture reviewer",
+            evidence="Fixture validates caller-selected packages.",
+            boundary="The target remains caller-supplied, not statically known.",
+            target_resolution="runtime-supplied (not statically resolved)",
+        )
+        result["dynamic_boundaries"].append(entry)
+    return result
+
+
+def write_sources(root: Path, sources: dict[str, str]) -> None:
+    for name, text in sources.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
 class ImportInventoryTests(unittest.TestCase):
+    def test_current_inventory_has_exactly_one_disposition_per_import_or_boundary(
+        self,
+    ) -> None:
+        actual = CHECK["discover"](ROOT)
+        inventory = json.loads((ROOT / CHECK["INVENTORY"]).read_text())
+        self.assertEqual(CHECK["validate"](actual, inventory), [])
+
+    def test_runtime_boundary_is_explicit_and_source_bound(self) -> None:
+        actual = observations("__import__(name)")
+        inventory = review_boundaries(actual)
+        self.assertEqual(CHECK["validate"](actual, inventory), [])
+        self.assertIsNone(inventory["dynamic_boundaries"][0]["target"])
+        for field in (
+            "boundary",
+            "target_resolution",
+            "classification",
+            "evidence",
+            "reviewer",
+        ):
+            changed = copy.deepcopy(inventory)
+            del changed["dynamic_boundaries"][0][field]
+            self.assertTrue(CHECK["validate"](actual, changed), field)
+        changed_source = observations("__import__(name)\n# new context")
+        self.assertTrue(CHECK["validate"](changed_source, inventory))
+        inventory["dynamic_boundaries"] *= 2
+        self.assertTrue(
+            any("duplicate" in e for e in CHECK["validate"](actual, inventory))
+        )
+
+    def test_new_dynamic_call_cannot_inherit_an_existing_review(self) -> None:
+        actual = observations("__import__(name)")
+        changed = observations("__import__(name)\n__import__(other)")
+        errors = CHECK["validate"](changed, review_boundaries(actual))
+        self.assertTrue(any("unresolved dynamic target" in e for e in errors))
+
+    def test_constants_reexports_and_literal_loops_are_resolved_without_execution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_sources(
+                root,
+                {
+                    "config/values.py": 'raise RuntimeError("never execute")\nTARGET = "agent_utilities.x"',
+                    "config/__init__.py": "from .values import TARGET as PUBLIC",
+                    "source.py": 'import importlib\nfrom config import PUBLIC as NAME\nimportlib.import_module(NAME)\nNAMES = ["agent_utilities.y", "agent_orchestration.z"]\nfor name in NAMES:\n importlib.import_module(name)',
+                },
+            )
+            resolver = CHECK["TargetResolver"](root)
+            actual, unknown = CHECK["source_observations"](
+                "source.py", (root / "source.py").read_bytes(), resolver
+            )
+            self.assertEqual(
+                {row["target"] for row in actual},
+                {"agent_utilities.x", "agent_utilities.y", "agent_orchestration.z"},
+            )
+            self.assertEqual(unknown, [])
+            (root / "config/values.py").write_text('TARGET = "agent_utilities.changed"')
+            actual, _ = CHECK["source_observations"](
+                "source.py",
+                (root / "source.py").read_bytes(),
+                CHECK["TargetResolver"](root),
+            )
+            self.assertIn("agent_utilities.changed", {row["target"] for row in actual})
+
+    def test_constant_shadowing_cycles_and_computed_values_stay_unknown(self) -> None:
+        sources = [
+            'NAME = "agent_utilities.x"\nNAME = variable\n__import__(NAME)',
+            'NAME = "agent_utilities.x"\ndef f(NAME):\n __import__(NAME)',
+            "from config import NAME\n__import__(NAME)",
+            'NAME = prefix + ".x"\n__import__(NAME)',
+            'NAMES = ["agent_utilities.x"]\nfor name in NAMES:\n name = variable\n __import__(name)',
+            '__import__(["agent_utilities.x"])',
+            'NAMES = "agent_utilities.x"\nfor name in NAMES:\n __import__(name)',
+            'NAMES = ["agent_utilities.x"]\nNAMES.append(variable)\nfor name in NAMES:\n __import__(name)',
+            'NAMES = ["agent_utilities.x"]\nalias = NAMES\nalias.append(variable)\nfor name in NAMES:\n __import__(name)',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for source in sources:
+                with self.subTest(source=source):
+                    write_sources(
+                        root,
+                        {"source.py": source, "config.py": "from source import NAME"},
+                    )
+                    actual, unknown = CHECK["source_observations"](
+                        "source.py", source.encode(), CHECK["TargetResolver"](root)
+                    )
+                    self.assertEqual(actual, [])
+                    self.assertEqual(len(unknown), 1)
+
     def test_repeated_imports_on_one_line_are_distinct_occurrences(self) -> None:
         actual = observations("import agent_utilities as a, agent_utilities as b")
         self.assertEqual(len(actual["imports"]), 2)

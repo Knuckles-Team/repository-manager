@@ -13,8 +13,12 @@ Those tools record dependency edges, not individual reviewed dispositions.
 
 Dynamic support: importlib.import_module and builtins.__import__, import aliases,
 and simple assignment aliases. Alias propagation is deliberately conservative
-and scope-insensitive: rebinding cannot hide a potential import. Only literal
-targets are resolved; other expressions remain blockers even with a disposition.
+and scope-insensitive: rebinding cannot hide a potential import. Literal targets,
+single-assignment module constants/re-exports, and literal iteration are resolved
+without execution. Other expressions require explicit reviewed dynamic-boundary
+dispositions tied to the complete source digest. Discovery still reports those
+runtime targets as unknown; a disposition classifies the call's responsibility,
+not its possible module names. Missing or stale dispositions fail closed.
 Arbitrary reflection, exec, and custom loader wrappers are not Python imports
 recognized by this static contract. Nothing here proves runtime reachability.
 """
@@ -105,16 +109,14 @@ def literal(node: ast.expr | None) -> str | None:
     return None
 
 
-def dynamic_target(call: ast.Call, loaders: set[str]) -> str | None:
-    target = literal(argument(call, 0, "name"))
+def dynamic_target(
+    call: ast.Call, loaders: set[str], target: str | None = None
+) -> str | None:
+    target = target or literal(argument(call, 0, "name"))
     if not target:
         return None
-    if "builtins.__import__" in loaders:
-        level = argument(call, 4, "level")
-        if level is not None and not (
-            isinstance(level, ast.Constant) and level.value == 0
-        ):
-            return None
+    if "builtins.__import__" in loaders and not absolute_builtin(call):
+        return None
     if not target.startswith("."):
         return target
     package = literal(argument(call, 1, "package"))
@@ -123,6 +125,190 @@ def dynamic_target(call: ast.Call, loaders: set[str]) -> str | None:
     try:
         return importlib.util.resolve_name(target, package)
     except (ImportError, ValueError):
+        return None
+
+
+def absolute_builtin(call: ast.Call) -> bool:
+    level = argument(call, 4, "level")
+    return level is None or (isinstance(level, ast.Constant) and level.value == 0)
+
+
+def binding_names(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+        return [node.id]
+    if isinstance(node, ast.arg):
+        return [node.arg]
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return [item.asname or item.name.split(".")[0] for item in node.names]
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    return []
+
+
+def literal_sequence(node: ast.expr) -> set[str] | None:
+    if not isinstance(node, (ast.List, ast.Tuple)):
+        return None
+    values = [literal(item) for item in node.elts]
+    return {value for value in values if value is not None} if all(values) else None
+
+
+def assigned_value(statement: ast.stmt, name: str) -> ast.expr | None:
+    if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        return None
+    names = [
+        n.id
+        for n in ast.walk(statement)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)
+    ]
+    return statement.value if names == [name] else None
+
+
+def binds_loop_variable(node: ast.AST, name: str) -> bool:
+    return (
+        isinstance(node, ast.For)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == name
+    )
+
+
+def loop_rebinds(node: ast.For, name: str) -> bool:
+    return any(
+        name in binding_names(child)
+        for statement in node.body
+        for child in ast.walk(statement)
+    )
+
+
+def sequence_escapes(tree: ast.Module, name: str) -> bool:
+    """Only direct iteration or unpacking may read a finite sequence constant.
+
+    Passing it to a function, aliasing it, or attribute/subscript access could mutate
+    the sequence. Such cases stay dynamic instead of inferring an incomplete set.
+    """
+    parents = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id == name
+        ):
+            parent = parents[node]
+            if not (
+                isinstance(parent, ast.For) and parent.iter is node
+            ) and not isinstance(parent, ast.Starred):
+                return True
+    return False
+
+
+class TargetResolver:
+    """Bounded source-only constant resolution; never import a project module."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root.resolve()
+        self.sources: dict[str, ast.Module] = {}
+
+    def tree(self, path: str) -> ast.Module:
+        source = self.root / path
+        if source.is_symlink() or not source.resolve().is_relative_to(self.root):
+            raise ValueError(f"constant source escapes repository: {path}")
+        if path not in self.sources:
+            self.sources[path] = ast.parse(source.read_bytes(), filename=path)
+        return self.sources[path]
+
+    def imported_source(self, path: str, node: ast.ImportFrom) -> str | None:
+        module = node.module or ""
+        if node.level:
+            package = ".".join(Path(path).parent.parts)
+            module = importlib.util.resolve_name("." * node.level + module, package)
+        base = Path(*module.split("."))
+        candidates = [base.with_suffix(".py"), base / "__init__.py"]
+        present = [str(p) for p in candidates if (self.root / p).is_file()]
+        return present[0] if len(present) == 1 else None
+
+    def value(
+        self,
+        path: str,
+        node: ast.expr,
+        seen: frozenset = frozenset(),
+        sequence: bool = False,
+    ) -> set[str] | None:
+        text = literal(node)
+        if text and not sequence:
+            return {text}
+        if sequence and isinstance(node, (ast.List, ast.Tuple)):
+            return literal_sequence(node)
+        if not isinstance(node, ast.Name):
+            return None
+        return self.named_value(path, node.id, seen, sequence)
+
+    def named_value(
+        self, path: str, name: str, seen: frozenset, sequence: bool
+    ) -> set[str] | None:
+        if (path, name) in seen or len(seen) >= 32:
+            return None
+        tree = self.tree(path)
+        bindings = [item for item in ast.walk(tree) if name in binding_names(item)]
+        if len(bindings) != 1 or (sequence and sequence_escapes(tree, name)):
+            return None
+        return self.definition(path, name, seen | {(path, name)}, sequence)
+
+    def definition(
+        self, path: str, name: str, seen: frozenset, sequence: bool
+    ) -> set[str] | None:
+        for statement in self.tree(path).body:
+            value = assigned_value(statement, name)
+            if value is not None:
+                return self.value(path, value, seen, sequence)
+            if isinstance(statement, ast.ImportFrom):
+                result = self.reexport(path, statement, name, seen, sequence)
+                if result is not None:
+                    return result
+        return None
+
+    def reexport(
+        self,
+        path: str,
+        node: ast.ImportFrom,
+        name: str,
+        seen: frozenset,
+        sequence: bool,
+    ) -> set[str] | None:
+        for item in node.names:
+            if (item.asname or item.name) == name:
+                source = self.imported_source(path, node)
+                if source:
+                    return self.value(source, ast.Name(id=item.name), seen, sequence)
+        return None
+
+    def targets(self, path: str, call: ast.Call) -> set[str] | None:
+        expression = argument(call, 0, "name")
+        if expression is None:
+            return None
+        if isinstance(expression, ast.Name):
+            loop = self.enclosing_loop(path, call, expression.id)
+            if loop is not None:
+                return self.value(path, loop.iter, sequence=True)
+        return self.value(path, expression)
+
+    def enclosing_loop(self, path: str, call: ast.Call, name: str) -> ast.For | None:
+        parents = {
+            child: parent
+            for parent in ast.walk(self.tree(path))
+            for child in ast.iter_child_nodes(parent)
+        }
+        node: ast.AST = call
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                return None
+            if binds_loop_variable(node, name):
+                if isinstance(node, ast.For) and not loop_rebinds(node, name):
+                    return node
+                return None
         return None
 
 
@@ -138,8 +324,17 @@ def matching(target: str) -> bool:
     return target.split(".")[0] in NAMESPACES
 
 
-def source_observations(path: str, raw: bytes) -> tuple[list[dict], list[dict]]:
+def parsed_source(path: str, raw: bytes, resolver: TargetResolver | None) -> ast.Module:
     tree = ast.parse(raw, filename=path)
+    if resolver is not None:
+        resolver.sources[path] = tree
+    return tree
+
+
+def source_observations(
+    path: str, raw: bytes, resolver: TargetResolver | None = None
+) -> tuple[list[dict], list[dict]]:
+    tree = parsed_source(path, raw, resolver)
     aliases = loader_aliases(tree)
     digest = hashlib.sha256(raw).hexdigest()
     imports: list[dict] = []
@@ -150,24 +345,30 @@ def source_observations(path: str, raw: bytes) -> tuple[list[dict], list[dict]]:
                 imports.append(
                     observation(path, alias, digest, "static", target, symbol)
                 )
-        row = dynamic_observation(path, node, digest, aliases)
-        if row is not None:
+        for row in dynamic_observations(path, node, digest, aliases, resolver):
             (unresolved if row["target"] is None else imports).append(row)
     return imports, unresolved
 
 
-def dynamic_observation(
-    path: str, node: ast.AST, digest: str, aliases: dict[str, set[str]]
-) -> dict | None:
+def dynamic_observations(
+    path: str,
+    node: ast.AST,
+    digest: str,
+    aliases: dict[str, set[str]],
+    resolver: TargetResolver | None,
+) -> list[dict]:
     if not isinstance(node, ast.Call):
-        return None
+        return []
     loaders = qualified(node.func, aliases) & LOADERS
     if not loaders:
-        return None
-    target = dynamic_target(node, loaders)
-    if target is not None and not matching(target):
-        return None
-    return observation(path, node, digest, "dynamic", target, "")
+        return []
+    values = resolver.targets(path, node) if resolver else None
+    targets = {dynamic_target(node, loaders, value) for value in values or [None]}
+    return [
+        observation(path, node, digest, "dynamic", target, "")
+        for target in targets
+        if target is None or matching(target)
+    ]
 
 
 def observation(
@@ -206,6 +407,7 @@ def discover(root: Path) -> dict:
         capture_output=True,
     )
     imports, unresolved = [], []
+    resolver = TargetResolver(root)
     paths = sorted(set(result.stdout.decode().split("\0")) - {""})
     for relative in paths:
         if not relative.endswith(".py"):
@@ -213,7 +415,7 @@ def discover(root: Path) -> dict:
         path = root / relative
         if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()):
             raise ValueError(f"source is not a regular in-repository file: {relative}")
-        found, unknown = source_observations(relative, path.read_bytes())
+        found, unknown = source_observations(relative, path.read_bytes(), resolver)
         imports.extend(found)
         unresolved.extend(unknown)
     return {
@@ -243,34 +445,65 @@ def validate(actual: dict, inventory: dict) -> list[str]:
     for field in ("schema_version", "namespaces", "unresolved"):
         if inventory.get(field) != actual[field]:
             errors.append(f"stale or missing {field}")
-    expected = {identity(row): row for row in actual["imports"]}
+    errors.extend(
+        validate_entries(
+            actual["imports"], inventory["imports"], "missing classification"
+        )
+    )
+    errors.extend(
+        validate_entries(
+            actual["unresolved"],
+            inventory.get("dynamic_boundaries", []),
+            "unresolved dynamic target (missing classification)",
+        )
+    )
+    return errors
+
+
+def validate_entries(
+    observations: list[dict], entries: list[dict], missing: str
+) -> list[str]:
+    errors = []
+    expected = {identity(row): row for row in observations}
     seen: set[str] = set()
-    for entry in inventory["imports"]:
+    for entry in entries:
         key = identity(entry)
         if key in seen:
             errors.append(f"duplicate classification: {key}")
         seen.add(key)
         errors.extend(entry_errors(entry, expected.get(key)))
-    errors.extend(
-        f"missing classification: {key}" for key in sorted(expected.keys() - seen)
-    )
-    errors.extend(
-        f"unresolved dynamic target: {identity(row)} ({row['expression']})"
-        for row in actual["unresolved"]
-    )
+    errors.extend(f"{missing}: {key}" for key in sorted(expected.keys() - seen))
     return errors
 
 
 def entry_errors(entry: dict, expected: dict | None) -> list[str]:
     key = identity(entry)
     errors = [f"{message}: {key}" for message in review_errors(entry)]
-    observed = {
-        k: v
-        for k, v in entry.items()
-        if k not in {"classification", "evidence", "reviewer"}
-    }
+    review_fields, boundary_findings = entry_review(entry, expected)
+    errors.extend(boundary_findings)
+    observed = {k: v for k, v in entry.items() if k not in review_fields}
     if observed != expected:
         errors.append(f"stale classification/source evidence: {key}")
+    return errors
+
+
+def entry_review(entry: dict, expected: dict | None) -> tuple[set[str], list[str]]:
+    review_fields = {"classification", "evidence", "reviewer"}
+    if expected is not None and expected["target"] is None:
+        review_fields.update({"target_resolution", "boundary"})
+        return review_fields, boundary_errors(entry)
+    return review_fields, []
+
+
+def boundary_errors(entry: dict) -> list[str]:
+    key = identity(entry)
+    errors = []
+    if entry.get("target_resolution") != "runtime-supplied (not statically resolved)":
+        errors.append(
+            f"unresolved dynamic target requires explicit runtime boundary: {key}"
+        )
+    if not isinstance(entry.get("boundary"), str) or not entry["boundary"].strip():
+        errors.append(f"unresolved dynamic target requires boundary evidence: {key}")
     return errors
 
 
@@ -314,7 +547,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"import inventory: {error}", file=sys.stderr)
     if errors:
         return 1
-    print(f"import inventory: OK ({len(actual['imports'])} classified imports)")
+    print(
+        f"import inventory: OK ({len(actual['imports'])} classified imports; "
+        f"{len(actual['unresolved'])} reviewed dynamic boundaries with runtime-unknown targets)"
+    )
     return 0
 
 
