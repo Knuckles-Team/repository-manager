@@ -31,8 +31,17 @@
     {
       "id": "RM-CONNECTOR-01",
       "title": "Classify every import from the orchestration package",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "BUILDING",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "c7068e31825aa006c480a70e4af199996b8fbcab",
+          "url": "https://github.com/Knuckles-Team/repository-manager/pull/17",
+          "description": "Import inventory, its checker and 18 tests merged by pull request 17; the inventory classifies 45 imports and CI run 36993058697 passed on Linux."
+        }
+      ],
+      "remaining": "Six dynamic import boundaries are recorded as reviewed runtime-unknown rather than given one of the four classifications, so not every matching import is classified yet. The Windows job skipped the import and unit tests, so there is no Windows proof."
     },
     {
       "id": "RM-CONNECTOR-02",
