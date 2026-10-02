@@ -38,6 +38,17 @@ NAMESPACES = ("agent_orchestration", "agent_utilities")
 CATEGORIES = ("orchestration", "connector transport", "governance", "obsolete")
 INVENTORY = "docs/development/orchestration-import-inventory.json"
 LOADERS = {"importlib.import_module", "builtins.__import__"}
+STRING_BINDING_FIELDS = {
+    "MatchAs": "name",
+    "MatchStar": "name",
+    "MatchMapping": "rest",
+    "ExceptHandler": "name",
+    "Global": "names",
+    "Nonlocal": "names",
+    "TypeVar": "name",
+    "ParamSpec": "name",
+    "TypeVarTuple": "name",
+}
 
 
 def qualified(node: ast.expr, aliases: dict[str, set[str]]) -> set[str]:
@@ -134,7 +145,7 @@ def absolute_builtin(call: ast.Call) -> bool:
 
 
 def binding_names(node: ast.AST) -> list[str]:
-    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
         return [node.id]
     if isinstance(node, ast.arg):
         return [node.arg]
@@ -142,7 +153,31 @@ def binding_names(node: ast.AST) -> list[str]:
         return [item.asname or item.name.split(".")[0] for item in node.names]
     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
         return [node.name]
-    return []
+    return string_bindings(node)
+
+
+def string_bindings(node: ast.AST) -> list[str]:
+    """Captures/declarations use string fields rather than Name(Store) nodes.
+
+    Type-parameter node names keep the scanner usable on Python 3.11, where
+    those AST classes do not exist yet. Declarations and deletions conservatively
+    invalidate constant proof, even when they do not assign a replacement value.
+    """
+    field = STRING_BINDING_FIELDS.get(type(node).__name__)
+    value = getattr(node, field, None) if field else None
+    if isinstance(value, str):
+        return [value]
+    return value if isinstance(value, list) else []
+
+
+def constant_bindings(tree: ast.Module, name: str) -> list[ast.AST]:
+    """Wildcard imports may replace any name; they invalidate unique binding."""
+    return [node for node in ast.walk(tree) if may_bind_name(node, name)]
+
+
+def may_bind_name(node: ast.AST, name: str) -> bool:
+    names = binding_names(node)
+    return name in names or "*" in names
 
 
 def literal_sequence(node: ast.expr) -> set[str] | None:
@@ -173,7 +208,7 @@ def binds_loop_variable(node: ast.AST, name: str) -> bool:
 
 def loop_rebinds(node: ast.For, name: str) -> bool:
     return any(
-        name in binding_names(child)
+        may_bind_name(child, name)
         for statement in node.body
         for child in ast.walk(statement)
     )
@@ -251,7 +286,7 @@ class TargetResolver:
         if (path, name) in seen or len(seen) >= 32:
             return None
         tree = self.tree(path)
-        bindings = [item for item in ast.walk(tree) if name in binding_names(item)]
+        bindings = constant_bindings(tree, name)
         if len(bindings) != 1 or (sequence and sequence_escapes(tree, name)):
             return None
         return self.definition(path, name, seen | {(path, name)}, sequence)

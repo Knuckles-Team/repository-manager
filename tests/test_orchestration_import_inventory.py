@@ -65,6 +65,50 @@ def write_sources(root: Path, sources: dict[str, str]) -> None:
 
 
 class ImportInventoryTests(unittest.TestCase):
+    def test_non_name_bindings_cannot_hide_a_dynamic_import(self) -> None:
+        bindings = [
+            'match "agent_utilities.fixture":\n case TARGET: pass',
+            'match ["agent_utilities.fixture"]:\n case [*TARGET]: pass',
+            "match {}:\n case {**TARGET}: pass",
+            'match "agent_utilities.fixture":\n case str() as TARGET: pass',
+            "try: raise Exception()\nexcept Exception as TARGET: pass",
+            'try: raise ExceptionGroup("fixture", [Exception()])\nexcept* Exception as TARGET: pass',
+            "del TARGET",
+            "from config import *",
+            'for TARGET in ["json"]:\n match "agent_utilities.fixture":\n  case TARGET: pass\n importlib.import_module(TARGET)',
+            'for TARGET in ["json"]:\n from config import *\n importlib.import_module(TARGET)',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for binding in bindings:
+                with self.subTest(binding=binding):
+                    source = (
+                        'import importlib\nTARGET = "json"\n'
+                        + binding
+                        + "\nimportlib.import_module(TARGET)"
+                    )
+                    write_sources(root, {"source.py": source})
+                    imports, unresolved = CHECK["source_observations"](
+                        "source.py", source.encode(), CHECK["TargetResolver"](root)
+                    )
+                    self.assertEqual(imports, [])
+                    # Loop fixtures include both the loop call and the final call.
+                    self.assertEqual(
+                        len(unresolved), source.count("importlib.import_module(")
+                    )
+                    actual = {
+                        "schema_version": 1,
+                        "namespaces": list(CHECK["NAMESPACES"]),
+                        "imports": imports,
+                        "unresolved": unresolved,
+                    }
+                    self.assertTrue(
+                        any(
+                            "unresolved dynamic target" in error
+                            for error in CHECK["validate"](actual, reviewed(actual))
+                        )
+                    )
+
     def test_current_inventory_has_exactly_one_disposition_per_import_or_boundary(
         self,
     ) -> None:
