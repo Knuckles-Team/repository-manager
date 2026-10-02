@@ -768,9 +768,7 @@ def _default_lane_registry() -> Any:
     return LaneRegistry()
 
 
-def _require_authorized_checkout(
-    scope: LaneScope, lane_registry: Any | None
-) -> None:
+def _require_authorized_checkout(scope: LaneScope, lane_registry: Any | None) -> None:
     """Refuse enqueue from a checkout the lane registry has not authorized.
 
     A candidate's worktree must be a durably registered, still-active lane for
