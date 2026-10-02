@@ -106,12 +106,15 @@ following this lifecycle will hit them directly at step 1 and at the `abort`/rem
 edges:
 
 - **`rm_concepts` (step 1) refuses every mutating action** with a named
-  `ConceptAuthorityUnavailable` refusal, because RMDD-16's concept-reservation
-  authority (`agent_utilities.governance.concept_reservation`) is not present on
-  `agent-utilities` `main` as of this lane. This is not a bug in
-  repository-manager — it is a real, honest refusal preserving the original
-  `ImportError` as its cause (never a fabricated local allocation). See
-  `repository-manager-concept-coordination`.
+  `ConceptAuthorityUnavailable` refusal. RMDD-16's concept-reservation authority
+  has since migrated into repository-manager itself
+  (`repository_manager.governance.concept_reservation`) and imports cleanly, but
+  it exposes no documented `build_default_authority()` construction entrypoint
+  yet — the live authority needs a connected epistemic-graph engine handle this
+  package does not yet establish — so `resolve_default_authority()` still raises
+  by design. This is not a bug in repository-manager — it is a real, honest
+  refusal preserving the original cause (never a fabricated local allocation).
+  See `repository-manager-concept-coordination`.
 - **`rm_remote_workers(action="host_loss_reconcile")` always refuses.** No live
   WorkItem-authoritative `ResourceScheduler` is wired into any repository-manager
   entrypoint yet. `recheck`/live remote dispatch also refuse honestly whenever the
@@ -138,3 +141,7 @@ ever disagree; the server is always the source of truth.
   `repository-manager-candidate-certification`, `repository-manager-worker-operations`,
   `repository-manager-workspace-release` — the specialized skills this lifecycle
   routes into for their own domains.
+- `repository-manager-operations` — the generic provider-operations wrapper every
+  MCP agent package ships (discovery, dry-run, evidence). It names this lifecycle
+  as one of its workflows; **this skill, not that one, is the sequence to follow**
+  for actually landing a change.
