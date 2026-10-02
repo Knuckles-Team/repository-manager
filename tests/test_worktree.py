@@ -114,6 +114,82 @@ def test_add_is_idempotent(repo):
     assert b["created"] is False and b["status"] == "exists"
 
 
+def test_concurrent_worktree_creation_keeps_shared_repo_usable_and_not_bare(repo):
+    """RM-GOVERNANCE-03: creating several worktrees at once must never corrupt
+    the shared repository's Git config, and every worktree stays independently
+    commit-able.  This is the documented EnterWorktree-class failure (a tool
+    writes ``core.bare = true`` into the shared ``$GIT_COMMON_DIR/config`` and
+    nothing restores it) -- :meth:`WorktreeManager.add` never does that
+    (plain ``git worktree add`` only), and this test proves the live
+    multi-lane behavior that absence is supposed to produce.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    branches = ["lane-a", "lane-b", "lane-c"]
+    with ThreadPoolExecutor(max_workers=len(branches)) as pool:
+        results = list(pool.map(lambda b: repo.wm.add("myrepo", b), branches))
+
+    assert all(r["ok"] and r["created"] for r in results), results
+
+    # The canonical checkout must still be a real work tree, not bare --
+    # `git rev-parse --is-inside-work-tree` is the direct, authoritative
+    # check (a `core.bare` config read can falsely read "unset == false").
+    is_worktree = subprocess.run(
+        "git rev-parse --is-inside-work-tree",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    )
+    assert is_worktree.returncode == 0
+    assert is_worktree.stdout.strip() == "true"
+
+    bare_cfg = subprocess.run(
+        "git config --get core.bare",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    )
+    # Either unset (git's default) or explicitly false -- never "true".
+    assert bare_cfg.returncode != 0 or bare_cfg.stdout.strip() == "false"
+
+    # Each worktree remains independently usable: a commit in one must not
+    # observe, block on, or get mixed up with a commit in another.
+    for branch, result in zip(branches, results, strict=True):
+        wt_path = result["path"]
+        with open(os.path.join(wt_path, "marker.txt"), "w") as handle:
+            handle.write(f"{branch}\n")
+        _run("git add -A && git commit -q -m " + branch, wt_path)
+        subject = subprocess.run(
+            "git show -s --format=%s HEAD",
+            shell=True,
+            cwd=wt_path,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert subject == branch
+
+    # The canonical checkout itself was never dirtied or moved off main by
+    # any of this concurrent worktree creation.
+    canonical_branch = subprocess.run(
+        "git rev-parse --abbrev-ref HEAD",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert canonical_branch == "main"
+    canonical_status = subprocess.run(
+        "git status --porcelain",
+        shell=True,
+        cwd=repo.path,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert canonical_status == ""
+
+
 def test_list_reports_linked_worktree(repo):
     repo.wm.add("myrepo", "feat-x")
     listing = repo.wm.list_worktrees("myrepo")

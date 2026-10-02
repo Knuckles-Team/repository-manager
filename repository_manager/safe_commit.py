@@ -500,9 +500,40 @@ def _commit(
     return sha_result.stdout.strip() if sha_result.returncode == 0 else None
 
 
-def _record_baseline(tree: Path) -> tuple[dict[str, Any], bool, str | None]:
+def _gate_identity(
+    gate_stage: str,
+    gate_invoked: bool,
+    configured_gate: Sequence[str] | Callable[[Path], Any] | None,
+) -> dict[str, Any]:
+    """A JSON-safe descriptor of exactly which declared gate validated this tree.
+
+    Bound into the same persisted record as the tree's own identity by
+    :func:`_record_baseline` below, so a later reader can answer "which gate,
+    if any, validated exactly this commit" from one file, not two correlated
+    ones (RM-GOVERNANCE-04).
+    """
+    command: str | None = None
+    if gate_invoked and configured_gate is not None:
+        command = (
+            getattr(configured_gate, "__qualname__", repr(configured_gate))
+            if callable(configured_gate)
+            else " ".join(configured_gate)
+        )
+    return {"gate_stage": gate_stage, "gate_invoked": gate_invoked, "command": command}
+
+
+def _record_baseline(
+    tree: Path,
+    *,
+    gate_stage: str,
+    gate_invoked: bool,
+    configured_gate: Sequence[str] | Callable[[Path], Any] | None,
+) -> tuple[dict[str, Any], bool, str | None]:
     try:
-        baseline = tree_repair.record_baseline(tree)
+        baseline = tree_repair.record_baseline(
+            tree,
+            gate_identity=_gate_identity(gate_stage, gate_invoked, configured_gate),
+        )
     except Exception as exc:  # pragma: no cover - defensive persistence seam
         baseline = {
             "ok": False,
@@ -556,7 +587,12 @@ def _safe_commit_run(
 
     gate_invoked = configured_gate is not None
     sha = _commit(tree, message, config, staged_paths, gate_stage, gate_invoked)
-    baseline, baseline_recorded, baseline_error = _record_baseline(tree)
+    baseline, baseline_recorded, baseline_error = _record_baseline(
+        tree,
+        gate_stage=gate_stage,
+        gate_invoked=gate_invoked,
+        configured_gate=configured_gate,
+    )
     return _result(
         path=tree,
         lane=lane,

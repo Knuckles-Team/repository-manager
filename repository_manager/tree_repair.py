@@ -22,7 +22,7 @@ import hashlib
 import json
 import os
 import subprocess  # nosec B404 - fixed argv git repair commands
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -126,7 +126,19 @@ def _load_baseline(path: Path) -> dict[str, Any] | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def _save_baseline(path: Path, names: list[str], digest: str) -> dict[str, Any]:
+def _gate_identity_fields(gate_identity: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The optional ``gate_identity`` block, present only when supplied."""
+    return {} if gate_identity is None else {"gate_identity": dict(gate_identity)}
+
+
+def _save_baseline(
+    path: Path,
+    names: list[str],
+    digest: str,
+    *,
+    gate_identity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    gate_fields = _gate_identity_fields(gate_identity)
     target = _baseline_path(path)
     if target is None:
         return {
@@ -135,12 +147,14 @@ def _save_baseline(path: Path, names: list[str], digest: str) -> dict[str, Any]:
             "recorded_at": dt.datetime.now(dt.UTC).isoformat(),
             "persisted": False,
             "persistence_error": "git administrative directory unavailable",
+            **gate_fields,
         }
     payload = {
         "tracked_count": len(names),
         "content_digest": digest,
         "head_sha": (_run(["git", "rev-parse", "HEAD"], path).stdout.strip()),
         "recorded_at": dt.datetime.now(dt.UTC).isoformat(),
+        **gate_fields,
     }
     try:
         target.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
@@ -156,8 +170,20 @@ def _save_baseline(path: Path, names: list[str], digest: str) -> dict[str, Any]:
     return {**payload, "persisted": True}
 
 
-def record_baseline(path: Path | str) -> dict[str, Any]:
-    """Record the current HEAD tracked set as this worktree's good baseline."""
+def record_baseline(
+    path: Path | str, *, gate_identity: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Record the current HEAD tracked set as this worktree's good baseline.
+
+    ``gate_identity`` -- when supplied -- binds exactly which declared gate
+    validated this tree (its stage and whether it actually ran) into the SAME
+    persisted record as the tree's own identity (``head_sha`` plus the
+    tracked-content digest), so a later reader of this one file can answer
+    "which gate validated exactly this commit" without correlating two
+    separate stores (RM-GOVERNANCE-04). :func:`repository_manager.safe_commit.safe_commit`
+    is the one production caller that supplies it; a bare diagnostic run
+    passes none and the baseline records tree identity only, as before.
+    """
     tree = Path(path).expanduser().resolve()
     names = _head_paths(tree)
     if not names and _run(["git", "rev-parse", "HEAD"], tree).returncode != 0:
@@ -167,7 +193,7 @@ def record_baseline(path: Path | str) -> dict[str, Any]:
             "error": "cannot resolve HEAD to record a baseline",
         }
     digest = _content_digest(tree, names)
-    payload = _save_baseline(tree, names, digest)
+    payload = _save_baseline(tree, names, digest, gate_identity=gate_identity)
     return {"ok": True, "finding": "clean", "path": str(tree), **payload}
 
 

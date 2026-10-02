@@ -164,20 +164,18 @@ def test_concept_authority_refusal_names_module_and_preserves_cause(tmp_path):
 
     ``resolve_default_authority`` (``repository_manager/concept_coordination/
     client.py``) always refuses when nothing is injected, by design, in
-    either of two states of the agent-utilities checkout under test (see
-    that module's "Why this always refuses today" docstring):
+    either of two states (see that module's docstring, RM-GOVERNANCE-07):
 
-    * the RMDD-16 authority module (``agent_utilities.governance.
-      concept_reservation``) is absent -> refusal chains the ``ImportError``
-      as its cause;
-    * the module merged to *some* agent-utilities checkout (it lives on
-      integration branches before landing on ``main``) but RMDD-17
-      deliberately never constructs a live authority itself -> refusal
-      names the module with no exception to chain (nothing was raised).
+    * the named authority module (``AUTHORITY_MODULE``) is absent -> refusal
+      chains the ``ImportError`` as its cause;
+    * the module is importable (its normal state now: it ships inside this
+      very package) but RMDD-17 deliberately never constructs a live
+      authority itself -> refusal names the module with no exception to
+      chain (nothing was raised).
 
     Branch on which state actually holds here rather than assuming the
-    first, so this test is correct on either an agent-utilities ``main``
-    checkout or one of the integration branches the docstring names.
+    first, so this test is correct whether or not the named module happens
+    to be importable in the environment it runs in.
     """
     import importlib.util
 
@@ -192,7 +190,7 @@ def test_concept_authority_refusal_names_module_and_preserves_cause(tmp_path):
     with pytest.raises(ConceptAuthorityUnavailable) as excinfo:
         actions.get("concept-reservation:t:1")
 
-    assert "agent_utilities.governance.concept_reservation" in str(excinfo.value)
+    assert AUTHORITY_MODULE in str(excinfo.value)
     if module_present:
         assert excinfo.value.__cause__ is None
         assert "RMDD-17 does not construct a live authority" in str(excinfo.value)

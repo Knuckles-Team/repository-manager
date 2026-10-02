@@ -20,24 +20,27 @@ the action core a :class:`~repository_manager.concept_coordination.port.ConceptA
   import cannot yield a *live* authority without an engine handle this
   module deliberately does not construct.
 
-**Why this always refuses today, verified 2026-08-10.** The authority module
-(``agent_utilities/governance/concept_reservation.py``) is real and complete
-(``ConceptReservationService``, ``NativeConceptReservationAuthority``,
+**Where the authority module actually lives now (RM-GOVERNANCE-07).** RMDD-16's
+authority (``ConceptReservationService``, ``NativeConceptReservationAuthority``,
 ``FixtureConceptReservationAuthority``, states
-reserved/materialized/landed/released/expired/tombstoned, fenced
-transitions, ``reconcile_projection`` — merged at agent-utilities commit
-``bbb09765``, "feat(governance): add native concept reservation authority")
-— but that commit is **not** an ancestor of agent-utilities ``main``
-(verified: ``git merge-base --is-ancestor bbb09765 <agent-utilities main>``
-returns false at agent-utilities ``main`` = ``338226f5``). It exists only on
-branches ``rmdd-program-integration-0808``, ``rmdd-28-native-lane-authority-0809``,
-``rmdd-19-provenance-0810``, and backup ref
-``refs/lane-backup/rmdd-16-concept-authority-0809``. The RMDD-16 ledger row
-records it "CLOSED" with tests passing "post-merge" — that merge landed on
-the AU integration branch, never on AU ``main``. So the import in
-:func:`resolve_default_authority` genuinely fails in this environment; this
-is not a simulated/mocked failure, and the refusal it produces is real,
-first-class evidence, not a placeholder.
+reserved/materialized/landed/released/expired/tombstoned, fenced transitions,
+``reconcile_projection``) was never an ancestor of agent-utilities ``main`` as
+``agent_utilities/governance/concept_reservation.py`` — it has since moved, by
+operator ruling, into this repository itself as
+:mod:`repository_manager.governance.concept_reservation` (repository-manager
+is the development-governance tool; see that package's ``__init__`` for the
+full migration note). So the module genuinely IS importable today, in this
+same package. What it still does not expose is a documented
+``build_default_authority()`` construction entrypoint:
+:class:`~repository_manager.governance.concept_reservation.NativeConceptReservationAuthority`
+needs a *connected* epistemic-graph engine handle
+(``NativeConceptReservationPort``) injected into its constructor, and nothing
+in this codebase establishes a standard way to reach a live one from here —
+that remains RMDD-16/RMDD-23 scope, not RMDD-17's ("central allocator
+internals" is a listed non-goal in the lane brief). :func:`resolve_default_authority`
+therefore still always refuses, but for the real, actionable reason (no live
+engine injected) rather than a now-permanently-false one (the module missing
+from an ``agent_utilities`` checkout it was deliberately moved out of).
 """
 
 from __future__ import annotations
@@ -49,7 +52,7 @@ from .port import ConceptAuthorityPort
 
 __all__ = ["AUTHORITY_MODULE", "resolve_default_authority"]
 
-AUTHORITY_MODULE = "agent_utilities.governance.concept_reservation"
+AUTHORITY_MODULE = "repository_manager.governance.concept_reservation"
 
 
 def resolve_default_authority() -> ConceptAuthorityPort:
@@ -71,7 +74,7 @@ def resolve_default_authority() -> ConceptAuthorityPort:
     except ImportError as exc:
         raise ConceptAuthorityUnavailable(
             f"could not import {AUTHORITY_MODULE} "
-            "(RMDD-16's authority is not present on this agent-utilities checkout)",
+            "(RMDD-16's authority module is not present in this checkout)",
             cause=exc,
         ) from exc
     raise ConceptAuthorityUnavailable(

@@ -134,6 +134,31 @@ def test_successful_commit_records_baseline_for_subsequent_diagnosis(
     assert diagnosis["baseline"]["head_sha"] == result["commit_sha"]
 
 
+def test_baseline_binds_the_declared_gate_identity_to_the_committed_tree(
+    tmp_path: Path,
+) -> None:
+    """RM-GOVERNANCE-04: the resulting tree and the gate that validated it
+    must be bound together in the one persisted baseline record, reachable
+    from the real ``safe_commit`` entry point -- not just provable in a unit
+    test of ``tree_repair`` in isolation."""
+    repo = _repo(tmp_path / "gate-identity-bound", "main")
+    (repo / "tracked.txt").write_text("changed\n")
+
+    def gate(path: Path) -> dict[str, object]:
+        return {"ok": True}
+
+    result = safe_commit(repo, "gate identity bound", paths=["tracked.txt"], gate=gate)
+
+    assert result["status"] == "success"
+    assert result["baseline_recorded"] is True
+    identity = result["baseline"]["gate_identity"]
+    assert identity["gate_stage"] == "configured"
+    assert identity["gate_invoked"] is True
+    assert identity["command"] == gate.__qualname__
+    # Bound to the EXACT committed tree, not merely recorded nearby.
+    assert result["baseline"]["head_sha"] == result["commit_sha"]
+
+
 def test_commit_reports_when_baseline_persistence_is_not_confirmed(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -142,7 +167,10 @@ def test_commit_reports_when_baseline_persistence_is_not_confirmed(
     monkeypatch.setattr(
         tree_repair,
         "record_baseline",
-        lambda path: {"ok": False, "error": "administrative directory is read-only"},
+        lambda path, **kwargs: {
+            "ok": False,
+            "error": "administrative directory is read-only",
+        },
     )
 
     result = safe_commit(repo, "report baseline warning", paths=["tracked.txt"])

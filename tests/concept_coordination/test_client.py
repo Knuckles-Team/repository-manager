@@ -30,14 +30,21 @@ def test_default_authority_refuses_and_names_what_it_could_not_reach() -> None:
 
 
 def test_authority_unreachable_never_swallows_the_import_error_cause() -> None:
-    """H-12: a refusal never discards its exception cause."""
+    """H-12: a refusal never discards its exception cause.
 
-    if importlib.util.find_spec("agent_utilities.governance.concept_reservation"):
+    ``AUTHORITY_MODULE`` names a module shipped by this very package
+    (RM-GOVERNANCE-07), so it is always importable here; the ``ImportError``
+    cause-preservation branch in ``resolve_default_authority`` is reachable
+    only when the named module is genuinely absent, which this checkout
+    cannot exercise against its own authority module. Skip honestly rather
+    than assert a cause that this environment can never produce.
+    """
+
+    if importlib.util.find_spec(AUTHORITY_MODULE):
         pytest.skip(
-            "agent_utilities.governance.concept_reservation is importable in this "
-            "environment; the cause-preservation path this test targets (a genuine "
-            "ImportError) cannot be exercised here. See client.py for the commit "
-            "evidence this normally fails on agent-utilities main."
+            f"{AUTHORITY_MODULE} is importable in this environment; the "
+            "cause-preservation path this test targets (a genuine ImportError) "
+            "cannot be exercised against this package's own authority module."
         )
     with pytest.raises(ConceptAuthorityUnavailable) as excinfo:
         resolve_default_authority()

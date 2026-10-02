@@ -54,8 +54,16 @@
     {
       "id": "RM-GOVERNANCE-01",
       "title": "Single authority for Git development governance",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "d84cc392388771d730e4fbf00a0c69fd7072328e",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d84cc392388771d730e4fbf00a0c69fd7072328e",
+          "description": "Implemented on the default branch; exercised by tests/governance/test_no_parallel_lane_authority.py"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-02",
@@ -74,16 +82,23 @@
     {
       "id": "RM-GOVERNANCE-03",
       "title": "Isolated checkouts never corrupt shared Git config",
-      "delivery_state": "SPECIFIED",
-      "evidence": [],
-      "remaining": "WorktreeManager.add() uses real `git worktree add` (not the EnterWorktree pattern), but no test asserts the shared repo's core.bare stays false, and no explicit serialization lock guards concurrent `git worktree add` calls against the shared common dir."
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "0454cd888aacf447c0fb965ce03d315b4d2eec04",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/0454cd888aacf447c0fb965ce03d315b4d2eec04",
+          "description": "Implemented on the default branch; exercised by tests/test_worktree.py"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-04",
       "title": "Commits stage only reviewed paths and verified gate identity",
       "delivery_state": "BUILDING",
       "evidence": [],
-      "remaining": "Commits now stage only an explicit path allowlist and refuse an empty one (tests/test_safe_commit.py). Remaining: prove that the declared local gates run and that the resulting tree and gate identity are bound together, and that merge-queue entry is refused from a dirty or unauthorized checkout."
+      "remaining": "Commits stage only an explicit path allowlist, the declared gates run, a dirty tree is refused, and the committed tree and the gate identity that validated it are now bound in one durable record (tests/test_safe_commit.py, tests/test_tree_repair.py). Remaining: refuse merge-queue entry from a checkout that the lane registry has not authorized."
     },
     {
       "id": "RM-GOVERNANCE-05",
@@ -116,9 +131,9 @@
     {
       "id": "RM-GOVERNANCE-07",
       "title": "Concept reservations are scoped and cannot be silently reused",
-      "delivery_state": "SPECIFIED",
+      "delivery_state": "BUILDING",
       "evidence": [],
-      "remaining": "ConceptCoordinationActions scaffolding (scoping, lifecycle, reconcile modules) exists, but per concept_actions.py's own comment the real authority (agent_utilities.governance.concept_reservation) is not wired on main, so resolve_default_authority() always raises ConceptAuthorityUnavailable today; du"
+      "remaining": "The concept reservation authority lives in this repository and the concept commands now resolve it at its real location (tests/test_concept_actions.py); before this fix they refused every call with an import error. Remaining: construct a live default authority from a connected graph engine, so reservations work without explicit injection."
     },
     {
       "id": "RM-GOVERNANCE-R002",
