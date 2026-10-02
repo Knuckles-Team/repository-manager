@@ -96,9 +96,16 @@
     {
       "id": "RM-GOVERNANCE-04",
       "title": "Commits stage only reviewed paths and verified gate identity",
-      "delivery_state": "BUILDING",
-      "evidence": [],
-      "remaining": "Commits stage only an explicit path allowlist, the declared gates run, a dirty tree is refused, and the committed tree and the gate identity that validated it are now bound in one durable record (tests/test_safe_commit.py, tests/test_tree_repair.py). Remaining: refuse merge-queue entry from a checkout that the lane registry has not authorized."
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "8a96a9e0cfeba34c6cb2f2713b2cb9699bc63cc5",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/8a96a9e0cfeba34c6cb2f2713b2cb9699bc63cc5",
+          "description": "Implemented on the default branch; exercised by tests/test_merge_queue.py"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-05",
@@ -151,8 +158,9 @@
     {
       "id": "RM-GOVERNANCE-R004",
       "title": "Workspace check refuses credential-embedded remote URLs",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "BUILDING",
+      "evidence": [],
+      "remaining": "Cloning refuses a remote URL that embeds a username or token, and redacts it in the refusal (tests/test_repository_manager.py). Remaining: a workspace check over the remotes of managed checkouts, stripping embedded credentials from remotes this package manages, and the test that managed checkouts contain none."
     },
     {
       "id": "RM-GOVERNANCE-R005",
@@ -200,14 +208,30 @@
     {
       "id": "RM-GOVERNANCE-R012",
       "title": "Build verification on extracted trees uses content hashes",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "8a96a9e0cfeba34c6cb2f2713b2cb9699bc63cc5",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/8a96a9e0cfeba34c6cb2f2713b2cb9699bc63cc5",
+          "description": "Implemented on the default branch; exercised by tests/test_build_queue.py"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-R013",
       "title": "A fast rebase must not silently skip the hook suite",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "8a96a9e0cfeba34c6cb2f2713b2cb9699bc63cc5",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/8a96a9e0cfeba34c6cb2f2713b2cb9699bc63cc5",
+          "description": "Implemented on the default branch; exercised by tests/test_worktree.py"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-R014",
@@ -230,8 +254,16 @@
     {
       "id": "RM-GOVERNANCE-R017",
       "title": "Build submission is asynchronous, not polling-based",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "8a96a9e0cfeba34c6cb2f2713b2cb9699bc63cc5",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/8a96a9e0cfeba34c6cb2f2713b2cb9699bc63cc5",
+          "description": "Implemented on the default branch; exercised by tests/test_durable_build_broker.py"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-R018",
@@ -250,8 +282,16 @@
     {
       "id": "RM-GOVERNANCE-R019",
       "title": "A fix is accepted only when all quality gates pass together",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "evidence": [
+        {
+          "kind": "merged_head",
+          "result": "passed",
+          "commit": "8a96a9e0cfeba34c6cb2f2713b2cb9699bc63cc5",
+          "url": "https://github.com/Knuckles-Team/repository-manager/commit/8a96a9e0cfeba34c6cb2f2713b2cb9699bc63cc5",
+          "description": "Implemented on the default branch; exercised by tests/test_gates.py"
+        }
+      ]
     },
     {
       "id": "RM-GOVERNANCE-R020",
