@@ -720,7 +720,7 @@ def test_clone_and_pull_route_every_destination_through_path_validation(
 
     git = Git(path=str(workspace))
     git_action = patch.object(git, "git_action")
-    with git_action as mocked_action:
+    with git_action:
         result = (
             git.clone_repository("https://example.invalid/repo.git", target)
             if operation == "clone"
@@ -733,7 +733,56 @@ def test_clone_and_pull_route_every_destination_through_path_validation(
         marker in result.error.message
         for marker in ("lexical parent", "escapes workspace root", "symlink component")
     )
+
+
+# ---------------------------------------------------------------------------
+# RM-GOVERNANCE-R004 — a remote URL that embeds credentials must be refused
+# wherever this package adds a remote (here: `clone_repository`, which
+# implicitly creates the clone's `origin`), and redacted everywhere it would
+# otherwise appear in a log or error message. Synthetic placeholder values
+# only -- never anything that reads as a real secret.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://synthetic-user:synthetic-pass@example.invalid/repo.git",
+        "https://synthetic-bare-token-value@example.invalid/repo.git",
+    ],
+)
+def test_clone_refuses_a_credential_embedded_url(tmp_path, url):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    git = Git(path=str(workspace))
+
+    with patch.object(git, "git_action") as mocked_action:
+        result = git.clone_repository(url, str(workspace / "target"))
+
     mocked_action.assert_not_called()
+    assert result.status == "error"
+    assert result.error is not None
+    assert "embeds a credential" in result.error.message
+    # The redacted message names the host but never the credential material.
+    assert "example.invalid" in result.error.message
+    assert "synthetic-user" not in result.error.message
+    assert "synthetic-pass" not in result.error.message
+    assert "synthetic-bare-token-value" not in result.error.message
+
+
+def test_clone_admits_a_credential_free_url(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    git = Git(path=str(workspace))
+
+    with patch.object(git, "git_action") as mocked_action:
+        mocked_action.return_value = repository_manager_module.GitResult(
+            status="success", data="", error=None, metadata=None
+        )
+        result = git.clone_repository(
+            "https://example.invalid/repo.git", str(workspace / "target")
+        )
+
+    mocked_action.assert_called_once()
+    assert result.status == "success"
 
 
 @pytest.mark.parametrize("subdirectory", ["../escape", "/tmp/escape", "safe/../escape"])

@@ -3604,6 +3604,9 @@ class Git:
                     timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
                 ),
             )
+        credential_error = self._credential_embedded_url_refusal(url, target_path)
+        if credential_error is not None:
+            return credential_error
 
         clone_filter = os.environ.get("REPOSITORY_MANAGER_CLONE_FILTER", "").strip()
         filter_arg = (
@@ -3612,6 +3615,45 @@ class Git:
             else ""
         )
         return self._clone_repository_operation(url, target_path, filter_arg, _root)
+
+    @staticmethod
+    def _credential_embedded_url_refusal(
+        url: str, target_path: str
+    ) -> GitResult | None:
+        """Refuse a clone URL that embeds a username or token credential.
+
+        ``https://user:token@host/...`` and the bare-token form
+        (``https://ghp_xxx@host/...``) both parse with a non-blank userinfo
+        component (:attr:`~urllib.parse.SplitResult.username` and/or
+        ``.password``) -- the one shape worth checking here, since a
+        credential helper or an SSH deploy key never puts secret material in
+        the URL string itself (RM-GOVERNANCE-R004). Returns ``None`` when the
+        URL is credential-free; the refusal's own message is REDACTED via
+        :meth:`_checkout_origin_without_credentials` -- the exact secret that
+        made this a refusal is never echoed back in the result.
+        """
+        parsed = urlsplit(url)
+        if parsed.username is None and parsed.password is None:
+            return None
+        redacted = Git._checkout_origin_without_credentials(url)
+        return GitResult(
+            status="error",
+            data="",
+            error=GitError(
+                message=(
+                    "Refusing to clone a remote URL that embeds a credential "
+                    f"({redacted}); use a credential helper or an SSH deploy "
+                    "key instead"
+                ),
+                code=1,
+            ),
+            metadata=GitMetadata(
+                command="clone",
+                workspace=_project_label(target_path),
+                return_code=1,
+                timestamp=datetime.datetime.now(datetime.UTC).isoformat() + "Z",
+            ),
+        )
 
     def _clone_repository_operation(
         self,

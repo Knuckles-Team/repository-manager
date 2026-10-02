@@ -130,7 +130,7 @@ from repository_manager.governance.lanes import (
     lane_scope,
     partitioned_paths,
 )
-from repository_manager.lane_record import repository_id_for
+from repository_manager.lane_record import ACTIVE_STATES, repository_id_for
 from repository_manager.test_commands import ensure_no_fail_fast
 
 #: The per-repository gate declaration. Its ABSENCE is a refusal, not a default:
@@ -755,21 +755,70 @@ def _append_domain_record(
     return True
 
 
+def _default_lane_registry() -> Any:
+    """The lane registry :func:`enqueue` consults when none is injected.
+
+    A fresh, no-authority :class:`~repository_manager.lane_registry.LaneRegistry`
+    reads whatever has actually been durably allocated for this host (its local
+    SQLite projection); it is never used here to allocate anything, only to ask
+    "has a lane authority already authorized this checkout."
+    """
+    from repository_manager.lane_registry import LaneRegistry
+
+    return LaneRegistry()
+
+
+def _require_authorized_checkout(
+    scope: LaneScope, lane_registry: Any | None
+) -> None:
+    """Refuse enqueue from a checkout the lane registry has not authorized.
+
+    A candidate's worktree must be a durably registered, still-active lane for
+    this exact repository (RM-GOVERNANCE-04) — never inferred from the branch
+    name alone, since an ad hoc clone and a stale/terminal lane can both name a
+    real branch. A repository that has never allocated any lane at all refuses
+    here exactly like one with only stale records: "never registered" and "no
+    longer authorized" are the same admission failure from the queue's point
+    of view — only a lane the registry can show as currently active clears it.
+    """
+
+    registry = lane_registry if lane_registry is not None else _default_lane_registry()
+    repository_id = repository_id_for(scope.main_tree)
+    worktree_path = str(scope.tree.resolve())
+    records = registry.list_records(repository_id=repository_id, states=ACTIVE_STATES)
+    if any(record.worktree_path == worktree_path for record in records):
+        return
+    raise MergeQueueError(
+        f"refusing to enqueue from {scope.tree}: the lane registry has not "
+        f"authorized this checkout for repository {repository_id!r}. Create "
+        "its worktree through a registered lane allocation "
+        "(repository_manager.lane_registry.LaneRegistry.allocate or "
+        "WorktreeManager.allocate) before offering a candidate from it."
+    )
+
+
 def enqueue(
     branch: str = "",
     *,
     base: str = "",
     worktree: str | Path | None = None,
     path: Path | str | None = None,
+    lane_registry: Any | None = None,
 ) -> dict[str, Any]:
     """Offer *branch* (default: this lane's own branch) for landing on *base*.
 
     Cheap and non-blocking on purpose: it appends one record and returns. Nothing
-    is verified here — verification happens once, at the head of the queue,
-    against the base that actually exists then. Verifying at enqueue time
-    re-creates the stale-premise problem the whole design exists to kill.
+    about the CANDIDATE is verified here — verification happens once, at the
+    head of the queue, against the base that actually exists then. Verifying
+    at enqueue time re-creates the stale-premise problem the whole design
+    exists to kill. The CHECKOUT itself is a different question and is checked
+    right here: only a worktree the lane registry currently shows as active
+    may offer anything at all (``lane_registry`` overrides the default
+    registry :func:`enqueue` would otherwise construct; see
+    :func:`_require_authorized_checkout`).
     """
     scope = lane_scope(path)
+    _require_authorized_checkout(scope, lane_registry)
     branch = branch or _require_git(["rev-parse", "--abbrev-ref", "HEAD"], scope.tree)
     base = base or _repo_config(scope).base
     if branch in {"HEAD", base}:
@@ -3586,6 +3635,7 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
             base=kwargs.get("base", "") or "",
             worktree=kwargs.get("worktree"),
             path=kwargs.get("path"),
+            lane_registry=kwargs.get("lane_registry"),
         ),
         "status": lambda: queue_report(kwargs.get("path")),
         "withdraw": lambda: withdraw(

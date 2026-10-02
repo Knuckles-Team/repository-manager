@@ -1001,7 +1001,7 @@ class WorktreeManager:
             }
         op = "merge" if strategy == "merge" else "rebase"
         res = self._run(f"git {op} {shlex.quote(base_ref)}", wt)
-        return {
+        result: dict[str, Any] = {
             "ok": self._ok(res),
             "repo": repo,
             "branch": branch,
@@ -1009,6 +1009,39 @@ class WorktreeManager:
             "base_ref": base_ref,
             "output": res.data,
         }
+        if result["ok"]:
+            self._require_gates_after_history_rewrite(wt, result)
+        return result
+
+    @staticmethod
+    def _require_gates_after_history_rewrite(wt: str, result: dict[str, Any]) -> None:
+        """RM-GOVERNANCE-R013: a rebase/merge replays history without ever
+        invoking the repo's own commit hooks -- a rebase that "completes in
+        about a second" is evidence the declared gate suite did not run, not
+        proof the result is clean. Run it explicitly on the synced tree and
+        fold its verdict into ``result`` in place, so ``sync`` can never
+        silently stand in for a passed hook run; a repo with no declared
+        gates (``gates.run_gate_stage``'s own "no config" case) still reports
+        ``ok`` since there is nothing to skip.
+        """
+
+        from repository_manager import gates
+
+        gate = gates.run_gate_stage(
+            wt, "fast", trigger="sync", scope="post-rebase-verify"
+        )
+        result["gate"] = {
+            "ok": gate.success,
+            "failed_hooks": [h.hook_id for h in gate.hooks if not h.passed],
+            "error": gate.error,
+        }
+        if not gate.success:
+            result["ok"] = False
+            result["error"] = (
+                "sync rewrote this branch's history but its declared gate "
+                "suite did not pass on the result afterward; a rebase/merge "
+                "alone is never proof of a clean tree"
+            )
 
     def prune(self, repo: str | None = None) -> dict[str, Any]:
         """Prune stale worktree administrative entries across the workspace."""

@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -31,6 +32,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from repository_manager import merge_queue as mq
+from repository_manager.lane_registry import FakeDurableLaneAuthority, LaneRegistry
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO_PYTHON = ".venv/bin/python"
@@ -74,11 +76,51 @@ class FakeGit:
         )
 
 
+# RM-GOVERNANCE-04 — enqueue() now refuses a checkout the lane registry has
+# not authorized (see `_require_authorized_checkout` in merge_queue.py). Every
+# test in this module drives real throwaway git repositories that were never
+# allocated through any lane authority, so this one shared fixture gives
+# `_init_repo`/`_enqueue_bootstrap_candidate` -- the two helpers EVERY test
+# here builds its repos through -- a real, active lane record to authorize
+# against, instead of copying registration logic into each test.
+_CURRENT_LANE_REGISTRY: LaneRegistry | None = None
+
+
+@pytest.fixture(autouse=True)
+def _authorized_test_lane_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[LaneRegistry]:
+    global _CURRENT_LANE_REGISTRY
+    registry = LaneRegistry(":memory:", authority=FakeDurableLaneAuthority())
+    monkeypatch.setattr(mq, "_default_lane_registry", lambda: registry)
+    _CURRENT_LANE_REGISTRY = registry
+    try:
+        yield registry
+    finally:
+        _CURRENT_LANE_REGISTRY = None
+
+
+def _authorize_checkout(repo: Path, worktree: Path, branch: str = "main") -> None:
+    """Register *worktree* as an active, authorized lane of *repo*."""
+
+    if _CURRENT_LANE_REGISTRY is None:
+        return
+    _CURRENT_LANE_REGISTRY.allocate(
+        repo,
+        branch,
+        worktree,
+        owner_id="test-owner",
+        session_id="test-session",
+        idempotency_key=f"authorize:{worktree}",
+    )
+
+
 def _init_repo(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     _run("git init -q -b main", root)
     _run("git config user.email t@t.io && git config user.name t", root)
     _run("git config commit.gpgsign false", root)
+    _authorize_checkout(root, root)
     return root
 
 
@@ -890,6 +932,7 @@ def _enqueue_bootstrap_candidate(
 ) -> Path:
     worktree = tmp_path / branch.replace("/", "-")
     _run(f"git worktree add -q -b {branch} {worktree} main", repo)
+    _authorize_checkout(repo, worktree, branch)
     if config is not None:
         _write_config(worktree, config)
     for relative, body in (extra or {}).items():
@@ -1956,3 +1999,67 @@ def test_shadow_generation_marks_base_move_stale_before_trial(
     assert outcome["synthetic_commit_sha"] == ""
     assert outcome["accepted"] == []
     assert outcome["conflicts"] == []
+
+
+# ---------------------------------------------------------------------------
+# RM-GOVERNANCE-04 — enqueue() refuses a checkout the lane registry has not
+# authorized (the single admission chokepoint: `_require_authorized_checkout`,
+# called at the top of `enqueue()` before anything else runs).
+# ---------------------------------------------------------------------------
+def test_enqueue_admits_an_authorized_checkout(shell_repo: Path) -> None:
+    """The positive case: a worktree the lane registry shows ACTIVE for this
+    exact repository is admitted -- this is the ordinary path every other
+    test in this module already exercises via `_init_repo`'s own
+    self-registration (`shell_repo` is built on it), proven directly here
+    against the real registry.
+    """
+    _run("git checkout -q -b feat/authorized", shell_repo)
+    _commit(shell_repo, "candidate")
+
+    result = mq.enqueue("feat/authorized", path=shell_repo)
+
+    assert result["enqueued"] is True
+
+
+def test_enqueue_refuses_an_unregistered_checkout(tmp_path: Path) -> None:
+    """No lane was ever allocated for this repository at all: refused."""
+
+    repo = tmp_path / "never-registered"
+    repo.mkdir(parents=True)
+    _run("git init -q -b main", repo)
+    _run("git config user.email t@t.io && git config user.name t", repo)
+    _run("git config commit.gpgsign false", repo)
+    _commit(repo, "base")
+    _run("git checkout -q -b feat/rogue", repo)
+    _commit(repo, "candidate")
+
+    with pytest.raises(mq.MergeQueueError, match="has not authorized"):
+        mq.enqueue("feat/rogue", path=repo)
+    assert mq.queued(repo) == []
+
+
+def test_enqueue_refuses_a_checkout_whose_lane_is_no_longer_active(
+    tmp_path: Path,
+) -> None:
+    """A lane record exists for this exact checkout, but it is now terminal
+    (aborted/landed/rejected/quarantined): refused -- "unauthorized", distinct
+    from "never registered" above, and refused the same way by the same
+    check. A lane authorizes a checkout only while it is still active.
+    """
+    repo = _init_repo(tmp_path / "stale-lane")
+    _commit(repo, "base")
+    assert _CURRENT_LANE_REGISTRY is not None
+    # `_init_repo` already registered this exact checkout's lane (ACTIVE); age
+    # it out to a terminal state so no ACTIVE_STATES record matches anymore.
+    (record,) = _CURRENT_LANE_REGISTRY.list_records(
+        repository_id=mq.repository_id_for(repo)
+    )
+    _CURRENT_LANE_REGISTRY.abort(
+        record.lane_id, owner_id="test-owner", fence=record.fence
+    )
+
+    _run("git checkout -q -b feat/rogue", repo)
+    _commit(repo, "candidate")
+
+    with pytest.raises(mq.MergeQueueError, match="has not authorized"):
+        mq.enqueue("feat/rogue", path=repo)
