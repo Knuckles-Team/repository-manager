@@ -10,15 +10,17 @@ or an authority of its own, so MCP and CLI can never diverge in behavior
 ``build_default_concept_authority`` is the "entrypoint that constructs the
 real RMDD-16 authority and injects it into ``ConceptCoordinationActions``"
 the RMDD-17 lane brief asked RMDD-20 to write. It is a best-effort attempt,
-never a fabrication: RMDD-16's authority module
-(``agent_utilities.governance.concept_reservation``) is not an ancestor of
-agent-utilities ``main`` as of this lane (verified 2026-08-10; see
-``repository_manager/concept_coordination/client.py`` for the full account
-of exactly which commit and which branches carry it), so today this always
-returns ``None`` in this environment and every caller falls through to
-``ConceptCoordinationActions``'s own ``resolve_default_authority()`` — which
-raises a named ``ConceptAuthorityUnavailable`` preserving the real
-``ImportError`` as ``__cause__`` (H-12: never discard an exception cause).
+never a fabrication: RMDD-16's authority module now lives in this very
+package, at :mod:`repository_manager.governance.concept_reservation`
+(RM-GOVERNANCE-07; see ``repository_manager/concept_coordination/client.py``
+for the full migration account), so the import itself succeeds today. What
+that module does not yet expose is a documented ``build_default_authority()``
+construction entrypoint — :class:`~repository_manager.governance.concept_reservation.NativeConceptReservationAuthority`
+needs a *connected* epistemic-graph engine handle injected into its
+constructor, and this package establishes no standard way to reach a live one
+from here. So this still returns ``None`` today, and every caller falls
+through to ``ConceptCoordinationActions``'s own ``resolve_default_authority()``
+— which raises a named ``ConceptAuthorityUnavailable`` naming that exact gap.
 No fixture, in-memory allocator, or fabricated authority is ever substituted
 for the real one in this module.
 """

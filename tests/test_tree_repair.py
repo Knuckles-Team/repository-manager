@@ -121,3 +121,42 @@ def test_one_hundred_clean_diagnoses_have_no_false_positive(tmp_path: Path) -> N
 
     assert all(report["finding"] == "clean" for report in reports)
     assert all(report["ok"] for report in reports)
+
+
+def test_record_baseline_binds_gate_identity_into_the_same_record(
+    tmp_path: Path,
+) -> None:
+    """RM-GOVERNANCE-04: the declared gate that validated a tree and the
+    tree's own identity (``head_sha`` plus the tracked-content digest) must
+    land in ONE persisted record, not two correlated stores."""
+    repo = tmp_path / "gate-identity"
+    repo.mkdir()
+    _git(["init", "-b", "main"], repo)
+    _git(["config", "user.email", "t@t.io"], repo)
+    _git(["config", "user.name", "t"], repo)
+    (repo / "tracked.txt").write_text("base\n")
+    _git(["add", "-A"], repo)
+    _git(["commit", "-m", "base"], repo)
+
+    recorded = tree_repair.record_baseline(
+        repo,
+        gate_identity={
+            "gate_stage": "configured",
+            "gate_invoked": True,
+            "command": "pytest -q",
+        },
+    )
+
+    assert recorded["ok"] is True
+    assert recorded["gate_identity"] == {
+        "gate_stage": "configured",
+        "gate_invoked": True,
+        "command": "pytest -q",
+    }
+    head_sha = _git(["rev-parse", "HEAD"], repo).stdout.strip()
+    assert recorded["head_sha"] == head_sha
+
+    # A bare recording (the diagnostic path, no gate involved) carries no
+    # gate identity at all -- this field is additive, never inferred.
+    reloaded = tree_repair.record_baseline(repo)
+    assert "gate_identity" not in reloaded
