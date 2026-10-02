@@ -429,3 +429,66 @@ def test_hook_ids_reports_a_failure_for_an_undeclared_hook(tmp_path):
     assert result.success is False
     assert result.hooks == []
     assert result.error is not None
+
+
+def test_one_red_check_refuses_admission_even_though_the_rest_are_green(tmp_path):
+    """RM-GOVERNANCE-R019: a fix is accepted only when every declared quality
+    gate passes TOGETHER, not individually. Five of the declared checks here
+    stand in for the named ones (complexity/cccc, KISS, duplication/
+    dupehound, clone-detection/jscpd, compiler lint/clippy) and all pass; the
+    sixth (the test suite) fails. The combined run must still refuse as a
+    whole, and every check's own verdict must still be visible -- a caller
+    cannot act on "mostly green".
+    """
+    (tmp_path / ".pre-commit-config.yaml").write_text("repos: []\n")
+    output = (
+        "cccc.....................................................................Passed\n"
+        "- hook id: cccc\n- duration: 0.10s\n\n"
+        "kiss.....................................................................Passed\n"
+        "- hook id: kiss\n- duration: 0.11s\n\n"
+        "dupehound................................................................Passed\n"
+        "- hook id: dupehound\n- duration: 0.12s\n\n"
+        "jscpd.....................................................................Passed\n"
+        "- hook id: jscpd\n- duration: 0.13s\n\n"
+        "clippy...................................................................Passed\n"
+        "- hook id: clippy\n- duration: 0.14s\n\n"
+        "pytest...................................................................Failed\n"
+        "- hook id: pytest\n- duration: 0.42s\n\n"
+        "FAILED tests/test_thing.py::test_it - AssertionError\n"
+    )
+
+    with mock.patch.object(
+        gates, "_run_pre_commit", return_value=_completed(1, stdout=output)
+    ):
+        result = gates.run_gate_stage(str(tmp_path), "fast")
+
+    assert result.success is False
+    by_id = {hook.hook_id: hook.passed for hook in result.hooks}
+    assert by_id == {
+        "cccc": True,
+        "kiss": True,
+        "dupehound": True,
+        "jscpd": True,
+        "clippy": True,
+        "pytest": False,
+    }
+
+
+def test_all_declared_checks_passing_is_the_only_way_to_admit(tmp_path):
+    """The positive side of the same contract: every one of the same six
+    checks passing is what makes the combined run succeed."""
+    (tmp_path / ".pre-commit-config.yaml").write_text("repos: []\n")
+    output = "".join(
+        f"{name}.....................................................................Passed\n"
+        f"- hook id: {name}\n- duration: 0.10s\n\n"
+        for name in ("cccc", "kiss", "dupehound", "jscpd", "clippy", "pytest")
+    )
+
+    with mock.patch.object(
+        gates, "_run_pre_commit", return_value=_completed(0, stdout=output)
+    ):
+        result = gates.run_gate_stage(str(tmp_path), "fast")
+
+    assert result.success is True
+    assert all(hook.passed for hook in result.hooks)
+    assert len(result.hooks) == 6

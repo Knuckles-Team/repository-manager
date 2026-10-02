@@ -19,8 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from repository_manager import lane_doctor
+from repository_manager import lane_doctor, merge_queue
 from repository_manager.lane_doctor import FAIL, OK, SKIP, WARN
+from repository_manager.lane_registry import FakeDurableLaneAuthority, LaneRegistry
 
 
 def _git(args: list[str], cwd: Path) -> str:
@@ -31,7 +32,20 @@ def _git(args: list[str], cwd: Path) -> str:
 
 
 @pytest.fixture
-def canonical(tmp_path: Path) -> Path:
+def lane_registry(monkeypatch: pytest.MonkeyPatch) -> LaneRegistry:
+    """RM-GOVERNANCE-04: ``merge_queue.enqueue`` now refuses a checkout the
+    lane registry has not authorized. These fixtures build real, disposable
+    repos that were never allocated through any lane authority, so this one
+    shared registry gives ``canonical``/``worktree`` a real, active lane
+    record to authorize against.
+    """
+    registry = LaneRegistry(":memory:", authority=FakeDurableLaneAuthority())
+    monkeypatch.setattr(merge_queue, "_default_lane_registry", lambda: registry)
+    return registry
+
+
+@pytest.fixture
+def canonical(tmp_path: Path, lane_registry: LaneRegistry) -> Path:
     """A real canonical checkout with one commit on ``main``."""
     root = tmp_path / "canonical"
     root.mkdir()
@@ -41,14 +55,30 @@ def canonical(tmp_path: Path) -> Path:
     (root / "README.md").write_text("base\n")
     _git(["add", "-A"], root)
     _git(["commit", "-m", "base"], root)
+    lane_registry.allocate(
+        root,
+        "main",
+        root,
+        owner_id="test-owner",
+        session_id="test-session",
+        idempotency_key=f"authorize:{root}",
+    )
     return root
 
 
 @pytest.fixture
-def worktree(canonical: Path, tmp_path: Path) -> Path:
+def worktree(canonical: Path, tmp_path: Path, lane_registry: LaneRegistry) -> Path:
     """A linked worktree of ``canonical`` on its own branch — a healthy lane."""
     tree = tmp_path / "lane"
     _git(["worktree", "add", str(tree), "-b", "lane/test", "main"], canonical)
+    lane_registry.allocate(
+        canonical,
+        "lane/test",
+        tree,
+        owner_id="test-owner",
+        session_id="test-session",
+        idempotency_key=f"authorize:{tree}",
+    )
     return tree
 
 

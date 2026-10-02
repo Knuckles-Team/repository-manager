@@ -874,6 +874,33 @@ def _manifest_artifacts_are_valid(
     return True
 
 
+def _refuse_if_git_discoverable(tree: Path) -> None:
+    """Fail loudly if a published, content-hash-verified artifact tree is
+    unexpectedly inside a git work tree.
+
+    ``tree`` here is the published ``artifacts/`` directory under
+    :func:`_artifact_root` — bytes the build runner extracted (copied out of
+    a materialized worktree, or received over the wire; see
+    :mod:`repository_manager.remote_execution.artifact_transport`) with no
+    ``.git`` of its own. Re-verification of that directory
+    (:func:`_manifest_is_valid`) relies entirely on the recorded ``sha256``
+    checksums for exactly this reason: ``git status``/``git diff`` run there
+    either refuse outright (no repository) or, worse, silently walk up to and
+    answer for an unrelated ANCESTOR repository that happens to contain this
+    cache directory — neither can detect a real change to these bytes. This
+    guard turns that second, silent case into a loud refusal instead of a
+    false cache hit.
+    """
+    probe = _run_git(["rev-parse", "--is-inside-work-tree"], tree)
+    if probe.ok and probe.out.strip() == "true":
+        raise BuildQueueError(
+            f"refusing to trust a content-hash cache verification at {tree}: "
+            "it is unexpectedly inside a git work tree; an extracted build "
+            "artifact tree must never be git-discoverable, and verifying it "
+            "must never fall back to running git there"
+        )
+
+
 def _manifest_is_valid(
     manifest: dict[str, Any],
     path: Path | str | None = None,
@@ -889,6 +916,8 @@ def _manifest_is_valid(
     root_ok, expected_root = _resolve_expected_artifact_root(path, expected_key)
     if not root_ok:
         return False
+    if expected_root is not None:
+        _refuse_if_git_discoverable(expected_root)
     artifacts = manifest.get("artifacts")
     if not isinstance(artifacts, list) or not artifacts or len(artifacts) > 4096:
         return False

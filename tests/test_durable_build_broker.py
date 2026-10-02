@@ -1917,3 +1917,105 @@ def test_legacy_compatibility_artifacts_reject_symlinks_and_bound_gc(
     result = bq.gc(repo_path=tree, keep_recent=0, max_age_days=0)
     assert result["removed"] == []
     assert result["errors"]
+
+
+# ---------------------------------------------------------------------------
+# RM-GOVERNANCE-R017 — submission is asynchronous AND bounded by capacity.
+# One test naming the combined guarantee: a contributor's ``submit()`` call
+# returns a durable handle before anything has run (no polling needed to get
+# THAT answer), and the jobs it hands back are the same ones a bounded
+# capacity profile admits only up to its limit, never all at once.
+# ---------------------------------------------------------------------------
+def _repo_named(tmp_path: Path, name: str, *, resource_class: str) -> Path:
+    repo = tmp_path / name
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.invalid"], cwd=repo, check=True
+    )
+    subprocess.run(["git", "config", "user.name", "RMDD tests"], cwd=repo, check=True)
+    (repo / "build_script.py").write_text("print(1)\n", encoding="utf-8")
+    (repo / ".buildcache.yaml").write_text(
+        f"""schema_version: 2
+base: main
+specs:
+  - name: test-build
+    command: [python3, build_script.py]
+    artifacts: [out.txt]
+    resource_class: {resource_class}
+""",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "fixture"], cwd=repo, check=True)
+    return repo
+
+
+def test_submission_is_immediate_and_bounded_by_the_same_capacity_profile(
+    tmp_path: Path,
+) -> None:
+    """``submit()`` never blocks on the build it queues (RM-GOVERNANCE-R017,
+    first half): each call below returns a durable job handle while the
+    underlying job row is still in its pre-execution state, never one that
+    waited for a result. The SAME job ids it hands back are then the ones a
+    capacity-bounded profile ("frontend-build", concurrency_limit=1, shared
+    with ``test_three_frontend_jobs_obey_native_profile_concurrency_limit``)
+    admits only one of at a time (second half) -- the queue, not the
+    contributor, is what serializes concurrent execution.
+    """
+
+    port = FakeRepositoryJobPort()
+    service = BuildService(RepositoryJobService(port))
+
+    submitted_job_ids: list[str] = []
+    for index in range(3):
+        repo = _repo_named(tmp_path, f"contributor-{index}", resource_class="frontend-build")
+        result = service.submit(repo_path=repo, spec_name="test-build")
+        job_id = result["job_id"]
+        submitted_job_ids.append(job_id)
+
+        # The call returned a queued handle, not a finished build: nothing
+        # this test process did could have executed the build command, so a
+        # "succeeded"/"running" row here would mean submission secretly
+        # blocked on (or performed) execution instead of only queuing it.
+        assert "artifacts" not in result
+        row = port.rows[job_id]
+        assert row.state in (JobState.SUBMITTED, JobState.READY)
+
+    assert len(set(submitted_job_ids)) == 3  # three distinct durable handles
+
+    # Now the capacity side: when all three of those SAME job ids compete for
+    # the one-at-a-time "frontend-build" resource class, only one is admitted
+    # -- a contributor's un-polled, already-returned submission is bounded by
+    # the queue's own capacity, not by how many contributors asked.
+    now = datetime.now(UTC)
+    reservation_port = InMemoryWorkItemReservationPort()
+    scheduler = ResourceScheduler(
+        capacity=CapacityInventory(
+            [HostCapacity("local", ResourceVector(64, 100_000, 100_000, 32), heartbeat_at=now)]
+        ),
+        work_item_port=reservation_port,
+    )
+    decisions = []
+    for job_id in submitted_job_ids:
+        fence = f"fence-{job_id}"
+        reservation_port.claim(job_id, fence=fence)
+        decisions.append(
+            scheduler.admit(
+                AdmissionRequest(
+                    work_item_id=job_id,
+                    attempt=1,
+                    fence=fence,
+                    resources=ResourceRequest(resource_class="frontend-build"),
+                    repository_id=job_id,
+                ),
+                now=now,
+            )
+        )
+
+    assert sum(decision.admitted for decision in decisions) == 1
+    assert all(
+        decision.reason_code is AdmissionReason.CONCURRENCY
+        for decision in decisions
+        if not decision.admitted
+    )

@@ -456,3 +456,93 @@ def test_the_python_dash_m_entrypoint_routes_to_the_same_dispatch_core(
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["computable"] is True
+
+
+# ---------------------------------------------------------------------------
+# RM-GOVERNANCE-R012 — verifying a published artifact tree (no `.git` of its
+# own: it lives under the repo's `.git/` common dir, never the work tree)
+# must rely entirely on recorded content hashes, and must refuse loudly
+# rather than silently trust git if that tree is ever git-discoverable.
+# ---------------------------------------------------------------------------
+def _write_single_artifact_manifest(artifacts_dir: Path, digest: str) -> dict:
+    artifact_path = artifacts_dir / "out.txt"
+    artifact_path.write_text("payload-v1\n")
+    return {
+        "key": digest,
+        "artifacts": [
+            {
+                "stored_at": str(artifact_path),
+                "sha256": bq._sha256_file(artifact_path),
+                "bytes": artifact_path.stat().st_size,
+            }
+        ],
+    }
+
+
+def test_content_hash_catches_drift_a_git_diff_never_sees(repo: Path) -> None:
+    digest = "r012-content-hash-proof"
+    artifacts_dir = bq._artifact_root(repo) / digest / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    manifest = _write_single_artifact_manifest(artifacts_dir, digest)
+
+    assert bq._manifest_is_valid(manifest, repo, digest) is True
+
+    # Tamper with the published bytes directly -- exactly what real drift in
+    # an extracted, non-git build-artifact tree looks like.
+    (artifacts_dir / "out.txt").write_text("payload-v2-tampered\n")
+    assert bq._manifest_is_valid(manifest, repo, digest) is False
+
+    # The published tree sits under the repo's `.git/` common dir, outside
+    # the work tree -- git status/diff of the repo are structurally blind to
+    # it; they report clean even though the recorded checksum just caught a
+    # real change.
+    status = bq._run_git(["status", "--porcelain"], repo)
+    assert status.ok
+    assert status.out == ""
+    diff = bq._run_git(["diff", "--stat"], repo)
+    assert diff.ok
+    assert diff.out == ""
+
+
+def test_refuse_if_git_discoverable_passes_for_a_plain_extracted_tree(
+    tmp_path: Path,
+) -> None:
+    tree = tmp_path / "extracted"
+    tree.mkdir()
+    bq._refuse_if_git_discoverable(tree)  # must not raise
+
+
+def test_refuse_if_git_discoverable_fails_loudly_inside_a_work_tree(
+    tmp_path: Path,
+) -> None:
+    root = _init_repo(tmp_path / "work-tree")
+    (root / "f.txt").write_text("x")
+    _commit(root)
+    nested = root / "nested"
+    nested.mkdir()
+
+    with pytest.raises(bq.BuildQueueError, match="git-discoverable"):
+        bq._refuse_if_git_discoverable(nested)
+
+
+def test_manifest_verification_refuses_a_cache_dir_relocated_into_a_work_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the published tree is ever relocated somewhere git CAN see it, the
+    runner must refuse loudly rather than quietly let git answer instead of
+    the recorded checksum.
+    """
+    relocated_repo = _init_repo(tmp_path / "relocated")
+    (relocated_repo / "f.txt").write_text("x")
+    _commit(relocated_repo)
+
+    digest = "r012-relocated-cache"
+    artifacts_dir = relocated_repo / "build-cache" / digest / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    manifest = _write_single_artifact_manifest(artifacts_dir, digest)
+    monkeypatch.setattr(
+        bq, "_artifact_root", lambda path=None: relocated_repo / "build-cache"
+    )
+
+    with pytest.raises(bq.BuildQueueError, match="git-discoverable"):
+        bq._manifest_is_valid(manifest, relocated_repo, digest)

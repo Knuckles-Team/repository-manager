@@ -1462,9 +1462,12 @@ def _enqueue_finish_result(
     report: dict[str, Any],
     force: bool,
     submitted_lane: Any,
+    registry: Any = None,
 ) -> dict[str, Any]:
     try:
-        result = merge_queue.enqueue(branch or "", base=base or "", path=tree)
+        result = merge_queue.enqueue(
+            branch or "", base=base or "", path=tree, lane_registry=registry
+        )
     except merge_queue.MergeQueueError as exc:
         return {
             "ok": False,
@@ -1538,7 +1541,7 @@ def finish(
         return error
 
     return _enqueue_finish_result(
-        merge_queue, branch, base, tree, report, force, submitted_lane
+        merge_queue, branch, base, tree, report, force, submitted_lane, registry
     )
 
 

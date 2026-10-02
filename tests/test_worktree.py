@@ -9,6 +9,7 @@ import pytest
 
 from repository_manager import worktree as wt_mod
 from repository_manager.worktree import WorktreeManager
+from tests.conftest import isolated_git_subprocess_env
 
 
 class FakeGit:
@@ -997,13 +998,72 @@ def test_old_stale_origin_rebase_would_have_dropped_the_landed_commit(repo, tmp_
 def test_sync_refuses_when_base_ref_is_not_resolvable_from_the_worktree(repo):
     """A worktree that is not genuinely linked to the canonical repo (refs not
     shared) must be refused rather than silently falling back to origin."""
-    made = repo.wm.add("myrepo", "feat-detached")
+    repo.wm.add("myrepo", "feat-detached")
     # simulate a broken/unlinked worktree: delete the local base ref entirely
     # is not realistic for a linked worktree (refs are shared), so instead
     # assert the refusal path by asking for a base that never existed.
     result = repo.wm.sync("myrepo", "feat-detached", base="no-such-base")
     assert result["ok"] is False
     assert "not resolvable" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# RM-GOVERNANCE-R013 — a rebase/merge replays history without ever invoking
+# commit hooks; `sync()` must run the repo's declared gates on the result and
+# refuse rather than silently reporting the rebase alone as success.
+# ---------------------------------------------------------------------------
+def _add_fixed_result_gate(repo_path: str, *, exit_code: int) -> None:
+    """Commit a deterministic local pre-commit hook onto ``repo_path``'s HEAD."""
+    env = isolated_git_subprocess_env()
+    with open(os.path.join(repo_path, ".pre-commit-config.yaml"), "w") as handle:
+        handle.write(
+            "default_stages: [pre-commit]\n"
+            "repos:\n"
+            "- repo: local\n"
+            "  hooks:\n"
+            "  - id: fixed-result\n"
+            "    name: fixed-result\n"
+            f'    entry: python3 -c "import sys; sys.exit({exit_code})"\n'
+            "    language: system\n"
+            "    always_run: true\n"
+            "    pass_filenames: false\n"
+        )
+    subprocess.run(["git", "add", "-A"], cwd=repo_path, check=True, env=env)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "declare a gate"],
+        cwd=repo_path,
+        check=True,
+        env=env,
+    )
+
+
+def test_sync_refuses_when_the_synced_tree_fails_its_declared_gates(repo):
+    """A rebase that "completes in about a second" is not proof the result is
+    clean -- the declared gate must actually run and pass."""
+    _add_fixed_result_gate(repo.path, exit_code=1)
+    repo.wm.add("myrepo", "feat-sync-fails-gate")
+    _commit_in(repo.path, "more.txt", "advance")
+
+    result = repo.wm.sync("myrepo", "feat-sync-fails-gate")
+
+    assert result["ok"] is False
+    assert result["gate"]["ok"] is False
+    assert "fixed-result" in result["gate"]["failed_hooks"]
+    assert "never proof of a clean tree" in result["error"]
+
+
+def test_sync_reports_a_passing_declared_gate(repo):
+    """The positive half: a genuinely passing declared gate still admits the
+    sync -- this is not a blanket refusal, only a closed loophole."""
+    _add_fixed_result_gate(repo.path, exit_code=0)
+    repo.wm.add("myrepo", "feat-sync-passes-gate")
+    _commit_in(repo.path, "more.txt", "advance")
+
+    result = repo.wm.sync("myrepo", "feat-sync-passes-gate")
+
+    assert result["ok"] is True
+    assert result["gate"]["ok"] is True
+    assert result["gate"]["failed_hooks"] == []
 
 
 # ---------------------------------------------------------------------------
