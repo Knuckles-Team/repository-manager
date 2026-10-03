@@ -198,3 +198,6 @@ Procfile          text
 # Concept governance (CONCEPT:OS-5.42)
 docs/concept_reservations.yaml  merge=union
 docs/concepts.md                merge=union
+
+# Read by the Bash bootstrap on every platform.
+scripts/siblings.lock text eol=lf
