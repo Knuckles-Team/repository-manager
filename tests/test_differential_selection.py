@@ -389,6 +389,22 @@ def test_correctness_unrelated_change_does_not_select_unrelated_test(
     assert "tests/sub" not in result.selected
 
 
+def test_direct_and_transitive_targets_share_one_path_format(project: Path) -> None:
+    _write(project, "pkg/leaf.py", "def compute():\n    return 5\n")
+    with (project / "tests/test_leaf.py").open("a", encoding="utf-8") as handle:
+        handle.write("\n# Changed directly as well as reached through pkg.leaf.\n")
+    _commit_all(project, "change leaf and its test")
+
+    result = _select(project)
+
+    assert not result.full_suite, result.as_dict()
+    assert result.changed_files == ("pkg/leaf.py", "tests/test_leaf.py")
+    assert result.selected == ("tests/test_hub.py", "tests/test_leaf.py")
+    assert ds.pytest_argv_for_selection(
+        result, base_command=(sys.executable, "-m", "pytest", "-q")
+    ) == [sys.executable, "-m", "pytest", "-q", *result.selected]
+
+
 def test_pytest_argv_for_selection_narrow(project: Path) -> None:
     _write(project, "pkg/leaf.py", "def compute():\n    return 5\n")
     _commit_all(project, "narrow change")
