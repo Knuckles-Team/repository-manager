@@ -12,21 +12,25 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from tunnel_manager.remote_execution import (
-    AuthorizedTarget,
-    ExecutionOutcome,
-    FailureClass,
-    RemoteCommandRequest,
-    RemoteExecutionContext,
-    RemoteExecutionResult,
-    RemoteTargetError,
-)
+if TYPE_CHECKING:
+    from tunnel_manager.remote_execution import (
+        AuthorizedTarget,
+        FailureClass,
+        RemoteCommandRequest,
+        RemoteExecutionContext,
+        RemoteExecutionResult,
+    )
 
 Responder = Callable[
-    [AuthorizedTarget, RemoteCommandRequest, RemoteExecutionContext],
-    RemoteExecutionResult,
+    ["AuthorizedTarget", "RemoteCommandRequest", "RemoteExecutionContext"],
+    "RemoteExecutionResult",
 ]
+
+
+def _failure_class(value: FailureClass | None, default: FailureClass) -> FailureClass:
+    return default if value is None else value
 
 
 class FakeInventoryResolver:
@@ -38,6 +42,8 @@ class FakeInventoryResolver:
 
     def resolve(self, alias: str, actor: object) -> AuthorizedTarget:
         """Record the call and enforce the current authorization set."""
+
+        from tunnel_manager.remote_execution import AuthorizedTarget, RemoteTargetError
 
         self.resolutions.append((alias, actor))
         if alias not in self.authorized_aliases:
@@ -85,6 +91,11 @@ class FakeRemoteExecutorPort:
 
     @staticmethod
     def succeeded(context: RemoteExecutionContext) -> RemoteExecutionResult:
+        from tunnel_manager.remote_execution import (
+            ExecutionOutcome,
+            RemoteExecutionResult,
+        )
+
         now = datetime.now(UTC)
         return RemoteExecutionResult(
             command_id=context.command_id,
@@ -100,8 +111,14 @@ class FakeRemoteExecutorPort:
     @staticmethod
     def failed(
         context: RemoteExecutionContext,
-        failure_class: FailureClass = FailureClass.WORKER_ENVIRONMENT_FAILURE,
+        failure_class: FailureClass | None = None,
     ) -> RemoteExecutionResult:
+        from tunnel_manager.remote_execution import (
+            ExecutionOutcome,
+            FailureClass,
+            RemoteExecutionResult,
+        )
+
         now = datetime.now(UTC)
         return RemoteExecutionResult(
             command_id=context.command_id,
@@ -111,14 +128,22 @@ class FakeRemoteExecutorPort:
             duration_ms=0,
             worker_id=context.worker_id,
             fence=context.fence,
-            failure_class=failure_class,
+            failure_class=_failure_class(
+                failure_class, FailureClass.WORKER_ENVIRONMENT_FAILURE
+            ),
         )
 
     @staticmethod
     def refused(
         context: RemoteExecutionContext,
-        failure_class: FailureClass = FailureClass.STALE_FENCE_DUPLICATE_EFFECT,
+        failure_class: FailureClass | None = None,
     ) -> RemoteExecutionResult:
+        from tunnel_manager.remote_execution import (
+            ExecutionOutcome,
+            FailureClass,
+            RemoteExecutionResult,
+        )
+
         now = datetime.now(UTC)
         return RemoteExecutionResult(
             command_id=context.command_id,
@@ -128,7 +153,9 @@ class FakeRemoteExecutorPort:
             duration_ms=0,
             worker_id=context.worker_id,
             fence=context.fence,
-            failure_class=failure_class,
+            failure_class=_failure_class(
+                failure_class, FailureClass.STALE_FENCE_DUPLICATE_EFFECT
+            ),
         )
 
 
