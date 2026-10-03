@@ -260,7 +260,7 @@
       "target": "agent_utilities.security.persistence_privacy",
       "symbol": "sanitize_for_persistence",
       "expression": "sanitize_for_persistence",
-      "source_sha256": "0c41174f348df346078a738a14cafc3c4363d8dd9d21af1a9ca9b511f16817d3",
+      "source_sha256": "14427c9c8380c838573ee7705a07bad887ffe4fef7fc05aa724def99e1bb6899",
       "classification": "governance",
       "reviewer": "Codex (initial disposition; independent review pending)",
       "evidence": "repository_manager/models.py:8: Identity, actor context or persistence privacy governs repository records and test authority."
