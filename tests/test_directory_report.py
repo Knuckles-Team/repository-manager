@@ -222,7 +222,7 @@ class TestToDirectoryReport:
             for f in files:
                 assert not f.startswith("summaries_")
 
-            with open(os.path.join(alpha_dir, summary_file)) as f_in:
+            with open(os.path.join(alpha_dir, summary_file), encoding="utf-8") as f_in:
                 content = f_in.read()
             assert "# 📋 alpha-agent Validation Summary" in content
             assert "Total Checks:" in content
@@ -231,7 +231,7 @@ class TestToDirectoryReport:
         report_dir = sample_report.to_directory_report(str(tmp_path))
         index_path = os.path.join(report_dir, "index.md")
 
-        with open(index_path) as f:
+        with open(index_path, encoding="utf-8") as f:
             content = f.read()
 
         assert "# 📋 Validation Report" in content
@@ -244,7 +244,7 @@ class TestToDirectoryReport:
         report_dir = sample_report.to_directory_report(str(tmp_path))
         index_path = os.path.join(report_dir, "index.md")
 
-        with open(index_path) as f:
+        with open(index_path, encoding="utf-8") as f:
             content = f.read()
 
         # Should have links to repo result directories
@@ -259,7 +259,7 @@ class TestToDirectoryReport:
         index_path = os.path.join(report_dir, "index.md")
         assert os.path.isfile(index_path)
 
-        with open(index_path) as f:
+        with open(index_path, encoding="utf-8") as f:
             content = f.read()
         assert "Total Checks:** 0" in content
 
@@ -386,7 +386,7 @@ class TestIncrementalReportWriter:
         index_path = os.path.join(report_dir, "index.md")
         assert os.path.isfile(index_path)
 
-        with open(index_path) as f:
+        with open(index_path, encoding="utf-8") as f:
             content = f.read()
 
         assert "📋 Validation Report" in content
@@ -417,7 +417,7 @@ class TestIncrementalReportWriter:
 
         report_dir = writer.finalize()
 
-        with open(os.path.join(report_dir, "index.md")) as f:
+        with open(os.path.join(report_dir, "index.md"), encoding="utf-8") as f:
             content = f.read()
 
         assert "🔴" in content  # Has failures, should be red
@@ -511,7 +511,7 @@ class TestNextCommandBlockIncrementalWriter:
 
         report_dir = writer.finalize()
 
-        with open(os.path.join(report_dir, "index.md")) as f:
+        with open(os.path.join(report_dir, "index.md"), encoding="utf-8") as f:
             content = f.read()
 
         assert "## 🔄 Next Validation Command" in content
@@ -544,7 +544,7 @@ class TestNextCommandBlockIncrementalWriter:
 
         report_dir = writer.finalize()
 
-        with open(os.path.join(report_dir, "index.md")) as f:
+        with open(os.path.join(report_dir, "index.md"), encoding="utf-8") as f:
             content = f.read()
 
         assert "Targeted Validation Passed" in content
@@ -578,7 +578,7 @@ class TestNextCommandBlockIncrementalWriter:
 
         report_dir = writer.finalize()
 
-        with open(os.path.join(report_dir, "index.md")) as f:
+        with open(os.path.join(report_dir, "index.md"), encoding="utf-8") as f:
             content = f.read()
 
         assert "All Repositories Passed" in content
@@ -596,7 +596,7 @@ class TestNextCommandBlockDirectoryReport:
     ):
         report_dir = sample_report.to_directory_report(str(tmp_path))
 
-        with open(os.path.join(report_dir, "index.md")) as f:
+        with open(os.path.join(report_dir, "index.md"), encoding="utf-8") as f:
             content = f.read()
 
         # sample_report has failures in gamma-agent and beta-agent
@@ -626,7 +626,7 @@ class TestNextCommandBlockDirectoryReport:
             str(tmp_path), validated_repositories=["my-agent"]
         )
 
-        with open(os.path.join(report_dir, "index.md")) as f:
+        with open(os.path.join(report_dir, "index.md"), encoding="utf-8") as f:
             content = f.read()
 
         assert "Targeted Validation Passed" in content
@@ -652,7 +652,7 @@ class TestNextCommandBlockDirectoryReport:
             str(tmp_path), validated_repositories=None
         )
 
-        with open(os.path.join(report_dir, "index.md")) as f:
+        with open(os.path.join(report_dir, "index.md"), encoding="utf-8") as f:
             content = f.read()
 
         assert "All Repositories Passed" in content

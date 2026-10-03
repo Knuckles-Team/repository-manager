@@ -27,9 +27,9 @@ import pytest
 from repository_manager import differential_selection as ds
 
 
-def _run(cmd: str, cwd: Path) -> str:
+def _run(cmd: list[str], cwd: Path) -> str:
     proc = subprocess.run(
-        cmd, shell=True, cwd=str(cwd), capture_output=True, text=True, check=True
+        cmd, shell=False, cwd=str(cwd), capture_output=True, text=True, check=True
     )
     return proc.stdout.strip()
 
@@ -37,15 +37,32 @@ def _run(cmd: str, cwd: Path) -> str:
 def _git_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
-    _run("git init -q", repo)
-    _run("git config user.email test@example.com", repo)
-    _run("git config user.name Test", repo)
+    _run(["git", "init", "-q"], repo)
+    _run(["git", "config", "user.email", "test@example.com"], repo)
+    _run(["git", "config", "user.name", "Test"], repo)
     return repo
 
 
 def _commit_all(repo: Path, message: str) -> None:
-    _run("git add -A", repo)
-    _run(f"git commit -q -m {message!r}", repo)
+    _run(["git", "add", "-A"], repo)
+    _run(["git", "commit", "-q", "-m", message], repo)
+
+
+@pytest.mark.parametrize(
+    "message", ["change leaf with spaces", 'author\'s "quoted" café']
+)
+def test_git_fixture_preserves_commit_message(tmp_path: Path, message: str) -> None:
+    parent = tmp_path / "author's café project"
+    parent.mkdir()
+    repo = _git_repo(parent)
+    _write(repo, "file.txt", "Unicode content: café\n")
+    _commit_all(repo, message)
+
+    actual = subprocess.check_output(
+        ["git", "log", "-1", "--format=%B"], cwd=repo
+    ).decode("utf-8")
+    assert actual.strip() == message
+    assert not subprocess.check_output(["git", "status", "--porcelain"], cwd=repo)
 
 
 def _write(repo: Path, rel: str, content: str) -> None:
@@ -135,7 +152,7 @@ def project(tmp_path: Path) -> Path:
     )
     _write(repo, "tests/sub/helper.py", 'def build():\n    return "built"\n')
     _commit_all(repo, "initial")
-    _run("git branch -f main", repo)
+    _run(["git", "branch", "-f", "main"], repo)
     return repo
 
 
