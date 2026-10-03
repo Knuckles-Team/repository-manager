@@ -12,7 +12,7 @@ def test_report_writer_uses_utf8_on_a_legacy_codepage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def legacy_open(path, mode, *, encoding=None):
-        return builtins.open(path, mode, encoding=encoding or "cp1252")
+        return builtins.open(path, mode, encoding=encoding or "cp1252", newline="\n")
 
     monkeypatch.setattr(models, "open", legacy_open, raising=False)
     report = tmp_path / "report.md"
