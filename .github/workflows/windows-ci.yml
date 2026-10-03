@@ -60,16 +60,64 @@ jobs:
           uv run --frozen --no-sync python -m pytest tests -q --tb=short
           -m "not slow and not integration and not native" --timeout=120
 
+      # Dormant native probe: reuse the existing environment; install nothing.
+      # This runner-enforced timeout also bounds native calls that cannot return.
+      - name: Dormant Windows filesystem qualification (not activation)
+        id: native_probe
+        if: ${{ !cancelled() && steps.bootstrap.outcome == 'success' }}
+        timeout-minutes: 15
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          evidence_dir="$RUNNER_TEMP/windows-native-probe"
+          mkdir -p "$evidence_dir"
+          printf '%s\n' '{"status":"BLOCKED_OR_INTERRUPTED","activation_qualified":false,"cases":[]}' > "$evidence_dir/qualification.json"
+          ./.venv/Scripts/python.exe -c '
+          import ctypes, json, os, platform, sys
+          from pathlib import Path
+          accepted = (sys.platform == "win32" and sys.version_info[:2] == (3, 12)
+                      and platform.python_implementation() == "CPython"
+                      and ctypes.sizeof(ctypes.c_void_p) == 8
+                      and ctypes.sizeof(ctypes.c_wchar) == 2 and __debug__)
+          record = {"status": "READY" if accepted else "BLOCKED",
+                    "activation_qualified": False, "python": sys.version,
+                    "system": sys.platform, "machine": platform.machine(),
+                    "windows_build": platform.version(), "assertions": __debug__,
+                    "sha": os.environ.get("GITHUB_SHA"),
+                    "run_id": os.environ.get("GITHUB_RUN_ID"),
+                    "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT")}
+          (Path(sys.argv[1]) / "environment.json").write_text(
+              json.dumps(record, indent=2) + "\n", encoding="utf-8")
+          raise SystemExit(0 if accepted else 2)
+          ' "$evidence_dir"
+          ./.venv/Scripts/python.exe -c "import runpy; runpy.run_path('tests/test_windows_filesystem.py', run_name='__main__')" \
+            --qualify-windows \
+            --expected-backend-sha256 161bef6be3aa6144ae47d778c2214476b9ed45173aaddf596d175deab072cb50 \
+            --expected-tests-sha256 f1ed4397dc538ebf4baa4e290aa372991581ec58497ce148894c3394f69055f7 \
+            --output "$evidence_dir/qualification.json" --repetitions 3
+
+      - name: Retain separate dormant Windows probe evidence
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-native-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-native-probe/*.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Windows coverage summary
         if: always()
         env:
           BOOTSTRAP_OUTCOME: ${{ steps.bootstrap.outcome }}
           IMPORT_OUTCOME: ${{ steps.imports.outcome }}
           TEST_OUTCOME: ${{ steps.tests.outcome }}
+          NATIVE_PROBE_OUTCOME: ${{ steps.native_probe.outcome }}
         run: |
           {
             echo "## Windows validation"
             echo "Bootstrap: $BOOTSTRAP_OUTCOME"
             echo "Import safety: $IMPORT_OUTCOME"
             echo "Unit tests: $TEST_OUTCOME"
+            echo "Dormant native probe (not activation): $NATIVE_PROBE_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"
