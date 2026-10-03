@@ -1,6 +1,6 @@
 # RM-IDENTITY-001 — Fleet Git identity and history reconciliation
 
-**Candidate owner:** repository-manager. **Owner decision:** OPEN; RM is the proposed execution home because it owns Git worktrees and release ordering, but repository governance must approve the authority before implementation or execution. See [requirements.md](requirements.md) for the definition of every requirement ID and [status.json](status.json) for current delivery state.
+**Candidate owner:** repository-manager. **Owner decision:** DECIDED 2026-10-03 — repository-manager is the sole history materializer (see "Recorded decisions" below). See [requirements.md](requirements.md) for the definition of every requirement ID and [status.json](status.json) for current delivery state.
 
 ## Outcome
 
@@ -28,6 +28,21 @@ The approved identity manifest declares exact old-email/name match rules and the
 2. Approve the public identity manifest, especially treatment of unknown and external contributor identities. The safe default is refusal.
 3. Approve signed tag/commit handling and protected branch permissions for each remote.
 4. Decide how contributors and open PRs receive a migration notice and recover their branches.
+
+### Recorded decisions (repository owner, 2026-10-03)
+
+1. **Authority.** repository-manager is the only tool permitted to rewrite history. The approving
+   authority is the repository owner; every run needs the owner's signed approval bound to the exact
+   repository set, source ref digests, policy digest, target remotes and expiry (RM-IDENTITY-03).
+2. **Unknown and external identities: refuse.** Only identities that match an explicit rule in the
+   approved manifest are rewritten. A commit or tag by any other identity is left unchanged, and a run
+   whose plan would need an unmatched identity mapped stops before any mutation and reports it.
+3. **Signed objects and protected branches.** Signed commits and tags are not rewritten unless the
+   approval for that run explicitly authorizes re-signing; otherwise the run reports them and leaves them
+   unchanged. Branch protection is never lifted by the tool: a protected ref that rejects the lease-guarded
+   update is reported as refused for that remote (RM-IDENTITY-06), and the owner changes protection by
+   hand beforehand if a rewrite there is intended.
+4. **Contributor notice and branch recovery:** still open — not yet decided by the owner.
 
 ## State and evidence
 
