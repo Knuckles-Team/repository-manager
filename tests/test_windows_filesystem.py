@@ -328,7 +328,7 @@ def test_relative_open_and_native_flags(kernel):
         assert second[4:7] == (0, 2, 0x00200060)
         assert first[7] == second[7] == 0x1040  # no OBJ_INHERIT
         assert second[8] == len(second[2].encode("utf-16-le"))
-        assert second[3] == 0x40150080  # includes WRITE_DAC for the restore
+        assert second[3] == 0x40170080  # READ_CONTROL + WRITE_DAC for the restore
         assert second[9] == PROTECTIVE_DESCRIPTOR  # born locked against links
         assert first[9] is None
         assert not kernel.handles[first[1]].pending

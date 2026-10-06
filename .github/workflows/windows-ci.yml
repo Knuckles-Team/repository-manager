@@ -92,8 +92,8 @@ jobs:
           ' "$evidence_dir"
           ./.venv/Scripts/python.exe -c "import runpy; runpy.run_path('tests/test_windows_filesystem.py', run_name='__main__')" \
             --qualify-windows \
-            --expected-backend-sha256 6f0384010af0b4fba0088fb4cff7a44f424b82870080de8f02bc3038360691d3 \
-            --expected-tests-sha256 a9141cc4b6628724c5a9e08d72dd9ca4f4f81e0580852f209904bf1d6f4b16f5 \
+            --expected-backend-sha256 47c1ffa05cd2481be06188886b6f161d7259e3d832cc4acceb6c7f861438085e \
+            --expected-tests-sha256 82913c2bb58ff607abebbdc42c5c71ae5bc0b4c3b9807245a74324acaef65668 \
             --output "$evidence_dir/qualification.json" --repetitions 3
 
       - name: Retain Windows native qualification evidence

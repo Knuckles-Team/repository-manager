@@ -411,10 +411,20 @@ class _NativeAPI:
             raise
 
 
+_CREATE_ACCESS = (
+    _READ_ATTRIBUTES
+    | _SYNCHRONIZE
+    | _GENERIC_WRITE
+    | _DELETE
+    | _READ_CONTROL
+    | _WRITE_DAC
+)
+
+
 def _relative_access(directory: bool, create: bool) -> int:
     """Creation keeps WRITE_DAC for the restore; directories can read their DACL."""
     if create:
-        return _READ_ATTRIBUTES | _SYNCHRONIZE | _GENERIC_WRITE | _DELETE | _WRITE_DAC
+        return _CREATE_ACCESS
     if directory:
         return _READ_ATTRIBUTES | _SYNCHRONIZE | _READ_CONTROL
     return _READ_ATTRIBUTES | _SYNCHRONIZE
@@ -703,6 +713,8 @@ _OWNER_GROUP_DACL = 0x1 | 0x2 | 0x4
 _DACL_INFORMATION = 0x4
 _UNPROTECTED_DACL = 0x20000000
 _SEF_DACL_AUTO_INHERIT = 0x1
+_DACL_AUTO_INHERITED = 0x0400
+_ABSOLUTE_DESCRIPTOR_BYTES = 64
 _TOKEN_QUERY = 0x8
 
 
@@ -763,19 +775,24 @@ class _WindowsSecurity:
                 c.c_int32,
                 [c.c_void_p, c.POINTER(c.c_int32), pointer, c.POINTER(c.c_int32)],
             ),
+            (advapi, "InitializeSecurityDescriptor", c.c_int32, [c.c_void_p, _DWORD]),
             (
                 advapi,
-                "SetSecurityInfo",
-                _DWORD,
-                [
-                    _HANDLE,
-                    c.c_int32,
-                    _DWORD,
-                    c.c_void_p,
-                    c.c_void_p,
-                    c.c_void_p,
-                    c.c_void_p,
-                ],
+                "SetSecurityDescriptorDacl",
+                c.c_int32,
+                [c.c_void_p, c.c_int32, c.c_void_p, c.c_int32],
+            ),
+            (
+                advapi,
+                "SetSecurityDescriptorControl",
+                c.c_int32,
+                [c.c_void_p, c.c_uint16, c.c_uint16],
+            ),
+            (
+                advapi,
+                "SetKernelObjectSecurity",
+                c.c_int32,
+                [_HANDLE, _DWORD, c.c_void_p],
             ),
             (advapi, "DestroyPrivateObjectSecurity", c.c_int32, [pointer]),
             (
@@ -889,19 +906,32 @@ class _WindowsSecurity:
         return c.string_at(acl.value, size)
 
     def set_dacl(self, handle: int, acl: bytes) -> None:
-        """Apply ``acl`` through the creating handle (which holds WRITE_DAC)."""
-        buffer = c.create_string_buffer(acl, len(acl))
-        self._check_status(
-            self._advapi.SetSecurityInfo(
-                handle,
-                _SE_FILE_OBJECT,
-                _DACL_INFORMATION | _UNPROTECTED_DACL,
-                None,
-                None,
-                buffer,
-                None,
+        """Apply ``acl`` through the creating handle (which holds WRITE_DAC).
+
+        ``SetKernelObjectSecurity`` writes exactly this DACL on the handle;
+        unlike ``SetSecurityInfo`` it never re-reads or re-derives anything.
+        """
+        acl_buffer = c.create_string_buffer(acl, len(acl))
+        descriptor = c.create_string_buffer(_ABSOLUTE_DESCRIPTOR_BYTES)
+        self._check(
+            self._advapi.InitializeSecurityDescriptor(descriptor, 1),
+            "InitializeSecurityDescriptor",
+        )
+        self._check(
+            self._advapi.SetSecurityDescriptorDacl(descriptor, 1, acl_buffer, 0),
+            "SetSecurityDescriptorDacl",
+        )
+        self._check(
+            self._advapi.SetSecurityDescriptorControl(
+                descriptor, _DACL_AUTO_INHERITED, _DACL_AUTO_INHERITED
             ),
-            "SetSecurityInfo",
+            "SetSecurityDescriptorControl",
+        )
+        self._check(
+            self._advapi.SetKernelObjectSecurity(
+                handle, _DACL_INFORMATION | _UNPROTECTED_DACL, descriptor
+            ),
+            "SetKernelObjectSecurity",
         )
 
 
