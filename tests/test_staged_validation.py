@@ -290,7 +290,7 @@ def test_dirty_feedback_tree_uses_safe_commit_and_evaluates_deletion(
         "  hooks:\n"
         "  - id: record-staged\n"
         "    name: record staged\n"
-        f"    entry: python {hook}\n"
+        f"    entry: python {hook.as_posix()}\n"
         "    language: system\n"
         "    pass_filenames: false\n"
         "    always_run: true\n",

@@ -117,27 +117,40 @@ def _make_patch(
     scratch = tmp_path / f"scratch-{label}"
     _git(["worktree", "add", "--detach", str(scratch), "main"], repo)
     try:
+        if symlink:
+            return _staged_symlink_patch(scratch, changes)
         for rel, content in changes.items():
             target = scratch / rel
             if content is None:
                 target.unlink()
-            elif symlink:
-                target.unlink(missing_ok=True)
-                target.symlink_to(content)
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(
                     content.encode("latin-1") if binary else content.encode()
                 )
-        # core.symlinks: Git for Windows defaults it off and would diff a link
-        # as a regular file.
-        diff_args = ["-c", "core.symlinks=true", "diff", "--no-color"] + (
-            ["--binary"] if binary else []
-        )
+        diff_args = ["diff", "--no-color"] + (["--binary"] if binary else [])
         diff = _git(diff_args, scratch, check=False)
         return diff.stdout
     finally:
         _git(["worktree", "remove", "--force", str(scratch)], repo, check=False)
+
+
+def _staged_symlink_patch(scratch: Path, changes: dict[str, str | None]) -> str:
+    """The patch Git writes for replacing files with symlinks (mode 120000).
+
+    Built from the index rather than a filesystem symlink, so it is the same
+    on every platform (Windows symlinks depend on privileges and Git config).
+    """
+    for rel, target in changes.items():
+        blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=str(scratch),
+            input=str(target).encode(),
+            capture_output=True,
+            check=True,
+        ).stdout.decode().strip()
+        _git(["update-index", "--cacheinfo", f"120000,{blob},{rel}"], scratch)
+    return _git(["diff", "--cached", "--no-color"], scratch, check=False).stdout
 
 
 def _proposal(

@@ -9,14 +9,16 @@ mechanism for ``operation_boundary`` and the lease publishers: they emulate
 POSIX ``openat``/``O_NOFOLLOW`` semantics with handle-relative ``NtCreateFile``
 opens that never traverse a reparse point.
 
-Late hardlinks. A same-principal process can add a name for any file it can
-open with ``FILE_WRITE_ATTRIBUTES``; that access is not governed by share
-modes, so denying sharing cannot stop ``CreateHardLinkW``. A newly created file
-is therefore born with a protected DACL that grants only ``READ_CONTROL`` to
-OWNER RIGHTS (which also strips the owner's implicit ``WRITE_DAC``). The
-creating handle keeps the access it requested at creation, every other open is
-denied, and the file's ordinary inherited DACL is restored only after the link
-count is re-verified to still be exactly one.
+Late hardlinks. Windows cannot prevent a same-principal ``CreateHardLinkW``:
+it opens the source without requesting any access, so neither share modes nor
+a DACL refuse it (measured on NTFS: the link is created even while the file is
+held without sharing under an owner-rights-only DACL).  POSIX has the same
+property (``linkat`` by the same uid).  What the backend guarantees instead:
+while the capability is live, no other open succeeds through any name (the
+creating handle denies all sharing); the link count is re-verified after every
+write and at close; and a capability that gained a foreign name has its
+content withdrawn (truncated through the held handle) before the error is
+raised, so nothing written through it is readable via the foreign name.
 
 Directory handles deny write/delete sharing; newly created files deny all
 sharing. All operations and closes on this backend serialize. Raw handles must
@@ -55,11 +57,6 @@ _DONT_REPARSE = 0x1000
 _CASE_INSENSITIVE = 0x40
 _REPARSE_POINT = 0x400
 _DIRECTORY = 0x10
-_READ_CONTROL = 0x20000
-_WRITE_DAC = 0x40000
-# Protected DACL: OWNER RIGHTS may only read the descriptor; nobody else may
-# open the object until the creator restores its inherited DACL.
-_PROTECTIVE_SDDL = "D:P(A;;RC;;;OW)"
 _OWNED = object()
 
 
@@ -171,10 +168,12 @@ def _check_component_encoding(name: str) -> None:
         raise WindowsFilesystemError("component exceeds supported length")
 
 
-def _required_security(security: Any) -> Any:
-    if security is None:
-        raise UnsupportedGuarantee("a security descriptor binding is required")
-    return security
+_OPEN_ACCESS = _READ_ATTRIBUTES | _SYNCHRONIZE
+# (access, share, disposition): a new file denies all sharing.
+_OPEN_MODES = {
+    True: (_OPEN_ACCESS | _GENERIC_WRITE | _DELETE, 0, _FILE_CREATE),
+    False: (_OPEN_ACCESS, _SHARE_READ, _FILE_OPEN),
+}
 
 
 class _NativeAPI:
@@ -186,7 +185,6 @@ class _NativeAPI:
         kernel32: Any = None,
         ntdll: Any = None,
         last_error: Callable[[], int] | None = None,
-        security: Any = None,
     ) -> None:
         if kernel32 is None or ntdll is None:
             if sys.platform != "win32":
@@ -194,7 +192,6 @@ class _NativeAPI:
             kernel32 = c.WinDLL("kernel32", use_last_error=True)
             ntdll = c.WinDLL("ntdll", use_last_error=True)
             last_error = c.get_last_error
-            security = _WindowsSecurity()
         self._error = last_error or (lambda: 0)
         self._kernel = kernel32
         self._nt = ntdll
@@ -254,7 +251,6 @@ class _NativeAPI:
             raise UnsupportedGuarantee(
                 "required native entry point unavailable"
             ) from exc
-        self._security = _required_security(security)
 
     def _check(self, result: int, operation: str) -> None:
         if not result:
@@ -264,7 +260,7 @@ class _NativeAPI:
     def open_root(self, root: str) -> int:
         handle = self._kernel.CreateFileW(
             root,
-            _READ_ATTRIBUTES | _READ_CONTROL | _SYNCHRONIZE,
+            _READ_ATTRIBUTES | _SYNCHRONIZE,
             _SHARE_READ,
             None,
             3,
@@ -286,12 +282,12 @@ class _NativeAPI:
             parent,
             c.pointer(string),
             _CASE_INSENSITIVE | _DONT_REPARSE,
-            self._creation_descriptor(create),
+            None,
             None,
         )
         handle, status = _HANDLE(), _IoStatus()
-        access = _relative_access(directory, create)
         options = 0x00200000 | 0x20 | (1 if directory else 0x40)
+        access, share, disposition = _OPEN_MODES[create]
         result = self._nt.NtCreateFile(
             c.byref(handle),
             access,
@@ -299,8 +295,8 @@ class _NativeAPI:
             c.byref(status),
             None,
             0x80,
-            0 if create else _SHARE_READ,
-            _FILE_CREATE if create else _FILE_OPEN,
+            share,
+            disposition,
             options,
             None,
             0,
@@ -310,10 +306,6 @@ class _NativeAPI:
         except BaseException as exc:
             self._close_failed_open(handle.value, exc)
             raise
-
-    def _creation_descriptor(self, create: bool) -> int | None:
-        """New files are born with the protective DACL; opens pass none."""
-        return self._security.protective_descriptor() if create else None
 
     @staticmethod
     def _completed_open(
@@ -383,13 +375,15 @@ class _NativeAPI:
     def flush(self, handle: int) -> None:
         self._check(self._kernel.FlushFileBuffers(handle), "FlushFileBuffers")
 
-    def inherited_dacl(self, parent: int) -> bytes:
-        """The DACL an ordinary new file in ``parent`` would inherit."""
-        return self._security.inherited_dacl(parent)
-
-    def set_dacl(self, handle: int, acl: bytes) -> None:
-        """Replace the object's DACL through the creating handle."""
-        self._security.set_dacl(handle, acl)
+    def truncate(self, handle: int) -> None:
+        """Set end-of-file to zero through the held handle."""
+        value = c.c_int64(0)
+        self._check(
+            self._kernel.SetFileInformationByHandle(
+                handle, 6, c.byref(value), c.sizeof(value)
+            ),
+            "FileEndOfFileInfo",
+        )
 
     def discard(self, handle: int) -> None:
         value = _DispositionInfo(1)
@@ -411,25 +405,6 @@ class _NativeAPI:
             raise
 
 
-_CREATE_ACCESS = (
-    _READ_ATTRIBUTES
-    | _SYNCHRONIZE
-    | _GENERIC_WRITE
-    | _DELETE
-    | _READ_CONTROL
-    | _WRITE_DAC
-)
-
-
-def _relative_access(directory: bool, create: bool) -> int:
-    """Creation keeps WRITE_DAC for the restore; directories can read their DACL."""
-    if create:
-        return _CREATE_ACCESS
-    if directory:
-        return _READ_ATTRIBUTES | _SYNCHRONIZE | _READ_CONTROL
-    return _READ_ATTRIBUTES | _SYNCHRONIZE
-
-
 class OwnedHandle:
     """One owned capability. Close once, including after uncertain close failure.
 
@@ -446,18 +421,14 @@ class OwnedHandle:
         *,
         _key: object,
         created: bool = False,
-        restore_dacl: bytes | None = None,
     ) -> None:
         if _key is not _OWNED:
             raise WindowsFilesystemError("numeric handle adoption is unsupported")
-        if created and restore_dacl is None:
-            raise WindowsFilesystemError("a created file needs its inherited DACL")
         self._owner = owner
         self._raw: int | None = raw
         self._identity = snapshot.identity
         self._directory = snapshot.directory
         self._created = created
-        self._restore_dacl = restore_dacl
         self._disposed = False
 
     @property
@@ -474,8 +445,8 @@ class OwnedHandle:
     def close(self) -> None:
         """Invalidate before native close; a failed close must never be retried.
 
-        A created file keeps its protective DACL unless its link count is still
-        exactly one, so a link that bypassed prevention never gains access.
+        A created file is re-verified first: if it gained a foreign name, its
+        content is withdrawn and the close reports the refusal.
         """
         with self._owner._lock:
             raw, self._raw = self._raw, None
@@ -543,7 +514,7 @@ class WindowsFilesystem:
 
     def _release_if_created(self, raw: int, handle: OwnedHandle) -> None:
         if handle._created and not handle._disposed:
-            self._release_created(raw, handle)
+            self._verify_or_withdraw(raw, handle)
 
     def _close_after_failure(self, raw: int, error: BaseException) -> None:
         try:
@@ -553,15 +524,6 @@ class WindowsFilesystem:
                 "release and close failed", [error, cleanup]
             ) from None
 
-    def _creation_dacl(self, parent: int, created: bool) -> bytes | None:
-        return self._api.inherited_dacl(parent) if created else None
-
-    def _release_created(self, raw: int, handle: OwnedHandle) -> None:
-        self._verify(raw, False, handle.identity)
-        if handle._restore_dacl is None:
-            raise WindowsFilesystemError("created file lost its inherited DACL")
-        self._api.set_dacl(raw, handle._restore_dacl)
-
     def _admit(
         self,
         raw: int,
@@ -570,20 +532,12 @@ class WindowsFilesystem:
         expected: FileIdentity | None = None,
         volume: int | None = None,
         created: bool = False,
-        restore_dacl: bytes | None = None,
     ) -> OwnedHandle:
         try:
             snapshot = self._verify(raw, directory, expected)
             if volume is not None and snapshot.identity.volume != volume:
                 raise WindowsFilesystemError("volume transition refused")
-            return OwnedHandle(
-                self,
-                raw,
-                snapshot,
-                _key=_OWNED,
-                created=created,
-                restore_dacl=restore_dacl,
-            )
+            return OwnedHandle(self, raw, snapshot, _key=_OWNED, created=created)
         except BaseException as exc:
             # Unverified objects are only closed, never written or deleted.
             try:
@@ -621,11 +575,8 @@ class WindowsFilesystem:
     def create_exclusive(self, parent: OwnedHandle, name: str) -> OwnedHandle:
         """Create one file, refusing collisions; NOT atomic complete publication.
 
-        The file is born with the protective DACL, so no other open (including
-        the one ``CreateHardLinkW`` makes) succeeds while this capability is
-        live. Closing it re-verifies a single link and restores the DACL an
-        ordinary file in ``parent`` inherits. The caller owns cleanup on later
-        failure. No lease lifetime or delete-on-close is implied.
+        The caller owns cleanup on later failure. ACLs are inherited without any
+        owner-only guarantee. No lease lifetime or delete-on-close is implied.
         """
         return self._child(parent, name, directory=False, created=True)
 
@@ -648,7 +599,6 @@ class WindowsFilesystem:
             if not parent._directory:
                 raise WindowsFilesystemError("parent must be a directory capability")
             self._verify(raw, True, parent.identity)
-            restore_dacl = self._creation_dacl(raw, created)
             child = self._api.open_relative(raw, name, directory, created)
             return self._admit(
                 child,
@@ -656,7 +606,6 @@ class WindowsFilesystem:
                 expected=expected,
                 volume=parent.identity.volume,
                 created=created,
-                restore_dacl=restore_dacl,
             )
 
     def _mutable(self, handle: OwnedHandle) -> int:
@@ -680,7 +629,15 @@ class WindowsFilesystem:
                 if type(count) is not int or not 0 < count <= len(chunk):
                     raise WindowsFilesystemError("invalid or zero write progress")
                 offset += count
+            self._verify_or_withdraw(raw, handle)
+
+    def _verify_or_withdraw(self, raw: int, handle: OwnedHandle) -> None:
+        """Verify the single link; otherwise empty the file, then refuse."""
+        try:
             self._verify(raw, False, handle.identity)
+        except WindowsFilesystemError:
+            self._api.truncate(raw)
+            raise
 
     def flush_file(self, handle: OwnedHandle) -> None:
         """Request file-buffer flush; does not promise directory-entry durability."""
@@ -696,243 +653,6 @@ class WindowsFilesystem:
     def require_durable_publication(self) -> None:
         """Refuse namespace/receipt durability before any publication side effect."""
         raise UnsupportedGuarantee("atomic durable publication is not qualified")
-
-
-class _GenericMapping(c.Structure):
-    _fields_ = [
-        ("GenericRead", _DWORD),
-        ("GenericWrite", _DWORD),
-        ("GenericExecute", _DWORD),
-        ("GenericAll", _DWORD),
-    ]
-
-
-_FILE_GENERIC_MAPPING = (0x120089, 0x120116, 0x1200A0, 0x1F01FF)
-_SE_FILE_OBJECT = 1
-_OWNER_GROUP_DACL = 0x1 | 0x2 | 0x4
-_DACL_INFORMATION = 0x4
-_UNPROTECTED_DACL = 0x20000000
-_SEF_DACL_AUTO_INHERIT = 0x1
-_DACL_AUTO_INHERITED = 0x0400
-_ABSOLUTE_DESCRIPTOR_BYTES = 64
-_TOKEN_QUERY = 0x8
-
-
-class _WindowsSecurity:
-    """advapi32 binding for the protective-creation DACL protocol."""
-
-    _advapi: Any
-    _kernel: Any
-    _last_error: Callable[[], int]
-
-    def __init__(self) -> None:
-        if sys.platform != "win32":
-            raise UnsupportedGuarantee("native Windows runtime required")
-        self._last_error = c.get_last_error
-        advapi = c.WinDLL("advapi32", use_last_error=True)
-        kernel = c.WinDLL("kernel32", use_last_error=True)
-        pointer = c.POINTER(c.c_void_p)
-        signatures: tuple[tuple[Any, str, Any, list[Any]], ...] = (
-            (
-                advapi,
-                "ConvertStringSecurityDescriptorToSecurityDescriptorW",
-                c.c_int32,
-                [c.c_wchar_p, _DWORD, pointer, c.POINTER(_DWORD)],
-            ),
-            (
-                advapi,
-                "GetSecurityInfo",
-                _DWORD,
-                [
-                    _HANDLE,
-                    c.c_int32,
-                    _DWORD,
-                    pointer,
-                    pointer,
-                    pointer,
-                    pointer,
-                    pointer,
-                ],
-            ),
-            (
-                advapi,
-                "CreatePrivateObjectSecurityEx",
-                c.c_int32,
-                [
-                    c.c_void_p,
-                    c.c_void_p,
-                    pointer,
-                    c.c_void_p,
-                    c.c_int32,
-                    c.c_uint32,
-                    _HANDLE,
-                    c.POINTER(_GenericMapping),
-                ],
-            ),
-            (
-                advapi,
-                "GetSecurityDescriptorDacl",
-                c.c_int32,
-                [c.c_void_p, c.POINTER(c.c_int32), pointer, c.POINTER(c.c_int32)],
-            ),
-            (advapi, "InitializeSecurityDescriptor", c.c_int32, [c.c_void_p, _DWORD]),
-            (
-                advapi,
-                "SetSecurityDescriptorDacl",
-                c.c_int32,
-                [c.c_void_p, c.c_int32, c.c_void_p, c.c_int32],
-            ),
-            (
-                advapi,
-                "SetSecurityDescriptorControl",
-                c.c_int32,
-                [c.c_void_p, c.c_uint16, c.c_uint16],
-            ),
-            (
-                advapi,
-                "SetKernelObjectSecurity",
-                c.c_int32,
-                [_HANDLE, _DWORD, c.c_void_p],
-            ),
-            (advapi, "DestroyPrivateObjectSecurity", c.c_int32, [pointer]),
-            (
-                advapi,
-                "OpenProcessToken",
-                c.c_int32,
-                [_HANDLE, _DWORD, c.POINTER(_HANDLE)],
-            ),
-            (kernel, "GetCurrentProcess", _HANDLE, []),
-            (kernel, "LocalFree", c.c_void_p, [c.c_void_p]),
-            (kernel, "CloseHandle", c.c_int32, [_HANDLE]),
-        )
-        for dll, name, result, arguments in signatures:
-            function = getattr(dll, name)
-            function.restype = result
-            function.argtypes = arguments
-        self._advapi = advapi
-        self._kernel = kernel
-        self._protective: c.c_void_p | None = None
-
-    def _check(self, result: int, operation: str) -> None:
-        if not result:
-            code = self._last_error()
-            raise WindowsFilesystemError(code, f"{operation} failed (Win32 {code})")
-
-    @staticmethod
-    def _check_status(code: int, operation: str) -> None:
-        if code:
-            raise WindowsFilesystemError(code, f"{operation} failed (Win32 {code})")
-
-    def protective_descriptor(self) -> int:
-        """A process-lifetime self-relative descriptor for new files."""
-        if self._protective is None:
-            descriptor = c.c_void_p()
-            self._check(
-                self._advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                    _PROTECTIVE_SDDL, 1, c.byref(descriptor), None
-                ),
-                "ConvertStringSecurityDescriptorToSecurityDescriptorW",
-            )
-            self._protective = descriptor
-        value = self._protective.value
-        if not value:
-            raise WindowsFilesystemError("protective descriptor unavailable")
-        return value
-
-    def inherited_dacl(self, parent: int) -> bytes:
-        """Compute the DACL Windows would give an ordinary file in ``parent``."""
-        parent_descriptor = c.c_void_p()
-        none = c.c_void_p()
-        self._check_status(
-            self._advapi.GetSecurityInfo(
-                parent,
-                _SE_FILE_OBJECT,
-                _OWNER_GROUP_DACL,
-                c.byref(none),
-                c.byref(none),
-                c.byref(none),
-                c.byref(none),
-                c.byref(parent_descriptor),
-            ),
-            "GetSecurityInfo",
-        )
-        try:
-            return self._derive_dacl(parent_descriptor)
-        finally:
-            self._kernel.LocalFree(parent_descriptor)
-
-    def _derive_dacl(self, parent_descriptor: c.c_void_p) -> bytes:
-        token = _HANDLE()
-        self._check(
-            self._advapi.OpenProcessToken(
-                self._kernel.GetCurrentProcess(), _TOKEN_QUERY, c.byref(token)
-            ),
-            "OpenProcessToken",
-        )
-        try:
-            created = c.c_void_p()
-            mapping = _GenericMapping(*_FILE_GENERIC_MAPPING)
-            self._check(
-                self._advapi.CreatePrivateObjectSecurityEx(
-                    parent_descriptor,
-                    None,
-                    c.byref(created),
-                    None,
-                    0,
-                    _SEF_DACL_AUTO_INHERIT,
-                    token,
-                    c.byref(mapping),
-                ),
-                "CreatePrivateObjectSecurityEx",
-            )
-            try:
-                return self._copy_dacl(created)
-            finally:
-                self._advapi.DestroyPrivateObjectSecurity(c.byref(created))
-        finally:
-            self._kernel.CloseHandle(token)
-
-    def _copy_dacl(self, descriptor: c.c_void_p) -> bytes:
-        present, defaulted, acl = c.c_int32(), c.c_int32(), c.c_void_p()
-        self._check(
-            self._advapi.GetSecurityDescriptorDacl(
-                descriptor, c.byref(present), c.byref(acl), c.byref(defaulted)
-            ),
-            "GetSecurityDescriptorDacl",
-        )
-        if not present.value or not acl.value:
-            raise WindowsFilesystemError("inherited DACL is absent")
-        size = c.c_uint16.from_address(acl.value + 2).value
-        return c.string_at(acl.value, size)
-
-    def set_dacl(self, handle: int, acl: bytes) -> None:
-        """Apply ``acl`` through the creating handle (which holds WRITE_DAC).
-
-        ``SetKernelObjectSecurity`` writes exactly this DACL on the handle;
-        unlike ``SetSecurityInfo`` it never re-reads or re-derives anything.
-        """
-        acl_buffer = c.create_string_buffer(acl, len(acl))
-        descriptor = c.create_string_buffer(_ABSOLUTE_DESCRIPTOR_BYTES)
-        self._check(
-            self._advapi.InitializeSecurityDescriptor(descriptor, 1),
-            "InitializeSecurityDescriptor",
-        )
-        self._check(
-            self._advapi.SetSecurityDescriptorDacl(descriptor, 1, acl_buffer, 0),
-            "SetSecurityDescriptorDacl",
-        )
-        self._check(
-            self._advapi.SetSecurityDescriptorControl(
-                descriptor, _DACL_AUTO_INHERITED, _DACL_AUTO_INHERITED
-            ),
-            "SetSecurityDescriptorControl",
-        )
-        self._check(
-            self._advapi.SetKernelObjectSecurity(
-                handle, _DACL_INFORMATION | _UNPROTECTED_DACL, descriptor
-            ),
-            "SetKernelObjectSecurity",
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1070,7 +790,7 @@ class _DescriptorNative:
         code = self._last_error()
         return OSError(0, f"{operation} failed (Win32 {code})", name, code)
 
-    def open_relative(
+    def open_child_handle(
         self,
         parent: int,
         name: str,
@@ -1260,7 +980,7 @@ def _register(handle: int, path: str, parent: _PinnedNode | None) -> int:
     return fd
 
 
-_DIRECTORY_ACCESS = _FILE_LIST_DIRECTORY | _READ_ATTRIBUTES | _READ_CONTROL
+_DIRECTORY_ACCESS = _FILE_LIST_DIRECTORY | _READ_ATTRIBUTES
 
 
 def descriptor_open_root(anchor: str) -> int:
@@ -1286,7 +1006,7 @@ def descriptor_open_directory(parent_fd: int, name: str) -> int:
             return _register_duplicate(target)
         name = _single_component(name)
         native = _native()
-        handle = native.open_relative(
+        handle = native.open_child_handle(
             _handle(parent_fd),
             name,
             access=_DIRECTORY_ACCESS,
@@ -1337,7 +1057,7 @@ def descriptor_listdir(fd: int) -> list[str]:
 def descriptor_stat(parent_fd: int, name: str) -> os.stat_result:
     """``fstatat(..., AT_SYMLINK_NOFOLLOW)``; a link reports its own metadata."""
     native = _native()
-    handle = native.open_relative(
+    handle = native.open_child_handle(
         _handle(parent_fd),
         _single_component(name),
         access=_READ_ATTRIBUTES,
@@ -1355,7 +1075,7 @@ def descriptor_stat(parent_fd: int, name: str) -> os.stat_result:
 def descriptor_mkdir(parent_fd: int, name: str) -> None:
     """``mkdirat``: create exactly one directory under the pinned parent."""
     native = _native()
-    handle = native.open_relative(
+    handle = native.open_child_handle(
         _handle(parent_fd),
         _single_component(name),
         access=_READ_ATTRIBUTES,
@@ -1392,7 +1112,7 @@ def descriptor_open_file(parent_fd: int, name: str, flags: int) -> int:
     """``openat(parent, name, flags | O_NOFOLLOW)`` for a regular file."""
     access, share, mode = _file_access(flags)
     native = _native()
-    handle = native.open_relative(
+    handle = native.open_child_handle(
         _handle(parent_fd),
         _single_component(name),
         access=access,
@@ -1410,7 +1130,7 @@ def descriptor_remove(parent_fd: int, name: str, *, directory: bool) -> None:
     A link is removed itself, never its target, exactly like ``unlink(2)``.
     """
     native = _native()
-    handle = native.open_relative(
+    handle = native.open_child_handle(
         _handle(parent_fd),
         _single_component(name),
         access=_DELETE | _READ_ATTRIBUTES,
@@ -1434,7 +1154,7 @@ def descriptor_replace(directory_fd: int, source: str, target: str) -> None:
     """``renameat(dir, source, dir, target)`` replacing ``target`` atomically."""
     native = _native()
     directory = _handle(directory_fd)
-    handle = native.open_relative(
+    handle = native.open_child_handle(
         directory,
         _single_component(source),
         access=_DELETE | _READ_ATTRIBUTES,

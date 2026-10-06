@@ -8,7 +8,9 @@ and the CLI's `--build-host` flag both route through.
 
 from __future__ import annotations
 
+import json
 import subprocess
+import sys
 import textwrap
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,6 +22,10 @@ from repository_manager import build_queue as bq
 from repository_manager import remote_worker_actions as rwa
 from repository_manager.remote_execution import ssh_executor as ssh_executor_module
 
+
+# The build is this interpreter, not a shell, so it runs on every platform
+# (on Windows a bare "bash" resolves to the WSL launcher in System32).
+_ECHO_BUILD = json.dumps([sys.executable, "-c", "print('remote-build-ran')"])
 
 def _run(cmd: str, cwd: Path) -> str:
     proc = subprocess.run(
@@ -58,7 +64,7 @@ class _FakeTunnel:
             return SimpleNamespace(success=True, stdout="", stderr="")
         if command.endswith("git rev-parse HEAD"):
             return SimpleNamespace(success=True, stdout=self._sha, stderr="")
-        if "echo remote-build-ran" in command:
+        if "remote-build-ran" in command:
             return SimpleNamespace(success=True, stdout="remote-build-ran", stderr="")
         return SimpleNamespace(success=False, stdout="", stderr=f"unhandled: {command}")
 
@@ -88,11 +94,11 @@ def repo_with_origin(tmp_path: Path) -> Path:
     _run("git config commit.gpgsign false", work)
     (work / bq.CONFIG_FILENAME).write_text(
         textwrap.dedent(
-            """
+            f"""
             base: main
             specs:
               - name: widget
-                command: ["bash", "-c", "echo remote-build-ran"]
+                command: {_ECHO_BUILD}
                 workdir: "."
                 timeout: 30
             """

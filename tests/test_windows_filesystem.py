@@ -30,9 +30,6 @@ import pytest
 
 from repository_manager import windows_filesystem as w
 
-PROTECTIVE_DESCRIPTOR = 0x5D5D
-INHERITED_DACL = b"inherited-dacl"
-
 
 @dataclass
 class Node:
@@ -45,7 +42,6 @@ class Node:
     pending: bool = False
     disk: bool = True
     data: bytearray = field(default_factory=bytearray)
-    dacl: bytes | None = None
 
     @property
     def identity(self):
@@ -84,22 +80,14 @@ class Kernel:
                     "GetFileType": "file_type",
                     "WriteFile": "write",
                     "FlushFileBuffers": "flush",
-                    "SetFileInformationByHandle": "discard",
+                    "SetFileInformationByHandle": "set_information",
                     "CloseHandle": "close",
                 }.items()
             }
         )
         self.ntdll = SimpleNamespace(NtCreateFile=Function(self.open))
-        self.security = SimpleNamespace(
-            protective_descriptor=lambda: PROTECTIVE_DESCRIPTOR,
-            inherited_dacl=self.inherited_dacl,
-            set_dacl=self.set_dacl,
-        )
         self.api = w._NativeAPI(
-            kernel32=self.kernel32,
-            ntdll=self.ntdll,
-            last_error=lambda: self.error,
-            security=self.security,
+            kernel32=self.kernel32, ntdll=self.ntdll, last_error=lambda: self.error
         )
         self.fs = w.WindowsFilesystem(_api=self.api)
 
@@ -217,6 +205,9 @@ class Kernel:
         self.event("flush", handle)
         return int("flush" not in self.fail)
 
+    def set_information(self, handle, kind, out, size):
+        return {4: self.discard, 6: self.truncate}[kind](handle, kind, out, size)
+
     def discard(self, handle, kind, out, size):
         self.event("discard", handle, kind, size)
         assert kind == 4
@@ -224,6 +215,13 @@ class Kernel:
         if "discard" in self.fail:
             return 0
         self.handles[handle].pending = True
+        return 1
+
+    def truncate(self, handle, kind, out, size):
+        del kind
+        self.event("truncate", handle, size)
+        assert c.cast(out, c.POINTER(c.c_int64)).contents.value == 0
+        self.handles[handle].data.clear()
         return 1
 
     def close(self, handle):
@@ -236,16 +234,6 @@ class Kernel:
                 key: value for key, value in self.edges.items() if value is not node
             }
         return int("close" not in self.fail)
-
-    def inherited_dacl(self, parent):
-        self.event("inherit", parent)
-        return INHERITED_DACL
-
-    def set_dacl(self, handle, acl):
-        self.event("dacl", handle, acl)
-        if "dacl" in self.fail:
-            raise w.WindowsFilesystemError(5, "SetSecurityInfo failed (Win32 5)")
-        self.handles[handle].dacl = acl
 
     def admit_root(self):
         return self.fs.open_drive_root("C:\\", expected=self.root.identity)
@@ -328,9 +316,8 @@ def test_relative_open_and_native_flags(kernel):
         assert second[4:7] == (0, 2, 0x00200060)
         assert first[7] == second[7] == 0x1040  # no OBJ_INHERIT
         assert second[8] == len(second[2].encode("utf-16-le"))
-        assert second[3] == 0x40170080  # READ_CONTROL + WRITE_DAC for the restore
-        assert second[9] == PROTECTIVE_DESCRIPTOR  # born locked against links
-        assert first[9] is None
+        assert second[3] == 0x40110080
+        assert second[9] is None  # inherited ACL, explicitly NOT owner-only
         assert not kernel.handles[first[1]].pending
 
 
@@ -611,26 +598,39 @@ def test_hardlink_appearing_before_write_check_refused(kernel):
         kernel.edges[(1, "file")].links = 2
         with pytest.raises(w.WindowsFilesystemError, match="links"):
             kernel.fs.write_all(file, b"bad")
-        # Closing re-verifies the link count: a link that bypassed prevention
-        # keeps the protective DACL (no restore) while the handle still closes.
+        # Closing re-verifies the link count, withdraws the content and still
+        # closes the handle.
         with pytest.raises(w.WindowsFilesystemError, match="links"):
             file.close()
         assert raw not in kernel.handles
-    assert not any(row[0] in {"write", "dacl"} for row in kernel.trace)
+    assert not any(row[0] == "write" for row in kernel.trace)
 
 
-def test_created_file_restores_inherited_dacl_only_at_close(kernel):
+def test_late_hardlink_after_last_check_withdraws_written_content(kernel):
+    with kernel.admit_root() as root:
+        file = kernel.fs.create_exclusive(root, "file")
+        raw = file._raw
+        node = kernel.edges[(1, "file")]
+        kernel.callbacks["write"] = lambda: setattr(node, "links", 2)
+        with pytest.raises(w.WindowsFilesystemError, match="links"):
+            kernel.fs.write_all(file, b"secret")
+        assert node.data == bytearray()
+        assert ("truncate", raw, 8) in kernel.trace
+        with pytest.raises(w.WindowsFilesystemError, match="links"):
+            file.close()
+        assert raw not in kernel.handles
+
+
+def test_created_file_is_reverified_at_close(kernel):
     with kernel.admit_root() as root:
         with kernel.fs.create_exclusive(root, "file") as file:
             raw = file._raw
             kernel.fs.write_all(file, b"data")
-            assert kernel.edges[(1, "file")].dacl is None
-        inherit = [row for row in kernel.trace if row[0] == "inherit"]
-        dacl = [row for row in kernel.trace if row[0] == "dacl"]
-        assert inherit == [("inherit", root._raw)]
-        assert dacl == [("dacl", raw, INHERITED_DACL)]
-        assert kernel.trace.index(dacl[0]) < kernel.trace.index(("close", raw))
-    assert kernel.edges[(1, "file")].dacl == INHERITED_DACL
+            before = len(kernel.trace)
+        queries = [row for row in kernel.trace[before:] if row[0] == "query"]
+        assert queries and queries[0][1] == raw
+        assert ("close", raw) in kernel.trace[before:]
+    assert kernel.edges[(1, "file")].data == bytearray(b"data")
 
 
 def test_partial_write_then_error_remains_error_and_cleanup_uses_handle(kernel):
@@ -1158,6 +1158,12 @@ def _mutation_hardlink(payload):
     return {"outcome": "linked"}
 
 
+def _mutation_read_open(payload):
+    with open(payload["source"], "rb") as stream:
+        stream.read()
+    return {"outcome": "read"}
+
+
 def _mutation_write_open(payload):
     with open(payload["source"], "ab") as stream:
         stream.write(b"ATTACK")
@@ -1213,6 +1219,7 @@ def _windows_worker(action, payload, ready, start, release, results):
                 "replace_owned": _mutation_replace_owned,
                 "hardlink": _mutation_hardlink,
                 "write_open": _mutation_write_open,
+                "read_open": _mutation_read_open,
             }
             outcome = handlers[action](payload)
         if outcome is not None:
@@ -1444,32 +1451,66 @@ def _native_final_swap(fixture):
 
 
 def _native_hardlinks(fixture):
+    """A same-principal late link cannot be prevented on Windows (it needs no
+    access to the file), so it must be detected and its content withdrawn,
+    and nothing may be read through it while the capability is held."""
     existing = fixture.workspace / "existing-link.bin"
     os.link(fixture.sentinel, existing)
+    payload = {
+        "source": str(fixture.workspace / "new.bin"),
+        "target": str(fixture.external / "late-link.bin"),
+    }
     with fixture.pin() as parent:
         with pytest.raises(w.WindowsFilesystemError, match="links"):
             fixture.fs.open_child(parent, existing.name, directory=False)
-        with fixture.fs.create_exclusive(parent, "new.bin") as file:
-            payload = {
-                "source": str(fixture.workspace / "new.bin"),
-                "target": str(fixture.external / "late-link.bin"),
-            }
-            with _native_peers(fixture, [("hardlink", payload)]) as (start, results):
-
-                def after_last_check():
-                    outcome = _trigger_peer(start, results)
-                    fixture.observations["post_check_hardlink"] = outcome
-                    _assert_prevented(outcome)
-
-                fixture.api.before_write = after_last_check
-                fixture.fs.write_all(file, b"SAFE")
-    assert not (fixture.external / "late-link.bin").exists()
-    _native_attack_control(fixture, "hardlink", payload, "linked")
+        file = fixture.fs.create_exclusive(parent, "new.bin")
+        outcome = _late_link_during_write(fixture, file, payload)
+        _LATE_LINK_CHECKS[outcome["outcome"] == "linked"](fixture, file, payload)
+    control = {**payload, "target": str(fixture.external / "control-link.bin")}
+    _native_attack_control(fixture, "hardlink", control, "linked")
     assert fixture.oracle.path_identity(
-        Path(payload["source"])
-    ) == fixture.oracle.path_identity(Path(payload["target"]))
-    assert Path(payload["target"]).read_bytes() == b"SAFE"
-    return {"existing_link": "refused", "post_check_link": "native prevention observed"}
+        Path(control["source"])
+    ) == fixture.oracle.path_identity(Path(control["target"]))
+    return {
+        "existing_link": "refused",
+        "post_check_link": outcome["outcome"],
+        "late_link": "detected, content withdrawn, unreadable while held",
+    }
+
+
+def _late_link_during_write(fixture, file, payload):
+    with _native_peers(fixture, [("hardlink", payload)]) as (start, results):
+
+        def after_last_check():
+            outcome = _trigger_peer(start, results)
+            fixture.observations["post_check_hardlink"] = outcome
+
+        fixture.api.before_write = after_last_check
+        try:
+            fixture.fs.write_all(file, b"SAFE")
+        except w.WindowsFilesystemError as error:
+            fixture.observations["write_refusal"] = str(error)
+    return fixture.observations["post_check_hardlink"]
+
+
+def _assert_late_link_withdrawn(fixture, file, payload):
+    assert "links" in fixture.observations.get("write_refusal", "")
+    reader = {"source": payload["target"]}
+    with _native_peers(fixture, [("read_open", reader)]) as (start, results):
+        _assert_prevented(_trigger_peer(start, results))
+    with pytest.raises(w.WindowsFilesystemError, match="links"):
+        file.close()
+    assert Path(payload["target"]).read_bytes() == b""
+
+
+def _assert_late_link_prevented(fixture, file, payload):
+    _assert_prevented(fixture.observations["post_check_hardlink"])
+    assert "write_refusal" not in fixture.observations
+    file.close()
+    assert not Path(payload["target"]).exists()
+
+
+_LATE_LINK_CHECKS = {True: _assert_late_link_withdrawn, False: _assert_late_link_prevented}
 
 
 def _native_lifetime(fixture):

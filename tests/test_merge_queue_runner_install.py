@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -66,7 +67,7 @@ def test_install_is_hash_verified_and_daemon_reloaded(tmp_path: Path) -> None:
     assert bin_path.read_bytes() == runner_artifact.source.read_bytes()
     assert (units / "merge-queue-runner.service").read_text().find(str(bin_path)) >= 0
     service_text = (units / "merge-queue-runner.service").read_text()
-    assert f"ExecStart={python_link}" in service_text
+    assert f"ExecStart={shlex.quote(str(python_link))}" in service_text
     assert service_text.find(str(root)) >= 0
     assert "--drain-deadline-seconds 42" in service_text
     assert "--global-deadline-seconds 300" in service_text

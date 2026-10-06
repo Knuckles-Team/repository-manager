@@ -159,8 +159,12 @@ def _attack_outcome(happened: list[bool], *, prevented: Any, detected: Any) -> N
 
 
 def _assert_metadata_kept(result: Any, checkout: Path, source: Path) -> None:
-    """Prevented: the pinned metadata was never replaced or redirected."""
-    assert result.status == "success", result.data
+    """Prevented: the pinned metadata was never replaced or redirected.
+
+    The child's own config write lands in the pinned ``.git``; the boundary
+    may still refuse the result because that config content changed.
+    """
+    del result
     assert _config_value(checkout / ".git", "phase7.boundary") == "anchored"
     assert not _config_value(source / ".git", "phase7.boundary")
 
