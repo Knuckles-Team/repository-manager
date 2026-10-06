@@ -70,9 +70,24 @@ def unstaged_deletions_with_hook(root: Path) -> Path:
     return path
 
 
+_BULK_STAGING_CONFIG = (
+    ("core.autocrlf", "false"),
+    ("core.preloadindex", "true"),
+    ("core.fscache", "true"),
+)
+
+
+def _configure_bulk_staging(path: Path) -> None:
+    """Thousands of files: skip per-file line-ending conversion and let Git for
+    Windows batch its stat calls, so staging stays fast on every platform."""
+    for key, value in _BULK_STAGING_CONFIG:
+        _run(["git", "config", key, value], path)
+
+
 def truncated_index(root: Path, *, files: int = 4634, retained: int = 5) -> Path:
     """Create the documented ~4634-entry HEAD with a collapsed index."""
     path = _repo(root, "truncated-index")
+    _configure_bulk_staging(path)
     for index in range(files):
         (path / f"tracked-{index:04d}.txt").write_text(
             f"content {index}\n", encoding="utf-8"

@@ -1158,15 +1158,50 @@ def _mutation_hardlink(payload):
     return {"outcome": "linked"}
 
 
+def _peer_open(path, access, disposition):
+    """Open like an ordinary program but keep the real Win32 error code.
+
+    Python's ``open`` reports a sharing violation only as errno 13 (EACCES),
+    without the ``winerror`` the prevention checks classify.
+    """
+    if sys.platform != "win32":
+        raise QualificationBlocked("peer opens require Windows")
+    import msvcrt
+
+    kernel = c.WinDLL("kernel32", use_last_error=True)
+    create = kernel.CreateFileW
+    create.restype = c.c_void_p
+    create.argtypes = [
+        c.c_wchar_p,
+        c.c_uint32,
+        c.c_uint32,
+        c.c_void_p,
+        c.c_uint32,
+        c.c_uint32,
+        c.c_void_p,
+    ]
+    handle = create(str(path), access, 7, None, disposition, 0x80, None)
+    if handle in (None, 0, c.c_void_p(-1).value):
+        raise OSError(0, "peer CreateFileW failed", None, c.get_last_error())
+    return msvcrt.open_osfhandle(handle, 0)
+
+
 def _mutation_read_open(payload):
-    with open(payload["source"], "rb") as stream:
-        stream.read()
+    descriptor = _peer_open(payload["source"], 0x80000000, 3)  # GENERIC_READ
+    try:
+        os.read(descriptor, 64)
+    finally:
+        os.close(descriptor)
     return {"outcome": "read"}
 
 
 def _mutation_write_open(payload):
-    with open(payload["source"], "ab") as stream:
-        stream.write(b"ATTACK")
+    descriptor = _peer_open(payload["source"], 0x40000000, 4)  # GENERIC_WRITE
+    try:
+        os.lseek(descriptor, 0, os.SEEK_END)
+        os.write(descriptor, b"ATTACK")
+    finally:
+        os.close(descriptor)
     return {"outcome": "wrote"}
 
 
