@@ -47,13 +47,13 @@ def _valid_contract_dict() -> dict:
         "version": 2,
         "hooks": {
             "fuzz": {
-                "argv": ["python3", "-c", "pass"],
+                "argv": [sys.executable, "-c", "pass"],
                 "timeout_seconds": 30,
                 "evidence": "security-results/fuzz.json",
                 "min_cases": 1,
             },
             "authenticated_negative": {
-                "argv": ["python3", "-c", "pass"],
+                "argv": [sys.executable, "-c", "pass"],
                 "timeout_seconds": 30,
                 "evidence": "security-results/authenticated-negative.json",
                 "min_cases": 1,
@@ -292,7 +292,7 @@ def test_check_licenses_treats_unknown_license_as_failing(tmp_path):
 
 def _hook(min_cases: int = 1) -> dict:
     return {
-        "argv": ["python3", "-c", "pass"],
+        "argv": [sys.executable, "-c", "pass"],
         "timeout_seconds": 30,
         "evidence": "security-results/fuzz.json",
         "min_cases": min_cases,
@@ -364,18 +364,18 @@ def test_run_hook_accepts_a_passing_hook(tmp_path):
         "p.write_text(json.dumps({'version': 1, 'kind': 'fuzz', 'passed': True, "
         "'cases': 10, 'failures': 0, 'crashes': 0}))"
     )
-    contract = _hook_contract(["python3", "-c", script])
+    contract = _hook_contract([sys.executable, "-c", script])
     sc.run_hook(tmp_path, contract, "fuzz", "security-results")
 
 
 def test_run_hook_rejects_nonzero_exit(tmp_path):
-    contract = _hook_contract(["python3", "-c", "import sys; sys.exit(1)"])
+    contract = _hook_contract([sys.executable, "-c", "import sys; sys.exit(1)"])
     with pytest.raises(sc.SecurityContractError, match="returned a failure"):
         sc.run_hook(tmp_path, contract, "fuzz", "security-results")
 
 
 def test_run_hook_rejects_missing_evidence(tmp_path):
-    contract = _hook_contract(["python3", "-c", "pass"])
+    contract = _hook_contract([sys.executable, "-c", "pass"])
     with pytest.raises(sc.SecurityContractError):
         sc.run_hook(tmp_path, contract, "fuzz", "security-results")
 
@@ -389,19 +389,19 @@ def test_run_hook_rejects_evidence_reporting_a_crash(tmp_path):
         "p.write_text(json.dumps({'version': 1, 'kind': 'fuzz', 'passed': True, "
         "'cases': 10, 'failures': 0, 'crashes': 1}))"
     )
-    contract = _hook_contract(["python3", "-c", script])
+    contract = _hook_contract([sys.executable, "-c", script])
     with pytest.raises(sc.SecurityContractError, match="reported a crash"):
         sc.run_hook(tmp_path, contract, "fuzz", "security-results")
 
 
 def test_run_hook_rejects_invalid_kind(tmp_path):
-    contract = _hook_contract(["python3", "-c", "pass"])
+    contract = _hook_contract([sys.executable, "-c", "pass"])
     with pytest.raises(sc.SecurityContractError, match="kind is invalid"):
         sc.run_hook(tmp_path, contract, "not-a-real-kind", "security-results")
 
 
 def test_run_hook_rejects_evidence_path_outside_result_root(tmp_path):
-    contract = _hook_contract(["python3", "-c", "pass"])
+    contract = _hook_contract([sys.executable, "-c", "pass"])
     contract["hooks"]["fuzz"]["evidence"] = "elsewhere/fuzz.json"
     with pytest.raises(
         sc.SecurityContractError, match="must stay in the result root"
@@ -410,7 +410,8 @@ def test_run_hook_rejects_evidence_path_outside_result_root(tmp_path):
 
 
 def test_run_hook_fails_closed_without_unix_resource_support(tmp_path, monkeypatch):
+    monkeypatch.setattr(sc, "_WINDOWS", False)
     monkeypatch.setattr(sc, "_resource", None)
-    contract = _hook_contract(["python3", "-c", "pass"])
+    contract = _hook_contract([sys.executable, "-c", "pass"])
     with pytest.raises(sc.SecurityContractError, match="Unix resource"):
         sc.run_hook(tmp_path, contract, "fuzz", "security-results")

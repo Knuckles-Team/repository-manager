@@ -653,13 +653,22 @@ def _spec_digest(spec: BuildSpec) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def config_text_digest(data: bytes) -> str:
+    """Digest of a config's text, independent of the checkout's line endings.
+
+    The worker reads the committed blob (LF) while a submitter may read a
+    working file Git for Windows checked out with CRLF; both must agree.
+    """
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
 def _config_digest(repo: Path) -> str:
     config_path = repo / CONFIG_FILENAME
     try:
         data = _read_bounded_regular_file(config_path, _MAX_CONFIG_BYTES)
     except BuildQueueError as exc:
         raise BuildQueueError(f"could not read {config_path}: {exc}") from exc
-    return hashlib.sha256(data).hexdigest()
+    return config_text_digest(data)
 
 
 def _generation_digest(generation_id: str | None) -> str:

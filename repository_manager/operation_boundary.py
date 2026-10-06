@@ -1466,8 +1466,45 @@ def _parse_git_config_line(
     match = re.fullmatch(r"([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?", line)
     if match is None or raw_line.rstrip().endswith("\\"):
         raise OperationBoundaryError("git config uses unsupported syntax")
-    entry = (*section, match.group(1).lower(), (match.group(2) or "").strip())
+    entry = (
+        *section,
+        match.group(1).lower(),
+        _decode_git_config_value(match.group(2) or ""),
+    )
     return section, entry
+
+
+_CONFIG_VALUE_TOKEN = re.compile(r'\\(.)|"|[#;]|[^\\"#;]+', re.S)
+_QUOTE = chr(34)
+_COMMENT_STARTS = frozenset({"#", ";"})
+_CONFIG_ESCAPES = {"n": "\n", "t": "\t", "b": "\b", "\\": "\\", '"': '"'}
+
+
+def _decode_git_config_value(raw: str) -> str:
+    """Decode one config value as Git does: quotes, escapes, inline comments.
+
+    Git writes a Windows path as ``C:\\\\Users\\\\...``; reading it raw would
+    audit (and push to) a different location than Git itself uses.
+    """
+    parts: list[str] = []
+    quoted = False
+    for match in _CONFIG_VALUE_TOKEN.finditer(raw):
+        piece = match.group(0)
+        if match.group(1) is not None:
+            parts.append(_config_escape(match.group(1)))
+        elif piece == _QUOTE:
+            quoted = not quoted
+        elif piece in _COMMENT_STARTS and not quoted:
+            break
+        else:
+            parts.append(piece)
+    return "".join(parts).strip()
+
+
+def _config_escape(character: str) -> str:
+    if character not in _CONFIG_ESCAPES:
+        raise OperationBoundaryError("git config uses an unsupported escape")
+    return _CONFIG_ESCAPES[character]
 
 
 def _git_config_section(line: str) -> tuple[str, str | None]:

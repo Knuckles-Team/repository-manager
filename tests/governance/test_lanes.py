@@ -1279,6 +1279,16 @@ def test_output_open_failure_rolls_back_published_lease(
     assert not output.exists()
 
 
+def _special_node(tmp_path: Path) -> Path:
+    """A non-regular, non-directory node: a FIFO, or the NUL device on Windows
+    (whose filesystem has no FIFOs)."""
+    if os.name == "nt":
+        return Path(os.devnull)
+    fifo = tmp_path / "output.fifo"
+    os.mkfifo(fifo)
+    return fifo
+
+
 def test_heavy_output_boundary_rejects_links_and_caps_writes(
     canonical: Path, tmp_path: Path
 ) -> None:
@@ -1318,8 +1328,7 @@ def test_heavy_output_boundary_rejects_links_and_caps_writes(
         ):
             pass
 
-    fifo = tmp_path / "output.fifo"
-    os.mkfifo(fifo)
+    fifo = _special_node(tmp_path)
     with pytest.raises(lanes.LaneArbitrationError, match="regular file"):
         with lanes.hold_lease(
             "cpu-heavy",
@@ -1335,7 +1344,7 @@ def test_heavy_output_boundary_rejects_links_and_caps_writes(
             "cpu-heavy",
             operation="device output",
             host_id="host-primary",
-            output_path=Path("/dev/null"),
+            output_path=Path(os.devnull),
             path=canonical,
         ):
             pass

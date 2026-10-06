@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import signal
 import sys
 import threading
@@ -272,8 +273,8 @@ def test_success_streams_both_outputs_and_allows_publication(tmp_path: Path) -> 
     assert result.outcome == ExecutionOutcome.SUCCEEDED
     assert result.exit_code == 0
     assert result.failure_class is None
-    assert result.stdout_tail == "out\n"
-    assert result.stderr_tail == "err\n"
+    assert result.stdout_tail == f"out{os.linesep}"  # text-mode child output
+    assert result.stderr_tail == f"err{os.linesep}"
     assert len(publisher.results) == 1
     assert publisher.results[0].outcome == ExecutionOutcome.SUCCEEDED
     assert publisher.fences == ["fence:local"]
@@ -343,9 +344,26 @@ def test_nonzero_and_signal_results_are_distinguishable(tmp_path: Path) -> None:
     assert failed.signal is None
     assert failed.failure_class == FailureClass.VALIDATION_CANDIDATE_FAILURE
     assert signalled.outcome == ExecutionOutcome.FAILED
+    _SIGNAL_RESULT_CHECKS[os.name == "nt"](signalled)
+
+
+def _assert_posix_signal_result(signalled: ExecutionResult) -> None:
     assert signalled.exit_code is None
     assert signalled.signal == signal.SIGTERM
     assert signalled.failure_class == FailureClass.WORKER_ENVIRONMENT_FAILURE
+
+
+def _assert_windows_termination_result(signalled: ExecutionResult) -> None:
+    """Windows has no signals: os.kill is TerminateProcess with that exit code."""
+    assert signalled.exit_code == signal.SIGTERM
+    assert signalled.signal is None
+    assert signalled.failure_class == FailureClass.VALIDATION_CANDIDATE_FAILURE
+
+
+_SIGNAL_RESULT_CHECKS = {
+    False: _assert_posix_signal_result,
+    True: _assert_windows_termination_result,
+}
 
 
 def test_environment_reference_is_materialized_and_redacted(tmp_path: Path) -> None:
@@ -382,7 +400,7 @@ def test_default_environment_excludes_unrelated_host_secret(
     result = LocalExecutor((tmp_path,)).run(command)
 
     assert result.outcome == ExecutionOutcome.SUCCEEDED
-    assert result.stdout_tail == "missing\n"
+    assert result.stdout_tail == f"missing{os.linesep}"
     assert host_value not in result.stdout_tail
 
 
@@ -431,6 +449,10 @@ def test_timeout_terminates_process_group_and_reports_cleanup(tmp_path: Path) ->
     assert result.failure_class == FailureClass.CANCELLED_DEADLINE
     assert result.cleanup_ok
     child_pid = int(pid_file.read_text())
+    _GRANDCHILD_GONE[os.name == "nt"](child_pid)
+
+
+def _assert_posix_grandchild_gone(child_pid: int) -> None:
     for _ in range(40):
         proc_stat = Path(f"/proc/{child_pid}/stat")
         if not proc_stat.exists():
@@ -440,6 +462,23 @@ def test_timeout_terminates_process_group_and_reports_cleanup(tmp_path: Path) ->
             break
         time.sleep(0.05)
     assert not proc_stat.exists() or proc_stat.read_text().split()[2] == "Z"
+
+
+def _assert_windows_grandchild_gone(child_pid: int) -> None:
+    """The child's Job object ended the grandchild with it."""
+    from repository_manager import windows_process
+
+    for _ in range(40):
+        if not windows_process.process_exists(child_pid):
+            break
+        time.sleep(0.05)
+    assert not windows_process.process_exists(child_pid)
+
+
+_GRANDCHILD_GONE = {
+    False: _assert_posix_grandchild_gone,
+    True: _assert_windows_grandchild_gone,
+}
 
 
 def test_cancellation_during_execution_terminates_child(tmp_path: Path) -> None:
@@ -465,7 +504,7 @@ def test_cancellation_during_execution_terminates_child(tmp_path: Path) -> None:
     assert not thread.is_alive()
     assert results[0].outcome == ExecutionOutcome.CANCELLED
     assert results[0].cleanup_ok
-    assert results[0].stdout_tail == "started\n"
+    assert results[0].stdout_tail == f"started{os.linesep}"
 
 
 def test_stale_fence_quarantines_output_and_skips_publication(tmp_path: Path) -> None:

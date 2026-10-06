@@ -47,6 +47,49 @@ jobs:
         id: bootstrap
         run: scripts/bootstrap.sh
 
+      - name: TEMPORARY protective DACL diagnostics
+        continue-on-error: true
+        run: |
+          uv run --frozen --no-sync python - <<'PYEOF'
+          import ctypes as c, os
+          from tests.test_windows_filesystem import NativeFixture
+          fx = NativeFixture({})
+          ntdll = c.WinDLL("ntdll")
+          advapi = c.WinDLL("advapi32", use_last_error=True)
+          class OBI(c.Structure):
+              _fields_ = [("Attributes", c.c_uint32), ("GrantedAccess", c.c_uint32), ("rest", c.c_uint32 * 12)]
+          ntdll.NtQueryObject.argtypes = [c.c_void_p, c.c_int, c.c_void_p, c.c_uint32, c.c_void_p]
+          advapi.SetKernelObjectSecurity.argtypes = [c.c_void_p, c.c_uint32, c.c_void_p]
+          advapi.InitializeSecurityDescriptor.argtypes = [c.c_void_p, c.c_uint32]
+          advapi.SetSecurityDescriptorDacl.argtypes = [c.c_void_p, c.c_int, c.c_void_p, c.c_int]
+          def granted(raw):
+              obi = OBI(); st = ntdll.NtQueryObject(raw, 0, c.byref(obi), c.sizeof(obi), None)
+              return hex(obi.GrantedAccess), hex(st & 0xFFFFFFFF)
+          try:
+              with fx.pin() as parent:
+                  print("parent granted", granted(parent._raw))
+                  f = fx.fs.create_exclusive(parent, "diag.bin")
+                  raw = f._raw
+                  print("created granted", granted(raw))
+                  path = fx.workspace / "diag.bin"
+                  try:
+                      os.link(path, fx.external / "diag-link.bin"); print("link: CREATED")
+                  except OSError as e:
+                      print("link refused", e.winerror)
+                  acl = f._restore_dacl
+                  print("acl bytes", len(acl), acl[:8].hex())
+                  for flags in (0x4, 0x4 | 0x20000000):
+                      sd = c.create_string_buffer(64); buf = c.create_string_buffer(acl, len(acl))
+                      advapi.InitializeSecurityDescriptor(sd, 1)
+                      advapi.SetSecurityDescriptorDacl(sd, 1, buf, 0)
+                      ok = advapi.SetKernelObjectSecurity(raw, flags, sd)
+                      print("SetKernelObjectSecurity flags", hex(flags), ok, c.get_last_error())
+                  fx.fs.discard_created(f)
+                  f.close()
+          finally:
+              fx.observations = {}
+          PYEOF
+
       - name: Cross-platform import safety (real Windows interpreter)
         id: imports
         run: uv run --frozen --no-sync python scripts/check_import_safety.py --package repository_manager

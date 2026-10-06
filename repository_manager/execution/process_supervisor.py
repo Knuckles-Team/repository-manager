@@ -6,10 +6,25 @@ import os
 import signal
 import subprocess  # nosec B404 - argv is supplied as a sequence and shell is disabled
 import time
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
+
+from repository_manager import windows_process
+
+_WINDOWS = os.name == "nt"
+# A POSIX child leads its own session; a Windows child starts suspended so it
+# can be placed in a Job object (see ProcessSupervisor._contain) before it runs.
+_GROUP_OPTIONS: dict[str, object] = (
+    {
+        "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        | windows_process.SUSPENDED_CREATION_FLAG
+    }
+    if _WINDOWS
+    else {"start_new_session": True}
+)
 
 
 class ProcessLike(Protocol):
@@ -82,6 +97,8 @@ class ProcessSupervisor:
         self._monotonic = monotonic if monotonic is not None else time.monotonic
         self._sleep = sleep if sleep is not None else time.sleep
         self._popen_factory = cast(PopenFactory, popen_factory or subprocess.Popen)
+        self._jobs: weakref.WeakKeyDictionary[ProcessLike, windows_process.ProcessJob]
+        self._jobs = weakref.WeakKeyDictionary()
 
     def spawn(
         self,
@@ -106,11 +123,21 @@ class ProcessSupervisor:
             "close_fds": True,
             "text": False,
         }
-        if os.name == "posix":
-            kwargs["start_new_session"] = True
-        else:
-            kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        return self._popen_factory(tuple(argv), **kwargs)
+        kwargs.update(_GROUP_OPTIONS)
+        process = self._popen_factory(tuple(argv), **kwargs)
+        self._contain(process)
+        return process
+
+    def _contain(self, process: ProcessLike) -> None:
+        """Windows: hold the suspended child's tree in a Job, then resume it."""
+        if _WINDOWS and hasattr(process, "_handle"):
+            try:
+                job = windows_process.contain_suspended(process)
+            except OSError:
+                process.kill()  # never leave a suspended child behind
+                raise
+            self._jobs[process] = job
+            weakref.finalize(process, job.close)
 
     def terminate(self, process: ProcessLike) -> TerminationReport:
         """Escalate TERM then KILL and reap the complete process group."""
@@ -160,15 +187,9 @@ class ProcessSupervisor:
         )
 
     def _signal_group(self, process: ProcessLike, *, kill: bool) -> None:
-        if os.name == "posix":
-            try:
-                os.killpg(os.getpgid(process.pid), _group_signal(kill))
-            except ProcessLookupError:
-                # Injectable fake processes and a child that exits between
-                # lookup and signal still receive the bounded fallback.
-                _signal_process(process, kill=kill)
-        else:
-            _signal_process(process, kill=kill)
+        job = self._jobs.get(process)
+        signaller = _job_signaller(job) if job is not None else _signal_without_job
+        signaller(process, kill=kill)
 
     def _wait_until_exit(self, process: ProcessLike, timeout: float) -> bool:
         deadline = float(self._monotonic()) + timeout
@@ -176,6 +197,26 @@ class ProcessSupervisor:
             remaining = max(0.0, deadline - float(self._monotonic()))
             self._sleep(min(self.poll_interval, remaining))
         return process.poll() is not None
+
+
+def _job_signaller(job: windows_process.ProcessJob) -> Callable[..., None]:
+    def terminate_job(_process: ProcessLike, *, kill: bool) -> None:
+        del kill  # a Job ends the whole tree at once
+        job.terminate()
+
+    return terminate_job
+
+
+def _signal_without_job(process: ProcessLike, *, kill: bool) -> None:
+    if os.name == "posix":
+        try:
+            os.killpg(os.getpgid(process.pid), _group_signal(kill))
+        except ProcessLookupError:
+            # Injectable fake processes and a child that exits between
+            # lookup and signal still receive the bounded fallback.
+            _signal_process(process, kill=kill)
+    else:
+        _signal_process(process, kill=kill)
 
 
 def _group_signal(kill: bool) -> int:

@@ -22,6 +22,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from repository_manager.development import ArtifactReference, LogReference
+from repository_manager.native_fs import is_rooted
 
 _MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024
 _DEFAULT_LOG_TAIL_BYTES = 64 * 1024
@@ -76,7 +77,7 @@ def _require_relative(relative_path: str) -> str:
     if (
         not relative_path
         or relative_path.strip() != relative_path
-        or path.is_absolute()
+        or is_rooted(relative_path)
         or ".." in path.parts
     ):
         raise PathTraversalError(f"unsafe relative artifact path: {relative_path!r}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +19,10 @@ from repository_manager.merge_queue_runner_install import (
 )
 from tests.portable_executables import write_python_program
 
+
+# Windows keeps only a read-only flag: a writable file reports 0o666 and has
+# no execute bits, whatever mode was requested.
+_EXECUTABLE_MODE = 0o666 if os.name == "nt" else 0o755
 
 def _workspace(tmp_path: Path) -> Path:
     root = tmp_path / "workspace"
@@ -54,7 +59,7 @@ def test_install_is_hash_verified_and_daemon_reloaded(tmp_path: Path) -> None:
     )
     assert report.verified
     assert marker.read_text(encoding="utf-8") == "--user daemon-reload"
-    assert bin_path.stat().st_mode & 0o777 == 0o755
+    assert bin_path.stat().st_mode & 0o777 == _EXECUTABLE_MODE
     runner_artifact = report.artifacts[0]
     assert runner_artifact.name == "runner"
     assert runner_artifact.source == Path(merge_queue_runner.__file__).resolve()

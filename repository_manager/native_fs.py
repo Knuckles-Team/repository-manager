@@ -9,6 +9,7 @@ Both return ordinary integer file descriptors.
 from __future__ import annotations
 
 import os
+from pathlib import PurePosixPath, PureWindowsPath
 
 WINDOWS = os.name == "nt"
 # A Windows flush needs a write handle; POSIX flushes a read-only descriptor.
@@ -57,3 +58,37 @@ def name_from_portable(name: str) -> str:
     if not WINDOWS:
         return name
     return name.replace("%3A", ":").replace("%25", "%")
+
+
+def is_rooted(value: str) -> bool:
+    """Whether ``value`` is anchored in POSIX or Windows syntax.
+
+    A path that must be relative is refused if either syntax would anchor it
+    (``/x``, ``C:x``, ``\\\\host\\share``), so the check is platform-independent.
+    """
+    return bool(PurePosixPath(value).root or PureWindowsPath(value).anchor)
+
+
+def read_link(path: str | os.PathLike[str]) -> str:
+    """``os.readlink`` spelled the way the link was created.
+
+    Windows returns the NT substitute name (``\\\\?\\C:\\...``); dropping that
+    prefix gives back the target ``os.symlink`` was called with.
+    """
+    target = os.readlink(path)
+    if WINDOWS and target.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + target[len("\\\\?\\UNC\\") :]
+    if WINDOWS and target.startswith("\\\\?\\"):
+        return target[len("\\\\?\\") :]
+    return target
+
+
+def replace_link(source: str | os.PathLike[str], link: str | os.PathLike[str]) -> None:
+    """Move the symlink ``source`` onto ``link`` (POSIX: one atomic rename).
+
+    Windows cannot rename onto an existing directory symlink, so the old link
+    is removed first; callers keep the previous target to restore on failure.
+    """
+    if WINDOWS and os.path.islink(link):
+        os.unlink(link)
+    os.replace(source, link)

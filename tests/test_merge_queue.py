@@ -214,7 +214,7 @@ def shell_repo(tmp_path: Path) -> Path:
         batch_size: 8
         gates:
           - name: no-broken
-            command: ["./gate.sh"]
+            command: ["sh", "gate.sh"]
             tier: fast
             timeout: 60
             compare: lines
@@ -457,7 +457,7 @@ def test_a_baseline_timeout_is_a_refusal_not_an_empty_baseline(tmp_path: Path) -
         base: main
         gates:
           - name: slow-baseline
-            command: ["./gate.sh"]
+            command: ["sh", "gate.sh"]
             tier: fast
             timeout: 60
             baseline_timeout: 2
@@ -507,12 +507,12 @@ def _timeout_drift_repo(tmp_path: Path, *, slow_recheck: bool = False) -> Path:
         base: main
         gates:
           - name: aggregate
-            command: ["./aggregate.sh"]
+            command: ["sh", "aggregate.sh"]
             timeout: 10
             baseline_timeout: 10
             compare: lines
             timeout_recheck_pattern: '^TIMEOUT (?P<item>checks/[^ ]+\\.sh)$'
-            timeout_recheck_command: ["/bin/sh", "{item}"]
+            timeout_recheck_command: ["sh", "{item}"]
             timeout_recheck_timeout: 1
         """,
     )
@@ -567,7 +567,7 @@ def test_timeout_recheck_refuses_output_derived_path_escape(tmp_path: Path) -> N
         command=("true",),
         compare="lines",
         timeout_recheck_pattern=r"^TIMEOUT (?P<item>.+)$",
-        timeout_recheck_command=("/bin/sh", "{item}"),
+        timeout_recheck_command=("sh", "{item}"),
         timeout_recheck_timeout=1,
     )
     result = mq._recheck_candidate_new_timeouts(
@@ -674,7 +674,7 @@ def test_a_conflict_confined_to_generated_files_is_regenerated_not_rejected(
             compare: exit
         generated_files: ["INDEX.md"]
         regenerate:
-          - ["{sys.executable}", "gen.py"]
+          - {json.dumps([sys.executable, "gen.py"])}
         """,
     )
     _commit(repo, "init")
@@ -717,7 +717,7 @@ def test_a_conflict_touching_a_handwritten_file_is_still_rejected(
             tier: fast
             compare: exit
         generated_files: ["INDEX.md"]
-        regenerate: [["{sys.executable}", "gen.py"]]
+        regenerate: [{json.dumps([sys.executable, "gen.py"])}]
         """,
     )
     _commit(repo, "init")
@@ -845,10 +845,10 @@ def test_materialized_gate_reuses_versioned_repo_venv_without_ambient_python(
         repo,
         """
         base: main
-        environment_signature: [".venv/bin/python", "--signature"]
+        environment_signature: ["sh", ".venv/bin/python", "--signature"]
         gates:
           - name: repo-python
-            command: [".venv/bin/python", "--gate"]
+            command: ["sh", ".venv/bin/python", "--gate"]
             tier: fast
             compare: exit
         """,
@@ -899,7 +899,7 @@ def test_dropping_a_declared_gate_is_a_refusal(shell_repo: Path) -> None:
 # ---------------------------------------------------------------------------
 # First-config bootstrap — one clean config-only candidate, under the lease
 # ---------------------------------------------------------------------------
-def _bootstrap_config(*, base: str = "main", command: str = '["./gate.sh"]') -> str:
+def _bootstrap_config(*, base: str = "main", command: str = '["sh", "gate.sh"]') -> str:
     return textwrap.dedent(
         f"""
         schema_version: 2
@@ -966,8 +966,8 @@ def test_one_clean_config_only_candidate_bootstraps_and_runs_exact_argv(
     assert result["landed"] == 1
     assert (repo / mq.CONFIG_FILENAME).is_file()
     assert [argv for argv, _cwd in calls] == [
-        ("./gate.sh",),
-        ("./gate.sh",),
+        ("sh", "gate.sh"),
+        ("sh", "gate.sh"),
     ]
     assert len({cwd for _argv, cwd in calls}) == 2
 
@@ -1326,7 +1326,7 @@ def test_a_killed_drain_does_not_strand_the_candidate(tmp_path: Path) -> None:
         base: main
         gates:
           - name: slow-but-clean
-            command: ["./slow_gate.sh"]
+            command: ["sh", "slow_gate.sh"]
             tier: fast
             timeout: 60
             compare: exit

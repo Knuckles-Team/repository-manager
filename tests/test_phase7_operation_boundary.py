@@ -160,7 +160,7 @@ def _attack_outcome(happened: list[bool], *, prevented: Any, detected: Any) -> N
 
 def _assert_metadata_kept(result: Any, checkout: Path, source: Path) -> None:
     """Prevented: the pinned metadata was never replaced or redirected."""
-    assert result.status == "success"
+    assert result.status == "success", result.data
     assert _config_value(checkout / ".git", "phase7.boundary") == "anchored"
     assert not _config_value(source / ".git", "phase7.boundary")
 
@@ -1229,7 +1229,9 @@ def test_git_action_rejects_multiple_preexisting_push_urls(tmp_path):
 def test_push_refuses_local_destination_rewrite_before_network(tmp_path, directive):
     manager, source, authorized, attacker = _push_fixture(tmp_path)
     with (source / ".git" / "config").open("a", encoding="utf-8") as stream:
-        stream.write(f'\n[url "{attacker}"]\n\t{directive} = {authorized}\n')
+        stream.write(
+            f'\n[url "{attacker.as_posix()}"]\n\t{directive} = {authorized.as_posix()}\n'
+        )
 
     result = manager.push_project(str(source))
 
@@ -1243,12 +1245,14 @@ def test_push_refuses_local_destination_rewrite_before_network(tmp_path, directi
 def test_push_refuses_included_config_and_later_include_drift(tmp_path):
     manager, source, authorized, attacker = _push_fixture(tmp_path)
     included = tmp_path / "included.gitconfig"
-    included.write_text(f'[remote "origin"]\n\tpushurl = {attacker}\n')
+    included.write_text(f'[remote "origin"]\n\tpushurl = {attacker.as_posix()}\n')
     with (source / ".git" / "config").open("a", encoding="utf-8") as stream:
-        stream.write(f"\n[include]\n\tpath = {included}\n")
+        stream.write(f"\n[include]\n\tpath = {included.as_posix()}\n")
 
     first = manager.push_project(str(source))
-    included.write_text(f'[url "{attacker}"]\n\tpushInsteadOf = {authorized}\n')
+    included.write_text(
+        f'[url "{attacker.as_posix()}"]\n\tpushInsteadOf = {authorized.as_posix()}\n'
+    )
     second = manager.push_project(str(source))
 
     assert first.status == second.status == "error"
@@ -1261,7 +1265,7 @@ def test_push_refuses_included_config_and_later_include_drift(tmp_path):
 def test_push_refuses_config_worktree_before_network(tmp_path):
     manager, source, authorized, attacker = _push_fixture(tmp_path)
     (source / ".git" / "config.worktree").write_text(
-        f'[remote "origin"]\n\tpushurl = {attacker}\n'
+        f'[remote "origin"]\n\tpushurl = {attacker.as_posix()}\n'
     )
 
     result = manager.push_project(str(source))
@@ -1301,7 +1305,7 @@ def test_sealed_push_does_not_inherit_external_git_config(
 ):
     manager, source, authorized, attacker = _push_fixture(tmp_path)
     external = tmp_path / f"{variable.lower()}.gitconfig"
-    external.write_text(f'[remote "origin"]\n\tpushurl = {attacker}\n')
+    external.write_text(f'[remote "origin"]\n\tpushurl = {attacker.as_posix()}\n')
     monkeypatch.setenv(variable, str(external))
 
     result = manager.push_project(str(source))
@@ -1324,7 +1328,9 @@ def test_source_config_popen_race_cannot_redirect_sealed_push(tmp_path, monkeypa
         if not raced and isinstance(argv, list) and "push" in argv:
             raced = True
             with (source / ".git" / "config").open("a", encoding="utf-8") as stream:
-                stream.write(f'\n[remote "origin"]\n\tpushurl = {attacker}\n')
+                stream.write(
+                    f'\n[remote "origin"]\n\tpushurl = {attacker.as_posix()}\n'
+                )
         return original(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", race_before_push)

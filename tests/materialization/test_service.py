@@ -129,7 +129,11 @@ def _make_patch(
                 target.write_bytes(
                     content.encode("latin-1") if binary else content.encode()
                 )
-        diff_args = ["diff", "--no-color"] + (["--binary"] if binary else [])
+        # core.symlinks: Git for Windows defaults it off and would diff a link
+        # as a regular file.
+        diff_args = ["-c", "core.symlinks=true", "diff", "--no-color"] + (
+            ["--binary"] if binary else []
+        )
         diff = _git(diff_args, scratch, check=False)
         return diff.stdout
     finally:

@@ -60,10 +60,9 @@ class _Kernel:
             ("Process32FirstW", c.c_int32, [handle, c.POINTER(_ProcessEntry)]),
             ("Process32NextW", c.c_int32, [handle, c.POINTER(_ProcessEntry)]),
         )
-        for name, result, arguments in signatures:
-            function = getattr(api, name)
-            function.restype = result
-            function.argtypes = arguments
+        _bind(
+            *((api, name, result, arguments) for name, result, arguments in signatures)
+        )
         self.api = api
         self.last_error = c.get_last_error
 
@@ -152,3 +151,94 @@ def process_parents() -> dict[int, int]:
     finally:
         kernel.api.CloseHandle(snapshot)
     return parents
+
+
+_CREATE_SUSPENDED = 0x4
+
+
+class _JobKernel:
+    """Bindings for per-child Job objects (the process-group equivalent)."""
+
+    api: Any
+    nt: Any
+    last_error: Callable[[], int]
+
+    def __init__(self) -> None:
+        if sys.platform != "win32":
+            raise OSError("Windows process containment requires Windows")
+        self.api = c.WinDLL("kernel32", use_last_error=True)
+        self.nt = c.WinDLL("ntdll", use_last_error=True)
+        handle = c.c_void_p
+        _bind(
+            (self.api, "CreateJobObjectW", handle, [c.c_void_p, c.c_wchar_p]),
+            (self.api, "AssignProcessToJobObject", c.c_int32, [handle, handle]),
+            (self.api, "TerminateJobObject", c.c_int32, [handle, c.c_uint32]),
+            (self.api, "CloseHandle", c.c_int32, [handle]),
+            (self.nt, "NtResumeProcess", c.c_int32, [handle]),
+        )
+        self.last_error = c.get_last_error
+
+
+def _bind(*signatures: tuple[Any, str, Any, list[Any]]) -> None:
+    for dll, name, result, arguments in signatures:
+        function = getattr(dll, name)
+        function.restype = result
+        function.argtypes = arguments
+
+
+def _job_kernel() -> _JobKernel:
+    with _LOCK:
+        kernel = _STATE.get("job_kernel")
+        if kernel is None:
+            kernel = _STATE["job_kernel"] = _JobKernel()
+        return kernel
+
+
+class ProcessJob:
+    """A child and every descendant it starts, held in one Job object.
+
+    The child is created suspended, assigned to a fresh job, and only then
+    resumed, so no descendant can start outside the job.  Terminating the job
+    ends the whole tree, which is what POSIX ``killpg`` gives a session.
+    """
+
+    def __init__(self, job: int) -> None:
+        self._job: int | None = job
+
+    @classmethod
+    def contain(cls, process_handle: int) -> ProcessJob:
+        """Assign a suspended process to a fresh job, then resume it."""
+        kernel = _job_kernel()
+        job = kernel.api.CreateJobObjectW(None, None)
+        if not job:
+            raise OSError(0, "CreateJobObjectW failed", None, kernel.last_error())
+        if not kernel.api.AssignProcessToJobObject(job, process_handle):
+            code = kernel.last_error()
+            kernel.api.CloseHandle(job)
+            raise OSError(0, "AssignProcessToJobObject failed", None, code)
+        status = kernel.nt.NtResumeProcess(process_handle)
+        if status != 0:
+            kernel.api.TerminateJobObject(job, 1)
+            kernel.api.CloseHandle(job)
+            raise OSError(
+                f"NtResumeProcess failed (NTSTATUS 0x{status & 0xFFFFFFFF:08x})"
+            )
+        return cls(int(job))
+
+    def terminate(self) -> None:
+        """End every process in the job (idempotent)."""
+        if self._job is not None:
+            _job_kernel().api.TerminateJobObject(self._job, 1)
+
+    def close(self) -> None:
+        job, self._job = self._job, None
+        if job is not None:
+            _job_kernel().api.CloseHandle(job)
+
+
+def contain_suspended(process: Any) -> ProcessJob:
+    """Contain a child started with ``CREATE_SUSPENDED`` and let it run."""
+    return ProcessJob.contain(int(process._handle))
+
+
+SUSPENDED_CREATION_FLAG = _CREATE_SUSPENDED

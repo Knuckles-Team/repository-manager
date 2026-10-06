@@ -116,7 +116,7 @@ def _require_absolute_path(value: str) -> str:
     Contracts carry paths for this host and for POSIX execution hosts reached
     over the remote transport, so a POSIX-absolute spelling is always a valid
     shape.  Only a path in this host's own syntax can be canonicalized here;
-    a foreign (POSIX on Windows) path must already be lexically normal.
+    a foreign (POSIX on Windows) path is normalized lexically.
     """
     native = Path(value)
     if native.is_absolute():
@@ -125,9 +125,8 @@ def _require_absolute_path(value: str) -> str:
     if not foreign.is_absolute():
         raise ValueError("path must be canonical and absolute")
     _require_no_traversal(foreign)
-    if str(foreign) != value:
-        raise ValueError(f"path is not canonical: {value!r}")
-    return value
+    # Lexically normalized, exactly as the native branch returns ``str(path)``.
+    return str(foreign)
 
 
 def _require_no_traversal(path: PurePath) -> None:

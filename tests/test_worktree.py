@@ -4,6 +4,7 @@ import os
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -268,7 +269,7 @@ def test_remove_preserves_sibling_registration_and_unmerged_refs(repo):
         text=True,
         check=True,
     ).stdout
-    assert sibling["path"] in before
+    assert Path(sibling["path"]).as_posix() in before  # Git prints "/"
 
     result = repo.wm.remove("myrepo", "feat-target", delete_branch=True)
 
@@ -285,7 +286,7 @@ def test_remove_preserves_sibling_registration_and_unmerged_refs(repo):
         text=True,
         check=True,
     ).stdout
-    assert sibling["path"] in after
+    assert Path(sibling["path"]).as_posix() in after
     assert "branch refs/heads/feat-sibling" in after
 
 

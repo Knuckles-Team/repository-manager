@@ -150,7 +150,7 @@ def _config_snapshot(
         )
     except (UnicodeDecodeError, bq.BuildQueueError, ValueError) as exc:
         raise BuildWorkerError("submitted build config could not be parsed") from exc
-    return config, hashlib.sha256(raw).hexdigest()
+    return config, bq.config_text_digest(raw)
 
 
 class BuildAuthority(Protocol):

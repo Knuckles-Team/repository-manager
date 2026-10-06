@@ -13,7 +13,7 @@
       "target": "agent_utilities.knowledge_graph.core.file_lock",
       "symbol": "lock_exclusive",
       "expression": "lock_exclusive",
-      "source_sha256": "23244c93fc6989422cd7112b07e16550877863f0dbf362c745409b82da4e2baf",
+      "source_sha256": "ebbfc09582549ae69bd1e0360a01722ed789efc6389c5151a1929626cc558d8f",
       "classification": "governance",
       "reviewer": "Codex (initial disposition; independent review pending)",
       "evidence": "repository_manager/build_artifacts.py:32: Repository locking, lane admission or reservation authority; classification does not claim RM authority migration complete."
@@ -26,7 +26,7 @@
       "target": "agent_utilities.knowledge_graph.core.file_lock",
       "symbol": "unlock",
       "expression": "unlock",
-      "source_sha256": "23244c93fc6989422cd7112b07e16550877863f0dbf362c745409b82da4e2baf",
+      "source_sha256": "ebbfc09582549ae69bd1e0360a01722ed789efc6389c5151a1929626cc558d8f",
       "classification": "governance",
       "reviewer": "Codex (initial disposition; independent review pending)",
       "evidence": "repository_manager/build_artifacts.py:32: Repository locking, lane admission or reservation authority; classification does not claim RM authority migration complete."
@@ -39,7 +39,7 @@
       "target": "agent_utilities.orchestration",
       "symbol": "repository_work_item",
       "expression": "repository_work_item as authority",
-      "source_sha256": "3b9c324b0eaca830a27aab9223b56589757ba8cdc931d3fc4c991182c74c5a89",
+      "source_sha256": "4f9ada7cc816e2a36fa904a8e4154421ab5c3cd974a90c83f670a8995d9c8c7a",
       "classification": "orchestration",
       "reviewer": "Codex (initial disposition; independent review pending)",
       "evidence": "repository_manager/build_worker.py:578: Graph execution/ingestion or workspace configuration supporting repository orchestration; this category does not assert the dependency is a public SDK API."
@@ -267,55 +267,55 @@
     },
     {
       "path": "repository_manager/native_lane_authority.py",
-      "line": 171,
+      "line": 172,
       "column": 12,
       "kind": "static",
       "target": "agent_utilities.knowledge_graph.core.work_durability",
       "symbol": "claim_specific",
       "expression": "claim_specific",
-      "source_sha256": "79ba959730f0e465b0091051d2df118d3faa0ffaeef163b3813acf17777cf8e2",
-      "classification": "governance",
-      "reviewer": "Codex (initial disposition; independent review pending)",
-      "evidence": "repository_manager/native_lane_authority.py:171: Repository locking, lane admission or reservation authority; classification does not claim RM authority migration complete."
-    },
-    {
-      "path": "repository_manager/native_lane_authority.py",
-      "line": 172,
-      "column": 12,
-      "kind": "static",
-      "target": "agent_utilities.knowledge_graph.core.work_durability",
-      "symbol": "submit_work_item_atomic",
-      "expression": "submit_work_item_atomic",
-      "source_sha256": "79ba959730f0e465b0091051d2df118d3faa0ffaeef163b3813acf17777cf8e2",
+      "source_sha256": "4fc981b8419fff3cbfc7a7211f8a306796bba768a62b79d586ac4daccfd7ebb9",
       "classification": "governance",
       "reviewer": "Codex (initial disposition; independent review pending)",
       "evidence": "repository_manager/native_lane_authority.py:172: Repository locking, lane admission or reservation authority; classification does not claim RM authority migration complete."
     },
     {
       "path": "repository_manager/native_lane_authority.py",
-      "line": 329,
+      "line": 173,
+      "column": 12,
+      "kind": "static",
+      "target": "agent_utilities.knowledge_graph.core.work_durability",
+      "symbol": "submit_work_item_atomic",
+      "expression": "submit_work_item_atomic",
+      "source_sha256": "4fc981b8419fff3cbfc7a7211f8a306796bba768a62b79d586ac4daccfd7ebb9",
+      "classification": "governance",
+      "reviewer": "Codex (initial disposition; independent review pending)",
+      "evidence": "repository_manager/native_lane_authority.py:173: Repository locking, lane admission or reservation authority; classification does not claim RM authority migration complete."
+    },
+    {
+      "path": "repository_manager/native_lane_authority.py",
+      "line": 344,
       "column": 12,
       "kind": "static",
       "target": "agent_utilities.orchestration.development_lane",
       "symbol": "EngineNativeDevelopmentLaneTransport",
       "expression": "EngineNativeDevelopmentLaneTransport",
-      "source_sha256": "79ba959730f0e465b0091051d2df118d3faa0ffaeef163b3813acf17777cf8e2",
+      "source_sha256": "4fc981b8419fff3cbfc7a7211f8a306796bba768a62b79d586ac4daccfd7ebb9",
       "classification": "governance",
       "reviewer": "Codex (initial disposition; independent review pending)",
-      "evidence": "repository_manager/native_lane_authority.py:329: Repository locking, lane admission or reservation authority; classification does not claim RM authority migration complete."
+      "evidence": "repository_manager/native_lane_authority.py:344: Repository locking, lane admission or reservation authority; classification does not claim RM authority migration complete."
     },
     {
       "path": "repository_manager/repository_manager.py",
-      "line": 397,
+      "line": 398,
       "column": 12,
       "kind": "static",
       "target": "agent_utilities.security.persistence_privacy",
       "symbol": "sanitize_for_persistence",
       "expression": "sanitize_for_persistence",
-      "source_sha256": "8b3a2c9396f240974ebbbca759f1e845ac9abc8dda25ac024c0cd9cf1476037b",
+      "source_sha256": "c0c97922c813e2a25e5d70b0efe2922722cff2bf42da728a544ce87a2c7b3756",
       "classification": "governance",
       "reviewer": "Codex (initial disposition; independent review pending)",
-      "evidence": "repository_manager/repository_manager.py:397: Identity, actor context or persistence privacy governs repository records and test authority."
+      "evidence": "repository_manager/repository_manager.py:398: Identity, actor context or persistence privacy governs repository records and test authority."
     },
     {
       "path": "repository_manager/repository_manager.py",
@@ -325,23 +325,23 @@
       "target": "agent_utilities.base_utilities",
       "symbol": "get_library_file_path",
       "expression": "get_library_file_path",
-      "source_sha256": "8b3a2c9396f240974ebbbca759f1e845ac9abc8dda25ac024c0cd9cf1476037b",
+      "source_sha256": "c0c97922c813e2a25e5d70b0efe2922722cff2bf42da728a544ce87a2c7b3756",
       "classification": "orchestration",
       "reviewer": "Codex (initial disposition; independent review pending)",
       "evidence": "repository_manager/repository_manager.py:52: Graph execution/ingestion or workspace configuration supporting repository orchestration; this category does not assert the dependency is a public SDK API."
     },
     {
       "path": "repository_manager/repository_manager.py",
-      "line": 841,
+      "line": 852,
       "column": 51,
       "kind": "static",
       "target": "agent_utilities.core.paths",
       "symbol": "log_dir",
       "expression": "log_dir",
-      "source_sha256": "8b3a2c9396f240974ebbbca759f1e845ac9abc8dda25ac024c0cd9cf1476037b",
+      "source_sha256": "c0c97922c813e2a25e5d70b0efe2922722cff2bf42da728a544ce87a2c7b3756",
       "classification": "orchestration",
       "reviewer": "Codex (initial disposition; independent review pending)",
-      "evidence": "repository_manager/repository_manager.py:841: Graph execution/ingestion or workspace configuration supporting repository orchestration; this category does not assert the dependency is a public SDK API."
+      "evidence": "repository_manager/repository_manager.py:852: Graph execution/ingestion or workspace configuration supporting repository orchestration; this category does not assert the dependency is a public SDK API."
     },
     {
       "path": "repository_manager/reservations.py",
