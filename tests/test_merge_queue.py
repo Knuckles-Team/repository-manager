@@ -17,6 +17,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -65,7 +66,10 @@ class FakeGit:
     ):
         del env, timeout, raw_output, quiet
         p = subprocess.run(
-            command, shell=True, cwd=path or self.path, capture_output=True, text=True
+            shlex.split(command),  # same parsing as Git.git_action
+            cwd=path or self.path,
+            capture_output=True,
+            text=True,
         )
         out = (p.stdout + p.stderr).strip()
         return SimpleNamespace(

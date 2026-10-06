@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import (
@@ -111,11 +111,32 @@ def _require_git_ref(value: str) -> str:
 
 
 def _require_absolute_path(value: str) -> str:
-    path = Path(value)
-    if not path.is_absolute():
+    """Require a canonical absolute path for the host that will use it.
+
+    Contracts carry paths for this host and for POSIX execution hosts reached
+    over the remote transport, so a POSIX-absolute spelling is always a valid
+    shape.  Only a path in this host's own syntax can be canonicalized here;
+    a foreign (POSIX on Windows) path must already be lexically normal.
+    """
+    native = Path(value)
+    if native.is_absolute():
+        return _require_native_canonical(native, value)
+    foreign = PurePosixPath(value)
+    if not foreign.is_absolute():
         raise ValueError("path must be canonical and absolute")
+    _require_no_traversal(foreign)
+    if str(foreign) != value:
+        raise ValueError(f"path is not canonical: {value!r}")
+    return value
+
+
+def _require_no_traversal(path: PurePath) -> None:
     if ".." in path.parts:
         raise ValueError("path must not contain a parent traversal component")
+
+
+def _require_native_canonical(path: Path, value: str) -> str:
+    _require_no_traversal(path)
     resolved = path.resolve(strict=False)
     if resolved != path:
         raise ValueError(f"path is not canonical: {value!r}")

@@ -1,6 +1,7 @@
 """Tests for WorktreeManager (CONCEPT:RM-WORKTREE) against real git repos."""
 
 import os
+import shlex
 import shutil
 import subprocess
 from types import SimpleNamespace
@@ -32,8 +33,8 @@ class FakeGit:
     ):
         del env, timeout, raw_output
         p = subprocess.run(
-            command,
-            shell=True,
+            shlex.split(command),  # same parsing as Git.git_action
+            shell=False,
             cwd=path or self.path,
             capture_output=True,
             text=True,
@@ -72,7 +73,7 @@ def repo(tmp_path, monkeypatch):
 
 def test_add_creates_worktree_on_branch(repo):
     res = repo.wm.add("myrepo", "feat-x")
-    assert res["ok"] and res["created"]
+    assert res["ok"] and res["created"], res
     assert os.path.isdir(res["path"])
     # the worktree is checked out on feat-x
     branch = subprocess.run(
@@ -88,7 +89,7 @@ def test_add_creates_worktree_on_branch(repo):
 def test_add_absolute_repo_path_stays_beneath_worktree_root(repo):
     res = repo.wm.add(repo.path, "feat-absolute")
 
-    assert res["ok"] and res["created"]
+    assert res["ok"] and res["created"], res
     expected = os.path.join(
         wt_mod.WORKTREE_ROOT,
         os.path.basename(repo.path),
@@ -271,7 +272,7 @@ def test_remove_preserves_sibling_registration_and_unmerged_refs(repo):
 
     result = repo.wm.remove("myrepo", "feat-target", delete_branch=True)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["branch_deleted"] is False
     assert not os.path.isdir(target["path"])
     assert _ref(repo.path, "refs/heads/feat-target") == target_tip
@@ -426,7 +427,7 @@ def test_add_refuses_dirty_untracked_file_on_canonical(repo):
 def test_add_parks_canonical_when_clean(repo):
     _run("git checkout -b feat-w", repo.path)
     res = repo.wm.add("myrepo", "feat-w")
-    assert res["ok"] and res["created"]
+    assert res["ok"] and res["created"], res
     branch = subprocess.run(
         "git rev-parse --abbrev-ref HEAD",
         shell=True,
@@ -743,7 +744,7 @@ def test_prune_merged_still_removes_a_genuinely_merged_worktree(repo):
     tip = _ref(repo.path, "refs/heads/feat-merged")
     result = repo.wm.audit("myrepo", prune_merged=True)
     entry = next(p for p in result["pruned"] if p["branch"] == "feat-merged")
-    assert entry["ok"] is True
+    assert entry["ok"] is True, entry
     assert entry["branch_deleted"] is True
     assert not os.path.isdir(made["path"])
     assert "feat-merged" not in _branches(repo.path)
@@ -856,7 +857,7 @@ def test_remove_with_delete_branch_refuses_an_unmerged_branch(repo):
     made = repo.wm.add("myrepo", "feat-unmerged")
     _commit_in(made["path"], "wip.txt", "wip")
     result = repo.wm.remove("myrepo", "feat-unmerged", delete_branch=True)
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["branch_deleted"] is False
     assert "not reachable from" in result["branch_kept_reason"]
     assert "feat-unmerged" in _branches(repo.path)
@@ -1061,7 +1062,7 @@ def test_sync_reports_a_passing_declared_gate(repo):
 
     result = repo.wm.sync("myrepo", "feat-sync-passes-gate")
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["gate"]["ok"] is True
     assert result["gate"]["failed_hooks"] == []
 
@@ -1097,7 +1098,7 @@ def test_remove_still_works_on_a_genuinely_abandoned_worktree(repo):
     with no lease and no uncommitted work removes exactly as before."""
     made = repo.wm.add("myrepo", "feat-abandoned")
     result = repo.wm.remove("myrepo", "feat-abandoned", force=True)
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert not os.path.isdir(made["path"])
 
 
@@ -1142,6 +1143,6 @@ def test_reset_branch_succeeds_when_branch_is_already_an_ancestor_of_target(repo
 
     result = repo.wm.reset_branch("myrepo", "feat-safe-reset", target="main")
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["new_sha"] == main_tip
     assert _ref(repo.path, "refs/heads/feat-safe-reset") == main_tip

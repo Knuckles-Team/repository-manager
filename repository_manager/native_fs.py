@@ -39,3 +39,21 @@ def fsync_path(path: str | os.PathLike[str], *, directory: bool = False) -> None
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def portable_name(component: str) -> str:
+    """Spell one path component (a cache key) so this filesystem accepts it.
+
+    Windows reserves ``:`` (it selects an NTFS data stream), so keys such as
+    ``v2:<hex>`` are percent-escaped there; POSIX keeps the key verbatim.
+    """
+    if not WINDOWS:
+        return component
+    return component.replace("%", "%25").replace(":", "%3A")
+
+
+def name_from_portable(name: str) -> str:
+    """Invert :func:`portable_name` for a directory entry read back."""
+    if not WINDOWS:
+        return name
+    return name.replace("%3A", ":").replace("%25", "%")

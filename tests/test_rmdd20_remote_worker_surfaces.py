@@ -205,7 +205,7 @@ async def test_mcp_and_cli_dispatch_build_are_identical(capsys, _fake_tunnel):
         repository_roots={"repository-manager": "/opt/rm-worktrees"},
         toolchains=["git"],
     )
-    assert register_mcp["ok"] is True
+    assert register_mcp["ok"] is True, register_mcp
 
     mcp_result = await _call_tool(
         tool,
@@ -221,7 +221,7 @@ async def test_mcp_and_cli_dispatch_build_are_identical(capsys, _fake_tunnel):
         disk_mib=512,
         process_slots=1,
     )
-    assert mcp_result["ok"] is True
+    assert mcp_result["ok"] is True, mcp_result
     assert mcp_result["succeeded"] is True
     assert mcp_result["build"]["stdout_tail"] == "parity-ok"
     assert mcp_result["staged"]["tree_sha"] == _DISPATCH_BUILD_SHA
@@ -240,7 +240,7 @@ async def test_mcp_and_cli_dispatch_build_are_identical(capsys, _fake_tunnel):
         toolchains=["git"],
     )
     assert register_exit == 0
-    assert register_cli["ok"] is True
+    assert register_cli["ok"] is True, register_cli
 
     cli_result, exit_code = _cli_result(
         capsys,
@@ -257,7 +257,7 @@ async def test_mcp_and_cli_dispatch_build_are_identical(capsys, _fake_tunnel):
         process_slots=1,
     )
     assert exit_code == 0
-    assert cli_result["ok"] is True
+    assert cli_result["ok"] is True, cli_result
     assert cli_result["succeeded"] is True
     assert cli_result["build"]["stdout_tail"] == "parity-ok"
     assert cli_result["staged"]["tree_sha"] == _DISPATCH_BUILD_SHA

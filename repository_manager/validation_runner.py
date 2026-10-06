@@ -63,6 +63,11 @@ from repository_manager.validation_policy import (
 )
 
 
+def _names_path(spelling: str | None, path: Path) -> bool:
+    """Whether Git's ``spelling`` names ``path`` (Windows Git prints ``/``)."""
+    return spelling is not None and Path(spelling) == path
+
+
 class ValidationRunnerError(ValueError):
     """A validation request, authority, or execution seam refused work."""
 
@@ -1011,7 +1016,7 @@ class ValidationRunner:
 
     def _verify_head_matches(self, request: ValidationRequest, tree: Path) -> None:
         current = self._git_output(["rev-parse", "--show-toplevel"], tree)
-        if current != str(tree):
+        if not _names_path(current, tree):
             raise ValidationPreparationError(
                 "tree path is not the Git worktree top-level"
             )

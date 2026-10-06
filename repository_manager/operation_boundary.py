@@ -28,11 +28,14 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import fnmatch
+import functools
 import hashlib
 import json
 import os
 import re
+import shutil
 import stat
+import subprocess
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -280,6 +283,58 @@ def _absolute_parts(absolute: Path) -> tuple[str, ...]:
     return tuple(part for part in absolute.parts if part not in ("", os.sep))
 
 
+_LINE_ENDING_KEYS = ("core.autocrlf", "core.eol")
+
+
+@functools.lru_cache(maxsize=1)
+def _inherited_line_endings() -> tuple[tuple[str, str], ...]:
+    """Line-ending settings from the system and global Git config (Windows).
+
+    Disabling system and user config must not change how an existing checkout
+    is compared: Git for Windows enables ``core.autocrlf`` system-wide, so
+    without it every CRLF working file of a racily-clean index reads as
+    modified.  These keys only select line-ending conversion; they cannot name
+    a path, remote or program, so carrying them forward keeps the isolation.
+    """
+    if not _WINDOWS:
+        return ()
+    values: dict[str, str] = {}
+    for scope in ("--system", "--global"):
+        for key in _LINE_ENDING_KEYS:
+            value = _git_config_value(scope, key)
+            if value is not None:
+                values[key] = value
+    return tuple(values.items())
+
+
+def _git_config_value(scope: str, key: str) -> str | None:
+    git = shutil.which("git")
+    if git is None:
+        return None
+    try:
+        result = subprocess.run(  # fixed argv, no shell
+            [git, "config", scope, "--get", key],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = result.stdout.strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _line_ending_environment() -> dict[str, str]:
+    """``GIT_CONFIG_*`` entries re-applying the inherited line-ending keys."""
+    pairs = _inherited_line_endings()
+    environment = {"GIT_CONFIG_COUNT": str(len(pairs))} if pairs else {}
+    for index, (key, value) in enumerate(pairs):
+        environment[f"GIT_CONFIG_KEY_{index}"] = key
+        environment[f"GIT_CONFIG_VALUE_{index}"] = value
+    return environment
+
+
 def descriptor_path(descriptor: int) -> str:
     """A child-visible spelling bound to an open directory descriptor."""
     if _WINDOWS:
@@ -446,6 +501,7 @@ class PinnedDirectory:
         }
         isolated["GIT_CONFIG_NOSYSTEM"] = "1"
         isolated["GIT_CONFIG_GLOBAL"] = os.devnull
+        isolated.update(_line_ending_environment())
         return isolated
 
     def assert_root_identity(self) -> None:

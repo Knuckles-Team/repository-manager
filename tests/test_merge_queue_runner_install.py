@@ -16,6 +16,7 @@ from repository_manager.merge_queue_runner_install import (
     MergeQueueRunnerInstallError,
     install,
 )
+from tests.portable_executables import write_python_program
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -26,15 +27,12 @@ def _workspace(tmp_path: Path) -> Path:
 
 def _systemctl(tmp_path: Path, *, status: int = 0) -> tuple[Path, Path]:
     marker = tmp_path / "daemon-reload"
-    executable = tmp_path / "systemctl"
-    executable.write_text(
-        "#!/usr/bin/env python3\n"
+    executable = write_python_program(
+        tmp_path / "systemctl",
         "import pathlib, sys\n"
         f"pathlib.Path({str(marker)!r}).write_text(' '.join(sys.argv[1:]))\n"
         f"raise SystemExit({status})\n",
-        encoding="utf-8",
     )
-    executable.chmod(0o755)
     return executable, marker
 
 

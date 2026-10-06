@@ -10,6 +10,7 @@ approval and temporary Git repository fixtures cover every rule".
 from __future__ import annotations
 
 import hashlib
+import shlex
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -59,7 +60,10 @@ class FakeGit:
     ):
         del env, timeout, raw_output
         proc = subprocess.run(
-            command, shell=True, cwd=path or self.path, capture_output=True, text=True
+            shlex.split(command),  # same parsing as Git.git_action
+            cwd=path or self.path,
+            capture_output=True,
+            text=True,
         )
         out = (proc.stdout + proc.stderr).strip()
         return SimpleNamespace(

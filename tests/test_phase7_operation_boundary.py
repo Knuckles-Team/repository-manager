@@ -35,6 +35,7 @@ from repository_manager.operation_boundary import (
     write_release_plan_receipt,
 )
 from repository_manager.repository_manager import Git, GitResult
+from tests.pinned_swap import attempt_swap
 
 
 def _run(argv: list[str], cwd: Path) -> None:
@@ -141,10 +142,104 @@ def test_git_subprocess_uses_an_inherited_descriptor_cwd(tmp_path, monkeypatch):
 
     assert result.status == "success"
     assert calls
-    cwd = str(calls[0]["cwd"])
+    _per_platform(
+        windows=lambda: _assert_windows_child_cwd(calls[0], repo),
+        posix=lambda: _assert_descriptor_child_cwd(calls[0]),
+    )
+
+
+def _per_platform(*, windows: Any, posix: Any) -> None:
+    """Run the check for this platform's pinning mechanism."""
+    (windows if os.name == "nt" else posix)()
+
+
+def _attack_outcome(happened: list[bool], *, prevented: Any, detected: Any) -> None:
+    """Assert prevention when the swap was refused, detection when it happened."""
+    (prevented if happened == [False] else detected)()
+
+
+def _assert_metadata_kept(result: Any, checkout: Path, source: Path) -> None:
+    """Prevented: the pinned metadata was never replaced or redirected."""
+    assert result.status == "success"
+    assert _config_value(checkout / ".git", "phase7.boundary") == "anchored"
+    assert not _config_value(source / ".git", "phase7.boundary")
+
+
+def _assert_metadata_swap_refused(result: Any, checkout: Path, source: Path) -> None:
+    assert result.status == "error"
+    assert result.error is not None
+    assert "symlink" in result.error.message
+    assert _config_value(checkout / ".git-original", "phase7.boundary") == "anchored"
+    assert not _config_value(source / ".git", "phase7.boundary")
+
+
+def _assert_clone_stayed_inside(target: Path, outside: Path) -> None:
+    """Prevented: the clone landed in the pinned parent, never outside."""
+    assert (target / "README.md").exists()
+    assert not any(outside.iterdir())
+
+
+def _assert_clone_redirect_refused(result: Any, outside: Path) -> None:
+    assert result.status == "error"
+    assert result.error is not None
+    assert "identity" in result.error.message or "symlink" in result.error.message
+    assert not (outside / "repo" / "README.md").exists()
+
+
+def _assert_parent_stayed_real(parent: Path, target: Path) -> None:
+    """Prevented: no alias was ever introduced; the parent stays real."""
+    assert not parent.is_symlink()
+    assert (target / "README.md").exists()
+
+
+def _assert_alias_refused(result: Any) -> None:
+    assert result.status == "error"
+    assert result.error is not None
+    assert "symlink" in result.error.message
+
+
+def _assert_root_stayed_real(workspace: Path, outside: Path) -> None:
+    """Prevented: the pinned root was never replaced or redirected."""
+    assert not workspace.is_symlink()
+    assert not any(outside.iterdir())
+
+
+def _assert_root_swap_refused(results: Any) -> None:
+    assert results and results[0].status == "error"
+    assert results[0].error is not None
+    assert "workspace_sync" in results[0].error.message
+
+
+def _assert_plan_refused(manager: Any, results: Any, *markers: str) -> None:
+    assert results
+    assert any(
+        result.error and any(marker in result.error.message for marker in markers)
+        for result in results
+    )
+    manager.git_action.assert_not_called()
+
+
+def _assert_pre_commit_refused(result: Any) -> None:
+    assert result.status == "error"
+    assert result.error is not None
+    assert "identity" in result.error.message or "pinned" in result.error.message
+
+
+def _assert_no_phase(phase: Any) -> None:
+    assert phase is None
+
+
+def _assert_windows_child_cwd(call: dict[str, Any], repo: Path) -> None:
+    """Windows children get the pinned spelling of the held chain, no fds."""
+    assert Path(str(call["cwd"])) == repo
+    assert "pass_fds" not in call
+
+
+def _assert_descriptor_child_cwd(call: dict[str, Any]) -> None:
+    cwd = str(call["cwd"])
     assert cwd.startswith("/proc/self/fd/")
     descriptor = int(cwd.rsplit("/", 1)[-1])
-    assert descriptor in tuple(calls[0]["pass_fds"])
+    assert descriptor in tuple(call["pass_fds"])
 
 
 def test_workspace_root_symlink_is_rejected_at_manager_boundary(tmp_path):
@@ -289,15 +384,42 @@ def test_release_receipt_flushes_parent_for_start_and_atomic_completion(
     assert len(flushes) == 2
 
 
+def _assert_windows_volume_identity(root: Any) -> None:
+    """Windows has no mount IDs: identity is the volume serial plus file ID,
+    and mount points are reparse points the boundary refuses outright."""
+    assert root.identity.mount_id is None
+    assert root.identity.device == os.fstat(root.fd).st_dev
+
+
+def _assert_kernel_mount_identity(root: Any) -> None:
+    kernel_mount_id = _kernel_mount_id(root.fd)
+    if kernel_mount_id is None:
+        pytest.skip("kernel descriptor mount IDs are unavailable")
+    assert root.identity.mount_id == kernel_mount_id
+
+
 def test_mount_identity_matches_the_kernel_descriptor_mount():
     with open_directory(Path(__file__).resolve().parent) as root:
-        kernel_mount_id = _kernel_mount_id(root.fd)
-        if kernel_mount_id is None:
-            pytest.skip("kernel descriptor mount IDs are unavailable")
-        assert root.identity.mount_id == kernel_mount_id
+        _per_platform(
+            windows=lambda: _assert_windows_volume_identity(root),
+            posix=lambda: _assert_kernel_mount_identity(root),
+        )
 
 
-def test_mount_identity_is_read_fresh_after_descriptor_reuse():
+def _assert_windows_fresh_identity(tmp_path: Path) -> None:
+    with open_directory(tmp_path) as root:
+        _assert_windows_volume_identity(root)
+        assert operation_boundary._mount_id_for_fd(root.fd) is None
+
+
+def test_mount_identity_is_read_fresh_after_descriptor_reuse(tmp_path):
+    _per_platform(
+        windows=lambda: _assert_windows_fresh_identity(tmp_path),
+        posix=_assert_kernel_mount_id_is_fresh,
+    )
+
+
+def _assert_kernel_mount_id_is_fresh() -> None:
     root_fd = os.open(os.sep, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     proc_fd = os.open("/proc", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -316,18 +438,25 @@ def test_mount_identity_is_read_fresh_after_descriptor_reuse():
 
 def test_mount_identity_rebind_is_rejected(tmp_path, monkeypatch):
     with open_directory(tmp_path) as root:
-        mount_id = root.identity.mount_id
-        if mount_id is None:
-            pytest.skip("mount IDs are unavailable on this platform")
-        assert mount_id is not None
-        changed_mount_id = mount_id + 1
-        monkeypatch.setattr(
-            operation_boundary,
-            "_mount_id_for_path",
-            lambda _path: changed_mount_id,
+        _per_platform(
+            windows=lambda: _assert_windows_volume_identity(root),
+            posix=lambda: _assert_mount_rebind_refused(root, monkeypatch),
         )
-        with pytest.raises(OperationBoundaryError, match="identity changed"):
-            root.assert_root_identity()
+
+
+def _assert_mount_rebind_refused(root: Any, monkeypatch: Any) -> None:
+    mount_id = root.identity.mount_id
+    if mount_id is None:
+        pytest.skip("mount IDs are unavailable on this platform")
+    assert mount_id is not None
+    changed_mount_id = mount_id + 1
+    monkeypatch.setattr(
+        operation_boundary,
+        "_mount_id_for_path",
+        lambda _path: changed_mount_id,
+    )
+    with pytest.raises(OperationBoundaryError, match="identity changed"):
+        root.assert_root_identity()
 
 
 def test_cleanup_refuses_nested_symlink_without_touching_external_file(tmp_path):
@@ -521,14 +650,18 @@ def test_git_action_keeps_git_metadata_on_the_pinned_checkout(tmp_path, monkeypa
     original = subprocess.Popen
     swapped = False
 
+    happened: list[bool] = []
+
+    def swap() -> None:
+        original_git = checkout / ".git"
+        original_git.rename(checkout / ".git-original")
+        original_git.symlink_to(source / ".git", target_is_directory=True)
+
     def swap_git_before_child(*args: Any, **kwargs: Any) -> Any:
         nonlocal swapped
         if not swapped:
             swapped = True
-            original_git = checkout / ".git"
-            saved = checkout / ".git-original"
-            original_git.rename(saved)
-            original_git.symlink_to(source / ".git", target_is_directory=True)
+            happened.append(attempt_swap(swap))
         return original(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", swap_git_before_child)
@@ -536,11 +669,11 @@ def test_git_action_keeps_git_metadata_on_the_pinned_checkout(tmp_path, monkeypa
         "git config phase7.boundary anchored", path=str(checkout)
     )
 
-    assert result.status == "error"
-    assert result.error is not None
-    assert "symlink" in result.error.message
-    assert _config_value(checkout / ".git-original", "phase7.boundary") == "anchored"
-    assert not _config_value(source / ".git", "phase7.boundary")
+    _attack_outcome(
+        happened,
+        prevented=lambda: _assert_metadata_kept(result, checkout, source),
+        detected=lambda: _assert_metadata_swap_refused(result, checkout, source),
+    )
 
 
 def test_pre_push_gate_uses_the_pinned_checkout_path(tmp_path, monkeypatch):
@@ -564,9 +697,18 @@ def test_pre_push_gate_uses_the_pinned_checkout_path(tmp_path, monkeypatch):
     )
     with open_directory(workspace) as root:
         with pin_existing(root, checkout) as pinned:
+            expected = pinned.proc_path
             assert manager._gate_before_push(str(checkout), pinned=pinned) is None
 
-    assert observed and observed[0].startswith("/proc/self/fd/")
+    assert observed == [expected]
+    _per_platform(
+        windows=lambda: _assert_windows_child_cwd({"cwd": expected}, checkout),
+        posix=lambda: _assert_descriptor_spelling(expected),
+    )
+
+
+def _assert_descriptor_spelling(spelling: str) -> None:
+    assert spelling.startswith("/proc/self/fd/")
 
 
 def test_clone_parent_swap_cannot_redirect_into_external_directory(
@@ -583,22 +725,27 @@ def test_clone_parent_swap_cannot_redirect_into_external_directory(
     original = subprocess.Popen
     swapped = False
 
+    happened: list[bool] = []
+
+    def swap() -> None:
+        parent.rename(workspace / "nested-original")
+        parent.symlink_to(outside, target_is_directory=True)
+
     def swap_before_child(*args: Any, **kwargs: Any) -> Any:
         nonlocal swapped
         if not swapped:
             swapped = True
-            saved = workspace / "nested-original"
-            parent.rename(saved)
-            parent.symlink_to(outside, target_is_directory=True)
+            happened.append(attempt_swap(swap))
         return original(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", swap_before_child)
     result = manager.clone_repository(str(source), str(target))
 
-    assert result.status == "error"
-    assert result.error is not None
-    assert "identity" in result.error.message or "symlink" in result.error.message
-    assert not (outside / "repo" / "README.md").exists()
+    _attack_outcome(
+        happened,
+        prevented=lambda: _assert_clone_stayed_inside(target, outside),
+        detected=lambda: _assert_clone_redirect_refused(result, outside),
+    )
 
 
 def test_clone_parent_swap_to_original_directory_is_still_refused(
@@ -615,21 +762,28 @@ def test_clone_parent_swap_to_original_directory_is_still_refused(
     original = subprocess.Popen
     swapped = False
 
+    happened: list[bool] = []
+
+    def swap() -> None:
+        saved = workspace / "nested-original"
+        parent.rename(saved)
+        parent.symlink_to(saved, target_is_directory=True)
+
     def swap_to_original(*args: Any, **kwargs: Any) -> Any:
         nonlocal swapped
         if not swapped:
             swapped = True
-            saved = workspace / "nested-original"
-            parent.rename(saved)
-            parent.symlink_to(saved, target_is_directory=True)
+            happened.append(attempt_swap(swap))
         return original(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", swap_to_original)
     result = manager.clone_repository(str(source), str(target))
 
-    assert result.status == "error"
-    assert result.error is not None
-    assert "symlink" in result.error.message
+    _attack_outcome(
+        happened,
+        prevented=lambda: _assert_parent_stayed_real(parent, target),
+        detected=lambda: _assert_alias_refused(result),
+    )
 
 
 def test_pull_target_swap_cannot_update_external_directory(tmp_path, monkeypatch):
@@ -699,18 +853,24 @@ def test_workspace_sync_empty_map_rejects_root_swap(tmp_path, monkeypatch):
     outside.mkdir()
     manager = Git(path=str(workspace))
 
-    def swap_root() -> list[tuple[str, str]]:
-        saved = tmp_path / "workspace-original"
-        workspace.rename(saved)
+    happened: list[bool] = []
+
+    def swap() -> None:
+        workspace.rename(tmp_path / "workspace-original")
         workspace.symlink_to(outside, target_is_directory=True)
+
+    def swap_root() -> list[tuple[str, str]]:
+        happened.append(attempt_swap(swap))
         return []
 
     monkeypatch.setattr(manager, "_validated_workspace_sync_targets", swap_root)
     results = manager._sync_workspace_repositories()
 
-    assert results and results[0].status == "error"
-    assert results[0].error is not None
-    assert "workspace_sync" in results[0].error.message
+    _attack_outcome(
+        happened,
+        prevented=lambda: _assert_root_stayed_real(workspace, outside),
+        detected=lambda: _assert_root_swap_refused(results),
+    )
 
 
 def test_phased_push_rejects_same_path_checkout_replacement(tmp_path, monkeypatch):
@@ -742,17 +902,29 @@ def test_phased_push_rejects_same_path_checkout_replacement(tmp_path, monkeypatc
     manager.git_action.assert_not_called()
 
 
+def _replace_directory(project: Path) -> None:
+    project.rename(project.with_name("repo-original"))
+    project.mkdir()
+
+
+def _assert_replacement_prevented(project: Path, before: os.stat_result) -> None:
+    """The pinned checkout was never renamed away or replaced."""
+    assert not project.with_name("repo-original").exists()
+    after = os.stat(project)
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+
+
 def test_phased_push_rejects_replacement_after_handle_binding(tmp_path, monkeypatch):
     """A plan cannot admit a checkout replaced after its handle is pinned."""
     manager = _manager_with_project(tmp_path)
     project = Path(next(iter(manager.project_map.values())))
+    before = os.stat(project)
     original_bind = manager._bind_release_plan_target
+    happened: list[bool] = []
 
     def bind_then_replace(*args: object, **kwargs: object) -> None:
         original_bind(*args, **kwargs)
-        saved = project.with_name("repo-original")
-        project.rename(saved)
-        project.mkdir()
+        happened.append(attempt_swap(lambda: _replace_directory(project)))
 
     monkeypatch.setattr(manager, "_bind_release_plan_target", bind_then_replace)
     results = manager.phased_push(
@@ -761,11 +933,11 @@ def test_phased_push_rejects_replacement_after_handle_binding(tmp_path, monkeypa
         auto_start=False,
     )
 
-    assert results
-    assert any(
-        result.error and "identity" in result.error.message for result in results
+    _attack_outcome(
+        happened,
+        prevented=lambda: _assert_replacement_prevented(project, before),
+        detected=lambda: _assert_plan_refused(manager, results, "identity"),
     )
-    manager.git_action.assert_not_called()
 
 
 def test_phased_push_rejects_origin_drift_before_mutation(tmp_path, monkeypatch):
@@ -1063,7 +1235,7 @@ def test_push_refuses_local_destination_rewrite_before_network(tmp_path, directi
 
     assert result.status == "error"
     assert result.error is not None
-    assert "URL rewrite" in (result.data or result.error.message)
+    assert "URL rewrite" in (result.data or result.error.message), result.data
     assert _ref_value(authorized, "refs/heads/main") is None
     assert _ref_value(attacker, "refs/heads/main") is None
 
@@ -1134,7 +1306,7 @@ def test_sealed_push_does_not_inherit_external_git_config(
 
     result = manager.push_project(str(source))
 
-    assert result.status == "success"
+    assert result.status == "success", result.data
     assert _ref_value(authorized, "refs/heads/main") == _ref_value(
         source / ".git", "HEAD"
     )
@@ -1158,7 +1330,7 @@ def test_source_config_popen_race_cannot_redirect_sealed_push(tmp_path, monkeypa
     monkeypatch.setattr(subprocess, "Popen", race_before_push)
     result = manager.push_project(str(source))
 
-    assert raced
+    assert raced, result.data
     assert result.status == "error"
     assert result.error is not None
     assert "config" in (result.data or result.error.message)
@@ -1212,12 +1384,12 @@ def test_linked_worktree_handle_rejects_common_config_content_append(tmp_path):
 def test_phased_bump_rejects_same_path_replacement_before_bump(tmp_path, monkeypatch):
     manager = _manager_with_project(tmp_path)
     project = Path(next(iter(manager.project_map.values())))
+    before = os.stat(project)
     original_bump = manager._bump_one_project
+    happened: list[bool] = []
 
     def replace_before_bump(**kwargs: object) -> str | None:
-        saved = project.with_name("repo-original")
-        project.rename(saved)
-        project.mkdir()
+        happened.append(attempt_swap(lambda: _replace_directory(project)))
         return original_bump(**kwargs)
 
     monkeypatch.setattr(manager, "_bump_one_project", replace_before_bump)
@@ -1228,48 +1400,53 @@ def test_phased_bump_rejects_same_path_replacement_before_bump(tmp_path, monkeyp
         force=True,
     )
 
-    assert results
-    assert any(
-        result.error
-        and (
-            "identity" in result.error.message or "release plan" in result.error.message
-        )
-        for result in results
+    _attack_outcome(
+        happened,
+        prevented=lambda: _assert_replacement_prevented(project, before),
+        detected=lambda: _assert_plan_refused(
+            manager, results, "identity", "release plan"
+        ),
     )
-    manager.git_action.assert_not_called()
 
 
 def test_pre_commit_rejects_checkout_swap_after_handle_pin(tmp_path, monkeypatch):
     manager = _manager_with_project(tmp_path)
     project = Path(next(iter(manager.project_map.values())))
     (project / ".pre-commit-config.yaml").write_text("repos: []\n")
+    before = os.stat(project)
     original_cleanup = manager.cleanup_artifacts
+    happened: list[bool] = []
 
     def swap_after_pin(target: str) -> None:
         original_cleanup(target)
-        saved = project.with_name("repo-original")
-        project.rename(saved)
-        project.mkdir()
+        happened.append(attempt_swap(lambda: _replace_directory(project)))
 
     monkeypatch.setattr(manager, "cleanup_artifacts", swap_after_pin)
     result = manager.pre_commit(path=str(project))
 
-    assert result.status == "error"
-    assert result.error is not None
-    assert "identity" in result.error.message or "pinned" in result.error.message
+    _attack_outcome(
+        happened,
+        prevented=lambda: _assert_replacement_prevented(project, before),
+        detected=lambda: _assert_pre_commit_refused(result),
+    )
 
 
 def test_auto_start_rejects_checkout_swap_after_pending_probe(tmp_path, monkeypatch):
     manager = _manager_with_project(tmp_path)
     project = Path(next(iter(manager.project_map.values())))
+    before = os.stat(project)
+    happened: list[bool] = []
 
     def swap_pending(_path: str, *, pinned: object) -> bool:
-        saved = project.with_name("repo-original")
-        project.rename(saved)
-        project.mkdir()
+        happened.append(attempt_swap(lambda: _replace_directory(project)))
         return True
 
     monkeypatch.setattr(manager, "_repo_has_pending_work", swap_pending)
     config = {"phases": [{"phase": 1, "name": "one", "projects": ["repo"]}]}
+    phase = manager._auto_start_phase(config, operation="bump")
 
-    assert manager._auto_start_phase(config, operation="bump") is None
+    _attack_outcome(
+        happened,
+        prevented=lambda: _assert_replacement_prevented(project, before),
+        detected=lambda: _assert_no_phase(phase),
+    )

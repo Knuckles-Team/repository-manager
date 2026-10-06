@@ -410,7 +410,7 @@ def _check_no_local_venv(tree: Path) -> Check:
 
     launcher = tree / "scripts" / "uv_workspace.py"
     marker = venv / ".uv-workspace-selection.json"
-    python = venv / "bin" / "python"
+    python = _venv_python(venv)
     expected = {"label": "", "selection": ["--all-extras"]}
     reason, unevaluable, loaded = _venv_ownership_state(
         venv, launcher, marker, python, expected
@@ -435,7 +435,24 @@ def _check_no_local_venv(tree: Path) -> Check:
 _MIN_PLAUSIBLE_PACKAGE_COUNT = 15
 
 
+def _venv_python(venv: Path) -> Path:
+    """The interpreter a virtual environment provides on this platform."""
+    if os.name == "nt":
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python"
+
+
 def _venv_site_packages(venv: Path) -> Path | None:
+    finder = _windows_site_packages if os.name == "nt" else _posix_site_packages
+    return finder(venv)
+
+
+def _windows_site_packages(venv: Path) -> Path | None:
+    site_packages = venv / "Lib" / "site-packages"
+    return site_packages if site_packages.is_dir() else None
+
+
+def _posix_site_packages(venv: Path) -> Path | None:
     lib = venv / "lib"
     if not lib.is_dir():
         return None
@@ -563,7 +580,7 @@ def _check_venv_package_count(tree: Path) -> Check:
     named "alpha", reported OK by the marker-only check).
     """
     venv = tree / ".venv"
-    python = venv / "bin" / "python"
+    python = _venv_python(venv)
     no_venv = _no_usable_venv_check(venv, python)
     if no_venv is not None:
         return no_venv

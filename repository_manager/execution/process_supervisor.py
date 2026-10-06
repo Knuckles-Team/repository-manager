@@ -121,7 +121,7 @@ class ProcessSupervisor:
 
         if process.poll() is None:
             try:
-                self._signal_group(process, signal.SIGTERM)
+                self._signal_group(process, kill=False)
                 term_sent = True
             except ProcessLookupError:
                 # The process exited between poll and signal.  Reaping below
@@ -135,7 +135,7 @@ class ProcessSupervisor:
         # process-group membership and output pipes.
         self._wait_until_exit(process, self.termination_grace_seconds)
         try:
-            self._signal_group(process, signal.SIGKILL)
+            self._signal_group(process, kill=True)
             kill_sent = True
         except ProcessLookupError:
             pass
@@ -159,21 +159,16 @@ class ProcessSupervisor:
             error=";".join(errors) if errors else None,
         )
 
-    def _signal_group(self, process: ProcessLike, sig: int) -> None:
+    def _signal_group(self, process: ProcessLike, *, kill: bool) -> None:
         if os.name == "posix":
             try:
-                os.killpg(os.getpgid(process.pid), sig)
+                os.killpg(os.getpgid(process.pid), _group_signal(kill))
             except ProcessLookupError:
                 # Injectable fake processes and a child that exits between
                 # lookup and signal still receive the bounded fallback.
-                if sig == signal.SIGTERM:
-                    process.terminate()
-                else:
-                    process.kill()
-        elif sig == signal.SIGTERM:
-            process.terminate()
+                _signal_process(process, kill=kill)
         else:
-            process.kill()
+            _signal_process(process, kill=kill)
 
     def _wait_until_exit(self, process: ProcessLike, timeout: float) -> bool:
         deadline = float(self._monotonic()) + timeout
@@ -181,6 +176,18 @@ class ProcessSupervisor:
             remaining = max(0.0, deadline - float(self._monotonic()))
             self._sleep(min(self.poll_interval, remaining))
         return process.poll() is not None
+
+
+def _group_signal(kill: bool) -> int:
+    """SIGKILL exists only on POSIX, so it is looked up only there."""
+    return int(signal.SIGKILL) if kill else int(signal.SIGTERM)
+
+
+def _signal_process(process: ProcessLike, *, kill: bool) -> None:
+    if kill:
+        process.kill()
+    else:
+        process.terminate()
 
 
 __all__ = ["ProcessLike", "ProcessSupervisor", "TerminationReport"]

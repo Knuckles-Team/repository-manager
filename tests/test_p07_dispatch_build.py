@@ -89,7 +89,7 @@ def _register_host(host_id: str = "R820") -> None:
         repository_roots={"epistemic-graph": "/srv/rm-build"},
         toolchains=["rust-1.95"],
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
 
 
 def test_dispatch_build_stages_and_runs_the_command_on_the_named_host(
@@ -111,7 +111,7 @@ def test_dispatch_build_stages_and_runs_the_command_on_the_named_host(
         process_slots=1,
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["succeeded"] is True
     assert result["host_id"] == "R820"
     assert result["staged"]["tree_sha"] == _SHARED_SHA
