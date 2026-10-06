@@ -60,9 +60,9 @@ jobs:
           uv run --frozen --no-sync python -m pytest tests -q --tb=short
           -m "not slow and not integration and not native" --timeout=120
 
-      # Dormant native probe: reuse the existing environment; install nothing.
+      # Native Windows qualification: reuse the existing environment; install nothing.
       # This runner-enforced timeout also bounds native calls that cannot return.
-      - name: Dormant Windows filesystem qualification (not activation)
+      - name: Windows filesystem native qualification
         id: native_probe
         if: ${{ !cancelled() && steps.bootstrap.outcome == 'success' }}
         timeout-minutes: 15
@@ -92,11 +92,11 @@ jobs:
           ' "$evidence_dir"
           ./.venv/Scripts/python.exe -c "import runpy; runpy.run_path('tests/test_windows_filesystem.py', run_name='__main__')" \
             --qualify-windows \
-            --expected-backend-sha256 161bef6be3aa6144ae47d778c2214476b9ed45173aaddf596d175deab072cb50 \
-            --expected-tests-sha256 f1ed4397dc538ebf4baa4e290aa372991581ec58497ce148894c3394f69055f7 \
+            --expected-backend-sha256 6f0384010af0b4fba0088fb4cff7a44f424b82870080de8f02bc3038360691d3 \
+            --expected-tests-sha256 a9141cc4b6628724c5a9e08d72dd9ca4f4f81e0580852f209904bf1d6f4b16f5 \
             --output "$evidence_dir/qualification.json" --repetitions 3
 
-      - name: Retain separate dormant Windows probe evidence
+      - name: Retain Windows native qualification evidence
         if: always()
         timeout-minutes: 5
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -119,5 +119,5 @@ jobs:
             echo "Bootstrap: $BOOTSTRAP_OUTCOME"
             echo "Import safety: $IMPORT_OUTCOME"
             echo "Unit tests: $TEST_OUTCOME"
-            echo "Dormant native probe (not activation): $NATIVE_PROBE_OUTCOME"
+            echo "Native qualification: $NATIVE_PROBE_OUTCOME"
           } >> "$GITHUB_STEP_SUMMARY"

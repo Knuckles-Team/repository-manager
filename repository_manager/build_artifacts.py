@@ -32,6 +32,7 @@ from typing import Any
 from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
 
 from repository_manager.governance.lanes import lane_scope
+from repository_manager.native_fs import FSYNC_FILE_FLAGS, fsync_path, open_no_follow
 
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
 MANIFEST_NAME = "manifest.json"
@@ -620,7 +621,7 @@ def _fsync_file(path: Path) -> None:
 
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = open_no_follow(path, FSYNC_FILE_FLAGS)
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
             raise ArtifactStoreError(f"cannot fsync non-regular artifact {path}")
@@ -643,14 +644,7 @@ def _fsync_directory(path: Path) -> None:
     """Flush a directory entry so an atomic rename survives a crash."""
 
     try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fsync_path(path, directory=True)
     except OSError as exc:
         raise ArtifactStoreError(f"could not fsync artifact directory {path}") from exc
 

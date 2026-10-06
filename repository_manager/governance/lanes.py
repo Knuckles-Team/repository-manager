@@ -75,6 +75,8 @@ from agent_utilities.core.config import setting
 # no new deps.
 from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
 
+from repository_manager.native_fs import open_no_follow
+
 ARBITRATION_DIRNAME = "agent-lanes"
 DEFAULT_LEASE_TTL_SECONDS = 1_800
 MAX_LEASE_TTL_SECONDS = 86_400
@@ -1316,18 +1318,13 @@ def _validate_existing_output(target: Path) -> None:
 
 
 def _output_open_flags(truncate: bool) -> int:
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise LaneArbitrationError(
-            "output_path cannot be opened safely: no-follow is unavailable"
-        )
-    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | no_follow
+    flags = os.O_WRONLY | os.O_CREAT
     return flags if truncate else flags | os.O_APPEND
 
 
 def _open_output_target(target: Path, truncate: bool) -> int:
     try:
-        return os.open(str(target), _output_open_flags(truncate), 0o600)
+        return open_no_follow(target, _output_open_flags(truncate), 0o600)
     except OSError as exc:
         raise LaneArbitrationError(
             f"cannot open required output_path {target} without following links: {exc}"
@@ -1986,14 +1983,7 @@ LeaseIdentity = tuple[int, int]
 
 
 def _lease_publication_flags() -> int:
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise LaneArbitrationError(
-            "lease publication cannot be made safely: no-follow is unavailable"
-        )
-    return (
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | no_follow
-    )
+    return os.O_WRONLY | os.O_CREAT | os.O_EXCL
 
 
 def _unlink_if_identity(path: Path, identity: LeaseIdentity) -> None:
@@ -2036,7 +2026,7 @@ def _write_exclusive_lease_file(path: Path, serialized: str) -> LeaseIdentity:
     fd: int | None = None
     identity: LeaseIdentity | None = None
     try:
-        fd = os.open(str(path), _lease_publication_flags(), 0o600)
+        fd = open_no_follow(path, _lease_publication_flags(), 0o600)
         info = os.fstat(fd)
         identity = (info.st_dev, info.st_ino)
         _write_lease_bytes(fd, serialized.encode("utf-8"))

@@ -88,6 +88,8 @@ from repository_manager.operation_boundary import (
     OperationBoundaryError,
     PinnedDirectory,
     cleanup_pinned_directory,
+    descriptor_path,
+    discard_empty_reservation,
     open_directory,
     path_exists,
     pin_creation,
@@ -98,6 +100,7 @@ from repository_manager.operation_boundary import (
     receipt_result_payload,
     snapshot_pinned_checkout,
     snapshot_workspace,
+    subprocess_descriptor_options,
     write_at,
     write_release_plan_receipt,
 )
@@ -3184,22 +3187,21 @@ class Git:
                     "descriptor-pinned path anchor is absent from the Git command"
                 )
             command_argv = [
-                f"/proc/self/fd/{destination_fd}" if token == lexical_path else token
+                descriptor_path(destination_fd) if token == lexical_path else token
                 for token in command_argv
             ]
         try:
             process = subprocess.Popen(
                 command_argv,
                 shell=False,
-                cwd=f"/proc/self/fd/{cwd_fd}",
+                cwd=descriptor_path(cwd_fd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 text=True,
                 env=current_env,
                 bufsize=1,
-                start_new_session=True,
-                pass_fds=inherited,
+                **subprocess_descriptor_options(inherited),
             )
         except OSError as exc:
             return self._repository_command_result(
@@ -3703,10 +3705,7 @@ class Git:
                         # absent.  A real clone always leaves at least .git.
                         if destination.target_fd is not None:
                             try:
-                                if destination.leaf is not None and not os.listdir(
-                                    destination.target_fd
-                                ):
-                                    os.rmdir(destination.leaf, dir_fd=destination.fd)
+                                discard_empty_reservation(destination)
                             except OSError:
                                 # A non-empty destination is the expected real
                                 # clone handoff; any inability to inspect it is
@@ -4376,7 +4375,7 @@ class Git:
         """Run Git only inside the private admin repository."""
         command = ["git"]
         if initialized:
-            command.append(f"--git-dir=/proc/self/fd/{admin.fd}")
+            command.append(f"--git-dir={descriptor_path(admin.fd)}")
         command.extend(argv)
         return self._run_pinned_repository_command(
             command,

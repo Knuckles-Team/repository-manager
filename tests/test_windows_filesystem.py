@@ -19,6 +19,7 @@ import struct
 import sys
 import tempfile
 import time
+import traceback
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,6 +29,9 @@ from typing import Any
 import pytest
 
 from repository_manager import windows_filesystem as w
+
+PROTECTIVE_DESCRIPTOR = 0x5D5D
+INHERITED_DACL = b"inherited-dacl"
 
 
 @dataclass
@@ -41,6 +45,7 @@ class Node:
     pending: bool = False
     disk: bool = True
     data: bytearray = field(default_factory=bytearray)
+    dacl: bytes | None = None
 
     @property
     def identity(self):
@@ -85,8 +90,16 @@ class Kernel:
             }
         )
         self.ntdll = SimpleNamespace(NtCreateFile=Function(self.open))
+        self.security = SimpleNamespace(
+            protective_descriptor=lambda: PROTECTIVE_DESCRIPTOR,
+            inherited_dacl=self.inherited_dacl,
+            set_dacl=self.set_dacl,
+        )
         self.api = w._NativeAPI(
-            kernel32=self.kernel32, ntdll=self.ntdll, last_error=lambda: self.error
+            kernel32=self.kernel32,
+            ntdll=self.ntdll,
+            last_error=lambda: self.error,
+            security=self.security,
         )
         self.fs = w.WindowsFilesystem(_api=self.api)
 
@@ -224,6 +237,16 @@ class Kernel:
             }
         return int("close" not in self.fail)
 
+    def inherited_dacl(self, parent):
+        self.event("inherit", parent)
+        return INHERITED_DACL
+
+    def set_dacl(self, handle, acl):
+        self.event("dacl", handle, acl)
+        if "dacl" in self.fail:
+            raise w.WindowsFilesystemError(5, "SetSecurityInfo failed (Win32 5)")
+        self.handles[handle].dacl = acl
+
     def admit_root(self):
         return self.fs.open_drive_root("C:\\", expected=self.root.identity)
 
@@ -305,8 +328,9 @@ def test_relative_open_and_native_flags(kernel):
         assert second[4:7] == (0, 2, 0x00200060)
         assert first[7] == second[7] == 0x1040  # no OBJ_INHERIT
         assert second[8] == len(second[2].encode("utf-16-le"))
-        assert second[3] == 0x40110080
-        assert second[9] is None  # inherited ACL, explicitly NOT owner-only
+        assert second[3] == 0x40150080  # includes WRITE_DAC for the restore
+        assert second[9] == PROTECTIVE_DESCRIPTOR  # born locked against links
+        assert first[9] is None
         assert not kernel.handles[first[1]].pending
 
 
@@ -582,11 +606,31 @@ def test_closed_capability_cannot_operate_on_reused_slot(kernel):
 
 def test_hardlink_appearing_before_write_check_refused(kernel):
     with kernel.admit_root() as root:
+        file = kernel.fs.create_exclusive(root, "file")
+        raw = file._raw
+        kernel.edges[(1, "file")].links = 2
+        with pytest.raises(w.WindowsFilesystemError, match="links"):
+            kernel.fs.write_all(file, b"bad")
+        # Closing re-verifies the link count: a link that bypassed prevention
+        # keeps the protective DACL (no restore) while the handle still closes.
+        with pytest.raises(w.WindowsFilesystemError, match="links"):
+            file.close()
+        assert raw not in kernel.handles
+    assert not any(row[0] in {"write", "dacl"} for row in kernel.trace)
+
+
+def test_created_file_restores_inherited_dacl_only_at_close(kernel):
+    with kernel.admit_root() as root:
         with kernel.fs.create_exclusive(root, "file") as file:
-            kernel.edges[(1, "file")].links = 2
-            with pytest.raises(w.WindowsFilesystemError, match="links"):
-                kernel.fs.write_all(file, b"bad")
-    assert not any(row[0] == "write" for row in kernel.trace)
+            raw = file._raw
+            kernel.fs.write_all(file, b"data")
+            assert kernel.edges[(1, "file")].dacl is None
+        inherit = [row for row in kernel.trace if row[0] == "inherit"]
+        dacl = [row for row in kernel.trace if row[0] == "dacl"]
+        assert inherit == [("inherit", root._raw)]
+        assert dacl == [("dacl", raw, INHERITED_DACL)]
+        assert kernel.trace.index(dacl[0]) < kernel.trace.index(("close", raw))
+    assert kernel.edges[(1, "file")].dacl == INHERITED_DACL
 
 
 def test_partial_write_then_error_remains_error_and_cleanup_uses_handle(kernel):
@@ -758,7 +802,18 @@ def _native_error(error):
     }
     if isinstance(error, w.WindowsFilesystemError):
         result["native_status"] = str(error)
+    result.update(_failure_location(error))
     return result
+
+
+def _failure_location(error):
+    """Assertion text (built from outcome records, never temp paths) and lines."""
+    frames = traceback.extract_tb(error.__traceback__)
+    lines = [frame.lineno for frame in frames if frame.filename == __file__]
+    details: dict[str, Any] = {"lines": lines[-6:]}
+    if isinstance(error, AssertionError):
+        details["assertion"] = str(error)[:2000]
+    return details
 
 
 class WindowsOracle:
