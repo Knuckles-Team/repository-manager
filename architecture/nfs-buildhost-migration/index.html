@@ -1028,7 +1028,7 @@ cause, confirmed against live server state
   already-logged NFS symptoms: a <code>git merge</code> that timed out mid-checkout
   leaving files written but HEAD unmoved, a <code>git commit</code> that took 10+
   minutes, <code>index.lock</code>/partial-index incidents, and epistemic-graph test
-  "deadlocks" root-caused across ~70 attempts to host I/O saturation
+  "deadlocks" root-caused across ~70 attempts to host <code>I/O</code> saturation
   (<code>fdatasync</code> stuck in <code>D</code> state) rather than an actual lock cycle.</li>
 <li>Remediation taken live against R820 (see the session report for the full
   transcript): confirmed via <code>fuser</code>/CWD scan that nothing was actively
@@ -1060,7 +1060,7 @@ for git specifically:</p>
   is invisible locally multiplies directly into wall-clock time for
   <code>status</code>/<code>commit</code>/<code>checkout</code>.</li>
 <li>NFSv4 delegations exist to let a client cache reads/writes without asking
-  the server every time — which is exactly why heavy git/build I/O
+  the server every time — which is exactly why heavy git/build <code>I/O</code>
   (thousands of small files touched per test run) generates the delegation
   volume this incident traced back to. That scaling failure mode is not a
   one-off misconfiguration; it is what this access pattern does to NFSv4
@@ -1092,7 +1092,7 @@ wires it end to end:</p>
    its <strong>authorized, non-shared, per-repository local worktree root</strong> —
    never a shared NFS path.</li>
 <li><code>dispatch_build</code> takes a <code>repository_id</code> + an <strong>immutable 40-hex commit
-   SHA</strong> (never a branch — a moving ref would make "what actually built"
+   SHA</strong> (never a branch — a moving ref will make "what actually built"
    ambiguous) and, over <code>TunnelSSHExecutor</code> (tunnel-manager's real SSH
    primitive, not a hand-rolled <code>ssh</code> invocation):</li>
 <li><code>git clone --no-checkout</code> the origin onto the host's authorized local
@@ -1130,13 +1130,13 @@ own docstring) but <strong>neither adapter exposed it</strong>: the CLI's
 tool's parameter set both predated the action and had never been updated —
 so it was reachable only via a direct <code>remote_worker_actions.dispatch(...)</code>
 Python import, not through the CLI or MCP surface a real build pipeline
-would actually call. This lane adds <code>dispatch_build</code> to the CLI's
+will actually call. This lane adds <code>dispatch_build</code> to the CLI's
 <code>choices=[...]</code> and adds the missing <code>command</code>/<code>workdir</code> parameters to
 <code>rm_remote_workers</code>, with CLI/MCP parity tests
 (<code>tests/test_rmdd20_remote_worker_surfaces.py</code>) proving both adapters now
 reach it identically, plus a real subprocess-level test proving <code>argparse</code>
 itself accepts the choice (the earlier register/recheck parity tests all
-bypass <code>argparse</code> by constructing the CLI's <code>Namespace</code> directly, which is
+bypass <code>argparse</code> by building the CLI's <code>Namespace</code> directly, which is
 exactly why this gap went unnoticed).</p>
 <h2 id="honest-assessment-of-rsync">Honest assessment of rsync<a class="headerlink" href="#honest-assessment-of-rsync" title="Permanent link">&para;</a></h2>
 <p>The user explicitly asked about rsync, so: it is a good, cheap tool for
@@ -1161,7 +1161,7 @@ it <em>is</em> a merge-aware distributed sync mechanism, not despite git being
 read-only build caches/wheel caches to a build host (a real candidate for a
 future addition here — <code>receive_artifact</code>'s own docstring already notes
 artifact retrieval isn't fully wired yet), or the existing use of NFS for
-genuinely shared, read-mostly data (see below) could in some cases be
+genuinely shared, read-mostly data (see below) can in some cases be
 replaced with a periodic rsync instead of a live mount, trading staleness
 for eliminating the mount's live-protocol failure modes entirely.</p>
 <h2 id="what-nfs-should-keep-being-used-for">What NFS should keep being used for<a class="headerlink" href="#what-nfs-should-keep-being-used-for" title="Permanent link">&para;</a></h2>
@@ -1179,7 +1179,7 @@ production-risk step this incident deliberately stopped short of and left
 for explicit approval. A follow-up should evaluate moving that pod to a
 baked image (matching this workspace's own documented lesson in
 <code>webui-image-build-does-not-deploy-code</code>) or onto this same
-<code>dispatch_build</code>-staged pattern, either of which would let R820's NFS
+<code>dispatch_build</code>-staged pattern, either of which will let R820's NFS
 mounts to RW710 be removed entirely.</p>
 <h2 id="migrating-a-buildci-host">Migrating a build/CI host<a class="headerlink" href="#migrating-a-buildci-host" title="Permanent link">&para;</a></h2>
 <ol>
@@ -1217,7 +1217,7 @@ mounts to RW710 be removed entirely.</p>
   <code>CapacityInventory</code>/<code>CapacityStore</code> is — a fresh process (a one-shot CLI
   invocation, or an MCP server restart) forgets registered profiles even
   though it remembers raw capacity. A long-lived MCP server process is
-  unaffected (register once, dispatch many times, same process); a
+  unaffected (register once, dispatch multiple times, same process); a
   register-then-dispatch split across two separate CLI invocations is not.
   This is a real, disclosed gap surfaced while validating this lane, not
   something this lane's scope covers fixing.</li>

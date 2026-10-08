@@ -1143,7 +1143,7 @@ file is written through a same-directory temporary file and <code>os.replace</co
 the original is copied to <code>&lt;config&gt;.bak</code>. Rollback checks that the current file
 still has the applied target digest; it refuses to overwrite operator edits.
 The parser and preset validator use the same schema functions as migration, so a
-preview cannot validate a shape that runtime loading would reject.</p>
+preview cannot validate a shape that runtime loading will reject.</p>
 <p>Presets remain templates, not an installation step. Validate the packaged
 presets with <code>validate_presets()</code> before a later cutover lane installs them in a
 target repository.</p>

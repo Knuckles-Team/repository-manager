@@ -1120,7 +1120,7 @@
 
 <h1 id="usage-api-cli-mcp">Usage — API / CLI / MCP<a class="headerlink" href="#usage-api-cli-mcp" title="Permanent link">&para;</a></h1>
 <p><code>repository-manager</code> exposes the same capability three ways: as <strong>MCP tools</strong> an
-agent calls, as a <strong>Python API</strong> (<code>Git</code>) you import, and as a <strong>command-line
+agent calls, as a <strong>Python API</strong> (<code>Git</code>) the operator import, and as a <strong>command-line
 interface</strong>.</p>
 <h2 id="as-an-mcp-server">As an MCP server<a class="headerlink" href="#as-an-mcp-server" title="Permanent link">&para;</a></h2>
 <p>Once <a href="../deployment/">deployed</a>, the server registers consolidated, action-routed tool
@@ -1224,7 +1224,7 @@ that aborts on the first failure:</p>
 <p>The phased mechanics are documented in detail in
 <a href="../phased_maintenance/">Phased Maintenance</a> and <a href="../phased_push/">Phased Push</a>.</p>
 <h3 id="lane-lifecycle-conceptrm-lane-doctor">Lane lifecycle (<code>CONCEPT:RM-LANE-DOCTOR</code>)<a class="headerlink" href="#lane-lifecycle-conceptrm-lane-doctor" title="Permanent link">&para;</a></h3>
-<p>When many agents and humans develop the same repositories at once, each unit of
+<p>When multiple agents and humans develop the same repositories at once, each unit of
 work runs as an isolated <strong>lane</strong>. The <code>--lane</code> verbs make that lifecycle
 executable rather than a convention:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Open a lane: a worktree PLUS a partitioned cargo target dir, pytest basetemp,</span>

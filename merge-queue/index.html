@@ -1336,10 +1336,10 @@ repository's own <code>.mergequeue.yaml</code>.</p>
 </blockquote>
 <h2 id="why-it-moved">Why it moved<a class="headerlink" href="#why-it-moved" title="Permanent link">&para;</a></h2>
 <p><code>agent_utilities/governance/merge_queue.py</code> is mature and battle-tested, but it
-could serve exactly one repository: its gates were pytest/ruff/contract-script
+can serve exactly one repository: its gates were pytest/ruff/contract-script
 specific by construction. The proof that this was mis-homed is empirical —
 <strong>epistemic-graph has no merge queue at all</strong>, so its lane had to hand-apply the
-discipline from memory: verify the <em>merged tree</em> with <code>cargo check
+discipline from memory: check the <em>merged tree</em> with <code>cargo check
 --all-features</code>, fast-forward only, never merge in the canonical checkout.</p>
 <p>repository-manager already owned the rest of the machinery:
 <code>WorktreeManager</code> (over a backend-agnostic <code>GitLike</code> Protocol), <code>canonical_guard</code>
@@ -1408,18 +1408,18 @@ it installs a reviewed declaration through this queue instead of bypassing it.</
 <tr>
 <td>4</td>
 <td><strong>Guarded prune</strong></td>
-<td>Merge-base re-checked <em>at delete time</em>, a <code>refs/lane-backup/&lt;branch&gt;</code> anchor written first, <code>git branch -d</code> <strong>never</strong> <code>-D</code>, and any worktree holding uncommitted work refused.</td>
+<td>Merge-base re-checked <em>at remove time</em>, a <code>refs/lane-backup/&lt;branch&gt;</code> anchor written first, <code>git branch -d</code> <strong>never</strong> <code>-D</code>, and any worktree holding uncommitted work refused.</td>
 </tr>
 <tr>
 <td>5</td>
 <td><strong>Honest degradation</strong></td>
-<td>Every refusal names its reason. No path reports success it did not verify — enforced by the landing post-condition (D-RMD-1, below), not just intended.</td>
+<td>Every refusal names its reason. No path reports success it did not check — enforced by the landing post-condition (D-RMD-1, below), not just intended.</td>
 </tr>
 </tbody>
 </table>
 <h2 id="first-config-bootstrap">First-config bootstrap<a class="headerlink" href="#first-config-bootstrap" title="Permanent link">&para;</a></h2>
 <p>A repository cannot use its normal queue until its first <code>.mergequeue.yaml</code>
-lands, but hand-merging that file would bypass the mechanism it establishes.
+lands, but hand-merging that file will bypass the mechanism it establishes.
 While holding the normal <code>reconciliation-merge</code> lease, the runner therefore may
 select exactly one queued candidate whose base-to-recorded-tip tree delta is
 exactly <code>A .mergequeue.yaml</code>. Ordinary payload candidates may already be waiting;
@@ -1431,7 +1431,7 @@ match both the candidate record and any requested base. A config change mixed
 with any other path, multiple config-only candidates, an absent candidate, a
 moved tip, an unclean worktree, or malformed configuration refuses the whole
 bootstrap without advancing a ref or recording a landing.</p>
-<p>Validation does not execute a candidate-selected helper to decide whether the
+<p>Validation does not ran a candidate-selected helper to decide whether the
 candidate is trusted. It reads YAML with <code>git show</code>, validates the typed argv
 schema, then enters the existing path: materialize the merged candidate, run its
 declared fixed argv, independently materialize the base for differential
@@ -1478,10 +1478,10 @@ for the complete gate/resource/path/artifact contract and guarded atomic migrati
   path is substituted out before diffing (the merged run and the base run happen
   in two different throwaway worktrees, so every absolute path differs);
   <code>keep_lines</code> is what makes this usable for a chatty tool — <code>cargo</code>'s
-  <code>Compiling</code>/<code>Finished in 3.4s</code> lines differ on every run and would otherwise
+  <code>Compiling</code>/<code>Finished in 3.4s</code> lines differ on every run and will otherwise
   read as new violations on every candidate.</li>
 <li><strong><code>exit</code></strong> — <strong>script granularity</strong>, for a tool that prints one static message
-  (or nothing) regardless of <em>why</em> it failed. Reported as exactly that much
+  (or nothing) in either case of <em>why</em> it failed. Reported as exactly that much
   precision, never dressed up as more.</li>
 </ul>
 <p>An aggregate <code>lines</code> gate may opt into the three <code>timeout_recheck_*</code> fields when
@@ -1500,7 +1500,7 @@ environment <strong>disables the cache</strong> rather than keying it on a ficti
 baseline computed against a toolchain that no longer exists is worse than a slow
 one (D-MQD-1).</p>
 <h2 id="pre-commit-safety-d-orc-37">Pre-commit safety (D-ORC-37)<a class="headerlink" href="#pre-commit-safety-d-orc-37" title="Permanent link">&para;</a></h2>
-<p><code>pre_commit/staged_files_only.py</code> writes your <strong>unstaged</strong> changes to a patch
+<p><code>pre_commit/staged_files_only.py</code> writes the operator's <strong>unstaged</strong> changes to a patch
 file, <code>git checkout</code>s them away so hooks see only staged content, then restores
 them in a <code>finally:</code>. <code>patch_dir</code> <strong>is</strong> the pre-commit store directory
 (<code>commands/run.py</code> → <code>staged_files_only(store.directory)</code>), which defaults to a
@@ -1522,7 +1522,7 @@ produced <code>OperationalError: database is locked</code> under concurrent lane
 <li><strong>Treat a crashed pre-commit as a data-loss incident, not a failed check.</strong>
    <code>lanes.orphaned_precommit_patches()</code> classifies each patch file as
    <code>restored</code> / <code>ORPHANED</code> / <code>in-progress</code> / <code>unknown</code> — a patch file alone is
-   <em>not</em> proof of a crash, because pre-commit never deletes one even on success —
+   <em>not</em> proof of a crash, because pre-commit never removes one even on success —
    and <code>lane env</code> / <code>lane status</code> surface any <code>ORPHANED</code> one loudly <strong>with its
    path</strong>, so the work can be replayed with <code>git apply &lt;path&gt;</code>.</li>
 </ol>
@@ -1537,7 +1537,7 @@ goes: a canonical checkout parked on another branch (a bisect, a merge in
 progress, an operator poking around), a base that is a release branch or a fork,
 or any repo whose checkout convention differs from au's.</p>
 <p>The failure mode was the worst kind — <strong>silent and positive</strong>. The queue reported
-<code>landed</code>, the guarded prune then deleted the branch <em>as landed</em>, and the work sat
+<code>landed</code>, the guarded prune then removed the branch <em>as landed</em>, and the work sat
 on a ref nobody looks at. A rejection is loud and recoverable; this manufactured
 confidence and then destroyed the evidence. Same family as a gate that reports
 green while enforcing nothing.</p>
@@ -1550,13 +1550,13 @@ green while enforcing nothing.</p>
    working tree move atomically together) or by a compare-and-swap
    <code>git update-ref &lt;ref&gt; &lt;new&gt; &lt;expected-old&gt;</code>. Fast-forward-only is enforced by
    asking <code>merge-base --is-ancestor</code> of the <strong>base ref</strong>, not of <code>HEAD</code>, because
-   <code>update-ref</code> would otherwise happily rewind history. A base checked out in
-   <em>another</em> worktree is refused outright — <code>update-ref</code> would leave that tree
+   <code>update-ref</code> will otherwise happily rewind history. A base checked out in
+   <em>another</em> worktree is refused outright — <code>update-ref</code> will leave that tree
    inconsistent with its own <code>HEAD</code>, which git forbids for <code>checkout</code> but not
    for us.</li>
 <li>★ <strong>Assert the post-condition.</strong> After the write the base ref is re-read and
    must equal the computed commit, <em>before</em> anything is reported <code>landed</code> and
-   before the guarded prune deletes a branch on the strength of it. This is what
+   before the guarded prune removes a branch on the strength of it. This is what
    makes the fix durable rather than merely correct today: it catches the wrong
    write target <strong>even with the bug still in place</strong>.</li>
 </ol>
@@ -1651,7 +1651,7 @@ strictly additive and reversible, and each step is independently valuable:</p>
 </tr>
 <tr>
 <td>6</td>
-<td>Retire the au implementation once the shim has landed real batches, per <em>No Legacy</em> (migrate-and-delete, no deprecation window).</td>
+<td>Retire the au implementation once the shim has landed real batches, per <em>No Legacy</em> (migrate-and-remove, no deprecation window).</td>
 <td>—</td>
 </tr>
 </tbody>
@@ -1666,14 +1666,14 @@ Running</code></strong>, <code>/health</code> 200, all four <code>rm_*</code> to
 <code>rm__worktree</code> through graph-os returning 355 worktrees / 44 linked. Landed by
 lane <code>rm-deploy-0802</code>; the queue now has a real deployment to run in.</p>
 <p>Four things about that deployment are <strong>load-bearing</strong> — none is cosmetic, and
-three of them were gaps a mount alone would not have closed:</p>
+three of them were gaps a mount alone will not have closed:</p>
 <ol>
 <li><strong>The workspace is mounted at the <em>identical absolute path</em>
    (<code>/home/apps/workspace</code>), read-write.</strong> Absolute paths are not a
    convenience here: git worktree metadata is absolute-path-based, so mounting
-   the tree anywhere else would leave ~55 linked worktrees unresolvable from
+   the tree anywhere else will leave ~55 linked worktrees unresolvable from
    inside the pod. Read-write because the queue moves refs, writes each repo's
-   arbitration dir, and removes landed worktrees — a read-only mount would let
+   arbitration dir, and removes landed worktrees — a read-only mount will let
    <code>status</code>/<code>config</code> work and fail <code>run</code> confusingly partway through.
    It is also what makes <code>prune_landed()</code> correct across the host/pod boundary:
    it prunes by the absolute worktree path the candidate <strong>recorded at enqueue
@@ -1681,7 +1681,7 @@ three of them were gaps a mount alone would not have closed:</p>
    matches.</li>
 <li><strong><code>REPOSITORY_MANAGER_WORKTREE_ROOT</code> must be set.</strong> It was unset, which is a
    silent trap: <code>worktree.py</code> defaults it under <code>XDG_STATE_HOME</code>, so worktrees
-   created by the pod would have gone to a <strong>container-local</strong> path — invisible
+   created by the pod will have gone to a <strong>container-local</strong> path — invisible
    to every host lane and destroyed on restart. The mount alone was <em>not</em>
    enough.</li>
 <li><strong>The pod runs as <code>1000:1000</code></strong> to match repo ownership. It previously ran as

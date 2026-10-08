@@ -984,7 +984,7 @@ inferred from package metadata. Existing <code>maintenance.phases</code> declara
 available through <code>phase_manifest_from_mapping</code> as an immutable compatibility
 view; their historical bare references are retained for later shadow comparison
 and are never used as canonical graph keys.</p>
-<p>Checkpoint 1 intentionally does not rewrite floors, execute validation/build/
+<p>Checkpoint 1 intentionally does not rewrite floors, ran validation/build/
 landing/push stages, create WorkItems, edit <code>workspace.yml</code>, or wire MCP/CLI
 surfaces. Those effects belong to later RMDD-18 checkpoints and their owning
 integration lanes.</p>
@@ -1001,7 +1001,7 @@ projects remain parallel.</p>
 <p>Unknown roots, duplicate or contradictory policy IDs, malformed graph edges, and
 cycles fail closed before a closure is returned. Policy and closure collections,
 references, explanations, and digests are bounded and immutable. The closure
-freezes the complete known-project cross-project edge evidence and verifies that
+freezes the complete known-project cross-project edge evidence and checks that
 selected membership, directional reasons, and witnesses agree with it; a digest
 alone is not treated as authenticity. The closure digest and explanations are
 independent of input project/edge iteration order.</p>
@@ -1017,12 +1017,12 @@ claim equivalence. Legacy phase reference order is preserved for comparison,
 while duplicate references are refused by the bounded manifest reader. Trailing
 derived/manual phases are reported individually. Membership diagnostics carry a
 bounded count, full-sequence digest, and prefix; diagnostic accumulation has a
-small deterministic overflow summary. No comparator path executes code, invokes a
+small deterministic overflow summary. No comparator path runs code, invokes a
 subprocess or network, or mutates a manifest.</p>
-<p>Checkpoint 2 still does not rewrite floors, plan versions, execute stages, create
+<p>Checkpoint 2 still does not rewrite floors, plan versions, ran stages, create
 WorkItems, restart/resume, edit workspace manifests, or wire MCP/CLI surfaces.</p>
 <h2 id="version-and-floor-previews-checkpoint-3">Version and floor previews (checkpoint 3)<a class="headerlink" href="#version-and-floor-previews-checkpoint-3" title="Permanent link">&para;</a></h2>
-<p><code>repository_manager.development.workspace_versions</code> consumes only the verified
+<p><code>repository_manager.development.workspace_versions</code> consumes only the checked
 <code>DependencyGraph</code> and <code>SelectedChangeClosure</code>, plus immutable site descriptors
 from a declarative metadata reader. A site names its relative metadata file,
 selector, representation (<code>python</code>, <code>rust</code>, or <code>node</code>), exact old literal, and
@@ -1062,7 +1062,7 @@ workspace file):</p>
 <h2 id="frozen-release-plan-and-stage-preview-checkpoint-4">Frozen release plan and stage preview (checkpoint 4)<a class="headerlink" href="#frozen-release-plan-and-stage-preview-checkpoint-4" title="Permanent link">&para;</a></h2>
 <p><code>repository_manager.development.workspace_release_plan</code> is the pure C-11 freeze
 boundary for the later release/mutation lanes. <code>freeze_release_plan</code> consumes
-only the verified <code>DependencyGraph</code>, <code>SelectedChangeClosure</code>, and checkpoint-3
+only the checked <code>DependencyGraph</code>, <code>SelectedChangeClosure</code>, and checkpoint-3
 <code>VersionPlan</code>, plus explicit bounded base/source/generation and profile inputs.
 It copies canonical repository/package identities, selected dependency-first
 groups, every selected project's immutable tree SHA, the version/floor preview
@@ -1082,9 +1082,9 @@ stage. The optional push stages are a separate consent-gated extension and are
 created only with a <code>PushConsentReference</code> containing both an opaque reference
 and immutable digest. A boolean flag alone can never create a push stage.</p>
 <p><code>FrozenReleasePlan.validate()</code> recomputes nested evidence and the exact plan
-preimage, while <code>validate_against(graph, selection)</code> additionally revalidates
+preimage, while <code>validate_against(graph, selection)</code> also revalidates
 the current graph, closure, and checkpoint-3 previews. These paths are intended
-to reject dataclass/Pydantic copy/construct and <code>object.__new__</code> forgeries,
+to reject dataclass/Pydantic copy/built and <code>object.__new__</code> forgeries,
 cleared or stale digests, changed source/tree/base/generation/profile/preview
 fields, reordered dependencies, unknown stage dependencies, cycles, and graph
 or selection drift. Inputs are exact builtin bounded containers and all refusal

@@ -916,7 +916,7 @@
 <h1 id="documentation-readiness-fleet-action">Documentation readiness fleet action<a class="headerlink" href="#documentation-readiness-fleet-action" title="Permanent link">&para;</a></h1>
 <p><code>repository_manager.docs_readiness.dispatch</code> is the shared action core for the
 RM CLI and MCP <code>rm_docs_readiness</code> tool. It consumes repository identities from
-the supplied canonical <code>workspace.yml</code>; it never discovers arbitrary sibling
+the provided canonical <code>workspace.yml</code>; it never discovers arbitrary sibling
 directories or accepts a basename/path as a repository selector.</p>
 <p>The action has three verbs:</p>
 <ul>
@@ -924,7 +924,7 @@ directories or accepts a basename/path as a repository selector.</p>
   builder with <code>check=True</code> and never writes a target repository.</li>
 <li><code>apply</code> requires one exact manifest-relative repository identity and an
   explicit confirmation flag. The target must be clean. The builder is called
-  once to publish and then verified through a bounded staging output directory
+  once to publish and then checked through a bounded staging output directory
   using the target's exact source inputs; RM never copies the repository tree.
   RM snapshots only the bounded generator-owned output namespace before apply
   and restores it if publication or the post-apply verification fails.</li>
@@ -949,7 +949,7 @@ configuration or make every repository rollout-ready.</p>
 <code>agent-packages/</code>, including
 both shared skill repositories. Only <code>agent-packages/agents/tests</code> is
 non-publishable when that identity is present. Expected identities are derived
-from the supplied canonical manifest before checkout resolution. RM compares
+from the provided canonical manifest before checkout resolution. RM compares
 the selected fleet against that set and rejects missing, extra, substituted,
 or duplicate identities before invoking the builder. A missing fleet checkout
 blocks even an exact-repository action; it does not

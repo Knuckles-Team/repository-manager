@@ -1085,7 +1085,7 @@
 
 
 <h1 id="phased-maintenance-workflows">Phased Maintenance Workflows<a class="headerlink" href="#phased-maintenance-workflows" title="Permanent link">&para;</a></h1>
-<p>The <code>repository-manager</code> includes powerful workflow automation features to execute phased, sequential updates across the workspace. This is primarily controlled via the <code>workspace.yml</code> configuration and the command-line interface.</p>
+<p>The <code>repository-manager</code> includes powerful workflow automation features to ran phased, sequential updates across the workspace. This is primarily controlled via the <code>workspace.yml</code> configuration and the command-line interface.</p>
 <h2 id="phased-maintenance-phases">Phased Maintenance Phases<a class="headerlink" href="#phased-maintenance-phases" title="Permanent link">&para;</a></h2>
 <p>The agent ecosystem enforces dependency order updates through five sequential maintenance phases:</p>
 <ol>
@@ -1146,13 +1146,13 @@ since those deliberately bypass change detection.</p>
 <h2 id="cli-usage">CLI Usage<a class="headerlink" href="#cli-usage" title="Permanent link">&para;</a></h2>
 <p>The following flags control phased update and push sequences:</p>
 <ul>
-<li><code>--validate</code>: Executes a full pre-release validation. If this fails, the next steps are aborted.</li>
-<li><code>--bump [patch/minor/major]</code>: Executes a version bump.</li>
-<li><code>--maintain</code>: Executes phased dependency updates across the workspace. Modifies <code>pyproject.toml</code> automatically based on dependency tree.</li>
-<li><code>--push</code>: Executes a parallelized Git Push sequence per-phase. Phase transitions are gate-driven (CONCEPT:RM-DEP-READY) — <code>wait_minutes</code> is the retry ceiling for downstream repos' own pre-push gates, not a sleep; see <code>docs/phased_push.md</code>.</li>
+<li><code>--validate</code>: Runs a full pre-release validation. If this fails, the next steps are aborted.</li>
+<li><code>--bump [patch/minor/major]</code>: Runs a version bump.</li>
+<li><code>--maintain</code>: Runs phased dependency updates across the workspace. Modifies <code>pyproject.toml</code> automatically based on dependency tree.</li>
+<li><code>--push</code>: Runs a parallelized Git Push sequence per-phase. Phase transitions are gate-driven (CONCEPT:RM-DEP-READY) — <code>wait_minutes</code> is the retry ceiling for downstream repos' own pre-push gates, not a sleep; see <code>docs/phased_push.md</code>.</li>
 <li><code>--phase [int]</code>: Starting phase (1-5). Acts as a floor under change-aware start.</li>
 <li><code>--no-auto-start</code>: Opt out of change-aware start; begin at <code>--phase</code> (default 1) instead of the lowest changed phase.</li>
-<li><code>--single-phase</code>: Execute only the specified starting phase and halt.</li>
+<li><code>--single-phase</code>: Ran only the specified starting phase and stop.</li>
 <li><code>--project [name[,name...]]</code>: Narrow bumps, pre-commit candidates, and pushes to one or more comma-separated project names (disables change-aware start). In a bulk phase this is an intersection with the eligible PyPI-agent set, never a way to add a service, image, plan, pipeline, or other ineligible repository.</li>
 </ul>
 <h2 id="example-the-sequential-execution-pipeline">Example: The Sequential Execution Pipeline<a class="headerlink" href="#example-the-sequential-execution-pipeline" title="Permanent link">&para;</a></h2>

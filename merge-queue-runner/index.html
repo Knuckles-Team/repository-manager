@@ -937,7 +937,7 @@ repository-manager:</p>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span>--workspace-root<span class="w"> </span>/home/apps/workspace
 </span></code></pre></div>
 <p>Installation writes the executable and all four units through same-directory
-temporary files, verifies every installed payload against its rendered source
+temporary files, checks every installed payload against its rendered source
 SHA-256, then runs <code>systemctl --user daemon-reload</code>. If a write or reload
 fails, the destinations are restored to their pre-install contents. The
 installer does not enable or start either timer; inspect the hash report first,
@@ -990,8 +990,8 @@ other non-zero child statuses are reported as failures. The user service
 invokes the direct Python interpreter captured at install time and the
 versioned runner source; it does not invoke <code>uv</code>, <code>uvx</code>, or a Snap wrapper. The unit uses
 <code>KillMode=control-group</code>, bounded CPU/memory/task accounting, and an explicit
-stop grace period. The runner also verifies every observed child/descendant
-remains in the service cgroup and terminates the whole process group plus the
+stop grace period. The runner also checks every observed child/descendant
+remains in the service cgroup and stop the whole process group plus the
 observed process tree if one escapes. A cgroup that cannot be inspected is a
 fail-closed error, so <code>/snap/bin/uv run ...</code> cannot silently escape the unit's
 resource controls.</p>
@@ -1007,9 +1007,9 @@ left unattempted. The installed unit sets <code>TimeoutStartSec</code> to the gl
 deadline plus a 60-second stop margin. This is a supervisor safety ceiling,
 not a way to disable the per-gate deadlines declared in each <code>.mergequeue.yaml</code>.</p>
 <p>The phased-push unit is intentionally separate: it invokes the versioned
-runner, which launches <code>&lt;installed-python&gt; -m repository_manager --workspace
+runner, which starts <code>&lt;installed-python&gt; -m repository_manager --workspace
 &lt;root&gt; --file &lt;validated-generated-manifest&gt; --threads 1 --push</code> directly and
-verifies the entire descendant process tree. The generated manifest is derived
+checks the entire descendant process tree. The generated manifest is derived
 from canonical <code>workspace.yml</code> and removes only the declared reference-input
 components (including <code>open-source-libraries</code>); missing canonical roots still
 fail before the child starts. It has a default 18,000-second unit

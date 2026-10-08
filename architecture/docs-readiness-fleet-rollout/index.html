@@ -1006,7 +1006,7 @@ standalone <code>pages.yml</code>. The current source findings are:</p>
 <li>Missing <code>site_url</code> declarations (4): <code>agent-utilities</code>, <code>agents/mealie-mcp</code>,
   <code>agents/microsoft-agent</code>, and <code>agents/vector-mcp</code>.</li>
 </ul>
-<p><code>audit_source_findings()</code> re-reads those facts from the supplied workspace and
+<p><code>audit_source_findings()</code> re-reads those facts from the provided workspace and
 refuses source drift. It never writes the missing workflows or URLs; the
 actual generated fleet rollout remains a separate, operator-approved step.</p>
 <h2 id="deterministic-waves">Deterministic waves<a class="headerlink" href="#deterministic-waves" title="Permanent link">&para;</a></h2>
@@ -1055,11 +1055,11 @@ explicit wave field. The current plan is:</p>
 </tbody>
 </table>
 <p>The planner refuses duplicate/unknown selections, empty waves, count drift,
-or a partial default fleet. A manually supplied one-project selection is still
+or a partial default fleet. A manually provided one-project selection is still
 checked against the same manifest and cannot escape its identity boundary.</p>
 <h2 id="safety-and-evidence-contract">Safety and evidence contract<a class="headerlink" href="#safety-and-evidence-contract" title="Permanent link">&para;</a></h2>
 <p>Before preview/apply/rollback, Repository Manager resolves the identity beneath
-the supplied workspace root, rejects symlink/path escapes, and records only:</p>
+the provided workspace root, rejects symlink/path escapes, and records only:</p>
 <ul>
 <li>exact <code>HEAD</code> revision;</li>
 <li>current branch name and clean/dirty boolean;</li>
@@ -1091,7 +1091,7 @@ before any apply adapter call. An apply record progresses:</p>
 digest, generator revision, and TCK revision. Exact retries return
 <code>replayed: true</code>; a prepared or rollback-failed transaction refuses rather than
 guessing; a different active operation for the same identity is a conflict.
-Apply verifies the canonical output digest after publication and invokes the
+Apply checks the canonical output digest after publication and invokes the
 adapter's bounded rollback seam on any publication/verification failure.
 Rollback requires explicit confirmation and the original source revision/digest
 to remain unchanged. It only delegates restoration of the generator-owned
@@ -1101,7 +1101,7 @@ branches, worktrees, commits, pushes, or edits a target repository.</p>
 <h2 id="root-only-execution-gates">Root-only execution gates<a class="headerlink" href="#root-only-execution-gates" title="Permanent link">&para;</a></h2>
 <p>Workers may run <code>git diff --check</code> only. After NE-137 and NE-144 are reviewed and
 landed, root should run the focused rollout suite, render a real exact-75
-preview with full dependency revisions, verify source findings, and inspect
+preview with full dependency revisions, check source findings, and inspect
 the journal/revision/digest evidence. Only root may authorize per-wave adapter
 execution, generated changes, commits, pushes, Pages TCKs, live deployment, or
 rollback.</p>
