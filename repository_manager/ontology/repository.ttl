@@ -144,5 +144,4 @@
     rdfs:comment """Repository-manager source-control model — git repositories, their linked
     worktrees and the local workspace projects the manager installs, validates, bumps and
     pushes, with their worktree/project relationships — federated into the agent-utilities
-    knowledge-graph hub.""" ;
-    owl:imports <http://knuckles.team/kg> .
+    knowledge-graph hub.""" .
