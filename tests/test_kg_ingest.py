@@ -97,7 +97,7 @@ def _capture_repository_mapping(monkeypatch):
         client.txn.committed = True
         return {"nodes": len(entities), "edges": len(relationships or [])}
 
-    monkeypatch.setattr("repository_manager.kg_ingest._native_ingest_entities", capture)
+    monkeypatch.setattr(_native_ingest, "ingest_entities", capture)
 
 
 def test_ingest_entities_writes_nodes_and_edges():

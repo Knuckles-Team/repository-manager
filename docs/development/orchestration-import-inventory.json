@@ -215,29 +215,29 @@
     },
     {
       "path": "repository_manager/kg_ingest.py",
-      "line": 15,
-      "column": 4,
+      "line": 54,
+      "column": 8,
       "kind": "static",
       "target": "agent_utilities.knowledge_graph.memory.native_ingest",
       "symbol": "ingest_documents",
       "expression": "ingest_documents as _native_ingest_documents",
-      "source_sha256": "9a2c469efe4dceef4b0f0ea390343960b6326bf52ee714c4c7269cb696295b89",
+      "source_sha256": "dd0c847a19e4b2416fbe4cb3ce38e1245b2143e20b5a001e9d7b1dbcbcf96875",
       "classification": "orchestration",
       "reviewer": "Codex (initial disposition; independent review pending)",
-      "evidence": "repository_manager/kg_ingest.py:15: Graph execution/ingestion or workspace configuration supporting repository orchestration; this category does not assert the dependency is a public SDK API."
+      "evidence": "repository_manager/kg_ingest.py:54: Graph execution/ingestion or workspace configuration supporting repository orchestration; this category does not assert the dependency is a public SDK API."
     },
     {
       "path": "repository_manager/kg_ingest.py",
-      "line": 18,
-      "column": 4,
+      "line": 31,
+      "column": 8,
       "kind": "static",
       "target": "agent_utilities.knowledge_graph.memory.native_ingest",
       "symbol": "ingest_entities",
       "expression": "ingest_entities as _native_ingest_entities",
-      "source_sha256": "9a2c469efe4dceef4b0f0ea390343960b6326bf52ee714c4c7269cb696295b89",
+      "source_sha256": "dd0c847a19e4b2416fbe4cb3ce38e1245b2143e20b5a001e9d7b1dbcbcf96875",
       "classification": "orchestration",
       "reviewer": "Codex (initial disposition; independent review pending)",
-      "evidence": "repository_manager/kg_ingest.py:18: Graph execution/ingestion or workspace configuration supporting repository orchestration; this category does not assert the dependency is a public SDK API."
+      "evidence": "repository_manager/kg_ingest.py:31: Graph execution/ingestion or workspace configuration supporting repository orchestration; this category does not assert the dependency is a public SDK API."
     },
     {
       "path": "repository_manager/mcp_server.py",
@@ -260,7 +260,7 @@
       "target": "agent_utilities.security.persistence_privacy",
       "symbol": "sanitize_for_persistence",
       "expression": "sanitize_for_persistence",
-      "source_sha256": "0c41174f348df346078a738a14cafc3c4363d8dd9d21af1a9ca9b511f16817d3",
+      "source_sha256": "14427c9c8380c838573ee7705a07bad887ffe4fef7fc05aa724def99e1bb6899",
       "classification": "governance",
       "reviewer": "Codex (initial disposition; independent review pending)",
       "evidence": "repository_manager/models.py:8: Identity, actor context or persistence privacy governs repository records and test authority."
