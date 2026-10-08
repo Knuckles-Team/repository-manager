@@ -142,13 +142,17 @@ def _staged_symlink_patch(scratch: Path, changes: dict[str, str | None]) -> str:
     on every platform (Windows symlinks depend on privileges and Git config).
     """
     for rel, target in changes.items():
-        blob = subprocess.run(
-            ["git", "hash-object", "-w", "--stdin"],
-            cwd=str(scratch),
-            input=str(target).encode(),
-            capture_output=True,
-            check=True,
-        ).stdout.decode().strip()
+        blob = (
+            subprocess.run(
+                ["git", "hash-object", "-w", "--stdin"],
+                cwd=str(scratch),
+                input=str(target).encode(),
+                capture_output=True,
+                check=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
         _git(["update-index", "--cacheinfo", f"120000,{blob},{rel}"], scratch)
     return _git(["diff", "--cached", "--no-color"], scratch, check=False).stdout
 
@@ -698,3 +702,19 @@ def test_unavailable_merge_queue_leaves_a_committed_candidate_pending(
     # in doubt. The canonical repo's own `main` is still untouched.
     assert receipt.commit_sha is not None
     assert _base_sha(repo) == base_before
+
+
+def test_symlink_headers_are_rejected_without_touching_the_work_tree(tmp_path):
+    """Where Git writes links as plain files, only the static check can refuse."""
+    from repository_manager.materialization.patch import PatchRejected, apply_patch
+
+    headers = (
+        "new file mode 120000\nindex 0000000..1111111\n",
+        "old mode 100644\nnew mode 120000\n",
+        "index 1111111..2222222 120000\n",
+    )
+    for header in headers:
+        patch = f"diff --git a/allowed.txt b/allowed.txt\n{header}--- a/allowed.txt\n+++ b/allowed.txt\n"
+        with pytest.raises(PatchRejected, match="symlink"):
+            apply_patch(tmp_path, patch, ("allowed.txt",))
+    assert list(tmp_path.iterdir()) == []
