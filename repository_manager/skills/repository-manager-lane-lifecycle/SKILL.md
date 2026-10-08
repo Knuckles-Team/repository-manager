@@ -2,7 +2,7 @@
 name: repository-manager-lane-lifecycle
 skill_type: skill
 description: >-
-  Run one unit of work — one agent session or one person — as an isolated *lane*
+  Run one unit of work — one agent session or one person — as an isolated lane
   in a repository many other lanes are editing at the same time. Covers opening a
   lane (worktree + partitioned build/test/hook state), staying isolated while
   working, diagnosing a lane that is behaving impossibly, and closing it out.
