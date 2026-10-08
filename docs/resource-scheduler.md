@@ -29,7 +29,7 @@ reservation by relying on the default request value.
 
 `ResourceScheduler.admit()` performs deterministic profile resolution, deadline
 checking, target/label/anti-affinity filtering, disk hysteresis, and weighted
-fit/rank.  Before a consumer may execute, the scheduler calls the injected
+fit/rank.  Before a consumer may ran, the scheduler calls the injected
 `WorkItemReservationPort.atomic_reserve()` with the exact WorkItem ID, attempt,
 and fence.
 
@@ -38,7 +38,7 @@ reservation evidence.  Callers must require an active native reservation before
 starting execution; a fit explanation is never a handoff credential.
 
 An active local row is never an execution credential.  Every retry or handoff
-that could return `ADMITTED` first calls the port's exact
+that can return `ADMITTED` first calls the port's exact
 `query_reservation()` (or an equivalent native transaction), which rechecks the
 current fence, immutable WorkItem admission extension, reservation identity,
 and lifecycle revision.  A missing native row, stale fence, changed input, or
@@ -66,7 +66,7 @@ link.  Request timestamps and capacity observations are projections; the
 retry-stable input fingerprint and requested TTL remain part of the comparison.
 
 On service recreation, active durable records are replayed through the
-inventory's restore path.  Restore verifies nonnegative accounting and the
+inventory's restore path.  Restore checks nonnegative accounting and the
 declared capacity bound but intentionally bypasses new-admission heartbeat,
 drain/quarantine, and observed-disk checks.  A held reservation remains
 explainable and releasable while its host is stale or ineligible; those host
@@ -82,7 +82,7 @@ it does not claim to ship a graph-os adapter.  The production binding/dependency
 lane must persist a WorkItem-linked reservation extension and implement these
 single-transaction verbs:
 
-1. `reserve_or_deduplicate`: verify the current WorkItem fence plus immutable
+1. `reserve_or_deduplicate`: check the current WorkItem fence plus immutable
    owner/tenant/profile/requirement/target/repository/concurrency/fairness
    extension, enforce one active reservation per WorkItem attempt, re-read
    host policy/capacity, update capacity and fairness debt, and return
@@ -90,7 +90,7 @@ single-transaction verbs:
 2. `query_reservation`: exact-read the immutable linked record and current
    lifecycle revision under the WorkItem fence; return active records or
    retained release/expiry tombstones, never a local projection.
-3. `release_if_current`: verify the current or terminal exact attempt/fence
+3. `release_if_current`: check the current or terminal exact attempt/fence
    and immutable reservation identity, then unlink, return capacity, and
    retain a release tombstone; a newer attempt remains stale.
 4. `reclaim_if_expired_or_superseded`: let current controller authority

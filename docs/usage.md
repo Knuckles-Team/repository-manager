@@ -1,7 +1,7 @@
 # Usage — API / CLI / MCP
 
 `repository-manager` exposes the same capability three ways: as **MCP tools** an
-agent calls, as a **Python API** (`Git`) you import, and as a **command-line
+agent calls, as a **Python API** (`Git`) the operator import, and as a **command-line
 interface**.
 
 ## As an MCP server
@@ -95,7 +95,7 @@ The phased mechanics are documented in detail in
 
 ### Lane lifecycle (`CONCEPT:RM-LANE-DOCTOR`)
 
-When many agents and humans develop the same repositories at once, each unit of
+When multiple agents and humans develop the same repositories at once, each unit of
 work runs as an isolated **lane**. The `--lane` verbs make that lifecycle
 executable rather than a convention:
 

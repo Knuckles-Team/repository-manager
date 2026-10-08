@@ -30,7 +30,7 @@ cause, confirmed against live server state
   already-logged NFS symptoms: a `git merge` that timed out mid-checkout
   leaving files written but HEAD unmoved, a `git commit` that took 10+
   minutes, `index.lock`/partial-index incidents, and epistemic-graph test
-  "deadlocks" root-caused across ~70 attempts to host I/O saturation
+  "deadlocks" root-caused across ~70 attempts to host `I/O` saturation
   (`fdatasync` stuck in `D` state) rather than an actual lock cycle.
 - Remediation taken live against R820 (see the session report for the full
   transcript): confirmed via `fuser`/CWD scan that nothing was actively
@@ -63,7 +63,7 @@ for git specifically:
   is invisible locally multiplies directly into wall-clock time for
   `status`/`commit`/`checkout`.
 - NFSv4 delegations exist to let a client cache reads/writes without asking
-  the server every time — which is exactly why heavy git/build I/O
+  the server every time — which is exactly why heavy git/build `I/O`
   (thousands of small files touched per test run) generates the delegation
   volume this incident traced back to. That scaling failure mode is not a
   one-off misconfiguration; it is what this access pattern does to NFSv4
@@ -97,7 +97,7 @@ wires it end to end:
    its **authorized, non-shared, per-repository local worktree root** —
    never a shared NFS path.
 2. `dispatch_build` takes a `repository_id` + an **immutable 40-hex commit
-   SHA** (never a branch — a moving ref would make "what actually built"
+   SHA** (never a branch — a moving ref will make "what actually built"
    ambiguous) and, over `TunnelSSHExecutor` (tunnel-manager's real SSH
    primitive, not a hand-rolled `ssh` invocation):
    - `git clone --no-checkout` the origin onto the host's authorized local
@@ -139,13 +139,13 @@ own docstring) but **neither adapter exposed it**: the CLI's
 tool's parameter set both predated the action and had never been updated —
 so it was reachable only via a direct `remote_worker_actions.dispatch(...)`
 Python import, not through the CLI or MCP surface a real build pipeline
-would actually call. This lane adds `dispatch_build` to the CLI's
+will actually call. This lane adds `dispatch_build` to the CLI's
 `choices=[...]` and adds the missing `command`/`workdir` parameters to
 `rm_remote_workers`, with CLI/MCP parity tests
 (`tests/test_rmdd20_remote_worker_surfaces.py`) proving both adapters now
 reach it identically, plus a real subprocess-level test proving `argparse`
 itself accepts the choice (the earlier register/recheck parity tests all
-bypass `argparse` by constructing the CLI's `Namespace` directly, which is
+bypass `argparse` by building the CLI's `Namespace` directly, which is
 exactly why this gap went unnoticed).
 
 ## Honest assessment of rsync
@@ -174,7 +174,7 @@ Where rsync **is** the right call in this same workspace: syncing
 read-only build caches/wheel caches to a build host (a real candidate for a
 future addition here — `receive_artifact`'s own docstring already notes
 artifact retrieval isn't fully wired yet), or the existing use of NFS for
-genuinely shared, read-mostly data (see below) could in some cases be
+genuinely shared, read-mostly data (see below) can in some cases be
 replaced with a periodic rsync instead of a live mount, trading staleness
 for eliminating the mount's live-protocol failure modes entirely.
 
@@ -194,7 +194,7 @@ production-risk step this incident deliberately stopped short of and left
 for explicit approval. A follow-up should evaluate moving that pod to a
 baked image (matching this workspace's own documented lesson in
 `webui-image-build-does-not-deploy-code`) or onto this same
-`dispatch_build`-staged pattern, either of which would let R820's NFS
+`dispatch_build`-staged pattern, either of which will let R820's NFS
 mounts to RW710 be removed entirely.
 
 ## Migrating a build/CI host
@@ -233,7 +233,7 @@ mounts to RW710 be removed entirely.
   `CapacityInventory`/`CapacityStore` is — a fresh process (a one-shot CLI
   invocation, or an MCP server restart) forgets registered profiles even
   though it remembers raw capacity. A long-lived MCP server process is
-  unaffected (register once, dispatch many times, same process); a
+  unaffected (register once, dispatch multiple times, same process); a
   register-then-dispatch split across two separate CLI invocations is not.
   This is a real, disclosed gap surfaced while validating this lane, not
   something this lane's scope covers fixing.

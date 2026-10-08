@@ -7,10 +7,10 @@
 ## Why it moved
 
 `agent_utilities/governance/merge_queue.py` is mature and battle-tested, but it
-could serve exactly one repository: its gates were pytest/ruff/contract-script
+can serve exactly one repository: its gates were pytest/ruff/contract-script
 specific by construction. The proof that this was mis-homed is empirical —
 **epistemic-graph has no merge queue at all**, so its lane had to hand-apply the
-discipline from memory: verify the *merged tree* with `cargo check
+discipline from memory: check the *merged tree* with `cargo check
 --all-features`, fast-forward only, never merge in the canonical checkout.
 
 repository-manager already owned the rest of the machinery:
@@ -67,13 +67,13 @@ flowchart TD
 | 1 | **Differential gating** — reject only failing signals *not* present on the base ref | `main` is legitimately red. An absolute gate deadlocked the queue and stranded **19 branches**; a branch that fixed 21 of 30 failing tests was rejected because 9 remained. **A baseline that cannot be produced REFUSES the candidate — never allow-all.** |
 | 2 | **Fold by `recorded_at`** | Resolving cross-lane duplicates by fragment order prefers whichever *lane name* sorts last. A candidate enqueued by `lane-foo` and landed by `canonical` folded to the stale record and reported `queued` forever (D-F6-1/D-CVG-9). |
 | 3 | **Regenerate-on-land** | With ~76 candidates on one base, nearly every one conflicts on a purely-derived file where there is no real disagreement. Regenerate from the *already-merged* tree; `--theirs` silently drops a side. |
-| 4 | **Guarded prune** | Merge-base re-checked *at delete time*, a `refs/lane-backup/<branch>` anchor written first, `git branch -d` **never** `-D`, and any worktree holding uncommitted work refused. |
-| 5 | **Honest degradation** | Every refusal names its reason. No path reports success it did not verify — enforced by the landing post-condition (D-RMD-1, below), not just intended. |
+| 4 | **Guarded prune** | Merge-base re-checked *at remove time*, a `refs/lane-backup/<branch>` anchor written first, `git branch -d` **never** `-D`, and any worktree holding uncommitted work refused. |
+| 5 | **Honest degradation** | Every refusal names its reason. No path reports success it did not check — enforced by the landing post-condition (D-RMD-1, below), not just intended. |
 
 ## First-config bootstrap
 
 A repository cannot use its normal queue until its first `.mergequeue.yaml`
-lands, but hand-merging that file would bypass the mechanism it establishes.
+lands, but hand-merging that file will bypass the mechanism it establishes.
 While holding the normal `reconciliation-merge` lease, the runner therefore may
 select exactly one queued candidate whose base-to-recorded-tip tree delta is
 exactly `A .mergequeue.yaml`. Ordinary payload candidates may already be waiting;
@@ -87,7 +87,7 @@ with any other path, multiple config-only candidates, an absent candidate, a
 moved tip, an unclean worktree, or malformed configuration refuses the whole
 bootstrap without advancing a ref or recording a landing.
 
-Validation does not execute a candidate-selected helper to decide whether the
+Validation does not ran a candidate-selected helper to decide whether the
 candidate is trusted. It reads YAML with `git show`, validates the typed argv
 schema, then enters the existing path: materialize the merged candidate, run its
 declared fixed argv, independently materialize the base for differential
@@ -139,10 +139,10 @@ regenerate: [["python3", "scripts/gen.py"]]
   path is substituted out before diffing (the merged run and the base run happen
   in two different throwaway worktrees, so every absolute path differs);
   `keep_lines` is what makes this usable for a chatty tool — `cargo`'s
-  `Compiling`/`Finished in 3.4s` lines differ on every run and would otherwise
+  `Compiling`/`Finished in 3.4s` lines differ on every run and will otherwise
   read as new violations on every candidate.
 * **`exit`** — **script granularity**, for a tool that prints one static message
-  (or nothing) regardless of *why* it failed. Reported as exactly that much
+  (or nothing) in either case of *why* it failed. Reported as exactly that much
   precision, never dressed up as more.
 
 An aggregate `lines` gate may opt into the three `timeout_recheck_*` fields when
@@ -165,7 +165,7 @@ one (D-MQD-1).
 
 ## Pre-commit safety (D-ORC-37)
 
-`pre_commit/staged_files_only.py` writes your **unstaged** changes to a patch
+`pre_commit/staged_files_only.py` writes the operator's **unstaged** changes to a patch
 file, `git checkout`s them away so hooks see only staged content, then restores
 them in a `finally:`. `patch_dir` **is** the pre-commit store directory
 (`commands/run.py` → `staged_files_only(store.directory)`), which defaults to a
@@ -188,7 +188,7 @@ Four rules, all enforced rather than documented:
 4. **Treat a crashed pre-commit as a data-loss incident, not a failed check.**
    `lanes.orphaned_precommit_patches()` classifies each patch file as
    `restored` / `ORPHANED` / `in-progress` / `unknown` — a patch file alone is
-   *not* proof of a crash, because pre-commit never deletes one even on success —
+   *not* proof of a crash, because pre-commit never removes one even on success —
    and `lane env` / `lane status` surface any `ORPHANED` one loudly **with its
    path**, so the work can be replayed with `git apply <path>`.
 
@@ -205,7 +205,7 @@ progress, an operator poking around), a base that is a release branch or a fork,
 or any repo whose checkout convention differs from au's.
 
 The failure mode was the worst kind — **silent and positive**. The queue reported
-`landed`, the guarded prune then deleted the branch *as landed*, and the work sat
+`landed`, the guarded prune then removed the branch *as landed*, and the work sat
 on a ref nobody looks at. A rejection is loud and recoverable; this manufactured
 confidence and then destroyed the evidence. Same family as a gate that reports
 green while enforcing nothing.
@@ -219,13 +219,13 @@ Both halves are implemented, and **the second is the durable one**:
    working tree move atomically together) or by a compare-and-swap
    `git update-ref <ref> <new> <expected-old>`. Fast-forward-only is enforced by
    asking `merge-base --is-ancestor` of the **base ref**, not of `HEAD`, because
-   `update-ref` would otherwise happily rewind history. A base checked out in
-   *another* worktree is refused outright — `update-ref` would leave that tree
+   `update-ref` will otherwise happily rewind history. A base checked out in
+   *another* worktree is refused outright — `update-ref` will leave that tree
    inconsistent with its own `HEAD`, which git forbids for `checkout` but not
    for us.
 2. ★ **Assert the post-condition.** After the write the base ref is re-read and
    must equal the computed commit, *before* anything is reported `landed` and
-   before the guarded prune deletes a branch on the strength of it. This is what
+   before the guarded prune removes a branch on the strength of it. This is what
    makes the fix durable rather than merely correct today: it catches the wrong
    write target **even with the bug still in place**.
 
@@ -304,7 +304,7 @@ strictly additive and reversible, and each step is independently valuable:
 | 3 | Adopt for **epistemic-graph first** — copy `mergequeue_presets/epistemic-graph.mergequeue.yaml` to its root and drive it. eg has **no queue today**, so there is nothing to break, and it is the honest first proof at production scale. | low |
 | 4 | Copy `mergequeue_presets/agent-utilities.mergequeue.yaml` into agent-utilities and run **both** queues against it in shadow: `--merge-queue config` and a `--queue-no-prune` drain on a scratch clone, comparing verdicts candidate by candidate. | low — read-mostly |
 | 5 | Cut over: `agent_utilities.governance.merge_queue` becomes a thin shim delegating to `repository_manager.merge_queue` **when importable**, keeping its current implementation as the fallback. Note the dependency direction — repository-manager depends on agent-utilities, so au importing repository-manager must stay optional (that asymmetry is exactly what D-ORC-21 recorded). | medium — do this only after step 4 agrees |
-| 6 | Retire the au implementation once the shim has landed real batches, per *No Legacy* (migrate-and-delete, no deprecation window). | — |
+| 6 | Retire the au implementation once the shim has landed real batches, per *No Legacy* (migrate-and-remove, no deprecation window). | — |
 
 **Do not skip to step 5.** Placing `.mergequeue.yaml` in a repository is what
 switches that repository over, so the presets shipped here are inert until
@@ -319,14 +319,14 @@ Running`**, `/health` 200, all four `rm_*` tools serving real data, and
 lane `rm-deploy-0802`; the queue now has a real deployment to run in.
 
 Four things about that deployment are **load-bearing** — none is cosmetic, and
-three of them were gaps a mount alone would not have closed:
+three of them were gaps a mount alone will not have closed:
 
 1. **The workspace is mounted at the *identical absolute path*
    (`/home/apps/workspace`), read-write.** Absolute paths are not a
    convenience here: git worktree metadata is absolute-path-based, so mounting
-   the tree anywhere else would leave ~55 linked worktrees unresolvable from
+   the tree anywhere else will leave ~55 linked worktrees unresolvable from
    inside the pod. Read-write because the queue moves refs, writes each repo's
-   arbitration dir, and removes landed worktrees — a read-only mount would let
+   arbitration dir, and removes landed worktrees — a read-only mount will let
    `status`/`config` work and fail `run` confusingly partway through.
    It is also what makes `prune_landed()` correct across the host/pod boundary:
    it prunes by the absolute worktree path the candidate **recorded at enqueue
@@ -334,7 +334,7 @@ three of them were gaps a mount alone would not have closed:
    matches.
 2. **`REPOSITORY_MANAGER_WORKTREE_ROOT` must be set.** It was unset, which is a
    silent trap: `worktree.py` defaults it under `XDG_STATE_HOME`, so worktrees
-   created by the pod would have gone to a **container-local** path — invisible
+   created by the pod will have gone to a **container-local** path — invisible
    to every host lane and destroyed on restart. The mount alone was *not*
    enough.
 3. **The pod runs as `1000:1000`** to match repo ownership. It previously ran as

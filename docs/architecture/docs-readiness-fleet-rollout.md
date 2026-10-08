@@ -32,7 +32,7 @@ standalone `pages.yml`. The current source findings are:
 - Missing `site_url` declarations (4): `agent-utilities`, `agents/mealie-mcp`,
   `agents/microsoft-agent`, and `agents/vector-mcp`.
 
-`audit_source_findings()` re-reads those facts from the supplied workspace and
+`audit_source_findings()` re-reads those facts from the provided workspace and
 refuses source drift. It never writes the missing workflows or URLs; the
 actual generated fleet rollout remains a separate, operator-approved step.
 
@@ -50,13 +50,13 @@ explicit wave field. The current plan is:
 | 5 | tail connectors | 18 | wave 4 |
 
 The planner refuses duplicate/unknown selections, empty waves, count drift,
-or a partial default fleet. A manually supplied one-project selection is still
+or a partial default fleet. A manually provided one-project selection is still
 checked against the same manifest and cannot escape its identity boundary.
 
 ## Safety and evidence contract
 
 Before preview/apply/rollback, Repository Manager resolves the identity beneath
-the supplied workspace root, rejects symlink/path escapes, and records only:
+the provided workspace root, rejects symlink/path escapes, and records only:
 
 - exact `HEAD` revision;
 - current branch name and clean/dirty boolean;
@@ -95,7 +95,7 @@ The operation key binds manifest digest, project identity, source revision and
 digest, generator revision, and TCK revision. Exact retries return
 `replayed: true`; a prepared or rollback-failed transaction refuses rather than
 guessing; a different active operation for the same identity is a conflict.
-Apply verifies the canonical output digest after publication and invokes the
+Apply checks the canonical output digest after publication and invokes the
 adapter's bounded rollback seam on any publication/verification failure.
 Rollback requires explicit confirmation and the original source revision/digest
 to remain unchanged. It only delegates restoration of the generator-owned
@@ -108,7 +108,7 @@ branches, worktrees, commits, pushes, or edits a target repository.
 
 Workers may run `git diff --check` only. After NE-137 and NE-144 are reviewed and
 landed, root should run the focused rollout suite, render a real exact-75
-preview with full dependency revisions, verify source findings, and inspect
+preview with full dependency revisions, check source findings, and inspect
 the journal/revision/digest evidence. Only root may authorize per-wave adapter
 execution, generated changes, commits, pushes, Pages TCKs, live deployment, or
 rollback.

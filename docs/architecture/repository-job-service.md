@@ -68,7 +68,7 @@ does not create a finding. This distinction keeps partial probes fail-closed.
 The response includes a stable, previewable `RepairProposal`. With explicit
 `enqueue_repairs=True`, the port submits one idempotent `operation=repair`
 WorkItem. No Git checkout, process signal, artifact deletion, branch move, or
-other mutation happens inline; the later repair worker must execute the
+other mutation happens inline; the later repair worker must ran the
 proposal under the normal scheduler/lease/consent boundaries. The repair
 request binds a versioned repair-intent digest and the source correlation; a
 repair worker must re-observe the correlated durable job instead of trusting a

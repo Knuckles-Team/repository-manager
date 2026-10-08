@@ -121,13 +121,13 @@ set:
 | `WORKSPACE_MANAGEMENTTOOL` | `True` | Register the workspace-management tool set |
 | `PROJECT_MANAGEMENT_TOOL` | `True` | Register the project-management tool set |
 
-The graph agent additionally reads `LLM_ROUTER_MODEL`, `LLM_AGENT_MODEL`,
+The graph agent also reads `LLM_ROUTER_MODEL`, `LLM_AGENT_MODEL`,
 `GRAPH_ROUTER_TIMEOUT`, and `GRAPH_VERIFIER_TIMEOUT`. Telemetry (`ENABLE_OTEL`,
 `OTEL_EXPORTER_OTLP_*`) and access governance (`EUNOMIA_TYPE`,
 `EUNOMIA_POLICY_FILE`, `EUNOMIA_REMOTE_URL`) are optional. The full set, with
 required-vs-optional separation, is documented in
 [`.env.example`](https://github.com/Knuckles-Team/repository-manager/blob/main/.env.example).
-Copy it to `.env` and populate only what you use.
+Copy it to `.env` and populate only what the operator use.
 
 ## Docker Compose
 
@@ -165,7 +165,7 @@ docker compose -f docker/mcp.compose.yml logs -f
 
 ## Behind a Caddy reverse proxy
 
-Expose the HTTP server on a hostname with automatic TLS. Add to your `Caddyfile`:
+Expose the HTTP server on a hostname with automatic TLS. Add to the operator's `Caddyfile`:
 
 ```caddy
 # Internal (self-signed) — homelab .example.invalid zone
@@ -209,7 +209,7 @@ this as a tool.
 
 ## Register with an MCP client
 
-Add to your client's `mcp_config.json` (multiplexer nickname `rep`):
+Add to the operator's client's `mcp_config.json` (multiplexer nickname `rep`):
 
 ```json
 {
