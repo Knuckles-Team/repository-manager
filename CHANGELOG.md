@@ -50,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under BOTH `lanes.guarded_tree_mutation` and `canonical_guard.guarded_canonical_mutation`.
   Gates are **declarative and per repository** (`.mergequeue.yaml`) — the queue never knows what a
   gate is, only how to run one and compare its result against the base ref. Ported from
-  `agent_utilities.governance.merge_queue`, which could serve only agent-utilities; the au queue is
+  `agent_utilities.governance.merge_queue`, which can serve only agent-utilities; the au queue is
   untouched and stays live (see `docs/merge-queue.md` for the migration plan).
 - **`--merge-queue {enqueue,status,withdraw,run,config}` CLI verbs** and the **`rm_merge_queue` MCP
   tool**, both thin marshallers over one `merge_queue.dispatch()` action core. Exit 75
@@ -60,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   merge queue at all) and `agent-utilities` (pytest + ruff + contract scripts). Presets are inert
   until copied into a repository root, which is what makes adoption per-repo and reversible.
 - **`WorktreeManager.delete_merged_branch()`** — public entry to the guarded ref deletion
-  (merge-base re-checked at delete time, `refs/lane-backup/<branch>` anchor, `git branch -d` never
+  (merge-base re-checked at remove time, `refs/lane-backup/<branch>` anchor, `git branch -d` never
   `-D`) so the queue reuses that guard instead of reimplementing it (D-ORC-21).
 - **Landing writes the DECLARED base ref, and proves it moved (D-RMD-1)** — `land()` previously ran
   `git merge --ff-only` in the canonical checkout, which merges into whatever `HEAD` is rather than
@@ -70,8 +70,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against the BASE ref rather than `HEAD`, and refuses when the base is checked out in another
   worktree. It then **re-reads the ref and asserts it holds the computed commit before anything is
   reported `landed`** — the durable half, which catches a wrong write target even with the bug still
-  in place. Previously the queue could report `landed` while the base never moved, after which the
-  guarded prune deleted the branch *as landed*: silent, positive, and self-erasing. A non-existent
+  in place. Previously the queue can report `landed` while the base never moved, after which the
+  guarded prune removed the branch *as landed*: silent, positive, and self-erasing. A non-existent
   base ref is now refused once at `run_queue` entry with an actionable message.
 - **Pre-commit data-loss guard (D-ORC-37)** — `refuse_precommit_on_dirty_tree()` refuses to run any
   pre-commit gate against a tree holding uncommitted work (pre-commit checks unstaged changes out
@@ -87,7 +87,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   report-only step into `rm_projects validate` (`auto_bump`/`auto_push`); `prune_worktrees=true`
   switches it to audit-aware cleanup that replaces the prior blind worktree reaping.
 - **Fast pre-push gate** — `_gate_before_push` runs the repo's own CI gates (`pre-commit run
-  --all-files` with `SKIP=pytest`) before each repo's push so a `--no-verify` phased commit can't
+  --all-files` with `SKIP=pytest`) before each repo's push so a `--no-check` phased commit can't
   ship a commit the repo's CI then rejects. No-op for repos with nothing to push or no
   `.pre-commit-config.yaml`; a tooling/env failure never blocks a push (only a real hook failure
   does); toggle with `RM_GATE_BEFORE_PUSH=false` (default on).
@@ -112,15 +112,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatch_build` is a valid CLI choice, and `rm_remote_workers` gained `command`/`workdir`, with
   CLI/MCP parity tests (`tests/test_rmdd20_remote_worker_surfaces.py`) proving both adapters reach
   it identically, including a real `argparse`-level subprocess test (the existing parity tests all
-  bypass `argparse` by constructing the CLI's `Namespace` directly, which is exactly why the gap
+  bypass `argparse` by building the CLI's `Namespace` directly, which is exactly why the gap
   went unnoticed).
-- **Worktree prune could delete an active lane's branch ref (CONCEPT:RM-PRUNE-GUARD, `D-FE-9`)** —
+- **Worktree prune can remove an active lane's branch ref (CONCEPT:RM-PRUNE-GUARD, `D-FE-9`)** —
   `rm_worktree audit --prune-merged` treated a `merged` classification as authorisation to remove a
   worktree and run `git branch -D`. It removed a live lane's `agent-utilities` worktree *and* its
   branch mid-run; the commits survived only as dangling objects. `merged` was a correct reading —
   the lane had merged an intermediate chunk back to `main` and kept working — which is the point:
-  mergedness is not vacancy, and a scan-time classification is not a delete-time authorisation.
-  Now: `merged` additionally requires `behind > 0` (so a worktree still sitting on `base` — a lane
+  mergedness is not vacancy, and a scan-time classification is not a remove-time authorisation.
+  Now: `merged` also requires `behind > 0` (so a worktree still sitting on `base` — a lane
   that has not started — is `active`, reported as `at_base`, never prunable); every removal runs
   inside `agent_utilities.governance.lanes.guarded_tree_mutation` with `_branch_state` re-derived
   under that lease; git's own `worktree lock` is honoured; and branch deletion goes through

@@ -39,7 +39,7 @@ python scripts/verify_graph.py "List all projects in the workspace"
 **Monitored Events:**
 - **Graph Lifecycle**: `graph-start`, `node-start`, `graph-complete` events.
 - **Tool Execution**: `expert_tool_call` and `expert_tool_result` events with detailed payloads.
-- **Payload Integrity**: Verifies unified result storage in `results_registry` for expert nodes.
+- **Payload Integrity**: Checks unified result storage in `results_registry` for expert nodes.
 
 ### Integration Test Suite
 The local `tests/test_agent_integration.py` validates the entire stack from registry sync to tool execution:
@@ -288,7 +288,7 @@ graph TB
 
 ## Unified Hybrid Graph Architecture
 
-The Repository Manager leverages a powerful 12-phase topological DAG pipeline (inspired by GitNexus) implemented in Python, paired with NetworkX for in-memory graph algorithms and LadybugDB for persistent Cypher search.
+The Repository Manager use a powerful 12-phase topological DAG pipeline (inspired by GitNexus) implemented in Python, paired with NetworkX for in-memory graph algorithms and LadybugDB for persistent Cypher search.
 
 ```mermaid
 graph TD
@@ -427,12 +427,12 @@ are retired.
 4. **Use types as boundaries.** `ExecutionStep`, `GraphPlan`, `GraphResponse`, and `MCPAgent` are the boundary
    contracts between levels. Internal state is private.
 5. **Defer flattening.** Never try to visualize or reason about the full system as one graph. Visualize one level at a time. Debug at the current level.
-6. **The growth test:** If you feel tempted to add more nodes to a graph, pause and ask whether you should add a new state machine instead.
+6. **The growth test:** If the operator feel tempted to add more nodes to a graph, pause and ask whether the operator should add a new state machine instead.
 
 ### Behavior Tree (BT) Concepts
 
 The graph also incorporates key Behavior Tree patterns **inside** the HSM structure.
-The principle: *graphs decide where you are; BT-style logic decides what to do next inside that place.*
+The principle: *graphs decide where the operator are; BT-style logic decides what to do next inside that place.*
 
 | agent-utilities Concept                                                                | Behavior Tree (BT) Concept   | Details                                                                         |
 |----------------------------------------------------------------------------------------|------------------------------|---------------------------------------------------------------------------------|
@@ -460,7 +460,7 @@ The sibling checkouts `uv.lock` installs editable (agent-utilities, the
 connector SDK, epistemic-graph) are cloned under the ignored
 `.uv-workspace-siblings/` at the commits in `scripts/siblings.lock`, the only
 place those pins live. A symlink there, or `AGENT_UTILITIES_ROOT`, points the
-gates at your own checkout instead.
+gates at the operator's own checkout instead.
 
 ## Commands (run these exactly)
 
@@ -556,7 +556,7 @@ passes `uvx pre-commit run --all-files` locally passes the same gates there.
 - Catch specific exceptions, not bare `except:`.
 - When raising exceptions, provide a clear error message.
 - Use custom exception classes for module-specific errors.
-- In general, prefer to raise exceptions and let the caller handle them, unless you can handle them locally.
+- In general, prefer to raise exceptions and let the caller handle them, unless the operator can handle them locally.
 
 **Good example (Guardrail):**
 ```python
@@ -574,8 +574,8 @@ except ImportError:
 - Use `create_agent_parser` from `agent_utilities/agent/factory.py` for CLI argument parsing.
 - Register tools with descriptive docstrings as they are parsed by the LLM.
 - Keep `base_utilities` free of heavy dependencies.
-- Utilize lazy imports for optional dependencies like FastAPI and LlamaIndex.
-- Follow the existing patterns in each module when adding new functionality.
+- Use lazy imports for optional dependencies like FastAPI and LlamaIndex.
+- Follow the existing patterns in each module when adding new feature.
 
 **Don't:**
 - Import `fastapi` or `llama_index` at the top level (use lazy imports inside functions or classes).
@@ -603,12 +603,12 @@ except ImportError:
 
 By default, `agent-utilities` implements a **Universal Tool Guard** that automatically intercepts sensitive tool calls from MCP servers.
 
-Any tool matching specific "danger" patterns (e.g., `delete_*`, `write_*`, `execute_*`, `drop_*`) will **automatically** trigger an elicitation request. The tool will not execute until you explicitly confirm it in the Web UI.
+Any tool matching specific "danger" patterns (e.g., `delete_*`, `write_*`, `execute_*`, `drop_*`) will **automatically** trigger an elicitation request. The tool will not ran until the operator explicitly confirm it in the Web UI.
 
 ### Key Features
 - **Zero Config**: Protections are applied automatically based on tool names.
 - **Fail-Safe**: If elicitations aren't supported or fail, the sensitive tool is blocked by default.
-- **Customizable**: You can disable the guard by setting `DISABLE_TOOL_GUARD=True` in your environment.
+- **Customizable**: The operator can disable the guard by setting `DISABLE_TOOL_GUARD=True` in the operator's environment.
 
 ### Sensitive Patterns
 The guard currently monitors for:
@@ -672,7 +672,7 @@ directory.
 When adding new utility modules to the agent_utilities package:
 1. Follow the existing code style and conventions
 2. Add appropriate type hints
-3. Include comprehensive docstrings
+3. Include complete docstrings
 4. Add unit tests in the tests/ directory
 5. Export public functions/classes in `__init__.py` if they should be part of the public API
 6. Consider if the module should have lazy imports for heavy dependencies
@@ -681,7 +681,7 @@ When adding new utility modules to the agent_utilities package:
 
 ## Testing Guidelines
 
-- Write tests for all new functionality
+- Write tests for all new feature
 - Aim for high test coverage, especially for utility functions
 - Use pytest fixtures for common test setup
 - Mock external dependencies when possible
@@ -737,7 +737,7 @@ the gate" or "retest" means (`run`/`status`/`explain`/`profile`/`retest`).
 `${XDG_STATE_HOME}/repository-manager/gate_ledger.sqlite3` (same shape as
 `LaneRegistry`/`CapacityStore`: WAL, `synchronous=FULL`, monotonic
 `version`). It replaces the old process-local `dict` job store, which died
-with the process and could never answer "what failed last time" across a
+with the process and can never answer "what failed last time" across a
 restart. Semantics that are easy to get wrong, because getting them wrong is
 silent:
 
@@ -748,7 +748,7 @@ silent:
   distinction.
 - **Clear-on-improve.** When a hook re-runs, any `test_latest` row for that
   `(repo, stage, hook)` whose test id is absent from the new failing set is
-  deleted. Upsert-only would leave a fixed test marked failed forever.
+  removed. Upsert-only will leave a fixed test marked failed forever.
 - **`unrunnable` hooks are never retest candidates.** A hook whose executable
   was missing found nothing about the code; re-running it in the same broken
   environment will find nothing again. Treating a missing toolchain as "still
@@ -764,7 +764,7 @@ silent:
 - **It is a local, best-effort projection — never an authority.** A ledger
   outage must never look like a gate failure (every write is swallowed on a
   storage error), and nothing may treat a ledger row as permission to skip
-  work it would otherwise do.
+  work it will otherwise do.
 
 ### `rm_gates action=retest` — narrow the re-run to what actually failed
 
@@ -772,7 +772,7 @@ Reads the ledger for the target repo/stage and decides what to run:
 
 - **No prior run recorded** → nothing to narrow against, so it degrades to a
   **full wave** and says so plainly (`"baseline": "missing"`). Treating
-  "never ran" as "ran clean" would fabricate evidence.
+  "never ran" as "ran clean" will fabricate evidence.
 - **Prior run, nothing failing** → no job submitted.
 - **Prior run, hooks failing** → only those hook ids are requested.
 - **Baseline stale** (ledger rows recorded against a different sha than HEAD
@@ -783,14 +783,14 @@ On an all-pass narrowed retest (`escalate=True`, the default), a **second**
 job — the full wave, `trigger="retest-escalate"`, `scope="full_wave"` — is
 submitted automatically, from inside the first job's own background thread
 the instant its subprocess returns. A narrowed pass by itself is never
-sufficient evidence of shippability; see `GateLedger.is_shippable`'s
+enough evidence of shippability; see `GateLedger.is_shippable`'s
 docstring for the deadlock that survived 95 clean isolated runs before this
 existed.
 
 ### `ensure_no_fail_fast` now strips as well as adds
 
 `repository_manager.test_commands.ensure_no_fail_fast` is applied by the
-runner at the process-launch chokepoint, immediately before
+runner at the process-start chokepoint, immediately before
 `subprocess.run`, so a declared command cannot reach the shell without the
 never-stop-early guarantee. It now goes **both directions**, because cargo's
 and pytest's/go's truncation defaults are opposite:
@@ -810,7 +810,7 @@ program) is returned byte-for-byte unchanged.
 
 `repository_manager.fail_fast_audit` statically scans a repo's
 `.pre-commit-config.yaml` hook `entry:` strings for the same fail-fast flags
-`ensure_no_fail_fast` knows how to fix in argv this package constructs
+`ensure_no_fail_fast` knows how to fix in argv this package builds
 itself. **It cannot fix what it finds.** `gates.py` never builds a
 pre-commit hook's argv — it shells to `pre-commit run --hook-stage <stage>`
 and pre-commit parses each repo's own `entry:` as opaque shell text this
@@ -909,7 +909,7 @@ or a CLI flag — call `repository_manager.xdist_rollout.dispatch("plan"|
 
 ## Testing with Timeout
 
-To run tests with a timeout to prevent hanging, use the `pytest-timeout` plugin. You can combine it with the `-k` flag to run specific tests:
+To run tests with a timeout to prevent hanging, use the `pytest-timeout` plugin. The operator can combine it with the `-k` flag to run specific tests:
 
 ```bash
 uv run pytest --timeout=60 -k "test_name_pattern"
@@ -957,27 +957,27 @@ and erodes a pristine codebase.
 `~/workspace/reports/` (command output); tests go in `tests/` (pytest).
 Before finishing a task, run `git status` and confirm no stray root files were added.
 
-## Working Discipline — think, simplify, stay surgical, verify
+## Working Discipline — think, simplify, stay surgical, check
 
 These four habits cut the most common LLM coding mistakes. For trivial tasks, use
 judgment; the bias here is correctness over speed.
 
-- **Think before coding.** State your assumptions explicitly. If a request has more than
+- **Think before coding.** State the operator's assumptions explicitly. If a request has more than
   one reasonable reading, surface the options instead of silently picking one. If a
   simpler approach exists, say so and push back when warranted. When something is
   genuinely unclear, stop and name what's confusing — ask, don't guess.
 - **Simplicity first.** Write the minimum code that solves the stated problem — no
   speculative features, no abstraction for single-use code, no configurability that
-  wasn't requested, no error handling for impossible states. If you wrote 200 lines and
-  it could be 50, rewrite it. (Name code from its purpose, never `wave0`/`phase2`/`v2`.)
+  wasn't requested, no error handling for impossible states. If the operator wrote 200 lines and
+  it can be 50, rewrite it. (Name code from its purpose, never `wave0`/`phase2`/`v2`.)
 - **Stay surgical.** Every changed line should trace directly to the task. Don't refactor,
-  reformat, or "improve" working code adjacent to your change; match the existing style
-  even where you'd do it differently. Remove only the imports/symbols your own change
-  orphaned; if you spot unrelated dead code, mention it rather than deleting it inline.
+  reformat, or "improve" working code adjacent to the operator's change; match the existing style
+  even where the operator'd do it differently. Remove only the imports/symbols the operator's own change
+  orphaned; if the operator spot unrelated dead code, mention it rather than removing it inline.
   *Exception — the Quality Bar below:* lint/format/type errors the pre-commit gate flags
-  get fixed regardless of who introduced them. In short: **surgical on behavior, clean on
+  get fixed in either case of who introduced them. In short: **surgical on behavior, clean on
   lint.**
-- **Verify against a goal.** Turn the task into a checkable outcome before you start:
+- **Check against a goal.** Turn the task into a checkable outcome before the operator start:
   "fix the bug" → "write a failing test that reproduces it, then make it pass"; "add
   validation" → "tests for the invalid inputs pass". For multi-step work, state the short
   plan and the check for each step, then loop until the checks pass.
@@ -992,8 +992,8 @@ pre-commit run --all-files
 ```
 
 Resolve **every** issue it reports — failures, lint errors, type errors, and
-warnings — **including problems that pre-date your change and were not caused by
-your edits**. The standing goal is a clean, working codebase with **no errors and
+warnings — **including problems that pre-date the operator's change and were not caused by
+the operator's edits**. The standing goal is a clean, working codebase with **no errors and
 no warnings**. Do not silence checks (`# noqa`, `# type: ignore`, `SKIP=`,
 `--no-verify`) to force green unless the exception is already documented in this
 file as a known, unavoidable limitation. Only commit once `pre-commit run
@@ -1006,7 +1006,7 @@ Multiple agents/sessions work the `agent-packages/*` repos concurrently. **Do no
 edit the canonical checkout** (`$AGENT_UTILITIES_WORKSPACE_ROOT/agent-packages/<repo>`) —
 a background `repository-manager` sync runs checkouts against it (default-branch
 sync, `rm_worktree add`/`merge`'s park/switch checkouts) that can collide with
-concurrent edits there. Take your own git worktree on your own branch instead:
+concurrent edits there. Take the operator's own git worktree on the operator's own branch instead:
 
 **The dirty-tree guard (CONCEPT:RM-CANON-GUARD,
 `repository_manager/canonical_guard.py`):** every one of those checkouts now goes
@@ -1016,13 +1016,13 @@ mutating and — if the canonical tree is dirty — **skips the checkout and log
 loud, actionable warning naming the repo and what it found** instead of running
 it. It also takes a short-lived cross-process lease
 (`<canonical>/.git/repository-manager.lease`, an `flock`) for the duration of
-its own check-then-mutate sequence, so two repository-manager-initiated
+its own check-then-mutate sequence, so two repository-manager-start
 mutations against the same canonical serialize instead of racing each other.
 **What this does not close:** an external process (e.g. a human running
 `pre-commit` by hand directly in the canonical checkout, against this exact
 warning) never takes that lease on its own, so the classic TOCTOU window — tree
 clean when repository-manager checks it, dirtied a moment later by that
-external process — is narrowed, not eliminated. If you must run a long
+external process — is narrowed, not eliminated. If the operator must run a long
 operation directly in canonical (**strongly discouraged — use a worktree**),
 make it visible to the guard by wrapping it with the same lease:
 
@@ -1055,7 +1055,7 @@ alone).
 2. **Commit** in the worktree.
 3. **Merge to main locally** — `rm_worktree merge <repo> <branch> --into main`
    (or `git merge --no-ff`). Push only when the user asks.
-4. **Clean up** — remove the worktree and delete the merged branch:
+4. **Clean up** — remove the worktree and remove the merged branch:
    `rm_worktree remove <repo> <branch> --delete-branch`; `rm_worktree prune` clears
    stale entries. (Raw-git: `git worktree remove <path> && git branch -d <branch>`.)
 
@@ -1066,11 +1066,11 @@ that took a live lane's `agent-utilities` worktree and branch ref out from under
 it (registry `D-FE-9`): the lane had merged an intermediate chunk back to `main`
 and kept working, so its branch really was an ancestor of `main` and its tree
 really was clean. **`merged` says the work is captured in `base`; it never says
-the worktree is unoccupied.** Three things follow, and none of them is a flag you
+the worktree is unoccupied.** Three things follow, and none of them is a flag the operator
 can forget to set:
 
 - **A ref is gated harder than a directory.** Removing a clean worktree is
-  recoverable — `git worktree add` puts it back. Deleting the branch ref is what
+  recoverable — `git worktree add` puts it back. Removing the branch ref is what
   turns commits into garbage. So deletion never uses `git branch -D`. It reads
   the tip, re-asks `git merge-base --is-ancestor <tip> <base>` *at the moment of
   deletion*, points `refs/lane-backup/<branch>` at that tip, and then defers to
@@ -1080,7 +1080,7 @@ can forget to set:
   recovery ref) or `branch_kept_reason` (why it declined).
 - **A worktree sitting exactly on `base` is not prunable.** `ahead == 0` is
   equally true of a lane that has finished and one that has not started, so
-  `merged` additionally requires `behind > 0` — proof `base` carries something
+  `merged` also requires `behind > 0` — proof `base` carries something
   this branch contributed. A worktree at base reports `at_base` and classifies
   `active`.
 - **Occupancy comes from the lane protocol, not a new mechanism.** Each removal
@@ -1109,10 +1109,10 @@ subsequent `git status`/`add`/`commit`/`diff` in that worktree until repaired
 — across at least 8 sibling worktrees in one session. Working-tree file
 *contents* were never touched; only the index.
 
-- **Rule:** kill a process by the exact PID you spawned (`kill <pid>`,
+- **Rule:** kill a process by the exact PID the operator spawned (`kill <pid>`,
   `SIGTERM` first, `SIGKILL` only if it doesn't respond), never by a
   command-line-text pattern (`pkill -f`, `pkill <name>`) on a host any other
-  lane might be running on. If you don't have the PID, don't kill it blind —
+  lane may be running on. If the operator don't have the PID, don't kill it blind —
   find it first (e.g. `ps -o pid,cmd --ppid <your-shell-pid>`), or leave it
   and let it finish/time out.
 - **Recovery, if it happens anyway:** `cd <worktree> && git read-tree HEAD`
@@ -1120,7 +1120,7 @@ subsequent `git status`/`add`/`commit`/`diff` in that worktree until repaired
   working directory, so no file content is lost. **Never** `git reset --hard`
   or `git checkout .` for this: the working tree is intact and correct; only
   the index is broken. Anything that was `git add`ed but not yet committed
-  will need to be re-staged (its content survives; only its staged/unstaged
+  will must be re-staged (its content survives; only its staged/unstaged
   status resets to match `HEAD`).
 - **A second, independent cause can look identical:** the same corruption
   pattern kept recurring on a *rotating* set of different worktrees well
@@ -1137,7 +1137,7 @@ addresses concurrent *local* sessions on one checkout, not a repository
 shared as a mutable mount across *hosts*. 2026-08-13's R820 incident (an
 NFSv4 client livelock — 555,965 stuck delegations pinning a kernel thread
 at ~98% CPU for hours, wedging that host's whole load average) traced
-directly back to build/test I/O against `/home/apps/workspace`/
+directly back to build/test `I/O` against `/home/apps/workspace`/
 `/home/apps/worktrees` over NFS. The fix is `dispatch_build`
 (`repository_manager.remote_worker_actions`, both CLI `--remote-workers
 dispatch_build` and MCP `rm_remote_workers`): stage an immutable commit SHA
@@ -1177,8 +1177,8 @@ artifact a repo adds later (e.g. a `constraints.txt`, a per-extra `requirements-
 
 1. **Never hand-edit a version string.** Change the version ONLY via
    `bump-my-version bump {patch|minor|major}` (a.k.a. `bump2version`), which rewrites every file
-   registered in `.bumpversion.cfg` in one atomic, tagged commit. If you edited the version in
-   `pyproject.toml` by hand, you created drift — revert and use the bumper.
+   registered in `.bumpversion.cfg` in one atomic, tagged commit. If the operator edited the version in
+   `pyproject.toml` by hand, the operator created drift — revert and use the bumper.
 2. **Every version-bearing file must be registered in `.bumpversion.cfg`** — at minimum
    `pyproject.toml` AND `README.md`, plus `docker/Dockerfile` and any module `__version__`. Never
    add a file that embeds the version without a `[bumpversion:file:...]` entry for it.
@@ -1196,7 +1196,7 @@ artifact a repo adds later (e.g. a `constraints.txt`, a per-extra `requirements-
 
 ## Upstream currency edict — target the newest release; a pin is a hypothesis, not a fact (READ BEFORE capping, deferring, or opt-in-gating an upgrade)
 
-This governs how we treat **other people's** releases, deprecations, and version caps in
+This governs how this repository treat **other people's** releases, deprecations, and version caps in
 this repo (fleet-wide edict, propagated from `agent-utilities/AGENTS.md`).
 
 1. **Latest by default.** Target the newest upstream release -- including a pre-release
@@ -1215,10 +1215,10 @@ this repo (fleet-wide edict, propagated from `agent-utilities/AGENTS.md`).
    -- never an indefinite pin.
 4. **Deprecations are fixed on sight, in code AND in tests.** A `DeprecationWarning` from
    an upstream library is a defect to fix now, not noise to filter. **Never** silence one
-   with a warning filter, `# noqa`, or a pytest `filterwarnings` entry in order to go
+   with a warning filter, `# noqa`, or a pytest `filterwarnings` entry to go
    green.
 5. **Adopt upstream features rather than reimplementing them.** If upstream ships a
-   capability this repo hand-rolled, migrate to theirs and delete the local one.
+   capability this repo hand-rolled, migrate to theirs and remove the local one.
 6. **Nothing built on an upgrade ships opt-in.** A new capability an upgrade unlocks is
    default-on unless it genuinely costs compute, in which case it is policy-selected,
    never flag-gated. An opt-in extra or a dependency-conflict fork is an interim state

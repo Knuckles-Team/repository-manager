@@ -1,14 +1,14 @@
 # Installation
 
 `repository-manager` is a standard Python package and a prebuilt container image.
-Pick the path that matches how you want to run it.
+Pick the path that matches how the operator want to run it.
 
 ## Requirements
 
 - **Python 3.11+**.
 - A reachable **Git** executable on `PATH` (the package shells out to `git` for bulk
   operations).
-- A workspace directory containing the Git repositories you intend to manage — set
+- A workspace directory containing the Git repositories the operator intend to manage — set
   via `REPOSITORY_MANAGER_WORKSPACE` (see [Deployment](deployment.md#configuration-environment)).
 
 ## From PyPI (recommended)
@@ -19,7 +19,7 @@ pip install repository-manager
 
 ### Optional extras
 
-The base install is intentionally minimal. Install the extra for what you need:
+The base install is intentionally minimal. Install the extra for what the operator need:
 
 | Extra | Install | Pulls in |
 |---|---|---|
@@ -82,7 +82,7 @@ docker run --rm -i \
 For an HTTP server with a published port, the agent server, and Docker Compose, see
 [Deployment](deployment.md).
 
-## Verify the install
+## Check the install
 
 ```bash
 repository-manager --version

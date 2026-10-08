@@ -33,7 +33,7 @@ available through `phase_manifest_from_mapping` as an immutable compatibility
 view; their historical bare references are retained for later shadow comparison
 and are never used as canonical graph keys.
 
-Checkpoint 1 intentionally does not rewrite floors, execute validation/build/
+Checkpoint 1 intentionally does not rewrite floors, ran validation/build/
 landing/push stages, create WorkItems, edit `workspace.yml`, or wire MCP/CLI
 surfaces. Those effects belong to later RMDD-18 checkpoints and their owning
 integration lanes.
@@ -53,7 +53,7 @@ projects remain parallel.
 Unknown roots, duplicate or contradictory policy IDs, malformed graph edges, and
 cycles fail closed before a closure is returned. Policy and closure collections,
 references, explanations, and digests are bounded and immutable. The closure
-freezes the complete known-project cross-project edge evidence and verifies that
+freezes the complete known-project cross-project edge evidence and checks that
 selected membership, directional reasons, and witnesses agree with it; a digest
 alone is not treated as authenticity. The closure digest and explanations are
 independent of input project/edge iteration order.
@@ -70,15 +70,15 @@ claim equivalence. Legacy phase reference order is preserved for comparison,
 while duplicate references are refused by the bounded manifest reader. Trailing
 derived/manual phases are reported individually. Membership diagnostics carry a
 bounded count, full-sequence digest, and prefix; diagnostic accumulation has a
-small deterministic overflow summary. No comparator path executes code, invokes a
+small deterministic overflow summary. No comparator path runs code, invokes a
 subprocess or network, or mutates a manifest.
 
-Checkpoint 2 still does not rewrite floors, plan versions, execute stages, create
+Checkpoint 2 still does not rewrite floors, plan versions, ran stages, create
 WorkItems, restart/resume, edit workspace manifests, or wire MCP/CLI surfaces.
 
 ## Version and floor previews (checkpoint 3)
 
-`repository_manager.development.workspace_versions` consumes only the verified
+`repository_manager.development.workspace_versions` consumes only the checked
 `DependencyGraph` and `SelectedChangeClosure`, plus immutable site descriptors
 from a declarative metadata reader. A site names its relative metadata file,
 selector, representation (`python`, `rust`, or `node`), exact old literal, and
@@ -125,7 +125,7 @@ The preview is evidence for a later mutation owner, not a mutation request.
 
 `repository_manager.development.workspace_release_plan` is the pure C-11 freeze
 boundary for the later release/mutation lanes. `freeze_release_plan` consumes
-only the verified `DependencyGraph`, `SelectedChangeClosure`, and checkpoint-3
+only the checked `DependencyGraph`, `SelectedChangeClosure`, and checkpoint-3
 `VersionPlan`, plus explicit bounded base/source/generation and profile inputs.
 It copies canonical repository/package identities, selected dependency-first
 groups, every selected project's immutable tree SHA, the version/floor preview
@@ -150,9 +150,9 @@ created only with a `PushConsentReference` containing both an opaque reference
 and immutable digest. A boolean flag alone can never create a push stage.
 
 `FrozenReleasePlan.validate()` recomputes nested evidence and the exact plan
-preimage, while `validate_against(graph, selection)` additionally revalidates
+preimage, while `validate_against(graph, selection)` also revalidates
 the current graph, closure, and checkpoint-3 previews. These paths are intended
-to reject dataclass/Pydantic copy/construct and `object.__new__` forgeries,
+to reject dataclass/Pydantic copy/built and `object.__new__` forgeries,
 cleared or stale digests, changed source/tree/base/generation/profile/preview
 fields, reordered dependencies, unknown stage dependencies, cycles, and graph
 or selection drift. Inputs are exact builtin bounded containers and all refusal

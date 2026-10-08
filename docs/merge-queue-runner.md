@@ -10,7 +10,7 @@ repository-manager-install-merge-queue-runner \
 ```
 
 Installation writes the executable and all four units through same-directory
-temporary files, verifies every installed payload against its rendered source
+temporary files, checks every installed payload against its rendered source
 SHA-256, then runs `systemctl --user daemon-reload`. If a write or reload
 fails, the destinations are restored to their pre-install contents. The
 installer does not enable or start either timer; inspect the hash report first,
@@ -73,8 +73,8 @@ other non-zero child statuses are reported as failures. The user service
 invokes the direct Python interpreter captured at install time and the
 versioned runner source; it does not invoke `uv`, `uvx`, or a Snap wrapper. The unit uses
 `KillMode=control-group`, bounded CPU/memory/task accounting, and an explicit
-stop grace period. The runner also verifies every observed child/descendant
-remains in the service cgroup and terminates the whole process group plus the
+stop grace period. The runner also checks every observed child/descendant
+remains in the service cgroup and stop the whole process group plus the
 observed process tree if one escapes. A cgroup that cannot be inspected is a
 fail-closed error, so `/snap/bin/uv run ...` cannot silently escape the unit's
 resource controls.
@@ -92,9 +92,9 @@ deadline plus a 60-second stop margin. This is a supervisor safety ceiling,
 not a way to disable the per-gate deadlines declared in each `.mergequeue.yaml`.
 
 The phased-push unit is intentionally separate: it invokes the versioned
-runner, which launches `<installed-python> -m repository_manager --workspace
+runner, which starts `<installed-python> -m repository_manager --workspace
 <root> --file <validated-generated-manifest> --threads 1 --push` directly and
-verifies the entire descendant process tree. The generated manifest is derived
+checks the entire descendant process tree. The generated manifest is derived
 from canonical `workspace.yml` and removes only the declared reference-input
 components (including `open-source-libraries`); missing canonical roots still
 fail before the child starts. It has a default 18,000-second unit
