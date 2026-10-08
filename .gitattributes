@@ -198,3 +198,10 @@ Procfile          text
 # Concept governance (CONCEPT:OS-5.42)
 docs/concept_reservations.yaml  merge=union
 docs/concepts.md                merge=union
+
+# Read by the Bash bootstrap on every platform.
+scripts/siblings.lock text eol=lf
+
+# Preserve reviewed raw hashes for the Windows native qualification.
+/repository_manager/windows_filesystem.py text eol=lf
+/tests/test_windows_filesystem.py text eol=lf

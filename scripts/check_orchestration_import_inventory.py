@@ -371,7 +371,9 @@ def source_observations(
 ) -> tuple[list[dict], list[dict]]:
     tree = parsed_source(path, raw, resolver)
     aliases = loader_aliases(tree)
-    digest = hashlib.sha256(raw).hexdigest()
+    # Bind the committed text: a CRLF checkout (Windows autocrlf) of the same
+    # commit must produce the same evidence as the LF blob Git stores.
+    digest = hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()
     imports: list[dict] = []
     unresolved: list[dict] = []
     for node in ast.walk(tree):

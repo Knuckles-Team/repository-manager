@@ -90,6 +90,7 @@ from repository_manager.merge_queue import (
     _run_git,
     materialized,
 )
+from repository_manager.native_fs import name_from_portable, portable_name
 from repository_manager.test_commands import ensure_no_fail_fast
 
 CONFIG_FILENAME = ".buildcache.yaml"
@@ -652,13 +653,22 @@ def _spec_digest(spec: BuildSpec) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def config_text_digest(data: bytes) -> str:
+    """Digest of a config's text, independent of the checkout's line endings.
+
+    The worker reads the committed blob (LF) while a submitter may read a
+    working file Git for Windows checked out with CRLF; both must agree.
+    """
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
 def _config_digest(repo: Path) -> str:
     config_path = repo / CONFIG_FILENAME
     try:
         data = _read_bounded_regular_file(config_path, _MAX_CONFIG_BYTES)
     except BuildQueueError as exc:
         raise BuildQueueError(f"could not read {config_path}: {exc}") from exc
-    return hashlib.sha256(data).hexdigest()
+    return config_text_digest(data)
 
 
 def _generation_digest(generation_id: str | None) -> str:
@@ -721,7 +731,7 @@ def _artifact_root(path: Path | str | None = None) -> Path:
 
 
 def _manifest_path(key_digest: str, path: Path | str | None = None) -> Path:
-    return _artifact_root(path) / key_digest / "manifest.json"
+    return _artifact_root(path) / portable_name(key_digest) / "manifest.json"
 
 
 def _read_manifest(
@@ -775,7 +785,7 @@ def _resolve_expected_artifact_root(
     if path is None or not isinstance(expected_key, str) or not expected_key:
         return True, None
     try:
-        key_dir = _artifact_root(path) / expected_key
+        key_dir = _artifact_root(path) / portable_name(expected_key)
         artifacts_dir = key_dir / "artifacts"
         if key_dir.is_symlink() or artifacts_dir.is_symlink():
             return False, None
@@ -1029,7 +1039,7 @@ def _publish_artifacts(
         workdir.relative_to(tree)
     except ValueError as exc:
         raise BuildQueueError("legacy artifact workdir escapes the build tree") from exc
-    dest_dir = _artifact_root(path) / key_digest / "artifacts"
+    dest_dir = _artifact_root(path) / portable_name(key_digest) / "artifacts"
     _reject_symlink_path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     published: list[dict[str, Any]] = []
@@ -1772,9 +1782,10 @@ def _scan_cache_manifests(
                 return entries, "legacy cache scan exceeds its entry bound"
             if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
                 continue
-            manifest = _read_manifest(entry.name, scope.tree)
+            key = name_from_portable(entry.name)
+            manifest = _read_manifest(key, scope.tree)
             if manifest:
-                entries.append((entry.name, manifest))
+                entries.append((key, manifest))
     return entries, None
 
 
@@ -1804,7 +1815,7 @@ def _gc_entry_is_protected(
 
 def _gc_reclaim_entry(root: Path, digest: str) -> int | None:
     """Remove one cache entry's tree; ``None`` means keep (size probe failed)."""
-    entry_dir = root / digest
+    entry_dir = root / portable_name(digest)
     try:
         total_bytes = _bounded_legacy_tree_size(entry_dir)
     except BuildQueueError:

@@ -1340,7 +1340,7 @@ def _render_report_category_section(cat: "ValidationCategory") -> list[str]:
 def _write_report_text_file(path: str, lines: list[str], *, error_message: str) -> bool:
     """Write joined markdown ``lines`` to ``path``. Logs (never raises) on failure."""
     try:
-        with open(path, "w") as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
         return True
     except Exception as e:

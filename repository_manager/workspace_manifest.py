@@ -17,7 +17,7 @@ import re
 import tempfile
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
@@ -312,10 +312,23 @@ def _validate_portable_seed_string(value: str, *, field: str) -> None:
         raise WorkspaceManifestError("Portable seed contains a machine-local endpoint")
 
 
-def _portable_path(value: str, *, workspace_root: Path) -> str:
+def _manifest_root(workspace: str) -> PurePath:
+    """The workspace root in the syntax the manifest was written in.
+
+    A canonical manifest describes the host it was authored on, so its paths
+    are interpreted in their own (POSIX or Windows) syntax, not this host's.
+    """
+    for flavor in (PurePosixPath, PureWindowsPath):
+        root = flavor(workspace)
+        if root.is_absolute():
+            return root
+    raise WorkspaceManifestError("Canonical manifest path must be absolute")
+
+
+def _portable_path(value: str, *, workspace_root: PurePath) -> str:
     """Parameterize an absolute workspace path without retaining its prefix."""
 
-    candidate = Path(value)
+    candidate = type(workspace_root)(value)
     if not candidate.is_absolute():
         return value
     try:
@@ -356,9 +369,7 @@ def project_portable_seed(data: dict[str, Any]) -> dict[str, Any]:
     workspace = data.get("path")
     if not isinstance(workspace, str) or not workspace:
         raise WorkspaceManifestError("Canonical manifest path must be a string")
-    workspace_root = Path(workspace)
-    if not workspace_root.is_absolute():
-        raise WorkspaceManifestError("Canonical manifest path must be absolute")
+    workspace_root = _manifest_root(workspace)
 
     def project(value: object, *, field: str = "") -> object:
         if isinstance(value, dict):

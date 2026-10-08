@@ -24,6 +24,7 @@ import re
 import selectors
 import shutil
 import subprocess  # nosec B404 - all calls below use fixed argv
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -61,6 +62,11 @@ from repository_manager.validation_policy import (
     ValidationPolicyError,
     ValidationProfile,
 )
+
+
+def _names_path(spelling: str | None, path: Path) -> bool:
+    """Whether Git's ``spelling`` names ``path`` (Windows Git prints ``/``)."""
+    return spelling is not None and Path(spelling) == path
 
 
 class ValidationRunnerError(ValueError):
@@ -187,6 +193,75 @@ def _pump_bounded_output(
         if _drain_selector_events(events, buffers, max_bytes, selector, process):
             return "overflow_killed"
     return "ok"
+
+
+def _pump_with_selector(
+    process: subprocess.Popen,
+    stdout: IO[bytes],
+    stderr: IO[bytes],
+    buffers: dict[str, bytearray],
+    deadline: float,
+    max_bytes: int,
+) -> str:
+    """POSIX: multiplex both pipes with a selector."""
+    selector = selectors.DefaultSelector()
+    try:
+        selector.register(stdout, selectors.EVENT_READ, "stdout")
+        selector.register(stderr, selectors.EVENT_READ, "stderr")
+        return _pump_bounded_output(process, selector, buffers, deadline, max_bytes)
+    finally:
+        selector.close()
+
+
+def _pump_with_threads(
+    process: subprocess.Popen,
+    stdout: IO[bytes],
+    stderr: IO[bytes],
+    buffers: dict[str, bytearray],
+    deadline: float,
+    max_bytes: int,
+) -> str:
+    """Windows: selectors only accept sockets, so each pipe gets a reader.
+
+    Same contract as :func:`_pump_bounded_output`: the byte budget, deadline
+    and kill/reap behaviour are identical.
+    """
+    overflow = threading.Event()
+    readers = [
+        threading.Thread(
+            target=_read_bounded,
+            args=(stream, buffers[name], max_bytes, overflow, process),
+            daemon=True,
+        )
+        for name, stream in (("stdout", stdout), ("stderr", stderr))
+    ]
+    for reader in readers:
+        reader.start()
+    for reader in readers:
+        reader.join(max(0.0, deadline - time.monotonic()))
+    if any(reader.is_alive() for reader in readers):
+        process.kill()
+        process.wait()
+        return "timeout_killed"
+    return "overflow_killed" if overflow.is_set() else "ok"
+
+
+def _read_bounded(
+    stream: IO[bytes],
+    buffer: bytearray,
+    max_bytes: int,
+    overflow: threading.Event,
+    process: subprocess.Popen,
+) -> None:
+    while chunk := os.read(stream.fileno(), 64 * 1024):
+        if len(buffer) + len(chunk) > max_bytes:
+            overflow.set()
+            process.kill()
+            return
+        buffer.extend(chunk)
+
+
+_PUMP_OUTPUT = _pump_with_threads if os.name == "nt" else _pump_with_selector
 
 
 def _normalize_changed_path(raw_path: bytes) -> str | None:
@@ -1011,7 +1086,7 @@ class ValidationRunner:
 
     def _verify_head_matches(self, request: ValidationRequest, tree: Path) -> None:
         current = self._git_output(["rev-parse", "--show-toplevel"], tree)
-        if current != str(tree):
+        if not _names_path(current, tree):
             raise ValidationPreparationError(
                 "tree path is not the Git worktree top-level"
             )
@@ -1182,21 +1257,14 @@ class ValidationRunner:
         if spawned is None:
             return None
         process, stdout, stderr = spawned
-        selector = selectors.DefaultSelector()
-        selector.register(stdout, selectors.EVENT_READ, "stdout")
-        selector.register(stderr, selectors.EVENT_READ, "stderr")
         buffers: dict[str, bytearray] = {"stdout": bytearray(), "stderr": bytearray()}
         deadline = time.monotonic() + timeout_seconds
         try:
-            state = _pump_bounded_output(
-                process, selector, buffers, deadline, max_bytes
-            )
+            state = _PUMP_OUTPUT(process, stdout, stderr, buffers, deadline, max_bytes)
         except OSError:
             process.kill()
             process.wait()
             return None
-        finally:
-            selector.close()
         if state == "timeout_killed":
             return None
         if state == "overflow_killed":

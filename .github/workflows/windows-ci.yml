@@ -1,47 +1,7 @@
 name: Windows coverage
 
-# ─────────────────────────────────────────────────────────────────────────
-# This repo previously had NO test/lint CI at all -- pipeline.yml only
-# builds and publishes to PyPI/Docker via a self-hosted runner (no test
-# step), and docs.yml/pages.yml only build documentation. This is the
-# FIRST workflow in this repo that actually imports and exercises the
-# package.
-#
-# Report-only by design (continue-on-error on every step, like
-# agent-utilities' advisory.yml two-workflow model): repository-manager's
-# publish pipeline is not gated on this, consistent with "do not disable or
-# weaken any existing CI job" -- this only adds signal, it does not touch
-# pipeline.yml.
-#
-# Every FEATURE in this repo is required to work on both platforms -- only
-# its MECHANISM may be platform-specific. So the exclusions below are two
-# different categories, not one "can't run on Windows" bucket:
-#
-# (A) INFRASTRUCTURE-UNAVAILABLE -- cannot exist on a GitHub-hosted Windows
-#     runner: `integration`-marked tests (subprocess/TestClient harness
-#     assumptions), `slow`-marked tests (long-running, excluded on ANY
-#     platform for a per-push job), and anything assuming Docker-in-CI or a
-#     self-hosted build host (none are in the selected subset below).
-#
-# (B) FEATURE-NOT-YET-PORTABLE -- a real, individually-listed defect, NOT
-#     excluded from the work queue just because it is excluded from this
-#     job's pytest invocation:
-#   * The import-safety step below is currently expected to FAIL: this
-#     package's own core module (repository_manager/repository_manager.py)
-#     eagerly imports repository_manager.canonical_guard, which has an
-#     unguarded top-level `import fcntl` -- so `import repository_manager`
-#     fails OUTRIGHT on a real Windows interpreter, before a single test
-#     can even collect. Five more files share the identical unguarded
-#     top-level `import fcntl` (fairness.py, task_queue.py,
-#     reservations.py, canonical_guard.py, stash_guard.py), plus 4 more
-#     lazy (function-body) sites in build_artifacts.py invisible to a
-#     static import walk. See .pre-commit-config.yaml's check-import-safety
-#     hook for the same finding at commit time. Left unexcluded and RED on
-#     purpose -- the tool that runs the FLEET's gates currently cannot be
-#     imported on Windows at all, and a job that went green by skipping
-#     that would be exactly the "gate reporting coverage it does not have"
-#     failure this program exists to catch.
-# ─────────────────────────────────────────────────────────────────────────
+# Use the same pinned sibling sources and non-native environment as Linux CI.
+# Setup, import, and test failures must fail this job; release policy is separate.
 
 on:
   pull_request:
@@ -61,7 +21,7 @@ permissions:
 
 jobs:
   windows:
-    name: Windows coverage (report only, never blocks)
+    name: Windows coverage
     runs-on: windows-latest
     permissions:
       contents: read
@@ -83,41 +43,81 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Sync test environment
-        id: sync
-        continue-on-error: true
-        run: |
-          uv sync --frozen --extra test
-          echo "$PWD/.venv/Scripts" >> "$GITHUB_PATH"
-          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - name: Bootstrap pinned test environment
+        id: bootstrap
+        run: scripts/bootstrap.sh
 
-      # See the header comment: this is EXPECTED to fail right now
-      # (repository_manager.canonical_guard's unguarded `import fcntl` is
-      # in the package's own eager import chain).
       - name: Cross-platform import safety (real Windows interpreter)
-        if: steps.sync.outcome == 'success'
-        continue-on-error: true
-        run: python3 scripts/check_import_safety.py --package repository_manager
+        id: imports
+        run: uv run --frozen --no-sync python scripts/check_import_safety.py --package repository_manager
 
-      # Same marker filter this repo's own pre-commit pytest hook already
-      # uses at commit time (fast, no integration/slow), so a green run here
-      # is directly comparable to "passes locally".
+      # Preserve the existing fast, non-native subset. Run it even when the
+      # import check fails, so both checks retain their own failure evidence.
       - name: Unit tests (fast subset -- not slow, not integration)
-        if: steps.sync.outcome == 'success'
-        continue-on-error: true
+        id: tests
+        if: ${{ !cancelled() && steps.bootstrap.outcome == 'success' }}
         run: >-
-          python3 -m pytest tests -q --tb=short -m "not slow and not integration and not native" --timeout=120
+          uv run --frozen --no-sync python -m pytest tests -q --tb=short
+          -m "not slow and not integration and not native" --timeout=120
+
+      # Native Windows qualification: reuse the existing environment; install nothing.
+      # This runner-enforced timeout also bounds native calls that cannot return.
+      - name: Windows filesystem native qualification
+        id: native_probe
+        if: ${{ !cancelled() && steps.bootstrap.outcome == 'success' }}
+        timeout-minutes: 15
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          evidence_dir="$RUNNER_TEMP/windows-native-probe"
+          mkdir -p "$evidence_dir"
+          printf '%s\n' '{"status":"BLOCKED_OR_INTERRUPTED","activation_qualified":false,"cases":[]}' > "$evidence_dir/qualification.json"
+          ./.venv/Scripts/python.exe -c '
+          import ctypes, json, os, platform, sys
+          from pathlib import Path
+          accepted = (sys.platform == "win32" and sys.version_info[:2] == (3, 12)
+                      and platform.python_implementation() == "CPython"
+                      and ctypes.sizeof(ctypes.c_void_p) == 8
+                      and ctypes.sizeof(ctypes.c_wchar) == 2 and __debug__)
+          record = {"status": "READY" if accepted else "BLOCKED",
+                    "activation_qualified": False, "python": sys.version,
+                    "system": sys.platform, "machine": platform.machine(),
+                    "windows_build": platform.version(), "assertions": __debug__,
+                    "sha": os.environ.get("GITHUB_SHA"),
+                    "run_id": os.environ.get("GITHUB_RUN_ID"),
+                    "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT")}
+          (Path(sys.argv[1]) / "environment.json").write_text(
+              json.dumps(record, indent=2) + "\n", encoding="utf-8")
+          raise SystemExit(0 if accepted else 2)
+          ' "$evidence_dir"
+          ./.venv/Scripts/python.exe -c "import runpy; runpy.run_path('tests/test_windows_filesystem.py', run_name='__main__')" \
+            --qualify-windows \
+            --expected-backend-sha256 7abb04a51af629390d0fd3ec8fbb9d9c8704ff18ab47c4f703377394b18c114b \
+            --expected-tests-sha256 e6a2545e42c0473a5aa750db6984699a42af282f0da2cce2edf7c74a77dce1dd \
+            --output "$evidence_dir/qualification.json" --repetitions 3
+
+      - name: Retain Windows native qualification evidence
+        if: always()
+        timeout-minutes: 5
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-native-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-native-probe/*.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Windows coverage summary
         if: always()
+        env:
+          BOOTSTRAP_OUTCOME: ${{ steps.bootstrap.outcome }}
+          IMPORT_OUTCOME: ${{ steps.imports.outcome }}
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+          NATIVE_PROBE_OUTCOME: ${{ steps.native_probe.outcome }}
         run: |
-          echo "## Windows coverage ran in report-only mode" >> "$GITHUB_STEP_SUMMARY"
-          echo "Both steps above use continue-on-error: true -- a red step" >> "$GITHUB_STEP_SUMMARY"
-          echo "here is a real Windows regression and never blocks the" >> "$GITHUB_STEP_SUMMARY"
-          echo "publish pipeline. The import-safety step is EXPECTED red" >> "$GITHUB_STEP_SUMMARY"
-          echo "right now: repository_manager.canonical_guard's unguarded" >> "$GITHUB_STEP_SUMMARY"
-          echo "top-level 'import fcntl' is in the package's own eager" >> "$GITHUB_STEP_SUMMARY"
-          echo "import chain, so the whole package fails to import on" >> "$GITHUB_STEP_SUMMARY"
-          echo "Windows today. See this file's header comment for the full" >> "$GITHUB_STEP_SUMMARY"
-          echo "list of affected modules and the infra-unavailable vs" >> "$GITHUB_STEP_SUMMARY"
-          echo "feature-not-yet-portable split." >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Windows validation"
+            echo "Bootstrap: $BOOTSTRAP_OUTCOME"
+            echo "Import safety: $IMPORT_OUTCOME"
+            echo "Unit tests: $TEST_OUTCOME"
+            echo "Native qualification: $NATIVE_PROBE_OUTCOME"
+          } >> "$GITHUB_STEP_SUMMARY"

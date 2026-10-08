@@ -8,6 +8,7 @@ and nowhere else.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import textwrap
@@ -109,13 +110,19 @@ def test_run_build_command_injects_no_fail_fast(
 # ---------------------------------------------------------------------------
 # Disk admission (P0.6) — a structural refusal, with a bounded self-heal
 # ---------------------------------------------------------------------------
+# The build is this interpreter, not a shell, so it runs on every platform.
+_WRITE_PAYLOAD = json.dumps(
+    [sys.executable, "-c", "open('out.txt', 'wb').write(b'payload\\n')"]
+)
+
+
 def _buildcache_yaml(*, disk_estimate_mb: int = 0) -> str:
     return textwrap.dedent(
         f"""
         base: main
         specs:
           - name: widget
-            command: ["bash", "-c", "echo payload > out.txt"]
+            command: {_WRITE_PAYLOAD}
             workdir: "."
             cache_key_paths: ["src.txt"]
             artifacts: ["out.txt"]

@@ -24,6 +24,7 @@ depends on stack order again.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -48,7 +49,10 @@ class FakeGit:
     ) -> SimpleNamespace:
         del env, timeout, raw_output
         p = subprocess.run(
-            command, shell=True, cwd=path, capture_output=True, text=True
+            shlex.split(command),  # same parsing as Git.git_action
+            cwd=path,
+            capture_output=True,
+            text=True,
         )
         out = (p.stdout + p.stderr).strip()
         return SimpleNamespace(
@@ -135,7 +139,7 @@ def test_capture_moves_tracked_and_untracked_wip_off_the_shared_stack(repo):
 
     result = stash_guard.capture_wip(FakeGit(), repo, label="lane-a")
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["ref"] is not None
     assert result["ref"].startswith("refs/lane/rm-adopt-stash/lane-a-")
     # canonical tree is clean again
@@ -234,7 +238,7 @@ def test_private_ref_pattern_is_immune_to_a_stash_push_that_lands_afterward(repo
     git = FakeGit()
 
     captured = stash_guard.capture_wip(git, repo, label="lane-RM")
-    assert captured["ok"] is True
+    assert captured["ok"] is True, captured
     assert _stash_list(repo) == ""  # nothing left on the shared stack
 
     # The interloper now pushes its own WIP onto the (now-empty) shared stack.
@@ -244,7 +248,7 @@ def test_private_ref_pattern_is_immune_to_a_stash_push_that_lands_afterward(repo
 
     # RM applies from its OWN ref, not from the shared stack.
     applied = stash_guard.apply_and_clear(git, repo, captured["ref"])
-    assert applied["ok"] is True
+    assert applied["ok"] is True, applied
 
     assert open(os.path.join(repo, "a.txt")).read() == "lane-RM own WIP\n"
     assert os.path.isfile(os.path.join(repo, "rm-only.txt"))
@@ -263,7 +267,7 @@ def test_capture_wip_never_reads_or_writes_an_existing_shared_stash(repo):
 
     captured = stash_guard.capture_wip(FakeGit(), repo, label="lane-RM")
 
-    assert captured["ok"] is True
+    assert captured["ok"] is True, captured
     assert _stash_list(repo) == existing
     assert _status(repo) == ""
     restored = stash_guard.apply_and_clear(FakeGit(), repo, captured["ref"])
@@ -295,7 +299,7 @@ def test_two_repository_manager_captures_on_the_same_canonical_never_cross(repo)
     git = HookedGit({"git update-ref refs/lane/rm-adopt-stash": _lane_b_races_in})
     result_a = stash_guard.capture_wip(git, repo, label="lane-A")
 
-    assert result_a["ok"] is True
+    assert result_a["ok"] is True, result_a
     # B was refused -- serialized out, not allowed to interleave.
     assert len(b_attempts) == 1
     assert b_attempts[0]["ok"] is False
@@ -303,7 +307,7 @@ def test_two_repository_manager_captures_on_the_same_canonical_never_cross(repo)
 
     # A's own WIP landed on A's own ref, uncontaminated.
     applied_a = stash_guard.apply_and_clear(FakeGit(), repo, result_a["ref"])
-    assert applied_a["ok"] is True
+    assert applied_a["ok"] is True, applied_a
     assert open(os.path.join(repo, "a.txt")).read() == "lane-A WIP\n"
     assert os.path.isfile(os.path.join(repo, "a-only.txt"))
 
@@ -311,4 +315,4 @@ def test_two_repository_manager_captures_on_the_same_canonical_never_cross(repo)
     # independent capture of whatever B's tree holds at that point (here:
     # nothing, since B never got to dirty its own tree in this scenario).
     retry_b = stash_guard.capture_wip(FakeGit(), repo, label="lane-B")
-    assert retry_b["ok"] is True
+    assert retry_b["ok"] is True, retry_b

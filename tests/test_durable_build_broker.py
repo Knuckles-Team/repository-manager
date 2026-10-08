@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from collections.abc import Callable, Mapping
@@ -13,6 +14,7 @@ from typing import Any, cast
 
 import pytest
 
+from repository_manager.native_fs import portable_name
 from repository_manager import build_artifacts as artifact_module
 from repository_manager import build_queue as bq
 from repository_manager.build_artifacts import (
@@ -307,7 +309,7 @@ def test_worker_recomputes_enabled_toolchain_fingerprint_on_materialized_sha(
     result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert calls and calls[0][1] == (
         "python3",
         "-c",
@@ -361,7 +363,7 @@ def test_worker_rechecks_uncacheable_toolchain_without_publishing_cache(
     result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["degraded"] is True
     assert calls == [("python3", "-c", "import sys; sys.exit(1)")]
     assert list(store.iter_entries()) == []
@@ -683,7 +685,7 @@ def test_validate_manifest_caps_sparse_bytes_and_fsync_refuses_symlinks(
 ) -> None:
     store = BuildArtifactStore(tmp_path / "cache")
     key = "v2:oversized-file"
-    artifact_dir = store.root / key / "artifacts"
+    artifact_dir = store._key_dir(key) / "artifacts"
     artifact_dir.mkdir(parents=True)
     artifact = artifact_dir / "large.bin"
     with artifact.open("wb") as handle:
@@ -826,7 +828,7 @@ def test_publish_quarantines_orphan_final_directory_before_republish(
     (output / "artifact.txt").write_text("ok", encoding="utf-8")
     store = BuildArtifactStore(tmp_path / "cache")
     key = "v2:orphan"
-    orphan = store.root / key / "artifacts"
+    orphan = store._key_dir(key) / "artifacts"
     orphan.mkdir(parents=True)
     (orphan / "leftover").write_text("crash", encoding="utf-8")
     staged = store.stage(
@@ -1137,7 +1139,7 @@ def test_worker_uses_submitted_argv_when_current_config_drifts(
     result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     manifest = store.read_manifest(result["key"])
     assert manifest is not None
     artifact = Path(manifest["artifacts"][0]["stored_at"])
@@ -1153,7 +1155,7 @@ def test_worker_executes_after_admission_and_recovers_terminal_manifest(
     result = worker.run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["state"] == "succeeded"
     assert scheduler.releases == ["reservation:test"]
     manifest = store.read_manifest(result["key"])
@@ -1162,7 +1164,7 @@ def test_worker_executes_after_admission_and_recovers_terminal_manifest(
     recovered = fresh.recover(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert recovered["ok"] is True
+    assert recovered["ok"] is True, recovered
     assert recovered["recovered"] is True
 
 
@@ -1287,7 +1289,7 @@ def test_worker_reports_reconciliation_after_terminal_commit_finalize_failure(
     recovered = BuildWorker(authority, scheduler, artifact_store=store).recover(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert recovered["ok"] is True
+    assert recovered["ok"] is True, recovered
     assert staged.stage_dir.exists()
 
 
@@ -1373,12 +1375,12 @@ def test_degraded_recover_requires_exact_terminal_result_ref(
     result = BuildWorker(authority, scheduler, artifact_store=store).run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["result_ref"] == (f"build-degraded:{authority.row.job_id}:fence:f1")
     recovered = BuildWorker(authority, scheduler, artifact_store=store).recover(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert recovered["ok"] is True
+    assert recovered["ok"] is True, recovered
     assert recovered["recovered"] is True
 
     authority.row = authority.row.model_copy(
@@ -1749,13 +1751,13 @@ def test_worker_surfaces_release_reconciliation_without_rerunning(
     result = worker.run_job(
         authority.row.job_id, repo_path=repo, spec_name="test-build"
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["release_pending"] is True
     assert result["reconciliation_pending"] is True
     assert worker.release_failures()
     scheduler.release_behavior = True
     reconciled = worker.reconcile_releases()
-    assert reconciled["ok"] is True
+    assert reconciled["ok"] is True, reconciled
     assert worker.release_failures() == {}
     assert [item["outcome"] for item in authority.commits] == ["succeeded"]
 
@@ -1797,7 +1799,7 @@ def test_disk_admission_refusal_happens_before_executor_process(
 def test_gc_protects_live_pinned_waited_and_running_keys(tmp_path: Path) -> None:
     store = BuildArtifactStore(tmp_path / "cache")
     key = "v2:protected"
-    entry = store.root / key
+    entry = store._key_dir(key)
     entry.mkdir()
     (entry / "manifest.json").write_text(
         '{"schema":"build-artifact:v2","key":"v2:protected",'
@@ -1865,11 +1867,11 @@ def test_gc_probe_fails_closed_and_stable_identity_does_not_use_basename(
     second_root.mkdir(parents=True)
     assert bq.stable_repository_id(first) != bq.stable_repository_id(second_root)
     store = BuildArtifactStore(tmp_path / "cache")
-    (store.root / "v2:gc" / "artifacts").mkdir(parents=True)
-    (store.root / "v2:gc" / "artifacts" / "x").write_text("x", encoding="utf-8")
-    (store.root / "v2:gc" / "manifest.json").write_text(
+    (store._key_dir("v2:gc") / "artifacts").mkdir(parents=True)
+    (store._key_dir("v2:gc") / "artifacts" / "x").write_text("x", encoding="utf-8")
+    (store._key_dir("v2:gc") / "manifest.json").write_text(
         f'{{"schema":"build-artifact:v2","key":"v2:gc","publication_state":"committed",'
-        f'"artifacts":[{{"stored_at":"{store.root / "v2:gc" / "artifacts" / "x"}",'
+        f'"artifacts":[{{"stored_at":{json.dumps(str(store._key_dir("v2:gc") / "artifacts" / "x"))},'
         '"sha256":"2d711642b726b04401627ca9fbac32f5da7e1e1f9b9f0f3f8f2f7b9b1b9b9b9b9",'
         '"bytes":1}]}',
         encoding="utf-8",
@@ -1881,7 +1883,7 @@ def test_artifact_manifest_and_root_scan_bounds_fail_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store = BuildArtifactStore(tmp_path / "cache")
-    oversized = store.root / "v2:oversized"
+    oversized = store._key_dir("v2:oversized")
     oversized.mkdir()
     (oversized / "manifest.json").write_bytes(
         b"{" + b'"x":"' + b"x" * (1 << 20) + b'"}'
@@ -1889,7 +1891,7 @@ def test_artifact_manifest_and_root_scan_bounds_fail_closed(
     assert store.read_manifest("v2:oversized") is None
 
     (store.root / ".hidden-entry").mkdir()
-    (store.root / "v2:visible-entry").mkdir()
+    (store._key_dir("v2:visible-entry")).mkdir()
     monkeypatch.setattr(artifact_module, "_MAX_SCAN_ENTRIES", 3)
     with pytest.raises(ArtifactStoreError, match="entry scan"):
         store.iter_entries()
@@ -1911,8 +1913,8 @@ def test_legacy_compatibility_artifacts_reject_symlinks_and_bound_gc(
         bq._publish_artifacts(tree, spec, "v1:legacy", tree)  # noqa: SLF001
 
     root = bq._artifact_root(tree)  # noqa: SLF001
-    (root / "v1:one").mkdir(parents=True, exist_ok=True)
-    (root / "v1:two").mkdir(parents=True, exist_ok=True)
+    (root / portable_name("v1:one")).mkdir(parents=True, exist_ok=True)
+    (root / portable_name("v1:two")).mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(bq, "_MAX_LEGACY_SCAN_ENTRIES", 1)
     result = bq.gc(repo_path=tree, keep_recent=0, max_age_days=0)
     assert result["removed"] == []

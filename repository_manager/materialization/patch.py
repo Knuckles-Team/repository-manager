@@ -22,7 +22,14 @@ from uuid import uuid4
 __all__ = ["PatchRejected", "apply_patch", "changed_paths_in_patch", "run_git"]
 
 _HEADER_RE = re.compile(r"^(?:\+\+\+|---) (?:a/|b/)(.+)$", re.MULTILINE)
-_SYMLINK_MODE_RE = re.compile(r"^(?:old|new) mode 120000$", re.MULTILINE)
+# Every git header that introduces or retargets a symlink: a mode change, a
+# new file, a type change (delete + new file), or an edit of an existing link.
+# The static check is the only one that holds where Git writes links as plain
+# files (Windows, core.symlinks=false), so it must not rely on the work tree.
+_SYMLINK_MODE_RE = re.compile(
+    r"^(?:(?:old|new|new file) mode 120000|index [0-9a-f]+\.\.[0-9a-f]+ 120000)$",
+    re.MULTILINE,
+)
 _DEV_NULL = "/dev/null"
 
 
@@ -129,7 +136,8 @@ def apply_patch(
 
     patch_name = f".materialize-{uuid4().hex}.patch"
     patch_file = worktree_path / patch_name
-    patch_file.write_text(patch_text, encoding="utf-8")
+    # Byte-exact: a patch must not gain CRLF line endings on Windows.
+    patch_file.write_bytes(patch_text.encode("utf-8"))
     try:
         check = run_git(["git", "apply", "--check", "--", patch_name], worktree_path)
         if check.returncode != 0:

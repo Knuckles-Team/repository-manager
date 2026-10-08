@@ -149,6 +149,9 @@ def test_security_contract_fails_closed_without_unix_resource_limits() -> None:
     # `module` is a runtime-loaded ModuleType, so mypy cannot know its
     # attributes; setattr says "poke this dynamically-loaded module" directly.
     setattr(module, "_resource", None)
+    # The POSIX hook runner is the one that needs ``resource``; Windows uses
+    # the pipe-bounded relay instead, so pin the POSIX branch here.
+    setattr(module, "_WINDOWS", False)
 
     with pytest.raises(module.SecurityContractError, match="Unix resource support"):
         module._limit_hook_output()

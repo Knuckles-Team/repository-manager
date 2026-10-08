@@ -10,6 +10,7 @@ approval and temporary Git repository fixtures cover every rule".
 from __future__ import annotations
 
 import hashlib
+import shlex
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -59,7 +60,10 @@ class FakeGit:
     ):
         del env, timeout, raw_output
         proc = subprocess.run(
-            command, shell=True, cwd=path or self.path, capture_output=True, text=True
+            shlex.split(command),  # same parsing as Git.git_action
+            cwd=path or self.path,
+            capture_output=True,
+            text=True,
         )
         out = (proc.stdout + proc.stderr).strip()
         return SimpleNamespace(
@@ -113,13 +117,12 @@ def _make_patch(
     scratch = tmp_path / f"scratch-{label}"
     _git(["worktree", "add", "--detach", str(scratch), "main"], repo)
     try:
+        if symlink:
+            return _staged_symlink_patch(scratch, changes)
         for rel, content in changes.items():
             target = scratch / rel
             if content is None:
                 target.unlink()
-            elif symlink:
-                target.unlink(missing_ok=True)
-                target.symlink_to(content)
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(
@@ -130,6 +133,28 @@ def _make_patch(
         return diff.stdout
     finally:
         _git(["worktree", "remove", "--force", str(scratch)], repo, check=False)
+
+
+def _staged_symlink_patch(scratch: Path, changes: dict[str, str | None]) -> str:
+    """The patch Git writes for replacing files with symlinks (mode 120000).
+
+    Built from the index rather than a filesystem symlink, so it is the same
+    on every platform (Windows symlinks depend on privileges and Git config).
+    """
+    for rel, target in changes.items():
+        blob = (
+            subprocess.run(
+                ["git", "hash-object", "-w", "--stdin"],
+                cwd=str(scratch),
+                input=str(target).encode(),
+                capture_output=True,
+                check=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
+        _git(["update-index", "--cacheinfo", f"120000,{blob},{rel}"], scratch)
+    return _git(["diff", "--cached", "--no-color"], scratch, check=False).stdout
 
 
 def _proposal(
@@ -677,3 +702,19 @@ def test_unavailable_merge_queue_leaves_a_committed_candidate_pending(
     # in doubt. The canonical repo's own `main` is still untouched.
     assert receipt.commit_sha is not None
     assert _base_sha(repo) == base_before
+
+
+def test_symlink_headers_are_rejected_without_touching_the_work_tree(tmp_path):
+    """Where Git writes links as plain files, only the static check can refuse."""
+    from repository_manager.materialization.patch import PatchRejected, apply_patch
+
+    headers = (
+        "new file mode 120000\nindex 0000000..1111111\n",
+        "old mode 100644\nnew mode 120000\n",
+        "index 1111111..2222222 120000\n",
+    )
+    for header in headers:
+        patch = f"diff --git a/allowed.txt b/allowed.txt\n{header}--- a/allowed.txt\n+++ b/allowed.txt\n"
+        with pytest.raises(PatchRejected, match="symlink"):
+            apply_patch(tmp_path, patch, ("allowed.txt",))
+    assert list(tmp_path.iterdir()) == []

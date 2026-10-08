@@ -9,11 +9,13 @@ import asyncio
 import datetime as dt
 import json
 import subprocess
+import sys
 import textwrap
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from repository_manager import build_queue as bq
 from repository_manager import task_queue as tq
@@ -55,18 +57,29 @@ def _commit(repo: Path, message: str = "commit") -> str:
     return _run("git rev-parse HEAD", repo)
 
 
-def _counter_spec(counter_path: Path) -> str:
+def _counter_script(counter_path: PurePath, delay: float) -> str:
+    return (
+        "import pathlib, time\n"
+        f"time.sleep({delay!r})\n"
+        f"with open({str(counter_path)!r}, 'ab') as stream: stream.write(b'built\\n')\n"
+        "pathlib.Path('out.txt').write_bytes(b'payload\\n')\n"
+    )
+
+
+def _counter_spec(counter_path: PurePath, *, delay: float = 0.0) -> str:
     # `counter_path` is an ABSOLUTE path outside the repo tree on purpose: a
     # cache-hit-eligible (clean-tree) build runs in a THROWAWAY materialized
     # worktree elsewhere on disk (never in place), so a relative "../counter"
     # would land in a different directory each time and silently prove
-    # nothing about whether the build command actually re-ran.
+    # nothing about whether the build command actually re-ran.  The build is
+    # this interpreter, not a shell, so it runs identically on every platform.
+    command = json.dumps([sys.executable, "-c", _counter_script(counter_path, delay)])
     return textwrap.dedent(
         f"""
         base: main
         specs:
           - name: widget
-            command: ["bash", "-c", "echo built >> {counter_path}; echo payload > out.txt"]
+            command: {command}
             workdir: "."
             cache_key_paths: ["src.txt"]
             artifacts: ["out.txt"]
@@ -89,7 +102,9 @@ def _healthy_disk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         bq.shutil,
         "disk_usage",
-        lambda _path: SimpleNamespace(total=total, used=total // 10, free=total - total // 10),
+        lambda _path: SimpleNamespace(
+            total=total, used=total // 10, free=total - total // 10
+        ),
     )
 
 
@@ -203,20 +218,7 @@ def test_two_concurrent_same_key_requests_build_exactly_once(tmp_path: Path):
     counter = tmp_path / "counter.txt"
     root = _init_repo(tmp_path / "repo")
     (root / "src.txt").write_text("v1\n")
-    (root / bq.CONFIG_FILENAME).write_text(
-        textwrap.dedent(
-            f"""
-            base: main
-            specs:
-              - name: widget
-                command: ["bash", "-c", "sleep 0.5; echo built >> {counter}; echo payload > out.txt"]
-                workdir: "."
-                cache_key_paths: ["src.txt"]
-                artifacts: ["out.txt"]
-                timeout: 30
-            """
-        )
-    )
+    (root / bq.CONFIG_FILENAME).write_text(_counter_spec(counter, delay=0.5))
     _commit(root)
 
     results: list[dict] = []
@@ -275,13 +277,14 @@ def test_request_without_colocation_proof_is_refused(repo: Path):
 def test_build_that_produces_no_declared_artifact_fails(tmp_path: Path):
     root = _init_repo(tmp_path / "empty-build")
     (root / "src.txt").write_text("v1\n")
+    succeed = json.dumps([sys.executable, "-c", "pass"])
     (root / bq.CONFIG_FILENAME).write_text(
         textwrap.dedent(
-            """
+            f"""
             base: main
             specs:
               - name: widget
-                command: ["true"]
+                command: {succeed}
                 cache_key_paths: ["src.txt"]
                 artifacts: ["nothing-*.bin"]
             """
@@ -546,3 +549,13 @@ def test_manifest_verification_refuses_a_cache_dir_relocated_into_a_work_tree(
 
     with pytest.raises(bq.BuildQueueError, match="git-discoverable"):
         bq._manifest_is_valid(manifest, relocated_repo, digest)
+
+
+@pytest.mark.parametrize("delay", [0.0, 0.5])
+def test_counter_spec_preserves_windows_paths_in_yaml(delay: float) -> None:
+    counter = PureWindowsPath("C:/Users/Test User/O'Brien/counter.txt")
+    command = yaml.safe_load(_counter_spec(counter, delay=delay))["specs"][0][
+        "command"
+    ]
+    assert command == [sys.executable, "-c", _counter_script(counter, delay)]
+    assert repr(str(counter)) in command[2]

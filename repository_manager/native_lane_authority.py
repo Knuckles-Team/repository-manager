@@ -41,6 +41,7 @@ best-effort SQLite projection RMDD-09's own ``LaneRegistry`` already owns
 
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -259,6 +260,20 @@ class _HoldFields:
     hold_revision: int
 
 
+# Host-owned state lives under /var/lib on POSIX and %ProgramData% on Windows.
+_DEFAULT_MANAGED_ROOT = (
+    Path(os.environ.get("ProgramData", "C:\\ProgramData"))
+    / "repository-manager"
+    / "lanes"
+    if os.name == "nt"
+    else Path("/var/lib/repository-manager/lanes")
+)
+
+
+def _managed_root_path(managed_root: str | Path | None) -> Path:
+    return Path(managed_root) if managed_root else _DEFAULT_MANAGED_ROOT
+
+
 class NativeLaneAuthority:
     """Bind RMDD-09's ``native`` protocol to the RMDD-28 native transaction."""
 
@@ -269,7 +284,7 @@ class NativeLaneAuthority:
         *,
         tenant_ref: str,
         host_ref: str,
-        managed_root: str | Path = "/var/lib/repository-manager/lanes",
+        managed_root: str | Path | None = None,
         quota_policy_name: str = "default",
         quota_policy_version: str = "1",
         clock: Callable[[], datetime] | Any | None = None,
@@ -298,7 +313,7 @@ class NativeLaneAuthority:
         # best-effort SQLite projection (LaneRegistry._project, never an
         # authorization path) retains the real path from the original
         # allocate() call; this is a disclosed v1 residual, not a silent gap.
-        self._managed_root = Path(managed_root)
+        self._managed_root = _managed_root_path(managed_root)
         self._quota_policy_name = _string(quota_policy_name, name="quota_policy_name")
         self._quota_policy_version = _string(
             quota_policy_version, name="quota_policy_version"

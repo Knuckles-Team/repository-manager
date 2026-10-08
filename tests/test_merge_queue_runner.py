@@ -24,6 +24,7 @@ from repository_manager.merge_queue_runner import (
     drain_repository,
     run_phased_push,
 )
+from tests.portable_executables import write_python_program
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 
@@ -419,16 +420,13 @@ def test_drain_uses_fixed_argv_and_preserves_lease_defer_code(tmp_path: Path) ->
     _workspace(tmp_path)
     repository = declared_repositories(tmp_path)[0]
     args_file = tmp_path / "args"
-    executable = tmp_path / "fake-runner"
-    executable.write_text(
-        "#!/usr/bin/env python3\n"
+    executable = write_python_program(
+        tmp_path / "fake-runner",
         "import pathlib, sys\n"
         f"pathlib.Path({str(args_file)!r}).write_text('\\n'.join(sys.argv[1:]))\n"
         "print('deferred')\n"
         "raise SystemExit(75)\n",
-        encoding="utf-8",
     )
-    executable.chmod(0o755)
     result = drain_repository(
         repository, executable=str(executable), deadline_seconds=10
     )
@@ -449,14 +447,11 @@ def test_drain_passes_an_explicit_lease_ttl_without_using_a_wrapper(
     _workspace(tmp_path)
     repository = declared_repositories(tmp_path)[0]
     args_file = tmp_path / "args"
-    executable = tmp_path / "fake-runner"
-    executable.write_text(
-        "#!/usr/bin/env python3\n"
+    executable = write_python_program(
+        tmp_path / "fake-runner",
         "import pathlib, sys\n"
         f"pathlib.Path({str(args_file)!r}).write_text('\\n'.join(sys.argv[1:]))\n",
-        encoding="utf-8",
     )
-    executable.chmod(0o755)
     result = drain_repository(
         repository,
         executable=str(executable),
@@ -556,12 +551,9 @@ def test_cgroup_escape_fails_closed_and_kills_the_child(
 ) -> None:
     _workspace(tmp_path)
     repository = declared_repositories(tmp_path)[0]
-    executable = tmp_path / "escape-runner"
-    executable.write_text(
-        "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n",
-        encoding="utf-8",
+    executable = write_python_program(
+        tmp_path / "escape-runner", "import time\ntime.sleep(10)\n"
     )
-    executable.chmod(0o755)
     current_pid = os.getpid()
 
     def fake_cgroup(pid: int) -> str:
@@ -581,12 +573,10 @@ def test_progressing_child_is_not_killed_by_low_concurrency_budget(
 
     _workspace(tmp_path)
     repository = declared_repositories(tmp_path)[0]
-    executable = tmp_path / "progressing-runner"
-    executable.write_text(
-        "#!/usr/bin/env python3\nimport time\ntime.sleep(0.2)\nraise SystemExit(0)\n",
-        encoding="utf-8",
+    executable = write_python_program(
+        tmp_path / "progressing-runner",
+        "import time\ntime.sleep(0.2)\nraise SystemExit(0)\n",
     )
-    executable.chmod(0o755)
     result = drain_repository(
         repository, executable=str(executable), deadline_seconds=1
     )

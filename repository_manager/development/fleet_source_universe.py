@@ -143,9 +143,8 @@ def _repository_tree_identity(
         root_resolved
     ):
         raise ValueError("fleet repository escapes workspace")
-    if _git(repository, "rev-parse", "--show-toplevel").decode().strip() != str(
-        repository.resolve()
-    ):
+    top_level = _git(repository, "rev-parse", "--show-toplevel").decode().strip()
+    if Path(top_level).resolve() != repository.resolve():
         raise ValueError("fleet repository path is not its Git root")
     commit = _git(repository, "rev-parse", "HEAD").decode().strip()
     if not _REVISION.fullmatch(commit):

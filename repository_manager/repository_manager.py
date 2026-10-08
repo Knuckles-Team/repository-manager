@@ -84,10 +84,13 @@ from repository_manager.models import (
     SubdirectoryConfig,
     WorkspaceConfig,
 )
+from repository_manager.native_fs import read_link, replace_link
 from repository_manager.operation_boundary import (
     OperationBoundaryError,
     PinnedDirectory,
     cleanup_pinned_directory,
+    descriptor_path,
+    discard_empty_reservation,
     open_directory,
     path_exists,
     pin_creation,
@@ -98,6 +101,7 @@ from repository_manager.operation_boundary import (
     receipt_result_payload,
     snapshot_pinned_checkout,
     snapshot_workspace,
+    subprocess_descriptor_options,
     write_at,
     write_release_plan_receipt,
 )
@@ -790,6 +794,16 @@ class _PhaseProgress:
 def _require_release_preparation(auto_bump: bool, auto_push: bool) -> None:
     if auto_bump or auto_push:
         require_legacy_release_route("release_preparation")
+
+
+_WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _transport_scheme(location: str) -> str:
+    """URL scheme of a remote location; a Windows drive path (``C:\\x``) is local."""
+    if os.name == "nt" and _WINDOWS_DRIVE_PATH.match(location):
+        return ""
+    return urlsplit(location).scheme
 
 
 class Git:
@@ -2270,7 +2284,7 @@ class Git:
             staged_created = True
             if link.exists() and not link.is_symlink():
                 raise ValueError(f"refusing to replace non-symlink path {link}")
-            os.replace(staged, link)
+            replace_link(staged, link)
         finally:
             if staged_created:
                 cleanup_errors = Git._cleanup_uv_sibling_temp(staged, os.fspath(target))
@@ -2291,7 +2305,7 @@ class Git:
                 return [f"staging path is no longer a symlink: {staged}"]
             return []
         try:
-            actual_target = os.readlink(staged)
+            actual_target = read_link(staged)
         except OSError as exc:
             return [f"cannot inspect staging path {staged}: {exc}"]
         if actual_target != expected_target:
@@ -2311,7 +2325,7 @@ class Git:
                     f"refusing to remove non-symlink path during rollback: {link}"
                 )
             return
-        if os.readlink(link) != new_target:
+        if read_link(link) != new_target:
             errors.append(f"refusing to remove changed symlink during rollback: {link}")
             return
         link.unlink()
@@ -2319,7 +2333,7 @@ class Git:
     @staticmethod
     def _restore_uv_link(link: Path, previous_target: str, errors: list[str]) -> None:
         """Point a pre-existing link back at the target it had before."""
-        if link.is_symlink() and os.readlink(link) == previous_target:
+        if link.is_symlink() and read_link(link) == previous_target:
             return
         if link.exists() and not link.is_symlink():
             errors.append(
@@ -2332,7 +2346,7 @@ class Git:
         try:
             restore.symlink_to(previous_target)
             restore_created = True
-            os.replace(restore, link)
+            replace_link(restore, link)
         finally:
             if restore_created:
                 errors.extend(Git._cleanup_uv_sibling_temp(restore, previous_target))
@@ -2418,7 +2432,7 @@ class Git:
         updates: list[tuple[Path, Path, str | None, Path]] = []
         for name, target in validated_links:
             link = sibling_dir / name
-            previous_target = os.readlink(link) if link.is_symlink() else None
+            previous_target = read_link(link) if link.is_symlink() else None
             if previous_target is not None and self._uv_link_already_points_at(
                 link, target
             ):
@@ -2446,7 +2460,7 @@ class Git:
         for link, _target, _previous_target, staged_path in updates:
             if link.exists() and not link.is_symlink():
                 raise ValueError(f"refusing to replace non-symlink path {link}")
-            os.replace(staged_path, link)
+            replace_link(staged_path, link)
 
     @staticmethod
     def _remove_created_uv_sibling_dir(sibling_dir: Path) -> list[str]:
@@ -3184,22 +3198,21 @@ class Git:
                     "descriptor-pinned path anchor is absent from the Git command"
                 )
             command_argv = [
-                f"/proc/self/fd/{destination_fd}" if token == lexical_path else token
+                descriptor_path(destination_fd) if token == lexical_path else token
                 for token in command_argv
             ]
         try:
             process = subprocess.Popen(
                 command_argv,
                 shell=False,
-                cwd=f"/proc/self/fd/{cwd_fd}",
+                cwd=descriptor_path(cwd_fd),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 text=True,
                 env=current_env,
                 bufsize=1,
-                start_new_session=True,
-                pass_fds=inherited,
+                **subprocess_descriptor_options(inherited),
             )
         except OSError as exc:
             return self._repository_command_result(
@@ -3703,10 +3716,7 @@ class Git:
                         # absent.  A real clone always leaves at least .git.
                         if destination.target_fd is not None:
                             try:
-                                if destination.leaf is not None and not os.listdir(
-                                    destination.target_fd
-                                ):
-                                    os.rmdir(destination.leaf, dir_fd=destination.fd)
+                                discard_empty_reservation(destination)
                             except OSError:
                                 # A non-empty destination is the expected real
                                 # clone handoff; any inability to inspect it is
@@ -4351,12 +4361,12 @@ class Git:
             raise OperationBoundaryError("push target has no admitted origin URL")
         if any(ord(char) < 0x20 or ord(char) == 0x7F for char in configured):
             raise OperationBoundaryError("push target contains control characters")
-        parsed = urlsplit(configured)
-        if parsed.scheme in {"http", "https"}:
+        scheme = _transport_scheme(configured)
+        if scheme in {"http", "https"}:
             return canonical_repository_url(configured)
-        if parsed.scheme == "file":
+        if scheme == "file":
             return configured
-        if parsed.scheme:
+        if scheme:
             raise OperationBoundaryError("push target uses an unsupported transport")
         return os.path.abspath(os.path.join(target_path, configured))
 
@@ -4376,7 +4386,7 @@ class Git:
         """Run Git only inside the private admin repository."""
         command = ["git"]
         if initialized:
-            command.append(f"--git-dir=/proc/self/fd/{admin.fd}")
+            command.append(f"--git-dir={descriptor_path(admin.fd)}")
         command.extend(argv)
         return self._run_pinned_repository_command(
             command,

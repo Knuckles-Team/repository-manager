@@ -25,7 +25,13 @@ from .bounded_log import BoundedLogSink, LogSink, RedactingLogSink, StreamName
 from .cancellation import CancellationToken
 from .process_supervisor import ProcessLike, ProcessSupervisor
 
-_SHELL_META = re.compile(r"[\x00\r\n\t;&|<>$`(){}\[\]`\\]")
+# A backslash is shell escaping on POSIX but the path separator on Windows,
+# where argv is never interpreted by a shell.
+_SHELL_META = re.compile(
+    r"[\x00\r\n\t;&|<>$`(){}\[\]`\\]"
+    if os.sep == "/"
+    else r"[\x00\r\n\t;&|<>$`(){}\[\]`]"
+)
 _SENSITIVE_ENV_NAME = re.compile(
     r"(?i)(?:token|secret|password|passwd|api[_-]?key|private[_-]?key|"
     r"authorization|credential|access[_-]?key|database[_-]?url|dsn|"

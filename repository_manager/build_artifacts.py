@@ -32,6 +32,13 @@ from typing import Any
 from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
 
 from repository_manager.governance.lanes import lane_scope
+from repository_manager.native_fs import (
+    FSYNC_FILE_FLAGS,
+    fsync_path,
+    name_from_portable,
+    open_no_follow,
+    portable_name,
+)
 
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
 MANIFEST_NAME = "manifest.json"
@@ -620,7 +627,7 @@ def _fsync_file(path: Path) -> None:
 
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = open_no_follow(path, FSYNC_FILE_FLAGS)
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
             raise ArtifactStoreError(f"cannot fsync non-regular artifact {path}")
@@ -643,14 +650,7 @@ def _fsync_directory(path: Path) -> None:
     """Flush a directory entry so an atomic rename survives a crash."""
 
     try:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        fsync_path(path, directory=True)
     except OSError as exc:
         raise ArtifactStoreError(f"could not fsync artifact directory {path}") from exc
 
@@ -1330,7 +1330,7 @@ def _stage_one_artifact(
             "artifact source escapes its declared output root"
         ) from exc
     relative = source.relative_to(paths.output_root)
-    relative_name = str(relative)
+    relative_name = relative.as_posix()  # manifests are platform-neutral
     if relative_name in accumulator.seen:
         return
     accumulator.seen.add(relative_name)
@@ -1427,10 +1427,10 @@ class BuildArtifactStore:
         self.quarantine_root.mkdir(parents=True, exist_ok=True)
 
     def manifest_path(self, key: str) -> Path:
-        return self.root / _key_component(key) / MANIFEST_NAME
+        return self._key_dir(key) / MANIFEST_NAME
 
     def _key_dir(self, key: str) -> Path:
-        return self.root / _key_component(key)
+        return self.root / portable_name(_key_component(key))
 
     def read_manifest(self, key: str) -> dict[str, Any] | None:
         path = self.manifest_path(key)
@@ -1867,7 +1867,7 @@ class BuildArtifactStore:
                     state.cleanup_stage = True
                     return existing
                 self._require_fence(fence_check)
-                final_dir = self.root / staged.key
+                final_dir = self._key_dir(staged.key)
                 temporary_dir = self.root / (
                     f".{_safe(staged.key)}.publish-{uuid.uuid4().hex}"
                 )
@@ -2005,9 +2005,10 @@ class BuildArtifactStore:
             ) from exc
         entries: list[tuple[str, dict[str, Any]]] = []
         for directory in sorted(directories):
-            manifest = self.read_manifest(directory.name)
+            key = name_from_portable(directory.name)
+            manifest = self.read_manifest(key)
             if manifest is not None:
-                entries.append((directory.name, manifest))
+                entries.append((key, manifest))
         return tuple(entries)
 
     def _authorize_entry_removal(

@@ -391,7 +391,7 @@ def _expand_conftest(repo_root: Path, conftest_path: Path) -> str:
     """The pytest target for a changed/reached conftest.py: its whole directory."""
     directory = conftest_path.parent
     rel = directory.resolve().relative_to(repo_root.resolve())
-    return str(rel) if str(rel) != "." else "."
+    return rel.as_posix()
 
 
 def _is_suite_wide_conftest(
@@ -549,7 +549,7 @@ def _classify_via_reverse_bfs(
     if suite_wide:
         return FileVerdict(rel, True, "transitively reaches a suite-wide conftest.py")
 
-    targets = {str(p.relative_to(ctx.repo)) for p in reached_tests}
+    targets = {p.relative_to(ctx.repo).as_posix() for p in reached_tests}
     targets |= {_expand_conftest(ctx.repo, c) for c in reached_conftests}
 
     # Rule 9: zero importers found — the dangerous silent-under-selection case.

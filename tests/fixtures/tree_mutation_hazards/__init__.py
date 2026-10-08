@@ -70,15 +70,46 @@ def unstaged_deletions_with_hook(root: Path) -> Path:
     return path
 
 
+def _commit_without_staging(path: Path, blobs: dict[str, bytes], message: str) -> None:
+    """Commit ``blobs`` on top of ``main`` with one ``git fast-import`` stream.
+
+    Staging thousands of files with ``git add`` stats and hashes every file
+    through the working tree, which exceeds the per-test bound on Windows
+    runners.  The fixture only needs the objects and the ref, so it writes
+    them directly; the files on disk carry the same bytes.
+    """
+    body = message.encode("utf-8")
+    stream = bytearray(b"commit refs/heads/main\n")
+    stream += b"committer RMDD-26 fixture <rmdd26@example.invalid> 0 +0000\n"
+    stream += b"data %d\n%s\nfrom refs/heads/main^0\n" % (len(body), body)
+    for name, data in blobs.items():
+        stream += b"M 100644 inline %s\ndata %d\n%s\n" % (
+            name.encode("utf-8"),
+            len(data),
+            data,
+        )
+    subprocess.run(
+        ["git", "fast-import", "--quiet"],
+        cwd=str(path),
+        input=bytes(stream),
+        capture_output=True,
+        check=True,
+    )
+
+
+def _write_tracked(path: Path, files: int) -> dict[str, bytes]:
+    blobs = {f"tracked-{n:04d}.txt": b"content %d\n" % n for n in range(files)}
+    for name, data in blobs.items():
+        (path / name).write_bytes(data)
+    return blobs
+
+
 def truncated_index(root: Path, *, files: int = 4634, retained: int = 5) -> Path:
     """Create the documented ~4634-entry HEAD with a collapsed index."""
     path = _repo(root, "truncated-index")
-    for index in range(files):
-        (path / f"tracked-{index:04d}.txt").write_text(
-            f"content {index}\n", encoding="utf-8"
-        )
-    _run(["git", "add", "-A"], path)
-    _run(["git", "commit", "-m", "fixture tracked baseline"], path)
+    _commit_without_staging(
+        path, _write_tracked(path, files), "fixture tracked baseline"
+    )
     _run(["git", "read-tree", "--empty"], path)
     _run(
         [

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import stat
 import subprocess
 from argparse import Namespace
 from pathlib import Path
@@ -20,6 +21,13 @@ from repository_manager.mcp_tools.docs_readiness import (
 )
 
 
+
+
+def _remove_tree(path: Path) -> None:
+    """Delete a checkout, including Git's read-only object files on Windows."""
+    for entry in path.rglob("*"):
+        entry.chmod(entry.stat().st_mode | stat.S_IWRITE)
+    shutil.rmtree(path)
 
 def _init_repo(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -187,7 +195,7 @@ def test_default_generator_is_the_canonical_universal_skills_builder(
         repository="agent-packages/agents/provider",
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     row = result["repositories"][0]
     assert row["status"] == "planned"
     assert row["generator_version"] == "1.0.0"
@@ -207,7 +215,7 @@ def test_default_apply_verifies_real_generator_output_dir_contract(
         confirm=True,
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["repositories"][0]["status"] == "applied"
     assert (repo / "llms.txt").is_file()
     assert (repo / "agent-readiness-manifest.json").is_file()
@@ -225,7 +233,7 @@ def test_preview_is_read_only_manifest_scoped_and_excludes_scaffolding(
         _generator=_fake_generator(calls),
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert [row["status"] for row in result["repositories"]] == ["planned"]
     assert calls == [(repo, True)]
     assert (
@@ -260,7 +268,7 @@ def test_apply_requires_exact_identity_and_confirmation(
 
     assert missing_selection["error_code"] == "apply-requires-exact-repository"
     assert no_confirmation["error_code"] == "apply-confirmation-required"
-    assert applied["ok"] is True
+    assert applied["ok"] is True, applied
     assert applied["repositories"][0]["status"] == "applied"
     assert calls[0] == (root / "agent-packages" / "agents" / "provider", False)
     assert len(calls) == 2 and calls[1][1] is False
@@ -371,7 +379,7 @@ def test_pages_layout_content_source_is_read_from_mkdocs_docs_dir(
         repository="agent-packages/agents/provider",
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     row = result["repositories"][0]
     assert row["status"] == "planned"
 
@@ -577,7 +585,7 @@ def test_verify_requires_current_idempotent_generator_plan(
         repository="agent-packages/agents/provider",
         _generator=current,
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["repositories"][0]["status"] == "verified"
     assert result["repositories"][0]["generator_version"] == "fixture-1"
 
@@ -694,7 +702,7 @@ def test_default_fleet_is_exact_manifest_agent_packages_scope(
     result = docs_readiness.dispatch(
         workspace_root=root, _generator=_fake_generator(calls)
     )
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert {row["repository"] for row in result["repositories"]} == expected
     assert {path.relative_to(root).as_posix() for path, _ in calls} == expected
     assert result["selected_count"] == len(expected)
@@ -824,7 +832,7 @@ def test_verify_uses_bounded_staging_and_does_not_copy_or_mutate_source(
 
     result = docs_readiness._verify_current(generate, repo)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert len(calls) == 1
     assert not any(path.name == "repository" for path in calls[0][1].parents)
     assert (repo / ".venv" / "ignored.bin").read_bytes() == b"ignored"
@@ -992,7 +1000,7 @@ def test_missing_other_fleet_checkout_blocks_exact_repository(
     fleet_workspace: tuple[Path, set[str]],
 ) -> None:
     root, _ = fleet_workspace
-    shutil.rmtree(root / "agent-packages/skills/skill-graphs")
+    _remove_tree(root / "agent-packages/skills/skill-graphs")
     calls: list[tuple[Path, bool]] = []
     result = docs_readiness.dispatch(
         workspace_root=root,

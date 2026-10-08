@@ -30,6 +30,7 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
+from repository_manager import windows_process
 from repository_manager.workspace_manifest import (
     WorkspaceManifestError,
     select_repositories,
@@ -657,34 +658,47 @@ def _process_parent(pid: int) -> int | None:
         return None
 
 
+def _linux_parent_map() -> dict[int, int]:
+    """Map each observable process id to its parent from procfs."""
+
+    try:
+        entries = tuple(Path("/proc").iterdir())
+    except OSError:
+        return {}
+    parents: dict[int, int] = {}
+    for entry in entries:
+        if entry.name.isdecimal():
+            parent = _process_parent(int(entry.name))
+            if parent is not None:
+                parents[int(entry.name)] = parent
+    return parents
+
+
+def _windows_parent_map() -> dict[int, int]:
+    """Map each live process id to its parent from a Toolhelp snapshot."""
+
+    try:
+        return windows_process.process_parents()
+    except OSError:
+        return {}
+
+
 def _process_tree(root_pid: int) -> set[int]:
     """Return root plus every currently observable descendant process."""
 
-    parents: dict[int, set[int]] = defaultdict(set)
-    proc_root = Path("/proc")
-    try:
-        entries = tuple(proc_root.iterdir())
-    except OSError:
-        return {root_pid}
-    for entry in entries:
-        if not entry.name.isdecimal():
-            continue
-        pid = int(entry.name)
-        parent = _process_parent(pid)
-        if parent is not None:
-            parents[parent].add(pid)
+    children: dict[int, set[int]] = defaultdict(set)
+    for pid, parent in _process_parent_map().items():
+        children[parent].add(pid)
     tree = {root_pid}
     pending = [root_pid]
     while pending:
-        parent = pending.pop()
-        for child in parents.get(parent, ()):
-            if child not in tree:
-                tree.add(child)
-                pending.append(child)
+        fresh = children.get(pending.pop(), set()) - tree
+        tree.update(fresh)
+        pending.extend(fresh)
     return tree
 
 
-def _process_cgroup(pid: int) -> str:
+def _linux_process_cgroup(pid: int) -> str:
     """Return a process' unified cgroup, refusing unverifiable execution."""
 
     try:
@@ -704,6 +718,29 @@ def _process_cgroup(pid: int) -> str:
     )
 
 
+def _windows_process_cgroup(pid: int) -> str:
+    """Return the Job object containment unit of a process (cgroup equivalent)."""
+
+    try:
+        return windows_process.containment_identity(pid)
+    except OSError as exc:
+        raise MergeQueueRunnerError(
+            f"cannot verify job containment for process {pid}: {exc}"
+        ) from exc
+
+
+def _linux_process_exists(pid: int) -> bool:
+    """Return whether a process is still observable in procfs."""
+
+    return Path(f"/proc/{pid}").exists()
+
+
+_WINDOWS = os.name == "nt"
+_process_parent_map = _windows_parent_map if _WINDOWS else _linux_parent_map
+_process_cgroup = _windows_process_cgroup if _WINDOWS else _linux_process_cgroup
+_process_exists = windows_process.process_exists if _WINDOWS else _linux_process_exists
+
+
 def _cgroup_violation(
     root_pid: int, expected_cgroup: str, seen: set[int]
 ) -> str | None:
@@ -718,7 +755,7 @@ def _cgroup_violation(
             # A process can disappear between the proc directory scan and the
             # read.  It is safe to ignore that one race; a live process must be
             # readable or the supervisor fails closed below.
-            if not Path(f"/proc/{pid}").exists():
+            if not _process_exists(pid):
                 continue
             return str(exc)
         if actual != expected_cgroup:
@@ -727,12 +764,6 @@ def _cgroup_violation(
                 f"into {actual!r}"
             )
     return None
-
-
-def _process_exists(pid: int) -> bool:
-    """Return whether a process is still observable in procfs."""
-
-    return Path(f"/proc/{pid}").exists()
 
 
 def _monitor_process_cgroup(
@@ -761,22 +792,38 @@ def _monitor_process_cgroup(
 
 
 def _signal_process_tree(
-    process: subprocess.Popen[str], signum: int, observed: set[int]
+    process: subprocess.Popen[str], kill: bool, observed: set[int]
 ) -> None:
-    """Signal the process group and every descendant found in proc."""
+    """Signal the process group and every observed descendant."""
 
     observed.update(_process_tree(process.pid))
-    try:
-        os.killpg(process.pid, signum)
-    except (OSError, ProcessLookupError):
-        pass
-    for pid in observed:
-        if pid == process.pid:
-            continue
+    signum = _tree_signal(kill)
+    leader_signalled = _signal_group_leader(process.pid, signum)
+    for pid in observed - ({process.pid} if leader_signalled else set()):
         try:
             os.kill(pid, signum)
         except (OSError, ProcessLookupError):
             pass
+
+
+def _tree_signal(kill: bool) -> int:
+    """SIGKILL/SIGTERM on POSIX; Windows terminates via ``os.kill`` (SIGTERM)."""
+
+    if kill and not _WINDOWS:
+        return int(signal.SIGKILL)
+    return int(signal.SIGTERM)
+
+
+def _signal_group_leader(pid: int, signum: int) -> bool:
+    """Signal a POSIX process group; Windows has none (each pid is signalled)."""
+
+    if _WINDOWS:
+        return False
+    try:
+        os.killpg(pid, signum)
+    except (OSError, ProcessLookupError):
+        pass
+    return True
 
 
 def _wait_for_process_tree(
@@ -800,10 +847,10 @@ def _kill_process_group(
     """Terminate the group and all observed descendants, then verify cleanup."""
 
     tracked = observed if observed is not None else set()
-    _signal_process_tree(process, signal.SIGTERM, tracked)
+    _signal_process_tree(process, False, tracked)
     if _wait_for_process_tree(process, tracked, 10):
         return True
-    _signal_process_tree(process, signal.SIGKILL, tracked)
+    _signal_process_tree(process, True, tracked)
     return _wait_for_process_tree(process, tracked, 10)
 
 

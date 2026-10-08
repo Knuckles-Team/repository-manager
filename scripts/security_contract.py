@@ -19,16 +19,18 @@ import re
 import signal
 import subprocess
 import sys
-from pathlib import Path
+import threading
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-# ``resource`` is POSIX-only; contract validation remains importable on
-# Windows, while run-hook fails closed before attempting Unix-only limits.
+# ``resource`` is POSIX-only; Windows bounds hook output by relaying it
+# through a pipe instead (see ``_hook_executor``).
 try:
     import resource as _resource
 except ImportError:  # pragma: no cover - exercised by the Windows gate
     _resource = None  # type: ignore[assignment]  # optional POSIX-only module
 
+_WINDOWS = os.name == "nt"
 MAX_CONTRACT_BYTES = 128 * 1024
 MAX_EVIDENCE_BYTES = 128 * 1024
 MAX_SBOM_BYTES = 64 * 1024 * 1024
@@ -249,11 +251,20 @@ def _spdx_expression_is_allowed(
     )
 
 
+def _is_rooted(value: str) -> bool:
+    """Whether a contract path is anchored in POSIX or Windows syntax.
+
+    Contract paths are repository-relative on every platform, so ``/x``,
+    ``C:x`` and ``\\\\host\\share`` are all refused, wherever this runs.
+    """
+    return bool(PurePosixPath(value).root or PureWindowsPath(value).anchor)
+
+
 def _relative_file(root: Path, value: str, *, maximum_bytes: int) -> Path:
     if not isinstance(value, str) or not value or len(value.encode()) > 4_096:
         raise SecurityContractError("security contract path is invalid")
     candidate = Path(value)
-    if candidate.is_absolute() or ".." in candidate.parts:
+    if _is_rooted(value) or ".." in candidate.parts:
         raise SecurityContractError("security contract path is invalid")
     joined = root.joinpath(candidate)
     try:
@@ -311,7 +322,7 @@ def _validate_hook_limits(hook: dict[str, Any]) -> None:
 def _validate_hook_evidence_reference(evidence: Any) -> None:
     if (
         not isinstance(evidence, str)
-        or Path(evidence).is_absolute()
+        or _is_rooted(evidence)
         or ".." in Path(evidence).parts
     ):
         raise SecurityContractError("security hook evidence path is invalid")
@@ -457,7 +468,7 @@ def _validate_hook_evidence(
 
 
 def _prepare_result_root(root: Path, result_root: str) -> Path:
-    if Path(result_root).is_absolute() or ".." in Path(result_root).parts:
+    if _is_rooted(result_root) or ".." in Path(result_root).parts:
         raise SecurityContractError("security result root is invalid")
     results = root.joinpath(result_root)
     results.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -471,7 +482,9 @@ def _prepare_result_root(root: Path, result_root: str) -> Path:
     return resolved_results
 
 
-def _hook_evidence_path(root: Path, resolved_results: Path, hook: dict[str, Any]) -> Path:
+def _hook_evidence_path(
+    root: Path, resolved_results: Path, hook: dict[str, Any]
+) -> Path:
     evidence = root.joinpath(hook["evidence"])
     try:
         evidence.relative_to(resolved_results)
@@ -510,21 +523,93 @@ def _execute_hook(root: Path, hook: dict[str, Any], log_path: Path) -> int:
         raise SecurityContractError("security hook execution failed") from exc
 
 
+def _hook_executor() -> Any:
+    """The bounded hook runner for this platform.
+
+    POSIX caps the hook's file writes with ``RLIMIT_FSIZE``.  Windows has no
+    file-size limit, so the hook's output is relayed through a pipe and the
+    parent stops (and kills) the hook once it exceeds the same byte bound.
+    """
+    if _WINDOWS:
+        return _execute_hook_relayed
+    if _resource is None:
+        raise SecurityContractError(
+            "run-hook requires Unix resource limits on this POSIX host"
+        )
+    return _execute_hook
+
+
+def _execute_hook_relayed(root: Path, hook: dict[str, Any], log_path: Path) -> int:
+    try:
+        with log_path.open("wb") as log:
+            process = subprocess.Popen(
+                hook["argv"],
+                cwd=root,
+                env=_hook_environment(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                shell=False,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            )
+            return _relay_bounded_output(process, log, hook["timeout_seconds"])
+    except SecurityContractError:
+        raise
+    except Exception as exc:
+        raise SecurityContractError("security hook execution failed") from exc
+
+
+def _relay_bounded_output(process: Any, log: Any, timeout_seconds: int) -> int:
+    reader = threading.Thread(
+        target=_copy_bounded, args=(process, log), name="security-hook-output"
+    )
+    reader.start()
+    reader.join(timeout_seconds)
+    if reader.is_alive():
+        _kill_tree(process)
+        reader.join()
+        raise SecurityContractError("security hook exceeded its time boundary")
+    if log.tell() > MAX_HOOK_OUTPUT_BYTES:
+        raise SecurityContractError("security hook exceeded its output boundary")
+    return int(process.wait())
+
+
+def _copy_bounded(process: Any, log: Any) -> None:
+    """Copy hook output up to the bound; one byte past it stops the hook."""
+    while chunk := process.stdout.read(64 * 1024):
+        log.write(chunk[: MAX_HOOK_OUTPUT_BYTES + 1 - log.tell()])
+        if log.tell() > MAX_HOOK_OUTPUT_BYTES:
+            _kill_tree(process)
+            return
+
+
+def _kill_tree(process: Any) -> None:
+    """Terminate the hook and every descendant (``taskkill /T``)."""
+    taskkill = Path(
+        os.environ.get("SystemRoot", "C:\\Windows"), "System32", "taskkill.exe"
+    )
+    subprocess.run(
+        [str(taskkill), "/T", "/F", "/PID", str(process.pid)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    process.wait()
+
+
 def run_hook(root: Path, contract: dict[str, Any], kind: str, result_root: str) -> None:
     """Run one declared hook without a shell and require bounded passing evidence."""
 
     if kind not in HOOK_KINDS:
         raise SecurityContractError("security hook kind is invalid")
-    if _resource is None:
-        raise SecurityContractError(
-            "run-hook requires Unix resource limits and is unavailable on Windows"
-        )
+    execute = _hook_executor()
     resolved_results = _prepare_result_root(root, result_root)
     hook = contract["hooks"][kind]
     evidence = _hook_evidence_path(root, resolved_results, hook)
     evidence.unlink(missing_ok=True)
     log_path = resolved_results.joinpath(f"{kind}.log")
-    return_code = _execute_hook(root, hook, log_path)
+    return_code = execute(root, hook, log_path)
     if return_code != 0:
         raise SecurityContractError("security hook returned a failure")
     evidence_file = _relative_file(
@@ -607,7 +692,7 @@ def _classify_component_licenses(
 def _write_license_evidence(
     root: Path, output_reference: str, payload: dict[str, Any]
 ) -> None:
-    if Path(output_reference).is_absolute() or ".." in Path(output_reference).parts:
+    if _is_rooted(output_reference) or ".." in Path(output_reference).parts:
         raise SecurityContractError("license evidence path is invalid")
     output = root.joinpath(output_reference)
     try:

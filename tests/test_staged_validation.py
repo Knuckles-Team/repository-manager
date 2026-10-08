@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -289,7 +290,7 @@ def test_dirty_feedback_tree_uses_safe_commit_and_evaluates_deletion(
         "  hooks:\n"
         "  - id: record-staged\n"
         "    name: record staged\n"
-        f"    entry: python {hook}\n"
+        f"    entry: python {hook.as_posix()}\n"
         "    language: system\n"
         "    pass_filenames: false\n"
         "    always_run: true\n",
@@ -568,11 +569,16 @@ def test_builtin_build_certification_requires_hook_replay_when_snapshot_deferred
     assert result.certificate is None
 
 
+# A name Git must quote in its output.  Windows filenames cannot hold a tab,
+# so there the quoting comes from non-ASCII bytes and a quote character.
+_ODD_NAME = {False: "odd\tname.py", True: "odd name \u00e9'.py"}[os.name == "nt"]
+
+
 def test_changed_path_derivation_preserves_deletion_rename_and_odd_names(
     tmp_path: Path,
 ) -> None:
     repo, sha = _repo(tmp_path)
-    odd_name = "odd\tname.py"
+    odd_name = _ODD_NAME
     (repo / odd_name).write_text("odd\n", encoding="utf-8")
     (repo / "removed.txt").unlink()
     profile = ValidationProfile(

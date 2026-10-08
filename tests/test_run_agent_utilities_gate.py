@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -101,7 +102,7 @@ def test_module_gate_runs_in_the_project_environment(located, monkeypatch) -> No
     assert command[1:] == ["-m", "pytest", "tests", "-q"]
     assert call["cwd"] == _ROOT
     assert environment.get("PYTHONPATH") is None
-    assert environment["PATH"].split(":")[0] == str(python.parent)
+    assert environment["PATH"].split(os.pathsep)[0] == str(python.parent)
     assert str(located / "tests") not in command
 
 

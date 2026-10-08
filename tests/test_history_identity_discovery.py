@@ -135,12 +135,11 @@ def test_discover_detects_a_signed_commit(tmp_path):
     )
     hashed = subprocess.run(
         ["git", "-C", str(repo), "hash-object", "-w", "-t", "commit", "--literally", "--stdin"],
-        input=raw_commit,
+        input=raw_commit.encode("utf-8"),  # bytes: no CRLF translation on Windows
         capture_output=True,
-        text=True,
         check=True,
     )
-    signed_sha = hashed.stdout.strip()
+    signed_sha = hashed.stdout.decode("ascii").strip()
     run_git(repo, "update-ref", "refs/heads/signed", signed_sha)
 
     result = discover(repo)
