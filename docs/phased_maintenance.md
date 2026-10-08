@@ -1,6 +1,6 @@
 # Phased Maintenance Workflows
 
-The `repository-manager` includes powerful workflow automation features to execute phased, sequential updates across the workspace. This is primarily controlled via the `workspace.yml` configuration and the command-line interface.
+The `repository-manager` includes powerful workflow automation features to ran phased, sequential updates across the workspace. This is primarily controlled via the `workspace.yml` configuration and the command-line interface.
 
 ## Phased Maintenance Phases
 
@@ -63,13 +63,13 @@ since those deliberately bypass change detection.
 
 The following flags control phased update and push sequences:
 
-- `--validate`: Executes a full pre-release validation. If this fails, the next steps are aborted.
-- `--bump [patch/minor/major]`: Executes a version bump.
-- `--maintain`: Executes phased dependency updates across the workspace. Modifies `pyproject.toml` automatically based on dependency tree.
-- `--push`: Executes a parallelized Git Push sequence per-phase. Phase transitions are gate-driven (CONCEPT:RM-DEP-READY) — `wait_minutes` is the retry ceiling for downstream repos' own pre-push gates, not a sleep; see `docs/phased_push.md`.
+- `--validate`: Runs a full pre-release validation. If this fails, the next steps are aborted.
+- `--bump [patch/minor/major]`: Runs a version bump.
+- `--maintain`: Runs phased dependency updates across the workspace. Modifies `pyproject.toml` automatically based on dependency tree.
+- `--push`: Runs a parallelized Git Push sequence per-phase. Phase transitions are gate-driven (CONCEPT:RM-DEP-READY) — `wait_minutes` is the retry ceiling for downstream repos' own pre-push gates, not a sleep; see `docs/phased_push.md`.
 - `--phase [int]`: Starting phase (1-5). Acts as a floor under change-aware start.
 - `--no-auto-start`: Opt out of change-aware start; begin at `--phase` (default 1) instead of the lowest changed phase.
-- `--single-phase`: Execute only the specified starting phase and halt.
+- `--single-phase`: Ran only the specified starting phase and stop.
 - `--project [name[,name...]]`: Narrow bumps, pre-commit candidates, and pushes to one or more comma-separated project names (disables change-aware start). In a bulk phase this is an intersection with the eligible PyPI-agent set, never a way to add a service, image, plan, pipeline, or other ineligible repository.
 
 ## Example: The Sequential Execution Pipeline

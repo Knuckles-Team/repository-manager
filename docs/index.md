@@ -1,6 +1,6 @@
 # repository-manager
 
-Manage your git projects across a workspace — a **CLI, API, MCP server, and A2A
+Manage the operator's git projects across a workspace — a **CLI, API, MCP server, and A2A
 agent** for bulk Git operations, phased multi-repository releases, and
 cross-repository graph intelligence in the agent-utilities ecosystem.
 
@@ -34,7 +34,7 @@ bumps and pushes across the ecosystem. It provides:
 
 <div class="grid cards" markdown>
 
-- :material-rocket-launch: **[Installation](installation.md)** — pip, source, extras, and the prebuilt Docker image.
+- :material-rocket-start: **[Installation](installation.md)** — pip, source, extras, and the prebuilt Docker image.
 - :material-server-network: **[Deployment](deployment.md)** — run the MCP and agent servers, Docker Compose, Caddy + Technitium.
 - :material-console: **[Usage](usage.md)** — the MCP tools, the `Git` Python client, and the CLI.
 - :material-sitemap: **[Overview](overview.md)** — ecosystem role, enterprise readiness, and architecture.

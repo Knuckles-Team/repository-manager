@@ -5,7 +5,7 @@
 
 ## Description
 
-Manage your git projects
+Manage the operator's git projects
 
 ## Enterprise Readiness
 

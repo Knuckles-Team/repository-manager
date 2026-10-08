@@ -2,7 +2,7 @@
 
 `repository_manager.docs_readiness.dispatch` is the shared action core for the
 RM CLI and MCP `rm_docs_readiness` tool. It consumes repository identities from
-the supplied canonical `workspace.yml`; it never discovers arbitrary sibling
+the provided canonical `workspace.yml`; it never discovers arbitrary sibling
 directories or accepts a basename/path as a repository selector.
 
 The action has three verbs:
@@ -11,7 +11,7 @@ The action has three verbs:
   builder with `check=True` and never writes a target repository.
 - `apply` requires one exact manifest-relative repository identity and an
   explicit confirmation flag. The target must be clean. The builder is called
-  once to publish and then verified through a bounded staging output directory
+  once to publish and then checked through a bounded staging output directory
   using the target's exact source inputs; RM never copies the repository tree.
   RM snapshots only the bounded generator-owned output namespace before apply
   and restores it if publication or the post-apply verification fails.
@@ -37,7 +37,7 @@ The default fleet is the exact set of manifest-declared identities beneath
 `agent-packages/`, including
 both shared skill repositories. Only `agent-packages/agents/tests` is
 non-publishable when that identity is present. Expected identities are derived
-from the supplied canonical manifest before checkout resolution. RM compares
+from the provided canonical manifest before checkout resolution. RM compares
 the selected fleet against that set and rejects missing, extra, substituted,
 or duplicate identities before invoking the builder. A missing fleet checkout
 blocks even an exact-repository action; it does not
