@@ -1,9 +1,9 @@
 """Native epistemic-graph ingestion for repository-management records.
 
-All writes use the required ``agent_utilities.knowledge_graph.memory.native_ingest``
-primitive. Nodes use canonical ``node_type`` and edges use canonical ``relationship``;
-nodes and edges commit in one native transaction. Missing engine dependencies, rejected
-records, conflicts, and transaction failures propagate as ``NativeIngestError``.
+All writes use ``agent_connector_sdk.ingest``. Nodes use canonical ``node_type`` and
+edges use canonical ``relationship``; nodes and edges commit in one native transaction.
+Missing engine dependencies, rejected records, conflicts, and transaction failures
+propagate as ``IngestError``.
 """
 
 from __future__ import annotations
@@ -11,11 +11,14 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from agent_utilities.knowledge_graph.memory.native_ingest import (
-    ingest_documents as _native_ingest_documents,
-)
-from agent_utilities.knowledge_graph.memory.native_ingest import (
-    ingest_entities as _native_ingest_entities,
+from agent_connector_sdk.ingest import (
+    ChangeSet,
+    Entity,
+    IngestBinding,
+    IngestError,
+    KnowledgeIngest,
+    Relationship,
+    current_ingest,
 )
 
 logger = logging.getLogger("repository_manager.kg")
@@ -23,39 +26,61 @@ logger = logging.getLogger("repository_manager.kg")
 _SOURCE = "repository-manager"
 _DOMAIN = "repository"
 
+_BINDING = IngestBinding(connector=_SOURCE, stream=_DOMAIN)
 
-def ingest_entities(
+
+def _to_entity(record: dict[str, Any]) -> Entity:
+    return Entity(
+        id=record.get("id"),
+        node_type=record.get("node_type"),
+        properties={k: v for k, v in record.items() if k not in ("id", "node_type")},
+    )
+
+
+def _to_relationship(record: dict[str, Any]) -> Relationship:
+    props = {
+        k: v
+        for k, v in record.items()
+        if k not in ("source", "target", "relationship")
+    }
+    return Relationship(
+        source=record["source"],
+        target=record["target"],
+        relationship=record["relationship"],
+        properties=props or None,
+    )
+
+
+async def ingest_entities(
     entities: list[dict[str, Any]],
     relationships: list[dict[str, Any]] | None = None,
     *,
-    source: str = _SOURCE,
-    domain: str = _DOMAIN,
-    client: Any | None = None,
-    graph: str | None = None,
+    ingest: KnowledgeIngest | None = None,
 ) -> dict[str, int]:
     """Write canonical typed nodes and relationships in one native transaction."""
-    return _native_ingest_entities(
-        entities,
-        relationships,
-        source=source,
-        domain=domain,
-        client=client,
-        graph=graph,
+    if not entities:
+        raise IngestError("ingest_entities needs at least one entity")
+    change_set = ChangeSet(
+        entities=tuple(_to_entity(e) for e in entities),
+        relationships=tuple(_to_relationship(r) for r in relationships or ()),
     )
+    service = ingest or current_ingest()
+    receipt = await service.submit(_BINDING, change_set)
+    return {"nodes": receipt.affected_count, "edges": receipt.relationship_count}
 
 
-def ingest_documents(
+async def ingest_documents(
     documents: list[dict[str, Any]],
     *,
-    source: str = _SOURCE,
-    domain: str = _DOMAIN,
-    client: Any | None = None,
-    graph: str | None = None,
+    ingest: KnowledgeIngest | None = None,
 ) -> dict[str, int]:
     """Write text records as canonical Document nodes."""
-    return _native_ingest_documents(
-        documents, source=source, domain=domain, client=client, graph=graph
-    )
+    if not documents:
+        raise IngestError("ingest_documents needs at least one document")
+    change_set = ChangeSet(entities=tuple(_to_entity(d) for d in documents))
+    service = ingest or current_ingest()
+    receipt = await service.submit(_BINDING, change_set)
+    return {"nodes": receipt.affected_count, "edges": receipt.relationship_count}
 
 
 def _repo_ext_id(ref: dict[str, Any]) -> str | None:
@@ -66,11 +91,10 @@ def _repo_ext_id(ref: dict[str, Any]) -> str | None:
     return ref.get("full_path") or ref.get("name") or None
 
 
-def ingest_repositories(
+async def ingest_repositories(
     refs: list[dict[str, Any]],
     *,
-    client: Any | None = None,
-    graph: str | None = None,
+    ingest: KnowledgeIngest | None = None,
 ) -> dict[str, int]:
     """Map VCS enumeration refs (``vcs_enumerator``) → ``:GitRepository`` nodes and ingest.
 
@@ -99,14 +123,13 @@ def ingest_repositories(
                 "externalToolId": ext,
             }
         )
-    return ingest_entities(entities, None, client=client, graph=graph)
+    return await ingest_entities(entities, None, ingest=ingest)
 
 
-def ingest_worktrees(
+async def ingest_worktrees(
     worktrees: list[dict[str, Any]],
     *,
-    client: Any | None = None,
-    graph: str | None = None,
+    ingest: KnowledgeIngest | None = None,
 ) -> dict[str, int]:
     """Map worktree records (``WorktreeManager.list_worktrees`` / ``audit``) → ``:Worktree`` nodes.
 
@@ -150,14 +173,13 @@ def ingest_worktrees(
             relationships.append(
                 {"source": wt_id, "target": repo_id, "relationship": "worktreeOf"}
             )
-    return ingest_entities(entities, relationships, client=client, graph=graph)
+    return await ingest_entities(entities, relationships, ingest=ingest)
 
 
-def ingest_projects(
+async def ingest_projects(
     projects: list[dict[str, Any]],
     *,
-    client: Any | None = None,
-    graph: str | None = None,
+    ingest: KnowledgeIngest | None = None,
 ) -> dict[str, int]:
     """Map managed workspace projects → ``:Project`` nodes and ingest.
 
@@ -204,4 +226,4 @@ def ingest_projects(
                     "relationship": "projectOfRepository",
                 }
             )
-    return ingest_entities(entities, relationships, client=client, graph=graph)
+    return await ingest_entities(entities, relationships, ingest=ingest)

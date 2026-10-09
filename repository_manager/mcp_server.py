@@ -27,8 +27,8 @@ from typing import Any
 
 from agent_connector_sdk.config import load_config, setting
 from agent_connector_sdk.mcp.server import create_mcp_server
+from agent_connector_sdk.mcp.tool_surface import register_tool_surface
 from agent_connector_sdk.utilities import to_integer
-from agent_utilities.mcp.verbose_tools import register_tool_surface
 
 from repository_manager.mcp_tools import (
     MCP_TOOL_REGISTRY,

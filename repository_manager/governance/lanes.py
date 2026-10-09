@@ -68,11 +68,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from agent_utilities.core.config import setting
+from agent_connector_sdk.config import setting
 
 # R-07: file_lock is the cross-platform chokepoint for advisory file locking
 # (POSIX fcntl.flock / Windows kernel32 LockFileEx via ctypes); stdlib-only,
-# no new deps.
+# no new deps. No agent-connector-sdk equivalent exists yet (SDK gap) --
+# keep this one agent_utilities import.
 from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
 
 ARBITRATION_DIRNAME = "agent-lanes"

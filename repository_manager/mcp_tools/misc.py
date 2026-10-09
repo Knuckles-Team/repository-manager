@@ -67,5 +67,5 @@ def register_misc_tools(mcp: FastMCP, *, context: McpToolContext | None = None) 
             refs = await run_blocking(
                 enumerate_gitlab, groups=scope_list, max_repos=max_repos
             )
-        ingested = await run_blocking(ingest_repositories, refs)
+        ingested = await ingest_repositories(refs)
         return {"vcs": which, "listed": len(refs), "ingested": ingested}
