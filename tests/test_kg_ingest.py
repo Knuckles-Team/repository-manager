@@ -1,28 +1,20 @@
-"""Native epistemic-graph typed-node ingestion — Wire-First coverage.
+"""Native epistemic-graph typed-node ingestion — SDK ingest facade coverage.
 
 Exercises the real ``ingest_entities`` / ``ingest_repositories`` / ``ingest_worktrees`` /
-``ingest_projects`` seams with a fake engine client (no engine required), asserting the txn
-add_node/commit + edge calls and the record → :GitRepository / :Worktree / :Project mappings.
+``ingest_projects`` seams against a fake ``agent_connector_sdk.ingest`` transport (no engine
+required), asserting the generated request's records/relationships and the record →
+:GitRepository / :Worktree / :Project mappings.
 CONCEPT:AU-KG.ingest.enterprise-source-extractor.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+from agent_connector_sdk.ingest import IngestError, KnowledgeIngest
 
-# agent_utilities.knowledge_graph.memory eagerly imports the compiled
-# epistemic-graph numeric kernel, which the default bootstrap does not build.
-# The default gates deselect `native`; `scripts/bootstrap.sh --native` builds
-# the kernel so `pytest -m native` runs these.
-pytestmark = pytest.mark.native
-_native_ingest = pytest.importorskip(
-    "agent_utilities.knowledge_graph.memory.native_ingest",
-    reason="needs the native epistemic-graph kernel (scripts/bootstrap.sh --native)",
-    exc_type=ImportError,
-)
-NativeIngestError = _native_ingest.NativeIngestError
-
-from repository_manager.kg_ingest import (  # noqa: E402
+from repository_manager.kg_ingest import (
     ingest_entities,
     ingest_projects,
     ingest_repositories,
@@ -30,99 +22,50 @@ from repository_manager.kg_ingest import (  # noqa: E402
 )
 
 
-class _FakeTxn:
+class _FakeTransport:
     def __init__(self):
-        self.nodes = {}
-        self.edges = []
-        self.committed = False
+        self.requests = []
 
-    def begin(self, graph=None):
-        self.graph = graph
-        return "txn-1"
+    async def source_status(self, connector, stream):
+        return SimpleNamespace(accepted_checkpoint=None)
 
-    def add_node(self, txn, node_id, props):
-        self.nodes[node_id] = props
+    async def submit(self, request):
+        self.requests.append(request)
+        return SimpleNamespace(
+            affected_count=len(request.records),
+            relationship_count=len(request.relationships),
+        )
 
-    def add_edge(self, txn, source, target, props):
-        self.edges.append((source, target, props))
-
-    def commit(self, txn):
-        self.committed = True
-        return True
+    async def store_blob(self, data):
+        raise AssertionError("this connector's ingestion carries no media")
 
 
-class _FakeClient:
-    def __init__(self):
-        self.txn = _FakeTxn()
+@pytest.fixture
+def ingest():
+    transport = _FakeTransport()
+    return KnowledgeIngest(transport, loop=None), transport
 
 
-def _validate_capture_entities(entities) -> None:
-    if not entities:
-        raise NativeIngestError("native ingest requires at least one entity")
-    if any("type" in entity or not entity.get("node_type") for entity in entities):
-        raise NativeIngestError("native ingest nodes require canonical node_type")
-
-
-def _capture_entity_row(entity, *, source, domain) -> dict:
-    row = {key: value for key, value in entity.items() if value is not None}
-    row.setdefault("source", source)
-    row.setdefault("domain", domain)
-    return row
-
-
-def _capture_edge_tuple(relationship) -> tuple:
-    return (
-        relationship["source"],
-        relationship["target"],
-        {"relationship": relationship["relationship"]},
-    )
-
-
-@pytest.fixture(autouse=True)
-def _capture_repository_mapping(monkeypatch):
-    """Keep repository DTO tests at their mapping boundary.
-
-    Agent Utilities owns ChangeEnvelope authorization and commit semantics; its
-    own suite covers that contract. These tests assert only this package's DTO
-    projection before it crosses that governed boundary.
-    """
-
-    def capture(entities, relationships, *, source, domain, client, graph):
-        _validate_capture_entities(entities)
-        for entity in entities:
-            row = _capture_entity_row(entity, source=source, domain=domain)
-            client.txn.nodes[row["id"]] = row
-        for relationship in relationships or []:
-            client.txn.edges.append(_capture_edge_tuple(relationship))
-        client.txn.committed = True
-        return {"nodes": len(entities), "edges": len(relationships or [])}
-
-    monkeypatch.setattr("repository_manager.kg_ingest._native_ingest_entities", capture)
-
-
-def test_ingest_entities_writes_nodes_and_edges():
-    c = _FakeClient()
-    res = ingest_entities(
+async def test_ingest_entities_writes_nodes_and_edges(ingest):
+    service, transport = ingest
+    res = await ingest_entities(
         [
             {"id": "a", "node_type": "GitRepository", "name": "p"},
             {"id": "b", "node_type": "Worktree"},
         ],
         [{"source": "b", "target": "a", "relationship": "worktreeOf"}],
-        client=c,
-        graph="__commons__",
+        ingest=service,
     )
     assert res == {"nodes": 2, "edges": 1}
-    assert c.txn.committed is True
-    assert set(c.txn.nodes) == {"a", "b"}
-    # provenance is stamped
-    assert c.txn.nodes["a"]["source"] == "repository-manager"
-    assert c.txn.nodes["a"]["domain"] == "repository"
-    assert c.txn.edges == [("b", "a", {"relationship": "worktreeOf"})]
+    request = transport.requests[0]
+    assert {r.record_id for r in request.records} == {"a", "b"}
+    assert request.relationships[0].source.record_id == "b"
+    assert request.relationships[0].target.record_id == "a"
 
 
-def test_ingest_repositories_maps_gitrepository():
-    c = _FakeClient()
-    res = ingest_repositories(
+async def test_ingest_repositories_maps_gitrepository(ingest):
+    service, transport = ingest
+    res = await ingest_repositories(
         [
             {
                 "vcs": "gitlab",
@@ -136,34 +79,32 @@ def test_ingest_repositories_maps_gitrepository():
                 "id": 42,
             }
         ],
-        client=c,
-        graph="__commons__",
+        ingest=service,
     )
     assert res == {"nodes": 1, "edges": 0}
-    node = c.txn.nodes["repository:GitRepository:42"]
-    assert node["node_type"] == "GitRepository"
-    assert node["vcs"] == "gitlab"
-    assert node["fullPath"] == "grp/demo"
-    assert node["cloneUrl"] == "https://gl/grp/demo.git"
-    assert node["defaultBranch"] == "main"
-    assert node["externalToolId"] == "42"
-    # empty head_sha is dropped (None-filtered)
-    assert "headSha" not in node
+    record = transport.requests[0].records[0]
+    assert record.record_id == "repository:GitRepository:42"
+    assert record.payload["vcs"] == "gitlab"
+    assert record.payload["fullPath"] == "grp/demo"
+    assert record.payload["cloneUrl"] == "https://gl/grp/demo.git"
+    assert record.payload["defaultBranch"] == "main"
+    assert record.payload["externalToolId"] == "42"
+    # empty head_sha is dropped (falsy-filtered in the mapping layer)
+    assert not record.payload.get("headSha")
 
 
-def test_ingest_repositories_falls_back_to_full_path_id():
-    c = _FakeClient()
-    ingest_repositories(
+async def test_ingest_repositories_falls_back_to_full_path_id(ingest):
+    service, transport = ingest
+    await ingest_repositories(
         [{"vcs": "github", "full_path": "owner/repo", "clone_url": "x"}],
-        client=c,
-        graph="__commons__",
+        ingest=service,
     )
-    assert "repository:GitRepository:owner/repo" in c.txn.nodes
+    assert transport.requests[0].records[0].record_id == "repository:GitRepository:owner/repo"
 
 
-def test_ingest_worktrees_maps_and_links_repo():
-    c = _FakeClient()
-    res = ingest_worktrees(
+async def test_ingest_worktrees_maps_and_links_repo(ingest):
+    service, transport = ingest
+    res = await ingest_worktrees(
         [
             {
                 "repo": "agent-utilities",
@@ -176,29 +117,33 @@ def test_ingest_worktrees_maps_and_links_repo():
                 "behind": 0,
             }
         ],
-        client=c,
-        graph="__commons__",
+        ingest=service,
     )
     assert res == {"nodes": 2, "edges": 1}
-    wt = c.txn.nodes["repository:Worktree:worktree://agent-utilities/feat-x"]
-    assert wt["node_type"] == "Worktree"
-    assert wt["branchName"] == "feat/x"
-    assert wt["worktreeStatus"] == "active"
-    assert wt["dirty"] is True
-    assert wt["aheadCount"] == 3
-    assert "repository:GitRepository:agent-utilities" in c.txn.nodes
-    assert c.txn.edges == [
-        (
-            "repository:Worktree:worktree://agent-utilities/feat-x",
-            "repository:GitRepository:agent-utilities",
-            {"relationship": "worktreeOf"},
-        )
-    ]
+    request = transport.requests[0]
+    wt = next(
+        r
+        for r in request.records
+        if r.record_id == "repository:Worktree:worktree://agent-utilities/feat-x"
+    )
+    assert wt.payload["branchName"] == "feat/x"
+    assert wt.payload["worktreeStatus"] == "active"
+    assert wt.payload["dirty"] is True
+    assert wt.payload["aheadCount"] == 3
+    assert any(
+        r.record_id == "repository:GitRepository:agent-utilities" for r in request.records
+    )
+    assert request.relationships[0].source.record_id == (
+        "repository:Worktree:worktree://agent-utilities/feat-x"
+    )
+    assert request.relationships[0].target.record_id == (
+        "repository:GitRepository:agent-utilities"
+    )
 
 
-def test_ingest_projects_maps_and_links_repo():
-    c = _FakeClient()
-    res = ingest_projects(
+async def test_ingest_projects_maps_and_links_repo(ingest):
+    service, transport = ingest
+    res = await ingest_projects(
         [
             {
                 "name": "gitlab-api",
@@ -208,28 +153,18 @@ def test_ingest_projects_maps_and_links_repo():
                 "ahead_origin": 0,
             }
         ],
-        client=c,
-        graph="__commons__",
+        ingest=service,
     )
     assert res == {"nodes": 2, "edges": 1}
-    proj = c.txn.nodes["repository:Project:gitlab-api"]
-    assert proj["node_type"] == "Project"
-    assert proj["validationStatus"] == "clean"
-    assert proj["projectPath"].endswith("gitlab-api")
-    assert c.txn.edges == [
-        (
-            "repository:Project:gitlab-api",
-            "repository:GitRepository:gitlab-api",
-            {"relationship": "projectOfRepository"},
-        )
-    ]
+    request = transport.requests[0]
+    proj = next(r for r in request.records if r.record_id == "repository:Project:gitlab-api")
+    assert proj.payload["validationStatus"] == "clean"
+    assert proj.payload["projectPath"].endswith("gitlab-api")
+    assert request.relationships[0].source.record_id == "repository:Project:gitlab-api"
+    assert request.relationships[0].target.record_id == "repository:GitRepository:gitlab-api"
 
 
-def test_retired_structural_alias_is_rejected():
-    with pytest.raises(NativeIngestError, match="canonical node_type"):
-        ingest_entities([{"id": "a", "type": "GitRepository"}], client=_FakeClient())
-
-
-def test_empty_native_ingest_is_rejected():
-    with pytest.raises(NativeIngestError, match="at least one entity"):
-        ingest_entities([], client=_FakeClient())
+async def test_empty_ingest_entities_is_rejected(ingest):
+    service, _transport = ingest
+    with pytest.raises(IngestError, match="at least one entity"):
+        await ingest_entities([], ingest=service)

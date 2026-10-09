@@ -105,7 +105,7 @@ async def _handle_enumerate(
     manifest_path = await run_blocking(write_manifest, refs, run_id)
     ingested = None
     try:
-        ingested = await run_blocking(ingest_repositories, refs)
+        ingested = await ingest_repositories(refs)
     except Exception as exc:  # noqa: BLE001 - ingestion is best-effort
         logger.debug("KG ingest skipped: %s", exc)
     return {
