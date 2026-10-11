@@ -1,4 +1,4 @@
-# RM-CONNECTOR-001 test contract
+# RM-CONNECTOR test contract
 
 | Requirement | Verification |
 |---|---|

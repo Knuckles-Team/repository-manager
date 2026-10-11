@@ -1,4 +1,4 @@
-# RM-RELEASE-001 requirements
+# RM-RELEASE requirements
 
 | ID | Requirement | Verification |
 |---|---|---|

@@ -1,4 +1,4 @@
-# RM-MATERIALIZE-001 test contract
+# RM-MATERIALIZE test contract
 
 | Requirement | Positive fixture | Negative fixture and expected result |
 |---|---|---|

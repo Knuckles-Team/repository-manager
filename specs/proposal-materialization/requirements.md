@@ -1,4 +1,4 @@
-# RM-MATERIALIZE-001 requirements
+# RM-MATERIALIZE requirements
 
 | ID | Requirement | Verification |
 |---|---|---|

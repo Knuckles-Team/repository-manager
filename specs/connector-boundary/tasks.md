@@ -1,4 +1,4 @@
-# RM-CONNECTOR-001 delivery tasks
+# RM-CONNECTOR delivery tasks
 
 - [ ] Produce reviewed import inventory and stable tool schema baseline.
 - [ ] Complete the [`RM-GOVERNANCE-R001`](../development-governance/spec.md) governance cut and route all RM governance callers locally.

@@ -1,5 +1,7 @@
 # repository-manager specifications
 
+These specs follow the ecosystem [spec standard](https://github.com/Knuckles-Team/pipelines/blob/main/reference/spec-standard.md): one owning spec per capability, extend an existing spec before creating one, audits and reviews land in the owning spec, one ID and title form, one file set. The `spec-standard` gate enforces it.
+
 This tracked `specs/` directory is the public build contract for **RM** owned work. Every
 spec must contain the behavior, architecture, interfaces, tests, quality gates, and acceptance
 criteria needed to implement it from this repository. External program notes may inform a draft,
@@ -67,8 +69,8 @@ bootstrap skill, together with the [SDD full lifecycle](https://github.com/Knuck
 
 ## Local specifications
 
-- [`RM-MATERIALIZE-001`](proposal-materialization/spec.md) — governed proposal to Git materialization.
-- [`RM-IDENTITY-001`](fleet-git-identity/spec.md) — repository history and migration receipts.
-- [`RM-CONNECTOR-001`](connector-boundary/spec.md) — connector boundary migration.
-- [`RM-GOVERNANCE-001`](development-governance/spec.md) — repository development governance.
-- [`RM-RELEASE-001`](fleet-release/spec.md) — dependency aware fleet release.
+- [`RM-MATERIALIZE`](proposal-materialization/spec.md) — governed proposal to Git materialization.
+- [`RM-IDENTITY`](fleet-git-identity/spec.md) — repository history and migration receipts.
+- [`RM-CONNECTOR`](connector-boundary/spec.md) — connector boundary migration.
+- [`RM-GOVERNANCE`](development-governance/spec.md) — repository development governance.
+- [`RM-RELEASE`](fleet-release/spec.md) — dependency aware fleet release.

@@ -1,4 +1,4 @@
-# RM-RELEASE-001 architecture and implementation plan
+# RM-RELEASE architecture and implementation plan
 
 ## Existing wiring to reuse
 

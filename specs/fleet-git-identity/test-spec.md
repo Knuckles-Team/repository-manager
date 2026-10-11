@@ -1,4 +1,4 @@
-# RM-IDENTITY-001 test contract
+# RM-IDENTITY test contract
 
 | Requirement | Positive case | Negative/recovery case |
 |---|---|---|

@@ -1,4 +1,4 @@
-# RM-IDENTITY-001 — Fleet Git identity and history reconciliation
+# RM-IDENTITY — Fleet Git identity and history reconciliation
 
 **Candidate owner:** repository-manager. **Owner decision:** DECIDED 2026-10-03 — repository-manager is the sole history materializer (see "Recorded decisions" below). See [requirements.md](requirements.md) for the definition of every requirement ID and [status.json](status.json) for current delivery state.
 

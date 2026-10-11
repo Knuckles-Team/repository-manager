@@ -1,4 +1,4 @@
-# RM-RELEASE-001 delivery tasks
+# RM-RELEASE delivery tasks
 
 - [x] Establish typed graph, plan, and frozen digest source in `development/workspace_release*.py` (source only, not yet merged; acceptance pending).
 - [ ] Complete portable census and independent source-universe proof for every selected repository and package ecosystem.

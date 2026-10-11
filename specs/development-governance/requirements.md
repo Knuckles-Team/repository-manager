@@ -1,4 +1,4 @@
-# RM-GOVERNANCE-001 requirements
+# RM-GOVERNANCE requirements
 
 | ID | Requirement | Verification |
 |---|---|---|

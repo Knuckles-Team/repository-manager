@@ -1,4 +1,4 @@
-# RM-MATERIALIZE-001 architecture
+# RM-MATERIALIZE architecture
 
 ## Reuse inventory
 

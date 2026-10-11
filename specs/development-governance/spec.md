@@ -1,4 +1,4 @@
-# RM-GOVERNANCE-001 — Repository development governance
+# RM-GOVERNANCE — Repository development governance
 
 **Owner:** repository-manager. See [requirements.md](requirements.md) for the definition of every requirement ID and [status.json](status.json) for current delivery state. The related connector migration [`RM-CONNECTOR-R001`](../connector-boundary/spec.md) must consume this authority before its repository-manager half is accepted.
 

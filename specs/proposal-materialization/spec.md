@@ -1,4 +1,4 @@
-# RM-MATERIALIZE-001 — Governed proposal to Git materialization
+# RM-MATERIALIZE — Governed proposal to Git materialization
 
 **Owner:** repository-manager for Git effects. See [requirements.md](requirements.md) for the definition of every requirement ID and [status.json](status.json) for current delivery state. This spec also supports a graph service that stores approval and receipts, and an orchestration service that requests execution; their public contracts are supplementary to the complete RM contract below.
 

@@ -1,7 +1,8 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "spec_id": "RM-MATERIALIZE-001",
   "owner_repo": "repository-manager",
+  "delivery_state": "SPECIFIED",
   "requirement_ids": [
     "RM-MATERIALIZE-R001",
     "RM-MATERIALIZE-01",
@@ -11,58 +12,57 @@
     "RM-MATERIALIZE-05",
     "RM-MATERIALIZE-06"
   ],
-  "delivery_state": "SPECIFIED",
-  "acceptance_state": "NOT_AUDITED",
-  "evidence": [],
   "requirements": [
     {
       "id": "RM-MATERIALIZE-R001",
       "title": "Repository-manager materializes an approved proposal into a commit",
-      "delivery_state": "BUILDING",
-      "evidence": [],
-      "remaining": "The materialization service is implemented on the default branch (repository_manager/materialization/) and its behavior is proven with test doubles for the external ports (tests/materialization/test_service.py). It is not reachable yet: there is no real approval authority or receipt store to bind it to, and no command exposes it. Remaining: bind real implementations of those two ports, expose one typed operation, and prove this requirement through that entry point."
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
     },
     {
       "id": "RM-MATERIALIZE-01",
       "title": "Approval verification gates every Git materialization request",
-      "delivery_state": "BUILDING",
-      "evidence": [],
-      "remaining": "The materialization service is implemented on the default branch (repository_manager/materialization/) and its behavior is proven with test doubles for the external ports (tests/materialization/test_service.py). It is not reachable yet: there is no real approval authority or receipt store to bind it to, and no command exposes it. Remaining: bind real implementations of those two ports, expose one typed operation, and prove this requirement through that entry point."
+      "delivery_state": "LANDED",
+      "landed_in": [
+        "c52511ddd596"
+      ],
+      "verified_by": []
     },
     {
       "id": "RM-MATERIALIZE-02",
       "title": "Patch application is isolated and restricted to approved paths",
-      "delivery_state": "BUILDING",
-      "evidence": [],
-      "remaining": "The materialization service is implemented on the default branch (repository_manager/materialization/) and its behavior is proven with test doubles for the external ports (tests/materialization/test_service.py). It is not reachable yet: there is no real approval authority or receipt store to bind it to, and no command exposes it. Remaining: bind real implementations of those two ports, expose one typed operation, and prove this requirement through that entry point."
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
     },
     {
       "id": "RM-MATERIALIZE-03",
       "title": "Validation gates and explicit staging precede every commit",
-      "delivery_state": "BUILDING",
-      "evidence": [],
-      "remaining": "The materialization service is implemented on the default branch (repository_manager/materialization/) and its behavior is proven with test doubles for the external ports (tests/materialization/test_service.py). It is not reachable yet: there is no real approval authority or receipt store to bind it to, and no command exposes it. Remaining: bind real implementations of those two ports, expose one typed operation, and prove this requirement through that entry point."
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
     },
     {
       "id": "RM-MATERIALIZE-04",
       "title": "Merge queue submission never claims landing before verification",
-      "delivery_state": "BUILDING",
-      "evidence": [],
-      "remaining": "The materialization service is implemented on the default branch (repository_manager/materialization/) and its behavior is proven with test doubles for the external ports (tests/materialization/test_service.py). It is not reachable yet: there is no real approval authority or receipt store to bind it to, and no command exposes it. Remaining: bind real implementations of those two ports, expose one typed operation, and prove this requirement through that entry point."
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
     },
     {
       "id": "RM-MATERIALIZE-05",
       "title": "An immutable receipt binds every materialization outcome",
-      "delivery_state": "BUILDING",
-      "evidence": [],
-      "remaining": "The materialization service is implemented on the default branch (repository_manager/materialization/) and its behavior is proven with test doubles for the external ports (tests/materialization/test_service.py). It is not reachable yet: there is no real approval authority or receipt store to bind it to, and no command exposes it. Remaining: bind real implementations of those two ports, expose one typed operation, and prove this requirement through that entry point."
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
     },
     {
       "id": "RM-MATERIALIZE-06",
       "title": "No caller has a direct Git fallback when the service is unavailable",
-      "delivery_state": "BUILDING",
-      "evidence": [],
-      "remaining": "The materialization service is implemented on the default branch (repository_manager/materialization/) and its behavior is proven with test doubles for the external ports (tests/materialization/test_service.py). It is not reachable yet: there is no real approval authority or receipt store to bind it to, and no command exposes it. Remaining: bind real implementations of those two ports, expose one typed operation, and prove this requirement through that entry point."
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
     }
   ]
 }
