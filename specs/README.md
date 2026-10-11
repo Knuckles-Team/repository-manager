@@ -28,22 +28,9 @@ owner and live wiring before proposing new components. Include CCCC, jscpd, dupe
 language-native and repo release gates where applicable, with exact pass evidence and a
 no-duplicate-authority check.
 
-## Status and evidence
+## States
 
-The tracked `status.json` is the source for the public HTML report. It uses delivery states
-`UNKNOWN`, `SPECIFIED`, `BUILDING`, `BUILT`, `LANDED`, `CLOSED`, `DEFERRED`, and `REJECTED`,
-and acceptance states `NOT_AUDITED`, `PENDING`, `ACCEPTED`, and `FAILED`. Use
-`SPECIFIED/NOT_AUDITED` for a complete design awaiting build; use `UNKNOWN/NOT_AUDITED`
-when existing code has not received an exact-revision audit. Prose labels such as `PARTIAL`
-or `IN REVIEW` may describe current work, but they do not prove delivery.
-
-`LANDED` requires a public merged-head receipt for the exact owning-repository revision.
-`ACCEPTED` additionally requires the checked-in test and consumer or release receipts.
-Record public issue, PR, check, and commit links in the owner spec and evidence array.
-An obligation can be landed while acceptance remains open. The same rule applies per
-requirement: each entry in `status.json`'s `requirements` array counts as delivered only once
-its evidence cites a commit merged to the repository's default branch, not a branch tip or a
-local build.
+States are `SPECIFIED`, `LANDED`, and `VERIFIED`. The generator sets them. See the [spec standard](https://github.com/Knuckles-Team/pipelines/blob/main/reference/spec-standard.md#states).
 
 ## Graph OS owner map
 
