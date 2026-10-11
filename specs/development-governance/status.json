@@ -32,7 +32,14 @@
     "RM-GOVERNANCE-R019",
     "RM-GOVERNANCE-R020",
     "RM-GOVERNANCE-R021",
-    "RM-GOVERNANCE-R022"
+    "RM-GOVERNANCE-R022",
+    "RM-GOVERNANCE-R023",
+    "RM-GOVERNANCE-R023.1",
+    "RM-GOVERNANCE-R023.2",
+    "RM-GOVERNANCE-R023.3",
+    "RM-GOVERNANCE-R023.4",
+    "RM-GOVERNANCE-R023.5",
+    "RM-GOVERNANCE-R023.6"
   ],
   "requirements": [
     {
@@ -275,6 +282,63 @@
     {
       "id": "RM-GOVERNANCE-R022",
       "title": "The repository passes its own full local gate suite",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-GOVERNANCE-R023",
+      "title": "Heavy gates run on a leased slot of an inventory host",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": [],
+      "rollup_of": [
+        "RM-GOVERNANCE-R023.1",
+        "RM-GOVERNANCE-R023.2",
+        "RM-GOVERNANCE-R023.3",
+        "RM-GOVERNANCE-R023.4",
+        "RM-GOVERNANCE-R023.5",
+        "RM-GOVERNANCE-R023.6"
+      ]
+    },
+    {
+      "id": "RM-GOVERNANCE-R023.1",
+      "title": "Typed host lease",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-GOVERNANCE-R023.2",
+      "title": "Read capacity from inventory",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-GOVERNANCE-R023.3",
+      "title": "Lease a slot per host",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-GOVERNANCE-R023.4",
+      "title": "Refuse when no host has headroom",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-GOVERNANCE-R023.5",
+      "title": "Release on crash",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-GOVERNANCE-R023.6",
+      "title": "Wire into the gate runner",
       "delivery_state": "SPECIFIED",
       "landed_in": [],
       "verified_by": []
