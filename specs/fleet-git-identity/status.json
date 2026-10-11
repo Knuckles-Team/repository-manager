@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "spec_id": "RM-IDENTITY-001",
+  "spec_id": "RM-IDENTITY",
   "owner_repo": "repository-manager",
   "delivery_state": "SPECIFIED",
   "requirement_ids": [
