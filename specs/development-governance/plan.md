@@ -19,3 +19,13 @@ Clone this repository and run `uv sync --extra test`. Run `uv run pytest tests/t
 ## Security and recovery
 
 Resolve canonical paths and reject symlink escapes before any Git operation. Never issue `git stash` on a shared repository or stage all paths implicitly. A caller cannot bypass an authorization/fence failure by switching from CLI to MCP. Queue and cleanup actions must be idempotent; after a crash, replay from durable record plus Git ref state, not from an in-memory success flag. Preserve uncertain state until reconciliation proves it safe.
+
+## Host-leased heavy gates (RM-GOVERNANCE-R023)
+
+Data flow: `tunnel-manager inventory.yml -> load_host_capacity -> HostLease (governance/lanes.py) -> remote gate run -> release`.
+
+Attach point: `_resource_lease_file` and `_free_resource_slot` in `repository_manager/governance/lanes.py:1772`. The gate runner call site is located by the first child row.
+
+Reuse: the existing per-machine resource lease and the fence token. The inventory file stays owned by tunnel-manager.
+
+Decision: slot accounting stays in repository-manager's lease. The rejected alternative is a second scheduler that picks hosts, which duplicates the engine's placement decision.

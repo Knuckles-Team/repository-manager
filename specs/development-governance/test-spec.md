@@ -9,6 +9,7 @@
 | 05 | Queue merges a clean candidate into a new base. | Stale base, merge conflict, and killed runner yield a retryable record. |
 | 06 | Merged clean branch prunes with recovery proof. | Dirty or unmerged branch remains with a reason and anchor. |
 | 07 | Reserve, verify, materialize, release a concept. | Other actor, expired fence, or mismatched candidate cannot reuse claim. |
+| R023 | The end-to-end row proves the lease, the remote run and the refusal. | Host at capacity or expired fence refuses with a typed reason. |
 
 Place tests in the existing `tests/test_lane_registry.py`, `tests/test_native_lane_authority.py`, `tests/test_safe_commit.py`, `tests/test_merge_queue.py`, `tests/test_merge_queue_runner.py`, and concept coordination tests. Use disposable Git fixtures and deterministic fake clock/authority adapters; optional forge tests are additive. Save exact commit/CI receipts and an import inventory when accepting.
 
