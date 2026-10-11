@@ -1,4 +1,4 @@
-# RM-IDENTITY-001 architecture
+# RM-IDENTITY architecture
 
 ## Reuse and boundaries
 

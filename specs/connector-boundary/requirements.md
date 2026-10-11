@@ -1,4 +1,4 @@
-# RM-CONNECTOR-001 requirements
+# RM-CONNECTOR requirements
 
 | ID | Requirement | Verification |
 |---|---|---|

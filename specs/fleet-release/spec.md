@@ -1,4 +1,4 @@
-# RM-RELEASE-001 — Dependency aware fleet release
+# RM-RELEASE — Dependency aware fleet release
 
 **Owner:** repository-manager. **Delivery state:** BUILDING; source exists, fleet activation and acceptance are unverified. See [requirements.md](requirements.md) for the definition of every requirement ID and [status.json](status.json) for current delivery state.
 

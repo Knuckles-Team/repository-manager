@@ -1,4 +1,4 @@
-# RM-RELEASE-001 test contract
+# RM-RELEASE test contract
 
 | Requirement | Fixture and test | Expected evidence |
 |---|---|---|

@@ -1,4 +1,4 @@
-# RM-GOVERNANCE-001 test contract
+# RM-GOVERNANCE test contract
 
 | Requirement | Positive case | Negative/recovery case |
 |---|---|---|

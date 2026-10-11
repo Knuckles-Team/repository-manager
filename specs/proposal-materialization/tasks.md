@@ -1,4 +1,4 @@
-# RM-MATERIALIZE-001 delivery tasks
+# RM-MATERIALIZE delivery tasks
 
 - [ ] Define versioned proposal, approval proof, receipt, and typed failure schemas with canonical digest goldens.
 - [ ] Implement authenticated admission and path/base/size validation before any worktree effect.

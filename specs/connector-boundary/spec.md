@@ -1,4 +1,4 @@
-# RM-CONNECTOR-001 — Repository-manager connector boundary migration
+# RM-CONNECTOR — Repository-manager connector boundary migration
 
 **Owner:** repository-manager for its own connector and package imports. See [requirements.md](requirements.md) for the definition of every requirement ID and [status.json](status.json) for current delivery state. This is the repository-manager slice of a broader connector migration across the fleet; the local contract is complete here.
 

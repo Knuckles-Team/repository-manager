@@ -1,4 +1,4 @@
-# RM-IDENTITY-001 delivery tasks
+# RM-IDENTITY delivery tasks
 
 - [ ] Review and record owner/approver, public identity manifest, unknown-author policy, signed-object behavior, and remote permissions.
 - [ ] Build deterministic read-only discovery and preview with exact ref/policy digests.

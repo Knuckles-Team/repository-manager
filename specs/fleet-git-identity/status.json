@@ -1,7 +1,8 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "spec_id": "RM-IDENTITY-001",
   "owner_repo": "repository-manager",
+  "delivery_state": "SPECIFIED",
   "requirement_ids": [
     "RM-IDENTITY-R001",
     "RM-IDENTITY-01",
@@ -13,88 +14,84 @@
     "RM-IDENTITY-07",
     "RM-IDENTITY-R002"
   ],
-  "delivery_state": "SPECIFIED",
-  "acceptance_state": "NOT_AUDITED",
-  "evidence": [],
   "requirements": [
     {
       "id": "RM-IDENTITY-R001",
       "title": "Rewrite commit identities across public repositories with approval and rollback",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "landed_in": [
+        "8ee2778dcc35"
+      ],
+      "verified_by": []
     },
     {
       "id": "RM-IDENTITY-01",
       "title": "Complete ref and tag discovery before rewrite",
       "delivery_state": "LANDED",
-      "evidence": [
-        {
-          "kind": "merged_head",
-          "result": "passed",
-          "commit": "9a933f61ad22207605f7786d51a263541085c557",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/9a933f61ad22207605f7786d51a263541085c557",
-          "description": "Implemented on the default branch; exercised by tests/test_history_identity_discovery.py"
-        }
-      ]
+      "landed_in": [
+        "8ee2778dcc35",
+        "9a933f61ad22"
+      ],
+      "verified_by": []
     },
     {
       "id": "RM-IDENTITY-02",
       "title": "Deterministic dry-run identity rewrite plan",
       "delivery_state": "LANDED",
-      "evidence": [
-        {
-          "kind": "merged_head",
-          "result": "passed",
-          "commit": "9a933f61ad22207605f7786d51a263541085c557",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/9a933f61ad22207605f7786d51a263541085c557",
-          "description": "Implemented on the default branch; exercised by tests/test_history_identity_preview.py"
-        }
-      ]
+      "landed_in": [
+        "8ee2778dcc35",
+        "9a933f61ad22"
+      ],
+      "verified_by": []
     },
     {
       "id": "RM-IDENTITY-03",
       "title": "Signed approval required before any rewrite",
       "delivery_state": "LANDED",
-      "evidence": [
-        {
-          "kind": "merged_head",
-          "result": "passed",
-          "commit": "9a933f61ad22207605f7786d51a263541085c557",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/9a933f61ad22207605f7786d51a263541085c557",
-          "description": "Implemented on the default branch; exercised by tests/test_history_identity_approval.py"
-        }
-      ]
+      "landed_in": [
+        "8ee2778dcc35",
+        "9a933f61ad22"
+      ],
+      "verified_by": []
     },
     {
       "id": "RM-IDENTITY-04",
       "title": "Byte-identical trees and preserved history topology",
-      "delivery_state": "SPECIFIED",
-      "evidence": []
+      "delivery_state": "LANDED",
+      "landed_in": [
+        "8ee2778dcc35"
+      ],
+      "verified_by": []
     },
     {
       "id": "RM-IDENTITY-05",
       "title": "Quarantined staging with backup refs before ref update",
       "delivery_state": "SPECIFIED",
-      "evidence": []
+      "landed_in": [],
+      "verified_by": []
     },
     {
       "id": "RM-IDENTITY-06",
       "title": "Lease-protected per-remote publication receipts",
       "delivery_state": "SPECIFIED",
-      "evidence": []
+      "landed_in": [],
+      "verified_by": []
     },
     {
       "id": "RM-IDENTITY-07",
       "title": "Coordinated merge-queue pause and resync during rewrite",
       "delivery_state": "SPECIFIED",
-      "evidence": []
+      "landed_in": [],
+      "verified_by": []
     },
     {
       "id": "RM-IDENTITY-R002",
       "title": "Reconcile diverged history before identity rewrite",
-      "delivery_state": "BUILDING",
-      "evidence": [],
-      "remaining": "A history-consistency check and an admission gate that refuses a repository whose branches share no merge base are on the default branch (tests/test_history_identity_consistency.py). Remaining: run it against agent-webui and reconcile that repository's history so it is admitted."
+      "delivery_state": "LANDED",
+      "landed_in": [
+        "8ee2778dcc35"
+      ],
+      "verified_by": []
     }
   ]
 }

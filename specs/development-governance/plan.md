@@ -1,4 +1,4 @@
-# RM-GOVERNANCE-001 architecture
+# RM-GOVERNANCE architecture
 
 ## Existing components
 

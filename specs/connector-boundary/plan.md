@@ -1,4 +1,4 @@
-# RM-CONNECTOR-001 architecture
+# RM-CONNECTOR architecture
 
 ## Current wiring and migration
 

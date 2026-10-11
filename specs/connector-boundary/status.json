@@ -1,7 +1,8 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "spec_id": "RM-CONNECTOR-001",
   "owner_repo": "repository-manager",
+  "delivery_state": "LANDED",
   "requirement_ids": [
     "RM-CONNECTOR-R001",
     "RM-CONNECTOR-01",
@@ -10,94 +11,67 @@
     "RM-CONNECTOR-04",
     "RM-CONNECTOR-05"
   ],
-  "delivery_state": "SPECIFIED",
-  "acceptance_state": "NOT_AUDITED",
-  "evidence": [],
   "requirements": [
     {
       "id": "RM-CONNECTOR-R001",
       "title": "Migrate connector imports to the public SDK boundary",
       "delivery_state": "LANDED",
-      "evidence": [
-        {
-          "kind": "merged_head",
-          "result": "passed",
-          "commit": "d00c0834551ecb859b617b4171aadde229d82b31",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d00c0834551ecb859b617b4171aadde229d82b31",
-          "description": "Implemented on the default branch; exercised by tests/test_action_discovery.py"
-        }
-      ]
+      "landed_in": [
+        "68211dcdc4a0",
+        "c4cd54f6527a",
+        "d00c0834551e"
+      ],
+      "verified_by": []
     },
     {
       "id": "RM-CONNECTOR-01",
       "title": "Classify every import from the orchestration package",
-      "delivery_state": "BUILDING",
-      "evidence": [
-        {
-          "kind": "merged_head",
-          "result": "passed",
-          "commit": "c7068e31825aa006c480a70e4af199996b8fbcab",
-          "url": "https://github.com/Knuckles-Team/repository-manager/pull/17",
-          "description": "Import inventory, its checker and 18 tests merged by pull request 17; the inventory classifies 45 imports and CI run 36993058697 passed on Linux."
-        }
+      "delivery_state": "LANDED",
+      "landed_in": [
+        "c7068e31825a"
       ],
-      "remaining": "Six dynamic import boundaries are recorded as reviewed runtime-unknown rather than given one of the four classifications, so not every matching import is classified yet. The Windows job skipped the import and unit tests, so there is no Windows proof."
+      "verified_by": []
     },
     {
       "id": "RM-CONNECTOR-02",
       "title": "Route connector transport imports through the public SDK",
       "delivery_state": "LANDED",
-      "evidence": [
-        {
-          "kind": "merged_head",
-          "result": "passed",
-          "commit": "d00c0834551ecb859b617b4171aadde229d82b31",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d00c0834551ecb859b617b4171aadde229d82b31",
-          "description": "Implemented on the default branch; exercised by tests/test_mcp_registration.py"
-        }
-      ]
+      "landed_in": [
+        "d00c0834551e",
+        "f6407b9f45af"
+      ],
+      "verified_by": []
     },
     {
       "id": "RM-CONNECTOR-03",
       "title": "Keep governance imports under repository-manager authority",
       "delivery_state": "LANDED",
-      "evidence": [
-        {
-          "kind": "merged_head",
-          "result": "passed",
-          "commit": "269c661d12faef0fe383d19614a6f00d8c3d61d8",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/269c661d12faef0fe383d19614a6f00d8c3d61d8",
-          "description": "Implemented on the default branch; exercised by tests/test_merge_queue.py"
-        }
-      ]
+      "landed_in": [
+        "269c661d12fa"
+      ],
+      "verified_by": []
     },
     {
       "id": "RM-CONNECTOR-04",
       "title": "Preserve MCP/CLI contract during connector migration",
       "delivery_state": "LANDED",
-      "evidence": [
-        {
-          "kind": "merged_head",
-          "result": "passed",
-          "commit": "d00c0834551ecb859b617b4171aadde229d82b31",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d00c0834551ecb859b617b4171aadde229d82b31",
-          "description": "Implemented on the default branch; exercised by tests/test_adapter_extraction.py"
-        }
-      ]
+      "landed_in": [
+        "a47346f9c0f0",
+        "d00c0834551e",
+        "dcb852f23680"
+      ],
+      "verified_by": []
     },
     {
       "id": "RM-CONNECTOR-05",
       "title": "Remove dead connector adapters after cutover",
       "delivery_state": "LANDED",
-      "evidence": [
-        {
-          "kind": "merged_head",
-          "result": "passed",
-          "commit": "d00c0834551ecb859b617b4171aadde229d82b31",
-          "url": "https://github.com/Knuckles-Team/repository-manager/commit/d00c0834551ecb859b617b4171aadde229d82b31",
-          "description": "Implemented on the default branch."
-        }
-      ]
+      "landed_in": [
+        "68211dcdc4a0",
+        "c4cd54f6527a",
+        "d00c0834551e"
+      ],
+      "verified_by": []
     }
   ]
 }

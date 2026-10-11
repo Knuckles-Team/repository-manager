@@ -1,4 +1,4 @@
-# RM-GOVERNANCE-001 delivery tasks
+# RM-GOVERNANCE delivery tasks
 
 - [x] Build the repository-manager governance APIs as isolated source (not yet merged to the default branch; merged-head verification pending).
 - [ ] Wire all production CLI, MCP, safe-commit, merge-queue, and concept callers to the RM authority.
