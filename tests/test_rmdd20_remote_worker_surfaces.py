@@ -22,6 +22,19 @@ from repository_manager.remote_execution import ssh_executor as ssh_executor_mod
 from repository_manager.remote_execution.executor import RemoteExecutionUnavailableError
 
 
+@pytest.fixture(autouse=True)
+def _isolated_capacity_state(tmp_path, monkeypatch):
+    """Never rehydrate an operator's or another test's cached capacity store."""
+    from repository_manager import remote_worker_actions as actions
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for name in ("_CAPACITY_INVENTORY", "_CAPACITY_STORE", "_REGISTRY"):
+        monkeypatch.setattr(actions, name, None)
+    yield
+    if actions._CAPACITY_STORE is not None:
+        actions._CAPACITY_STORE._connection.close()
+
+
 async def _rm_remote_workers_tool():
     mcp, _, _, _ = get_mcp_instance()
     tools = await mcp.list_tools()

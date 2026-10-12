@@ -88,9 +88,10 @@ _CURRENT_LANE_REGISTRY: LaneRegistry | None = None
 
 @pytest.fixture(autouse=True)
 def _authorized_test_lane_registry(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> Iterator[LaneRegistry]:
     global _CURRENT_LANE_REGISTRY
+    monkeypatch.setenv("AU_LANE_TEMP_ROOT", str(tmp_path / "lanes"))
     registry = LaneRegistry(":memory:", authority=FakeDurableLaneAuthority())
     monkeypatch.setattr(mq, "_default_lane_registry", lambda: registry)
     _CURRENT_LANE_REGISTRY = registry

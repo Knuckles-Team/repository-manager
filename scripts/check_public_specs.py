@@ -21,6 +21,7 @@ DELIVERY_STATES = frozenset(
         "REJECTED",
     }
 )
+GENERATED_STATES = frozenset({"SPECIFIED", "LANDED", "VERIFIED", "RETIRED"})
 ACCEPTANCE_STATES = frozenset({"NOT_AUDITED", "PENDING", "ACCEPTED", "FAILED"})
 EVIDENCE_KINDS = frozenset(
     {
@@ -56,7 +57,9 @@ CONTENT_MARKERS = {
         r"(?m)^# .*plan|architecture|design|interface|sequence", re.IGNORECASE
     ),
     "test-spec.md": re.compile(r"test|expected|proof", re.IGNORECASE),
-    "tasks.md": re.compile(r"(?m)(^# .*tasks|^- \[[ xX]\]|^\|[^\n]*\bTask\b)", re.IGNORECASE),
+    "tasks.md": re.compile(
+        r"(?m)(^# .*tasks|^- \[[ xX]\]|^\|[^\n]*\bTask\b)", re.IGNORECASE
+    ),
 }
 
 
@@ -154,6 +157,13 @@ def _status_errors(root: Path, path: Path) -> list[str]:
         return [f"{path}: invalid JSON ({exc})"]
     if not isinstance(data, dict):
         return [f"{path}: status must be an object"]
+    validate = {2: _generated_status_errors}.get(
+        data.get("schema_version", 0), _legacy_status_errors
+    )
+    return validate(root, path, data)
+
+
+def _legacy_status_errors(root: Path, path: Path, data: dict) -> list[str]:
     entries = data.get("evidence")
     return (
         _status_field_errors(path, data)
@@ -161,6 +171,56 @@ def _status_errors(root: Path, path: Path) -> list[str]:
         + _receipt_errors(path, data, entries)
         + _requirement_errors(root, path, data)
     )
+
+
+def _generated_identity_errors(path: Path, data: dict) -> list[str]:
+    errors = []
+    if not data.get("spec_id") or data.get("owner_repo") != "repository-manager":
+        errors.append(f"{path}: spec ID and repository owner are required")
+    if data.get("delivery_state") not in GENERATED_STATES:
+        errors.append(f"{path}: invalid generated delivery_state")
+    ids = data.get("requirement_ids")
+    if not isinstance(ids, list) or not _valid_ids(ids) or len(set(ids)) != len(ids):
+        errors.append(f"{path}: unique nonempty requirement_ids are required")
+    return errors
+
+
+def _generated_provenance_errors(label: str, entry: dict) -> list[str]:
+    errors = []
+    for field in ("landed_in", "verified_by"):
+        values = entry.get(field)
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) or not value for value in values
+        ):
+            errors.append(f"{label}: {field} must be an array of nonempty strings")
+    return errors
+
+
+def _generated_entry_errors(path: Path, entry: dict, defined: str) -> list[str]:
+    label = f"{path}: {entry.get('id')}"
+    errors = _generated_provenance_errors(label, entry)
+    if f"`{entry.get('id')}`" not in defined:
+        errors.append(f"{label}: lacks a definition")
+    if not entry.get("title") or entry.get("delivery_state") not in GENERATED_STATES:
+        errors.append(f"{label}: requires a title and valid generated state")
+    return errors
+
+
+def _generated_status_errors(root: Path, path: Path, data: dict) -> list[str]:
+    """Validate v2 structure; the shared spec-status hook checks generated content."""
+    errors = _generated_identity_errors(path, data)
+    entries = data.get("requirements")
+    if not isinstance(entries, list) or any(
+        not isinstance(item, dict) for item in entries
+    ):
+        return errors + [f"{path}: requirements must be an array of objects"]
+    if [item.get("id") for item in entries] != data.get("requirement_ids"):
+        errors.append(f"{path}: requirements must match requirement_ids in order")
+    register = root / path.parent / "requirements.md"
+    defined = register.read_text(encoding="utf-8") if register.is_file() else ""
+    for entry in entries:
+        errors.extend(_generated_entry_errors(path, entry, defined))
+    return errors
 
 
 def _requirement_entry_errors(path: Path, owner: str, entry: dict) -> list[str]:

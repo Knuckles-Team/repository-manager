@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   deploy-docs:
@@ -23,5 +23,6 @@ jobs:
       - name: Install MkDocs
         run: pip install mkdocs-material
 
-      - name: Build and Deploy
-        run: mkdocs gh-deploy --force
+      # Keep this job identity and validation; pages.yml owns publication.
+      - name: Build documentation
+        run: mkdocs build

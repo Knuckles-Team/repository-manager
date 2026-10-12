@@ -61,3 +61,6 @@ repository-manager-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 See **[Installation](installation.md)** and **[Deployment](deployment.md)** for the
 full matrix (PyPI extras, Docker image, all transports, the agent server, reverse
 proxy, DNS).
+
+[Spec delivery dashboard](spec-delivery/) reports canonical spec status.
+Missing status or traceability mappings remain unknown.
