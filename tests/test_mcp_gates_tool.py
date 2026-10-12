@@ -238,6 +238,7 @@ async def _poll_until_done(rm_gates, job_ids, timeout_s=60.0):
             import asyncio
 
             await asyncio.sleep(0.1)
+    assert len(done) == len(job_ids), f"Jobs did not finish: {set(job_ids) - set(done)}"
     return done
 
 
@@ -434,6 +435,10 @@ async def test_rm_gates_run_is_parallel_and_stage_scoped(tmp_path, monkeypatch):
     # the shared writer entirely; confirmed 0 failures across repeated
     # runs at load ~76-90 after this change (was reproducible before it).
     monkeypatch.setenv("PRE_COMMIT_HOME", str(tmp_path / "pre-commit-home"))
+    from repository_manager import gate_ledger
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(gate_ledger, "_DEFAULT", None)
     # The production pool is sized from a share of the host (one worker on a
     # 4-CPU runner); this test proves the tool fans repos out concurrently, so
     # it supplies a pool wide enough for every repo instead of depending on
@@ -462,12 +467,15 @@ async def test_rm_gates_run_is_parallel_and_stage_scoped(tmp_path, monkeypatch):
     with _jobs_lock:
         _jobs.clear()
 
-    with patch("repository_manager.mcp_server.get_git_instance", return_value=mock_git):
-        rm_gates = await _get_rm_gates_tool()
+    try:
+        with patch("repository_manager.mcp_server.get_git_instance", return_value=mock_git):
+            rm_gates = await _get_rm_gates_tool()
 
-        await _run_and_verify_fast_stage(rm_gates)
-        heavy_jobs = await _run_and_verify_heavy_stage(rm_gates, barrier_dir, repo_names)
-        await _verify_profile(rm_gates)
-        one_repo = next(iter(heavy_jobs))
-        await _verify_explain(rm_gates, one_repo)
-        await _verify_status_rollup(rm_gates)
+            await _run_and_verify_fast_stage(rm_gates)
+            heavy_jobs = await _run_and_verify_heavy_stage(rm_gates, barrier_dir, repo_names)
+            await _verify_profile(rm_gates)
+            one_repo = next(iter(heavy_jobs))
+            await _verify_explain(rm_gates, one_repo)
+            await _verify_status_rollup(rm_gates)
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)

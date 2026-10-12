@@ -57,6 +57,7 @@ def _run(cmd, cwd):
 def repo(tmp_path, monkeypatch):
     """A real git repo 'myrepo' on main with one commit, plus an isolated
     WORKTREE_ROOT so tests never touch an operator worktree directory."""
+    monkeypatch.setenv("PRE_COMMIT_HOME", str(tmp_path / "pre-commit-home"))
     ws = tmp_path / "workspace"
     repo_path = ws / "myrepo"
     repo_path.mkdir(parents=True)

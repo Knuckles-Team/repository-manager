@@ -91,6 +91,15 @@ fi
 log "syncing .venv (uv sync ${sync_args[*]})"
 uv sync "${sync_args[@]}"
 
+# The generated client is needed even when the native engine is not installed.
+# Verify the exact Git pin, all upstream receipt artifacts, and the shipped
+# contract verifier before exposing that source. No wheel/source mixing.
+client_args=()
+if [[ "$native" == 1 ]]; then
+  client_args+=(--native)
+fi
+.venv/bin/python scripts/bootstrap_graph_client.py "${client_args[@]}"
+
 # 4. Git hooks --------------------------------------------------------------
 log "installing pre-commit and pre-push hooks"
 uvx pre-commit install --hook-type pre-commit --hook-type pre-push >/dev/null
