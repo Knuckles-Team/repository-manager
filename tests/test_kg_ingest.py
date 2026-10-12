@@ -25,8 +25,10 @@ from repository_manager.kg_ingest import (
 class _FakeTransport:
     def __init__(self):
         self.requests = []
+        self.status_requests = []
 
     async def source_status(self, connector, stream):
+        self.status_requests.append((connector, stream))
         return SimpleNamespace(accepted_checkpoint=None)
 
     async def submit(self, request):
@@ -57,6 +59,7 @@ async def test_ingest_entities_writes_nodes_and_edges(ingest):
         ingest=service,
     )
     assert res == {"nodes": 2, "edges": 1}
+    assert transport.status_requests == [("repository-manager", "repository")]
     request = transport.requests[0]
     assert {r.record_id for r in request.records} == {"a", "b"}
     assert request.relationships[0].source.record_id == "b"
@@ -99,7 +102,10 @@ async def test_ingest_repositories_falls_back_to_full_path_id(ingest):
         [{"vcs": "github", "full_path": "owner/repo", "clone_url": "x"}],
         ingest=service,
     )
-    assert transport.requests[0].records[0].record_id == "repository:GitRepository:owner/repo"
+    assert (
+        transport.requests[0].records[0].record_id
+        == "repository:GitRepository:owner/repo"
+    )
 
 
 async def test_ingest_worktrees_maps_and_links_repo(ingest):
@@ -131,7 +137,8 @@ async def test_ingest_worktrees_maps_and_links_repo(ingest):
     assert wt.payload["dirty"] is True
     assert wt.payload["aheadCount"] == 3
     assert any(
-        r.record_id == "repository:GitRepository:agent-utilities" for r in request.records
+        r.record_id == "repository:GitRepository:agent-utilities"
+        for r in request.records
     )
     assert request.relationships[0].source.record_id == (
         "repository:Worktree:worktree://agent-utilities/feat-x"
@@ -157,11 +164,16 @@ async def test_ingest_projects_maps_and_links_repo(ingest):
     )
     assert res == {"nodes": 2, "edges": 1}
     request = transport.requests[0]
-    proj = next(r for r in request.records if r.record_id == "repository:Project:gitlab-api")
+    proj = next(
+        r for r in request.records if r.record_id == "repository:Project:gitlab-api"
+    )
     assert proj.payload["validationStatus"] == "clean"
     assert proj.payload["projectPath"].endswith("gitlab-api")
     assert request.relationships[0].source.record_id == "repository:Project:gitlab-api"
-    assert request.relationships[0].target.record_id == "repository:GitRepository:gitlab-api"
+    assert (
+        request.relationships[0].target.record_id
+        == "repository:GitRepository:gitlab-api"
+    )
 
 
 async def test_empty_ingest_entities_is_rejected(ingest):
