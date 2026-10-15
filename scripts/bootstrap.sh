@@ -65,6 +65,9 @@ sync_sibling() {
   log "sibling ${name}: fetching ${sha:0:12}"
   mkdir -p "$path"
   [ -d "$path/.git" ] || git -C "$path" init -q
+  # Pinned contract artifacts are hashed byte-for-byte; never let a platform
+  # autocrlf default rewrite line endings on checkout.
+  git -C "$path" config core.autocrlf false
   git -C "$path" remote remove origin 2>/dev/null || true
   git -C "$path" remote add origin "$url"
   local attempt
