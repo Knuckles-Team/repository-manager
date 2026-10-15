@@ -65,6 +65,9 @@ sync_sibling() {
   log "sibling ${name}: fetching ${sha:0:12}"
   mkdir -p "$path"
   [ -d "$path/.git" ] || git -C "$path" init -q
+  # Pinned contract artifacts are hashed byte-for-byte; never let a platform
+  # autocrlf default rewrite line endings on checkout.
+  git -C "$path" config core.autocrlf false
   git -C "$path" remote remove origin 2>/dev/null || true
   git -C "$path" remote add origin "$url"
   local attempt
@@ -98,7 +101,9 @@ client_args=()
 if [[ "$native" == 1 ]]; then
   client_args+=(--native)
 fi
-.venv/bin/python scripts/bootstrap_graph_client.py "${client_args[@]}"
+venv_python=.venv/bin/python
+[ -x "$venv_python" ] || venv_python=.venv/Scripts/python.exe
+"$venv_python" scripts/bootstrap_graph_client.py "${client_args[@]}"
 
 # 4. Git hooks --------------------------------------------------------------
 log "installing pre-commit and pre-push hooks"
