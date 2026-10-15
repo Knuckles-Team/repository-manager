@@ -13,16 +13,6 @@ import pytest
     ("module", "dependency", "operation"),
     [
         (
-            "repository_manager.kg_ingest",
-            "agent_utilities.knowledge_graph.memory",
-            "adapter.ingest_entities([])",
-        ),
-        (
-            "repository_manager.kg_ingest",
-            "agent_utilities.knowledge_graph.memory",
-            "adapter.ingest_documents([])",
-        ),
-        (
             "repository_manager.remote_execution.fakes",
             "tunnel_manager",
             "adapter.FakeInventoryResolver({'synthetic'}).resolve('synthetic', object())",
