@@ -98,7 +98,9 @@ client_args=()
 if [[ "$native" == 1 ]]; then
   client_args+=(--native)
 fi
-.venv/bin/python scripts/bootstrap_graph_client.py "${client_args[@]}"
+venv_python=.venv/bin/python
+[ -x "$venv_python" ] || venv_python=.venv/Scripts/python.exe
+"$venv_python" scripts/bootstrap_graph_client.py "${client_args[@]}"
 
 # 4. Git hooks --------------------------------------------------------------
 log "installing pre-commit and pre-push hooks"
