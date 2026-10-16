@@ -35,7 +35,7 @@ bumps and pushes across the ecosystem. It provides:
 <div class="grid cards" markdown>
 
 - :material-rocket-start: **[Installation](installation.md)** — pip, source, extras, and the prebuilt Docker image.
-- :material-server-network: **[Deployment](deployment.md)** — run the MCP and agent servers, Docker Compose, Caddy + Technitium.
+- :material-server-network: **[Deployment](deployment.md)** — run the MCP server, Docker Compose, Caddy + Technitium.
 - :material-console: **[Usage](usage.md)** — the MCP tools, the `Git` Python client, and the CLI.
 - :material-sitemap: **[Overview](overview.md)** — ecosystem role, enterprise readiness, and architecture.
 - :material-source-branch: **[Phased Maintenance](phased_maintenance.md)** — dependency-ordered workspace updates.
@@ -59,7 +59,7 @@ repository-manager-mcp --transport streamable-http --host 0.0.0.0 --port 8000
 ```
 
 See **[Installation](installation.md)** and **[Deployment](deployment.md)** for the
-full matrix (PyPI extras, Docker image, all transports, the agent server, reverse
+full matrix (PyPI extras, Docker image, all transports, reverse
 proxy, DNS).
 
 [Spec delivery dashboard](spec-delivery/) reports canonical spec status.

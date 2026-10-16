@@ -380,99 +380,6 @@ the detailed transport contract.
   `MCP_ALLOWED_HOSTS` in `AgentConfig`.
 <!-- END GENERATED: additional-deployment-options -->
 
-## Agent
-
-This repository features a fully integrated Pydantic AI Graph Agent. It communicates over the **Agent Control Protocol (ACP)** and interacts smoothly with the **Agent Web UI (AG-UI)** and Terminal interface.
-
-### Running the Agent CLI
-To start the interactive command-line agent:
-
-```bash
-# Set workspace + git operation settings
-export REPOSITORY_MANAGER_WORKSPACE="your_value"
-export WORKSPACE_YML="workspace.yml"
-export REPOSITORY_MANAGER_DEFAULT_BRANCH="main"
-export REPOSITORY_MANAGER_THREADS="12"
-# Optional VCS provider credentials
-export GITLAB_TOKEN="your_gitlab_token"
-export GITHUB_TOKEN="your_github_token"
-
-# Run the agent server
-repository-manager-agent --provider openai --model-id gpt-4o
-```
-
-### Docker Compose Orchestration
-The following `docker/agent.compose.yml` configures the Agent, Web UI, and Terminal Interface together:
-
-```yaml
-version: '3.8'
-
-services:
-  repository-manager-mcp:
-    image: example/repository-manager:mcp
-    container_name: repository-manager-mcp
-    hostname: repository-manager-mcp
-    restart: always
-    env_file:
-      - ../.env
-    environment:
-      - PYTHONUNBUFFERED=1
-      - HOST=0.0.0.0
-      - PORT=8000
-      - TRANSPORT=streamable-http
-    ports:
-      - "8000:8000"
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  repository-manager-agent:
-    image: example/repository-manager@sha256:<digest>
-    container_name: repository-manager-agent
-    hostname: repository-manager-agent
-    restart: always
-    depends_on:
-      - repository-manager-mcp
-    env_file:
-      - ../.env
-    command: [ "repository-manager-agent" ]
-    environment:
-      - PYTHONUNBUFFERED=1
-      - HOST=0.0.0.0
-      - PORT=9047
-      - MCP_URL=http://repository-manager-mcp:8000/mcp
-      - PROVIDER=${PROVIDER:-openai}
-      - MODEL_ID=${MODEL_ID:-gpt-4o}
-      - ENABLE_WEB_UI=True
-      - ENABLE_OTEL=True
-    ports:
-      - "9047:9047"
-    healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9047/health')"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-```
-
-Detailed graph node architecture explanations, custom skill configurations, and agentic trace guides are available in [docs/deployment.md](docs/deployment.md).
-
----
-
 ## Environment Variables
 
 <!-- ENV-VARS-TABLE:START -->
@@ -534,8 +441,6 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `CONCEPTSTOOL` | `True` |  |
 | `REMOTE_WORKERSTOOL` | `True` |  |
 | `AUTH_TYPE` | `bearer` | authentication type (e.g. bearer, none) |
-| `LLM_API_KEY` | secret-injected |  |
-| `LLM_BASE_URL` | `https://api.openai.com/v1` |  |
 | `MCP_URL` | `http://localhost:8000` |  |
 | `DOCS_READINESSTOOL` | `True` |  |
 | `RM_GATE_TIMEOUT_SECONDS` | `1800` | Wall-clock ceiling, in seconds, for one pre-commit gate stage (repository_manager/gates.py). Unset uses the per-stage built-in default. |
@@ -573,7 +478,7 @@ Detailed graph node architecture explanations, custom skill configurations, and 
 | `MODEL_ID` | — | Operator-configured model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_71 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_69 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 
@@ -636,9 +541,7 @@ The full list is in the [Available MCP Tools](#available-mcp-tools) table above.
 | `EUNOMIA_POLICY_FILE` | Embedded policy file | `mcp_policies.json` |
 | `EUNOMIA_REMOTE_URL` | Remote Eunomia server URL | — |
 
-### Agent CLI (full `[agent]` runtime only)
-| Variable | Description | Default |
-|----------|-------------|---------|
+----------|-------------|---------|
 | `MCP_URL` | URL of the MCP server the agent connects to | `http://localhost:8000/mcp` |
 | `PROVIDER` | LLM provider (e.g. `openai`) | `openai` |
 | `MODEL_ID` | Model id (e.g. `gpt-4o`) | `gpt-4o` |
@@ -671,42 +574,35 @@ Pick the extra that matches what the operator want to run:
 | Extra | Installs | Use when |
 |-------|----------|----------|
 | `repository-manager[mcp]` | Connector-focused MCP server (`agent-utilities[mcp]` — FastMCP/FastAPI + `epistemic-graph[full]`) | The operator only run the **MCP server** (smallest install / image) |
-| `repository-manager[agent]` | Full agent runtime (`agent-utilities[agent-runtime,logfire]` — Pydantic AI + the epistemic-graph engine, plus `pre-commit` / `bump2version`) | The operator run the **integrated agent** |
-| `repository-manager[all]` | Everything (`mcp` + `agent` + `logfire`) | Development / both surfaces |
+| `repository-manager[all]` | `mcp` plus `pre-commit` / `bump2version` | Development |
 
 ```bash
 # Connector-focused MCP server (includes the shared graph engine)
 uv pip install "repository-manager[mcp]"
 
-# Agent runtime (adds model orchestration to the shared graph engine)
-uv pip install "repository-manager[agent]"
-
 # Everything (development)
 uv pip install "repository-manager[all]"      # or: python -m pip install "repository-manager[all]"
 ```
 
-### Container images (`:mcp` vs `:agent`)
+### Container image (`:mcp`)
 
-One multi-stage `docker/Dockerfile` builds two right-sized images, selected by `--target`:
+`docker/Dockerfile` builds the MCP-server image (`--target mcp`):
 
 | Image tag | Build target | Contents | Entrypoint |
 |-----------|--------------|----------|------------|
 | `example/repository-manager:mcp` | `--target mcp` | `repository-manager[mcp]` — **connector-focused**, includes `epistemic-graph[full]`; no model-orchestration stack | `repository-manager-mcp` |
-| `example/repository-manager@sha256:<digest>` | `--target agent` (default) | `repository-manager[agent]` — **agent runtime**, model orchestration + `epistemic-graph[full]` | `repository-manager-agent` |
 
 ```bash
 docker build --target mcp   -t example/repository-manager:mcp    docker/   # connector-focused MCP server
-docker build --target agent -t example/repository-manager:agent-local docker/   # agent runtime
 ```
 
-`docker/mcp.compose.yml` runs the connector-focused `:mcp` server; `docker/agent.compose.yml` runs the
-agent (`immutable agent digest`) with a co-located `:mcp` sidecar.
+`docker/mcp.compose.yml` runs the connector-focused `:mcp` server.
 
 ### Knowledge-graph database (`epistemic-graph`)
 
-Both `[mcp]` and `[agent]` carry the **epistemic-graph** engine through the required
+The `[mcp]` extra carries the **epistemic-graph** engine through the required
 Agent Utilities core dependency (`epistemic-graph[full]`). The `[mcp]` extra keeps
-the server connector-focused; `[agent]` also enables model orchestration. Local
+the server connector-focused. Local
 deployments can use the bundled engine. For production or shared state, run
 **epistemic-graph as a dedicated database service** and configure the runtime to use it.
 Deployment recipes (single-node + Raft HA), connection configuration, and architecture
@@ -766,7 +662,7 @@ to **"deploy `repository-manager` with agent-utilities-deployment"**.
 | Install mode | Command |
 |------|---------|
 | Installed package | `uv tool install "repository-manager[mcp]"`, then run `repository-manager-mcp` |
-| Editable source | `uv pip install -e ".[agent]"`, then run `repository-manager-mcp` |
+| Editable source | `uv pip install -e ".[all]"`, then run `repository-manager-mcp` |
 | Immutable container | deploy `registry.example.invalid/repository-manager@sha256:<digest>` through the operator-selected orchestrator |
 
 The repository embeds no deployment profile, credential value, certificate path, or

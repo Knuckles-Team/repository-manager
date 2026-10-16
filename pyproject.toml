@@ -21,13 +21,7 @@ text = "MIT"
 mcp = [
     "agent-utilities[mcp]>=2.0.0,<3.0.0"]
 
-agent = [
-    "agent-utilities[agent-runtime,logfire]>=2.0.0,<3.0.0",
-    "pre-commit>=4.6.0",
-    "bump2version>=1.0.1"]
-
 all = [
-    "agent-utilities[agent-runtime,logfire]>=2.0.0,<3.0.0",
     "pre-commit>=4.6.0",
     "bump2version>=1.0.1",
     "agent-utilities[mcp]>=2.0.0,<3.0.0"
@@ -65,7 +59,7 @@ repository-manager-install-merge-queue-runner = "repository_manager.merge_queue_
 repository-manager-governance = "repository_manager.governance.cli:main"
 
 [tool.setuptools.package-data]
-repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "docs_readiness_fleet_manifest.json", "prompts/**", "skills/**", "ontology/**", "connectors/**", "development/contracts/*.json", "mergequeue_presets/*.yaml", "governance/*.yaml", "buildcache_presets/*.yaml", "systemd/*.service", "systemd/*.timer",]
+repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "docs_readiness_fleet_manifest.json", "skills/**", "ontology/**", "connectors/**", "development/contracts/*.json", "mergequeue_presets/*.yaml", "governance/*.yaml", "buildcache_presets/*.yaml", "systemd/*.service", "systemd/*.timer",]
 
 [tool.uv]
 managed = true
@@ -119,9 +113,6 @@ repository-manager = "repository_manager.ontology"
 
 [project.entry-points."agent_utilities.source_connector_providers"]
 repository-manager = "repository_manager.connectors"
-
-[project.entry-points."agent_utilities.prompt_providers"]
-repository-manager = "repository_manager.prompts"
 
 [tool.setuptools]
 include-package-data = true

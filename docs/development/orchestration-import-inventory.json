@@ -548,7 +548,7 @@
       "target": null,
       "symbol": "",
       "expression": "importlib.import_module(module_name)",
-      "source_sha256": "68b877d5f3d3a4b1ca1456432830756bafb1109471dcea4d8314879f2bd4a571"
+      "source_sha256": "b29a3242031b71c85845c23e91dd19b5435d09fd73629ea1b4954eb3a4c8b037"
     },
     {
       "path": "scripts/check_import_safety.py",
@@ -587,18 +587,18 @@
       "kind": "dynamic",
       "target": null,
       "symbol": "",
-      "expression": "original_import(name)",
-      "source_sha256": "f1e874fd1bc05b7df07042da8d461eba14b738f6106ae51d505b7142a8d07f28"
+      "expression": "original_import(name, package)",
+      "source_sha256": "3d15becd5062d0fd0fa14c1935090e9242938c6c2f4cbc1c5b71d4721c4f3b59"
     },
     {
       "path": "tests/test_init_dynamics.py",
-      "line": 53,
+      "line": 51,
       "column": 15,
       "kind": "dynamic",
       "target": null,
       "symbol": "",
-      "expression": "original_import(name)",
-      "source_sha256": "f1e874fd1bc05b7df07042da8d461eba14b738f6106ae51d505b7142a8d07f28"
+      "expression": "original_import(name, package)",
+      "source_sha256": "3d15becd5062d0fd0fa14c1935090e9242938c6c2f4cbc1c5b71d4721c4f3b59"
     }
   ],
   "scope_notes": [
@@ -619,7 +619,7 @@
       "target": null,
       "symbol": "",
       "expression": "importlib.import_module(module_name)",
-      "source_sha256": "68b877d5f3d3a4b1ca1456432830756bafb1109471dcea4d8314879f2bd4a571",
+      "source_sha256": "b29a3242031b71c85845c23e91dd19b5435d09fd73629ea1b4954eb3a4c8b037",
       "classification": "orchestration",
       "reviewer": "Codex (initial disposition; independent review pending)",
       "evidence": "repository_manager/__init__.py:59: _import_module_safely accepts a runtime module_name; current callers select OPTIONAL_MODULES via _module_is_importable and _load_optional_module. This is a lazy package-loading boundary, not proof that arbitrary future inputs exclude orchestration modules.",
@@ -678,8 +678,8 @@
       "kind": "dynamic",
       "target": null,
       "symbol": "",
-      "expression": "original_import(name)",
-      "source_sha256": "f1e874fd1bc05b7df07042da8d461eba14b738f6106ae51d505b7142a8d07f28",
+      "expression": "original_import(name, package)",
+      "source_sha256": "3d15becd5062d0fd0fa14c1935090e9242938c6c2f4cbc1c5b71d4721c4f3b59",
       "classification": "orchestration",
       "reviewer": "Codex (initial disposition; independent review pending)",
       "evidence": "tests/test_init_dynamics.py:22: The test patches importlib.import_module while initializing repository_manager. Its wrapper intercepts the MCP module and forwards all other runtime names through original_import. This open test-loader boundary may receive orchestration module names; no finite target set is asserted.",
@@ -688,16 +688,16 @@
     },
     {
       "path": "tests/test_init_dynamics.py",
-      "line": 53,
+      "line": 51,
       "column": 15,
       "kind": "dynamic",
       "target": null,
       "symbol": "",
-      "expression": "original_import(name)",
-      "source_sha256": "f1e874fd1bc05b7df07042da8d461eba14b738f6106ae51d505b7142a8d07f28",
+      "expression": "original_import(name, package)",
+      "source_sha256": "3d15becd5062d0fd0fa14c1935090e9242938c6c2f4cbc1c5b71d4721c4f3b59",
       "classification": "orchestration",
       "reviewer": "Codex (initial disposition; independent review pending)",
-      "evidence": "tests/test_init_dynamics.py:53: The test patches importlib.import_module while initializing repository_manager. Its wrapper intercepts the MCP module and forwards all other runtime names through original_import. This open test-loader boundary may receive orchestration module names; no finite target set is asserted.",
+      "evidence": "tests/test_init_dynamics.py:51: The test patches importlib.import_module while initializing repository_manager. Its wrapper intercepts the MCP module and forwards all other runtime names through original_import. This open test-loader boundary may receive orchestration module names; no finite target set is asserted.",
       "boundary": "The test patches importlib.import_module while initializing repository_manager. Its wrapper intercepts the MCP module and forwards all other runtime names through original_import. This open test-loader boundary may receive orchestration module names; no finite target set is asserted.",
       "target_resolution": "runtime-supplied (not statically resolved)"
     }

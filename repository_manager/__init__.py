@@ -70,12 +70,10 @@ def _module_is_importable(marker: str) -> bool:
 
 
 def _availability_flag(name: str) -> bool | None:
-    """Value for a ``_MCP_AVAILABLE``/``_AGENT_AVAILABLE`` probe, or ``None``
+    """Value for a ``_MCP_AVAILABLE`` probe, or ``None``
     if *name* is not one of those flags."""
     if name == "_MCP_AVAILABLE":
         return _module_is_importable("mcp_server")
-    if name == "_AGENT_AVAILABLE":
-        return _module_is_importable("agent_server")
     return None
 
 
@@ -91,7 +89,7 @@ def _load_optional_module(module_name: str) -> Any:
 
 def __getattr__(name: str) -> Any:
     # Handle availability flags dynamically without eager imports
-    if name in ("_MCP_AVAILABLE", "_AGENT_AVAILABLE"):
+    if name == "_MCP_AVAILABLE":
         return _availability_flag(name)
 
     # Check optional modules
