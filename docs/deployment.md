@@ -63,14 +63,12 @@ Store the real remote URL, outbound identity reference, and TLS-profile referenc
 <!-- END GENERATED: deployment-options -->
 
 This page covers running `repository-manager` as a long-lived server: the
-transports, a Docker Compose stack, the companion agent server, putting it behind a
+transports, a Docker Compose stack, putting it behind a
 Caddy reverse proxy, and giving it a DNS name with Technitium.
 
-> `repository-manager` ships **both** an MCP server (console script
-> `repository-manager-mcp`) and an A2A agent server (console script
-> `repository-manager-agent`). The MCP server is a typed, deterministic tool surface
-> a policy router / agent calls; the agent server wraps a Pydantic-AI graph
-> orchestrator exposed over ACP and the Agent Web UI.
+> `repository-manager` is an MCP server only (console script
+> `repository-manager-mcp`): a typed, deterministic tool surface that a policy
+> router or an external agent calls. It uses no LLM endpoint.
 
 ## Run the MCP server
 
@@ -121,8 +119,7 @@ set:
 | `WORKSPACE_MANAGEMENTTOOL` | `True` | Register the workspace-management tool set |
 | `PROJECT_MANAGEMENT_TOOL` | `True` | Register the project-management tool set |
 
-The graph agent also reads `LLM_ROUTER_MODEL`, `LLM_AGENT_MODEL`,
-`GRAPH_ROUTER_TIMEOUT`, and `GRAPH_VERIFIER_TIMEOUT`. Telemetry (`ENABLE_OTEL`,
+Telemetry (`ENABLE_OTEL`,
 `OTEL_EXPORTER_OTLP_*`) and access governance (`EUNOMIA_TYPE`,
 `EUNOMIA_POLICY_FILE`, `EUNOMIA_REMOTE_URL`) are optional. The full set, with
 required-vs-optional separation, is documented in

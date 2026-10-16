@@ -136,13 +136,6 @@ repos:
     additional_dependencies: ['@zabaca/mermaid-validate@1.0.1']
     types: [markdown]
     pass_filenames: true
-  - id: check-agent-standards
-    name: check agent standards
-    entry: |-
-      bash -c 'for f in $(find . -type f -name "agent_server.py" -not -path "*/\.venv/*" -not -path "./.uv-workspace-siblings/*" -not -path "./build/*" -not -path "*/__pycache__/*"); do grep -q "warnings.filterwarnings" "$f" && grep -q "file=sys.stderr" "$f" || { echo "Missing warnings.filterwarnings or file=sys.stderr in $f"; exit 1; }; done'
-    language: system
-    pass_filenames: false
-    always_run: true
   - id: check-cli-help
     name: check cli help
     entry: |-

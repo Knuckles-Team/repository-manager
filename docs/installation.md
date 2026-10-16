@@ -24,7 +24,6 @@ The base install is intentionally minimal. Install the extra for what the operat
 | Extra | Install | Pulls in |
 |---|---|---|
 | `mcp` | `pip install "repository-manager[mcp]"` | FastMCP MCP-server runtime (`agent-utilities[mcp]`) |
-| `agent` | `pip install "repository-manager[agent]"` | Pydantic-AI agent + Logfire tracing, `pre-commit`, `bump2version` |
 | `test` | `pip install "repository-manager[test]"` | `pytest` tooling plus `agent-utilities[graphos,mcp]` and the certified `epistemic-graph` test kernel |
 | `all` | `pip install "repository-manager[all]"` | Everything above |
 
@@ -79,7 +78,7 @@ docker run --rm -i \
   example/repository-manager@sha256:<digest>        # stdio transport (default)
 ```
 
-For an HTTP server with a published port, the agent server, and Docker Compose, see
+For an HTTP server with a published port, and Docker Compose, see
 [Deployment](deployment.md).
 
 ## Check the install
@@ -92,6 +91,6 @@ python -c "import repository_manager; print('repository-manager ready')"
 
 ## Next steps
 
-- **[Deployment](deployment.md)** — run it as a long-lived MCP / agent server behind Caddy + DNS.
+- **[Deployment](deployment.md)** — run it as a long-lived MCP server behind Caddy + DNS.
 - **[Usage](usage.md)** — call the tools, the `Git` client, and the CLI.
 - **[Configuration](deployment.md#configuration-environment)** — every environment variable.
