@@ -399,3 +399,17 @@ def test_manifest_gate_cli_requires_explicit_source_and_never_touches_defaults(
     with pytest.raises(SystemExit, match="2"):
         main()
     assert "require --manifest-check or --manifest-sync" in capsys.readouterr().err
+
+
+def test_runtime_manifest_path_is_the_graph_os_config_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("GRAPH_OS_CONFIG_DIR", raising=False)
+    assert (
+        workspace_manifest.default_runtime_manifest_path()
+        == tmp_path / "graph-os" / "workspace.yml"
+    )
+    monkeypatch.setenv("GRAPH_OS_CONFIG_DIR", str(tmp_path / "custom"))
+    assert (
+        workspace_manifest.default_runtime_manifest_path()
+        == tmp_path / "custom" / "workspace.yml"
+    )

@@ -97,3 +97,23 @@ def test_a_seeded_host_is_deliberately_stale_and_cannot_admit_real_work(
     )
     assert fits is False
     assert "stale" in reason
+
+
+def test_default_inventory_path_prefers_graph_os_then_legacy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from repository_manager.capacity_seed import default_inventory_path
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.delenv("GRAPH_OS_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("AGENT_UTILITIES_CONFIG_DIR", raising=False)
+    assert default_inventory_path() == tmp_path / "graph-os" / "inventory.yaml"
+    legacy = tmp_path / "agent-utilities"
+    legacy.mkdir()
+    (legacy / "inventory.yaml").write_text("all: {}\n")
+    assert default_inventory_path() == legacy / "inventory.yaml"
+    override = tmp_path / "override"
+    override.mkdir()
+    (override / "inventory.yaml").write_text("all: {}\n")
+    monkeypatch.setenv("GRAPH_OS_CONFIG_DIR", str(override))
+    assert default_inventory_path() == override / "inventory.yaml"

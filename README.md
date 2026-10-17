@@ -399,7 +399,7 @@ the detailed transport contract.
 | `EUNOMIA_TYPE` | `none` | options: none, embedded, remote |
 | `EUNOMIA_POLICY_FILE` | `mcp_policies.json` |  |
 | `EUNOMIA_REMOTE_URL` | `http://eunomia-server:8000` |  |
-| `CONNECTOR_CONFIG_DIR` | — | override of ~/.config/agent-connector-sdk for the capacity-seed inventory.yaml lookup |
+| `GRAPH_OS_CONFIG_DIR` | `~/.config/graph-os` | platform config dir for the runtime `workspace.yml` and capacity-seed `inventory.yaml` (one-release read fallback: `AGENT_UTILITIES_CONFIG_DIR` / `~/.config/agent-utilities`) |
 | `CONNECTOR_WORKSPACE_ROOT` | — | runtime-injected root; never persist a machine path |
 | `REPOSITORY_MANAGER_WORKSPACE` | — | optional override of CONNECTOR_WORKSPACE_ROOT |
 | `WORKSPACE_PATH` | — | compatibility workspace-root override |

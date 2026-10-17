@@ -89,7 +89,7 @@ every action goes in the one JSON blob.
 | Action | Required | Optional |
 |---|---|---|
 | `register_worker` | `host_id` | `cpu_weight`, `memory_mib`, `disk_mib`, `process_slots` (each defaults to `1` if omitted), `labels`, `inventory_alias`, `repository_roots` (repo id → authorized absolute worktree root), `toolchains` |
-| `seed_from_inventory` | — | `path` (inventory.yaml override; default `~/.config/agent-connector-sdk/inventory.yaml`) — registers a PLACEHOLDER capacity record, deliberately already-stale, for every host not already registered; never admits real work until a real `register_worker`/heartbeat confirms the host |
+| `seed_from_inventory` | — | `path` (inventory.yaml override; default `~/.config/graph-os/inventory.yaml`, legacy `~/.config/agent-utilities` read for one release) — registers a PLACEHOLDER capacity record, deliberately already-stale, for every host not already registered; never admits real work until a real `register_worker`/heartbeat confirms the host |
 | `profile` | `host_id` | — |
 | `recheck` | `host_id`, `repository_id` | `actor` (defaults to `"repository-manager"`), `inventory_alias`, `required_toolchain` |
 | `stage_source` | `origin` (credential-free Git origin), `tree_sha` (full 40-hex commit SHA), `parent_root` (the worker's authorized parent root), `worktree_name` | `repository_id`, `timeout_seconds` (default 1800), `execute_locally` (default `false` — commands only, no execution) |

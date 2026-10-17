@@ -22,6 +22,7 @@ from typing import Any
 from urllib.parse import SplitResult, urlsplit
 
 import yaml  # type: ignore[import-untyped]
+from agent_connector_sdk.paths import preferred_platform_config_dir
 
 _ENV_REFERENCE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _LOCAL_HOST_SUFFIXES = (".arpa", ".internal", ".lan", ".local", ".localhost")
@@ -125,11 +126,14 @@ class _DestinationSnapshot:
 
 
 def default_runtime_manifest_path() -> Path:
-    """Return the exact XDG runtime manifest path without creating directories."""
+    """Return the runtime manifest path Graph OS reads, without creating directories.
 
-    config_home = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(config_home).expanduser() if config_home else Path.home() / ".config"
-    return base / "agent-connector-sdk" / "workspace.yml"
+    ``$GRAPH_OS_CONFIG_DIR`` or ``$XDG_CONFIG_HOME/graph-os``; synchronization
+    always writes the new location (the legacy agent-utilities copy is only a
+    read fallback for one release).
+    """
+
+    return preferred_platform_config_dir() / "workspace.yml"
 
 
 def default_packaged_seed_path() -> Path:

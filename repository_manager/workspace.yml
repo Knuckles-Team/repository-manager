@@ -225,12 +225,23 @@ subdirectories:
           description: Wger Workout Manager — exercise database, workout routines,
             nutrition plans, body measurements, and progress tracking.
         - url: https://github.com/Knuckles-Team/market-data-mcp.git
-          description: Crypto discovery/caps (CoinMarketCap), Fed macro series
-            with point-in-time vintages (FRED/ALFRED), and the FOMC decision
-            calendar. MCP Server for Agentic AI!
+          description: Crypto discovery/caps (CoinMarketCap), Fed macro series with
+            point-in-time vintages (FRED/ALFRED), and the FOMC decision calendar.
+            MCP Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/world-reference-mcp.git
-          description: World-reference data (taxonomy, OBO terms, nutrition,
-            observations, Wikidata alignment) MCP Server for Agentic AI!
+          description: World-reference data (taxonomy, OBO terms, nutrition, observations,
+            Wikidata alignment) MCP Server for Agentic AI!
+        - url: https://github.com/Knuckles-Team/craft-suite-api.git
+          description: Craft document suite API connector and MCP Server for Agentic
+            AI!
+        - url: https://github.com/Knuckles-Team/immich-api.git
+          description: Immich photo library API connector and MCP Server for Agentic
+            AI!
+        - url: https://github.com/Knuckles-Team/adguard-home-agent.git
+          description: AdGuard Home DNS filtering API connector and MCP Server for
+            Agentic AI!
+        - url: https://github.com/Knuckles-Team/cockpit-api.git
+          description: Cockpit CMS API connector and MCP Server for Agentic AI!
   images:
     description: Container images for the homelab
     repositories:
@@ -636,6 +647,10 @@ selectors:
     - agent-packages/agents/wger-agent
     - agent-packages/agents/market-data-mcp
     - agent-packages/agents/world-reference-mcp
+    - agent-packages/agents/craft-suite-api
+    - agent-packages/agents/immich-api
+    - agent-packages/agents/adguard-home-agent
+    - agent-packages/agents/cockpit-api
   service-codebases:
     include:
     - services/gramps

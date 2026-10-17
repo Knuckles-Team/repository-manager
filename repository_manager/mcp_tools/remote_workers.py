@@ -57,7 +57,7 @@ def register_remote_workers_tools(
             default=None,
             description=(
                 "For seed_from_inventory: override the inventory.yaml path "
-                "(default ~/.config/agent-connectors/inventory.yaml)."
+                "(default ~/.config/graph-os/inventory.yaml)."
             ),
         ),
         cpu_weight: int | None = Field(

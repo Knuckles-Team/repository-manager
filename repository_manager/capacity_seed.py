@@ -2,7 +2,7 @@
 (CONCEPT:RM-CAPACITY-SEED).
 
 P0.7 — "seed it from the existing tunnel-manager host inventory rather than
-requiring hand registration." ``~/.config/agent-connectors/inventory.yaml``
+requiring hand registration." ``~/.config/graph-os/inventory.yaml``
 already lists every real host (``r510``, ``r710``, ``r820``, ``rw710``,
 ``gb10``, ...) — but it is tunnel-manager's own SSH inventory, a DIFFERENT
 system with a different purpose (host discovery + SSH connection material),
@@ -25,13 +25,13 @@ admit real work against it until an operator sends a real heartbeat/recheck
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml  # type: ignore[import-untyped]
+from agent_connector_sdk.paths import platform_config_file
 
 from repository_manager.capacity import HostCapacity, HostState, ResourceVector
 
@@ -61,17 +61,13 @@ _SEED_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def default_inventory_path() -> Path:
-    """``~/.config/agent-connectors/inventory.yaml`` (or ``$CONNECTOR_CONFIG_DIR``).
+    """The platform ``inventory.yaml`` (``~/.config/graph-os`` or ``$GRAPH_OS_CONFIG_DIR``).
 
-    Mirrors ``find_workspace_manifest``-style resolution without importing
-    agent-connector-sdk' config module, so this stays a plain file read.
+    Resolved by :func:`agent_connector_sdk.paths.platform_config_file`, which for
+    one release falls back to the legacy ``~/.config/agent-utilities`` location.
     """
 
-    config_dir = os.getenv(
-        "CONNECTOR_CONFIG_DIR",
-        str(Path.home() / ".config" / "agent-connector-sdk"),
-    )
-    return Path(config_dir) / "inventory.yaml"
+    return platform_config_file("inventory.yaml")
 
 
 @dataclass(frozen=True)
