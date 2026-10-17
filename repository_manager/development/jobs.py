@@ -832,7 +832,9 @@ class GraphRepositoryJobPort:
 
     @staticmethod
     def _authority_module() -> Any:
-        from agent_utilities.orchestration import repository_work_item as authority
+        from repository_manager.eg_work_coordination import (
+            repository_work_items as authority,
+        )
 
         return authority
 

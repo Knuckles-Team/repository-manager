@@ -25,7 +25,7 @@ full ``pytest`` suite          ~28 concurrent runs corrupted a shared basetemp,
 ============================  ==================================================
 
 Each got its own bespoke fix: a hand-rolled flock pool
-(:func:`agent_utilities...uv_workspace._dependency_sync_slot`), a new
+(:func:`agent_connector_sdk...uv_workspace._dependency_sync_slot`), a new
 ``PRE_COMMIT_HOME`` partition, a ``PARTITION``-class cargo target dir, a
 ``PARTITION``-class pytest basetemp. None of those fixes is wrong — but they
 are four mechanisms for one idea, and the next incident gets a fifth unless the
@@ -69,7 +69,7 @@ the cargo ``PARTITION`` class exists to prevent. **Do not do that.**
 
 **Co-location is not optional — same rule as everything else in this module:
 refuse rather than assume.** The advisory file lock (which :func:`hold_lease`
-uses under the hood, via ``agent_utilities.knowledge_graph.core.file_lock``)
+uses under the hood, via ``agent_connector_sdk.knowledge_graph.core.file_lock``)
 arbitrates processes sharing one kernel and one mount; it does
 **not** arbitrate across nodes, and two facts here make that concrete rather
 than theoretical: ``repository-manager-mcp`` is pinned to one node via
@@ -113,7 +113,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
+from agent_connector_sdk.file_lock import lock_exclusive
+from agent_connector_sdk.file_lock import unlock
 
 from repository_manager.governance.lanes import (
     DEFAULT_LEASE_TTL_SECONDS,
@@ -574,9 +575,9 @@ def _lease_name_for(
 
 
 #: D-CDX-14 lands as two independently merged changes across two
-#: repositories: agent-utilities' ``hold_lease`` gains an ``owner`` kwarg,
+#: repositories: agent-connector-sdk' ``hold_lease`` gains an ``owner`` kwarg,
 #: and this module starts passing it. Detect support once rather than
-#: hard-depending on merge order — an older ``agent-utilities`` still works,
+#: hard-depending on merge order — an older ``agent-connector-sdk`` still works,
 #: it just does not persist ``owner`` into the lease record yet.
 _HOLD_LEASE_ACCEPTS_OWNER = "owner" in inspect.signature(hold_lease).parameters
 
@@ -626,7 +627,7 @@ def _global_lease_dir() -> Path:
     Rather than hand-registering one YAML row per dynamically generated name
     (silently wrong again the next time ``pool_size`` changes or a new
     GLOBAL class is declared), GLOBAL leases are stored directly under
-    agent-utilities' own host-wide arbitration root
+    agent-connector-sdk' own host-wide arbitration root
     (:func:`repository_manager.governance.lanes.workspace_arbitration_dir`) — the
     SAME directory the ``dependency-lock`` resource (a genuinely
     ``scope: workspace`` row) already uses — bypassing the name-classification
@@ -810,7 +811,7 @@ def acquire(
     # GLOBAL-scope leases route through this ledger's own host-wide storage
     # (D-CDX-12) instead of `lanes.hold_lease`'s per-repository default,
     # which only escapes to the host-wide root for a NAME registered
-    # `scope: workspace` in agent-utilities' own lane_resources.yaml — a
+    # `scope: workspace` in agent-connector-sdk' own lane_resources.yaml — a
     # registry this ledger's dynamically-generated GLOBAL names never
     # satisfy. See :func:`_global_lease_dir` for the full incident.
     is_global = execution_class.scope == Scope.GLOBAL

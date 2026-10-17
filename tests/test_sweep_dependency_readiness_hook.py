@@ -2,7 +2,7 @@
 the dependency-readiness manual release hook (CONCEPT:RM-DEP-READY Layer 1).
 
 Mirrors real fleet `.pre-commit-config.yaml` shapes (a `repo: local` block
-with existing 2-space-indented hooks, matching agent-utilities'/servicenow-api's
+with existing 2-space-indented hooks, matching agent-connector-sdk'/servicenow-api's
 actual files) so the indentation-matching + idempotency behavior is proven
 against the shape it will actually run against, not a synthetic minimal file.
 """

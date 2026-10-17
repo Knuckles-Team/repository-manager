@@ -558,7 +558,7 @@ def _terminal_matches(
 
 
 class GraphBuildAuthority:
-    """Production adapter over the existing Agent Utilities WorkItem verbs."""
+    """Production adapter over the existing Agent Connector SDK WorkItem verbs."""
 
     def __init__(
         self,
@@ -575,7 +575,9 @@ class GraphBuildAuthority:
 
     @staticmethod
     def _authority() -> Any:
-        from agent_utilities.orchestration import repository_work_item as authority
+        from repository_manager.eg_work_coordination import (
+            repository_work_items as authority,
+        )
 
         return authority
 

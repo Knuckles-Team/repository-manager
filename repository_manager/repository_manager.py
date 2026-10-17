@@ -48,9 +48,7 @@ import signal
 
 import yaml  # type: ignore[import-untyped]
 from agent_connector_sdk.utilities import to_boolean
-from agent_utilities.base_utilities import (
-    get_library_file_path,  # no agent-connector-sdk equivalent
-)
+from agent_connector_sdk.library_state import get_library_file_path
 from pydantic import ValidationError
 
 try:
@@ -390,9 +388,7 @@ def _privacy_safe_diagnostic(value: object) -> str:
     """Sanitize command output before returning or persisting it."""
 
     try:
-        from agent_utilities.security.persistence_privacy import (
-            sanitize_for_persistence,
-        )
+        from agent_connector_sdk.privacy import sanitize_for_persistence
 
         clean, _ = sanitize_for_persistence(str(value or ""))
     except Exception:
@@ -541,7 +537,7 @@ def get_packaged_file_path(package: str, file: str) -> str:
 
 # Robust environment variable retrieval with empty string fallbacks
 _raw_workspace = os.getenv("REPOSITORY_MANAGER_WORKSPACE", "")
-_portable_workspace = os.getenv("AGENT_UTILITIES_WORKSPACE_ROOT", "")
+_portable_workspace = os.getenv("CONNECTOR_WORKSPACE_ROOT", "")
 DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.path.abspath(
     os.path.expanduser(_raw_workspace or _portable_workspace or os.getcwd())
 )
@@ -833,16 +829,16 @@ class Git:
         if threads:
             self.set_threads(threads=threads)
 
-        # Centralized debug logging under XDG logs directory of agent-utilities
+        # Centralized debug logging under XDG logs directory of agent-connector-sdk
         try:
-            from agent_utilities.core.paths import log_dir
+            from agent_connector_sdk.paths import log_dir
 
             logs_dir = log_dir()
         except ImportError:
             import platformdirs
 
             logs_dir = Path(
-                platformdirs.user_log_path("agent-utilities", "knuckles-team")
+                platformdirs.user_log_path("agent-connector-sdk", "knuckles-team")
             )
 
         logs_dir.mkdir(parents=True, exist_ok=True)
@@ -1034,8 +1030,8 @@ class Git:
         ``install=True`` extends clone/pull with the fresh-machine bootstrap
         gap this closes (CONCEPT:RM-BOOTSTRAP): after every repository is
         cloned or pulled, materialize the `.uv-workspace-siblings/` symlinks
-        and run `uv sync` for agent-utilities and every cloned project that
-        declares a path dependency on it, dependency-ordered (agent-utilities
+        and run `uv sync` for agent-connector-sdk and every cloned project that
+        declares a path dependency on it, dependency-ordered (agent-connector-sdk
         first). See :meth:`install_projects` for the mechanism and its
         documented limits. Install failures are reported, never masked --
         `setup_from_yaml` returns ``status="error"`` if any project failed to
@@ -2566,17 +2562,17 @@ class Git:
 
         logger.info("Installing ecosystem using native uv workspace sync...")
         results: list[GitResult] = []
-        results.extend(self._install_agent_utilities_first(extra))
+        results.extend(self._install_agent_connector_sdk_first(extra))
         results.extend(self._install_remaining_ecosystem_projects())
         self._maybe_export_install_report(results, report)
         return results
 
-    def _install_agent_utilities_first(self, extra: str) -> list[GitResult]:
-        """Step 1: install agent-utilities first, then every other cloned
+    def _install_agent_connector_sdk_first(self, extra: str) -> list[GitResult]:
+        """Step 1: install agent-connector-sdk first, then every other cloned
         project that depends on it -- CONCEPT:RM-BOOTSTRAP.
 
         This replaces a prior `uv sync --all-packages` run at the
-        workspace root, which cannot succeed structurally: agent-utilities
+        workspace root, which cannot succeed structurally: agent-connector-sdk
         is its own uv workspace root (a dedicated, security-motivated
         boundary -- see its own AGENTS.md), and uv refuses a workspace
         member that is itself a workspace root ("Nested workspaces are not
@@ -2587,9 +2583,9 @@ class Git:
         matches an ancestor workspace's `[tool.uv.workspace].members`
         glob; running each project's `uv sync` directly IN that project's
         own directory (never at `self.path`) avoids both failure modes.
-        Every fleet member depends on agent-utilities, and it is not yet
+        Every fleet member depends on agent-connector-sdk, and it is not yet
         published to PyPI at the floor the fleet requires (only <=1.26.4
-        is public; the fleet requires >=2.0.0), so agent-utilities must
+        is public; the fleet requires >=2.0.0), so agent-connector-sdk must
         install successfully before any dependent is attempted -- this
         fails closed rather than reporting a partial "N/M installed" that
         would mask a downstream project never having had a chance.
@@ -2598,10 +2594,10 @@ class Git:
             logger.warning("uv not found. Native workspace sync requires uv.")
             return []
 
-        au_path = self._find_project_path("agent-utilities")
+        au_path = self._find_project_path("agent-connector-sdk")
         if au_path is None or not os.path.isdir(au_path):
             logger.warning(
-                "agent-utilities not present in this workspace's project "
+                "agent-connector-sdk not present in this workspace's project "
                 "set; every fleet member depends on it, so no project "
                 "can be installed."
             )
@@ -2615,7 +2611,7 @@ class Git:
                     data="",
                     error=GitError(
                         message=(
-                            "agent-utilities checkout is missing "
+                            "agent-connector-sdk checkout is missing "
                             "scripts/uv_workspace.py"
                         ),
                         code=1,
@@ -2640,7 +2636,7 @@ class Git:
 
     def _sync_uv_siblings(self, au_path: str, extra: str) -> list[GitResult]:
         """Materialize + `uv sync` every declared uv sibling once
-        agent-utilities itself has installed successfully."""
+        agent-connector-sdk itself has installed successfully."""
         results: list[GitResult] = []
         for path in list(self.project_map.values()):
             if path == au_path or not os.path.isdir(path):
@@ -4020,7 +4016,7 @@ class Git:
         No hook reported a verdict -- the gate did not complete (timeout,
         tooling error). Reporting that as "Pre-push gate failed (pre-push
         gate)" made a 600s HEAVY-tier timeout look identical to a real
-        hook failure, which is how agent-utilities appeared to be blocked
+        hook failure, which is how agent-connector-sdk appeared to be blocked
         on merit when it had simply run out of clock. Surface the harness
         error verbatim instead of inventing a hook name.
         """
@@ -6779,7 +6775,7 @@ class Git:
         """Expand the configured phases into the concrete bump plan.
 
         A project claimed by an earlier phase is dropped from every later one --
-        otherwise a project named in an explicit phase (e.g. agent-utilities in
+        otherwise a project named in an explicit phase (e.g. agent-connector-sdk in
         Phase 3) is ALSO swept into the Phase-5 bulk list and gets BUMPED TWICE.
         (CONCEPT:RM-BUMP single-bump-per-project)
         """

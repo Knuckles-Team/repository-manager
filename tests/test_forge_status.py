@@ -17,12 +17,12 @@ from repository_manager import forge_status as fs
 
 
 def test_backend_for_remote_selects_github_for_github_com():
-    backend = fs.backend_for_remote("https://github.com/knuckles-team/agent-utilities.git")
+    backend = fs.backend_for_remote("https://github.com/knuckles-team/agent-connector-sdk.git")
     assert isinstance(backend, fs.GitHubActionsBackend)
 
 
 def test_backend_for_remote_selects_github_for_ssh_shorthand():
-    backend = fs.backend_for_remote("git@github.com:knuckles-team/agent-utilities.git")
+    backend = fs.backend_for_remote("git@github.com:knuckles-team/agent-connector-sdk.git")
     assert isinstance(backend, fs.GitHubActionsBackend)
 
 
@@ -40,14 +40,14 @@ def test_backend_for_remote_unparseable_url_degrades_to_unknown_backend():
 
 def test_owner_repo_from_remote_https():
     assert fs.owner_repo_from_remote(
-        "https://github.com/knuckles-team/agent-utilities.git"
-    ) == ("knuckles-team", "agent-utilities")
+        "https://github.com/knuckles-team/agent-connector-sdk.git"
+    ) == ("knuckles-team", "agent-connector-sdk")
 
 
 def test_owner_repo_from_remote_ssh_shorthand():
     assert fs.owner_repo_from_remote(
-        "git@github.com:knuckles-team/agent-utilities.git"
-    ) == ("knuckles-team", "agent-utilities")
+        "git@github.com:knuckles-team/agent-connector-sdk.git"
+    ) == ("knuckles-team", "agent-connector-sdk")
 
 
 def test_owner_repo_from_remote_nested_gitlab_group():
@@ -288,8 +288,8 @@ def test_backend_for_remote_degrades_end_to_end_when_github_agent_unavailable(
     optional client package is missing: never raises, always 'unknown'."""
     monkeypatch.setattr(fs, "_GitHubWorkflowsApi", None)
     monkeypatch.setattr(fs, "_GITHUB_AGENT_UNAVAILABLE", "No module named 'github_agent'")
-    backend = fs.backend_for_remote("https://github.com/knuckles-team/agent-utilities.git")
+    backend = fs.backend_for_remote("https://github.com/knuckles-team/agent-connector-sdk.git")
     with caplog.at_level("WARNING", logger="repository_manager.forge_status"):
-        status = backend.latest_run_for_ref("knuckles-team", "agent-utilities", "v1.0.0")
+        status = backend.latest_run_for_ref("knuckles-team", "agent-connector-sdk", "v1.0.0")
     assert status.state == "unknown"
     assert any("FORGE_STATUS_UNAVAILABLE" in rec.message for rec in caplog.records)

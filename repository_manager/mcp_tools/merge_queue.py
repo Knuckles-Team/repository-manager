@@ -84,7 +84,7 @@ def register_merge_queue_tools(
         **The queue does not know what a gate is.** Gates are declared in the
         target repository's own ``.mergequeue.yaml`` — a command, a tier, a
         timeout, and how to compare its result against the base ref.
-        agent-utilities declares pytest + ruff + its contract scripts;
+        agent-connector-sdk declares pytest + ruff + its contract scripts;
         epistemic-graph declares ``cargo check --all-features`` + clippy; a docs
         repo could declare only a link check. A repository with no declaration is
         REFUSED rather than defaulted, because "declared no gates" and "has no

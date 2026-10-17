@@ -22,7 +22,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Protocol
 
-from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
+from agent_connector_sdk.file_lock import lock_exclusive
+from agent_connector_sdk.file_lock import unlock
 
 
 class FairnessError(ValueError):

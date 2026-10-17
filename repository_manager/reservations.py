@@ -22,7 +22,8 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol, cast
 
-from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
+from agent_connector_sdk.file_lock import lock_exclusive
+from agent_connector_sdk.file_lock import unlock
 
 from repository_manager.capacity import CapacityView, HostState, ResourceVector
 from repository_manager.development import (

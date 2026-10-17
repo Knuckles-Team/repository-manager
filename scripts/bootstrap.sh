@@ -44,7 +44,7 @@ log "Python ${python_version} (uv $(uv --version | awk '{print $2}'))"
 uv python install "$python_version"
 
 # 2. Sibling sources --------------------------------------------------------
-# uv.lock installs agent-utilities (and, through it, the SDK and the
+# uv.lock installs agent-connector-sdk (and, through it, the SDK and the
 # epistemic-graph engine) editable from ignored .uv-workspace-siblings paths.
 # Each is cloned at exactly the commit in scripts/siblings.lock, the only place
 # those pins live. A developer symlink at a sibling path is respected as-is.

@@ -123,7 +123,7 @@ rm_projects(action="validate_status", job_id="<id>", summary=true)
 ```
 Re-bump just the repos a prior phase run skipped:
 ```
-rm_workspace(action="maintain", part="patch", projects="agent-utilities,gitlab-api")
+rm_workspace(action="maintain", part="patch", projects="agent-connector-sdk,gitlab-api")
 ```
 List the workspace manifest / branches:
 ```

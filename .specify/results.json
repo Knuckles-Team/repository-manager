@@ -4,7 +4,7 @@
     "score": 74,
     "grade": "C",
     "findings": [
-      "Detected ecosystem marker: agent-utilities \u2192 Agent-Utilities Ecosystem",
+      "Detected ecosystem marker: agent-connector-sdk \u2192 Agent-Utilities Ecosystem",
       "Protocol support: MCP"
     ],
     "justifications": [
@@ -131,14 +131,14 @@
         "version_source": "installed",
         "summary": "pytest plugin to abort hanging tests"
       },
-      "agent-utilities": {
+      "agent-connector-sdk": {
         "current": "0.16.0",
         "constraint": "0.16.0",
         "installed": "0.16.0",
         "latest": "0.16.0",
         "status": "up-to-date",
         "version_source": "installed",
-        "summary": "Agent Utilities for Pydantic AI Agents"
+        "summary": "Agent Connector SDK for Pydantic AI Agents"
       },
       "pytest-cov": {
         "current": "7.1.0",
@@ -1019,8 +1019,8 @@
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/graph/config_helpers.py",
-        "detail": "Referenced file 'agent_utilities/graph/config_helpers.py' not found in project"
+        "reference": "agent_connector_sdk/graph/config_helpers.py",
+        "detail": "Referenced file 'agent_connector_sdk/graph/config_helpers.py' not found in project"
       },
       {
         "type": "broken_reference",
@@ -1037,50 +1037,50 @@
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/agent_utilities.py",
-        "detail": "Referenced file 'agent_utilities/agent_utilities.py' not found in project"
+        "reference": "agent_connector_sdk/agent_connector_sdk.py",
+        "detail": "Referenced file 'agent_connector_sdk/agent_connector_sdk.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/agent_factory.py",
-        "detail": "Referenced file 'agent_utilities/agent_factory.py' not found in project"
+        "reference": "agent_connector_sdk/agent_factory.py",
+        "detail": "Referenced file 'agent_connector_sdk/agent_factory.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/mcp_utilities.py",
-        "detail": "Referenced file 'agent_utilities/mcp_utilities.py' not found in project"
+        "reference": "agent_connector_sdk/mcp_utilities.py",
+        "detail": "Referenced file 'agent_connector_sdk/mcp_utilities.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/base_utilities.py",
-        "detail": "Referenced file 'agent_utilities/base_utilities.py' not found in project"
+        "reference": "agent_connector_sdk/base_utilities.py",
+        "detail": "Referenced file 'agent_connector_sdk/base_utilities.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/embedding_utilities.py",
-        "detail": "Referenced file 'agent_utilities/embedding_utilities.py' not found in project"
+        "reference": "agent_connector_sdk/embedding_utilities.py",
+        "detail": "Referenced file 'agent_connector_sdk/embedding_utilities.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/api_utilities.py",
-        "detail": "Referenced file 'agent_utilities/api_utilities.py' not found in project"
+        "reference": "agent_connector_sdk/api_utilities.py",
+        "detail": "Referenced file 'agent_connector_sdk/api_utilities.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/chat_persistence.py",
-        "detail": "Referenced file 'agent_utilities/chat_persistence.py' not found in project"
+        "reference": "agent_connector_sdk/chat_persistence.py",
+        "detail": "Referenced file 'agent_connector_sdk/chat_persistence.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/custom_observability.py",
-        "detail": "Referenced file 'agent_utilities/custom_observability.py' not found in project"
+        "reference": "agent_connector_sdk/custom_observability.py",
+        "detail": "Referenced file 'agent_connector_sdk/custom_observability.py' not found in project"
       },
       {
         "type": "broken_reference",
@@ -1097,44 +1097,44 @@
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/model_factory.py",
-        "detail": "Referenced file 'agent_utilities/model_factory.py' not found in project"
+        "reference": "agent_connector_sdk/model_factory.py",
+        "detail": "Referenced file 'agent_connector_sdk/model_factory.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/middlewares.py",
-        "detail": "Referenced file 'agent_utilities/middlewares.py' not found in project"
+        "reference": "agent_connector_sdk/middlewares.py",
+        "detail": "Referenced file 'agent_connector_sdk/middlewares.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/prompt_builder.py",
-        "detail": "Referenced file 'agent_utilities/prompt_builder.py' not found in project"
+        "reference": "agent_connector_sdk/prompt_builder.py",
+        "detail": "Referenced file 'agent_connector_sdk/prompt_builder.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/tool_filtering.py",
-        "detail": "Referenced file 'agent_utilities/tool_filtering.py' not found in project"
+        "reference": "agent_connector_sdk/tool_filtering.py",
+        "detail": "Referenced file 'agent_connector_sdk/tool_filtering.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/tool_guard.py",
-        "detail": "Referenced file 'agent_utilities/tool_guard.py' not found in project"
+        "reference": "agent_connector_sdk/tool_guard.py",
+        "detail": "Referenced file 'agent_connector_sdk/tool_guard.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/workspace.py",
-        "detail": "Referenced file 'agent_utilities/workspace.py' not found in project"
+        "reference": "agent_connector_sdk/workspace.py",
+        "detail": "Referenced file 'agent_connector_sdk/workspace.py' not found in project"
       },
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities/a2a.py",
-        "detail": "Referenced file 'agent_utilities/a2a.py' not found in project"
+        "reference": "agent_connector_sdk/a2a.py",
+        "detail": "Referenced file 'agent_connector_sdk/a2a.py' not found in project"
       },
       {
         "type": "broken_reference",
@@ -1163,8 +1163,8 @@
       {
         "type": "broken_reference",
         "doc": "AGENTS.md",
-        "reference": "agent_utilities.py",
-        "detail": "Referenced file 'agent_utilities.py' not found in project"
+        "reference": "agent_connector_sdk.py",
+        "detail": "Referenced file 'agent_connector_sdk.py' not found in project"
       },
       {
         "type": "broken_reference",

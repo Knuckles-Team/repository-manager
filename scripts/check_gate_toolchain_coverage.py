@@ -649,7 +649,7 @@ def _probe_dockerfile(dockerfile: Path, binaries: list[str]) -> dict[str, bool |
 
 def _find_fleet_root(start: Path) -> Path | None:
     """Walk upward for the `agent-packages` root (has both `agents/` and
-    `agent-utilities/`). NOT a fixed `parents[N]` index: this script's own
+    `agent-connector-sdk/`). NOT a fixed `parents[N]` index: this script's own
     directory depth from the fleet root is only `scripts/repository-manager/
     agents/agent-packages` in the CANONICAL checkout. A git worktree (this
     repo's own recommended isolation pattern, `git worktree add
@@ -659,11 +659,11 @@ def _find_fleet_root(start: Path) -> Path | None:
     real `agent-packages`) rather than failing loudly, which is exactly the
     under-detection failure mode this whole script exists to avoid. Mirrors
     the same upward-search idiom `agent-webui`'s own system hooks already
-    use to locate `agent-utilities/scripts` from an arbitrary checkout depth.
+    use to locate `agent-connector-sdk/scripts` from an arbitrary checkout depth.
     """
     d = start
     while d != d.parent:
-        if (d / "agent-utilities").is_dir() and (d / "agents").is_dir():
+        if (d / "agent-connector-sdk").is_dir() and (d / "agents").is_dir():
             return d
         d = d.parent
     return None
@@ -677,7 +677,7 @@ def _build_arg_parser(default_fleet_root: Path | None, default_dockerfile: Path)
         default=default_fleet_root,
         required=default_fleet_root is None,
         help="agent-packages root. Auto-detected by walking up from this script "
-        "for a directory containing both agents/ and agent-utilities/; pass "
+        "for a directory containing both agents/ and agent-connector-sdk/; pass "
         "explicitly if that search fails (e.g. a partial/sparse checkout).",
     )
     parser.add_argument("--image", default=None, help="Probe a built image via `docker run` (CI mode).")

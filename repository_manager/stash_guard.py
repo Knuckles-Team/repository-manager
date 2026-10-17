@@ -189,7 +189,7 @@ def apply_and_clear(git: _GitLike, target_path: str, ref: str) -> dict[str, Any]
 def _lane_ref(tree: str | Path, lane: str | None = None) -> str:
     """Return the PARTITION ref for ``tree`` without making it a requirement.
 
-    Agent Utilities owns the canonical lane naming function.  This package is
+    Agent Connector SDK owns the canonical lane naming function.  This package is
     also used in small, dependency-light repair processes, though, so a
     basename fallback keeps the safety primitive usable while that optional
     dependency is unavailable.  The fallback is deliberately deterministic;
@@ -245,7 +245,8 @@ def hold_tree_mutation_lease(tree: str | Path, note: str = "") -> Iterator[int]:
         fd = os.open(lease_path, os.O_CREAT | os.O_RDWR, 0o644)
     except OSError as exc:
         raise RuntimeError(f"cannot create worktree mutation lease: {exc}") from exc
-    from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive_nb, unlock
+    from agent_connector_sdk.file_lock import lock_exclusive_nb
+    from agent_connector_sdk.file_lock import unlock
 
     try:
         try:

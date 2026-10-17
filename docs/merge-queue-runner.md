@@ -115,7 +115,7 @@ receipts with `ttl_seconds`, `acquired_at`, and `expires_at`, and the same
 records are emitted through the repository-manager logger for fleet telemetry.
 
 For a portable projection, pass `--manifest` explicitly and set
-`AGENT_UTILITIES_WORKSPACE_ROOT`; the projection must still declare that same
+`CONNECTOR_WORKSPACE_ROOT`; the projection must still declare that same
 root (an unresolved or mismatched `path` is a manifest-drift error). The
 installed unit embeds the workspace root and age/timeout bounds, so the timer
 does not depend on its current working directory.

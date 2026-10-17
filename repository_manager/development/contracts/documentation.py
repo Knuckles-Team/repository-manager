@@ -25,9 +25,9 @@ CONTRACT_OWNER: Final[str] = "repository-manager"
 DOCUMENTATION_CONTRACT_NAME: Final[str] = CONTRACT_NAME
 DOCUMENTATION_CONTRACT_VERSION: Final[str] = CONTRACT_VERSION
 DOCUMENTATION_CONTRACT_OWNER: Final[str] = CONTRACT_OWNER
-CONCEPT_AUTHORITY_OWNER: Final[str] = "agent-utilities"
+CONCEPT_AUTHORITY_OWNER: Final[str] = "agent-connector-sdk"
 CONCEPT_AUTHORITY_RULE: Final[str] = "RMDD-16"
-CONCEPT_AUTHORITY_MODULE: Final[str] = "agent_utilities.governance.concept_reservation"
+CONCEPT_AUTHORITY_MODULE: Final[str] = "agent_connector_sdk.governance.concept_reservation"
 _CONTRACT_RESOURCE = "engineering_documentation_v1.json"
 
 

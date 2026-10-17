@@ -164,7 +164,7 @@ def register_worktree_tools(
         ),
         repo: str | None = Field(
             default=None,
-            description="Repo basename (e.g. 'agent-utilities') or absolute path. Omit for 'list'/'prune' across all repos.",
+            description="Repo basename (e.g. 'epistemic-graph') or absolute path. Omit for 'list'/'prune' across all repos.",
         ),
         branch: str | None = Field(
             default=None,

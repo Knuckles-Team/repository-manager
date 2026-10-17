@@ -170,7 +170,7 @@ When query strings or parameters are provided, an LLM-free **Knowledge Graph res
 <!-- MCP-CONFIG-EXAMPLES:START -->
 
 > **Install the connector-focused `[mcp]` extra.** Examples use `repository-manager[mcp]` to add
-> FastMCP / FastAPI through `agent-utilities[mcp]`; the required Agent Utilities core
+> FastMCP / FastAPI through `agent-connector-sdk`; the required Agent Connector SDK core
 > still carries `epistemic-graph[full]`. The `[agent-runtime]` extra additionally
 > enables model orchestration.
 
@@ -399,11 +399,11 @@ the detailed transport contract.
 | `EUNOMIA_TYPE` | `none` | options: none, embedded, remote |
 | `EUNOMIA_POLICY_FILE` | `mcp_policies.json` |  |
 | `EUNOMIA_REMOTE_URL` | `http://eunomia-server:8000` |  |
-| `AGENT_UTILITIES_CONFIG_DIR` | — | override of ~/.config/agent-utilities for the capacity-seed inventory.yaml lookup |
-| `AGENT_UTILITIES_WORKSPACE_ROOT` | — | runtime-injected root; never persist a machine path |
-| `REPOSITORY_MANAGER_WORKSPACE` | — | optional override of AGENT_UTILITIES_WORKSPACE_ROOT |
+| `CONNECTOR_CONFIG_DIR` | — | override of ~/.config/agent-connector-sdk for the capacity-seed inventory.yaml lookup |
+| `CONNECTOR_WORKSPACE_ROOT` | — | runtime-injected root; never persist a machine path |
+| `REPOSITORY_MANAGER_WORKSPACE` | — | optional override of CONNECTOR_WORKSPACE_ROOT |
 | `WORKSPACE_PATH` | — | compatibility workspace-root override |
-| `WORKSPACE_YML` | `workspace.yml` | prefer the XDG agent-utilities copy at runtime |
+| `WORKSPACE_YML` | `workspace.yml` | prefer the XDG agent-connector-sdk copy at runtime |
 | `WORKSPACE_REPORTS` | — | optional report directory; defaults beneath the workspace root |
 | `REPOSITORY_MANAGER_WORKTREE_ROOT` | — | optional worktree root; injected at runtime |
 | `REPOSITORY_MANAGER_DEFAULT_BRANCH` | `main` | default branch name for git operations |
@@ -458,7 +458,7 @@ the detailed transport contract.
 | `AU_LANE_TEMP_ROOT` | — | Absolute override for the per-lane temp root (pytest basetemp / TMPDIR / pre-commit store / cargo target dir); unset uses the default $HOME/.al/<token> root. See lanes.py's _configured_lane_temp_root(). |
 | `CARGO_TARGET_DIR` | — | Cargo's own target-dir override. lane_guard.py's cargo-target-override check reads this to refuse a shared/global CARGO_TARGET_DIR that would both serialize and corrupt concurrent lane builds; it is not set by this package. |
 
-#### Inherited agent-utilities variables (apply to every connector)
+#### Inherited agent-connector-sdk variables (apply to every connector)
 
 | Variable | Example | Description |
 |----------|---------|-------------|
@@ -478,7 +478,7 @@ the detailed transport contract.
 | `MODEL_ID` | — | Operator-configured model id for the agent |
 | `ENABLE_WEB_UI` | `True` | Serve the AG-UI web interface |
 
-_69 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-utilities set — do not edit._
+_69 package + 15 inherited variable(s). Auto-generated from `.env.example` + the shared agent-connector-sdk set — do not edit._
 <!-- ENV-VARS-TABLE:END -->
 
 
@@ -551,7 +551,7 @@ The full list is in the [Available MCP Tools](#available-mcp-tools) table above.
 
 ## Security & Governance
 
-Built directly upon the enterprise-ready [`agent-utilities`](https://github.com/Knuckles-Team/agent-utilities) core, standard security parameters are fully supported:
+Built directly upon the enterprise-ready [`agent-connector-sdk`](https://github.com/Knuckles-Team/agent-connector-sdk) core, standard security parameters are fully supported:
 
 ### Access Control & Policy Enforcement
 - **Eunomia Policies:** Fine-grained, policy-driven tool authorization. Supports `none`, local `embedded` (`mcp_policies.json`), or centralized `remote` modes.
@@ -573,7 +573,7 @@ Pick the extra that matches what the operator want to run:
 
 | Extra | Installs | Use when |
 |-------|----------|----------|
-| `repository-manager[mcp]` | Connector-focused MCP server (`agent-utilities[mcp]` — FastMCP/FastAPI + `epistemic-graph[full]`) | The operator only run the **MCP server** (smallest install / image) |
+| `repository-manager[mcp]` | Connector-focused MCP server (`agent-connector-sdk` — FastMCP/FastAPI + `epistemic-graph[full]`) | The operator only run the **MCP server** (smallest install / image) |
 | `repository-manager[all]` | `mcp` plus `pre-commit` / `bump2version` | Development |
 
 ```bash
@@ -601,7 +601,7 @@ docker build --target mcp   -t example/repository-manager:mcp    docker/   # con
 ### Knowledge-graph database (`epistemic-graph`)
 
 The `[mcp]` extra carries the **epistemic-graph** engine through the required
-Agent Utilities core dependency (`epistemic-graph[full]`). The `[mcp]` extra keeps
+Agent Connector SDK core dependency (`epistemic-graph[full]`). The `[mcp]` extra keeps
 the server connector-focused. Local
 deployments can use the bundled engine. For production or shared state, run
 **epistemic-graph as a dedicated database service** and configure the runtime to use it.
@@ -649,27 +649,6 @@ Contributions are welcome! Please ensure code quality by running local checks be
 - Ran test suites using `pytest`
 
 
-<!-- BEGIN agent-utilities-deployment (generated; do not edit between markers) -->
-
-## Deploy with `agent-utilities-deployment`
-
-Provision this package with the consolidated **`agent-utilities-deployment`**
-workflow. It selects an installed-package, editable-source, or immutable-container
-path; records only runtime secret and TLS-profile references in `AgentConfig`; and
-runs doctor, registration, policy, observability, and rollback gates. Ask your agent
-to **"deploy `repository-manager` with agent-utilities-deployment"**.
-
-| Install mode | Command |
-|------|---------|
-| Installed package | `uv tool install "repository-manager[mcp]"`, then run `repository-manager-mcp` |
-| Editable source | `uv pip install -e ".[all]"`, then run `repository-manager-mcp` |
-| Immutable container | deploy `registry.example.invalid/repository-manager@sha256:<digest>` through the operator-selected orchestrator |
-
-The repository embeds no deployment profile, credential value, certificate path, or
-environment-specific endpoint. Supply those at runtime through `AgentConfig` and the
-configured secret provider.
-
-<!-- END agent-utilities-deployment -->
 
 <!-- GOVERNED-CAPABILITY:START -->
 ## Governed capability contract

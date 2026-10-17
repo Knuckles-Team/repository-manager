@@ -5,7 +5,7 @@ import os
 import re
 from collections.abc import Callable
 
-from agent_utilities.security.persistence_privacy import sanitize_for_persistence
+from agent_connector_sdk.privacy import sanitize_for_persistence
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger("RepositoryManager")

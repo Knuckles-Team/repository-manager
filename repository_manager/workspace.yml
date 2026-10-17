@@ -1,5 +1,5 @@
 name: Agent Packages Workspace
-path: ${AGENT_UTILITIES_WORKSPACE_ROOT}/.
+path: ${CONNECTOR_WORKSPACE_ROOT}/.
 description: Main development environment for the agent-packages ecosystem.
 repositories:
 - url: https://github.com/Knuckles-Team/pipelines.git

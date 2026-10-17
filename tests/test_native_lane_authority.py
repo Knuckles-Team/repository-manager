@@ -28,7 +28,7 @@ from repository_manager.lane_registry import (
     StaleLaneFence,
 )
 from repository_manager.native_lane_authority import (
-    AgentUtilitiesWorkItemClaimer,
+    EgLaneLifecycleClaimer,
     DevelopmentLaneTransport,
     NativeLaneAuthority,
     NativeLaneAuthorityUnavailable,
@@ -246,34 +246,29 @@ class FakeWorkItemClaimer:
         }
 
 
-def test_production_claimer_uses_canonical_work_durability(monkeypatch) -> None:
-    calls: list[tuple[str, object]] = []
+def test_production_claimer_uses_eg_served_work_items() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
 
-    def submit(engine: object, **kwargs: object) -> tuple[str, bool]:
-        calls.append(("submit", engine))
-        assert kwargs["kind"] == "repository.lane.lifecycle"
-        return str(kwargs["work_item_id"]), True
+    class WorkItems:
+        def submit(self, request: dict[str, object]) -> dict[str, object]:
+            calls.append(("submit", request))
+            return {"created": True}
 
-    def claim(engine: object, item_id: str, *, now: float) -> dict[str, object]:
-        calls.append(("claim", engine))
-        return {
-            "work_item_id": item_id,
-            "lease_owner": "owner:one",
-            "attempt": 1,
-            "lease_epoch": 1,
-            "fencing_token": 1,
-            "claimed_at": now,
-        }
+        def claim(
+            self, request: dict[str, object], *, idempotency_key: str
+        ) -> dict[str, object]:
+            calls.append(("claim", request))
+            return {
+                "claimed": True,
+                "work_item_id": request["work_item_id"],
+                "lease_owner": "owner:one",
+                "fencing_token": 1,
+            }
 
-    work_durability = ModuleType(
-        "agent_utilities.knowledge_graph.core.work_durability"
-    )
-    canonical_contract = cast(Any, work_durability)
-    canonical_contract.submit_work_item_atomic = submit
-    canonical_contract.claim_specific = claim
-    monkeypatch.setitem(sys.modules, work_durability.__name__, work_durability)
-    engine = object()
-    claimed = AgentUtilitiesWorkItemClaimer(engine).claim_lifecycle(
+    class Engine:
+        work_items = WorkItems()
+
+    claimed = EgLaneLifecycleClaimer(Engine()).claim_lifecycle(
         lane_id="lane:one",
         request_key="request:one",
         repository_id="repository:one",
@@ -285,7 +280,8 @@ def test_production_claimer_uses_canonical_work_durability(monkeypatch) -> None:
     )
 
     assert claimed["work_item_id"] == lane_work_item_id("lane:one")
-    assert calls == [("submit", engine), ("claim", engine)]
+    assert [name for name, _ in calls] == ["submit", "claim"]
+    assert calls[0][1]["tenant"] == "tenant:one"
 
 
 def _native_authority() -> NativeLaneAuthority:
@@ -480,17 +476,18 @@ def test_native_lane_authority_refuses_against_the_real_generated_client() -> No
     ``epistemic_graph.client.EpistemicGraphClient``/``SyncEpistemicGraphClient``
     do not yet expose a ``development_lanes`` namespace (only ``work_items``
     for RMDD-27's resource reservation). Importing the real package and
-    attempting to build the AU transport against a bare namespace-less stand-in
+    attempting to build the EG transport against a bare namespace-less stand-in
     for that client -- not a synthetic "missing" fixture -- must raise
-    ``DevelopmentLaneAuthorityUnavailable``. This is today's honest state of
+    ``EgWorkCoordinationUnavailable``. This is today's honest state of
     the world, not a placeholder.
     """
 
-    agent_utilities_orchestration_development_lane = pytest.importorskip(
-        "agent_utilities.orchestration.development_lane"
+    from repository_manager.eg_work_coordination import (
+        EgDevelopmentLaneTransport as transport_cls,
     )
-    transport_cls = agent_utilities_orchestration_development_lane.EngineNativeDevelopmentLaneTransport
-    unavailable_cls = agent_utilities_orchestration_development_lane.DevelopmentLaneAuthorityUnavailable
+    from repository_manager.eg_work_coordination import (
+        EgWorkCoordinationUnavailable as unavailable_cls,
+    )
 
     class BareClientWithoutDevelopmentLanes:
         """Shaped like the real generated client's public surface, minus the
@@ -505,4 +502,4 @@ def test_native_lane_authority_refuses_against_the_real_generated_client() -> No
 
     with pytest.raises(unavailable_cls) as excinfo:
         transport_cls(BareClientWithoutDevelopmentLanes())
-    assert excinfo.value.code == "native_development_lane_authority_unavailable"
+    assert excinfo.value.code == "eg_work_coordination_unavailable"

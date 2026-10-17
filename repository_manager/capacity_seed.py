@@ -2,7 +2,7 @@
 (CONCEPT:RM-CAPACITY-SEED).
 
 P0.7 — "seed it from the existing tunnel-manager host inventory rather than
-requiring hand registration." ``~/.config/agent-utilities/inventory.yaml``
+requiring hand registration." ``~/.config/agent-connectors/inventory.yaml``
 already lists every real host (``r510``, ``r710``, ``r820``, ``rw710``,
 ``gb10``, ...) — but it is tunnel-manager's own SSH inventory, a DIFFERENT
 system with a different purpose (host discovery + SSH connection material),
@@ -61,15 +61,15 @@ _SEED_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def default_inventory_path() -> Path:
-    """``~/.config/agent-utilities/inventory.yaml`` (or ``$AGENT_UTILITIES_CONFIG_DIR``).
+    """``~/.config/agent-connectors/inventory.yaml`` (or ``$CONNECTOR_CONFIG_DIR``).
 
     Mirrors ``find_workspace_manifest``-style resolution without importing
-    agent-utilities' config module, so this stays a plain file read.
+    agent-connector-sdk' config module, so this stays a plain file read.
     """
 
     config_dir = os.getenv(
-        "AGENT_UTILITIES_CONFIG_DIR",
-        str(Path.home() / ".config" / "agent-utilities"),
+        "CONNECTOR_CONFIG_DIR",
+        str(Path.home() / ".config" / "agent-connector-sdk"),
     )
     return Path(config_dir) / "inventory.yaml"
 

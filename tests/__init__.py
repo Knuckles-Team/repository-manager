@@ -1,7 +1,7 @@
 """Mark ``tests`` as a regular package.
 
 Without this file, ``tests/`` is an implicit PEP 420 namespace package. In the
-shared agent-utilities environment, several installed distributions
+shared agent-connector-sdk environment, several installed distributions
 (third-party ``caio`` and ``linkpreview``, plus formerly some of our own
 fleet packages — see INFRA-4) also ship a top-level ``tests/`` directory. When
 any of those ships a real ``tests/__init__.py`` (``linkpreview`` does, and

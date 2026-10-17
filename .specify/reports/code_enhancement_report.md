@@ -42,7 +42,7 @@ xychart-beta
 `██████████████░░░░░░` 74/100
 
 > [!NOTE]
-> Detected ecosystem marker: agent-utilities → Agent-Utilities Ecosystem
+> Detected ecosystem marker: agent-connector-sdk → Agent-Utilities Ecosystem
 
 | Criterion | Points | Evidence | Reasoning |
 |-----------|--------|----------|-----------|
@@ -317,7 +317,7 @@ xychart-beta
 | 12 | 🔴 High | Architecture & Design Patterns | SRP: 1 classes have >15 methods | High | Medium |
 | 13 | 🔴 High | Architecture & Design Patterns | No discernible layer architecture (no domain/service/adapter separation) | High | Medium |
 | 14 | 🔴 High | Architecture & Design Patterns | Low dependency injection ratio: 8% | High | Medium |
-| 15 | 🟡 Medium | Project Analysis | Detected ecosystem marker: agent-utilities → Agent-Utilities Ecosystem | Medium | Low |
+| 15 | 🟡 Medium | Project Analysis | Detected ecosystem marker: agent-connector-sdk → Agent-Utilities Ecosystem | Medium | Low |
 | 16 | 🟡 Medium | Project Analysis | Protocol support: MCP | Medium | Low |
 | 17 | 🟡 Medium | Test Coverage | Test suite lacks intent diversity (only one type) | Medium | Low |
 | 18 | 🟡 Medium | Test Coverage | 17 potential doc-test drift items | Medium | Low |

@@ -186,7 +186,7 @@ def lane_exports(path: Path | str | None = None) -> dict[str, str]:
     """The environment that gives this lane its own build/test/hook state.
 
     ``PRE_COMMIT_HOME`` is resolved here rather than being left to
-    agent-utilities' ``lane env`` on purpose: it is the newest PARTITION-class
+    agent-connector-sdk' ``lane env`` on purpose: it is the newest PARTITION-class
     resource and the one whose absence is *silent* — a shared store does not
     fail, it just occasionally eats a lane's unstaged work. Resolving it in the
     same call that creates the worktree means no lane can start without it.
@@ -704,7 +704,7 @@ def _check_stash_ref(tree: Path, scope: Any) -> Check:
         "lane's entry. It may not be yours.",
         remedy=(
             "never `git stash`. Read pristine content with `git show HEAD:<path>`; "
-            f"park work with `git commit -m 'wip: …'` or `agent-utilities lane park` "
+            f"park work with `git commit -m 'wip: …'` or `agent-connector-sdk lane park` "
             f"(writes refs/lane/{lane}/stash, no shared ref)"
         ),
         evidence={"refs/stash": out},
@@ -758,7 +758,7 @@ def _check_canonical_is_worktree(scope: Any) -> Check:
     """FAIL loudly if the canonical checkout has been corrupted into `core.bare`.
 
     D-MQR-5/D-MQR-6: ``core.bare=true`` was found set directly in the
-    ``agent-utilities`` canonical checkout's ``.git/config`` -- files and every
+    ``agent-connector-sdk`` canonical checkout's ``.git/config`` -- files and every
     linked worktree stayed intact, but every git command run WITH CWD=canonical
     (``git status``, the merge queue's own driver, invoked via ``cd $REPO``)
     then failed with "fatal: this operation must be run in a work tree". That

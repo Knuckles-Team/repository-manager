@@ -12,7 +12,7 @@ policy this module must satisfy in production:
 
 This module supplies that ``native`` object, :class:`NativeLaneAuthority`,
 bound to the RMDD-28 engine-native ``DevelopmentLaneHold`` protocol via AU's
-narrow transport (``agent_utilities.orchestration.development_lane``). It is
+narrow transport (:class:`repository_manager.eg_work_coordination.EgDevelopmentLaneTransport`). It is
 deliberately narrower than RMDD-08's 1700-line
 :mod:`repository_manager.native_reservations` -- that module is this one's
 closest sibling and the template this follows for shape (no-fallback
@@ -48,6 +48,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from repository_manager.eg_work_coordination import (
+    EgDevelopmentLaneTransport,
+    EgWorkCoordinationUnavailable,
+    EgWorkItemClaimer,
+)
 from repository_manager.lane_quota import LaneQuotaDecision
 from repository_manager.lane_record import (
     LaneLifecycleState,
@@ -85,8 +90,8 @@ class NativeLaneProtocolError(ValueError):
 class DevelopmentLaneTransport(Protocol):
     """Narrow structural surface this adapter consumes.
 
-    Matches ``agent_utilities.orchestration.development_lane.
-    EngineNativeDevelopmentLaneTransport`` method-for-method so a focused
+    Matches :class:`repository_manager.eg_work_coordination.
+    EgDevelopmentLaneTransport` method-for-method so a focused
     test can inject a deterministic fake without importing the engine
     package, exactly as RMDD-08's ``NativeReservationClient`` does for
     ``native_reservations.py``.
@@ -118,9 +123,9 @@ class WorkItemLifecycleClaimer(Protocol):
     """Claims/reads the ``lane.lifecycle`` WorkItem correlation for one lane.
 
     Kept as an injected seam (mirroring RMDD-08's ``NativeFenceCodec``) so a
-    focused test can supply a deterministic fake. :class:`AgentUtilitiesWorkItemClaimer`
-    is the real production implementation, built on
-    ``agent_utilities.knowledge_graph.core.work_durability``.
+    focused test can supply a deterministic fake. :class:`EgLaneLifecycleClaimer`
+    is the real production implementation, built on EG's served
+    ``SubmitWorkItem``/``ClaimWorkItem`` (:mod:`repository_manager.eg_work_coordination`).
     """
 
     def claim_lifecycle(
@@ -149,8 +154,8 @@ def lane_work_item_id(lane_id: str) -> str:
     return f"workitem:repository_manager:{uuid.uuid5(_WORK_ITEM_NAMESPACE, lane_id)}"
 
 
-class AgentUtilitiesWorkItemClaimer:
-    """Production :class:`WorkItemLifecycleClaimer` over the real WorkItem authority."""
+class EgLaneLifecycleClaimer:
+    """Production :class:`WorkItemLifecycleClaimer` over EG's served WorkItem methods."""
 
     def __init__(self, engine: Any) -> None:
         self._engine = engine
@@ -167,25 +172,17 @@ class AgentUtilitiesWorkItemClaimer:
         lane_intent: Mapping[str, Any],
         now: datetime,
     ) -> Mapping[str, Any]:
-        from agent_utilities.knowledge_graph.core.work_durability import (
-            claim_specific,
-            submit_work_item_atomic,
-        )
-
         work_item_id = lane_work_item_id(lane_id)
-        submit_work_item_atomic(
-            self._engine,
+        claimed = EgWorkItemClaimer(self._engine).claim_lifecycle(
             work_item_id=work_item_id,
             kind=_LANE_LIFECYCLE_KIND,
-            tenant=tenant_ref,
+            tenant_ref=tenant_ref,
             payload_ref=lane_id,
             idempotency_key=f"{repository_id}:{request_key}",
             created_by=owner_id,
             metadata={_LANE_INTENT_METADATA_KEY: dict(lane_intent)},
-            create_if_absent=True,
-            now=now.timestamp(),
+            now_ms=int(now.timestamp() * 1000),
         )
-        claimed = claim_specific(self._engine, work_item_id, now=now.timestamp())
         if claimed is None:
             raise NativeLaneProtocolError(
                 "lane.lifecycle WorkItem could not be claimed for allocation"
@@ -325,12 +322,13 @@ class NativeLaneAuthority:
         :class:`NativeLaneAuthorityUnavailable`.
         """
 
-        from agent_utilities.orchestration.development_lane import (
-            EngineNativeDevelopmentLaneTransport,
-        )
-
-        transport = EngineNativeDevelopmentLaneTransport(graph_client)
-        claimer = AgentUtilitiesWorkItemClaimer(engine)
+        try:
+            transport = EgDevelopmentLaneTransport(graph_client)
+        except EgWorkCoordinationUnavailable as exc:
+            raise NativeLaneAuthorityUnavailable(
+                NativeLaneAuthorityUnavailable.code
+            ) from exc
+        claimer = EgLaneLifecycleClaimer(engine)
         return cls(
             transport,
             claimer,
@@ -375,6 +373,10 @@ class NativeLaneAuthority:
             result = function(request)
         except NativeLaneAuthorityUnavailable:
             raise
+        except EgWorkCoordinationUnavailable as exc:
+            raise NativeLaneAuthorityUnavailable(
+                NativeLaneAuthorityUnavailable.code
+            ) from exc
         except Exception as exc:
             if getattr(exc, "code", None) == NativeLaneAuthorityUnavailable.code:
                 raise NativeLaneAuthorityUnavailable(
@@ -884,7 +886,7 @@ def create_production_lane_registry(
 
 
 __all__ = [
-    "AgentUtilitiesWorkItemClaimer",
+    "EgLaneLifecycleClaimer",
     "DevelopmentLaneTransport",
     "NativeLaneAuthority",
     "NativeLaneAuthorityUnavailable",

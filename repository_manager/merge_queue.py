@@ -1,13 +1,13 @@
 """A **repo-agnostic** serialized merge queue — the mechanism, with the gates
 declared per repository (CONCEPT:RM-MERGE-QUEUE).
 
-**Why this lives here and not in agent-utilities.** The queue's *mechanism* —
+**Why this lives here and not in agent-connector-sdk.** The queue's *mechanism* —
 an append-only candidate store, differential gating against a base ref,
 regenerate-on-land, a guarded prune, one serializing lease, optimistic batching
 with bisection — has nothing to do with Python, pytest, ruff, or
-``agent_utilities``. It is git discipline. The *gates* are the only
+``agent_connector_sdk``. It is git discipline. The *gates* are the only
 project-specific part, and they were the only part hard-coded. So
-``agent_utilities.governance.merge_queue`` could serve exactly one repository,
+``agent_connector_sdk.governance.merge_queue`` could serve exactly one repository,
 and the proof is empirical: **epistemic-graph has no merge queue at all**, and
 the engine lane had to hand-apply the discipline by memory (verify the *merged
 tree* with ``cargo check --all-features``, fast-forward only, never merge in the
@@ -21,13 +21,13 @@ queue layer was mis-homed. This module is that layer, made generic.
 run one and compare its result against the base ref. A gate is a row in the
 repository's own ``.mergequeue.yaml`` (see :class:`QueueConfig`): a command, a
 tier, a timeout, and *how to compare* its output against the base
-(:class:`GateSpec.compare`). ``agent-utilities`` declares pytest + ruff + its
+(:class:`GateSpec.compare`). ``agent-connector-sdk`` declares pytest + ruff + its
 contract scripts; ``epistemic-graph`` declares ``cargo check --all-features`` +
 clippy; a docs repo could declare nothing but a link check. Adding a gate is a
 config row, never a change to this module.
 
 **The five hard-won behaviours ported verbatim from
-``agent_utilities.governance.merge_queue``**, each because it was paid for once
+``agent_connector_sdk.governance.merge_queue``**, each because it was paid for once
 already:
 
 1. **Differential gating** (:func:`compute_gate_baseline`,
@@ -140,7 +140,7 @@ from repository_manager.test_commands import ensure_no_fail_fast
 CONFIG_FILENAME = ".mergequeue.yaml"
 
 #: The LEASE that serializes a drain. Deliberately the SAME resource name
-#: ``agent_utilities.governance.merge_queue`` holds, so an au queue runner and a
+#: ``agent_connector_sdk.governance.merge_queue`` holds, so an au queue runner and a
 #: repository-manager runner can never drain the same repository at once during
 #: the migration. It is repo-scoped in ``lane_resources.yaml``, so each
 #: repository gets its own instance for free.
@@ -2912,7 +2912,7 @@ def land(
     D-RMD-1 — **the bug this function is written against, and why it was
     invisible.** This used to run ``git merge --ff-only <commit>`` in the
     canonical checkout, which merges into whatever ``HEAD`` happens to be, not
-    into ``base``. In agent-utilities the canonical checkout always sits on
+    into ``base``. In agent-connector-sdk the canonical checkout always sits on
     ``main``, so "merge into HEAD" *coincidentally* equalled "land on base" and
     seven consecutive landings were audited as genuinely correct. That is luck,
     not correctness, and the coincidence breaks precisely where this queue is
@@ -3599,7 +3599,7 @@ def run_queue(
     another runner holds ``reconciliation-merge`` for this repository — deferring
     is the correct outcome and the caller must make it explicit, exactly as every
     other LEASE-class resource here. The lease is repo-scoped, so draining
-    agent-utilities and epistemic-graph concurrently is safe by construction.
+    agent-connector-sdk and epistemic-graph concurrently is safe by construction.
     ``lease_ttl_seconds`` is bounded independently from gate worker limits and
     is reported with acquired/deadline/released receipts in the result.
     """

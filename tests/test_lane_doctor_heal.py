@@ -65,7 +65,7 @@ def test_heal_repairs_core_bare_drift_visible_from_the_canonical_checkout(
     canonical: Path, worktree: Path
 ) -> None:
     """The D-MQR-5/6 shape: `core.bare=true` was found set directly on
-    `agent-utilities`'s canonical checkout. `git config --get core.bare` run
+    `agent-connector-sdk`'s canonical checkout. `git config --get core.bare` run
     from ANY linked worktree resolves the shared config too (worktree-local
     config is the exception, not the default), so `heal`'s own-tree pass
     already observes and repairs it here through the shared file — proven by

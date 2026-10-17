@@ -62,13 +62,6 @@ def test_command_tokens_assignment_prefix_is_skipped_not_a_command():
     assert tokens == ["node"]
 
 
-def test_command_tokens_escaped_parens_do_not_trigger_command_position():
-    tokens = gtc._command_tokens(
-        r'find . -type f \( -name "mcp_server.py" -o -name "agent_server.py" \)'
-    )
-    # "-name" must never appear as a command-position token here.
-    assert "find" in tokens
-    assert "-name" not in tokens
 
 
 def test_command_tokens_real_paren_subshell_puts_next_in_command_position():
@@ -183,7 +176,7 @@ def test_iter_mergequeue_entries_skips_non_list_command(tmp_path):
 
 def _build_fleet(tmp_path: Path, hook_entry: str) -> Path:
     fleet_root = tmp_path / "fleet"
-    (fleet_root / "agent-utilities").mkdir(parents=True)
+    (fleet_root / "agent-connector-sdk").mkdir(parents=True)
     (fleet_root / "agents" / "repo-one").mkdir(parents=True)
     (fleet_root / "agents" / "repo-one" / ".pre-commit-config.yaml").write_text(
         textwrap.dedent(

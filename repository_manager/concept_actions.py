@@ -70,7 +70,7 @@ def build_default_concept_authority() -> ConceptAuthorityPort | None:
     that construction raises for any reason — it never fabricates a
     fixture/local allocator as a substitute (repository-manager AGENTS.md
     "optional dependency" guardrail: ``try/except ImportError`` only, no
-    module-level import of ``agent_utilities.governance.concept_reservation``
+    module-level import of ``agent_connector_sdk.governance.concept_reservation``
     anywhere in this module). ``None`` is a legitimate, honest result: the
     caller (``concept_actions_for``) passes it straight through to
     ``ConceptCoordinationActions``, whose own ``resolve_default_authority()``

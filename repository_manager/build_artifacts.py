@@ -29,7 +29,8 @@ from fnmatch import fnmatchcase
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
+from agent_connector_sdk.file_lock import lock_exclusive
+from agent_connector_sdk.file_lock import unlock
 
 from repository_manager.governance.lanes import lane_scope
 

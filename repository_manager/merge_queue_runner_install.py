@@ -703,7 +703,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--workspace-root",
-        default=os.environ.get("AGENT_UTILITIES_WORKSPACE_ROOT")
+        default=os.environ.get("CONNECTOR_WORKSPACE_ROOT")
         or os.environ.get("REPOSITORY_MANAGER_WORKSPACE")
         or str(Path.cwd()),
     )

@@ -42,10 +42,10 @@ branches = git.list_branches()                 # name -> current branch
 
 # Bulk operations
 git.pull_projects()                            # pull every managed repository
-git.clone_projects(["agent-utilities"])        # clone selected projects
+git.clone_projects(["agent-connector-sdk"])        # clone selected projects
 
 # Validation
-result = git.validate_single_project(project_map["agent-utilities"])
+result = git.validate_single_project(project_map["agent-connector-sdk"])
 ```
 
 Load a workspace from its declarative `workspace.yml`:
@@ -53,7 +53,7 @@ Load a workspace from its declarative `workspace.yml`:
 ```python
 import os
 
-git = Git(path=os.environ["AGENT_UTILITIES_WORKSPACE_ROOT"])
+git = Git(path=os.environ["CONNECTOR_WORKSPACE_ROOT"])
 git.setup_from_yaml(os.environ["WORKSPACE_YML"])  # use the XDG-managed manifest
 ```
 
@@ -102,7 +102,7 @@ executable rather than a convention:
 ```bash
 # Open a lane: a worktree PLUS a partitioned cargo target dir, pytest basetemp,
 # TMPDIR and PRE_COMMIT_HOME -- and a preflight that proves the isolation.
-repository-manager --lane start --lane-repo agent-utilities --lane-branch lane/my-change
+repository-manager --lane start --lane-repo agent-connector-sdk --lane-branch lane/my-change
 
 # Adopt the environment in your shell.
 eval "$(repository-manager --lane env --lane-path . --lane-shell)"
@@ -215,7 +215,7 @@ flowchart LR
 For a development bootstrap, the root `workspace.yml` is the only authority.
 The Graph-OS XDG copy retains its canonical bytes, including private runtime
 values. This package's `workspace.yml` is a separate portable projection: the
-workspace root becomes `${AGENT_UTILITIES_WORKSPACE_ROOT}`, private URL origins
+workspace root becomes `${CONNECTOR_WORKSPACE_ROOT}`, private URL origins
 become `${AGENT_UTILITIES_REPO_ORIGIN}`, and private service suffixes become
 `${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}`. The gate rejects embedded URL
 credentials, secret fields, and absolute paths outside the declared workspace
@@ -262,7 +262,7 @@ profiles:
 selectors:
   core:
     include:
-      - agent-packages/agent-utilities
+      - agent-packages/agent-connector-sdk
       - agent-packages/agents/repository-manager
 ```
 

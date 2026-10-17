@@ -4,7 +4,7 @@ from __future__ import annotations
 """Remote VCS enumeration for enterprise-scale ingestion (CONCEPT:AU-KG.ontology.populated-at-import-real-3).
 
 Lists every repository across a GitLab instance or GitHub org so the KG-side
-batch ingestor (``agent_utilities.knowledge_graph.ingestion.batch_orchestrator``)
+batch ingestor (``agent_connector_sdk.knowledge_graph.ingestion.batch_orchestrator``)
 can fan deep-code ingestion into the durable queue. This is the enumeration gap:
 the engine and queue already scale, but nothing listed 20k+ remote repos.
 

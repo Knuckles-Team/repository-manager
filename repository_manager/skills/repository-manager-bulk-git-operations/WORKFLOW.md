@@ -60,7 +60,7 @@ rm_git(action="pull")
 ```
 Commit code across two repos with pre-commit hooks first:
 ```
-rm_git(action="commit_code", projects="agent-utilities,gitlab-api", message="chore: sweep", run_precommit=true)
+rm_git(action="commit_code", projects="agent-connector-sdk,gitlab-api", message="chore: sweep", run_precommit=true)
 ```
 Enumerate an entire GitLab instance (also KG-ingests as :GitRepository nodes):
 ```

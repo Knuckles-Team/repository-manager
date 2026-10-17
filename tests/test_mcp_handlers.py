@@ -1158,26 +1158,26 @@ def test_resolve_repo_dir_honors_nested_workspace_layout(tmp_path):
     """A bare repo name must resolve to its nested project_map path, not a flat join.
 
     Regression: rm_git pull/push/add/commit flat-joined ``git.path + name`` and
-    so failed with ENOENT on every nested repo (e.g. push agent-utilities ->
-    <ws>/agent-utilities) while validate (which uses project_map) succeeded.
+    so failed with ENOENT on every nested repo (e.g. push agent-connector-sdk ->
+    <ws>/agent-connector-sdk) while validate (which uses project_map) succeeded.
     """
     from repository_manager.mcp_server import _resolve_repo_dir
     from repository_manager.repository_manager import Git
 
     ws = tmp_path
-    nested = ws / "agent-packages" / "agent-utilities"
+    nested = ws / "agent-packages" / "agent-connector-sdk"
     nested.mkdir(parents=True)
     deep = ws / "agent-packages" / "agents" / "data-science-mcp"
     deep.mkdir(parents=True)
     git = Git.__new__(Git)  # bypass __init__; _resolve_repo_dir only reads two attrs
     git.path = str(ws)
     git.project_map = {
-        "https://x/agent-utilities.git": str(nested),
+        "https://x/agent-connector-sdk.git": str(nested),
         "https://x/data-science-mcp.git": str(deep),
     }
 
     # bare names -> nested paths (the fix)
-    assert _resolve_repo_dir(git, "agent-utilities") == str(nested)
+    assert _resolve_repo_dir(git, "agent-connector-sdk") == str(nested)
     assert _resolve_repo_dir(git, "data-science-mcp") == str(deep)
     # absolute spec -> verbatim
     assert _resolve_repo_dir(git, "/tmp/abs") == "/tmp/abs"
@@ -1220,7 +1220,7 @@ def test_resolve_commit_code_target_names_exactly_one_repo_or_worktree(
 
     # a real linked-worktree shape: .git is a FILE, not a directory, and it
     # lives under the configured worktree root.
-    isolated = worktree_root / "agent-utilities" / "codex__timeseries-boundary"
+    isolated = worktree_root / "agent-connector-sdk" / "codex__timeseries-boundary"
     isolated.mkdir(parents=True)
     (isolated / ".git").write_text("gitdir: /elsewhere/.git/worktrees/x\n")
 

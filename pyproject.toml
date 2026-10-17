@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64.0.0", "wheel"]
+requires = ["setuptools>=84.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,7 +9,7 @@ description = "Manage your git projects"
 readme = "README.md"
 classifiers = [ "Development Status :: 5 - Production/Stable", "License :: Public Domain", "Environment :: Console", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3",]
 requires-python = ">=3.12,<3.15"
-dependencies = [ "agent-utilities[mcp]>=2.0.0,<3.0.0", "agent-connector-sdk>=0.1.0,<1.0.0",]
+dependencies = [ "agent-connector-sdk[mcp]>=0.2.0,<1.0.0", "psutil>=7.2.2", "requests>=2.34.2",]
 [[project.authors]]
 name = "Project Maintainers"
 email = "maintainers@users.noreply.github.com"
@@ -19,19 +19,15 @@ text = "MIT"
 
 [project.optional-dependencies]
 mcp = [
-    "agent-utilities[mcp]>=2.0.0,<3.0.0"]
+    "agent-connector-sdk[mcp]>=0.2.0,<1.0.0"]
 
 all = [
-    "pre-commit>=4.6.0",
+    "pre-commit>=4.7.0",
     "bump2version>=1.0.1",
-    "agent-utilities[mcp]>=2.0.0,<3.0.0"
+    "agent-connector-sdk[mcp]>=0.2.0,<1.0.0"
 ]
 
 test = [
-    # RM's native-ingest tests import agent_utilities.knowledge_graph.memory,
-    # whose eager optimization surface requires the certified graphos kernel.
-    # Keep this optional so the lean runtime/mcp extras remain engine-free.
-    "agent-utilities[graphos,mcp]>=2.0.0,<3.0.0",
     "pytest-xdist>=3.8.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -63,29 +59,29 @@ repository_manager = ["mcp_config.json", "workspace.yml", "AGENTS.md", "docs_rea
 
 [tool.uv]
 managed = true
-# Same narrow override agent-utilities/agent-webui declare for themselves
-# (see agent-utilities' pyproject.toml `[tool.uv]` comment for the full
+# Same narrow override agent-connector-sdk/agent-webui declare for themselves
+# (see agent-connector-sdk' pyproject.toml `[tool.uv]` comment for the full
 # "why"): fastmcp-slim ships no non-prerelease under the fastmcp>=4.0.0b1
-# floor agent-utilities[mcp] requires, and uv only allows prereleases for a
+# floor agent-connector-sdk requires, and uv only allows prereleases for a
 # package when a ROOT project's own requirement names one -- which this
-# repo's requirement (transitively, via agent-utilities[mcp]) now does once
+# repo's requirement (transitively, via agent-connector-sdk) now does once
 # the path-dependency fix below lets resolution reach this far at all.
 override-dependencies = [
     "fastmcp-slim[client,server]>=4.0.0b1",
 ]
 
-# B6 (REMAINING-ISSUES-DESIGNS.md): `agent-utilities>=2.0.0` (below) is not
+# B6 (REMAINING-ISSUES-DESIGNS.md): `agent-connector-sdk>=2.0.0` (below) is not
 # yet published to PyPI (only <=1.26.4 is), so a plain version-range
 # dependency is unconditionally unresolvable from this checkout -- BEFORE
-# this fix, `uv lock` failed with "only agent-utilities[mcp]<=1.26.4 is
+# this fix, `uv lock` failed with "only agent-connector-sdk<=1.26.4 is
 # available". Mirrors the agent-webui/geniusbot BUG-074 fix already proven in
 # this fleet: a plain editable PATH dependency instead of a version-range
-# one. `.uv-workspace-siblings/agent-utilities` is a local, untracked symlink
+# one. `.uv-workspace-siblings/agent-connector-sdk` is a local, untracked symlink
 # to the real sibling checkout (see `.gitignore`'s matching entry);
 # dev/lane-machine-only, materialized once per checkout, never cloned/copied.
 #
 # Separately (not fixed by this table): this checkout also sits inside the
-# /home/apps/workspace uv WORKSPACE root, which lists agent-utilities as a
+# /home/apps/workspace uv WORKSPACE root, which lists agent-connector-sdk as a
 # member that is itself its own self-contained uv workspace root
 # (D-75-1/D-CIP-19/D-W3BP-4) -- uv rejects that ("Nested workspaces are not
 # supported") for ANY `uv lock` invocation whose ancestor-directory walk
@@ -103,15 +99,14 @@ override-dependencies = [
 # member's pyproject.toml.
 [tool.uv.sources]
 agent-connector-sdk = { path = ".uv-workspace-siblings/agent-connector-sdk", editable = true }
-agent-utilities = { path = ".uv-workspace-siblings/agent-utilities", editable = true }
 
-[project.entry-points."agent_utilities.skill_providers"]
+[project.entry-points."agent_connector_sdk.skill_providers"]
 repository-manager = "repository_manager.skills"
 
-[project.entry-points."agent_utilities.ontology_providers"]
+[project.entry-points."agent_connector_sdk.ontology_providers"]
 repository-manager = "repository_manager.ontology"
 
-[project.entry-points."agent_utilities.source_connector_providers"]
+[project.entry-points."agent_connector_sdk.source_connector_providers"]
 repository-manager = "repository_manager.connectors"
 
 [tool.setuptools]
@@ -129,17 +124,16 @@ check_untyped_defs = true
 [dependency-groups]
 dev = [
     "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.6.0",
-    "pytest",
-    "pytest-asyncio",
-    "pytest-cov",
-    "universal-skills",
+    "pytest-xdist>=3.8.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "universal-skills>=1.3.11",
 ]
 
 [tool.ruff.lint]
 select = [ "E", "F", "I", "UP", "B",]
 ignore = [ "E402", "E501", "B008",]
-
 
 [tool.setuptools.packages.find]
 where = [ ".",]

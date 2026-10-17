@@ -41,7 +41,7 @@ __all__ = ["safe_commit"]
 
 
 def _lane_name(path: Path) -> str:
-    """Resolve a lane name without making Agent Utilities a hard import."""
+    """Resolve a lane name without making Agent Connector SDK a hard import."""
     try:
         from repository_manager.governance.lanes import lane_name
 

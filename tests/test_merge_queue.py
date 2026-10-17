@@ -6,7 +6,7 @@ of either would prove nothing about it.
 
 The headline test is :func:`test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate`:
 it stands up a genuine cargo crate, declares ``cargo check --all-features`` as
-its only gate, and lands a candidate through the same code path agent-utilities
+its only gate, and lands a candidate through the same code path agent-connector-sdk
 would use with pytest. That is the whole claim of this module — that the queue
 does not know what a gate IS — and it is checked, not asserted.
 """
@@ -250,7 +250,7 @@ def test_long_gate_lease_ttl_and_deadline_receipts_are_observable(
 # ---------------------------------------------------------------------------
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is not installed")
 def test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate(tmp_path: Path) -> None:
-    """A cargo repo lands through the SAME queue agent-utilities uses with pytest.
+    """A cargo repo lands through the SAME queue agent-connector-sdk uses with pytest.
 
     This is the evidence that the capability was mis-homed: epistemic-graph has
     no merge queue at all today, and its lane had to hand-apply the discipline.
@@ -1418,7 +1418,7 @@ def test_the_mcp_tool_is_registered_and_declares_every_action() -> None:
 
     # Register against a bare FastMCP rather than `get_mcp_instance()`: the full
     # server factory is currently unbuildable in this environment for a reason
-    # that has nothing to do with this tool (`agent_utilities.mcp.tasks_extension`
+    # that has nothing to do with this tool (`agent_connector_sdk.mcp.tasks_extension`
     # imports `MCPError` from `mcp.shared.exceptions`, which the installed `mcp`
     # spells `McpError`). `tests/test_mcp_registration.py` already owns and
     # reports that rule — one rule, one message — so this test pins ITS OWN
@@ -1481,7 +1481,7 @@ def test_the_cli_returns_75_when_the_lease_is_held(
 # D-RMD-1 — the queue reported `landed` while the base ref never moved
 #
 # The original defect merged into whatever HEAD was, not into the declared base.
-# In agent-utilities the canonical checkout always sits on `main`, so "merge into
+# In agent-connector-sdk the canonical checkout always sits on `main`, so "merge into
 # HEAD" coincidentally equalled "land on base" and seven audited landings were
 # genuinely correct -- luck, not correctness. These tests remove the luck.
 # ---------------------------------------------------------------------------

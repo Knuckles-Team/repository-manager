@@ -99,7 +99,7 @@ def test_setup_from_yaml(mock_pull, mock_git, sample_workspace_yml):
 
     assert mock_git.call_count > 0
 
-    (workspace_dir / "agent-packages" / "agent-utilities").mkdir(parents=True)
+    (workspace_dir / "agent-packages" / "agent-connector-sdk").mkdir(parents=True)
 
     result = wm.setup_from_yaml(str(yml_path))
 
@@ -1058,27 +1058,27 @@ class TestUpdateDependencyPropagation:
         f = tmp_path / "deps.txt"
         f.write_text(content)
         git = Git(path=str(tmp_path))
-        updated = git.update_dependency(str(f), "agent-utilities", "0.39.0")
+        updated = git.update_dependency(str(f), "agent-connector-sdk", "0.39.0")
         return updated, f.read_text()
 
     def test_pyproject_gte(self, tmp_path):
-        upd, out = self._run(tmp_path, 'deps = ["agent-utilities>=0.38.0"]')
-        assert upd and "agent-utilities>=0.39.0" in out
+        upd, out = self._run(tmp_path, 'deps = ["agent-connector-sdk>=0.38.0"]')
+        assert upd and "agent-connector-sdk>=0.39.0" in out
 
     def test_requirements_exact_pin(self, tmp_path):
-        upd, out = self._run(tmp_path, "agent-utilities==0.16.0\n")
-        assert upd and "agent-utilities==0.39.0" in out  # == preserved, not stale
+        upd, out = self._run(tmp_path, "agent-connector-sdk==0.16.0\n")
+        assert upd and "agent-connector-sdk==0.39.0" in out  # == preserved, not stale
 
     def test_extras_and_compatible(self, tmp_path):
-        upd, out = self._run(tmp_path, "agent-utilities[all]~=0.30.0\n")
-        assert upd and "agent-utilities[all]~=0.39.0" in out
+        upd, out = self._run(tmp_path, "agent-connector-sdk~=0.30.0\n")
+        assert upd and "agent-connector-sdk~=0.39.0" in out
 
     def test_transitive_comment_untouched(self, tmp_path):
-        upd, out = self._run(tmp_path, "    # via agent-utilities\n")
-        assert upd is False and out.strip() == "# via agent-utilities"
+        upd, out = self._run(tmp_path, "    # via agent-connector-sdk\n")
+        assert upd is False and out.strip() == "# via agent-connector-sdk"
 
     def test_unpinned_untouched(self, tmp_path):
-        upd, out = self._run(tmp_path, "agent-utilities\n")
+        upd, out = self._run(tmp_path, "agent-connector-sdk\n")
         assert upd is False
 
 

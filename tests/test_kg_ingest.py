@@ -113,8 +113,8 @@ async def test_ingest_worktrees_maps_and_links_repo(ingest):
     res = await ingest_worktrees(
         [
             {
-                "repo": "agent-utilities",
-                "path": "worktree://agent-utilities/feat-x",
+                "repo": "agent-connector-sdk",
+                "path": "worktree://agent-connector-sdk/feat-x",
                 "branch": "feat/x",
                 "head": "abc1234567",
                 "class": "active",
@@ -130,21 +130,21 @@ async def test_ingest_worktrees_maps_and_links_repo(ingest):
     wt = next(
         r
         for r in request.records
-        if r.record_id == "repository:Worktree:worktree://agent-utilities/feat-x"
+        if r.record_id == "repository:Worktree:worktree://agent-connector-sdk/feat-x"
     )
     assert wt.payload["branchName"] == "feat/x"
     assert wt.payload["worktreeStatus"] == "active"
     assert wt.payload["dirty"] is True
     assert wt.payload["aheadCount"] == 3
     assert any(
-        r.record_id == "repository:GitRepository:agent-utilities"
+        r.record_id == "repository:GitRepository:agent-connector-sdk"
         for r in request.records
     )
     assert request.relationships[0].source.record_id == (
-        "repository:Worktree:worktree://agent-utilities/feat-x"
+        "repository:Worktree:worktree://agent-connector-sdk/feat-x"
     )
     assert request.relationships[0].target.record_id == (
-        "repository:GitRepository:agent-utilities"
+        "repository:GitRepository:agent-connector-sdk"
     )
 
 

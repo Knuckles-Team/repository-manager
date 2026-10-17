@@ -55,7 +55,7 @@ __version__ = "3.4.0"
 
 DEFAULT_WORKSPACE = setting(
     "REPOSITORY_MANAGER_WORKSPACE",
-    setting("WORKSPACE_PATH", os.getenv("AGENT_UTILITIES_WORKSPACE_ROOT", os.getcwd())),
+    setting("WORKSPACE_PATH", os.getenv("CONNECTOR_WORKSPACE_ROOT", os.getcwd())),
 )
 DEFAULT_THREADS = to_integer(setting("REPOSITORY_MANAGER_THREADS", "12"))
 DEFAULT_WORKSPACE_YML = setting("WORKSPACE_YML", "workspace.yml")
@@ -828,12 +828,12 @@ def _resolve_repo_dir(git: Git, spec: str) -> str:
 
     Honors the workspace's **nested** layout. The workspace.yml groups repos
     under subdirectories (e.g. ``agent-packages/agents/data-science-mcp``), so a
-    bare name like ``agent-utilities`` lives at
-    ``<ws>/agent-packages/agent-utilities`` — NOT the flat ``<ws>/agent-utilities``.
+    bare name like ``agent-connector-sdk`` lives at
+    ``<ws>/agent-packages/agent-connector-sdk`` — NOT the flat ``<ws>/agent-connector-sdk``.
     ``validate`` already resolves via ``project_map``; the per-repo git
     sub-actions (pull/push/add/commit) historically flat-joined ``git.path + name``
     and so hit ``[Errno 2] No such file or directory`` on every nested repo (e.g.
-    a standalone ``push projects=agent-utilities`` failing while ``validate``
+    a standalone ``push projects=agent-connector-sdk`` failing while ``validate``
     of the same repo passed). This makes path resolution consistent across
     actions by consulting ``project_map`` for bare names.
 

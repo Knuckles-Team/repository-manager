@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-utilities.invalid/schemas/engineering-documentation-v1.json",
+  "$id": "https://agent-connector-sdk.invalid/schemas/engineering-documentation-v1.json",
   "contract_name": "engineering-documentation",
   "contract_version": "1",
   "owner": "repository-manager",
   "concept_authority": {
-    "owner": "agent-utilities",
+    "owner": "agent-connector-sdk",
     "rule_id": "RMDD-16",
-    "module": "agent_utilities.governance.concept_reservation",
+    "module": "agent_connector_sdk.governance.concept_reservation",
     "mode": "reference-only",
     "allocates_ids": false
   },
@@ -110,7 +110,7 @@
       "id": "DOC-CONCEPT-001",
       "version": "1",
       "owner": "repository-manager",
-      "statement": "Concept IDs are referenced for traceability only; allocation and uniqueness remain owned by agent-utilities RMDD-16."
+      "statement": "Concept IDs are referenced for traceability only; allocation and uniqueness remain owned by agent-connector-sdk RMDD-16."
     }
   ]
 }
