@@ -110,7 +110,7 @@ from repository_manager.config_migration import (
 )
 
 preview = preview_migration(".mergequeue.yaml")  # diff only; no write
-applied = apply_migration(".mergequeue.yaml")    # atomic replace + .bak backup
+applied = apply_migration(".mergequeue.yaml")  # atomic replace + .bak backup
 rollback_migration(".mergequeue.yaml", applied)  # guarded restoration
 ```
 

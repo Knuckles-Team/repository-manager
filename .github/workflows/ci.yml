@@ -38,9 +38,13 @@ jobs:
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Bootstrap
         run: scripts/bootstrap.sh
+      - name: Put the locked environment on PATH
+        # system-language hooks run `python`; it must be the bootstrapped .venv.
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - name: Prepare synthetic Compose environment
         run: install -m 600 scripts/fixtures/precommit-compose.env .env
       - name: Pre-commit gates
-        run: uvx pre-commit run --all-files --show-diff-on-failure
+        # The locked pre-commit, so system hooks resolve `python` to .venv.
+        run: .venv/bin/pre-commit run --all-files --show-diff-on-failure
         env:
           SKIP: no-commit-to-branch

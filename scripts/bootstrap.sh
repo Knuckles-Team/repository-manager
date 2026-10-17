@@ -83,7 +83,7 @@ done < scripts/siblings.lock
 # 3. Locked environment -----------------------------------------------------
 # Every dependency, the epistemic-graph engine included, installs from its
 # published PyPI wheel; nothing is built from source.
-sync_args=(--frozen --python "$python_version" --extra test)
+sync_args=(--frozen --python "$python_version" --extra test --extra all)
 log "syncing .venv (uv sync ${sync_args[*]})"
 uv sync "${sync_args[@]}"
 # The installed engine provides the graph client; clear any stale source overlay.

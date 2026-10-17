@@ -625,6 +625,7 @@ from fastmcp import FastMCP, Context
 
 mcp = FastMCP("MyServer")
 
+
 @mcp.tool()
 async def book_table(restaurant: str, ctx: Context) -> str:
     # Trigger elicitation for confirmation and additional details
@@ -634,10 +635,10 @@ async def book_table(restaurant: str, ctx: Context) -> str:
             "type": "object",
             "properties": {
                 "guests": {"type": "integer", "description": "Number of guests"},
-                "time": {"type": "string", "description": "Time of booking"}
+                "time": {"type": "string", "description": "Time of booking"},
             },
-            "required": ["guests", "time"]
-        }
+            "required": ["guests", "time"],
+        },
     )
 
     if confirmation.get("_action") == "cancel":

@@ -52,8 +52,7 @@ from typing import Any
 # importing it here keeps this module's "top-level imports are stdlib-only"
 # contract while routing through the chokepoint instead of a direct,
 # POSIX-only `import fcntl`.
-from agent_connector_sdk.file_lock import lock_exclusive
-from agent_connector_sdk.file_lock import unlock
+from agent_connector_sdk.file_lock import lock_exclusive, unlock
 
 # CONCEPT:AU-OS.governance.concept-id-allocation — Multi-session concept-ID allocation & coordination protocol.
 # The grammar lives in concept_hierarchy; every scanner imports this exact regex.

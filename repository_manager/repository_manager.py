@@ -47,8 +47,8 @@ import shutil
 import signal
 
 import yaml  # type: ignore[import-untyped]
-from agent_connector_sdk.utilities import to_boolean
 from agent_connector_sdk.library_state import get_library_file_path
+from agent_connector_sdk.utilities import to_boolean
 from pydantic import ValidationError
 
 try:

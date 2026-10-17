@@ -36,13 +36,13 @@ from repository_manager.repository_manager import Git
 git = Git(path=os.environ["REPOSITORY_MANAGER_WORKSPACE"])
 
 # Reads
-projects = git.get_workspace_projects()        # list of managed project names
-project_map = git.get_project_map()            # name -> absolute path
-branches = git.list_branches()                 # name -> current branch
+projects = git.get_workspace_projects()  # list of managed project names
+project_map = git.get_project_map()  # name -> absolute path
+branches = git.list_branches()  # name -> current branch
 
 # Bulk operations
-git.pull_projects()                            # pull every managed repository
-git.clone_projects(["agent-connector-sdk"])        # clone selected projects
+git.pull_projects()  # pull every managed repository
+git.clone_projects(["agent-connector-sdk"])  # clone selected projects
 
 # Validation
 result = git.validate_single_project(project_map["agent-connector-sdk"])

@@ -245,8 +245,7 @@ def hold_tree_mutation_lease(tree: str | Path, note: str = "") -> Iterator[int]:
         fd = os.open(lease_path, os.O_CREAT | os.O_RDWR, 0o644)
     except OSError as exc:
         raise RuntimeError(f"cannot create worktree mutation lease: {exc}") from exc
-    from agent_connector_sdk.file_lock import lock_exclusive_nb
-    from agent_connector_sdk.file_lock import unlock
+    from agent_connector_sdk.file_lock import lock_exclusive_nb, unlock
 
     try:
         try:

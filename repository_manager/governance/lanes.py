@@ -74,8 +74,7 @@ from agent_connector_sdk.config import setting
 # (POSIX fcntl.flock / Windows kernel32 LockFileEx via ctypes); stdlib-only,
 # no new deps. No agent-connector-sdk equivalent exists yet (SDK gap) --
 # keep this one agent_connector_sdk import.
-from agent_connector_sdk.file_lock import lock_exclusive
-from agent_connector_sdk.file_lock import unlock
+from agent_connector_sdk.file_lock import lock_exclusive, unlock
 
 ARBITRATION_DIRNAME = "agent-lanes"
 DEFAULT_LEASE_TTL_SECONDS = 1_800
