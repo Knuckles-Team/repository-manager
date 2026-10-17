@@ -42,7 +42,7 @@ mismatches.  A failed verification is explicitly *not a certificate*.
 `ValidationRunner.plan` seals a deterministic dependency-linked job DAG.  Each
 job carries the immutable tree/worktree path, gate command, dependency IDs,
 configuration/toolchain/resource digests, base SHA, and generation.  `submit`
-requires the graph-os WorkItem adapter.  `run` admits each job before invoking
+requires the arbora WorkItem adapter.  `run` admits each job before invoking
 the fixed-argv `ValidationExecutor`, releases its reservation in all result,
 exception, timeout, and cancellation paths, and classifies code, environment,
 resource, cancellation, timeout, stale-tree/fence, baseline, dependency, and

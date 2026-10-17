@@ -248,7 +248,7 @@ def _concept_reserve(
 def _concept(args: argparse.Namespace) -> dict[str, Any]:
     """Same-host compatibility concept reservation against the file ledger.
 
-    Separate-host callers must use graph-os' native concept authority; this
+    Separate-host callers must use arbora' native concept authority; this
     legacy CLI path is intentionally not advertised as globally atomic.
     """
     from repository_manager.governance import concept_allocator as ca

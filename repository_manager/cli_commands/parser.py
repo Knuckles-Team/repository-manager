@@ -133,7 +133,7 @@ Examples:
     group_workspace.add_argument(
         "--manifest-runtime-destination",
         type=str,
-        help="Override the Graph-OS runtime manifest destination.",
+        help="Override the Arbora runtime manifest destination.",
     )
     group_workspace.add_argument(
         "--manifest-seed-destination",

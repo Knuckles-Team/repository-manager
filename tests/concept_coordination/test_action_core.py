@@ -84,7 +84,7 @@ def test_reserve_and_materialize_are_idempotent(tmp_path: Path) -> None:
     )
     # "across restart": a fresh ConceptCoordinationActions bound to the same
     # durable authority instance, exactly as a real restart reconnects to the
-    # same durable graph-os authority.
+    # same durable arbora authority.
     restarted = _actions(tmp_path, lane_ref="lane-a", authority=authority)
     materialized_again = restarted.materialize(
         first.reservation_id, owner_ref=request.owner_ref, expected_fence=first.fence

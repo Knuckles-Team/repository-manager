@@ -14,7 +14,7 @@ import pytest
 #: environment silently operates on the OUTER real repo instead, regardless
 #: of `cwd=`. Reproduced live during GOC-60/P0.4 development: it planted two
 #: bogus commits on a real feature branch; reproduced again and root-caused
-#: during GOC-71 (plans/graph-os-completion-program/GOC-59-67-EXPANSION-
+#: during GOC-71 (plans/arbora-completion-program/GOC-59-67-EXPANSION-
 #: TRACKS.md): `GIT_DIR=real/.git git -C tmp config core.bare true` mutates
 #: `real`, not `tmp` -- `GIT_DIR` silently overrides `-C`.
 #:

@@ -36,7 +36,7 @@ class ValidationStage(StrEnum):
 
 
 class JobState(StrEnum):
-    """The graph-os WorkItem lifecycle projected for repository jobs."""
+    """The arbora WorkItem lifecycle projected for repository jobs."""
 
     SUBMITTED = "submitted"
     READY = "ready"

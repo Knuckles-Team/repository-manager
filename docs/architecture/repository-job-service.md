@@ -9,7 +9,7 @@ agnostic: MCP, CLI, and later worker adapters inject the same
 
 `RepositoryJobService` accepts a verified `JobAuthorization` and an injected
 `RepositoryJobPort`. The production `GraphRepositoryJobPort` lazily delegates
-to `agent_connector_sdk.orchestration.repository_work_item`, whose graph-os
+to `agent_connector_sdk.orchestration.repository_work_item`, whose arbora
 WorkItem is the only durable state, dependency, lease, retry, fence, and
 result authority. The service owns no `_jobs`, `_job_futures`, worker thread,
 future, SQLite table, Docket queue, Redis queue, or Git/process mutation.

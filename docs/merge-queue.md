@@ -315,7 +315,7 @@ copied — which is what makes steps 1-2 zero-risk.
 The long-running `repository-manager-mcp` streamable-http server in k8s is the
 host (replacing the stopgap systemd timer). As of 2026-08-02 it is **`1/1
 Running`**, `/health` 200, all four `rm_*` tools serving real data, and
-`rm__worktree` through graph-os returning 355 worktrees / 44 linked. Landed by
+`rm__worktree` through arbora returning 355 worktrees / 44 linked. Landed by
 lane `rm-deploy-0802`; the queue now has a real deployment to run in.
 
 Four things about that deployment are **load-bearing** — none is cosmetic, and

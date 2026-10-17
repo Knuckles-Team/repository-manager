@@ -5,7 +5,7 @@ executor.  It creates one immutable job description per selected gate and
 submits those descriptions to an injected WorkItem authority.  A separate
 resource adapter admits each job before the fixed-argv executor is called.
 Tests use the explicit fake adapters in this module; production callers must
-provide adapters backed by graph-os WorkItems and RMDD-27 native reservation
+provide adapters backed by arbora WorkItems and RMDD-27 native reservation
 authority.  This lane has no production claim/terminal WorkItem adapter or
 executor fence heartbeat yet, so these durable-shaped seams cannot be called
 production execution until RMDD-27/RMDD-29 closes that binding.
@@ -477,7 +477,7 @@ class PreparedValidation:
 
 @runtime_checkable
 class ValidationJobAuthority(Protocol):
-    """Adapter to graph-os WorkItem authority; no local job store is implied."""
+    """Adapter to arbora WorkItem authority; no local job store is implied."""
 
     def submit(self, job: ValidationJob) -> SubmittedValidationJob:
         """Persist one immutable job with its dependency IDs."""
@@ -892,7 +892,7 @@ class ValidationRunner:
         authority = self.job_authority
         if authority is None:
             raise ValidationAuthorityUnavailable(
-                "validation requires a graph-os WorkItem authority; no local job store is allowed"
+                "validation requires an arbora WorkItem authority; no local job store is allowed"
             )
         submitted: list[SubmittedValidationJob] = []
         current_job: ValidationJob | None = None

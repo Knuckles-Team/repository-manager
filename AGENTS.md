@@ -490,7 +490,7 @@ passes `uvx pre-commit run --all-files` locally passes the same gates there.
 - `agent_connector_sdk/agent/` → Agent construction, discovery, sampling profiles, and prompt-to-KG registry synchronization.
 - `agent_connector_sdk/agent/factory.py` → `create_agent_parser()` and `create_agent()` implementations.
 - `agent_connector_sdk/server/` → `create_agent_server()` and the FastAPI application boundary.
-- `agent_connector_sdk/mcp/` → FastMCP server construction, graph-os tools, fleet loading, and governed dispatch.
+- `agent_connector_sdk/mcp/` → FastMCP server construction, arbora tools, fleet loading, and governed dispatch.
 - `agent_connector_sdk/base_utilities.py` → Generic helpers for file handling, type conversions, and CLI flags.
 - `agent_connector_sdk/tools/` → Built-in agent tools (developer_tools, git_tools, workspace_tools).
 - `agent_connector_sdk/core/` → Configuration, workspace, model, scheduling, persistence, embedding, and other foundational utilities.
@@ -654,7 +654,7 @@ async def book_table(restaurant: str, ctx: Context) -> str:
 
 ## When Stuck
 - Refer to `agent_connector_sdk/agent/factory.py` for `create_agent` and CLI parser implementation details.
-- Review `agent_connector_sdk/mcp/server_factory.py` and `agent_connector_sdk/mcp/kg_server.py` for MCP server construction and graph-os tool exposure.
+- Review `agent_connector_sdk/mcp/server_factory.py` and `agent_connector_sdk/mcp/kg_server.py` for MCP server construction and arbora tool exposure.
 - Review `agent_connector_sdk/graph/` for graph construction, routing, execution, and state.
 - Ask for clarification if the multi-agent supervisor logic is unclear.
 

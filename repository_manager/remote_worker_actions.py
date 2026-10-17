@@ -14,7 +14,7 @@ this module composes with
 same instance the scheduler uses -- never a copy"). A live,
 WorkItem-authoritative ``ResourceScheduler.admit``/``.release`` requires
 :meth:`repository_manager.native_reservations.NativeWorkItemReservationPort.from_graph_client`,
-which needs a connected graph-os engine client. As of this lane
+which needs a connected arbora engine client. As of this lane
 (2026-08-10), grepping the whole package for
 ``create_production_resource_scheduler``/``ResourceScheduler(`` finds this
 construction wired into **no** MCP/CLI entrypoint anywhere in
@@ -394,7 +394,7 @@ def _dispatch_host_loss_reconcile(kwargs: dict[str, Any]) -> dict[str, Any]:
     raise RemoteExecutionUnavailableError(
         "host-loss reconciliation requires a live WorkItem-authoritative "
         "ResourceScheduler.release (repository_manager.native_reservations."
-        "NativeWorkItemReservationPort, bound to a connected graph-os "
+        "NativeWorkItemReservationPort, bound to a connected arbora "
         "engine client); no such live scheduler is wired into this "
         "MCP/CLI entrypoint yet, and this module never substitutes a "
         "local in-memory reservation ledger for that authority"

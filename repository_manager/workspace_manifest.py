@@ -1,6 +1,6 @@
 """Validate and safely mirror the canonical workspace manifest.
 
-The workspace root manifest is human-authored.  The Graph-OS XDG manifest is an
+The workspace root manifest is human-authored.  The Arbora XDG manifest is an
 exact-byte mirror and the packaged repository-manager seed is its portable
 projection; neither is a source of truth.  This module deliberately does not
 discover or mutate a workspace: callers provide the canonical source and may

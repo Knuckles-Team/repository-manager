@@ -30,9 +30,9 @@ subdirectories:
       - url: https://git.internal.arpa/repository-manager.git
 services:
   items:
-    - name: graph-os
-      url: https://graph-os.internal.arpa/
-      domain: graph-os.internal.arpa
+    - name: arbora
+      url: https://arbora.internal.arpa/
+      domain: arbora.internal.arpa
       description: Private graph runtime
 profiles:
   development:
@@ -63,7 +63,7 @@ def test_packaged_seed_release_order_matches_dependency_publication_dag():
     assert [phase.get("projects") for phase in phases[3:7]] == [
         ["agent-utilities"],
         ["agent-webui"],
-        ["graph-os"],
+        ["arbora"],
         ["universal-skills", "skill-graphs", "agent-terminal-ui", "geniusbot"],
     ]
     assert phases[7]["bulk_bump"] is True

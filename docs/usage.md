@@ -213,7 +213,7 @@ flowchart LR
 ## Canonical manifest gate
 
 For a development bootstrap, the root `workspace.yml` is the only authority.
-The Graph-OS XDG copy retains its canonical bytes, including private runtime
+The Arbora XDG copy retains its canonical bytes, including private runtime
 values. This package's `workspace.yml` is a separate portable projection: the
 workspace root becomes `${CONNECTOR_WORKSPACE_ROOT}`, private URL origins
 become `${AGENT_UTILITIES_REPO_ORIGIN}`, and private service suffixes become
@@ -246,7 +246,7 @@ selected workspace-relative repository identifiers; it omits local paths.
 ```mermaid
 flowchart LR
     ROOT[Canonical root workspace.yml] --> GATE[repository-manager manifest gate]
-    GATE -->|canonical projection / atomic replace| XDG[Graph-OS runtime copy]
+    GATE -->|canonical projection / atomic replace| XDG[Arbora runtime copy]
     GATE -->|portable projection / atomic replace| SEED[Packaged distribution seed]
     GATE -->|profile + selector resolution| BOOT[Bounded development bootstrap]
 ```

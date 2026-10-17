@@ -7,7 +7,7 @@ Protocol (``reserve``/``get``/``list``/``transition``) structurally — as a
 repository-manager never takes a hard, load-bearing dependency on
 agent-connector-sdk internals. Any object exposing these four methods (the real
 native authority once injected by RMDD-20's entrypoint, an integration-test
-double, or a future graph-os MCP adapter) satisfies this port.
+double, or a future arbora MCP adapter) satisfies this port.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 The package is an additive boundary for later WorkItem, executor, scheduler,
 generation, and adapter lanes.  Importing it performs only model definition;
-it does not access Git, Graph-OS, inventories, the filesystem, or a network.
+it does not access Git, Arbora, inventories, the filesystem, or a network.
 """
 
 from .contracts import (

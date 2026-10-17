@@ -43,7 +43,7 @@ Verified against `agent-packages/repository-manager` `main` at `fdce825`:
 - **`host_loss_reconcile` always refuses.** Host-loss reconciliation requires a
   live, WorkItem-authoritative `ResourceScheduler.release`
   (`repository_manager.native_reservations.NativeWorkItemReservationPort`, bound to
-  a connected graph-os engine client). As of this lane, grepping the whole package
+  a connected arbora engine client). As of this lane, grepping the whole package
   for that construction wired into any MCP/CLI entrypoint finds **none** — not this
   one, and not RMDD-28's sibling native lane authority either. This module
   deliberately never substitutes a local in-memory reservation ledger for that
