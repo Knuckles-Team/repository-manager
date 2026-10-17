@@ -92,7 +92,7 @@ def test_realistic_manifest_projects_private_values_without_leaking_them(tmp_pat
     seed_text = seed.read_text(encoding="utf-8")
     assert "/srv/private-workspace" not in seed_text
     assert "internal.arpa" not in seed_text
-    assert "${AGENT_UTILITIES_WORKSPACE_ROOT}" in seed_text
+    assert "${CONNECTOR_WORKSPACE_ROOT}" in seed_text
     assert "${AGENT_UTILITIES_REPO_ORIGIN}" in seed_text
     assert "${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}" in seed_text
 
