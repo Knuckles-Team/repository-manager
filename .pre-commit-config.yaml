@@ -28,7 +28,7 @@ repos:
   - id: end-of-file-fixer
   - id: no-commit-to-branch
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: 6fec9b7edb08fd9989088709d864a7826dc74e80 # v0.15.12
+  rev: 38bfb07c0c64c304f47eb52090f8288150c77730 # v0.17.1
   hooks:
   - id: ruff-check
     args: ["--ignore=E402,B008,E501"]
@@ -37,7 +37,7 @@ repos:
     args: ["--check"]
     exclude: ^(tests/|test/|scripts/|script/)
 - repo: https://github.com/pre-commit/mirrors-mypy
-  rev: fc0f09a29bb495f4a91f00266155d6282d52485d # v1.20.2
+  rev: 2834ec6639549dd6796205c8f011dedcd587288b # v2.4.0
   hooks:
   - id: mypy
     additional_dependencies: [pydantic==2.13.4, types-PyYAML==6.0.12.20260518, types-requests==2.33.0.20260518,
@@ -51,7 +51,7 @@ repos:
     args: [".", "--min-confidence", "95", "--exclude", "node_modules,dotnet,.venv,venv,.uv-workspace-siblings,.git,build,dist"]
     require_serial: true
 - repo: https://github.com/codespell-project/codespell
-  rev: 2ccb47ff45ad361a21071a7eedda4c37e6ae8c5a # v2.4.2
+  rev: 57b21406f092110c18776e39b0bda50d37c945c8 # v2.4.3
   hooks:
   - id: codespell
     args: ["-L", "ans,linar,nam,tread,ot,unparseable,notin"]
@@ -79,7 +79,7 @@ repos:
   # syntactically valid.
   - id: parse-gate
     name: Tier 0 — every source file parses
-    # Run as a file, not `-m`: the package __init__ imports agent_utilities,
+    # Run as a file, not `-m`: the package __init__ imports its dependencies,
     # and this tier must need no environment at all.
     entry: python repository_manager/parse_gate.py .
     language: system
@@ -87,7 +87,7 @@ repos:
     always_run: true
   - id: check-import-safety
     name: Cross-platform import safety (native + conservative simulated-Windows analysis)
-    # Same tool as agent-utilities' own check-import-safety hook (copied,
+    # The fleet's shared check-import-safety tool (copied,
     # not vendored as a dependency, so this hook has no environment-sync
     # prerequisite beyond what pytest below already needs). Walks every
     # repository_manager module, with fcntl/termios/pwd/resource poisoned
@@ -99,36 +99,13 @@ repos:
     # The gate makes the checkout-owned package authoritative over any stale
     # installed distribution. Simulated-Windows mode uses conservative AST
     # platform-guard analysis plus a native package-root import: changing
-    # sys.platform or poisoning fcntl on Linux would falsely reject AU's
+    # sys.platform or poisoning fcntl on Linux would falsely reject the SDK's
     # correctly guarded file_lock implementation. Include the directly
     # executed security contract too: pkgutil cannot walk standalone scripts.
-    entry: python scripts/run_agent_utilities_gate.py --local-script scripts/check_import_safety.py -- --package repository_manager --script scripts/security_contract.py --simulate-windows
+    entry: python scripts/check_import_safety.py --package repository_manager --script scripts/security_contract.py --simulate-windows
     language: system
     pass_filenames: false
     always_run: true
-  - id: okf-no-legacy-concepts
-    name: OKF-CIS — no legacy CONCEPT ids
-    entry: python scripts/run_agent_utilities_gate.py --system-script --script scripts/check_no_legacy_markers.py -- .
-    language: system
-    pass_filenames: false
-    always_run: true
-  - id: check-mermaid
-    name: Check Mermaid syntax
-    entry: python scripts/run_agent_utilities_gate.py --system-script --script scripts/mermaid_linter.py --
-    language: system
-    files: \.md$
-    pass_filenames: true
-  - id: lane-guard
-    name: Lane guard — canonical checkout read-only + stray CARGO_TARGET_DIR (D-CP-3/D-CP-4 reach)
-    entry: python scripts/run_agent_utilities_gate.py --system-script --script scripts/check_lane_guard.py
-    language: system
-    pass_filenames: false
-    always_run: true
-  - id: check-stubs
-    name: Check for Active Stubs and TODOs
-    entry: python scripts/run_agent_utilities_gate.py --system-script --script scripts/check_stubs.py --
-    language: system
-    types: [python]
   - id: mermaid-validate
     name: mermaid-validate
     entry: mermaid-validate
@@ -139,37 +116,10 @@ repos:
   - id: check-cli-help
     name: check cli help
     entry: |-
-      bash -c 'for f in $(find . -type f \( -name "mcp_server.py" -o -name "agent_server.py" \) -not -path "*/\.venv/*" -not -path "./.uv-workspace-siblings/*" -not -path "./build/*" -not -path "*/__pycache__/*"); do mod=$(echo "$f" | sed -e "s/^\.\///" -e "s/\.py$//" -e "s/\//./g"); python scripts/run_agent_utilities_gate.py --module "$mod" -- --help >/dev/null || exit 1; done'
+      bash -c 'for f in $(find . -type f \( -name "mcp_server.py" -o -name "agent_server.py" \) -not -path "*/\.venv/*" -not -path "./.uv-workspace-siblings/*" -not -path "./build/*" -not -path "*/__pycache__/*"); do mod=$(echo "$f" | sed -e "s/^\.\///" -e "s/\.py$//" -e "s/\//./g"); python -m "$mod" --help >/dev/null || exit 1; done'
     language: system
     pass_filenames: false
     files: ^(repository_manager/|pyproject\.toml$)
-  - id: mcp-readme-table
-    name: sync MCP tools table in README
-    entry: |-
-      python scripts/run_agent_utilities_gate.py --module agent_utilities.mcp.readme_tools
-    language: system
-    files: ^(README\.md|.*/mcp_server\.py|.*/mcp/.*\.py)$
-    pass_filenames: false
-  - id: readme-env-vars
-    name: sync env-vars table in README
-    entry: |-
-      python scripts/run_agent_utilities_gate.py --module agent_utilities.mcp.readme_env_vars
-    language: system
-    files: ^(README\.md|\.env\.example)$
-    pass_filenames: false
-  - id: readme-mcp-examples
-    name: sync mcp_config examples in README + env blocks
-    entry: |-
-      python scripts/run_agent_utilities_gate.py --module agent_utilities.mcp.readme_mcp_examples
-    language: system
-    files: ^(README\.md|\.env\.example|mcp_config.*\.json|.*/mcp_config.*\.json|.*/mcp_server\.py)$
-    pass_filenames: false
-  - id: env-var-drift
-    name: check env-var/config drift
-    entry: python scripts/run_agent_utilities_gate.py --module agent_utilities.mcp.check_env_var_drift -- --check
-    language: system
-    pass_filenames: false
-    files: ^(README\.md|\.env\.example|mcp_config.*\.json|.*/mcp_config.*\.json|docker/.*compose.*\.ya?ml|.*/auth\.py|.*/mcp_server\.py)$
   - id: check-bumpversion
     name: validate bumpversion config
     # B6/C2 (REMAINING-ISSUES-DESIGNS.md): this is the ONE gate in this repo
@@ -181,19 +131,13 @@ repos:
     # major version behind pyproject.toml, because it is regenerated by
     # `uv lock`, not text-substituted by the bumper) and requirements.txt's
     # dependency ranges (C2: it drifted to pin an unpublishable
-    # agent-utilities floor with nothing catching it, because the fleet's
+    # framework floor with nothing catching it, because the fleet's
     # version/lockfile edict only ever named uv.lock).
     entry: |-
-      bash -c 'python scripts/run_agent_utilities_gate.py --module bumpversion -- patch --dry-run --allow-dirty && python scripts/run_agent_utilities_gate.py --system-script --script scripts/check_lockfile_version_mirrors.py -- .'
+      bash -c 'bump2version patch --dry-run --allow-dirty'
     language: system
     pass_filenames: false
-    files: ^(\.bumpversion\.cfg$|pyproject\.toml$|requirements\.txt$|uv\.lock$|scripts/run_agent_utilities_gate\.py$|\.pre-commit-config\.yaml$)
-  - id: gate-launcher-tests
-    name: Lightweight framework gate launcher tests
-    entry: python scripts/run_agent_utilities_gate.py --module pytest -- -q -p no:cacheprovider tests/test_run_agent_utilities_gate.py
-    language: system
-    pass_filenames: false
-    files: ^(scripts/(run_agent_utilities_gate|gate_env)\.py$|tests/test_run_agent_utilities_gate\.py$|\.pre-commit-config\.yaml$)
+    files: ^(\.bumpversion\.cfg$|pyproject\.toml$|requirements\.txt$|uv\.lock$|\.pre-commit-config\.yaml$)
   - id: complexity-staged
     name: Complexity (cccc) - no NEW function over cyclomatic 10 / cognitive 15, none regressed
     entry: python3 scripts/check_complexity_staged.py
@@ -207,17 +151,17 @@ repos:
     # Run this repository's tests from its locked environment (scripts/
     # bootstrap.sh). `native` tests need the compiled epistemic-graph kernel,
     # which the default bootstrap does not build (bootstrap.sh --native does).
-    entry: python scripts/run_agent_utilities_gate.py --module pytest -- tests -q --tb=short -p no:cacheprovider -n auto -m "not slow and not integration and not native" --timeout=120
+    entry: python -m pytest tests -q --tb=short -p no:cacheprovider -n auto -m "not slow and not integration and not native" --timeout=120
     language: system
     types: [file]
     pass_filenames: false
-    files: ^(repository_manager/|tests/(?!test_run_agent_utilities_gate\.py$)|scripts/(?!(run_agent_utilities_gate|gate_env)\.py$)|pyproject\.toml$|requirements\.txt$|pytest\.ini$)
+    files: ^(repository_manager/|tests/|scripts/|pyproject\.toml$|requirements\.txt$|pytest\.ini$)
   - id: dependency-readiness
     name: Dependency readiness — every declared intra-fleet constraint is installable
     # Network-touching: invoked explicitly by phased_push's release barrier
     # and by operators, never by an ordinary commit or push.
     # CONCEPT:RM-DEP-READY -- see repository_manager/dependency_readiness.py
-    # for the live instance this closes (agent-utilities declaring
+    # for the live instance this closes (a framework package declaring
     # epistemic-graph>=2.23.2 while PyPI held only 2.23.0).
     entry: python -m repository_manager.dependency_readiness .
     language: system
@@ -225,7 +169,7 @@ repos:
     always_run: true
     stages: [manual]
 - repo: https://github.com/AleksaC/hadolint-py
-  rev: 458cb25edf664682e3e856a53a2f9af33e068297 # v2.14.0
+  rev: 6e7504451511eaeb62a3e7f14d63b0296cbf86eb # v2.15.1
   hooks:
   - id: hadolint
     args:
@@ -244,48 +188,6 @@ repos:
     files: ^docker/.*compose.*\.ya?ml$
 - repo: local
   hooks:
-  - id: gate-toolchain-coverage
-    name: Gate toolchain coverage — image can run every fleet-declared gate (D-MQ-8/node-pnpm mirror)
-    # `rm__merge_queue`'s (and `rm_gates`'/`scanner.py`'s) gate subprocesses run
-    # INSIDE this image (docker/Dockerfile) at runtime -- D-MQ-8 documents the
-    # defect class: a target repo's `.pre-commit-config.yaml`/`.mergequeue.yaml`
-    # can declare ANY `language: system` toolchain, and without it on PATH the
-    # gate auto-rejects in seconds reading exactly like a real failure. That
-    # was fixed once by hand for cargo, then drifted again for node/pnpm
-    # (agent-webui) until this hook existed. Rather than re-trusting a
-    # hand-maintained package list to stay current, this DERIVES the required
-    # toolchain set from the fleet's own configs every run and fails loudly on
-    # anything it cannot classify -- see the script's own header for the full
-    # design and its documented scope boundary (only sees literal command text
-    # in these two file types; a transitively-pulled build dependency such as
-    # cmake is out of its reach by construction).
-    #
-    # Static-Dockerfile mode: no Docker daemon required, ~3s warm over the
-    # whole fleet (measured) -- comfortably inside the pre-commit FAST budget.
-    # The authoritative check is `--image <built-tag>` in CI against the real
-    # build; this hook is the cheap, no-daemon local mirror of that.
-    #
-    # `manual`-only, NOT a default-stage blocking hook -- same reasoning as
-    # this fleet's own D-W6PC-3 precedent (agent-webui's `lint` hook): the
-    # fleet-wide scan surfaces real, PRE-EXISTING debt this lane does not own
-    # fixing (today: epistemic-graph's go-client mergequeue gate has no `go`
-    # in this image, and two repos' bare `pytest` entries -- see P0.2 in
-    # PHASE-0-DEV-VELOCITY.md -- are unclassifiable without knowing whether
-    # they resolve via a target repo's own venv). Blocking every future
-    # commit to THIS repo on debt it did not introduce is the exact
-    # "absolute local gate on a red baseline" anti-pattern D-W5GR-4 exists to
-    # avoid. Run on demand: `pre-commit run gate-toolchain-coverage
-    # --hook-stage manual --all-files`. Real enforcement of a NEW gap (a
-    # regression this lane DID introduce) belongs in CI as a differential
-    # check once one exists for this repo's own `.mergequeue.yaml`-style
-    # gating; until then this is the deliberate, checked-in way to see the
-    # current backlog, not to fail every push over it.
-    entry: |-
-      bash -c 'repo=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)"); if [ -n "$AGENT_UTILITIES_ROOT" ]; then root="$AGENT_UTILITIES_ROOT"; else d="$repo"; root=""; while [ "$d" != "/" ]; do if [ -d "$d/agent-utilities/scripts" ]; then root="$d/agent-utilities"; break; fi; d=$(dirname "$d"); done; fi; if [ ! -d "$root/scripts" ]; then if [ -n "$CI" ]; then echo "gate-toolchain-coverage: CANNOT RUN in CI: no fleet checkout above $repo" >&2; exit 2; fi; echo "SKIPPED (gate-toolchain-coverage): no fleet checkout above $repo (set AGENT_UTILITIES_ROOT)"; exit 0; fi; python3 scripts/check_gate_toolchain_coverage.py --fleet-root "$(dirname "$root")" --dockerfile docker/Dockerfile'
-    language: system
-    pass_filenames: false
-    always_run: true
-    stages: [manual]
 - repo: local
   hooks:
   - id: security-sanitizer
@@ -306,6 +208,6 @@ repos:
 
 # Generated v2 status is checked against requirements, history and test bindings.
 - repo: https://github.com/Knuckles-Team/pipelines
-  rev: 2cf519b523cec1c4b9fa3b2677035c00d6e1f763
+  rev: main
   hooks:
   - id: spec-status
