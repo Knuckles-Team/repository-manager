@@ -4,7 +4,7 @@ The scheduler owns these records, but it does not own job state.  Every
 mutation is first authorized by an injected native WorkItem reservation port
 which compares the current ``(work_item_id, attempt, fence)`` in its own
 transaction/CAS.  The in-memory implementation below is a deterministic test
-port; production graph-os adapters can implement the same protocol without
+port; production arbora adapters can implement the same protocol without
 changing scheduler policy.
 """
 
@@ -22,7 +22,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol, cast
 
-from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
+from agent_connector_sdk.file_lock import lock_exclusive, unlock
 
 from repository_manager.capacity import CapacityView, HostState, ResourceVector
 from repository_manager.development import (

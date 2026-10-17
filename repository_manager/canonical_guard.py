@@ -47,7 +47,7 @@ import logging
 import os
 from typing import Any, Protocol
 
-from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive_nb, unlock
+from agent_connector_sdk.file_lock import lock_exclusive_nb, unlock
 
 logger = logging.getLogger(__name__)
 

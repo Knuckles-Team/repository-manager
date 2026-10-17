@@ -9,7 +9,7 @@ This document provides an overview of the Repository Manager agent, its architec
 - **Language**: Python 3.11–3.14
 - **Core Framework**: [Pydantic AI](https://ai.pydantic.dev) & [Pydantic Graph](https://ai.pydantic.dev/pydantic-graph/)
 - **Tooling**: `requests`, `pydantic`, `pyyaml`, `python-dotenv`, `fastapi`, `llama_index`, `FastMCP`
-- **Architecture**: Centered around the `create_agent` factory from `agent-utilities`, which has been modernized to support a **Unified Skill Loading** model (`skill_types`) and automated **Graph Orchestration**.
+- **Architecture**: Centered around the `create_agent` factory from `agent-connector-sdk`, which has been modernized to support a **Unified Skill Loading** model (`skill_types`) and automated **Graph Orchestration**.
 - **Specialist Discovery**: Automated discovery of domain specialist agents from `NODE_AGENTS.md` (local) and `A2A_AGENTS.md` (remote) registries, enabling dynamic graph expansion without hardcoded nodes.
 - **Key Principles**:
     - Functional and modular utility design.
@@ -17,9 +17,9 @@ This document provides an overview of the Repository Manager agent, its architec
     - **Elicitation First**: Robust support for structured user input during tool calls, bridging MCP and Web UIs.
 
 ## Package Relationships
-The Repository Manager agent is built on top of the `agent-utilities` package, which provides the core Python engine for LLM orchestration, tool execution, and the SSE streaming protocol.
+The Repository Manager agent is built on top of the `agent-connector-sdk` package, which provides the core Python engine for LLM orchestration, tool execution, and the SSE streaming protocol.
 
-- **Backend (`agent-utilities`)**: Handles LLM orchestration, tool execution, and the SSE streaming protocol.
+- **Backend (`agent-connector-sdk`)**: Handles LLM orchestration, tool execution, and the SSE streaming protocol.
 - **Web Frontend (`agent-webui`)**: A React application that provides a cinematic chat interface and specialized UI components.
 - **Communication**: Frontends talk to Backend via SSE for output and standard REST (POST) for input and elicitation responses.
 
@@ -51,9 +51,9 @@ The local `tests/test_agent_integration.py` validates the entire stack from regi
 ```mermaid
 graph TD
     User([User Request]) --> WebUI[agent-webui]
-    WebUI -- SSE /api/chat --> Backend[agent-utilities Server]
+    WebUI -- SSE /api/chat --> Backend[agent-connector-sdk Server]
 
-    subgraph AgentUtilities [agent-utilities]
+    subgraph AgentUtilities [agent-connector-sdk]
         Backend -- manages --> Agent[Pydantic AI Agent]
         Agent -- uses --> CA[create_agent]
         CA -- initializes --> ST[SkillsToolset]
@@ -391,18 +391,18 @@ skill-graph directories. The old `NODE_SKILL_MAP` and `NODE_AGENTS.md` registry
 are retired.
 
 **How it works**
-1. `agent_utilities/agent/registry_builder.py` ingests canonical JSON prompt blueprints from the packaged base, fleet `prompt_providers`, and the operator XDG overlay as `PromptNode` records, using provider namespaces where applicable.
-2. `agent_utilities/core/config.py` exposes the discovery registry used by the graph builder, router, planner, and executor.
-3. `agent_utilities/graph/executor.py` reads capability and skill tags from that registry, resolves matching installed skill content, then binds governed MCP tools or the network-policy-bounded A2A delegation surface selected for the specialist.
+1. `agent_connector_sdk/agent/registry_builder.py` ingests canonical JSON prompt blueprints from the packaged base, fleet `prompt_providers`, and the operator XDG overlay as `PromptNode` records, using provider namespaces where applicable.
+2. `agent_connector_sdk/core/config.py` exposes the discovery registry used by the graph builder, router, planner, and executor.
+3. `agent_connector_sdk/graph/executor.py` reads capability and skill tags from that registry, resolves matching installed skill content, then binds governed MCP tools or the network-policy-bounded A2A delegation surface selected for the specialist.
 
 **Future Enhancements & Best Practices**
 - Author new roles as schema-valid JSON prompts with the `prompt-builder` skill and declare their skills, tools, and capabilities in the prompt or provider metadata.
-- Contribute package prompts through the `agent_utilities.prompt_providers` entry point; reserve the packaged base and XDG overlay for their documented precedence layers.
+- Contribute package prompts through the `agent_connector_sdk.prompt_providers` entry point; reserve the packaged base and XDG overlay for their documented precedence layers.
 - Validate that newly developed skills resolve to at least one registered agent capability so they do not become orphaned.
 - The `agent-webui` interface will naturally ingest the new node ID and emit it via the graph activity viewer. Keep role IDs in `snake_case`.
 
 ### Concept Mapping
-| agent-utilities Concept        | HSM Concept           | Details                       |
+| agent-connector-sdk Concept        | HSM Concept           | Details                       |
 |--------------------------------|-----------------------|-------------------------------|
 | Root graph                     | Root state machine    | 18 Orchestration nodes        |
 | Router → Planner → Dispatcher  | Top-level transitions | Sequential pipeline           |
@@ -434,7 +434,7 @@ are retired.
 The graph also incorporates key Behavior Tree patterns **inside** the HSM structure.
 The principle: *graphs decide where the operator are; BT-style logic decides what to do next inside that place.*
 
-| agent-utilities Concept                                                                | Behavior Tree (BT) Concept   | Details                                                                         |
+| agent-connector-sdk Concept                                                                | Behavior Tree (BT) Concept   | Details                                                                         |
 |----------------------------------------------------------------------------------------|------------------------------|---------------------------------------------------------------------------------|
 | `_attempt_specialist_fallback`, `static_route_query`, `check_specialist_preconditions` | Selector (priority/fallback) | Specialist fallback chain, static route before LLM call |
 | `dispatcher_step`, `assert_state_valid`                                                | Sequence (fail-fast)         | Plan step execution with cursor, state invariant assertions                     |
@@ -456,7 +456,7 @@ scripts/bootstrap.sh            # uv >= 0.9, pinned Python, pinned siblings, .ve
 scripts/bootstrap.sh --native   # also build the epistemic-graph kernel (slow; `pytest -m native` only)
 ```
 
-The sibling checkouts `uv.lock` installs editable (agent-utilities, the
+The sibling checkouts `uv.lock` installs editable (agent-connector-sdk, the
 connector SDK, epistemic-graph) are cloned under the ignored
 `.uv-workspace-siblings/` at the commits in `scripts/siblings.lock`, the only
 place those pins live. A symlink there, or `AGENT_UTILITIES_ROOT`, points the
@@ -486,30 +486,30 @@ and then this repository's own `.pre-commit-config.yaml`, so a branch that
 passes `uvx pre-commit run --all-files` locally passes the same gates there.
 
 ## Project Structure Quick Reference
-- `agent_utilities/__init__.py` → Public lazy-export facade for `create_agent`, `create_agent_server`, and the supported package API.
-- `agent_utilities/agent/` → Agent construction, discovery, sampling profiles, and prompt-to-KG registry synchronization.
-- `agent_utilities/agent/factory.py` → `create_agent_parser()` and `create_agent()` implementations.
-- `agent_utilities/server/` → `create_agent_server()` and the FastAPI application boundary.
-- `agent_utilities/mcp/` → FastMCP server construction, graph-os tools, fleet loading, and governed dispatch.
-- `agent_utilities/base_utilities.py` → Generic helpers for file handling, type conversions, and CLI flags.
-- `agent_utilities/tools/` → Built-in agent tools (developer_tools, git_tools, workspace_tools).
-- `agent_utilities/core/` → Configuration, workspace, model, scheduling, persistence, embedding, and other foundational utilities.
-- `agent_utilities/api_utilities.py` → Generic API helpers
-- `agent_utilities/models/` → Shared Pydantic request, graph, registry, and execution models.
-- `agent_utilities/observability/` → Tracing, metrics, Langfuse export, and audit utilities.
-- `agent_utilities/core/decorators.py` → Authentication guard decorators used by API wrappers.
-- `agent_utilities/graph/` → **Graph orchestration subpackage** (the core engine):
+- `agent_connector_sdk/__init__.py` → Public lazy-export facade for `create_agent`, `create_agent_server`, and the supported package API.
+- `agent_connector_sdk/agent/` → Agent construction, discovery, sampling profiles, and prompt-to-KG registry synchronization.
+- `agent_connector_sdk/agent/factory.py` → `create_agent_parser()` and `create_agent()` implementations.
+- `agent_connector_sdk/server/` → `create_agent_server()` and the FastAPI application boundary.
+- `agent_connector_sdk/mcp/` → FastMCP server construction, arbora tools, fleet loading, and governed dispatch.
+- `agent_connector_sdk/base_utilities.py` → Generic helpers for file handling, type conversions, and CLI flags.
+- `agent_connector_sdk/tools/` → Built-in agent tools (developer_tools, git_tools, workspace_tools).
+- `agent_connector_sdk/core/` → Configuration, workspace, model, scheduling, persistence, embedding, and other foundational utilities.
+- `agent_connector_sdk/api_utilities.py` → Generic API helpers
+- `agent_connector_sdk/models/` → Shared Pydantic request, graph, registry, and execution models.
+- `agent_connector_sdk/observability/` → Tracing, metrics, Langfuse export, and audit utilities.
+- `agent_connector_sdk/core/decorators.py` → Authentication guard decorators used by API wrappers.
+- `agent_connector_sdk/graph/` → **Graph orchestration subpackage** (the core engine):
   - `graph/builder.py` → `initialize_graph_from_workspace()`, per-server resilient MCP loading
   - `graph/protocol_agnostic_execution.py` → Unified graph execution and streaming entry points
   - `graph/nodes.py` and `graph/_router_impl.py` → Graph nodes and routing implementation
   - `graph/executor.py` → Specialist execution with unified result storage (`results_registry`)
   - `graph/state.py` → `GraphState`, `GraphDeps` Pydantic models
   - `graph/hsm.py` → HSM/BT entry/exit hooks, preconditions, static routing
-- `agent_utilities/knowledge_graph/memory/` → Agent memory, distillation, lifecycle, and optimization.
-- `agent_utilities/prompting/` → Canonical prompt schema, composition, and rendering.
-- `agent_utilities/security/tool_guard.py` → Universal tool guard implementation.
-- `agent_utilities/protocols/a2a.py` → Agent-to-Agent protocol adapter.
-- `agent_utilities/prompts/` → Schema-validated JSON specialist prompt blueprints.
+- `agent_connector_sdk/knowledge_graph/memory/` → Agent memory, distillation, lifecycle, and optimization.
+- `agent_connector_sdk/prompting/` → Canonical prompt schema, composition, and rendering.
+- `agent_connector_sdk/security/tool_guard.py` → Universal tool guard implementation.
+- `agent_connector_sdk/protocols/a2a.py` → Agent-to-Agent protocol adapter.
+- `agent_connector_sdk/prompts/` → Schema-validated JSON specialist prompt blueprints.
 - `repository_manager/graph/` → **Hybrid Workspace Graph Engine** (NetworkX + LadybugDB)
   - `graph/engine.py` → Multi-faceted Search Engine (Semantic Vector + Structural Cypher)
   - `graph/schema.py` → Unified graph schema for workspace symbols and cross-repo dependencies
@@ -523,7 +523,7 @@ passes `uvx pre-commit run --all-files` locally passes the same gates there.
 
 **Always:**
 - Use the `try/except ImportError` guardrail pattern for optional dependencies.
-- Use `agent_utilities.base_utilities.to_boolean` for parsing environment variables and CLI flags.
+- Use `agent_connector_sdk.base_utilities.to_boolean` for parsing environment variables and CLI flags.
 - Use `resolve_configured_tls_profile(service)` and its client adapters for every
   network operation; transport policy comes from AgentConfig and never from a
   boolean verification switch.
@@ -571,7 +571,7 @@ except ImportError:
 
 **Do:**
 - Use `create_agent` for all new agent instances to ensure consistent workspace setup.
-- Use `create_agent_parser` from `agent_utilities/agent/factory.py` for CLI argument parsing.
+- Use `create_agent_parser` from `agent_connector_sdk/agent/factory.py` for CLI argument parsing.
 - Register tools with descriptive docstrings as they are parsed by the LLM.
 - Keep `base_utilities` free of heavy dependencies.
 - Use lazy imports for optional dependencies like FastAPI and LlamaIndex.
@@ -601,7 +601,7 @@ except ImportError:
 
 ## Universal Tool Guard (Global Safety)
 
-By default, `agent-utilities` implements a **Universal Tool Guard** that automatically intercepts sensitive tool calls from MCP servers.
+By default, `agent-connector-sdk` implements a **Universal Tool Guard** that automatically intercepts sensitive tool calls from MCP servers.
 
 Any tool matching specific "danger" patterns (e.g., `delete_*`, `write_*`, `execute_*`, `drop_*`) will **automatically** trigger an elicitation request. The tool will not ran until the operator explicitly confirm it in the Web UI.
 
@@ -625,6 +625,7 @@ from fastmcp import FastMCP, Context
 
 mcp = FastMCP("MyServer")
 
+
 @mcp.tool()
 async def book_table(restaurant: str, ctx: Context) -> str:
     # Trigger elicitation for confirmation and additional details
@@ -634,10 +635,10 @@ async def book_table(restaurant: str, ctx: Context) -> str:
             "type": "object",
             "properties": {
                 "guests": {"type": "integer", "description": "Number of guests"},
-                "time": {"type": "string", "description": "Time of booking"}
+                "time": {"type": "string", "description": "Time of booking"},
             },
-            "required": ["guests", "time"]
-        }
+            "required": ["guests", "time"],
+        },
     )
 
     if confirmation.get("_action") == "cancel":
@@ -653,23 +654,23 @@ async def book_table(restaurant: str, ctx: Context) -> str:
 4.  **Response**: User submits, backend resolves the `Future`, and the tool call resumes with the data.
 
 ## When Stuck
-- Refer to `agent_utilities/agent/factory.py` for `create_agent` and CLI parser implementation details.
-- Review `agent_utilities/mcp/server_factory.py` and `agent_utilities/mcp/kg_server.py` for MCP server construction and graph-os tool exposure.
-- Review `agent_utilities/graph/` for graph construction, routing, execution, and state.
+- Refer to `agent_connector_sdk/agent/factory.py` for `create_agent` and CLI parser implementation details.
+- Review `agent_connector_sdk/mcp/server_factory.py` and `agent_connector_sdk/mcp/kg_server.py` for MCP server construction and arbora tool exposure.
+- Review `agent_connector_sdk/graph/` for graph construction, routing, execution, and state.
 - Ask for clarification if the multi-agent supervisor logic is unclear.
 
 ## Runtime Workspace Files
 
-`agent_utilities/core/workspace.py` resolves the operator workspace and manages
+`agent_connector_sdk/core/workspace.py` resolves the operator workspace and manages
 `main_agent.json` plus `mcp_config.json`. Workspace and XDG files can remain
 runtime inputs for memory, schedules, and related configuration; the platform
 projects those inputs into Knowledge Graph records where the corresponding
-ingestion path applies. There is no packaged `agent_utilities/agent_data/`
+ingestion path applies. There is no packaged `agent_connector_sdk/agent_data/`
 directory.
 
 ## Adding New Modules
 
-When adding new utility modules to the agent_utilities package:
+When adding new utility modules to the agent_connector_sdk package:
 1. Follow the existing code style and conventions
 2. Add appropriate type hints
 3. Include complete docstrings
@@ -868,7 +869,7 @@ gate) gained:
 
 `repository_manager.xdist_rollout` gives repos that already declare
 `pytest-xdist` (but never pass `-n` at collection) the same
-`-n auto --dist loadfile -p no:randomly -rfE` switch `agent-utilities` itself
+`-n auto --dist loadfile -p no:randomly -rfE` switch `agent-connector-sdk` itself
 proved out (17,974 tests in one process is why its own pre-push gate used to
 exceed 90 minutes). Three gates, ALL required, before it will touch a repo:
 the dependency must be declared, the repo's pytest hook `entry:` must be
@@ -894,14 +895,14 @@ or a CLI flag — call `repository_manager.xdist_rollout.dispatch("plan"|
   exist in the fix. Force-reinstall or check the installed version, don't
   trust exit code 0 alone.
 - **Bare `python3`/`uv run pytest` can pick the wrong interpreter.** Use
-  `python scripts/run_agent_utilities_gate.py --module pytest -- ...` (or
+  `python scripts/run_agent_connector_sdk_gate.py --module pytest -- ...` (or
   the workspace's equivalent per-repo gate runner) rather than a bare
   interpreter invocation, and print `sys.executable` when a result looks
   suspicious.
 
 ## Recent Changes
 - **Gate ledger + `rm_gates action=retest`**: `repository_manager.gate_ledger` durably records what a gate wave found (SQLite, `${XDG_STATE_HOME}/repository-manager/gate_ledger.sqlite3`), and `retest` narrows a re-run to whatever it last recorded failing instead of re-running the whole wave, escalating to a full wave on an all-pass. Closes the measured 2026-08-21 incident (~6h push validated by full 90-minute waves per fix). See "Gate Execution" above for the full contract, plus the sibling additions landed alongside it: `test_commands.ensure_no_fail_fast` now strips pytest/go fail-fast flags as well as adding cargo's; `fail_fast_audit` statically detects (never fixes) fail-fast flags hiding in `.pre-commit-config.yaml` `entry:` text; `forge_status` abstracts CI-run status over GitHub/GitLab; `dependency_readiness` gained a targets cross-check, partial-publish detection, and a CI-run barrier; `xdist_rollout` is dry-run-by-default plan/apply for the fleet's `pytest-xdist` rollout.
-- **Consistent nested-path resolution for git sub-actions**: `rm_git` pull/push/add/commit now resolve a bare repo name through the workspace `project_map` (`_resolve_repo_dir`) instead of flat-joining `git.path + name`. Fixes `[Errno 2] No such file or directory` failures on nested repos (e.g. `push projects=agent-utilities` looked for `<ws>/agent-utilities` while the repo lives at `<ws>/agent-packages/agent-utilities`), making the git actions agree with `validate`. Absolute paths and existing flat repos are unchanged; unknown names keep the prior fallback.
+- **Consistent nested-path resolution for git sub-actions**: `rm_git` pull/push/add/commit now resolve a bare repo name through the workspace `project_map` (`_resolve_repo_dir`) instead of flat-joining `git.path + name`. Fixes `[Errno 2] No such file or directory` failures on nested repos (e.g. `push projects=agent-connector-sdk` looked for `<ws>/agent-connector-sdk` while the repo lives at `<ws>/agent-packages/agent-connector-sdk`), making the git actions agree with `validate`. Absolute paths and existing flat repos are unchanged; unknown names keep the prior fallback.
 - **Cascade-deadlock root causes eliminated** (`633ffd4`): `_latest_jobs()` collapses repo-scoped jobs to the most-recent per repo so a fixed+re-validated repo drops out of `failed_projects`; `_reap_stale_jobs()` (env `RM_JOB_STALE_SECONDS`, default 1800) self-heals wedged `running` jobs. Note: a long-lived RM-MCP process must be **restarted** to pick these up — they are loaded at import time.
 - **Consolidated Architecture**: Centralized core repo logic into the `Git` class (`repository_manager.py`), refactoring `mcp_server.py` into a thin client.
 - **Enhanced Hybrid Graph Intelligence**: Implemented a multi-faceted graph search defaulting to `hybrid` mode, which merges structural NetworkX data with semantic vector results for higher precision.
@@ -1003,7 +1004,7 @@ why rather than bypassing it.
 ## Working with Git Worktrees (multi-session)
 
 Multiple agents/sessions work the `agent-packages/*` repos concurrently. **Do not
-edit the canonical checkout** (`$AGENT_UTILITIES_WORKSPACE_ROOT/agent-packages/<repo>`) —
+edit the canonical checkout** (`$CONNECTOR_WORKSPACE_ROOT/agent-packages/<repo>`) —
 a background `repository-manager` sync runs checkouts against it (default-branch
 sync, `rm_worktree add`/`merge`'s park/switch checkouts) that can collide with
 concurrent edits there. Take the operator's own git worktree on the operator's own branch instead:
@@ -1062,7 +1063,7 @@ alone).
 **The prune guard (CONCEPT:RM-PRUNE-GUARD, `repository_manager/prune_guard.py`):**
 `rm_worktree audit --prune-merged` used to treat a `merged` classification as
 authorisation to remove the worktree *and* run `git branch -D`. On 2026-07-31
-that took a live lane's `agent-utilities` worktree and branch ref out from under
+that took a live lane's `agent-connector-sdk` worktree and branch ref out from under
 it (registry `D-FE-9`): the lane had merged an intermediate chunk back to `main`
 and kept working, so its branch really was an ancestor of `main` and its tree
 really was clean. **`merged` says the work is captured in `base`; it never says
@@ -1084,7 +1085,7 @@ can forget to set:
   this branch contributed. A worktree at base reports `at_base` and classifies
   `active`.
 - **Occupancy comes from the lane protocol, not a new mechanism.** Each removal
-  runs inside `agent_utilities.governance.lanes.guarded_tree_mutation` (the
+  runs inside `agent_connector_sdk.governance.lanes.guarded_tree_mutation` (the
   repo-scoped lease in the shared `--git-common-dir`, plus
   `require_resettable_tree`), and `_branch_state` is re-derived *inside* that
   lease, so a classification that went stale during the audit scan is caught
@@ -1154,10 +1155,10 @@ validated live against R820 during that same incident.
 Working in parallel with other sessions/worktrees? **Reserve a concept id before you write its `CONCEPT:` marker** so two sessions never collide:
 
 ```bash
-agent-utilities --json concept reserve --ns EG-KG.compute.backend   # or a package prefix, e.g. KEY
+agent-connector-sdk --json concept reserve --ns EG-KG.compute.backend   # or a package prefix, e.g. KEY
 ```
 
-Full protocol (ledger, merge=union, reconcile, MCP/REST): <https://knuckles-team.github.io/agent-utilities/concept_coordination/>
+Full protocol (ledger, merge=union, reconcile, MCP/REST): <https://knuckles-team.github.io/agent-connector-sdk/concept_coordination/>
 <!-- END concept-coordination (generated) -->
 
 ## Version & lockfile drift edict (keep the version mirrors AND every generated lock artifact in sync)
@@ -1173,7 +1174,7 @@ consumer installs from** — at minimum `uv.lock` AND any `requirements.txt` thi
 matters here, even though nothing text-registers it in `.bumpversion.cfg`) — plus any other such
 artifact a repo adds later (e.g. a `constraints.txt`, a per-extra `requirements-*.txt`). Naming
 `uv.lock` only, as this edict once did, is how a stale `requirements.txt` pinning an unpublishable
-`agent-utilities` shipped from two fleet repos with nothing catching it (C2). Rules:
+`agent-connector-sdk` shipped from two fleet repos with nothing catching it (C2). Rules:
 
 1. **Never hand-edit a version string.** Change the version ONLY via
    `bump-my-version bump {patch|minor|major}` (a.k.a. `bump2version`), which rewrites every file
@@ -1197,14 +1198,14 @@ artifact a repo adds later (e.g. a `constraints.txt`, a per-extra `requirements-
 ## Upstream currency edict — target the newest release; a pin is a hypothesis, not a fact (READ BEFORE capping, deferring, or opt-in-gating an upgrade)
 
 This governs how this repository treat **other people's** releases, deprecations, and version caps in
-this repo (fleet-wide edict, propagated from `agent-utilities/AGENTS.md`).
+this repo (fleet-wide edict, propagated from `agent-connector-sdk/AGENTS.md`).
 
 1. **Latest by default.** Target the newest upstream release -- including a pre-release
    where the ecosystem has already moved onto it. Sitting on an old major because the
    upgrade is work is not a reason to defer it.
 2. **A conservative upstream pin is a hypothesis, not a fact -- test it, don't inherit
    it.** Upstream maintainers cap defensively (an unreleased major, an untested surface)
-   as often as they cap for a known break. Worked example (from `agent-utilities`):
+   as often as they cap for a known break. Worked example (from `agent-connector-sdk`):
    `pydantic-ai-slim` 2.18.0 declared `fastmcp-slim[client]>=3.3.0` with no upper bound;
    2.19.0 added `<4` purely as a defensive guard while fastmcp 4 was still pre-release --
    not because of an observed incompatibility. Blocking an upgrade on that kind of cap

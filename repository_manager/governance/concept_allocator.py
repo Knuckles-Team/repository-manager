@@ -52,7 +52,7 @@ from typing import Any
 # importing it here keeps this module's "top-level imports are stdlib-only"
 # contract while routing through the chokepoint instead of a direct,
 # POSIX-only `import fcntl`.
-from agent_utilities.knowledge_graph.core.file_lock import lock_exclusive, unlock
+from agent_connector_sdk.file_lock import lock_exclusive, unlock
 
 # CONCEPT:AU-OS.governance.concept-id-allocation — Multi-session concept-ID allocation & coordination protocol.
 # The grammar lives in concept_hierarchy; every scanner imports this exact regex.
@@ -484,8 +484,8 @@ def _default_scan_roots(repo_root: Path) -> list[Path]:
     Each top-level Python package of the repository (a directory carrying an
     ``__init__.py``; test packages excluded), plus ``crates/`` for a Rust
     workspace. Deriving the roots
-    from the tree keeps the allocator repository-neutral: agent-utilities
-    resolves to ``agent_utilities/``, repository-manager to
+    from the tree keeps the allocator repository-neutral: agent-connector-sdk
+    resolves to ``agent_connector_sdk/``, repository-manager to
     ``repository_manager/``, epistemic-graph to ``crates/`` and its Python
     package. ``scan_code_markers`` already skips a root that does not exist.
     """
@@ -563,7 +563,7 @@ def reserve_concept_id(
         )
     root = _root(repo_root)
 
-    from agent_utilities.security.persistence_privacy import persistence_reference
+    from agent_connector_sdk.privacy_reference import persistence_reference
 
     with _Arbiter(root):
         now = _utcnow()
@@ -634,7 +634,7 @@ def _authority_projection(record: dict[str, Any]) -> dict[str, Any]:
     state = str(record["state"])
     if state not in _LEDGER_STATUSES:
         raise ValueError("authoritative concept reservation state is invalid")
-    from agent_utilities.security.persistence_privacy import persistence_reference
+    from agent_connector_sdk.privacy_reference import persistence_reference
 
     concept_id = str(record["concept_id"])
     parsed = parse_okf_id(concept_id)

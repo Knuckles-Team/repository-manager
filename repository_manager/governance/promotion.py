@@ -1,11 +1,11 @@
 """Merge is not deploy — CONCEPT:AU-OS.governance.merge-deploy-decoupling.
 
-Moved from agent-utilities' retired merge queue, where it was the
+Moved from agent-connector-sdk' retired merge queue, where it was the
 ``merge-queue promotion`` verb; it is ``repository-manager-governance
 promotion`` now. It needs nothing from a queue: it compares two refs of the
 repository the caller stands in.
 
-**The hazard this measures.** graph-os runs source-over-site-packages: the pod
+**The hazard this measures.** arbora runs source-over-site-packages: the pod
 NFS-mounts the canonical checkout read-only with the checkout on
 ``PYTHONPATH``, so the bytes a pod imports on its next start are whatever is in
 the canonical working tree at that instant. Nothing hot-reloads — but nothing

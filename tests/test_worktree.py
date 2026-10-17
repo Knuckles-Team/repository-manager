@@ -722,7 +722,7 @@ def test_worktree_hygiene_prune_removes_only_merged(tmp_path, monkeypatch):
 
 
 # ── prune safety (CONCEPT:RM-PRUNE-GUARD, registry D-FE-9) ────────────────────
-# D-FE-9: an `agent-utilities`-scoped sweep removed a live lane's worktree AND
+# D-FE-9: an `agent-connector-sdk`-scoped sweep removed a live lane's worktree AND
 # ran `git branch -D` on its ref, leaving its commits reachable only as dangling
 # objects. The branch was genuinely merged at that instant — the lane had merged
 # an intermediate chunk back to main and kept working — so "merged" was never

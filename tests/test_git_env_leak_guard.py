@@ -1,7 +1,7 @@
 """Regression tests for GOC-71 -- a leaked `GIT_DIR`/... pointer env var must
 never reach a `git` subprocess undetected.
 
-Root cause (`plans/graph-os-completion-program/GOC-59-67-EXPANSION-TRACKS.md`
+Root cause (`plans/arbora-completion-program/GOC-59-67-EXPANSION-TRACKS.md`
 Sec. GOC-71): this repo's own `pytest` pre-commit hook runs as a child of `git
 commit` and inherits `GIT_DIR`/`GIT_WORK_TREE`/`GIT_AUTHOR_*` pointing at the
 REAL checkout. `GIT_DIR` silently overrides `-C <path>` -- demonstrated

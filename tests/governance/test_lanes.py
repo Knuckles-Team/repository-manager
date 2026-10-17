@@ -38,11 +38,11 @@ def _init_repo(root: Path) -> Path:
     _run(["git", "init", "-b", "main"], root)
     _run(["git", "config", "user.email", "test@example.invalid"], root)
     _run(["git", "config", "user.name", "Lane Test"], root)
-    package = root / "agent_utilities"
+    package = root / "agent_connector_sdk"
     package.mkdir(parents=True, exist_ok=True)
     (package / "__init__.py").write_text("", encoding="utf-8")
     (root / "pyproject.toml").write_text(
-        '[project]\nname = "agent-utilities"\n', encoding="utf-8"
+        '[project]\nname = "agent-connector-sdk"\n', encoding="utf-8"
     )
     (root / "docs").mkdir(exist_ok=True)
     (root / "docs" / "concepts.yaml").write_text(
@@ -59,7 +59,7 @@ def _isolate_workspace_arbitration_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Route "workspace"-scoped leases into an isolated ``tmp_path`` instead of
-    the REAL host-wide ``~/.local/state/agent-utilities/arbitration`` directory
+    the REAL host-wide ``~/.local/state/agent-connector-sdk/arbitration`` directory
     that live lane orchestration on this host actually uses for
     ``dependency-lock``/``epistemic-graph-daemon``/``workspace-scripts``
     (``lanes.workspace_arbitration_dir()`` — see ``lane_resources.yaml``:
@@ -913,8 +913,8 @@ def test_reconcile_sees_a_marker_that_landed_in_the_worktree(canonical: Path) ->
     lane = _add_worktree(canonical, "lane-n")
     concept_id = "AU-KG.compute.branch-marker"
     ca.reserve_concept_id(concept_id, session_id="lane", repo_root=lane)
-    (lane / "agent_utilities").mkdir(exist_ok=True)
-    (lane / "agent_utilities" / "feature.py").write_text(
+    (lane / "agent_connector_sdk").mkdir(exist_ok=True)
+    (lane / "agent_connector_sdk" / "feature.py").write_text(
         f"# CONCEPT:{concept_id}\n", encoding="utf-8"
     )
     assert ca.reconcile(repo_root=lane)["landed"] == [concept_id]
@@ -1545,7 +1545,7 @@ def test_gate_refuses_a_source_commit_in_the_canonical_checkout(
 ) -> None:
     guard = _guard_module()
     scope = lanes.lane_scope(canonical)
-    refusal = guard._check_canonical(scope, ["agent_utilities/thing.py"])
+    refusal = guard._check_canonical(scope, ["agent_connector_sdk/thing.py"])
     assert refusal is not None
     assert "CANONICAL checkout" in refusal and "worktree add" in refusal
 
@@ -1609,7 +1609,7 @@ def test_guard_refusal_names_the_remedy(canonical: Path) -> None:
 
 # ---------------------------------------------------------------------------
 # D-CP-3/D-CP-4 reach — the gate and the cargo binding work from a repo that is
-# NOT agent-utilities, proven by invoking the real gate module as a
+# NOT agent-connector-sdk, proven by invoking the real gate module as a
 # subprocess (exactly how a repo's `.pre-commit-config.yaml` calls it), not by
 # calling its Python functions directly.
 # ---------------------------------------------------------------------------
@@ -1628,7 +1628,7 @@ def _guard_env() -> dict[str, str]:
 
 
 def _init_foreign_repo(root: Path, *, with_cargo: bool = False) -> Path:
-    """A repo wholly unrelated to agent-utilities — the reach proof needs one."""
+    """A repo wholly unrelated to agent-connector-sdk — the reach proof needs one."""
     root.mkdir(parents=True, exist_ok=True)
     _run(["git", "init", "-b", "main"], root)
     _run(["git", "config", "user.email", "foreign@example.invalid"], root)
@@ -1647,13 +1647,13 @@ def _init_foreign_repo(root: Path, *, with_cargo: bool = False) -> Path:
     return root
 
 
-def test_gate_reaches_a_repo_that_is_not_agent_utilities(tmp_path: Path) -> None:
+def test_gate_reaches_a_repo_that_is_not_agent_connector_sdk(tmp_path: Path) -> None:
     """The SAME script, invoked from a foreign repo, guards THAT repo — not AU.
 
     Before this reach fix, ``main()`` resolved ``lanes.current_tree(REPO)``
     where ``REPO`` was hardcoded to wherever the script file itself lives
-    (agent-utilities), so a foreign caller would silently guard
-    agent-utilities' OWN tree and never see its own staged work at all — a
+    (agent-connector-sdk), so a foreign caller would silently guard
+    agent-connector-sdk' OWN tree and never see its own staged work at all — a
     no-op gate for every other repo (D-CP-3). It must now resolve the tree
     from cwd, which is what pre-commit always sets to the repo being
     committed.

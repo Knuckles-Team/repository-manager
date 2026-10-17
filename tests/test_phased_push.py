@@ -150,7 +150,7 @@ def test_phased_push_aborts_wave_when_barrier_times_out_unsatisfied(
                 raw_requirement="epistemic-graph[full]>=2.23.2,<3.0.0",
                 specifier="<3.0.0,>=2.23.2",
                 extras=("full",),
-                declared_by="agent-utilities/pyproject.toml",
+                declared_by="agent-connector-sdk/pyproject.toml",
             )
         ],
     )
@@ -208,7 +208,7 @@ def test_phased_push_proceeds_immediately_when_barrier_satisfied(
                 raw_requirement="epistemic-graph>=2.23.0",
                 specifier=">=2.23.0",
                 extras=(),
-                declared_by="agent-utilities/pyproject.toml",
+                declared_by="agent-connector-sdk/pyproject.toml",
             )
         ],
     )

@@ -108,7 +108,7 @@ RUN apt-get update \
 RUN uv pip install --system --break-system-packages maturin==1.14.1
 
 # cccc -- the complexity gate's measurement backend. `check_complexity.py` in
-# agent-utilities (and its ported copies) shells out to `cccc` and exits 2
+# agent-connector-sdk (and its ported copies) shells out to `cccc` and exits 2
 # "CANNOT RUN" when it is absent, so without this binary EVERY complexity gate
 # in every repo fails closed inside this container -- the same
 # reads-like-a-real-failure defect class as D-MQ-8's cargo and maturin above.

@@ -3,8 +3,7 @@
 # web, and the hosted CI workflow all run this same script).
 #
 #   scripts/bootstrap.sh            uv, Python, pinned siblings, .venv, git hooks
-#   scripts/bootstrap.sh --native   also build the epistemic-graph kernel (slow;
-#                                   only `pytest -m native` needs it)
+#   (--native is accepted for compatibility; the engine wheel always installs)
 #
 # Idempotent and non-interactive. Afterwards:
 #   uvx pre-commit run --all-files
@@ -18,7 +17,7 @@ for arg in "$@"; do
   case "$arg" in
     --native) native=1 ;;
     -h | --help)
-      sed -n '2,11p' "$0"
+      sed -n '2,10p' "$0"
       exit 0
       ;;
     *)
@@ -44,7 +43,7 @@ log "Python ${python_version} (uv $(uv --version | awk '{print $2}'))"
 uv python install "$python_version"
 
 # 2. Sibling sources --------------------------------------------------------
-# uv.lock installs agent-utilities (and, through it, the SDK and the
+# uv.lock installs agent-connector-sdk (and, through it, the SDK and the
 # epistemic-graph engine) editable from ignored .uv-workspace-siblings paths.
 # Each is cloned at exactly the commit in scripts/siblings.lock, the only place
 # those pins live. A developer symlink at a sibling path is respected as-is.
@@ -82,23 +81,13 @@ while read -r name url sha path; do
 done < scripts/siblings.lock
 
 # 3. Locked environment -----------------------------------------------------
-# epistemic-graph is a native (Rust) engine; building it would dominate setup
-# time and only the `native`-marked tests need it.
-sync_args=(--frozen --python "$python_version" --extra test --extra agent)
-if [[ "$native" == 0 ]]; then
-  sync_args+=(--no-install-package epistemic-graph)
-fi
+# Every dependency, the epistemic-graph engine included, installs from its
+# published PyPI wheel; nothing is built from source.
+sync_args=(--frozen --python "$python_version" --extra test --extra all)
 log "syncing .venv (uv sync ${sync_args[*]})"
 uv sync "${sync_args[@]}"
-
-# The generated client is needed even when the native engine is not installed.
-# Verify the exact Git pin, all upstream receipt artifacts, and the shipped
-# contract verifier before exposing that source. No wheel/source mixing.
-client_args=()
-if [[ "$native" == 1 ]]; then
-  client_args+=(--native)
-fi
-.venv/bin/python scripts/bootstrap_graph_client.py "${client_args[@]}"
+# The installed engine provides the graph client; clear any stale source overlay.
+.venv/bin/python scripts/bootstrap_graph_client.py --native
 
 # 4. Git hooks --------------------------------------------------------------
 log "installing pre-commit and pre-push hooks"

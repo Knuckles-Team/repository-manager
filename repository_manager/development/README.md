@@ -2,7 +2,7 @@
 
 This package freezes the versioned data boundary used by the Repository Manager
 development program.  It is intentionally additive and effect-free: importing
-the models does not inspect a checkout, contact Graph-OS, resolve a
+the models does not inspect a checkout, contact Arbora, resolve a
 tunnel-manager host, execute a command, or create durable state.
 
 ## Authority and consumers
@@ -10,7 +10,7 @@ tunnel-manager host, execute a command, or create durable state.
 | Contract | Authority | First consumers |
 | --- | --- | --- |
 | `DevelopmentRequest` | MCP/CLI application service after validation | RMDD-02, RMDD-06, RMDD-20 |
-| `RepositoryJobResult` and `LeaseRecord` | graph-os WorkItem projection | RMDD-02, RMDD-05, RMDD-06, RMDD-19 |
+| `RepositoryJobResult` and `LeaseRecord` | arbora WorkItem projection | RMDD-02, RMDD-05, RMDD-06, RMDD-19 |
 | `ResourceRequest` and `ResourceReservation` | scheduler admission | RMDD-07, RMDD-08, RMDD-09, RMDD-15 |
 | `ExecutionCommand` and `ExecutionResult` | local/remote executor boundary | RMDD-07, RMDD-14, RMDD-15 |
 | `BuildKey` and `BuildResult` | content-addressed build broker | RMDD-10, RMDD-12 |
@@ -20,7 +20,7 @@ tunnel-manager host, execute a command, or create durable state.
 | `TargetPolicy` and `RepositoryIdentity` | identity/configuration resolvers | RMDD-07, RMDD-14, RMDD-18 |
 | `WorkspaceReleasePlan` and dependency records | workspace DAG/release planner | RMDD-18, RMDD-20, RMDD-24 |
 
-Graph-os `WorkItem` remains the only durable job authority.  FastMCP task
+Arbora `WorkItem` remains the only durable job authority.  FastMCP task
 operations and the CLI are projections/adapters; this package does not add a
 second task store or scheduler.  Repository fragments, host inventory, and
 workspace manifests retain their existing authorities.
@@ -94,7 +94,7 @@ that seam only after their own scheduler/transport policies are ready.
 ## Durable job service
 
 `jobs.py` provides the RMDD-06 `RepositoryJobService` and its injected
-`RepositoryJobPort`. `GraphRepositoryJobPort` delegates to the graph-os Agent
+`RepositoryJobPort`. `GraphRepositoryJobPort` delegates to the arbora Agent
 Utilities repository WorkItem authority; `FakeRepositoryJobPort` is a durable-shaped
 test double. The service owns no `_jobs`/`_job_futures` state, requires a verified
 tenant/owner (including an owner-scoped read immediately before native cancel),

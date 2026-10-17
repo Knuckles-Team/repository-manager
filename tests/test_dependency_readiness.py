@@ -3,7 +3,7 @@
 Covers both layers off the SAME primitives -- no network in these tests: every
 test supplies a fake :class:`~repository_manager.dependency_readiness.IndexBackend`
 so behavior is proven deterministically, and the live-index proof (does this
-correctly fail against agent-utilities' real, currently-unsatisfiable
+correctly fail against agent-connector-sdk' real, currently-unsatisfiable
 ``epistemic-graph`` constraint, and pass for a satisfiable one) is demonstrated
 separately, out of band, against the real PyPI index.
 """
@@ -247,7 +247,7 @@ def test_fleet_package_names_excludes_infra_subdirectories(tmp_path):
     """A `services/`-tree repo (e.g. a Docker stack literally named `langfuse`)
     must never collide with an unrelated third-party PyPI package of the same
     name -- this was caught live: `services/langfuse.git` (a Docker Swarm
-    stack) vs. the third-party `langfuse` SDK agent-utilities depends on."""
+    stack) vs. the third-party `langfuse` SDK agent-connector-sdk depends on."""
     manifest = tmp_path / "workspace.yml"
     manifest.write_text(
         """
@@ -285,11 +285,11 @@ maintenance:
   phases:
     - phase: 1
       name: solo
-      project: agent-utilities
+      project: agent-connector-sdk
 """
         )
         names = dr.fleet_package_names(manifest)
-        assert "agent-utilities" in names
+        assert "agent-connector-sdk" in names
 
 
 @pytest.mark.parametrize(
@@ -297,7 +297,7 @@ maintenance:
     [
         "subdirectories: invalid\n",
         "maintenance:\n  phases:\n    - null\n",
-        "maintenance:\n  phases:\n    - projects: agent-utilities\n",
+        "maintenance:\n  phases:\n    - projects: agent-connector-sdk\n",
         (
             "subdirectories:\n"
             "  agent-packages:\n"
@@ -316,7 +316,7 @@ maintenance:
             "    repositories:\n"
             "      - url: ' https://example.invalid/org/epistemic-graph.git'\n"
         ),
-        "maintenance:\n  phases:\n    - projects: [org/agent-utilities]\n",
+        "maintenance:\n  phases:\n    - projects: [org/agent-connector-sdk]\n",
     ],
 )
 def test_malformed_manifest_is_typed_blocking_state(
@@ -415,7 +415,7 @@ def test_check_tree_fails_on_unsatisfiable_fleet_constraint(tmp_path, monkeypatc
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "agent-utilities"
+name = "agent-connector-sdk"
 dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
@@ -432,7 +432,7 @@ def test_check_tree_passes_for_satisfiable_constraint(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "agent-utilities"
+name = "agent-connector-sdk"
 dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
@@ -491,7 +491,7 @@ def test_override_bypasses_failure_but_is_never_silent(tmp_path, monkeypatch, ca
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "agent-utilities"
+name = "agent-connector-sdk"
 dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
@@ -525,7 +525,7 @@ def test_no_override_env_var_means_no_bypass(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "agent-utilities"
+name = "agent-connector-sdk"
 dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
@@ -625,7 +625,7 @@ def test_await_gate_readiness_resumes_early_once_satisfied(monkeypatch):
         return _gate_result(success=True)
 
     outcome = dr.await_gate_readiness(
-        [("agent-utilities", "/fake/agent-utilities")],
+        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
         wait_minutes=30,
         poll_interval_s=30,
         run_gate=run_gate,
@@ -635,7 +635,7 @@ def test_await_gate_readiness_resumes_early_once_satisfied(monkeypatch):
     assert outcome.ok is True
     assert clock.t < 30 * 60  # resumed early, nowhere near the 30-minute budget
     assert attempts["n"] == 2
-    assert outcome.targets_checked == ["agent-utilities"]
+    assert outcome.targets_checked == ["agent-connector-sdk"]
 
 
 def test_await_gate_readiness_aborts_when_deadline_passes_unsatisfied(monkeypatch):
@@ -651,7 +651,7 @@ def test_await_gate_readiness_aborts_when_deadline_passes_unsatisfied(monkeypatc
         )
 
     outcome = dr.await_gate_readiness(
-        [("agent-utilities", "/fake/agent-utilities")],
+        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
         wait_minutes=2,
         poll_interval_s=1,
         run_gate=run_gate,
@@ -660,7 +660,7 @@ def test_await_gate_readiness_aborts_when_deadline_passes_unsatisfied(monkeypatc
     )
     assert outcome.ok is False
     assert outcome.overridden is False
-    assert outcome.failures[0].repo_name == "agent-utilities"
+    assert outcome.failures[0].repo_name == "agent-connector-sdk"
     assert "epistemic-graph" in outcome.failures[0].detail
     assert clock.t >= 2 * 60  # genuinely waited out the full ceiling before giving up
 
@@ -676,7 +676,7 @@ def test_await_gate_readiness_override_bypasses_abort_loudly(
         return _gate_result(success=False, detail="still unsatisfiable")
 
     outcome = dr.await_gate_readiness(
-        [("agent-utilities", "/fake/agent-utilities")],
+        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
         wait_minutes=1,
         poll_interval_s=1,
         run_gate=run_gate,
@@ -736,7 +736,7 @@ def test_await_gate_readiness_backs_off_exponentially(monkeypatch):
         return _gate_result(success=False, detail="still unsatisfiable")
 
     dr.await_gate_readiness(
-        [("agent-utilities", "/fake/agent-utilities")],
+        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
         wait_minutes=10,
         poll_interval_s=30,
         max_interval_s=120,
@@ -834,7 +834,7 @@ def test_main_exits_nonzero_on_unsatisfiable(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
         """
 [project]
-name = "agent-utilities"
+name = "agent-connector-sdk"
 dependencies = ["epistemic-graph[full]>=2.23.2,<3.0.0"]
 """
     )
@@ -1001,12 +1001,12 @@ dependencies = [{deps_toml}]
 
 def test_cross_check_targets_finds_repo_excluded_from_targets(tmp_path):
     covered = tmp_path / "covered"
-    _write_pyproject(covered, name="agent-utilities", deps=["epistemic-graph>=2.23.2"])
+    _write_pyproject(covered, name="agent-connector-sdk", deps=["epistemic-graph>=2.23.2"])
     missed = tmp_path / "missed"
     _write_pyproject(missed, name="another-repo", deps=["epistemic-graph>=2.0.0"])
 
-    targets = [("agent-utilities", str(covered))]
-    candidate_repos = [("agent-utilities", str(covered)), ("another-repo", str(missed))]
+    targets = [("agent-connector-sdk", str(covered))]
+    candidate_repos = [("agent-connector-sdk", str(covered)), ("another-repo", str(missed))]
 
     missing = dr.cross_check_targets(
         targets, published_packages={"epistemic-graph"}, candidate_repos=candidate_repos
@@ -1016,8 +1016,8 @@ def test_cross_check_targets_finds_repo_excluded_from_targets(tmp_path):
 
 def test_cross_check_targets_empty_when_every_dependent_is_covered(tmp_path):
     covered = tmp_path / "covered"
-    _write_pyproject(covered, name="agent-utilities", deps=["epistemic-graph>=2.23.2"])
-    targets = [("agent-utilities", str(covered))]
+    _write_pyproject(covered, name="agent-connector-sdk", deps=["epistemic-graph>=2.23.2"])
+    targets = [("agent-connector-sdk", str(covered))]
 
     missing = dr.cross_check_targets(
         targets, published_packages={"epistemic-graph"}, candidate_repos=targets
@@ -1081,7 +1081,7 @@ def test_await_gate_readiness_targets_cross_check_skipped_by_default(monkeypatch
         return _gate_result(success=True)
 
     outcome = dr.await_gate_readiness(
-        [("agent-utilities", "/fake/agent-utilities")],
+        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
         wait_minutes=5,
         run_gate=run_gate,
         sleep=clock.sleep,
@@ -1124,7 +1124,7 @@ def test_await_gate_readiness_ci_run_failed_aborts_before_any_gate_call(monkeypa
         )
     )
     outcome = dr.await_gate_readiness(
-        [("agent-utilities", "/fake/agent-utilities")],
+        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
         wait_minutes=5,
         run_gate=run_gate,
         sleep=clock.sleep,
@@ -1154,7 +1154,7 @@ def test_await_gate_readiness_ci_run_success_falls_through_to_gate_polling(monke
         )
     )
     outcome = dr.await_gate_readiness(
-        [("agent-utilities", "/fake/agent-utilities")],
+        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
         wait_minutes=5,
         run_gate=run_gate,
         sleep=clock.sleep,
@@ -1180,7 +1180,7 @@ def test_await_gate_readiness_ci_run_unknown_degrades_to_gate_polling(monkeypatc
         )
     )
     outcome = dr.await_gate_readiness(
-        [("agent-utilities", "/fake/agent-utilities")],
+        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
         wait_minutes=5,
         run_gate=run_gate,
         sleep=clock.sleep,
@@ -1219,7 +1219,7 @@ def test_await_gate_readiness_ci_run_in_progress_waits_then_concludes(monkeypatc
             return self._seq.pop(0) if len(self._seq) > 1 else self._seq[0]
 
     outcome = dr.await_gate_readiness(
-        [("agent-utilities", "/fake/agent-utilities")],
+        [("agent-connector-sdk", "/fake/agent-connector-sdk")],
         wait_minutes=5,
         poll_interval_s=1,
         run_gate=run_gate,

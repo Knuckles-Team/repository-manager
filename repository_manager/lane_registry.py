@@ -72,7 +72,7 @@ class StaleLaneFence(LaneAuthorizationError):
 class LaneAuthority(Protocol):
     """Durable authority required for every managed lane effect.
 
-    A graph-os/WorkItem-backed implementation supplies this protocol in
+    An arbora/WorkItem-backed implementation supplies this protocol in
     production.  The registry never treats its SQLite projection or a process
     lock as evidence for any method below.
     """
@@ -111,7 +111,7 @@ class FakeDurableLaneAuthority:
 
     This class is intentionally named ``Fake``: its in-memory lock is useful
     for deterministic tests, but it is not a cross-host guarantee.  Production
-    callers must inject a graph-os/WorkItem-backed implementation of
+    callers must inject an arbora/WorkItem-backed implementation of
     :class:`LaneAuthority`.
     """
 

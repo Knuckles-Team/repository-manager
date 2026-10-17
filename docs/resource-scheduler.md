@@ -1,7 +1,7 @@
 # Weighted resource scheduler
 
 Repository Manager admits development work through one weighted policy surface.
-The scheduler is deliberately an admission service: graph-os WorkItems remain
+The scheduler is deliberately an admission service: arbora WorkItems remain
 the only durable job, lease, attempt, and fence authority, and no scheduler
 method starts a subprocess, opens SSH, mutates Git, or acquires a local
 filesystem lease.
@@ -78,7 +78,7 @@ compatibility adapter only; it is not a substitute for a WorkItem-backed
 reservation.
 
 The RMDD-08 package intentionally stops at the injected native-port contract;
-it does not claim to ship a graph-os adapter.  The production binding/dependency
+it does not claim to ship an arbora adapter.  The production binding/dependency
 lane must persist a WorkItem-linked reservation extension and implement these
 single-transaction verbs:
 

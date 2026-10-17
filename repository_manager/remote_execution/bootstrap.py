@@ -4,7 +4,7 @@ RMDD-15 never sends a model-authored or caller-supplied command string over
 SSH.  The remote worker is a fixed, pre-installed binary; the only variable
 inputs accepted here are the opaque WorkItem correlations (work item ID,
 attempt, fence) the installed worker uses to look up its own authorized job
-data from graph-os.  No job payload, code, host, credential, or shell text
+data from arbora.  No job payload, code, host, credential, or shell text
 ever passes through this module -- see the "Prefer a fixed installed worker
 bootstrap" requirement in the lane brief and C-04 ("no ``shell=True`` or
 public raw shell string is valid").

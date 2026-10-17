@@ -75,7 +75,7 @@ EXPECTED_TOOL_NAMES = (
 # `connector_manifest.yml` and `tool_schema_fingerprints.json` by
 # `connector-certify --write`, never hand-edited).
 BASELINE_CATALOG_SHA256 = (
-    "564e0e6d2d8c58c71da616150315757bc5e72e1cdec6bacaaa66fe6c36604cf0"
+    "43833149eca3347d6a5be4a7c2c5eb84d8c99126d225ac6473b79ca2978ece2d"
 )
 
 

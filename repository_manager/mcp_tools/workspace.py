@@ -225,8 +225,8 @@ def register_workspace_management_tools(
             default=False,
             description=(
                 "For 'setup': after clone/pull, materialize each project's "
-                ".uv-workspace-siblings/agent-utilities symlink and run `uv "
-                "sync`, dependency-ordered (agent-utilities first, since "
+                ".uv-workspace-siblings/agent-connector-sdk symlink and run `uv "
+                "sync`, dependency-ordered (agent-connector-sdk first, since "
                 "every fleet member depends on it and it is not yet "
                 "published to PyPI at the required floor). Best-effort per "
                 "project; a partial failure is reported (status='error' "

@@ -27,10 +27,10 @@ pre-commit tier with no environment sync.
 
 Usage::
 
-    python3 scripts/check_import_safety.py --package agent_utilities
-    python3 scripts/check_import_safety.py --package agent_utilities --simulate-windows
+    python3 scripts/check_import_safety.py --package agent_connector_sdk
+    python3 scripts/check_import_safety.py --package agent_connector_sdk --simulate-windows
     python3 scripts/check_import_safety.py --package repository_manager --script scripts/security_contract.py --simulate-windows
-    python3 scripts/check_import_safety.py --package agent_utilities --exclude agent_utilities.some.heavy_optional_module
+    python3 scripts/check_import_safety.py --package agent_connector_sdk --exclude agent_connector_sdk.some.heavy_optional_module
 """
 
 from __future__ import annotations
@@ -450,7 +450,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--package",
         required=True,
-        help="top-level package/module name to walk, e.g. agent_utilities",
+        help="top-level package/module name to walk, e.g. agent_connector_sdk",
     )
     parser.add_argument(
         "--script",

@@ -62,7 +62,7 @@ rm_projects(action="validate_status", job_id="<id>", summary=true)
 ```
 Validate only two projects:
 ```
-rm_projects(action="validate", repositories="agent-utilities,gitlab-api")
+rm_projects(action="validate", repositories="agent-connector-sdk,gitlab-api")
 ```
 Dry-run a patch bump across the workspace:
 ```

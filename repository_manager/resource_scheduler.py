@@ -1,7 +1,7 @@
 """Unified weighted resource admission for Repository Manager.
 
 ``ResourceScheduler`` is intentionally an admission service, not a worker or a
-job queue.  A WorkItem is created and leased by graph-os; this module accepts a
+job queue.  A WorkItem is created and leased by arbora; this module accepts a
 leased request, chooses a live host, and attaches one durable reservation to
 that WorkItem through a native fenced port.  Consumers later release the
 reservation after their WorkItem transition.  No subprocess, Git operation,

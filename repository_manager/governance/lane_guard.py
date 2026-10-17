@@ -38,7 +38,7 @@ unmodified):
 
     python3 -m repository_manager.governance.lane_guard
 
-Moved from agent-utilities' ``scripts/check_lane_guard.py`` with the lane
+Moved from agent-connector-sdk' ``scripts/check_lane_guard.py`` with the lane
 arbitration it enforces.
 """
 
@@ -81,8 +81,8 @@ def _staged_files(tree: Path) -> list[str]:
 
 #: `[bumpversion:file:PATH]` and the KEYED form `[bumpversion:file(NAME):PATH]`.
 #: bump2version allows the same file to appear under several distinct keys
-#: (agent-utilities declares `compatibility-matrix.yml` twice -- once for its own
-#: version line, once for the `agent-utilities:` dependency entry), and the key
+#: (agent-connector-sdk declares `compatibility-matrix.yml` twice -- once for its own
+#: version line, once for the `agent-connector-sdk:` dependency entry), and the key
 #: is the only thing making those section names unique.
 _BUMPVERSION_SECTION = re.compile(r"^bumpversion:file(?:\([^)]*\))?:(?P<path>.+)$")
 #: bump2version config locations, the relocated ``.config/`` file first; a
@@ -102,7 +102,7 @@ def _bumpversion_files(tree: Path) -> set[str]:
        the declared sections alone can never match a real bump.
     2. The KEYED section form. Matching only the literal ``bumpversion:file:``
        prefix missed every ``[bumpversion:file(NAME):PATH]`` stanza; in
-       agent-utilities that was 8 of the 12 files a bump touches.
+       agent-connector-sdk that was 8 of the 12 files a bump touches.
 
     Together these made the "a pure version bump is allowed" carve-out
     unreachable in BOTH repos that have one, so `bump2version` -- which commits

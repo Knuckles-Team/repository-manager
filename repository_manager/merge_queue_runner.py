@@ -62,7 +62,7 @@ KNOWN_STATES = TERMINAL_STATES | {QUEUED_STATE}
 # those inputs must never become merge-queue targets even if a future manifest
 # projection happens to describe one of them.
 EXCLUDED_MANIFEST_COMPONENTS = frozenset({"open-source-libraries"})
-_WORKSPACE_ROOT_REFERENCE = "${AGENT_UTILITIES_WORKSPACE_ROOT}"
+_WORKSPACE_ROOT_REFERENCE = "${CONNECTOR_WORKSPACE_ROOT}"
 
 
 class MergeQueueRunnerError(RuntimeError):
@@ -180,9 +180,9 @@ def _manifest_workspace_root(
     if not isinstance(value, str) or not value.strip():
         raise MergeQueueRunnerError(f"{source}: manifest path must be absolute")
     expanded = value.strip()
-    if expanded in {_WORKSPACE_ROOT_REFERENCE, "$AGENT_UTILITIES_WORKSPACE_ROOT"}:
+    if expanded in {_WORKSPACE_ROOT_REFERENCE, "$CONNECTOR_WORKSPACE_ROOT"}:
         expanded = str(configured_root)
-    elif "${" in expanded or "$AGENT_UTILITIES_WORKSPACE_ROOT" in expanded:
+    elif "${" in expanded or "$CONNECTOR_WORKSPACE_ROOT" in expanded:
         raise MergeQueueRunnerError(
             f"{source}: manifest path contains an unresolved environment reference"
         )
@@ -1096,7 +1096,7 @@ def run_phased_push(
     )
     # The child is deliberately launched with an explicit workspace root. Make
     # the generated projection self-contained as well, so a canonical manifest
-    # using the portable ``${AGENT_UTILITIES_WORKSPACE_ROOT}`` reference does
+    # using the portable ``${CONNECTOR_WORKSPACE_ROOT}`` reference does
     # not depend on an ambient service environment variable.
     projected_manifest["path"] = str(root)
     repository = DeclaredRepository("phased-push", "phased-push", root)
@@ -1242,7 +1242,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--workspace-root",
-        default=os.environ.get("AGENT_UTILITIES_WORKSPACE_ROOT")
+        default=os.environ.get("CONNECTOR_WORKSPACE_ROOT")
         or os.environ.get("REPOSITORY_MANAGER_WORKSPACE")
         or str(Path.cwd()),
         help="canonical workspace root containing workspace.yml",

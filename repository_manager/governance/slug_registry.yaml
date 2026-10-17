@@ -16,7 +16,7 @@ version: 1
 
 slugs:
   # ── core framework + engine + frontends ──────────────────────────────────
-  agent-utilities: AU
+  agent-connector-sdk: AU
   epistemic-graph: EG
   universal-skills: US
   skill-graphs: SG

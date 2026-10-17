@@ -177,7 +177,7 @@ requires ("Remote target remains feature-gated; local is default").
 
 ## What remains out of scope for this lane
 
-- The installed remote worker **binary** itself (reads its WorkItem from graph-os, polls
+- The installed remote worker **binary** itself (reads its WorkItem from arbora, polls
   the cancellation marker, writes artifacts back) is a deployment artifact, not a Python
   module in this repository -- see the non-goals in the lane brief
   (`public tools, ... production deployment, or multi-replica controller`).

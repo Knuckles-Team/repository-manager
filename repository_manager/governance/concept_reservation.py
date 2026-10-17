@@ -5,7 +5,7 @@ CONCEPT:AU-OS.governance.cross-host-concept-reservation-authority
 The repository-local allocator remains the compatibility projection for
 ``docs/concept_reservations.d``.  It is deliberately *not* the authority for
 separate hosts: a git common directory and a filesystem lock stop being shared
-at that boundary.  This module defines the graph-os boundary that owns global
+at that boundary.  This module defines the arbora boundary that owns global
 concept uniqueness and supplies a fail-closed adapter over the engine's existing
 native ``CreateNodeIfAbsent`` and ``CompareAndSetNodeFields`` primitives.
 
@@ -39,7 +39,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol, Self
 
-from agent_utilities.security.persistence_privacy import persistence_reference
+from agent_connector_sdk.privacy_reference import persistence_reference
 
 from repository_manager.governance.concept_hierarchy import (
     is_valid_domain,
@@ -612,7 +612,7 @@ def reserve_next_numeric(
 
 @dataclass(frozen=True, slots=True)
 class ConceptReservationRecord:
-    """Durable authoritative claim returned by graph-os."""
+    """Durable authoritative claim returned by arbora."""
 
     reservation_id: str
     request: ConceptReservationRequest
@@ -907,7 +907,7 @@ class NativeConceptReservationPort(Protocol):
     ``GraphComputeEngine`` exposes the first two methods directly.  The
     adapter also accepts an epistemic-graph sync client (``engine.nodes``) and
     the backend's equivalent wrappers, which keeps this seam usable from the
-    graph-os MCP process without adding a second engine command.
+    arbora MCP process without adding a second engine command.
     """
 
     def create_node_if_absent(

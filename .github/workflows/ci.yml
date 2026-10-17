@@ -20,27 +20,31 @@ jobs:
   pre-commit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # The official spec-status gate verifies landing provenance from history.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: '1.4.2'
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Bootstrap
         run: scripts/bootstrap.sh
+      - name: Put the locked environment on PATH
+        # system-language hooks run `python`; it must be the bootstrapped .venv.
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - name: Prepare synthetic Compose environment
         run: install -m 600 scripts/fixtures/precommit-compose.env .env
       - name: Pre-commit gates
-        run: uvx pre-commit run --all-files --show-diff-on-failure
+        # The locked pre-commit, so system hooks resolve `python` to .venv.
+        run: .venv/bin/pre-commit run --all-files --show-diff-on-failure
         env:
           SKIP: no-commit-to-branch

@@ -1,6 +1,6 @@
 """Validate and safely mirror the canonical workspace manifest.
 
-The workspace root manifest is human-authored.  The Graph-OS XDG manifest is an
+The workspace root manifest is human-authored.  The Arbora XDG manifest is an
 exact-byte mirror and the packaged repository-manager seed is its portable
 projection; neither is a source of truth.  This module deliberately does not
 discover or mutate a workspace: callers provide the canonical source and may
@@ -44,7 +44,7 @@ _PRIVATE_IPV6_REFERENCE = re.compile(
     r"(?![0-9A-Fa-f:])"
 )
 _PORTABLE_ENVIRONMENT_REFERENCES = {
-    "AGENT_UTILITIES_WORKSPACE_ROOT",
+    "CONNECTOR_WORKSPACE_ROOT",
     "AGENT_UTILITIES_REPO_ORIGIN",
     "AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX",
 }
@@ -129,7 +129,7 @@ def default_runtime_manifest_path() -> Path:
 
     config_home = os.environ.get("XDG_CONFIG_HOME")
     base = Path(config_home).expanduser() if config_home else Path.home() / ".config"
-    return base / "agent-utilities" / "workspace.yml"
+    return base / "agent-connector-sdk" / "workspace.yml"
 
 
 def default_packaged_seed_path() -> Path:
@@ -325,7 +325,7 @@ def _portable_path(value: str, *, workspace_root: Path) -> str:
             "Canonical manifest contains an absolute path outside its workspace root"
         ) from exc
     suffix = relative.as_posix()
-    return "${AGENT_UTILITIES_WORKSPACE_ROOT}" + (f"/{suffix}" if suffix else "")
+    return "${CONNECTOR_WORKSPACE_ROOT}" + (f"/{suffix}" if suffix else "")
 
 
 def _portable_endpoint(value: str) -> str:

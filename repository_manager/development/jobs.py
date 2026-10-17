@@ -1,6 +1,6 @@
 """Durable repository job application service.
 
-RMDD-06 keeps the Repository Manager domain independent from the graph-os
+RMDD-06 keeps the Repository Manager domain independent from the arbora
 implementation.  :class:`RepositoryJobService` depends on the small
 ``RepositoryJobPort`` below; the production port delegates to the Agent
 Utilities repository WorkItem adapter, while tests use ``FakeRepositoryJobPort``.
@@ -815,7 +815,7 @@ def _translate_authority_error(
 
 
 class GraphRepositoryJobPort:
-    """Production adapter over the graph-os/AU repository WorkItem authority.
+    """Production adapter over the arbora/AU repository WorkItem authority.
 
     Imports are lazy so the service remains unit-testable without a graph
     client.  ``engine`` is the already-authenticated graph authority supplied
@@ -832,7 +832,9 @@ class GraphRepositoryJobPort:
 
     @staticmethod
     def _authority_module() -> Any:
-        from agent_utilities.orchestration import repository_work_item as authority
+        from repository_manager.eg_work_coordination import (
+            repository_work_items as authority,
+        )
 
         return authority
 

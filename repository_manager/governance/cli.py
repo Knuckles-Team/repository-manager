@@ -1,6 +1,6 @@
 """``repository-manager-governance`` — the lane and concept-ID command surface.
 
-Moved from ``agent-utilities lane …`` / ``agent-utilities concept …`` with the
+Moved from ``agent-connector-sdk lane …`` / ``agent-connector-sdk concept …`` with the
 modules it drives: lane arbitration
 (:mod:`repository_manager.governance.lanes`) and same-host concept-ID
 reservation (:mod:`repository_manager.governance.concept_allocator`). The verbs,
@@ -248,7 +248,7 @@ def _concept_reserve(
 def _concept(args: argparse.Namespace) -> dict[str, Any]:
     """Same-host compatibility concept reservation against the file ledger.
 
-    Separate-host callers must use graph-os' native concept authority; this
+    Separate-host callers must use arbora' native concept authority; this
     legacy CLI path is intentionally not advertised as globally atomic.
     """
     from repository_manager.governance import concept_allocator as ca

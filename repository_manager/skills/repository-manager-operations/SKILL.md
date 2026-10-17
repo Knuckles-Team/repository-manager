@@ -2,7 +2,7 @@
 name: repository-manager-operations
 skill_type: skill
 description: >-
-  Operate repository-manager through its governed MCP and GraphOS capabilities,
+  Operate repository-manager through its governed MCP and Arbora capabilities,
   including its development-lifecycle, lane, worktree, merge-queue, build, workspace
   validation/release, concept-coordination, and remote-worker-operations workflows
   (see references/catalog.md for the full, current list). Use when a request
@@ -12,7 +12,7 @@ description: >-
 
 # Repository Manager Operations
 
-Use the provider's governed MCP tools through GraphOS delegation.
+Use the provider's governed MCP tools through Arbora delegation.
 
 ## Workflow
 

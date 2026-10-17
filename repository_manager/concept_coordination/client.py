@@ -24,8 +24,8 @@ the action core a :class:`~repository_manager.concept_coordination.port.ConceptA
 authority (``ConceptReservationService``, ``NativeConceptReservationAuthority``,
 ``FixtureConceptReservationAuthority``, states
 reserved/materialized/landed/released/expired/tombstoned, fenced transitions,
-``reconcile_projection``) was never an ancestor of agent-utilities ``main`` as
-``agent_utilities/governance/concept_reservation.py`` — it has since moved, by
+``reconcile_projection``) was never an ancestor of agent-connector-sdk ``main`` as
+``agent_connector_sdk/governance/concept_reservation.py`` — it has since moved, by
 operator ruling, into this repository itself as
 :mod:`repository_manager.governance.concept_reservation` (repository-manager
 is the development-governance tool; see that package's ``__init__`` for the
@@ -40,7 +40,7 @@ that remains RMDD-16/RMDD-23 scope, not RMDD-17's ("central allocator
 internals" is a listed non-goal in the lane brief). :func:`resolve_default_authority`
 therefore still always refuses, but for the real, actionable reason (no live
 engine injected) rather than a now-permanently-false one (the module missing
-from an ``agent_utilities`` checkout it was deliberately moved out of).
+from an ``agent_connector_sdk`` checkout it was deliberately moved out of).
 """
 
 from __future__ import annotations

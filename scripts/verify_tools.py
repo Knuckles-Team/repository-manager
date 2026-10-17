@@ -3,7 +3,7 @@ import json
 import logging
 import os
 
-from agent_utilities.core.workspace import get_mcp_config_path
+from agent_connector_sdk.core.workspace import get_mcp_config_path
 from pydantic_ai.mcp import load_mcp_servers
 
 logging.basicConfig(level=logging.INFO)

@@ -61,7 +61,7 @@ tool (used below) vs. the 1:1 verbose actions.
 | `rm_worktree` | `add`, `list`, `remove`, `merge`, `sync`, `prune`, `bulk_add`, `audit`, `reset_branch` |
 
 ### Key parameters
-- `repo` — repo basename (e.g. `agent-utilities`) or absolute path. Omit for `list`/`prune` across all repos.
+- `repo` — repo basename (e.g. `agent-connector-sdk`) or absolute path. Omit for `list`/`prune` across all repos.
 - `branch` — the worktree branch (each session uses a distinct branch). Required for
   `add`/`remove`/`merge`/`sync`/`reset_branch`.
 - `base` — branch to fork from / sync against (default `main`); `into` — merge target for `merge`,
@@ -75,7 +75,7 @@ tool (used below) vs. the 1:1 verbose actions.
 ## Recipes
 Open a session worktree for one repo:
 ```
-rm_worktree(action="add", repo="agent-utilities", branch="feat/my-change", base="main")
+rm_worktree(action="add", repo="agent-connector-sdk", branch="feat/my-change", base="main")
 ```
 Audit the whole workspace (read-only), 21-day staleness threshold:
 ```
@@ -83,8 +83,8 @@ rm_worktree(action="audit", stale_days=21)
 ```
 Sync a worktree against main, then merge it back:
 ```
-rm_worktree(action="sync", repo="agent-utilities", branch="feat/my-change", strategy="rebase")
-rm_worktree(action="merge", repo="agent-utilities", branch="feat/my-change", into="main")
+rm_worktree(action="sync", repo="agent-connector-sdk", branch="feat/my-change", strategy="rebase")
+rm_worktree(action="merge", repo="agent-connector-sdk", branch="feat/my-change", into="main")
 ```
 Safely reclaim only merged worktrees:
 ```
@@ -92,7 +92,7 @@ rm_worktree(action="audit", prune_merged=true)
 ```
 Reset a worktree's branch pointer onto another target (e.g. after discarding a bad rebase):
 ```
-rm_worktree(action="reset_branch", repo="agent-utilities", branch="feat/my-change", into="main")
+rm_worktree(action="reset_branch", repo="agent-connector-sdk", branch="feat/my-change", into="main")
 ```
 
 ## Gotchas

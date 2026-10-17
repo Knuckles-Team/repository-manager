@@ -577,7 +577,7 @@ def _resolve_git_identity_root(resolved: Path) -> Path:
 
 
 def _find_workspace_root(identity_root: Path) -> Path | None:
-    configured = os.environ.get("AGENT_UTILITIES_WORKSPACE_ROOT")
+    configured = os.environ.get("CONNECTOR_WORKSPACE_ROOT")
     candidates = [Path(configured).expanduser().resolve()] if configured else []
     candidates.extend(
         parent

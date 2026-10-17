@@ -201,7 +201,7 @@ resources:
   # class has exactly one mechanism"; `uv_workspace.py` is a bootstrap-time
   # launcher that runs BEFORE the environment it prepares exists, so it
   # cannot safely import `repository_manager.governance.lanes` (circular, and
-  # it would risk resolving against whichever `agent_utilities` happens to be
+  # it would risk resolving against whichever `agent_connector_sdk` happens to be
   # on the ambient interpreter's path -- the "poisoned interpreter" trap `uv
   # run pytest` fell into). Classifying it `lease` here anyway would invite
   # `repository-manager-governance lane lease --resource heavy-lane-pool` to silently guard

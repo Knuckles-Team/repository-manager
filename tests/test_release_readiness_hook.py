@@ -19,7 +19,7 @@ def test_missing_scope_blocks_without_query(monkeypatch, scope):
 
 @pytest.mark.parametrize("ok,overridden,expected", [(True, False, 0), (False, False, 1), (True, True, 1)])
 def test_authoritative_verdict_without_override(monkeypatch, ok, overridden, expected):
-    monkeypatch.setattr(hook.readiness, "_resolve_fleet_packages", lambda *a: {"agent-utilities"})
+    monkeypatch.setattr(hook.readiness, "_resolve_fleet_packages", lambda *a: {"agent-connector-sdk"})
     report = SimpleNamespace(ok=ok, overridden=overridden)
     monkeypatch.setattr(hook.readiness, "check_tree", lambda *a: report)
     monkeypatch.setattr(hook.readiness, "_print_human_report", lambda r: None)
@@ -27,7 +27,7 @@ def test_authoritative_verdict_without_override(monkeypatch, ok, overridden, exp
 
 
 def test_index_errors_are_not_swallowed(monkeypatch):
-    monkeypatch.setattr(hook.readiness, "_resolve_fleet_packages", lambda *a: {"agent-utilities"})
+    monkeypatch.setattr(hook.readiness, "_resolve_fleet_packages", lambda *a: {"agent-connector-sdk"})
     def unavailable(*a):
         raise RuntimeError("index unavailable")
     monkeypatch.setattr(hook.readiness, "check_tree", unavailable)
