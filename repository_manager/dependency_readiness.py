@@ -71,18 +71,20 @@ earlier phase's package before it is actually on PyPI:
   that ``targets`` omitted. A hit there is a hard abort with a distinct
   ``TARGETS_INCOMPLETE`` reason — "something did depend on it and the barrier
   didn't know" is the real failure "nothing declared a constraint" was hiding.
-* **Partial-publish detection** (:class:`AvailableVersions`'s
-  ``partial_versions``, :data:`CheckStatus`'s ``"partial_publish"``). A
-  publish workflow uploads a wheel and an sdist as two separate requests; a
-  version whose Simple-API listing shows only one of the two is mid-publish,
-  not absent and not genuinely unsatisfiable — reporting it as plain
-  ``"unsatisfied"`` (today's behavior before this addition) is indistinguishable
-  from "will never be satisfiable", which is exactly the confusion the
-  2026-08-12 incident above turned on. ``"partial_publish"`` is reported as
-  its own :data:`CheckStatus` (still a *failure* for gating purposes — a
-  half-published release is not installable yet either) so the retry loop's
-  own logging can tell an operator "this is still uploading" apart from "this
-  was never going to work".
+* **The wheel rule** (pipelines ``PIPE-RELEASE-R008``; :class:`AvailableVersions`,
+  :data:`CheckStatus`). Consumers install wheels only, so a version counts as
+  available when the index holds a wheel compatible with the target
+  interpreter or platform. A missing sdist on such a version is the advisory
+  ``"sdist_missing"`` on a satisfied check, never a failure. A version with
+  only an sdist fails as ``"source_only"`` and one with no compatible wheel
+  fails as ``"no_compatible_wheel"``, unless the consumer names the package in
+  ``[tool.pipelines] allow-source-build`` (then an sdist counts).
+  ``"partial_publish"`` is a distinct, transient failure reported only while
+  the forge says that version's release run is still queued or in progress
+  (:func:`forge_release_run_probe`). Once the run has concluded, or when the
+  forge cannot say, the version is judged by the rule above. This replaces
+  an earlier rule that treated any version lacking either a wheel or an sdist
+  as mid-publish; a wheel-only release then failed forever.
 * **CI-run barrier** (:mod:`repository_manager.forge_status`). Before
   retrying a downstream repo's gate at all, :func:`await_gate_readiness` can
   ask the publishing repo's own forge (GitHub Actions / GitLab CI, via
@@ -116,7 +118,7 @@ import time
 import tomllib
 import warnings
 from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -127,6 +129,7 @@ import requests  # transitively pinned by agent-connector-sdk>=2.0.0 (requests>=
 import yaml  # type: ignore[import-untyped]
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import SpecifierSet
+from packaging.tags import Tag, sys_tags
 from packaging.utils import (
     InvalidSdistFilename,
     InvalidWheelFilename,
@@ -164,6 +167,11 @@ __all__ = [
     "IndexUnreachableError",
     "PackageUnknownError",
     "PyPISimpleIndexBackend",
+    "ReleaseRunProbe",
+    "SDIST_MISSING",
+    "allow_source_build",
+    "forge_release_run_probe",
+    "target_tags",
     "resolve_index_urls",
     "fleet_package_names",
     "declared_fleet_constraints",
@@ -236,33 +244,31 @@ class PackageUnknownError(IndexQueryError):
 class AvailableVersions:
     """What one index says is installable for one package, right now.
 
-    ``versions``/``latest`` are FULLY published releases only — both a wheel
-    AND an sdist present, non-yanked (see :func:`_version_file_summary`). Two
-    further buckets distinguish the reasons a version is NOT in ``versions``,
-    each needing a different remediation:
+    A version counts as available when the index holds a non-yanked wheel
+    that is compatible with the target interpreter or platform (pipelines
+    ``PIPE-RELEASE-R008``). Consumers install wheels only, so an sdist never
+    makes a version available by itself. The buckets:
 
-    * ``partial_versions`` — at least one non-yanked file exists, but not
-      both a wheel and an sdist. A real publish workflow uploads the two as
-      separate requests; a version caught mid-upload looks, to a naive
-      "does the version string appear at all" check, identical to a fully
-      published one — reported as ``"satisfied"`` when it may still be
-      seconds away from having its other half land, or identical to
-      "unsatisfied" when actually a live in-flight publish, not a failure.
-      Neither is correct; :func:`check_constraint` reports this bucket as
-      its own ``"partial_publish"`` :data:`CheckStatus`.
-    * ``yanked_versions`` — every file for the version is yanked (PEP 592).
-      Correctly excluded from ``versions``, but worth surfacing by name when
-      the version would otherwise have satisfied a constraint (see
-      :func:`check_constraint`'s ``yanked_but_would_match``), so an
-      ``"unsatisfied"`` verdict is explicable rather than a bare "nothing
-      available".
+    * ``versions``/``latest`` -- versions with a compatible wheel.
+    * ``sdist_missing_versions`` -- the subset of ``versions`` that has no
+      sdist. That is an advisory (``sdist_missing``), never a failure.
+    * ``source_only_versions`` -- a non-yanked sdist but no compatible wheel.
+      This is available only to a consumer that lists the package in its
+      ``[tool.pipelines] allow-source-build``.
+    * ``incompatible_versions`` -- wheels only, none compatible with the
+      target, and no sdist.
+    * ``yanked_versions`` -- every file for the version is yanked (PEP 592).
+      Surfaced by name when it would otherwise have satisfied a constraint
+      (see :func:`check_constraint`'s ``yanked_but_would_match``).
     """
 
     package: str
     index_url: str
     versions: list[str] = field(default_factory=list)  # sorted ascending
     latest: str | None = None
-    partial_versions: list[str] = field(default_factory=list)  # sorted ascending
+    sdist_missing_versions: list[str] = field(default_factory=list)
+    source_only_versions: list[str] = field(default_factory=list)
+    incompatible_versions: list[str] = field(default_factory=list)
     yanked_versions: list[str] = field(default_factory=list)  # sorted ascending
 
 
@@ -288,84 +294,106 @@ class IndexBackend(Protocol):
         ...
 
 
-def _version_from_filename(filename: str) -> tuple[str, bool] | None:
-    """``(version, is_wheel)`` parsed from one Simple-API filename, or
-    ``None`` when the filename is not a wheel/sdist this parser recognizes
-    (e.g. a legacy ``.egg``) — such files are skipped, never mis-attributed.
+def _version_from_filename(
+    filename: str,
+) -> tuple[str, frozenset[Tag] | None] | None:
+    """``(version, wheel_tags)`` parsed from one Simple-API filename.
+
+    ``wheel_tags`` is ``None`` for an sdist. Returns ``None`` when the
+    filename is neither a wheel nor an sdist this parser recognizes (e.g. a
+    legacy ``.egg``); such files are skipped, never mis-attributed.
     """
     try:
         _, version = parse_sdist_filename(filename)
-        return str(version), False
+        return str(version), None
     except InvalidSdistFilename:
         pass
     try:
-        _, version, _, _ = parse_wheel_filename(filename)
-        return str(version), True
+        _, version, _, tags = parse_wheel_filename(filename)
+        return str(version), frozenset(tags)
     except InvalidWheelFilename:
         return None
+
+
+def target_tags() -> frozenset[Tag]:
+    """The wheel tags the running (target) interpreter and platform accept."""
+    return frozenset(sys_tags())
 
 
 @dataclass
 class _VersionFiles:
     """Per-version file-kind/yanked summary — see :func:`_version_file_summary`."""
 
+    has_compatible_wheel: bool = False
     has_wheel: bool = False
     has_sdist: bool = False
     saw_file: bool = False
     saw_non_yanked: bool = False
 
-    @property
-    def fully_installable(self) -> bool:
-        return self.has_wheel and self.has_sdist and self.saw_non_yanked
+    def record(
+        self, wheel_tags: frozenset[Tag] | None, supported: frozenset[Tag]
+    ) -> None:
+        """Count one non-yanked file: an sdist (``None``) or a tagged wheel."""
+        self.saw_non_yanked = True
+        if wheel_tags is None:
+            self.has_sdist = True
+            return
+        self.has_wheel = True
+        self.has_compatible_wheel |= not wheel_tags.isdisjoint(supported)
 
     @property
-    def partial(self) -> bool:
-        """At least one non-yanked file, but not both a wheel and an sdist —
-        an in-flight (or permanently incomplete) publish, distinct from both
-        "fully installable" and "nothing here"."""
-        return self.saw_non_yanked and not self.fully_installable
+    def available(self) -> bool:
+        """A non-yanked wheel compatible with the target exists."""
+        return self.has_compatible_wheel
+
+    @property
+    def sdist_missing(self) -> bool:
+        """Available, but no sdist: the ``sdist_missing`` advisory."""
+        return self.available and not self.has_sdist
+
+    @property
+    def source_only(self) -> bool:
+        """An sdist but no compatible wheel: needs ``allow-source-build``."""
+        return self.has_sdist and not self.has_compatible_wheel
+
+    @property
+    def incompatible(self) -> bool:
+        """Wheels only, none compatible with the target, and no sdist."""
+        return self.has_wheel and not self.has_compatible_wheel and not self.has_sdist
 
     @property
     def all_yanked(self) -> bool:
         return self.saw_file and not self.saw_non_yanked
 
 
-def _version_file_summary(data: dict[str, Any]) -> dict[str, _VersionFiles]:
+def _version_file_summary(
+    data: dict[str, Any], supported_tags: frozenset[Tag] | None = None
+) -> dict[str, _VersionFiles]:
     """Per-version wheel/sdist/yanked summary parsed from one Simple-API
-    ``files`` list — extends the file-kind-blind, yanked-only version this
-    replaced (the previous ``_installable_versions``, which asked only "does
-    ANY non-yanked file exist for this version") with wheel-vs-sdist tracking
-    in the SAME single pass over ``files``, so a caller can additionally tell
-    "one file type published, the other still uploading" (:attr:`_VersionFiles
-    .partial` — a live, in-flight publish) apart from "fully published"
-    (:attr:`_VersionFiles.fully_installable`) and "nothing published, or
-    every file yanked" (:attr:`_VersionFiles.all_yanked`).
+    ``files`` list, in one pass.
 
-    Per-file ``yanked`` status (PEP 592) still wins over anything else: a
-    yanked wheel/sdist never counts toward either bucket. Returns an empty
-    dict when ``files`` parses to nothing usable (e.g. a minimal PEP 691
-    response with no ``files`` key) — :func:`PyPISimpleIndexBackend
-    .available_versions` falls back to the top-level ``versions`` field in
-    that case, exactly as the function this replaced did, so a working index
-    is never reported as empty just because this parser couldn't read
-    filenames.
+    A wheel counts as compatible when one of its tags is in
+    ``supported_tags`` (default: :func:`target_tags`). Per-file ``yanked``
+    status (PEP 592) wins over anything else: a yanked file never counts.
+    Returns an empty dict when ``files`` parses to nothing usable (e.g. a
+    minimal PEP 691 response with no ``files`` key);
+    :meth:`PyPISimpleIndexBackend.available_versions` then falls back to the
+    top-level ``versions`` field, so a working index is never reported as
+    empty just because this parser couldn't read filenames.
     """
+    supported = target_tags() if supported_tags is None else supported_tags
     per_version: dict[str, _VersionFiles] = {}
     for entry in data.get("files", []) or []:
         filename = entry.get("filename", "")
         parsed = _version_from_filename(filename)
         if parsed is None:
             continue
-        version, is_wheel = parsed
+        version, wheel_tags = parsed
         bucket = per_version.setdefault(version, _VersionFiles())
         bucket.saw_file = True
         if bool(entry.get("yanked")):
             continue
-        bucket.saw_non_yanked = True
-        if is_wheel:
-            bucket.has_wheel = True
-        else:
-            bucket.has_sdist = True
+        bucket.record(wheel_tags, supported)
     return per_version
 
 
@@ -431,33 +459,35 @@ def _available_versions_from_fallback(
     )
 
 
+def _sorted_versions(
+    summary: dict[str, _VersionFiles], keep: Callable[[_VersionFiles], bool]
+) -> list[str]:
+    found: list[Version] = []
+    for raw, info in summary.items():
+        if not keep(info):
+            continue
+        try:
+            found.append(Version(raw))
+        except InvalidVersion:
+            continue
+    return [str(v) for v in sorted(found)]
+
+
 def _available_versions_from_summary(
     summary: dict[str, _VersionFiles], package: str, index_url: str
 ) -> AvailableVersions:
-    full: list[Version] = []
-    partial: list[Version] = []
-    yanked: list[Version] = []
-    for raw, info in summary.items():
-        try:
-            parsed_version = Version(raw)
-        except InvalidVersion:
-            continue
-        if info.fully_installable:
-            full.append(parsed_version)
-        elif info.partial:
-            partial.append(parsed_version)
-        elif info.all_yanked:
-            yanked.append(parsed_version)
-    full.sort()
-    partial.sort()
-    yanked.sort()
+    available = _sorted_versions(summary, lambda info: info.available)
     return AvailableVersions(
         package=package,
         index_url=index_url,
-        versions=[str(v) for v in full],
-        latest=str(full[-1]) if full else None,
-        partial_versions=[str(v) for v in partial],
-        yanked_versions=[str(v) for v in yanked],
+        versions=available,
+        latest=available[-1] if available else None,
+        sdist_missing_versions=_sorted_versions(
+            summary, lambda info: info.sdist_missing
+        ),
+        source_only_versions=_sorted_versions(summary, lambda info: info.source_only),
+        incompatible_versions=_sorted_versions(summary, lambda info: info.incompatible),
+        yanked_versions=_sorted_versions(summary, lambda info: info.all_yanked),
     )
 
 
@@ -469,7 +499,15 @@ class PyPISimpleIndexBackend:
     also work against a GitLab PyPI package-registry proxy, devpi, or any other
     compliant private index — only the base URL differs, and that is resolved
     by :func:`resolve_index_urls`, never hardcoded here.
+
+    ``supported_tags`` selects the target interpreter/platform whose wheels
+    count as compatible; the default is the running interpreter's.
     """
+
+    def __init__(self, supported_tags: Iterable[Tag] | None = None) -> None:
+        self.supported_tags = (
+            frozenset(supported_tags) if supported_tags is not None else None
+        )
 
     def available_versions(
         self, package: str, *, index_url: str, timeout: float = 10.0
@@ -477,7 +515,7 @@ class PyPISimpleIndexBackend:
         name = canonicalize_name(package)
         url = f"{index_url.rstrip('/')}/{name}/"
         data = _fetch_simple_json(package, index_url, url, timeout)
-        summary = _version_file_summary(data)
+        summary = _version_file_summary(data, self.supported_tags)
         if not summary:
             return _available_versions_from_fallback(data, package, index_url)
         return _available_versions_from_summary(summary, package, index_url)
@@ -2184,30 +2222,44 @@ def check_phase_direction_here(
 CheckStatus = Literal[
     "satisfied",
     "unsatisfied",
+    "source_only",
+    "no_compatible_wheel",
     "partial_publish",
     "index_unreachable",
     "package_unknown",
     "invalid_metadata",
 ]
 
+#: The advisory a satisfied check carries when its matching version has a
+#: compatible wheel but no sdist. Never a failure (pipelines PIPE-RELEASE-R008).
+SDIST_MISSING = "sdist_missing"
+
+#: ``(package, version) -> RunState`` of the release run that publishes that
+#: version, as the forge reports it (:mod:`repository_manager.forge_status`).
+ReleaseRunProbe = Callable[[str, str], str]
+
+_RUN_IN_PROGRESS = frozenset({"queued", "in_progress"})
+
 
 @dataclass
 class ConstraintCheck:
     """The verdict for one declared constraint against the configured index/es.
 
-    ``status="partial_publish"`` is a distinct FAILURE state (see
-    :attr:`satisfied`) from ``"unsatisfied"`` — a version exists that would
-    satisfy the specifier, but only a wheel or an sdist has been uploaded so
-    far, never both (:attr:`_VersionFiles.partial`). It still blocks a push
-    (the version is not genuinely installable yet), but names a different
-    remediation: wait for the other half of the publish to land, not "this
-    constraint may never be satisfiable".
+    ``"satisfied"`` means a matching version has a wheel compatible with the
+    target, or the consumer allows a source build and the version has an
+    sdist. A satisfied check may carry the advisory ``"sdist_missing"`` in
+    ``advisories``; that never fails the gate.
+
+    A matching version without a compatible wheel fails as ``"source_only"``
+    (an sdist only) or ``"no_compatible_wheel"``. It reports as
+    ``"partial_publish"`` instead only while the forge reports that version's
+    release run as still in progress. That is a transient state: retry, do
+    not treat it as unsatisfiable. Once the run has concluded, or when the
+    forge cannot say, the version is judged by the wheel rule above.
 
     ``yanked_but_would_match`` lists any version that WOULD have satisfied
     the specifier but was excluded because every one of its files is yanked
-    (PEP 592) — folded into the ``"unsatisfied"`` ``detail`` line so that
-    verdict is explicable rather than a bare "nothing available" when a
-    matching-looking version was in fact seen and deliberately excluded.
+    (PEP 592).
     """
 
     package: str
@@ -2219,6 +2271,8 @@ class ConstraintCheck:
     matching_version: str | None = None
     latest_available: str | None = None
     partial_publish_version: str | None = None
+    unavailable_version: str | None = None
+    advisories: list[str] = field(default_factory=list)
     yanked_but_would_match: list[str] = field(default_factory=list)
     detail: str = ""
 
@@ -2238,7 +2292,8 @@ class _ConstraintCheckState:
     best_latest: str | None = None
     saw_reachable_index: bool = False
     unreachable_errors: list[str] = field(default_factory=list)
-    best_partial: tuple[str, str] | None = None  # (version, index_url)
+    # (version, index_url, status) of the best matching version without a wheel.
+    best_unavailable: tuple[str, str, CheckStatus] | None = None
     yanked_but_would_match: list[str] = field(default_factory=list)
 
 
@@ -2247,6 +2302,21 @@ class _IndexFetchOptions:
     timeout: float
     retries: int
     retry_delay_s: float
+
+
+@dataclass(frozen=True)
+class _WheelRule:
+    """The consumer side of the rule: its source-build allow-list and probe."""
+
+    allow_source_build: frozenset[str] = frozenset()
+    release_run_state: ReleaseRunProbe | None = None
+
+    @classmethod
+    def build(cls, names: Collection[str], probe: ReleaseRunProbe | None) -> _WheelRule:
+        return cls(frozenset(map(canonicalize_name, names)), probe)
+
+    def allows_source(self, package: str) -> bool:
+        return canonicalize_name(package) in self.allow_source_build
 
 
 def _fetch_available_versions(
@@ -2279,19 +2349,51 @@ def _fetch_available_versions(
     return None, last_error
 
 
+def _best_match(versions: Iterable[str], specifier: SpecifierSet) -> str | None:
+    matches = [Version(v) for v in versions if specifier.contains(v, prereleases=False)]
+    return str(max(matches)) if matches else None
+
+
+def _best_available(
+    package: str,
+    available: AvailableVersions,
+    specifier: SpecifierSet,
+    rule: _WheelRule,
+) -> tuple[str | None, str | None]:
+    """``(best match, best wheel match)``; an allowed sdist-only version counts."""
+    best_wheel = _best_match(available.versions, specifier)
+    pool = list(available.versions)
+    if rule.allows_source(package):
+        pool.extend(available.source_only_versions)
+    return _best_match(pool, specifier), best_wheel
+
+
+def _satisfied_note(
+    best_match: str, best_wheel: str | None, available: AvailableVersions
+) -> tuple[list[str], str]:
+    if best_match != best_wheel:
+        return [], " as an sdist (allow-source-build)"
+    if best_match in available.sdist_missing_versions:
+        return [SDIST_MISSING], (
+            f" (advisory {SDIST_MISSING}: the release has a wheel but no sdist)"
+        )
+    return [], ""
+
+
 def _record_satisfied_match(
     constraint: DeclaredConstraint,
     index_url: str,
     state: _ConstraintCheckState,
     available: AvailableVersions,
     specifier: SpecifierSet,
+    rule: _WheelRule,
 ) -> ConstraintCheck | None:
-    matches = [
-        v for v in available.versions if specifier.contains(v, prereleases=False)
-    ]
-    if not matches:
+    best_match, best_wheel = _best_available(
+        constraint.package, available, specifier, rule
+    )
+    if best_match is None:
         return None
-    best_match = str(max(Version(v) for v in matches))
+    advisories, note = _satisfied_note(best_match, best_wheel, available)
     return ConstraintCheck(
         package=constraint.package,
         raw_requirement=constraint.raw_requirement,
@@ -2301,30 +2403,30 @@ def _record_satisfied_match(
         index_urls_checked=state.checked,
         matching_version=best_match,
         latest_available=available.latest,
+        advisories=advisories,
         detail=(
             f"{constraint.package} {constraint.specifier or '(any)'}: "
-            f"{best_match} satisfies it, available from {index_url}"
+            f"{best_match} satisfies it, available from {index_url}{note}"
         ),
     )
 
 
-def _accumulate_partial_and_yanked(
+def _accumulate_unavailable_and_yanked(
     state: _ConstraintCheckState,
     available: AvailableVersions,
     specifier: SpecifierSet,
     index_url: str,
 ) -> None:
-    if state.best_partial is None:
-        partial_matches = [
-            v
-            for v in available.partial_versions
-            if specifier.contains(v, prereleases=False)
-        ]
-        if partial_matches:
-            state.best_partial = (
-                str(max(Version(v) for v in partial_matches)),
-                index_url,
-            )
+    for versions, status in (
+        (available.source_only_versions, "source_only"),
+        (available.incompatible_versions, "no_compatible_wheel"),
+    ):
+        match = _best_match(versions, specifier)
+        if match is None:
+            continue
+        best = state.best_unavailable
+        if best is None or Version(match) > Version(best[0]):
+            state.best_unavailable = (match, index_url, cast(CheckStatus, status))
 
     yanked_matches = [
         v
@@ -2342,6 +2444,7 @@ def _check_index_for_constraint(
     options: _IndexFetchOptions,
     specifier: SpecifierSet,
     state: _ConstraintCheckState,
+    rule: _WheelRule,
 ) -> ConstraintCheck | None:
     """Check one index; updates ``state`` in place.
 
@@ -2367,12 +2470,12 @@ def _check_index_for_constraint(
         state.best_latest = available.latest
 
     satisfied = _record_satisfied_match(
-        constraint, index_url, state, available, specifier
+        constraint, index_url, state, available, specifier, rule
     )
     if satisfied is not None:
         return satisfied
 
-    _accumulate_partial_and_yanked(state, available, specifier, index_url)
+    _accumulate_unavailable_and_yanked(state, available, specifier, index_url)
     return None
 
 
@@ -2393,29 +2496,59 @@ def _index_unreachable_result(
     )
 
 
-def _partial_publish_result(
-    constraint: DeclaredConstraint, state: _ConstraintCheckState
+def _release_run_state(rule: _WheelRule, package: str, version: str) -> str:
+    """The forge's run state for the release of ``version``, or ``unknown``."""
+    if rule.release_run_state is None:
+        return "unknown"
+    try:
+        return str(rule.release_run_state(package, version))
+    except Exception as exc:  # noqa: BLE001 - a probe failure degrades, never blocks
+        logger.warning("release-run probe failed for %s %s: %s", package, version, exc)
+        return "unknown"
+
+
+def _unavailable_result(
+    constraint: DeclaredConstraint, state: _ConstraintCheckState, rule: _WheelRule
 ) -> ConstraintCheck:
-    assert state.best_partial is not None
-    partial_version, partial_index_url = state.best_partial
+    assert state.best_unavailable is not None
+    version, index_url, status = state.best_unavailable
+    run_state = _release_run_state(rule, constraint.package, version)
+    in_progress = run_state in _RUN_IN_PROGRESS
+    what = (
+        "has only an sdist"
+        if status == "source_only"
+        else "has no wheel compatible with the target interpreter or platform"
+    )
+    if in_progress:
+        detail = (
+            f"{constraint.package} {constraint.specifier or '(any)'}: "
+            f"{version} would satisfy it but {what} on {index_url} yet, and its "
+            f"release run is still {run_state}; this is a publish in flight, "
+            "retry rather than treating it as a hard failure."
+        )
+    else:
+        fix = (
+            f"; publish a compatible wheel, or add {constraint.package!r} to "
+            "[tool.pipelines] allow-source-build"
+            if status == "source_only"
+            else "; publish a wheel for the target"
+        )
+        detail = (
+            f"{constraint.package} {constraint.specifier or '(any)'} (from "
+            f"{constraint.declared_by}): {version} {what} on {index_url}{fix}."
+        )
     return ConstraintCheck(
         package=constraint.package,
         raw_requirement=constraint.raw_requirement,
         specifier=constraint.specifier,
         declared_by=constraint.declared_by,
-        status="partial_publish",
+        status="partial_publish" if in_progress else status,
         index_urls_checked=state.checked,
         latest_available=state.best_latest,
-        partial_publish_version=partial_version,
+        partial_publish_version=version if in_progress else None,
+        unavailable_version=version,
         yanked_but_would_match=sorted(state.yanked_but_would_match, key=Version),
-        detail=(
-            f"{constraint.package} {constraint.specifier or '(any)'}: "
-            f"{partial_version} would satisfy it, but only a wheel OR an "
-            f"sdist has been uploaded to {partial_index_url} so far (not "
-            "both) — this is a publish still in flight, not an "
-            "unsatisfiable constraint; retry rather than treating it as "
-            "a hard failure."
-        ),
+        detail=detail,
     )
 
 
@@ -2456,22 +2589,27 @@ def check_constraint(
     timeout: float = 10.0,
     retries: int = 2,
     retry_delay_s: float = 3.0,
+    allow_source_build: Collection[str] = (),
+    release_run_state: ReleaseRunProbe | None = None,
 ) -> ConstraintCheck:
     """Is ``constraint`` satisfiable from any of ``index_urls`` right now?
 
     Tries each index in order (matching resolver precedence: the first index
     with the package wins). A brief retry (``retries`` attempts,
     ``retry_delay_s`` apart) absorbs the publish-but-not-yet-CDN-visible
-    window — a version that was just uploaded and has not finished propagating
-    reads as transiently unreachable/absent, not as a hard failure, without
-    this retry.
+    window.
+
+    A version is available when it has a wheel compatible with the target
+    (see :class:`AvailableVersions`). ``allow_source_build`` names the
+    packages for which an sdist-only version also counts.
+    ``release_run_state`` reports the forge's run state for a version's
+    release; only a ``queued``/``in_progress`` run turns an unavailable
+    match into ``"partial_publish"``.
 
     Fails closed: if every configured index is unreachable, the verdict is
     ``"index_unreachable"`` (never silently treated as satisfied). If at least
     one index was reached but none had a satisfying version, the verdict is
-    ``"unsatisfied"`` and ``latest_available`` names what IS published, so the
-    message states the package, the declared constraint, and what's actually
-    available — never just "failed".
+    ``"unsatisfied"`` and ``latest_available`` names what IS published.
     """
     if isinstance(constraint, InvalidDependencyMetadata):
         return ConstraintCheck(
@@ -2482,13 +2620,15 @@ def check_constraint(
             status="invalid_metadata",
             detail=constraint.detail,
         )
+    rule = _WheelRule.build(allow_source_build, release_run_state)
     return _check_declared_constraint(
         constraint,
         index_urls=index_urls,
         backend=backend,
-        timeout=timeout,
-        retries=retries,
-        retry_delay_s=retry_delay_s,
+        options=_IndexFetchOptions(
+            timeout=timeout, retries=retries, retry_delay_s=retry_delay_s
+        ),
+        rule=rule,
     )
 
 
@@ -2497,19 +2637,16 @@ def _check_declared_constraint(
     *,
     index_urls: Sequence[str],
     backend: IndexBackend | None,
-    timeout: float,
-    retries: int,
-    retry_delay_s: float,
+    options: _IndexFetchOptions,
+    rule: _WheelRule,
 ) -> ConstraintCheck:
     backend = backend or PyPISimpleIndexBackend()
     specifier = (
         SpecifierSet(constraint.specifier) if constraint.specifier else SpecifierSet()
     )
-
-    options = _IndexFetchOptions(
-        timeout=timeout, retries=retries, retry_delay_s=retry_delay_s
+    return _scan_constraint_indexes(
+        constraint, index_urls, backend, options, specifier, rule
     )
-    return _scan_constraint_indexes(constraint, index_urls, backend, options, specifier)
 
 
 def _scan_constraint_indexes(
@@ -2518,25 +2655,25 @@ def _scan_constraint_indexes(
     backend: IndexBackend,
     options: _IndexFetchOptions,
     specifier: SpecifierSet,
+    rule: _WheelRule,
 ) -> ConstraintCheck:
     state = _ConstraintCheckState()
     for index_url in index_urls:
         result = _check_index_for_constraint(
-            constraint, index_url, backend, options, specifier, state
+            constraint, index_url, backend, options, specifier, state, rule
         )
         if result is not None:
             return result
-
-    return _constraint_failure_result(constraint, state)
+    return _constraint_failure_result(constraint, state, rule)
 
 
 def _constraint_failure_result(
-    constraint: DeclaredConstraint, state: _ConstraintCheckState
+    constraint: DeclaredConstraint, state: _ConstraintCheckState, rule: _WheelRule
 ) -> ConstraintCheck:
     if not state.saw_reachable_index:
         return _index_unreachable_result(constraint, state)
-    if state.best_partial is not None:
-        return _partial_publish_result(constraint, state)
+    if state.best_unavailable is not None:
+        return _unavailable_result(constraint, state, rule)
     return _unsatisfied_result(constraint, state)
 
 
@@ -2617,28 +2754,99 @@ class ReadinessReport:
         }
 
 
+def allow_source_build(repo_path: str | Path) -> frozenset[str]:
+    """The consumer's ``[tool.pipelines] allow-source-build`` names, canonical.
+
+    Mirrors the pipelines publish guard: each entry is an exact distribution
+    name; a wildcard such as ``:all:`` is ignored with a warning, never
+    widened to every package.
+    """
+    pyproject = Path(repo_path) / _PYPROJECT_NAME
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return frozenset()
+    raw = data.get("tool", {}).get("pipelines", {}).get("allow-source-build", [])
+    if not isinstance(raw, list):
+        logger.warning("%s: allow-source-build must be a list; ignored", pyproject)
+        return frozenset()
+    names: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, str) or not re.fullmatch(r"[A-Za-z0-9._-]+", entry):
+            logger.warning("%s: allow-source-build entry %r ignored", pyproject, entry)
+            continue
+        names.add(canonicalize_name(entry))
+    return frozenset(names)
+
+
+def forge_release_run_probe(repo_path: str | Path) -> ReleaseRunProbe | None:
+    """A probe asking the consumer's own forge for a dependency's release run.
+
+    Fleet packages publish from a repository of the same name under the same
+    owner as the consumer, tagged ``v<version>``. The probe is consulted only
+    when a matching version has no compatible wheel. Any failure, including no
+    forge client, reads as ``"unknown"`` and the wheel rule decides.
+    """
+    checkout = _git_toplevel(Path(repo_path).resolve())
+    remotes = _git_remote_urls_preferring_origin(checkout) if checkout else []
+    for remote in remotes:
+        owner_repo = forge_status.owner_repo_from_remote(remote)
+        if owner_repo is not None:
+            return _forge_probe(forge_status.backend_for_remote(remote), owner_repo[0])
+    return None
+
+
+def _forge_probe(backend: forge_status.ForgeBackend, owner: str) -> ReleaseRunProbe:
+    def probe(package: str, version: str) -> str:
+        return backend.latest_run_for_ref(
+            owner, canonicalize_name(package), f"v{version}"
+        ).state
+
+    return probe
+
+
+def _check_tree_constraints(
+    repo: Path,
+    backend: IndexBackend | None,
+    timeout: float,
+    release_run_state: ReleaseRunProbe | None,
+) -> list[ConstraintCheck]:
+    index_urls = resolve_index_urls(repo)
+    allowed = allow_source_build(repo)
+    probe = release_run_state or forge_release_run_probe(repo)
+    return [
+        check_constraint(
+            c,
+            index_urls=index_urls,
+            backend=backend,
+            timeout=timeout,
+            allow_source_build=allowed,
+            release_run_state=probe,
+        )
+        for c in declared_fleet_constraints(repo)
+    ]
+
+
 def check_tree(
     path: str | Path | None = None,
     *,
     fleet_packages: set[str] | None = None,
     backend: IndexBackend | None = None,
     timeout: float = 10.0,
+    release_run_state: ReleaseRunProbe | None = None,
 ) -> ReadinessReport:
     """Layer 1: is every intra-fleet constraint THIS repo declares satisfiable?
 
     Mirrors :func:`repository_manager.parse_gate.check_tree`'s shape (a report
     dataclass, mutates nothing) so it slots into the same pre-commit-hook
-    convention. Honors :data:`OVERRIDE_ENV_VAR` — never a silent skip: an
+    convention. Reads the repo's ``[tool.pipelines] allow-source-build`` and,
+    unless ``release_run_state`` is given, asks the repo's forge for in-progress
+    release runs (:func:`forge_release_run_probe`). Honors :data:`OVERRIDE_ENV_VAR` — never a silent skip: an
     override still runs every check, still reports every failure, and prints +
     audit-logs the bypass loudly before returning ``ok=True``.
     """
     repo = Path(path or Path.cwd())
-    index_urls = resolve_index_urls(repo)
-    constraints = declared_fleet_constraints(repo)
-    checks = [
-        check_constraint(c, index_urls=index_urls, backend=backend, timeout=timeout)
-        for c in constraints
-    ]
+    checks = _check_tree_constraints(repo, backend, timeout, release_run_state)
     failures = [c for c in checks if not c.satisfied]
     ok = not failures
 
@@ -3221,12 +3429,18 @@ def dispatch(action: str, **kwargs: Any) -> dict[str, Any]:
     return handler(kwargs)
 
 
+def _print_check(check: ConstraintCheck) -> None:
+    mark = "OK" if check.satisfied else check.status.upper()
+    print(f"  [{mark}] {check.detail}")
+    for advisory in check.advisories:
+        print(f"  [ADVISORY {advisory}] {check.package} {check.matching_version}")
+
+
 def _print_human_report(report: Any) -> None:
     if not report.checks:
         print("dependency-readiness: no intra-fleet constraints declared here")
     for c in report.checks:
-        mark = "OK" if c.satisfied else c.status.upper()
-        print(f"  [{mark}] {c.detail}")
+        _print_check(c)
     print(
         "OK"
         if report.ok and not report.overridden

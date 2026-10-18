@@ -52,11 +52,17 @@
     {
       "id": "RM-RELEASE-04",
       "title": "Dependency-ordered execution with trusted gating",
-      "delivery_state": "LANDED",
+      "delivery_state": "VERIFIED",
       "landed_in": [
         "c930dfd5c01a"
       ],
-      "verified_by": []
+      "verified_by": [
+        "tests/test_dependency_readiness.py:1006",
+        "tests/test_dependency_readiness.py:1017",
+        "tests/test_dependency_readiness.py:1024",
+        "tests/test_dependency_readiness.py:1042",
+        "tests/test_dependency_readiness.py:1051"
+      ]
     },
     {
       "id": "RM-RELEASE-05",

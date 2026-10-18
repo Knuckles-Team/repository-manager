@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repository-manager"
-version = "3.5.0"
+version = "3.5.1"
 description = "Manage your git projects"
 readme = "README.md"
 classifiers = [ "Development Status :: 5 - Production/Stable", "License :: Public Domain", "Environment :: Console", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3",]
 requires-python = ">=3.12,<3.15"
-dependencies = [ "agent-connector-sdk[mcp]>=0.3.0,<1.0.0", "psutil>=7.2.2", "requests>=2.34.2",]
+dependencies = [ "agent-connector-sdk[mcp]>=0.3.8,<1.0.0", "psutil>=7.2.2", "requests>=2.34.2",]
 [[project.authors]]
 name = "Project Maintainers"
 email = "maintainers@users.noreply.github.com"
@@ -19,12 +19,12 @@ text = "MIT"
 
 [project.optional-dependencies]
 mcp = [
-    "agent-connector-sdk[mcp]>=0.3.0,<1.0.0"]
+    "agent-connector-sdk[mcp]>=0.3.8,<1.0.0"]
 
 all = [
     "pre-commit>=4.7.0",
     "bump2version>=1.0.1",
-    "agent-connector-sdk[mcp]>=0.3.0,<1.0.0"
+    "agent-connector-sdk[mcp]>=0.3.8,<1.0.0"
 ]
 
 test = [
