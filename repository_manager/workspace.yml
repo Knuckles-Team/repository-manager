@@ -152,7 +152,7 @@ subdirectories:
             policies, and system log.
         - url: https://github.com/Knuckles-Team/openbao-mcp.git
           description: OpenBao Secrets Engine MCP Server for Agentic AI!
-        - url: https://github.com/Knuckles-Team/opensearch-mcp.git
+        - url: https://github.com/Knuckles-Team/lucerna-mcp.git
           description: OpenSearch API + MCP Server + A2A Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/owncast-agent.git
           description: Agent for interacting with Owncast API
@@ -226,7 +226,7 @@ subdirectories:
         - url: https://github.com/Knuckles-Team/wger-agent.git
           description: Wger Workout Manager — exercise database, workout routines,
             nutrition plans, body measurements, and progress tracking.
-        - url: https://github.com/Knuckles-Team/market-data-mcp.git
+        - url: https://github.com/Knuckles-Team/bellwether-mcp.git
           description: Crypto discovery/caps (CoinMarketCap), Fed macro series
             with point-in-time vintages (FRED/ALFRED), and the FOMC decision
             calendar. MCP Server for Agentic AI!
@@ -609,7 +609,7 @@ selectors:
     - agent-packages/agents/objectstore-mcp
     - agent-packages/agents/okta-agent
     - agent-packages/agents/openbao-mcp
-    - agent-packages/agents/opensearch-mcp
+    - agent-packages/agents/lucerna-mcp
     - agent-packages/agents/owncast-agent
     - agent-packages/agents/plane-agent
     - agent-packages/agents/portainer-agent
@@ -639,7 +639,7 @@ selectors:
     - agent-packages/agents/vector-mcp
     - agent-packages/agents/vaultwarden-mcp
     - agent-packages/agents/wger-agent
-    - agent-packages/agents/market-data-mcp
+    - agent-packages/agents/bellwether-mcp
     - agent-packages/agents/world-reference-mcp
   service-codebases:
     include:
