@@ -245,10 +245,20 @@ def test_long_gate_lease_ttl_and_deadline_receipts_are_observable(
     assert "merge_queue_lease" in caplog.text
 
 
+def _cargo_runs() -> bool:
+    """Whether cargo is installed AND executes (a host guard may refuse it)."""
+    if shutil.which("cargo") is None:
+        return False
+    try:
+        return subprocess.run(["cargo", "--version"], capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # THE GENERICITY PROOF — a Rust repository, gated by cargo, end to end
 # ---------------------------------------------------------------------------
-@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is not installed")
+@pytest.mark.skipif(not _cargo_runs(), reason="cargo is not installed or not runnable here")
 def test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate(tmp_path: Path) -> None:
     """A cargo repo lands through the SAME queue agent-connector-sdk uses with pytest.
 
@@ -325,7 +335,7 @@ def test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate(tmp_path: Path) -
     assert "type error" not in log
 
 
-@pytest.mark.skipif(shutil.which("cargo") is None, reason="cargo is not installed")
+@pytest.mark.skipif(not _cargo_runs(), reason="cargo is not installed or not runnable here")
 def test_the_cargo_gate_is_differential_not_absolute(tmp_path: Path) -> None:
     """A candidate touching an ALREADY-BROKEN crate still lands — behaviour 1.
 

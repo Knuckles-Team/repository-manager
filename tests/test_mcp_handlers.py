@@ -168,7 +168,7 @@ async def test_mcp_rm_git_tool(tmp_path):
     """Test all actions and parameter checks of rm_git tool."""
     mcp, _, _, _ = get_mcp_instance()
     tools = await mcp.list_tools()
-    rm_git = next(t for t in tools if t.name == "rm_git")
+    rm_git = {t.name: t for t in tools}
 
     # Mock Git Instance
     mock_git = MagicMock()
@@ -189,8 +189,7 @@ async def test_mcp_rm_git_tool(tmp_path):
 
     with patch("repository_manager.mcp_server.get_git_instance", return_value=mock_git):
         # 1. Legacy raw action is permanently retired, with or without a command.
-        res = await rm_git.fn(
-            action="raw",
+        res = await rm_git["rm_git_raw"].fn(
             command=None,
             path=None,
             threads=None,
@@ -202,8 +201,7 @@ async def test_mcp_rm_git_tool(tmp_path):
         assert "permanently retired" in res.error.message
 
         # 2. No environment opt-in can re-enable arbitrary host commands.
-        res = await rm_git.fn(
-            action="raw",
+        res = await rm_git["rm_git_raw"].fn(
             command="git status",
             path=None,
             threads=None,
@@ -216,8 +214,7 @@ async def test_mcp_rm_git_tool(tmp_path):
         mock_git.git_action.assert_not_called()
 
         # 4. Action: clone
-        res = await rm_git.fn(
-            action="clone",
+        res = await rm_git["rm_git_clone"].fn(
             command=None,
             path=None,
             threads=None,
@@ -229,8 +226,7 @@ async def test_mcp_rm_git_tool(tmp_path):
         assert res["status"] == "submitted"
 
         # 3b. Action: clone with custom projects
-        res = await rm_git.fn(
-            action="clone",
+        res = await rm_git["rm_git_clone"].fn(
             command=None,
             path=None,
             threads=None,
@@ -258,8 +254,7 @@ async def test_mcp_rm_git_tool(tmp_path):
         mock_git.clone_projects.assert_any_call(projects=expected)
 
         # 4. Action: pull
-        res = await rm_git.fn(
-            action="pull",
+        res = await rm_git["rm_git_pull"].fn(
             command=None,
             path=None,
             threads=None,
@@ -271,8 +266,7 @@ async def test_mcp_rm_git_tool(tmp_path):
         assert res["status"] == "submitted"
 
         # 4b. Action: pull with custom projects
-        res = await rm_git.fn(
-            action="pull",
+        res = await rm_git["rm_git_pull"].fn(
             command=None,
             path="/tmp",
             threads=None,
@@ -295,8 +289,7 @@ async def test_mcp_rm_git_tool(tmp_path):
         )
 
         # 5. Action: push
-        res = await rm_git.fn(
-            action="push",
+        res = await rm_git["rm_git_push"].fn(
             command=None,
             path=None,
             threads=None,
@@ -308,8 +301,7 @@ async def test_mcp_rm_git_tool(tmp_path):
         assert res["status"] == "submitted"
 
         # 5b. Action: push with custom projects
-        res = await rm_git.fn(
-            action="push",
+        res = await rm_git["rm_git_push"].fn(
             command=None,
             path="/tmp",
             threads=None,
@@ -330,8 +322,7 @@ async def test_mcp_rm_git_tool(tmp_path):
         )
 
         # 6. Action: phased_push
-        res = await rm_git.fn(
-            action="phased_push",
+        res = await rm_git["rm_git_phased_push"].fn(
             command=None,
             path=None,
             threads=None,
@@ -341,33 +332,23 @@ async def test_mcp_rm_git_tool(tmp_path):
         )
         assert res["status"] == "submitted"
 
-        # 7. Action: invalid — the shared resolver raises a rich did-you-mean
-        # error pointing callers at 'list_actions'.
-        with pytest.raises(ValueError) as exc:
-            await rm_git.fn(
-                action="invalid_action",
-                command=None,
-                path=None,
-                threads=None,
-                phase=1,
-                target_project=None,
-                ctx=None,
-            )
-        assert "Unknown action" in str(exc.value)
-        assert "list_actions" in str(exc.value)
+        # 7. One tool per operation: no action router, so no invalid-action
+        # or list_actions entry points are served.
+        assert "rm_git" not in rm_git
+        assert "rm_git_list_actions" not in rm_git
 
-        # 8. Action: discovery — 'list_actions' returns the available actions.
-        disc = await rm_git.fn(
-            action="list_actions",
-            command=None,
-            path=None,
-            threads=None,
-            phase=1,
-            target_project=None,
-            ctx=None,
-        )
-        assert isinstance(disc, dict)
-        assert "raw" in disc["actions"]
+
+def _has_action_input(tool) -> bool:
+    return "action" in (tool.parameters or {}).get("properties", {})
+
+
+@pytest.mark.anyio
+async def test_no_served_rm_tool_takes_an_action_argument():
+    """One tool per operation: no rm_* tool routes on an ``action`` input."""
+    mcp, _, _, _ = get_mcp_instance()
+    tools = await mcp.list_tools()
+    routed = [t.name for t in tools if t.name.startswith("rm_") and _has_action_input(t)]
+    assert routed == []
 
 
 @pytest.mark.anyio
@@ -375,7 +356,7 @@ async def test_mcp_rm_git_status_exposes_submitted_job_and_failure():
     """rm_git owns the polling surface for its own background jobs."""
     mcp, _, _, _ = get_mcp_instance()
     tools = await mcp.list_tools()
-    rm_git = next(t for t in tools if t.name == "rm_git")
+    rm_git = {t.name: t for t in tools}
 
     with _jobs_lock:
         _jobs.clear()
@@ -388,7 +369,7 @@ async def test_mcp_rm_git_status_exposes_submitted_job_and_failure():
             "error": "pre-commit gate failed",
         }
 
-    response = await rm_git.fn(action="status", job_id="git-failed")
+    response = await rm_git["rm_git_status"].fn(job_id="git-failed")
 
     assert response["job_id"] == "git-failed"
     assert response["status"] == "failed"
@@ -411,7 +392,7 @@ async def test_mcp_rm_git_status_exposes_submitted_job_and_failure():
             "error": None,
         }
 
-    completed = await rm_git.fn(action="status", job_id="git-completed-failed")
+    completed = await rm_git["rm_git_status"].fn(job_id="git-completed-failed")
 
     assert completed["status"] == "completed"
     assert completed["outcome"] == "failed"
@@ -449,9 +430,9 @@ async def test_mcp_rm_git_cancels_queued_job_and_refuses_running_job(monkeypatch
 
         mcp, _, _, _ = get_mcp_instance()
         tools = await mcp.list_tools()
-        rm_git = next(t for t in tools if t.name == "rm_git")
+        rm_git = {t.name: t for t in tools}
 
-        refused = await rm_git.fn(action="cancel", job_id=active["job_id"])
+        refused = await rm_git["rm_git_cancel"].fn(job_id=active["job_id"])
         assert refused == {
             "job_id": active["job_id"],
             "status": "running",
@@ -462,13 +443,13 @@ async def test_mcp_rm_git_cancels_queued_job_and_refuses_running_job(monkeypatch
             ),
         }
 
-        cancelled = await rm_git.fn(action="cancel", job_id=queued["job_id"])
+        cancelled = await rm_git["rm_git_cancel"].fn(job_id=queued["job_id"])
         assert cancelled == {
             "job_id": queued["job_id"],
             "status": "cancelled",
             "cancelled": True,
         }
-        status = await rm_git.fn(action="status", job_id=queued["job_id"])
+        status = await rm_git["rm_git_status"].fn(job_id=queued["job_id"])
         assert status["status"] == "cancelled"
         assert status["outcome"] == "cancelled"
         with _jobs_lock:
@@ -553,7 +534,7 @@ async def test_mcp_rm_workspace_tool():
     """Test all actions and parameter checks of rm_workspace tool."""
     mcp, _, _, _ = get_mcp_instance()
     tools = await mcp.list_tools()
-    rm_workspace = next(t for t in tools if t.name == "rm_workspace")
+    rm_workspace = {t.name: t for t in tools}
 
     mock_git = MagicMock()
     mock_git.get_workspace_projects.return_value = ["proj1", "proj2"]
@@ -565,8 +546,7 @@ async def test_mcp_rm_workspace_tool():
 
     with patch("repository_manager.mcp_server.get_git_instance", return_value=mock_git):
         # 1. Action: list
-        res = await rm_workspace.fn(
-            action="list",
+        res = await rm_workspace["rm_workspace_list"].fn(
             yml_path=None,
             config_dict=None,
             part="patch",
@@ -578,8 +558,7 @@ async def test_mcp_rm_workspace_tool():
         assert res == ["proj1", "proj2"]
 
         # 2. Action: list_branches
-        res = await rm_workspace.fn(
-            action="list_branches",
+        res = await rm_workspace["rm_workspace_list_branches"].fn(
             yml_path=None,
             config_dict=None,
             part="patch",
@@ -591,8 +570,7 @@ async def test_mcp_rm_workspace_tool():
         assert res == ["main", "dev"]
 
         # 3. Action: setup (missing yml_path)
-        res = await rm_workspace.fn(
-            action="setup",
+        res = await rm_workspace["rm_workspace_setup"].fn(
             yml_path=None,
             config_dict=None,
             part="patch",
@@ -604,8 +582,7 @@ async def test_mcp_rm_workspace_tool():
         assert res.status == "error"
 
         # 4. Action: setup (with yml_path)
-        res = await rm_workspace.fn(
-            action="setup",
+        res = await rm_workspace["rm_workspace_setup"].fn(
             yml_path="workspace.yml",
             config_dict=None,
             part="patch",
@@ -617,8 +594,7 @@ async def test_mcp_rm_workspace_tool():
         assert res == "setup_ok"
 
         # 5. Action: template (missing yml_path)
-        res = await rm_workspace.fn(
-            action="template",
+        res = await rm_workspace["rm_workspace_template"].fn(
             yml_path=None,
             config_dict=None,
             part="patch",
@@ -630,8 +606,7 @@ async def test_mcp_rm_workspace_tool():
         assert res.status == "error"
 
         # 6. Action: template (with yml_path)
-        res = await rm_workspace.fn(
-            action="template",
+        res = await rm_workspace["rm_workspace_template"].fn(
             yml_path="workspace.yml",
             config_dict=None,
             part="patch",
@@ -643,8 +618,7 @@ async def test_mcp_rm_workspace_tool():
         assert res == "template_ok"
 
         # 7. Action: save (missing config_dict)
-        res = await rm_workspace.fn(
-            action="save",
+        res = await rm_workspace["rm_workspace_save"].fn(
             yml_path="workspace.yml",
             config_dict=None,
             part="patch",
@@ -656,8 +630,7 @@ async def test_mcp_rm_workspace_tool():
         assert res.status == "error"
 
         # 8. Action: save (invalid config_dict)
-        res = await rm_workspace.fn(
-            action="save",
+        res = await rm_workspace["rm_workspace_save"].fn(
             yml_path="workspace.yml",
             config_dict={"invalid": "key"},
             part="patch",
@@ -669,8 +642,7 @@ async def test_mcp_rm_workspace_tool():
         assert res.status == "error"
 
         # 9. Action: save (valid config_dict)
-        res = await rm_workspace.fn(
-            action="save",
+        res = await rm_workspace["rm_workspace_save"].fn(
             yml_path="workspace.yml",
             config_dict={"name": "test_workspace", "path": "/path", "repositories": []},
             part="patch",
@@ -682,8 +654,7 @@ async def test_mcp_rm_workspace_tool():
         assert res == "save_ok"
 
         # 10. Action: maintain
-        res = await rm_workspace.fn(
-            action="maintain",
+        res = await rm_workspace["rm_workspace_maintain"].fn(
             yml_path=None,
             config_dict=None,
             part="patch",
@@ -694,20 +665,9 @@ async def test_mcp_rm_workspace_tool():
         )
         assert res["status"] == "submitted"
 
-        # 12. Action: invalid — rich did-you-mean error from the shared resolver.
-        with pytest.raises(ValueError) as exc:
-            await rm_workspace.fn(
-                action="invalid_action",
-                yml_path=None,
-                config_dict=None,
-                part="patch",
-                phase=1,
-                dry_run=False,
-                use_default=True,
-                ctx=None,
-            )
-        assert "Unknown action" in str(exc.value)
-        assert "list_actions" in str(exc.value)
+        # 12. One tool per operation: no action router is served.
+        assert "rm_workspace" not in rm_workspace
+        assert "rm_workspace_list_actions" not in rm_workspace
 
 
 @pytest.mark.anyio
@@ -721,12 +681,11 @@ async def test_mcp_rm_workspace_fleet_evidence_check():
     """
     mcp, _, _, _ = get_mcp_instance()
     tools = await mcp.list_tools()
-    rm_workspace = next(t for t in tools if t.name == "rm_workspace")
+    rm_workspace = {t.name: t for t in tools}
 
     with patch("repository_manager.mcp_server.get_git_instance") as mock_get_git:
         # Missing fleet_evidence_json refuses before any Git instance is touched.
-        res = await rm_workspace.fn(
-            action="fleet_evidence_check",
+        res = await rm_workspace["rm_workspace_fleet_evidence_check"].fn(
             yml_path=None,
             config_dict=None,
             part="patch",
@@ -752,8 +711,7 @@ async def test_mcp_rm_workspace_fleet_evidence_check():
             "project_id": "repo:fixture",
         }
         reference_json = json.dumps({**payload, "digest": _reference_digest(payload)})
-        res = await rm_workspace.fn(
-            action="fleet_evidence_check",
+        res = await rm_workspace["rm_workspace_fleet_evidence_check"].fn(
             yml_path=None,
             config_dict=None,
             part="patch",
@@ -772,7 +730,7 @@ async def test_mcp_rm_projects_tool():
     """Test all actions and parameter checks of rm_projects tool."""
     mcp, _, _, _ = get_mcp_instance()
     tools = await mcp.list_tools()
-    rm_projects = next(t for t in tools if t.name == "rm_projects")
+    rm_projects = {t.name: t for t in tools}
 
     mock_git = MagicMock()
     mock_git.project_map = {
@@ -785,8 +743,7 @@ async def test_mcp_rm_projects_tool():
 
     with patch("repository_manager.mcp_server.get_git_instance", return_value=mock_git):
         # 1. Repository filtering logic
-        res = await rm_projects.fn(
-            action="install",
+        res = await rm_projects["rm_projects_install"].fn(
             threads=None,
             extra="all",
             output_dir=None,
@@ -810,8 +767,7 @@ async def test_mcp_rm_projects_tool():
         }
 
         # 2. Action: build
-        res = await rm_projects.fn(
-            action="build",
+        res = await rm_projects["rm_projects_build"].fn(
             threads=None,
             extra="all",
             output_dir=None,
@@ -827,8 +783,7 @@ async def test_mcp_rm_projects_tool():
         assert res["status"] == "submitted"
 
         # 3. Action: validate
-        res = await rm_projects.fn(
-            action="validate",
+        res = await rm_projects["rm_projects_validate"].fn(
             threads=None,
             extra="all",
             output_dir=None,
@@ -856,8 +811,7 @@ async def test_mcp_rm_projects_tool():
                 "started_at": None,
                 "completed_at": None,
             }
-        res = await rm_projects.fn(
-            action="validate_status",
+        res = await rm_projects["rm_projects_validate_status"].fn(
             threads=None,
             extra="all",
             output_dir=None,
@@ -872,24 +826,9 @@ async def test_mcp_rm_projects_tool():
         )
         assert res["result"] == "passed"
 
-        # 5. Action: invalid — rich did-you-mean error from the shared resolver.
-        with pytest.raises(ValueError) as exc:
-            await rm_projects.fn(
-                action="invalid_action",
-                threads=None,
-                extra="all",
-                output_dir=None,
-                generate_report=True,
-                force_revalidate=False,
-                auto_bump=False,
-                auto_push=False,
-                bump_part="minor",
-                repositories=None,
-                job_id=None,
-                ctx=None,
-            )
-        assert "Unknown action" in str(exc.value)
-        assert "list_actions" in str(exc.value)
+        # 5. One tool per operation: no action router is served.
+        assert "rm_projects" not in rm_projects
+        assert "rm_projects_list_actions" not in rm_projects
 
 
 def test_mcp_server_cli_execution():

@@ -4,7 +4,7 @@ skill_type: skill
 description: >-
   Reserve, inspect, release, and materialize a CONCEPT:ID claim, and verify a
   candidate's or generation's introduced concept markers against those claims, via
-  the repository-manager `rm_concepts` MCP tool / `--concepts` CLI family. Routes
+  the repository-manager `rm_concepts_*` MCP tool / `--concepts` CLI family. Routes
   agents away from hand-writing a `CONCEPT:` marker without first reserving its id,
   which is exactly how two concurrent lanes collide on the same identifier. Use
   before writing any new `CONCEPT:` marker, or to verify a candidate/generation's
@@ -21,7 +21,7 @@ metadata:
 ---
 # Repository Manager — Concept Coordination
 
-`rm_concepts` is repository-manager's thin, MCP/CLI-neutral consumer of RMDD-16's
+`rm_concepts_*` is repository-manager's thin, MCP/CLI-neutral consumer of RMDD-16's
 central concept-id claim authority (`agent_connector_sdk.governance.
 concept_reservation`). Repository-manager **never allocates a concept id itself** —
 every action here is a claim/verification call against an injected authority port.
@@ -29,7 +29,7 @@ every action here is a claim/verification call against an injected authority por
 ## ⚠ Read this before anything else: the authority is unavailable on `main` today
 As of this lane (verified 2026-08-10 against `agent-packages/repository-manager`
 `main` at `fdce825`), RMDD-16's authority module is **not an ancestor of
-agent-connector-sdk `main`**. Every mutating `rm_concepts` action —
+agent-connector-sdk `main`**. Every mutating `rm_concepts_*` action —
 `reserve`/`get`/`list`/`release`/`materialize`/`verify_candidate`/`verify_generation`
 — therefore refuses with a named `ConceptAuthorityUnavailable` refusal
 (`error_code: "dependency_blocked"` from the shared `RefusalCode`/`FailureClass`
@@ -67,9 +67,9 @@ not this skill's cue to route around it:
   `repository-manager-candidate-certification`.
 
 ## Tools & actions
-| Condensed tool | Actions |
+| Tool group | Per-operation tools |
 |----------------|---------|
-| `rm_concepts` | `reserve`, `list`, `get`, `release`, `materialize`, `verify_candidate`, `verify_generation`, `reconcile` |
+| `rm_concepts_*` | `rm_concepts_reserve`, `rm_concepts_list`, `rm_concepts_get`, `rm_concepts_release`, `rm_concepts_materialize`, `rm_concepts_verify_candidate`, `rm_concepts_verify_generation`, `rm_concepts_reconcile` |
 
 CLI: `repository-manager --concepts {reserve,list,get,release,materialize,verify_candidate,verify_generation,reconcile} --concepts-repo-root <path> --concepts-tenant-ref <ref> --concepts-lane-ref <ref> --concepts-params-json '<json>'`.
 
@@ -100,7 +100,7 @@ rather than silently clobbering a concurrent update.
 ## Recipes
 Reserve a concept id before writing its marker (MCP form):
 ```
-rm_concepts(action="reserve", repo_root=".", tenant_ref="<tenant>", lane_ref="<lane>",
+rm_concepts_reserve(repo_root=".", tenant_ref="<tenant>", lane_ref="<lane>",
             concept_id="RM-EXAMPLE.thing", namespace="RM-EXAMPLE",
             repository_ref="repository-manager", owner_ref="<you>",
             request_key_ref="<idempotency-key>", purpose="short reason")
@@ -113,12 +113,12 @@ repository-manager --concepts reserve --concepts-repo-root . \
 ```
 Verify one candidate's introduced markers before it lands:
 ```
-rm_concepts(action="verify_candidate", repo_root=".", tenant_ref="<tenant>", lane_ref="<lane>",
+rm_concepts_verify_candidate(repo_root=".", tenant_ref="<tenant>", lane_ref="<lane>",
             candidate=<Candidate payload>, repo_path="/path/to/repo")
 ```
 Read-only drift report:
 ```
-rm_concepts(action="reconcile", repo_root=".", tenant_ref="<tenant>", lane_ref="<lane>")
+rm_concepts_reconcile(repo_root=".", tenant_ref="<tenant>", lane_ref="<lane>")
 ```
 
 ## Result shape
@@ -137,7 +137,7 @@ authority-unavailable case above).
 - `verify_candidate`/`verify_generation` take **serialized contract payloads**
   (`Candidate`/`Generation`), not free-form dicts — an incompatible shape is an
   `invalid_request`, not a silent pass.
-- Any tool's live action set is self-discoverable: `rm_concepts(action="list_actions")`.
+- Any tool's live action set is self-discoverable: the served `rm_concepts_*` tool list.
 
 ## Related
 - `repository-manager-development-lifecycle` — step 1 (plan) calls `reserve` before

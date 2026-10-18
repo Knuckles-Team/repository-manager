@@ -38,7 +38,7 @@ def _isolated_capacity_state(tmp_path, monkeypatch):
 async def _rm_remote_workers_tool():
     mcp, _, _, _ = get_mcp_instance()
     tools = await mcp.list_tools()
-    return next(t for t in tools if t.name == "rm_remote_workers")
+    return {t.name: t for t in tools}
 
 
 # `.fn(...)` calls the raw Python function directly, bypassing FastMCP's own
@@ -86,10 +86,11 @@ _ALL_OPTIONAL_KWARGS: dict = {
 }
 
 
-async def _call_tool(tool, **overrides):
+async def _call_tool(tools, action: str, **overrides):
+    """Call the per-operation ``rm_remote_workers_<action>`` tool."""
     kwargs = dict(_ALL_OPTIONAL_KWARGS)
     kwargs.update(overrides)
-    return await tool.fn(**kwargs)
+    return await tools[f"rm_remote_workers_{action}"].fn(**kwargs)
 
 
 def _cli_result(capsys, action: str, **params) -> tuple[dict, int]:

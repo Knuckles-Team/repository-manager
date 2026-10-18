@@ -105,8 +105,8 @@ schema_mappings:
 sync:
 - preset: repository-worktrees
   server: repository-manager-mcp
-  tool: rm_worktree
-  action: list
+  tool: rm_worktree_list
+  action: null
   records_path: worktrees
   id_field: path
   title_field: branch
@@ -114,12 +114,11 @@ sync:
   updated_field: null
   pagination: null
   doc_type: repository
-  tool_schema_sha256: fde09a290e9e0d803d6b1e71de6eeb711da12b6b176f41f0b542ca8ab8f0b0f4
+  tool_schema_sha256: fb0e1afb6bb3b9dd244b8cd2d51673a5753fe20c05c4e00f4b11d232070f9d00
   raw:
     server: repository-manager-mcp
-    tool: rm_worktree
+    tool: rm_worktree_list
     params_style: args
-    action: list
     records_path: worktrees
     id_field: path
     title_field: branch

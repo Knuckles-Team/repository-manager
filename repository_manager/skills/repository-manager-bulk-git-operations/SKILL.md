@@ -30,7 +30,7 @@ run as background jobs; poll them via the job status path.
 - `enumerate` every repository across a GitLab instance / GitHub org into an ingest
   manifest — and natively ingest them into the KG as `:GitRepository` nodes.
 
-★ **There is no arbitrary/raw git command action.** `action="raw"` is accepted by
+★ **There is no arbitrary/raw git command action.** `rm_git_raw` is accepted by
 the action resolver (so it does not read as a typo) but the handler always returns
 a refusal — `"Raw host commands are permanently retired; use a typed
 repository-manager action through governed delegation."` — regardless of
@@ -54,9 +54,9 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
 | `GIT_OPERATIONSTOOL` | optional | Gate the git-operations tool tag on |
 
 ## Tools & actions
-| Condensed tool | Actions |
+| Tool group | Per-operation tools |
 |----------------|---------|
-| `rm_git` | `raw`, `clone`, `enumerate`, `pull`, `push`, `phased_push`, `add`, `commit`, `pre_commit`, `commit_code`, `status`, `cancel` |
+| `rm_git_*` | `rm_git_raw`, `rm_git_clone`, `rm_git_enumerate`, `rm_git_pull`, `rm_git_push`, `rm_git_phased_push`, `rm_git_add`, `rm_git_commit`, `rm_git_pre_commit`, `rm_git_commit_code`, `rm_git_status`, `rm_git_cancel` |
 
 ### Key parameters
 - `command` — the VCS selector (`gitlab`|`github`) for `enumerate`. (`raw` also reads
@@ -65,30 +65,30 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
   for `enumerate`, comma-separated GitLab groups / GitHub orgs (omit for whole instance / your user).
 - `message` — commit message for `commit` / `commit_code`.
 - `run_precommit` — for `commit_code`: run hooks before committing (default true).
-- `job_id` — required for `status` and `cancel`; use the id returned by a submitted `rm_git` job.
+- `job_id` — required for `status` and `cancel`; use the id returned by a submitted `rm_git_*` job.
 - `phase` / `auto_start` / `target_project` — control `phased_push`.
 
 ## Recipes
 Pull every repo in the workspace:
 ```
-rm_git(action="pull")
+rm_git_pull()
 ```
 Commit code across two repos with pre-commit hooks first:
 ```
-rm_git(action="commit_code", projects="agent-connector-sdk,gitlab-api", message="chore: sweep", run_precommit=true)
+rm_git_commit_code(projects="agent-connector-sdk,gitlab-api", message="chore: sweep", run_precommit=true)
 ```
 Enumerate an entire GitLab instance (also KG-ingests as :GitRepository nodes):
 ```
-rm_git(action="enumerate", command="gitlab")
+rm_git_enumerate(command="gitlab")
 ```
 Enumerate specific GitHub orgs:
 ```
-rm_git(action="enumerate", command="github", projects="my-org,another-org")
+rm_git_enumerate(command="github", projects="my-org,another-org")
 ```
 
 ## Gotchas
 - `clone`/`pull`/`push`/`commit`/`pre_commit`/`commit_code`/`phased_push` return a **job id** and run in
-  the background — poll with `rm_git(action="status", job_id="<id>")` rather than expecting inline results.
+  the background — poll with `rm_git_status(job_id="<id>")` rather than expecting inline results.
 - Do not submit `add` and `commit` as separate dependent jobs; use `commit_code` for its ordered
   stage → gate → commit operation.
 - `cancel` cancels queued work. Once a job is running it returns an explicit refusal because the
@@ -98,8 +98,7 @@ rm_git(action="enumerate", command="github", projects="my-org,another-org")
 - `push` honors the pre-push gate when `RM_GATE_BEFORE_PUSH` is set — a failing gate blocks the push.
 - `commit`/`commit_code` require `message`. `raw` is permanently retired (see above) — do not
   build a workflow that depends on it succeeding.
-- Any tool's live action set is self-discoverable: `rm_git(action="list_actions")` (or `"help"`/
-  `"actions"`) returns the current set instead of running anything — use it if this table and the
+- Any tool's live action set is self-discoverable: list the served `rm_git_*` tools (`tools/list`); that is the current set — use it if this table and the
   live server ever disagree.
 
 ## Related

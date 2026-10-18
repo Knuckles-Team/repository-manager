@@ -24,7 +24,7 @@ from repository_manager.kg_ingest import (
 
 class _FakeTransport:
     def __init__(self):
-        self.requests = []
+        self.requests: list[object] = []
         self.status_requests = []
 
     async def source_status(self, connector, stream):

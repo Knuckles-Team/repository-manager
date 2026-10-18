@@ -24,7 +24,7 @@ from repository_manager.mcp_server import get_mcp_instance
 async def _rm_concepts_tool():
     mcp, _, _, _ = get_mcp_instance()
     tools = await mcp.list_tools()
-    return next(t for t in tools if t.name == "rm_concepts")
+    return {t.name: t for t in tools}
 
 
 def _cli_result(capsys, **kwargs) -> tuple[dict, int]:
@@ -58,8 +58,7 @@ async def test_mcp_and_cli_reserve_refusal_are_identical(tmp_path, capsys):
     # parameter is passed explicitly here to mirror what a real MCP call
     # produces. See `RM_MCP_OPTIONAL_KWARGS` below for the shared value set
     # `_cli_result` also uses, so both paths see identical input.
-    mcp_result = await tool.fn(
-        action="reserve",
+    mcp_result = await tool["rm_concepts_reserve"].fn(
         repo_root=str(tmp_path),
         tenant_ref="tenant:parity",
         lane_ref="lane:parity",
@@ -117,8 +116,7 @@ async def test_mcp_and_cli_reserve_refusal_are_identical(tmp_path, capsys):
 @pytest.mark.anyio
 async def test_mcp_and_cli_list_refusal_are_identical(tmp_path, capsys):
     tool = await _rm_concepts_tool()
-    mcp_result = await tool.fn(
-        action="list",
+    mcp_result = await tool["rm_concepts_list"].fn(
         repo_root=str(tmp_path),
         tenant_ref="tenant:parity",
         lane_ref="lane:parity",

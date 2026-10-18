@@ -29,7 +29,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit, urlunsplit
 
-__version__ = "3.4.1"
+__version__ = "3.5.0"
 
 __all__ = [
     "Git",
@@ -6423,6 +6423,16 @@ class Git:
         package_name: str,
         new_version: str,
         dry_run: bool = False,
+    ) -> bool:
+        """Update a package's pinned version in a deps file (pyproject or requirements)."""
+        return self._update_dependency(file_path, package_name, new_version, dry_run)
+
+    def _update_dependency(
+        self,
+        file_path: str,
+        package_name: str,
+        new_version: str,
+        dry_run: bool = False,
         *,
         _directory_fd: int | None = None,
         _file_name: str | None = None,
@@ -7043,7 +7053,7 @@ class Git:
         pinned.assert_operation_identity()
         if read_at(pinned.fd, dep_file_name) is None:
             return None
-        updated = self.update_dependency(
+        updated = self._update_dependency(
             str(Path(path) / dep_file_name),
             project_name,
             new_version,

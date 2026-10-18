@@ -72,7 +72,7 @@ Two corollaries:
 
 ```bash
 # one branch name across every workspace repo (or a named subset)
-rm_worktree(action="bulk_add", branch="lane/<wave>-<name>", repos="agent-connector-sdk,epistemic-graph")
+rm_worktree_bulk_add(branch="lane/<wave>-<name>", repos="agent-connector-sdk,epistemic-graph")
 ```
 
 Then, per repository, adopt the isolation and prove it:
@@ -89,7 +89,7 @@ that exports one set of values has partitioned nothing.
 ## Auditing what exists
 
 ```bash
-rm_worktree(action="audit", stale_days=21)        # read-only, whole workspace
+rm_worktree_audit(stale_days=21)        # read-only, whole workspace
 ```
 
 The classification, and what each class means operationally:
@@ -113,7 +113,7 @@ what is on it — `git log --oneline <base>..<branch>` — and never in bulk.
 ## Reclaiming safely
 
 ```bash
-rm_worktree(action="audit", prune_merged=true)    # DESTRUCTIVE: merged + dangling only
+rm_worktree_audit(prune_merged=true)    # DESTRUCTIVE: merged + dangling only
 ```
 
 What makes this safe is not the flag; it is the guard behind it. The prune

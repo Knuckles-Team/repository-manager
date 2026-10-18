@@ -210,7 +210,7 @@ def _init_tiered_repo(
 async def _get_rm_gates_tool():
     mcp, _, _, _ = get_mcp_instance()
     tools = await mcp.list_tools()
-    return next(t for t in tools if t.name == "rm_gates")
+    return {t.name: t for t in tools}
 
 
 async def _poll_until_done(rm_gates, job_ids, timeout_s=60.0):
@@ -220,8 +220,7 @@ async def _poll_until_done(rm_gates, job_ids, timeout_s=60.0):
         for repo_name, jid in job_ids.items():
             if repo_name in done:
                 continue
-            status = await rm_gates.fn(
-                action="status",
+            status = await rm_gates["rm_gates_status"].fn(
                 job_id=jid,
                 repos=None,
                 stage="fast",
@@ -244,8 +243,7 @@ async def _poll_until_done(rm_gates, job_ids, timeout_s=60.0):
 
 async def _run_and_verify_fast_stage(rm_gates) -> None:
     """FAST stage: the pre-push-only hook must NOT fire."""
-    fast_submit = await rm_gates.fn(
-        action="run",
+    fast_submit = await rm_gates["rm_gates_run"].fn(
         stage="fast",
         repos=None,
         threads=None,
@@ -320,8 +318,7 @@ async def _run_and_verify_heavy_stage(
     """
     with _jobs_lock:
         _jobs.clear()
-    heavy_submit = await rm_gates.fn(
-        action="run",
+    heavy_submit = await rm_gates["rm_gates_run"].fn(
         stage="heavy",
         repos=None,
         threads=None,
@@ -355,8 +352,7 @@ async def _run_and_verify_heavy_stage(
 
 async def _verify_profile(rm_gates) -> None:
     """profile: real per-hook timings from the real heavy run."""
-    profile = await rm_gates.fn(
-        action="profile",
+    profile = await rm_gates["rm_gates_profile"].fn(
         repos=None,
         stage="fast",
         threads=None,
@@ -379,8 +375,7 @@ async def _verify_profile(rm_gates) -> None:
 
 async def _verify_explain(rm_gates, one_repo: str) -> None:
     """explain: condensed detail for one repo by name."""
-    explanation = await rm_gates.fn(
-        action="explain",
+    explanation = await rm_gates["rm_gates_explain"].fn(
         repo=one_repo,
         repos=None,
         stage="fast",
@@ -397,8 +392,7 @@ async def _verify_explain(rm_gates, one_repo: str) -> None:
 
 async def _verify_status_rollup(rm_gates) -> None:
     """status roll-up (no job_id): counts + failed set."""
-    rollup = await rm_gates.fn(
-        action="status",
+    rollup = await rm_gates["rm_gates_status"].fn(
         repos=None,
         stage="fast",
         threads=None,
