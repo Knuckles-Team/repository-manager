@@ -85,7 +85,7 @@ eval "$(repository-manager --lane env --lane-path . --lane-shell)"
 That gives you a private `CARGO_TARGET_DIR`, `PYTEST_ADDOPTS --basetemp`,
 `TMPDIR`, and `PRE_COMMIT_HOME`.
 
-MCP equivalent: `rm_lane(action="start", repo=…, branch=…, base="main")`.
+MCP equivalent: `rm_lane_start(repo=…, branch=…, base="main")`.
 
 ## 2. Stay isolated while you work
 

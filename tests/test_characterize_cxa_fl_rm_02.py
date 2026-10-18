@@ -142,7 +142,7 @@ class TestFromResultsUncategorized:
 async def _get_rm_projects_tool():
     mcp, _, _, _ = mcp_server_module.get_mcp_instance()
     tools = await mcp.list_tools()
-    return next(t for t in tools if t.name == "rm_projects")
+    return {t.name: t for t in tools}
 
 
 def _mock_git(project_map=None):
@@ -173,8 +173,7 @@ async def test_rm_projects_validate_wires_auto_bump_and_auto_push_and_hygiene():
         patch.object(mcp_server_module, "get_git_instance", return_value=git),
         patch.object(mcp_server_module, "_submit_job", side_effect=fake_submit_job),
     ):
-        res = await rm_projects.fn(
-            action="validate",
+        res = await rm_projects["rm_projects_validate"].fn(
             threads=None,
             extra="all",
             output_dir=None,
@@ -242,8 +241,7 @@ async def test_rm_projects_validate_commit_code_reroutes_bump_dependency():
         patch.object(mcp_server_module, "get_git_instance", return_value=git),
         patch.object(mcp_server_module, "_submit_job", side_effect=fake_submit_job),
     ):
-        res = await rm_projects.fn(
-            action="validate",
+        res = await rm_projects["rm_projects_validate"].fn(
             threads=None,
             extra="all",
             output_dir=None,
@@ -297,8 +295,7 @@ async def test_rm_projects_validate_running_job_is_not_resubmitted():
         }
     try:
         with patch.object(mcp_server_module, "get_git_instance", return_value=git):
-            res = await rm_projects.fn(
-                action="validate",
+            res = await rm_projects["rm_projects_validate"].fn(
                 threads=None,
                 extra="all",
                 output_dir=None,
@@ -349,8 +346,7 @@ async def test_rm_projects_validate_completed_cache_hit_without_force_revalidate
         }
     try:
         with patch.object(mcp_server_module, "get_git_instance", return_value=git):
-            res = await rm_projects.fn(
-                action="validate",
+            res = await rm_projects["rm_projects_validate"].fn(
                 threads=None,
                 extra="all",
                 output_dir=None,
@@ -395,8 +391,7 @@ async def test_rm_projects_validate_force_revalidate_bypasses_completed_cache():
         }
     try:
         with patch.object(mcp_server_module, "get_git_instance", return_value=git):
-            res = await rm_projects.fn(
-                action="validate",
+            res = await rm_projects["rm_projects_validate"].fn(
                 threads=None,
                 extra="all",
                 output_dir=None,
@@ -432,8 +427,7 @@ async def test_rm_projects_validate_failed_only_with_no_failures_is_clean_noop()
         patch.object(mcp_server_module, "get_git_instance", return_value=git),
         patch.object(mcp_server_module, "_last_failed_repos", return_value=[]),
     ):
-        res = await rm_projects.fn(
-            action="validate",
+        res = await rm_projects["rm_projects_validate"].fn(
             threads=None,
             extra="all",
             output_dir=None,
@@ -479,8 +473,7 @@ async def test_rm_projects_validate_failed_only_targets_failed_repos_and_forces(
         ),
         patch.object(mcp_server_module, "_submit_job", side_effect=fake_submit_job),
     ):
-        res = await rm_projects.fn(
-            action="validate",
+        res = await rm_projects["rm_projects_validate"].fn(
             threads=None,
             extra="all",
             output_dir=None,

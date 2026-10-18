@@ -33,13 +33,13 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
 | `REPOSITORY_MANAGER_DEFAULT_BRANCH` | optional | Base branch (default `main`) |
 | `WORKSPACE_MANAGEMENTTOOL` / `PROJECT_MANAGEMENTTOOL` | optional | Gate the tool tags on |
 
-`MCP_TOOL_MODE` (`condensed`|`verbose`|`both`) selects the condensed `rm_worktree`
+`MCP_TOOL_MODE` (`condensed`|`verbose`|`both`) selects the condensed `rm_worktree_*`
 tool (used below) vs. the 1:1 verbose actions.
 
 ## Tools & actions
-| Condensed tool | Actions |
+| Tool group | Per-operation tools |
 |----------------|---------|
-| `rm_worktree` | `add`, `list`, `remove`, `merge`, `sync`, `prune`, `bulk_add`, `audit`, `reset_branch` |
+| `rm_worktree_*` | `rm_worktree_add`, `rm_worktree_list`, `rm_worktree_remove`, `rm_worktree_merge`, `rm_worktree_sync`, `rm_worktree_prune`, `rm_worktree_bulk_add`, `rm_worktree_audit`, `rm_worktree_reset_branch` |
 
 ### Key parameters
 - `repo` — repo basename (e.g. `agent-connector-sdk`) or absolute path. Omit for `list`/`prune` across all repos.
@@ -56,24 +56,24 @@ tool (used below) vs. the 1:1 verbose actions.
 ## Recipes
 Open a session worktree for one repo:
 ```
-rm_worktree(action="add", repo="agent-connector-sdk", branch="feat/my-change", base="main")
+rm_worktree_add(repo="agent-connector-sdk", branch="feat/my-change", base="main")
 ```
 Audit the whole workspace (read-only), 21-day staleness threshold:
 ```
-rm_worktree(action="audit", stale_days=21)
+rm_worktree_audit(stale_days=21)
 ```
 Sync a worktree against main, then merge it back:
 ```
-rm_worktree(action="sync", repo="agent-connector-sdk", branch="feat/my-change", strategy="rebase")
-rm_worktree(action="merge", repo="agent-connector-sdk", branch="feat/my-change", into="main")
+rm_worktree_sync(repo="agent-connector-sdk", branch="feat/my-change", strategy="rebase")
+rm_worktree_merge(repo="agent-connector-sdk", branch="feat/my-change", into="main")
 ```
 Safely reclaim only merged worktrees:
 ```
-rm_worktree(action="audit", prune_merged=true)
+rm_worktree_audit(prune_merged=true)
 ```
 Reset a worktree's branch pointer onto another target (e.g. after discarding a bad rebase):
 ```
-rm_worktree(action="reset_branch", repo="agent-connector-sdk", branch="feat/my-change", into="main")
+rm_worktree_reset_branch(repo="agent-connector-sdk", branch="feat/my-change", into="main")
 ```
 
 ## Gotchas
@@ -83,16 +83,16 @@ rm_worktree(action="reset_branch", repo="agent-connector-sdk", branch="feat/my-c
   directories (untracked worktree dirs) are report-only and never removed.
 - These repos use custom worktree paths; always identify a worktree by its actual `path` from `list`.
 - A dirty tree is always classified `active` and `remove` refuses it unless `force=true`.
-- Any tool's live action set is self-discoverable: `rm_worktree(action="list_actions")` returns the
+- Any tool's live action set is self-discoverable: the served `rm_worktree_*` tool list returns the
   current set instead of running anything — use it if this table and the live server ever disagree.
 
 ## Related
-- **The lane lifecycle around these verbs** (`rm_lane`: start → doctor → finish) →
-  `repository-manager-lane-lifecycle`. Prefer `rm_lane(action="start")` over a bare
-  `rm_worktree(action="add")`: it also partitions the build/test/hook state and *proves*
+- **The lane lifecycle around these verbs** (`rm_lane_*`: start → doctor → finish) →
+  `repository-manager-lane-lifecycle`. Prefer `rm_lane_start()` over a bare
+  `rm_worktree_add()`: it also partitions the build/test/hook state and *proves*
   the isolation, which a bare worktree does not.
-- **Landing and reconciling** (`rm_merge_queue`) → `repository-manager-merge-and-reconcile`.
-  Prefer the queue over `rm_worktree(action="merge")` into a shared base: the queue gates the
+- **Landing and reconciling** (`rm_merge_queue_*`) → `repository-manager-merge-and-reconcile`.
+  Prefer the queue over `rm_worktree_merge()` into a shared base: the queue gates the
   MERGED tree differentially, lands fast-forward-only under both guards, and prunes for you.
 - **Fleet-scale waves and audits** → `repository-manager-fleet-scale-operations`.
 - **The governed lifecycle entrypoint** → `repository-manager-development-lifecycle`. These are the

@@ -66,17 +66,17 @@ This table is auto-generated from the live server — do not edit by hand.
 | MCP Tool | Toggle Env Var | Description |
 |----------|----------------|-------------|
 | `repository_ingest_repositories` | `MISCTOOL` | Natively ingest git repositories into epistemic-graph as typed :GitRepository nodes. |
-| `rm_build` | `PROJECT_MANAGEMENTTOOL` | Content-addressed build broker for ANY repository (CONCEPT:RM-TASK-LEDGER). |
-| `rm_concepts` | `DEVELOPMENT_SURFACESTOOL` | Concept-id claim coordination against RMDD-16's central authority. |
-| `rm_docs_readiness` | `PROJECT_MANAGEMENTTOOL` | Preview/apply/verify artifacts after per-repository readiness setup. |
-| `rm_gates` | `PROJECT_MANAGEMENTTOOL` | Run and inspect the two-tier (fast/heavy) pre-commit gate across repos. |
-| `rm_git` | `GIT_OPERATIONSTOOL` | Typed bulk Git operations; arbitrary host commands are prohibited. |
-| `rm_lane` | `PROJECT_MANAGEMENTTOOL` | The lane lifecycle for concurrent agents and humans (CONCEPT:RM-LANE-DOCTOR). |
-| `rm_merge_queue` | `PROJECT_MANAGEMENTTOOL` | Serialized merge queue for ANY git repository (CONCEPT:RM-MERGE-QUEUE). |
-| `rm_projects` | `PROJECT_MANAGEMENTTOOL` | Bulk install, build, and validate Python projects. |
-| `rm_remote_workers` | `DEVELOPMENT_SURFACESTOOL` | Remote worker registry, immutable source staging, and artifact transport. |
-| `rm_workspace` | `WORKSPACE_MANAGEMENTTOOL` | Core workspace organization, configuration, and maintenance. |
-| `rm_worktree` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
+| `rm_build_*` | `PROJECT_MANAGEMENTTOOL` | Content-addressed build broker for ANY repository (CONCEPT:RM-TASK-LEDGER). |
+| `rm_concepts_*` | `DEVELOPMENT_SURFACESTOOL` | Concept-id claim coordination against RMDD-16's central authority. |
+| `rm_docs_readiness_*` | `PROJECT_MANAGEMENTTOOL` | Preview/apply/verify artifacts after per-repository readiness setup. |
+| `rm_gates_*` | `PROJECT_MANAGEMENTTOOL` | Run and inspect the two-tier (fast/heavy) pre-commit gate across repos. |
+| `rm_git_*` | `GIT_OPERATIONSTOOL` | Typed bulk Git operations; arbitrary host commands are prohibited. |
+| `rm_lane_*` | `PROJECT_MANAGEMENTTOOL` | The lane lifecycle for concurrent agents and humans (CONCEPT:RM-LANE-DOCTOR). |
+| `rm_merge_queue_*` | `PROJECT_MANAGEMENTTOOL` | Serialized merge queue for ANY git repository (CONCEPT:RM-MERGE-QUEUE). |
+| `rm_projects_*` | `PROJECT_MANAGEMENTTOOL` | Bulk install, build, and validate Python projects. |
+| `rm_remote_workers_*` | `DEVELOPMENT_SURFACESTOOL` | Remote worker registry, immutable source staging, and artifact transport. |
+| `rm_workspace_*` | `WORKSPACE_MANAGEMENTTOOL` | Core workspace organization, configuration, and maintenance. |
+| `rm_worktree_*` | `PROJECT_MANAGEMENTTOOL` | Manage git worktrees for concurrent multi-session development (CONCEPT:RM-WORKTREE). |
 
 #### Verbose 1:1 API-mapped tools (`MCP_TOOL_MODE=verbose` or `both`)
 

@@ -718,12 +718,12 @@ failures** underneath the noise. Both gaps are now closed, and the loop an
 agent should actually run is:
 
 ```
-rm_gates(action="run", stage=<fast|heavy>)        # populate the ledger
+rm_gates_run(stage=<fast|heavy>)        # populate the ledger
 # ... fix what failed ...
-rm_gates(action="retest", stage=<fast|heavy>)      # only what failed, re-run
+rm_gates_retest(stage=<fast|heavy>)      # only what failed, re-run
 # all requested hooks pass -> automatic full-wave escalation, submitted
 # from inside the retest job itself, the instant it returns
-rm_gates(action="profile")                         # find the slow hooks fleet-wide
+rm_gates_profile()                         # find the slow hooks fleet-wide
 ```
 
 CLI equivalents: `repository-manager --gate fast|heavy` /

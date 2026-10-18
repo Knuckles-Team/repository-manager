@@ -6,7 +6,7 @@ description: >-
   read its profile, run the dispatch-time entitlement recheck, stage/verify an
   immutable source commit onto it with a fixed clone/fetch/checkout command
   sequence, stream artifacts/logs back, and reconcile a lost host — via the
-  repository-manager `rm_remote_workers` MCP tool / `--remote-workers` CLI family.
+  repository-manager `rm_remote_workers_*` MCP tool / `--remote-workers` CLI family.
   Routes agents away from a raw SSH/tunnel command or a hand-rolled clone onto a
   remote host. ⚠ `recheck`/live dispatch refuse honestly without the optional
   tunnel-manager dependency, and `host_loss_reconcile` always refuses today — read
@@ -22,7 +22,7 @@ metadata:
 ---
 # Repository Manager — Worker Operations
 
-`rm_remote_workers` composes RMDD-15's remote-execution registry/staging/artifact
+`rm_remote_workers_*` composes RMDD-15's remote-execution registry/staging/artifact
 package with RMDD-08's `CapacityInventory` weighted resource ledger. It is the
 governed surface for **placing and staging** work on a non-local host — it never
 builds a raw shell string, never accepts a credential, and never lets a caller
@@ -77,9 +77,9 @@ credential, or a local reservation you invented — report the refusal and escal
   `recheck`/dispatch path *depends on* that server without wrapping its full surface).
 
 ## Tools & actions
-| Condensed tool | Actions |
+| Tool group | Per-operation tools |
 |----------------|---------|
-| `rm_remote_workers` | `register_worker`, `seed_from_inventory`, `profile`, `recheck`, `stage_source`, `verify_source`, `receive_artifact`, `host_loss_reconcile`, `dispatch_build` |
+| `rm_remote_workers_*` | `rm_remote_workers_register_worker`, `rm_remote_workers_seed_from_inventory`, `rm_remote_workers_profile`, `rm_remote_workers_recheck`, `rm_remote_workers_stage_source`, `rm_remote_workers_verify_source`, `rm_remote_workers_receive_artifact`, `rm_remote_workers_host_loss_reconcile`, `rm_remote_workers_dispatch_build` |
 
 CLI: `repository-manager --remote-workers {register_worker,seed_from_inventory,profile,recheck,stage_source,verify_source,receive_artifact,host_loss_reconcile,dispatch_build} --remote-workers-params-json '<json>'`.
 Unlike `--concepts`, there is no separate top-level flag family — every field for
@@ -96,12 +96,12 @@ every action goes in the one JSON blob.
 | `verify_source` | `destination`, `expected_sha`, `repository_id` | — |
 | `receive_artifact` | `root`, `relative_path`, `content_base64`, `host_id`, `source_description` | `declared_digest`, `media_type`, `kind` (`"artifact"` default or `"log"`) |
 | `host_loss_reconcile` | — (always refuses today, see above) | `reservation_id`, `work_item_id`, `attempt`, `fence`, `reason` |
-| `dispatch_build` | `host_id`, `repository_id`, `origin`, `tree_sha`, `command` (argv list) | `workdir` (default `"."`), `timeout_seconds` (default 3600), `cpu_weight`/`memory_mib`/`disk_mib`/`process_slots` (admission request against the host's durable capacity) — stages the commit and runs `command` on the host over `TunnelSSHExecutor`; reached more conveniently via `rm_build(action="request", host=<host_id>)`, see repository-manager-build-coordination. Does **not** yet retrieve artifacts back to the caller. Does **not** run `recheck`'s tunnel-manager entitlement resolve (no `InventoryResolver` is configured for this entrypoint today — see the fail-closed section) — only registered-profile + authorized-root + durable-capacity admission. |
+| `dispatch_build` | `host_id`, `repository_id`, `origin`, `tree_sha`, `command` (argv list) | `workdir` (default `"."`), `timeout_seconds` (default 3600), `cpu_weight`/`memory_mib`/`disk_mib`/`process_slots` (admission request against the host's durable capacity) — stages the commit and runs `command` on the host over `TunnelSSHExecutor`; reached more conveniently via `rm_build_request(host=<host_id>)`, see repository-manager-build-coordination. Does **not** yet retrieve artifacts back to the caller. Does **not** run `recheck`'s tunnel-manager entitlement resolve (no `InventoryResolver` is configured for this entrypoint today — see the fail-closed section) — only registered-profile + authorized-root + durable-capacity admission. |
 
 ## Recipes
 Register a worker's capacity and authorized roots:
 ```
-rm_remote_workers(action="register_worker", host_id="r820", cpu_weight=64,
+rm_remote_workers_register_worker(host_id="r820", cpu_weight=64,
                    memory_mib=253952, disk_mib=327680000, process_slots=8,
                    inventory_alias="r820.arpa",
                    repository_roots={"epistemic-graph": "/home/apps/worktrees/epistemic-graph"},
@@ -109,14 +109,14 @@ rm_remote_workers(action="register_worker", host_id="r820", cpu_weight=64,
 ```
 Build (without executing) the fixed stage-source command sequence for one commit:
 ```
-rm_remote_workers(action="stage_source", origin="https://gitlab.example/org/repo.git",
+rm_remote_workers_stage_source(origin="https://gitlab.example/org/repo.git",
                    tree_sha="<40-hex-sha>", parent_root="/home/apps/worktrees/repo",
                    worktree_name="lane-42")
 ```
 Same, executing and verifying it locally (only meaningful when this call itself
 runs on the target host):
 ```
-rm_remote_workers(action="stage_source", origin="...", tree_sha="...",
+rm_remote_workers_stage_source(origin="...", tree_sha="...",
                    parent_root="...", worktree_name="lane-42", execute_locally=true)
 ```
 
@@ -133,7 +133,7 @@ continuing past a broken clone/fetch.
 ```mermaid
 sequenceDiagram
     participant Caller
-    participant RM as rm_remote_workers
+    participant RM as rm_remote_workers_*
     participant TM as tunnel-manager (optional)
     participant Worker as target host
 
@@ -168,7 +168,7 @@ sequenceDiagram
 
 ## Target policy, drain, and quarantine are states you read, not actions you call
 Two more pieces of shared vocabulary this skill's results carry, neither of which
-is a separate `rm_remote_workers` action:
+is a separate `rm_remote_workers_*` action:
 
 - **Target policy** (`TargetKind`) distinguishes `local` from `inventory_alias`
   (the wire spelling `remote` uses) execution targets. `register_worker` always
@@ -191,7 +191,7 @@ is a separate `rm_remote_workers` action:
   refusal rather than retrying blindly.
 - `host_loss_reconcile` always refuses today — do not build a "drain and reconcile"
   workflow that assumes it succeeds.
-- Any tool's live action set is self-discoverable: `rm_remote_workers(action="list_actions")`.
+- Any tool's live action set is self-discoverable: the served `rm_remote_workers_*` tool list.
 
 ## Related
 - `repository-manager-development-lifecycle` — the governed entrypoint; remote

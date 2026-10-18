@@ -3,7 +3,7 @@ name: repository-manager-gate-execution
 skill_type: skill
 description: >-
   Run and inspect the two-tier (fast/heavy) pre-commit gate across repos via
-  `rm_gates`, and validate a fix without re-running the whole wave: `run` to
+  `rm_gates_*`, and validate a fix without re-running the whole wave: `run` to
   populate the durable gate ledger, `retest` to narrow a re-run to only the
   hooks the ledger last recorded failing (with automatic full-wave
   escalation on an all-pass), and `profile` to find the slow hooks. Covers
@@ -13,7 +13,7 @@ description: >-
   repo's fast or heavy gate, re-validate only what just failed, explain a
   failure, or find what is slow. Do NOT use for the merge queue's own
   differential gate-vs-base comparison (repository-manager-merge-and-reconcile),
-  Python install/build via `rm_projects` (repository-manager-workspace-validation),
+  Python install/build via `rm_projects_*` (repository-manager-workspace-validation),
   or content-addressed build caching (repository-manager-build-coordination).
 license: MIT
 tags: [repository-manager, gates, pre-commit, testing, ci, mcp]
@@ -23,7 +23,7 @@ metadata:
 ---
 # Repository Manager — Gate Execution
 
-`rm_gates` is the one tool that drives both tiers of the pre-commit gate:
+`rm_gates_*` is the one tool that drives both tiers of the pre-commit gate:
 `stage="fast"` runs a repo's `pre-commit`-stage hooks (formatters/linters, no
 network/tests, target ≤5s warm); `stage="heavy"` runs its `pre-push`-stage
 hooks (pytest, cargo, `uv lock --check`, ...) via
@@ -59,9 +59,9 @@ anything.
   `repository-manager-fleet-scale-operations`.
 
 ## Tools & actions
-| Condensed tool | Actions |
+| Tool group | Per-operation tools |
 |----------------|---------|
-| `rm_gates` | `run`, `retest`, `status`, `explain`, `profile` |
+| `rm_gates_*` | `rm_gates_run`, `rm_gates_retest`, `rm_gates_status`, `rm_gates_explain`, `rm_gates_profile` |
 
 CLI: `repository-manager --gate {fast,heavy}` / `--gate-retest {fast,heavy}
 [--same-node]`. Both front ends call the exact same
@@ -92,28 +92,28 @@ means.
 ## Recipes
 Run the fast gate across the whole workspace:
 ```
-rm_gates(action="run", stage="fast")
+rm_gates_run(stage="fast")
 ```
 Run the heavy gate against two repos:
 ```
-rm_gates(action="run", stage="heavy", repos="agent-connector-sdk,epistemic-graph")
+rm_gates_run(stage="heavy", repos="agent-connector-sdk,epistemic-graph")
 ```
 After fixing what a wave reported failing, retest only that — narrows
 automatically, escalates to a full wave on an all-pass:
 ```
-rm_gates(action="retest", stage="heavy", repos="epistemic-graph")
+rm_gates_retest(stage="heavy", repos="epistemic-graph")
 ```
 Poll a wave (compact roll-up):
 ```
-rm_gates(action="status")
+rm_gates_status()
 ```
 Explain why one repo's gate job failed:
 ```
-rm_gates(action="explain", repo="epistemic-graph")
+rm_gates_explain(repo="epistemic-graph")
 ```
 Find the fleet's 15 slowest hooks:
 ```
-rm_gates(action="profile")
+rm_gates_profile()
 ```
 
 ## The ledger `retest` reads — read this before trusting a "clean" baseline
@@ -139,8 +139,8 @@ are easy to get wrong precisely because getting them wrong is silent:
 
 ```mermaid
 flowchart TD
-    Run["rm_gates run<br/>stage=fast|heavy"] --> Ledger[("gate_ledger<br/>records every hook + failing test id")]
-    Fix["fix what failed"] --> Retest["rm_gates retest"]
+    Run["rm_gates_run<br/>stage=fast|heavy"] --> Ledger[("gate_ledger<br/>records every hook + failing test id")]
+    Fix["fix what failed"] --> Retest["rm_gates_retest"]
     Ledger -->|"reads latest hooks<br/>for repo+stage"| Plan{"baseline?"}
     Plan -->|"missing"| Full1["run FULL wave<br/>(nothing to narrow against)"]
     Plan -->|"clean"| NoOp["nothing submitted"]
@@ -164,7 +164,7 @@ flowchart TD
   `.pre-commit-config.yaml` `entry:` text for the same flags, fleet-wide.
   **Detection only** — `gates.py` shells to `pre-commit run` and never
   constructs a hook's argv, so nothing here can rewrite what it finds. Not
-  yet wired to `rm_gates` or a CLI flag; call
+  yet wired to `rm_gates_*` or a CLI flag; call
   `fail_fast_audit.dispatch("check"|"check_fleet", ...)` directly.
 - **`forge_status`** — abstracts "is the tag's CI run still going, or did it
   conclude?" over GitHub Actions and GitLab CI. A confirmed non-success
@@ -175,7 +175,7 @@ flowchart TD
   loadfile -p no:randomly -rfE` when it already declares `pytest-xdist` but
   never passes `-n`. Dry-run by default; refuses any repo whose pytest hook
   entry is not byte-identical to the fleet boilerplate. Not yet wired to
-  `rm_gates` or a CLI flag; call `xdist_rollout.dispatch("plan"|"apply",
+  `rm_gates_*` or a CLI flag; call `xdist_rollout.dispatch("plan"|"apply",
   ...)` directly.
 
 ## ★ Three environment traps that produce FALSE gate verdicts
@@ -205,7 +205,7 @@ in one agent's memory:
   key on. Two differently-located checkouts of the same repo name do not
   collide in the ledger.
 - Any tool's live action set is self-discoverable:
-  `rm_gates(action="list_actions")`.
+  the served `rm_gates_*` tool list.
 
 ## Related
 - `repository-manager-development-lifecycle` — the governed entrypoint; a
@@ -213,8 +213,8 @@ in one agent's memory:
   replacement for the lifecycle.
 - `repository-manager-merge-and-reconcile` — the merge queue's own
   differential gate-vs-base comparison at land time; a separate mechanism
-  from `rm_gates`, which validates a working tree directly.
-- `repository-manager-workspace-validation` — `rm_projects`/`rm_workspace`
+  from `rm_gates_*`, which validates a working tree directly.
+- `repository-manager-workspace-validation` — `rm_projects_*`/`rm_workspace_*`
   install/build/version-bump; not gate execution.
 - `repository-manager-fleet-scale-operations` — sizing how many concurrent
   heavy gate waves a workspace can sustain.

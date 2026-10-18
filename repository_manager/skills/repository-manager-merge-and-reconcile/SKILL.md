@@ -45,7 +45,7 @@ repository-manager --merge-queue config  --repo-path .        # validate the gat
 repository-manager --merge-queue withdraw --repo-path . --queue-branch <b>
 ```
 
-MCP: `rm_merge_queue(action=…, repo_path=…)`. Standalone driver, suitable as a
+MCP: `rm_merge_queue_<action>(repo_path=…)`. Standalone driver, suitable as a
 systemd/CronJob `ExecStart`: `python -m repository_manager.merge_queue run --path <repo>`.
 
 **Enqueued is not a to-do item.** A scheduler drains every ~5 minutes: it gates

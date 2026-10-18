@@ -772,11 +772,8 @@ async def test_rm_lane_is_a_live_registered_mcp_tool() -> None:
 
     tools = await mcp.list_tools()
     names = {t.name for t in tools}
-    assert "rm_lane" in names
-
-    rm_lane = next(t for t in tools if t.name == "rm_lane")
-    action_description = rm_lane.parameters["properties"]["action"]["description"]
     for action in lane_doctor.ACTIONS:
-        assert f"'{action}'" in action_description, (
-            f"rm_lane's live action Field does not document {action!r}"
+        assert f"rm_lane_{action}" in names, (
+            f"rm_lane action {action!r} is not served as its own tool"
         )
+    assert "rm_lane" not in names

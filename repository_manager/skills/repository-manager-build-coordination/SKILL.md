@@ -10,7 +10,7 @@ description: >-
   (repo, tree-sha, feature-set, toolchain, target) has already paid for. Use when
   an agent needs a repository's build artifacts, wants to know whether a build is
   cached, or must reclaim old cache entries. Do NOT use for the packaging-style
-  `rm_projects` install/build (repository-manager-workspace-validation), for the
+  `rm_projects_*` install/build (repository-manager-workspace-validation), for the
   merge queue's own gate execution (repository-manager-merge-and-reconcile), or for
   sizing how many heavy builds may run at once
   (repository-manager-fleet-scale-operations).
@@ -22,7 +22,7 @@ metadata:
 ---
 # Repository Manager — Build Coordination
 
-`rm_build` is a content-addressed build broker for **any** repository
+`rm_build_*` is a content-addressed build broker for **any** repository
 (`CONCEPT:RM-TASK-LEDGER`). The dedup is the entire value: N lanes each asking for
 the same build today each pay for a full `cargo`/`pnpm` build into their own
 `target-isolated`/`node_modules` — measured at 21.7 GB across 4 duplicate
@@ -40,7 +40,7 @@ one shared, checksummed cache instead.
 - Reclaim old cache entries under a bound (`gc`).
 
 ## When NOT to use
-- Python project install/build via `pyproject.toml` (`rm_projects` `install`/`build`)
+- Python project install/build via `pyproject.toml` (`rm_projects_install`/`rm_projects_build`)
   → `repository-manager-workspace-validation`.
 - The merge queue's own gate execution (it calls a repo's declared command directly,
   not this broker) → `repository-manager-merge-and-reconcile`.
@@ -48,9 +48,9 @@ one shared, checksummed cache instead.
   `repository-manager-fleet-scale-operations`.
 
 ## Tools & actions
-| Condensed tool | Actions |
+| Tool group | Per-operation tools |
 |----------------|---------|
-| `rm_build` | `request`, `status`, `artifacts`, `explain`, `gc` |
+| `rm_build_*` | `rm_build_request`, `rm_build_status`, `rm_build_artifacts`, `rm_build_explain`, `rm_build_gc` |
 
 CLI: `repository-manager --build-broker {request,status,artifacts,explain,gc} --repo-path <repo>`
 with `--build-spec` / `--build-key` / `--same-node` / `--build-wait-timeout` /
@@ -67,19 +67,19 @@ with `--build-spec` / `--build-key` / `--same-node` / `--build-wait-timeout` /
 ## Recipes
 Request a build (dedups or builds; blocks up to `wait_timeout` on an in-flight match):
 ```
-rm_build(action="request", repo_path="/path/to/epistemic-graph", spec="release")
+rm_build_request(repo_path="/path/to/epistemic-graph", spec="release")
 ```
 Check a specific key without building:
 ```
-rm_build(action="status", repo_path=".", key="<the key>")
+rm_build_status(repo_path=".", key="<the key>")
 ```
 Find out why a key missed cache:
 ```
-rm_build(action="explain", repo_path=".", key="<the key>")
+rm_build_explain(repo_path=".", key="<the key>")
 ```
 Reclaim cache, keeping the 10 most recent entries per key, or anything under 14 days old:
 ```
-rm_build(action="gc", repo_path=".", keep_recent=10, max_age_days=14)
+rm_build_gc(repo_path=".", keep_recent=10, max_age_days=14)
 ```
 
 ## The cache key and honest degradation
@@ -104,7 +104,7 @@ properties matter more than the mechanics:
 
 ```mermaid
 flowchart TD
-    Req["rm_build request<br/>(repo, tree-sha, feature-set,<br/>toolchain, target)"] --> Key["compute cache key"]
+    Req["rm_build_request<br/>(repo, tree-sha, feature-set,<br/>toolchain, target)"] --> Key["compute cache key"]
     Key --> Check{"key already<br/>published?"}
     Check -->|"yes"| Hit["hit — return published artifacts"]
     Check -->|"in-flight elsewhere"| Wait["wait up to wait_timeout"]
@@ -114,11 +114,11 @@ flowchart TD
     Build -->|"tree clean, toolchain fingerprintable"| Miss["produced_miss — publish + cache"]
     Build -->|"dirty tree OR unfingerprintable toolchain"| Degraded["degraded_uncacheable — BUILDS,<br/>never serves a stale artifact"]
     Build -->|"artifact fails checksum on read-back"| Corrupted["corrupted_entry — rebuild, do not serve"]
-    Hit --> Artifacts["rm_build artifacts"]
+    Hit --> Artifacts["rm_build_artifacts"]
     WaitedHit --> Artifacts
     Miss --> Artifacts
-    Explain["rm_build explain"] -.->|"names the ONE differing<br/>key component"| Check
-    GC["rm_build gc<br/>keep_recent + max_age_days"] -.->|"bounded reclamation,<br/>never touches keep_recent"| Key
+    Explain["rm_build_explain"] -.->|"names the ONE differing<br/>key component"| Check
+    GC["rm_build_gc<br/>keep_recent + max_age_days"] -.->|"bounded reclamation,<br/>never touches keep_recent"| Key
 ```
 
 ## ★ Arbitration here is advisory, not enforced (D-CP-8)
@@ -126,7 +126,7 @@ An agent running `cargo build`/`uv sync` directly bypasses this broker entirely 
 nothing prevents it. That is the correct default for **private, lane-local**
 iteration (see `repository-manager-lane-lifecycle`'s `CARGO_TARGET_DIR`
 partitioning): a quick local `cargo check` inside your own `target-isolated` does
-not need to go through a shared broker. Route through `rm_build` specifically when
+not need to go through a shared broker. Route through `rm_build_*` specifically when
 the build's *artifacts* are something another lane, the merge queue, or a release
 step might also want — that is where the dedup pays for itself. Do not present a
 direct compiler invocation as equivalent to a broker request in either direction:
@@ -134,11 +134,11 @@ they are different operations with different visibility, not two spellings of th
 same call.
 
 ## Gotchas
-- `request` returns **synchronously** (unlike `rm_git`/`rm_projects`/`rm_workspace`,
+- `request` returns **synchronously** (unlike `rm_git_*`/`rm_projects_*`/`rm_workspace_*`,
   which return a job id) — it already blocks internally up to `wait_timeout` on an
   in-flight match.
 - `gc` never removes the `keep_recent` most-recent entries per key regardless of age.
-- Any tool's live action set is self-discoverable: `rm_build(action="list_actions")`.
+- Any tool's live action set is self-discoverable: the served `rm_build_*` tool list.
 
 ## Related
 - `repository-manager-development-lifecycle` — the governed entrypoint; a build

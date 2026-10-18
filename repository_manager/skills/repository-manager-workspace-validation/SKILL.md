@@ -24,11 +24,11 @@ and pytest suite and returns a structured pass/fail report; maintenance drives p
 dependency-ordered version bumps.
 
 ## When to use
-- Validate one or all projects (pre-commit + pytest) and get a pass/fail report (`rm_projects` `validate`).
-- Install or build a project ecosystem (`rm_projects` `install` / `build`).
-- List workspace projects / their branches (`rm_workspace` `list` / `list_branches`).
-- Scaffold, template, or save a `workspace.yml` (`rm_workspace` `setup` / `template` / `save`).
-- Run phased version-bump maintenance across the workspace (`rm_workspace` `maintain`).
+- Validate one or all projects (pre-commit + pytest) and get a pass/fail report (`rm_projects_validate`).
+- Install or build a project ecosystem (`rm_projects_install` / `rm_projects_build`).
+- List workspace projects / their branches (`rm_workspace_list` / `rm_workspace_list_branches`).
+- Scaffold, template, or save a `workspace.yml` (`rm_workspace_setup` / `rm_workspace_template` / `rm_workspace_save`).
+- Run phased version-bump maintenance across the workspace (`rm_workspace_maintain`).
 
 ## When NOT to use
 - Isolated per-session branch worktrees → `repository-manager-worktree-orchestration`.
@@ -46,15 +46,15 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
 | `WORKSPACE_MANAGEMENTTOOL` / `PROJECT_MANAGEMENTTOOL` | optional | Gate the tool tags on |
 
 ## Tools & actions
-| Condensed tool | Actions |
+| Tool group | Per-operation tools |
 |----------------|---------|
-| `rm_projects` | `install`, `build`, `validate`, `validate_status` |
-| `rm_workspace` | `fleet_evidence_check`, `list`, `list_branches`, `setup`, `template`, `save`, `maintain`, `maintain_status` |
+| `rm_projects_*` | `rm_projects_install`, `rm_projects_build`, `rm_projects_validate`, `rm_projects_validate_status` |
+| `rm_workspace_*` | `rm_workspace_fleet_evidence_check`, `rm_workspace_list`, `rm_workspace_list_branches`, `rm_workspace_setup`, `rm_workspace_template`, `rm_workspace_save`, `rm_workspace_maintain`, `rm_workspace_maintain_status` |
 
 ### Key parameters
-- `repositories` — comma-separated project names/paths to scope `rm_projects(action="validate")`;
-  omit to target all. **Not `projects`** — that is `rm_workspace(action="maintain")`'s scoping
-  field (see below); the two condensed tools use different parameter names for the same idea.
+- `repositories` — comma-separated project names/paths to scope `rm_projects_validate()`;
+  omit to target all. **Not `projects`** — that is `rm_workspace_maintain()`'s scoping
+  field (see below); the two tool groups use different parameter names for the same idea.
 - `validate` returns a **job id**; poll it with `validate_status` (pass `job_id`, `summary`).
 - `failed_only` — for `validate`: re-validate only repositories whose most-recent run failed
   (ignored if `repositories` is set; forces re-validation of that set).
@@ -62,43 +62,43 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
   commit across the targeted repos before any bump.
 - `auto_bump` / `auto_push` / `bump_part` — for `validate`: chain a phased version bump and/or push
   once validation passes (see `repository-manager-workspace-release` for the full DAG/consent story).
-- `part` — version part to bump for `rm_workspace(action="maintain")` (`major`|`minor`|`patch`).
-- `projects` — comma-separated repo names to scope `rm_workspace(action="maintain")` (this tool's
-  field IS named `projects`, unlike `rm_projects`'s `repositories`).
+- `part` — version part to bump for `rm_workspace_maintain()` (`major`|`minor`|`patch`).
+- `projects` — comma-separated repo names to scope `rm_workspace_maintain()` (this tool's
+  field IS named `projects`, unlike `rm_projects_*`'s `repositories`).
 - `phase` / `auto_start` — phased maintenance controls; `dry_run` to preview bumps.
 - `yml_path` / `config_dict` / `use_default` — for `setup` / `template` / `save`.
 
 ## Recipes
 Validate every project (returns a job id), then poll:
 ```
-rm_projects(action="validate")
-rm_projects(action="validate_status", job_id="<id>", summary=true)
+rm_projects_validate()
+rm_projects_validate_status(job_id="<id>", summary=true)
 ```
 Validate only two projects:
 ```
-rm_projects(action="validate", repositories="agent-connector-sdk,gitlab-api")
+rm_projects_validate(repositories="agent-connector-sdk,gitlab-api")
 ```
 Dry-run a patch bump across the workspace:
 ```
-rm_workspace(action="maintain", part="patch", dry_run=true)
+rm_workspace_maintain(part="patch", dry_run=true)
 ```
 List all workspace projects:
 ```
-rm_workspace(action="list")
+rm_workspace_list()
 ```
 
 ## Gotchas
 - `validate` and `maintain` run as **background jobs** — use `validate_status` / `maintain_status`
   with the returned `job_id`; don't expect inline results.
-- ★ **`rm_projects(action="validate")` scopes on `repositories`; `rm_workspace(action="maintain")`
-  scopes on `projects`.** The two condensed tools do not share a parameter name for the same idea
+- ★ **`rm_projects_validate()` scopes on `repositories`; `rm_workspace_maintain()`
+  scopes on `projects`.** The two tool groups do not share a parameter name for the same idea
   — do not assume the field you used to scope one also scopes the other.
 - Validation covers pre-commit hooks **and** pytest; a project is only clean when both pass.
 - `maintain` bumps are phased/dependency-ordered — `auto_start` begins at the lowest phase with
   pending work; use `dry_run` first on a large workspace.
 - `save` overwrites `workspace.yml` — pass an explicit `yml_path` when you don't want the default.
-- Any tool's live action set is self-discoverable: `rm_projects(action="list_actions")` /
-  `rm_workspace(action="list_actions")` return the current set instead of running anything.
+- Any tool's live action set is self-discoverable: the served `rm_projects_*` tool list /
+  the served `rm_workspace_*` tool list return the current set instead of running anything.
 
 ## Related
 - `repository-manager-worktree-orchestration` to audit which projects have unmerged/unpushed work.
