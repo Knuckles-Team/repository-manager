@@ -59,6 +59,8 @@ subdirectories:
         - url: https://github.com/Knuckles-Team/archivebox-api.git
           description: Pythonic ArchiveBox API Wrapper and Fast MCP Server for Agentic
             AI use!
+        - url: https://github.com/Knuckles-Team/webarchiver.git
+          description: 'Web-source connector: governed fetch, main-content extract, render, screenshot, crawl and links over MCP.'
         - url: https://github.com/Knuckles-Team/arr-mcp.git
           description: Arr Suite MCP Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/atlassian-agent.git
@@ -402,6 +404,8 @@ subdirectories:
       description: Model Context Protocol adapter for Sonarr/Radarr indexers.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/archivebox-mcp.git
       description: Model Context Protocol adapter for ArchiveBox page archiving.
+    - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/webarchiver-mcp.git
+      description: Model Context Protocol adapter for the webarchiver web-source connector.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/vllm.git
       description: vLLM highly-performant LLM inference service.
     - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/containers/services/technitium-dns.git
@@ -569,6 +573,7 @@ selectors:
     - agent-packages/agents/lakekeeper-mcp
     - agent-packages/agents/kafka-mcp
     - agent-packages/agents/archivebox-api
+    - agent-packages/agents/webarchiver
     - agent-packages/agents/arr-mcp
     - agent-packages/agents/atlassian-agent
     - agent-packages/agents/audio-transcriber
@@ -664,6 +669,7 @@ selectors:
     - services/audio-transcriber-mcp
     - services/arr-mcp
     - services/archivebox-mcp
+    - services/webarchiver-mcp
     - services/vllm
     - services/technitium-dns
     - services/eunomia
