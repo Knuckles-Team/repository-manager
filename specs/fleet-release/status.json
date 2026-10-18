@@ -54,6 +54,7 @@
       "title": "Dependency-ordered execution with trusted gating",
       "delivery_state": "VERIFIED",
       "landed_in": [
+        "a6c7923876ce",
         "c930dfd5c01a"
       ],
       "verified_by": [
