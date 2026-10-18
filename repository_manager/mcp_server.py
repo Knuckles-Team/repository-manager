@@ -30,6 +30,7 @@ from agent_connector_sdk.mcp.server import create_mcp_server
 from agent_connector_sdk.mcp.tool_surface import register_tool_surface
 from agent_connector_sdk.utilities import to_integer
 
+from repository_manager.action_split import register_split_action_tools
 from repository_manager.mcp_tools import (
     MCP_TOOL_REGISTRY,
     register_docs_readiness_tools,
@@ -49,9 +50,10 @@ from repository_manager.mcp_tools.contracts import (
     RM_WORKTREE_ACTIONS,
 )
 from repository_manager.models import GitResult
+from repository_manager.operations_facade import operations_facade
 from repository_manager.repository_manager import Git
 
-__version__ = "3.4.1"
+__version__ = "3.5.0"
 
 DEFAULT_WORKSPACE = setting(
     "REPOSITORY_MANAGER_WORKSPACE",
@@ -971,11 +973,11 @@ def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
 
     registered_tags = register_tool_surface(
         mcp,
-        client_cls=Git,
+        client_cls=operations_facade(Git),
         get_client=lambda: Git(),
         service="repository-manager",
-        tool_registry=list(MCP_TOOL_REGISTRY),
     )
+    registered_tags += register_split_action_tools(mcp, list(MCP_TOOL_REGISTRY))
 
     for mw in middlewares:
         mcp.add_middleware(mw)

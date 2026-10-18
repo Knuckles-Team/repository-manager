@@ -19,7 +19,7 @@ RUN apt-get update \
 # Slim MCP-only dependency closure.
 FROM builder-base AS builder-mcp
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --break-system-packages repository-manager[mcp]==3.4.1
+    uv pip install --system --break-system-packages --only-binary :all: repository-manager[mcp]==3.5.0
 
 FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime-base
 # repository-manager shells out to `git` at RUNTIME — the validate/release flow runs
@@ -106,7 +106,7 @@ RUN apt-get update \
 # newest release satisfying epistemic-graph's own `[build-system] requires =
 # ["maturin>=1.0,<2.0"]`; keep this in sync with that declaration the same way
 # the rust/node/go pins above track theirs.
-RUN uv pip install --system --break-system-packages maturin==1.14.1
+RUN uv pip install --system --break-system-packages --only-binary :all: maturin==1.14.1
 
 # node + pnpm — the SAME defect class as D-MQ-8 above, never mirrored from
 # cargo to node until now. `agent-webui/.pre-commit-config.yaml` declares
