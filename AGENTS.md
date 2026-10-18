@@ -851,14 +851,15 @@ gate) gained:
   `cross_check_targets` independently rescans a full `candidate_repos`
   universe (never the caller's own narrowed list) and reports any omission
   as a **hard abort** with a distinct `TARGETS_INCOMPLETE` reason.
-- **Partial-publish detection.** A publish uploads a wheel and an sdist as
-  two separate requests; a version whose Simple-API listing shows only one
-  of the two is mid-publish, not absent and not unsatisfiable. Reporting it
-  as plain `"unsatisfied"` is indistinguishable from "will never work" —
-  exactly the confusion behind the 2026-08-12 incident this module already
-  guards against. It is now its own `CheckStatus`, `"partial_publish"` —
-  still a failure for gating purposes, but with its own remediation ("wait
-  for the other half," not "give up").
+- **The wheel rule (pipelines `PIPE-RELEASE-R008`).** Consumers install
+  wheels only, so a dependency version is available when the index has a
+  wheel compatible with the target interpreter or platform. A missing sdist
+  on that version is the advisory `sdist_missing`, never a failure. A version
+  with only an sdist fails as `source_only`, and one with no compatible wheel
+  fails as `no_compatible_wheel`. The exception is a package listed in the
+  consumer's `[tool.pipelines] allow-source-build`. `partial_publish` is
+  reported only while the forge says that version's release run is still
+  queued or in progress. After the run concludes, the wheel rule decides.
 - **CI-run barrier.** Before retrying a downstream repo's gate at all,
   `await_gate_readiness` can ask the publishing repo's own forge (via
   `forge_status.backend_for_remote`) whether the release run already

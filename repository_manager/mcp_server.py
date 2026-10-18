@@ -53,7 +53,7 @@ from repository_manager.models import GitResult
 from repository_manager.operations_facade import operations_facade
 from repository_manager.repository_manager import Git
 
-__version__ = "3.5.0"
+__version__ = "3.5.1"
 
 DEFAULT_WORKSPACE = setting(
     "REPOSITORY_MANAGER_WORKSPACE",

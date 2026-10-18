@@ -354,9 +354,7 @@ def test_non_distribution_repository_is_a_valid_manifest_entry(tmp_path) -> None
     assert dr.fleet_package_names(manifest) == {".github", "epistemic-graph"}
     assert not any(
         isinstance(item, dr.InvalidDependencyMetadata)
-        for item in dr.declared_fleet_constraints(
-            tmp_path, workspace_yml_path=manifest
-        )
+        for item in dr.declared_fleet_constraints(tmp_path, workspace_yml_path=manifest)
     )
 
 
@@ -865,28 +863,32 @@ def test_main_exits_zero_when_no_constraints(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# _version_file_summary / PyPISimpleIndexBackend -- partial-publish (only a
-# wheel OR an sdist uploaded, never both) and all-yanked detection.
+# _version_file_summary / PyPISimpleIndexBackend -- the wheel rule
+# (pipelines PIPE-RELEASE-R008): a compatible wheel makes a version available.
 # --------------------------------------------------------------------------- #
 
+_PURE = "py3-none-any"
+_FILES = {
+    "files": [
+        {"filename": f"epistemic_graph-2.23.2-{_PURE}.whl", "yanked": False},
+        {"filename": "epistemic_graph-2.23.2.tar.gz", "yanked": False},
+        {"filename": f"epistemic_graph-2.23.3-{_PURE}.whl", "yanked": False},
+        {"filename": "epistemic_graph-2.23.4.tar.gz", "yanked": False},
+        {"filename": "epistemic_graph-2.23.5-cp399-cp399-win_arm64.whl"},
+        {"filename": f"epistemic_graph-2.23.6-{_PURE}.whl", "yanked": True},
+        {"filename": "epistemic_graph-2.23.6.tar.gz", "yanked": True},
+    ]
+}
 
-def test_version_file_summary_distinguishes_wheel_sdist_and_yanked():
-    data = {
-        "files": [
-            {"filename": "epistemic_graph-2.23.2-py3-none-any.whl", "yanked": False},
-            {"filename": "epistemic_graph-2.23.2.tar.gz", "yanked": False},
-            {"filename": "epistemic_graph-2.23.3-py3-none-any.whl", "yanked": False},
-            {"filename": "epistemic_graph-2.23.4-py3-none-any.whl", "yanked": True},
-            {"filename": "epistemic_graph-2.23.4.tar.gz", "yanked": True},
-        ]
-    }
-    summary = dr._version_file_summary(data)
-    assert summary["2.23.2"].fully_installable is True
-    assert summary["2.23.3"].partial is True
-    assert summary["2.23.3"].fully_installable is False
-    assert summary["2.23.4"].all_yanked is True
-    assert summary["2.23.4"].fully_installable is False
-    assert summary["2.23.4"].partial is False
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_version_file_summary_judges_by_compatible_wheel():
+    summary = dr._version_file_summary(_FILES)
+    assert summary["2.23.2"].available and not summary["2.23.2"].sdist_missing
+    assert summary["2.23.3"].available and summary["2.23.3"].sdist_missing
+    assert summary["2.23.4"].source_only and not summary["2.23.4"].available
+    assert summary["2.23.5"].incompatible and not summary["2.23.5"].available
+    assert summary["2.23.6"].all_yanked and not summary["2.23.6"].available
 
 
 class _FakeHTTPResponse:
@@ -898,42 +900,48 @@ class _FakeHTTPResponse:
         return self._data
 
 
-def test_pypi_backend_separates_full_partial_and_yanked_versions(monkeypatch):
-    """The real (extended) PyPISimpleIndexBackend.available_versions path --
-    only a version with BOTH a wheel and an sdist counts as fully available;
-    a wheel-only release is `partial_versions`, an all-yanked one is
-    `yanked_versions`, never silently folded into `versions`."""
-    data = {
-        "files": [
-            {"filename": "epistemic_graph-2.23.2-py3-none-any.whl", "yanked": False},
-            {"filename": "epistemic_graph-2.23.2.tar.gz", "yanked": False},
-            {"filename": "epistemic_graph-2.23.3-py3-none-any.whl", "yanked": False},
-            {"filename": "epistemic_graph-2.23.4-py3-none-any.whl", "yanked": True},
-            {"filename": "epistemic_graph-2.23.4.tar.gz", "yanked": True},
-        ]
-    }
+@pytest.mark.spec("RM-RELEASE-04")
+def test_pypi_backend_buckets_versions_by_the_wheel_rule(monkeypatch):
+    """The real PyPISimpleIndexBackend path: a wheel-only release is available
+    (with sdist_missing), an sdist-only one is source_only, and a wheel for
+    another platform is incompatible -- never folded into `versions`."""
     monkeypatch.setattr(
-        dr.requests, "get", lambda *a, **k: _FakeHTTPResponse(200, data)
+        dr.requests, "get", lambda *a, **k: _FakeHTTPResponse(200, _FILES)
     )
     backend = dr.PyPISimpleIndexBackend()
     available = backend.available_versions(
         "epistemic-graph", index_url="https://pypi.org/simple"
     )
-    assert available.versions == ["2.23.2"]
-    assert available.latest == "2.23.2"
-    assert available.partial_versions == ["2.23.3"]
-    assert available.yanked_versions == ["2.23.4"]
+    assert available.versions == ["2.23.2", "2.23.3"]
+    assert available.latest == "2.23.3"
+    assert available.sdist_missing_versions == ["2.23.3"]
+    assert available.source_only_versions == ["2.23.4"]
+    assert available.incompatible_versions == ["2.23.5"]
+    assert available.yanked_versions == ["2.23.6"]
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_pypi_backend_honours_the_target_tags(monkeypatch):
+    from packaging.tags import Tag
+
+    monkeypatch.setattr(
+        dr.requests, "get", lambda *a, **k: _FakeHTTPResponse(200, _FILES)
+    )
+    backend = dr.PyPISimpleIndexBackend([Tag("cp399", "cp399", "win_arm64")])
+    available = backend.available_versions(
+        "epistemic-graph", index_url="https://pypi.org/simple"
+    )
+    assert available.versions == ["2.23.5"]
 
 
 # --------------------------------------------------------------------------- #
-# check_constraint -- partial_publish status, and yanked_but_would_match.
+# check_constraint -- sdist_missing advisory, source_only, allow-source-build,
+# partial_publish only while the release run is in progress.
 # --------------------------------------------------------------------------- #
 
 
 class _RichFakeBackend:
-    """Returns a caller-supplied AvailableVersions verbatim -- used to drive
-    check_constraint's partial/yanked branches directly, without needing a
-    real Simple-API response to produce them."""
+    """Returns a caller-supplied AvailableVersions verbatim."""
 
     def __init__(self, available):
         self.available = available
@@ -942,24 +950,154 @@ class _RichFakeBackend:
         return self.available
 
 
-def test_check_constraint_reports_partial_publish_as_distinct_status():
-    available = dr.AvailableVersions(
+def _available(**buckets):
+    return dr.AvailableVersions(
         package="epistemic-graph",
         index_url="https://pypi.org/simple",
-        versions=["2.22.4"],
-        latest="2.22.4",
-        partial_versions=["2.23.2"],
+        versions=buckets.pop("versions", ["2.22.4"]),
+        latest=buckets.pop("latest", "2.22.4"),
+        **buckets,
     )
-    result = dr.check_constraint(
+
+
+def _check(available, **kwargs):
+    return dr.check_constraint(
         _constraint(),
         index_urls=["https://pypi.org/simple"],
         backend=_RichFakeBackend(available),
+        **kwargs,
+    )
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_wheel_without_sdist_passes_with_the_sdist_missing_advisory():
+    result = _check(
+        _available(
+            versions=["2.22.4", "2.23.2"],
+            latest="2.23.2",
+            sdist_missing_versions=["2.23.2"],
+        )
+    )
+    assert result.status == "satisfied" and result.satisfied
+    assert result.matching_version == "2.23.2"
+    assert result.advisories == [dr.SDIST_MISSING]
+    assert "sdist_missing" in result.detail
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_wheel_with_sdist_passes_without_advisory():
+    result = _check(_available(versions=["2.23.2"], latest="2.23.2"))
+    assert result.satisfied and result.advisories == []
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_sdist_only_version_fails():
+    result = _check(
+        _available(source_only_versions=["2.23.2"]),
+        release_run_state=lambda package, version: "completed",
+    )
+    assert result.status == "source_only"
+    assert result.satisfied is False
+    assert result.unavailable_version == "2.23.2"
+    assert result.partial_publish_version is None
+    assert "allow-source-build" in result.detail
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_sdist_only_version_on_the_allow_list_passes():
+    result = _check(
+        _available(source_only_versions=["2.23.2"]),
+        allow_source_build=["Epistemic_Graph"],
+    )
+    assert result.satisfied
+    assert result.matching_version == "2.23.2"
+    assert "allow-source-build" in result.detail
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_no_compatible_wheel_fails():
+    result = _check(_available(incompatible_versions=["2.23.2"]))
+    assert result.status == "no_compatible_wheel"
+    assert result.satisfied is False
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_in_progress_release_run_reports_partial_publish():
+    seen = []
+
+    def probe(package, version):
+        seen.append((package, version))
+        return "in_progress"
+
+    result = _check(
+        _available(source_only_versions=["2.23.2"]), release_run_state=probe
     )
     assert result.status == "partial_publish"
-    assert result.status != "unsatisfied"
     assert result.satisfied is False
     assert result.partial_publish_version == "2.23.2"
     assert "in flight" in result.detail
+    assert seen == [("epistemic-graph", "2.23.2")]
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_concluded_release_run_is_judged_by_the_wheel_rule():
+    result = _check(
+        _available(source_only_versions=["2.23.2"]),
+        release_run_state=lambda package, version: "completed",
+    )
+    assert result.status == "source_only"
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_concluded_run_with_a_wheel_passes_without_asking_the_forge():
+    def probe(package, version):
+        raise AssertionError("a satisfied check must not query the forge")
+
+    result = _check(
+        _available(
+            versions=["2.23.2"], latest="2.23.2", sdist_missing_versions=["2.23.2"]
+        ),
+        release_run_state=probe,
+    )
+    assert result.satisfied and result.advisories == [dr.SDIST_MISSING]
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_failing_probe_degrades_to_the_wheel_rule():
+    def probe(package, version):
+        raise RuntimeError("forge down")
+
+    result = _check(
+        _available(source_only_versions=["2.23.2"]), release_run_state=probe
+    )
+    assert result.status == "source_only"
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_allow_source_build_reads_exact_names_only(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pipelines]\nallow-source-build = ["Uptime_Kuma.API", ":all:"]\n'
+    )
+    assert dr.allow_source_build(tmp_path) == frozenset({"uptime-kuma-api"})
+    assert dr.allow_source_build(tmp_path / "missing") == frozenset()
+
+
+@pytest.mark.spec("RM-RELEASE-04")
+def test_check_tree_applies_the_allow_list(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "consumer"\n'
+        '[tool.pipelines]\nallow-source-build = ["epistemic-graph"]\n'
+    )
+    monkeypatch.setattr(
+        dr, "declared_fleet_constraints", lambda *a, **k: [_constraint()]
+    )
+    report = dr.check_tree(
+        tmp_path,
+        backend=_RichFakeBackend(_available(source_only_versions=["2.23.2"])),
+        release_run_state=lambda package, version: "completed",
+    )
+    assert report.ok
+    assert report.checks[0].matching_version == "2.23.2"
 
 
 def test_check_constraint_reports_yanked_but_would_match_on_unsatisfied():
@@ -1001,12 +1139,17 @@ dependencies = [{deps_toml}]
 
 def test_cross_check_targets_finds_repo_excluded_from_targets(tmp_path):
     covered = tmp_path / "covered"
-    _write_pyproject(covered, name="agent-connector-sdk", deps=["epistemic-graph>=2.23.2"])
+    _write_pyproject(
+        covered, name="agent-connector-sdk", deps=["epistemic-graph>=2.23.2"]
+    )
     missed = tmp_path / "missed"
     _write_pyproject(missed, name="another-repo", deps=["epistemic-graph>=2.0.0"])
 
     targets = [("agent-connector-sdk", str(covered))]
-    candidate_repos = [("agent-connector-sdk", str(covered)), ("another-repo", str(missed))]
+    candidate_repos = [
+        ("agent-connector-sdk", str(covered)),
+        ("another-repo", str(missed)),
+    ]
 
     missing = dr.cross_check_targets(
         targets, published_packages={"epistemic-graph"}, candidate_repos=candidate_repos
@@ -1016,7 +1159,9 @@ def test_cross_check_targets_finds_repo_excluded_from_targets(tmp_path):
 
 def test_cross_check_targets_empty_when_every_dependent_is_covered(tmp_path):
     covered = tmp_path / "covered"
-    _write_pyproject(covered, name="agent-connector-sdk", deps=["epistemic-graph>=2.23.2"])
+    _write_pyproject(
+        covered, name="agent-connector-sdk", deps=["epistemic-graph>=2.23.2"]
+    )
     targets = [("agent-connector-sdk", str(covered))]
 
     missing = dr.cross_check_targets(
