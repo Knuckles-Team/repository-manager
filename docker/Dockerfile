@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 # One right-sized MCP-server image (build in a builder, ship only /usr/local
-# -- no dev-tools/source). agent_server was retired fleet-wide (operator
+# -- no dev-tools/source). Advisory scanners (cccc, the mermaid linter's bun)
+# are never installed here; they run in the weekly advisory workflow. agent_server was retired fleet-wide (operator
 # ruling), so the former --target agent image no longer exists; this is now
 # the sole build target.
 #
@@ -18,7 +19,7 @@ RUN apt-get update \
 # Slim MCP-only dependency closure.
 FROM builder-base AS builder-mcp
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --break-system-packages repository-manager[mcp]==3.4.0
+    uv pip install --system --break-system-packages repository-manager[mcp]==3.4.1
 
 FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime-base
 # repository-manager shells out to `git` at RUNTIME — the validate/release flow runs
@@ -107,36 +108,6 @@ RUN apt-get update \
 # the rust/node/go pins above track theirs.
 RUN uv pip install --system --break-system-packages maturin==1.14.1
 
-# cccc -- the complexity gate's measurement backend. `check_complexity.py` in
-# agent-connector-sdk (and its ported copies) shells out to `cccc` and exits 2
-# "CANNOT RUN" when it is absent, so without this binary EVERY complexity gate
-# in every repo fails closed inside this container -- the same
-# reads-like-a-real-failure defect class as D-MQ-8's cargo and maturin above.
-#
-# ⚠ INSTALLED FROM GIT AT A PINNED REV, NOT FROM crates.io, AND THAT IS NOT
-#   FUSSINESS: the name `cccc` on crates.io is a DIFFERENT, UNRELATED PROJECT
-#   ("Collaborative multi-agent control plane and CLI", 0.4.33). `cargo install
-#   cccc` silently installs that instead, and the resulting binary would not
-#   understand a single flag this gate passes. The per-language `cccc-es-cli` /
-#   `cccc-rs-cli` crates ARE from this author but are older (0.4.0) and split
-#   per language; the gate needs the unified multi-language binary.
-#
-# Pinned to rev 5b735b1 (= cccc 1.6.0). Bump this rev and the version comment
-# together, the same way the rust/node/go pins above track theirs -- and re-run
-# the ladder afterwards, because cccc and lizard disagree on attribution and a
-# threshold means nothing across a change of instrument.
-#
-# Built with the toolchain installed above and copied to /usr/local/bin so it is
-# HOME-independent like CARGO_HOME/NODE_HOME/GOROOT -- the runtime user is a
-# fixed non-root uid and does not own a cargo bin dir.
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    "$CARGO_HOME/bin/cargo" install \
-        --git https://github.com/moznion/cccc.git \
-        --rev 5b735b15596b87dcf2de64459378906bcd16897f \
-        --locked --root /usr/local cccc-cli \
-    && /usr/local/bin/cccc --version \
-    && chmod a+rx /usr/local/bin/cccc
-
 # node + pnpm — the SAME defect class as D-MQ-8 above, never mirrored from
 # cargo to node until now. `agent-webui/.pre-commit-config.yaml` declares
 # three `language: system` hooks that shell out to `node`/`pnpm` directly
@@ -188,43 +159,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSfL \
     # deployed runtime HOME on first use, not under $NODE_HOME — nothing
     # here needs a runtime write.
     && chmod -R a+rX "$NODE_HOME"
-
-# bun — the mermaid-validate hook (`.pre-commit-config.yaml`, `language: node`,
-# `@zabaca/mermaid-validate@1.0.1`) is declared across this fleet's repos to
-# lint the mermaid diagrams their AGENTS.md/README files are full of.
-# pre-commit installs the npm package itself, so this looks like a
-# self-contained node hook — but that package's bin (`dist/main.js`) opens with
-# `#!/usr/bin/env bun`, so pre-commit resolves the shebang and fails with
-# ``Executable `bun` not found``. It is a TRANSITIVE runtime of an npm
-# dependency, invisible in the hook text, which is why
-# `check_gate_toolchain_coverage.py` cannot see it either — the same structural
-# blind spot as `cmake` (documented in that script's header) and as `maturin`
-# above.
-#
-# The `-baseline` build is REQUIRED here, not a conservative preference. Bun's
-# default `bun-linux-x64` is compiled for AVX2; this fleet's k8s nodes are Dell
-# PowerEdge R510/R710/R820/RW710, whose Westmere/Sandy-Bridge CPUs have none
-# (verified against /proc/cpuinfo on rw710, where this pod is scheduled today).
-# The default build would install cleanly, pass every build-time check, and
-# then SIGILL the first time a gate actually invoked it — reading as yet
-# another mysterious gate failure. `bun-linux-x64-baseline` is the same binary
-# built to the SSE4.2 floor and runs on every node. `bun --version` below is
-# the build-time proof it actually executes here, not just that it downloaded.
-#
-# Extracted with python3's own `zipfile` module (already in this base image)
-# rather than adding an `unzip` package for a single extraction. sha256 pinned
-# from oven-sh/bun's published SHASUMS256.txt for this release, matching the
-# node/go tarball discipline above; fixed HOME-independent path for the same
-# reason as CARGO_HOME/NODE_HOME/GOROOT.
-RUN curl --proto '=https' --tlsv1.2 -sSfL \
-        https://github.com/oven-sh/bun/releases/download/bun-v1.4.0/bun-linux-x64-baseline.zip \
-        -o /tmp/bun.zip \
-    && echo "184fb4595f0d401a217cf7c78c1bc430ba83314dab7a8b94805babbf7fa7097f  /tmp/bun.zip" \
-        | sha256sum -c - \
-    && python3 -m zipfile -e /tmp/bun.zip /tmp/bun-extract \
-    && install -m 0755 /tmp/bun-extract/bun-linux-x64-baseline/bun /usr/local/bin/bun \
-    && rm -rf /tmp/bun.zip /tmp/bun-extract \
-    && bun --version
 
 # go — same defect class again, this time epistemic-graph's own `go-client`
 # mergequeue gate (`clients/go`: `go build ./... && go test ./...`), found

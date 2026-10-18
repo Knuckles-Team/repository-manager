@@ -29,7 +29,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit, urlunsplit
 
-__version__ = "3.4.0"
+__version__ = "3.4.1"
 
 __all__ = [
     "Git",
