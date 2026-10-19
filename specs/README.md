@@ -61,3 +61,4 @@ bootstrap skill, together with the [SDD full lifecycle](https://github.com/Knuck
 - [`RM-CONNECTOR`](connector-boundary/spec.md) — connector boundary migration.
 - [`RM-GOVERNANCE`](development-governance/spec.md) — repository development governance.
 - [`RM-RELEASE`](fleet-release/spec.md) — dependency aware fleet release.
+- [`CONN-REPOSITORY-MANAGER`](source-mirror/spec.md) — git import, mirror push and source cutover for engine-held repositories.

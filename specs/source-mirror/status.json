@@ -1,0 +1,42 @@
+{
+  "schema_version": 2,
+  "spec_id": "CONN-REPOSITORY-MANAGER",
+  "owner_repo": "repository-manager",
+  "delivery_state": "SPECIFIED",
+  "requirement_ids": [
+    "CONN-REPOSITORY-MANAGER-R001",
+    "CONN-REPOSITORY-MANAGER-R002",
+    "CONN-REPOSITORY-MANAGER-R003",
+    "CONN-REPOSITORY-MANAGER-R004"
+  ],
+  "requirements": [
+    {
+      "id": "CONN-REPOSITORY-MANAGER-R001",
+      "title": "Full-history import into engine changesets (compose)",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "CONN-REPOSITORY-MANAGER-R002",
+      "title": "Mirror push after each accepted changeset (compose)",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "CONN-REPOSITORY-MANAGER-R003",
+      "title": "External commits and drift (compose)",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "CONN-REPOSITORY-MANAGER-R004",
+      "title": "Cutover, rollback and local merge-queue retirement (wire)",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    }
+  ]
+}
