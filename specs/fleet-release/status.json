@@ -2,7 +2,7 @@
   "schema_version": 2,
   "spec_id": "RM-RELEASE",
   "owner_repo": "repository-manager",
-  "delivery_state": "SPECIFIED",
+  "delivery_state": "LANDED",
   "requirement_ids": [
     "RM-RELEASE-R001",
     "RM-RELEASE-R002",
@@ -87,8 +87,10 @@
     {
       "id": "RM-RELEASE-R008",
       "title": "Publish this package only from version tags",
-      "delivery_state": "SPECIFIED",
-      "landed_in": [],
+      "delivery_state": "VERIFIED",
+      "landed_in": [
+        "bbd7f22f1b5a"
+      ],
       "verified_by": [
         "tests/test_package_publication_workflow.py:10"
       ]
