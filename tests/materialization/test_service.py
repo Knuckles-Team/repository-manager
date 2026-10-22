@@ -194,7 +194,7 @@ def _simple_patch(repo: Path, tmp_path: Path) -> str:
     return _make_patch(repo, tmp_path, {"allowed.txt": "changed\n"}, label="simple")
 
 
-# ── RM-MATERIALIZE-01: approval verification gates every request ───────────
+# ── RM-MATERIALIZE-R002: approval verification gates every request ───────────
 
 
 def test_expired_approval_refuses_without_any_worktree(tmp_path, monkeypatch):
@@ -295,7 +295,7 @@ def test_check_binding_is_pure_and_lists_every_structural_reason():
     assert len(reasons) == 5  # expired approval, digest, repo, tenant, actor
 
 
-# ── RM-MATERIALIZE-02: isolated, allowlist-restricted patch application ────
+# ── RM-MATERIALIZE-R003: isolated, allowlist-restricted patch application ────
 
 
 def test_valid_patch_touches_only_the_approved_path(tmp_path, monkeypatch):
@@ -446,7 +446,7 @@ def test_binary_patch_content_is_rejected(tmp_path, monkeypatch):
     assert "binary" in receipt.error_detail
 
 
-# ── RM-MATERIALIZE-03: validation gates and explicit staging precede commit ─
+# ── RM-MATERIALIZE-R004: validation gates and explicit staging precede commit ─
 
 
 def test_a_failing_gate_blocks_both_commit_and_queue(tmp_path, monkeypatch):
@@ -483,7 +483,7 @@ def test_a_passing_gate_commits_with_exactly_the_reviewed_paths(tmp_path, monkey
     assert observed == [["allowed.txt"]]
 
 
-# ── RM-MATERIALIZE-04: queue submission never claims landing ───────────────
+# ── RM-MATERIALIZE-R005: queue submission never claims landing ───────────────
 
 
 def test_queue_acceptance_is_reported_as_queued_never_merged(tmp_path, monkeypatch):
@@ -552,7 +552,7 @@ def test_reconcile_reports_a_rejected_candidate_as_refused(tmp_path, monkeypatch
     assert reconciled.error_code is MaterializationErrorCode.QUEUE_CONFLICT
 
 
-# ── RM-MATERIALIZE-05: an immutable receipt binds every outcome ────────────
+# ── RM-MATERIALIZE-R006: an immutable receipt binds every outcome ────────────
 
 
 def test_a_replayed_request_returns_the_same_receipt_without_a_second_commit(
@@ -624,7 +624,7 @@ def test_materialization_receipt_contract_round_trips_through_canonical_serializ
     )
 
 
-# ── RM-MATERIALIZE-06: no direct Git fallback when a dependency is down ────
+# ── RM-MATERIALIZE-R007: no direct Git fallback when a dependency is down ────
 
 
 def test_unavailable_approval_authority_leaves_the_request_pending(

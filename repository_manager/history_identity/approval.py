@@ -1,4 +1,4 @@
-"""RM-IDENTITY-03: signed approval required before any rewrite.
+"""RM-IDENTITY-R005: signed approval required before any rewrite.
 
 An :class:`ApprovalBinding` pins exactly the five facts plan.md requires: the
 repository set, the source (preview) digest, the policy digest, the target

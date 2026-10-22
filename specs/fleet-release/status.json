@@ -5,12 +5,12 @@
   "delivery_state": "LANDED",
   "requirement_ids": [
     "RM-RELEASE-R001",
-    "RM-RELEASE-01",
-    "RM-RELEASE-02",
-    "RM-RELEASE-03",
-    "RM-RELEASE-04",
-    "RM-RELEASE-05",
-    "RM-RELEASE-06"
+    "RM-RELEASE-R002",
+    "RM-RELEASE-R003",
+    "RM-RELEASE-R004",
+    "RM-RELEASE-R005",
+    "RM-RELEASE-R006",
+    "RM-RELEASE-R007"
   ],
   "requirements": [
     {
@@ -23,7 +23,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-RELEASE-01",
+      "id": "RM-RELEASE-R002",
       "title": "Complete per-repository dependency census",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -32,7 +32,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-RELEASE-02",
+      "id": "RM-RELEASE-R003",
       "title": "Acyclic, typed dependency graph per release scope",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -41,7 +41,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-RELEASE-03",
+      "id": "RM-RELEASE-R004",
       "title": "Immutable, content-addressed release plan digest",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -50,7 +50,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-RELEASE-04",
+      "id": "RM-RELEASE-R005",
       "title": "Dependency-ordered execution with trusted gating",
       "delivery_state": "VERIFIED",
       "landed_in": [
@@ -66,7 +66,7 @@
       ]
     },
     {
-      "id": "RM-RELEASE-05",
+      "id": "RM-RELEASE-R006",
       "title": "One shared admission contract across release routes",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -75,7 +75,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-RELEASE-06",
+      "id": "RM-RELEASE-R007",
       "title": "Per-stage receipts with retry and rollback evidence",
       "delivery_state": "LANDED",
       "landed_in": [

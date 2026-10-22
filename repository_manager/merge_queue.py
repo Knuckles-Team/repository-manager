@@ -772,7 +772,7 @@ def _require_authorized_checkout(scope: LaneScope, lane_registry: Any | None) ->
     """Refuse enqueue from a checkout the lane registry has not authorized.
 
     A candidate's worktree must be a durably registered, still-active lane for
-    this exact repository (RM-GOVERNANCE-04) — never inferred from the branch
+    this exact repository (RM-GOVERNANCE-R027) — never inferred from the branch
     name alone, since an ad hoc clone and a stale/terminal lane can both name a
     real branch. A repository that has never allocated any lane at all refuses
     here exactly like one with only stale records: "never registered" and "no

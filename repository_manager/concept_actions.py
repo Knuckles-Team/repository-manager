@@ -12,7 +12,7 @@ real RMDD-16 authority and injects it into ``ConceptCoordinationActions``"
 the RMDD-17 lane brief asked RMDD-20 to write. It is a best-effort attempt,
 never a fabrication: RMDD-16's authority module now lives in this very
 package, at :mod:`repository_manager.governance.concept_reservation`
-(RM-GOVERNANCE-07; see ``repository_manager/concept_coordination/client.py``
+(RM-GOVERNANCE-R030; see ``repository_manager/concept_coordination/client.py``
 for the full migration account), so the import itself succeeds today. What
 that module does not yet expose is a documented ``build_default_authority()``
 construction entrypoint — :class:`~repository_manager.governance.concept_reservation.NativeConceptReservationAuthority`

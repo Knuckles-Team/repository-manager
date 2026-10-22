@@ -22,7 +22,7 @@ import pytest
 REPOSITORY_MANAGER_ROOT = Path(__file__).resolve().parents[2] / "repository_manager"
 
 #: ``agent_connector_sdk.governance.concept_reservation`` is a separate, still-out
-#: -of-scope authority (RM-GOVERNANCE-07): ``concept_coordination/client.py``
+#: -of-scope authority (RM-GOVERNANCE-R030): ``concept_coordination/client.py``
 #: names it only as a string a caller may inject, never imports it, and this
 #: test does not pin that unrelated requirement.
 RETIRED_LANE_MODULE = "agent_connector_sdk.governance.lanes"

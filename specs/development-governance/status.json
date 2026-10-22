@@ -5,13 +5,13 @@
   "delivery_state": "SPECIFIED",
   "requirement_ids": [
     "RM-GOVERNANCE-R001",
-    "RM-GOVERNANCE-01",
-    "RM-GOVERNANCE-02",
-    "RM-GOVERNANCE-03",
-    "RM-GOVERNANCE-04",
-    "RM-GOVERNANCE-05",
-    "RM-GOVERNANCE-06",
-    "RM-GOVERNANCE-07",
+    "RM-GOVERNANCE-R024",
+    "RM-GOVERNANCE-R025",
+    "RM-GOVERNANCE-R026",
+    "RM-GOVERNANCE-R027",
+    "RM-GOVERNANCE-R028",
+    "RM-GOVERNANCE-R029",
+    "RM-GOVERNANCE-R030",
     "RM-GOVERNANCE-R002",
     "RM-GOVERNANCE-R003",
     "RM-GOVERNANCE-R004",
@@ -55,7 +55,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-GOVERNANCE-01",
+      "id": "RM-GOVERNANCE-R024",
       "title": "Single authority for Git development governance",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -64,7 +64,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-GOVERNANCE-02",
+      "id": "RM-GOVERNANCE-R025",
       "title": "Branch allocation tracks ownership, lease, and lifecycle state",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -73,7 +73,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-GOVERNANCE-03",
+      "id": "RM-GOVERNANCE-R026",
       "title": "Isolated checkouts never corrupt shared Git config",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -82,7 +82,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-GOVERNANCE-04",
+      "id": "RM-GOVERNANCE-R027",
       "title": "Commits stage only reviewed paths and verified gate identity",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -94,7 +94,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-GOVERNANCE-05",
+      "id": "RM-GOVERNANCE-R028",
       "title": "Merge-queue promotion rechecks identity before reporting success",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -103,7 +103,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-GOVERNANCE-06",
+      "id": "RM-GOVERNANCE-R029",
       "title": "Cleanup proves containment before deleting a branch checkout",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -112,7 +112,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-GOVERNANCE-07",
+      "id": "RM-GOVERNANCE-R030",
       "title": "Concept reservations are scoped and cannot be silently reused",
       "delivery_state": "LANDED",
       "landed_in": [

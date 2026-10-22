@@ -33,7 +33,7 @@ def test_authority_unreachable_never_swallows_the_import_error_cause() -> None:
     """H-12: a refusal never discards its exception cause.
 
     ``AUTHORITY_MODULE`` names a module shipped by this very package
-    (RM-GOVERNANCE-07), so it is always importable here; the ``ImportError``
+    (RM-GOVERNANCE-R030), so it is always importable here; the ``ImportError``
     cause-preservation branch in ``resolve_default_authority`` is reachable
     only when the named module is genuinely absent, which this checkout
     cannot exercise against its own authority module. Skip honestly rather

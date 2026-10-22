@@ -5,12 +5,12 @@
   "delivery_state": "SPECIFIED",
   "requirement_ids": [
     "RM-MATERIALIZE-R001",
-    "RM-MATERIALIZE-01",
-    "RM-MATERIALIZE-02",
-    "RM-MATERIALIZE-03",
-    "RM-MATERIALIZE-04",
-    "RM-MATERIALIZE-05",
-    "RM-MATERIALIZE-06"
+    "RM-MATERIALIZE-R002",
+    "RM-MATERIALIZE-R003",
+    "RM-MATERIALIZE-R004",
+    "RM-MATERIALIZE-R005",
+    "RM-MATERIALIZE-R006",
+    "RM-MATERIALIZE-R007"
   ],
   "requirements": [
     {
@@ -21,7 +21,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-MATERIALIZE-01",
+      "id": "RM-MATERIALIZE-R002",
       "title": "Approval verification gates every Git materialization request",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -30,35 +30,35 @@
       "verified_by": []
     },
     {
-      "id": "RM-MATERIALIZE-02",
+      "id": "RM-MATERIALIZE-R003",
       "title": "Patch application is isolated and restricted to approved paths",
       "delivery_state": "SPECIFIED",
       "landed_in": [],
       "verified_by": []
     },
     {
-      "id": "RM-MATERIALIZE-03",
+      "id": "RM-MATERIALIZE-R004",
       "title": "Validation gates and explicit staging precede every commit",
       "delivery_state": "SPECIFIED",
       "landed_in": [],
       "verified_by": []
     },
     {
-      "id": "RM-MATERIALIZE-04",
+      "id": "RM-MATERIALIZE-R005",
       "title": "Merge queue submission never claims landing before verification",
       "delivery_state": "SPECIFIED",
       "landed_in": [],
       "verified_by": []
     },
     {
-      "id": "RM-MATERIALIZE-05",
+      "id": "RM-MATERIALIZE-R006",
       "title": "An immutable receipt binds every materialization outcome",
       "delivery_state": "SPECIFIED",
       "landed_in": [],
       "verified_by": []
     },
     {
-      "id": "RM-MATERIALIZE-06",
+      "id": "RM-MATERIALIZE-R007",
       "title": "No caller has a direct Git fallback when the service is unavailable",
       "delivery_state": "SPECIFIED",
       "landed_in": [],

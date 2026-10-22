@@ -1,4 +1,4 @@
-"""Tests for RM-IDENTITY-03: signed approval required before any rewrite.
+"""Tests for RM-IDENTITY-R005: signed approval required before any rewrite.
 
 Every negative case proves ``verify_approval`` *raises* (zero mutating
 effects follow -- there is no execution path downstream of a rejected

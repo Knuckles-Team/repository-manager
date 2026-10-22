@@ -117,7 +117,7 @@ def test_add_is_idempotent(repo):
 
 
 def test_concurrent_worktree_creation_keeps_shared_repo_usable_and_not_bare(repo):
-    """RM-GOVERNANCE-03: creating several worktrees at once must never corrupt
+    """RM-GOVERNANCE-R026: creating several worktrees at once must never corrupt
     the shared repository's Git config, and every worktree stays independently
     commit-able.  This is the documented EnterWorktree-class failure (a tool
     writes ``core.bare = true`` into the shared ``$GIT_COMMON_DIR/config`` and

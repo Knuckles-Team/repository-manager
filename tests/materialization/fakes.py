@@ -61,7 +61,7 @@ class FakeApprovalAuthority:
     (useful when a test is only exercising the service's own binding checks).
     ``raise_unavailable=True`` makes every call raise
     :class:`~repository_manager.materialization.ports.ApprovalAuthorityUnavailable`,
-    for RM-MATERIALIZE-06 fault injection.
+    for RM-MATERIALIZE-R007 fault injection.
     """
 
     accepted_signatures: frozenset[str] | None = None

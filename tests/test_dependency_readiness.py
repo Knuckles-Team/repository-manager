@@ -881,7 +881,7 @@ _FILES = {
 }
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_version_file_summary_judges_by_compatible_wheel():
     summary = dr._version_file_summary(_FILES)
     assert summary["2.23.2"].available and not summary["2.23.2"].sdist_missing
@@ -900,7 +900,7 @@ class _FakeHTTPResponse:
         return self._data
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_pypi_backend_buckets_versions_by_the_wheel_rule(monkeypatch):
     """The real PyPISimpleIndexBackend path: a wheel-only release is available
     (with sdist_missing), an sdist-only one is source_only, and a wheel for
@@ -920,7 +920,7 @@ def test_pypi_backend_buckets_versions_by_the_wheel_rule(monkeypatch):
     assert available.yanked_versions == ["2.23.6"]
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_pypi_backend_honours_the_target_tags(monkeypatch):
     from packaging.tags import Tag
 
@@ -969,7 +969,7 @@ def _check(available, **kwargs):
     )
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_wheel_without_sdist_passes_with_the_sdist_missing_advisory():
     result = _check(
         _available(
@@ -984,13 +984,13 @@ def test_wheel_without_sdist_passes_with_the_sdist_missing_advisory():
     assert "sdist_missing" in result.detail
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_wheel_with_sdist_passes_without_advisory():
     result = _check(_available(versions=["2.23.2"], latest="2.23.2"))
     assert result.satisfied and result.advisories == []
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_sdist_only_version_fails():
     result = _check(
         _available(source_only_versions=["2.23.2"]),
@@ -1003,7 +1003,7 @@ def test_sdist_only_version_fails():
     assert "allow-source-build" in result.detail
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_sdist_only_version_on_the_allow_list_passes():
     result = _check(
         _available(source_only_versions=["2.23.2"]),
@@ -1014,14 +1014,14 @@ def test_sdist_only_version_on_the_allow_list_passes():
     assert "allow-source-build" in result.detail
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_no_compatible_wheel_fails():
     result = _check(_available(incompatible_versions=["2.23.2"]))
     assert result.status == "no_compatible_wheel"
     assert result.satisfied is False
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_in_progress_release_run_reports_partial_publish():
     seen = []
 
@@ -1039,7 +1039,7 @@ def test_in_progress_release_run_reports_partial_publish():
     assert seen == [("epistemic-graph", "2.23.2")]
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_concluded_release_run_is_judged_by_the_wheel_rule():
     result = _check(
         _available(source_only_versions=["2.23.2"]),
@@ -1048,7 +1048,7 @@ def test_concluded_release_run_is_judged_by_the_wheel_rule():
     assert result.status == "source_only"
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_concluded_run_with_a_wheel_passes_without_asking_the_forge():
     def probe(package, version):
         raise AssertionError("a satisfied check must not query the forge")
@@ -1062,7 +1062,7 @@ def test_concluded_run_with_a_wheel_passes_without_asking_the_forge():
     assert result.satisfied and result.advisories == [dr.SDIST_MISSING]
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_failing_probe_degrades_to_the_wheel_rule():
     def probe(package, version):
         raise RuntimeError("forge down")
@@ -1073,7 +1073,7 @@ def test_failing_probe_degrades_to_the_wheel_rule():
     assert result.status == "source_only"
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_allow_source_build_reads_exact_names_only(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
         '[tool.pipelines]\nallow-source-build = ["Uptime_Kuma.API", ":all:"]\n'
@@ -1082,7 +1082,7 @@ def test_allow_source_build_reads_exact_names_only(tmp_path):
     assert dr.allow_source_build(tmp_path / "missing") == frozenset()
 
 
-@pytest.mark.spec("RM-RELEASE-04")
+@pytest.mark.spec("RM-RELEASE-R005")
 def test_check_tree_applies_the_allow_list(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text(
         '[project]\nname = "consumer"\n'

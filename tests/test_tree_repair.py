@@ -126,7 +126,7 @@ def test_one_hundred_clean_diagnoses_have_no_false_positive(tmp_path: Path) -> N
 def test_record_baseline_binds_gate_identity_into_the_same_record(
     tmp_path: Path,
 ) -> None:
-    """RM-GOVERNANCE-04: the declared gate that validated a tree and the
+    """RM-GOVERNANCE-R027: the declared gate that validated a tree and the
     tree's own identity (``head_sha`` plus the tracked-content digest) must
     land in ONE persisted record, not two correlated stores."""
     repo = tmp_path / "gate-identity"

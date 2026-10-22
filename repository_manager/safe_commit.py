@@ -510,7 +510,7 @@ def _gate_identity(
     Bound into the same persisted record as the tree's own identity by
     :func:`_record_baseline` below, so a later reader can answer "which gate,
     if any, validated exactly this commit" from one file, not two correlated
-    ones (RM-GOVERNANCE-04).
+    ones (RM-GOVERNANCE-R027).
     """
     command: str | None = None
     if gate_invoked and configured_gate is not None:

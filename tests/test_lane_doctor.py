@@ -33,7 +33,7 @@ def _git(args: list[str], cwd: Path) -> str:
 
 @pytest.fixture
 def lane_registry(monkeypatch: pytest.MonkeyPatch) -> LaneRegistry:
-    """RM-GOVERNANCE-04: ``merge_queue.enqueue`` now refuses a checkout the
+    """RM-GOVERNANCE-R027: ``merge_queue.enqueue`` now refuses a checkout the
     lane registry has not authorized. These fixtures build real, disposable
     repos that were never allocated through any lane authority, so this one
     shared registry gives ``canonical``/``worktree`` a real, active lane

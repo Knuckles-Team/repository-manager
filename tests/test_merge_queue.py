@@ -76,7 +76,7 @@ class FakeGit:
         )
 
 
-# RM-GOVERNANCE-04 — enqueue() now refuses a checkout the lane registry has
+# RM-GOVERNANCE-R027 — enqueue() now refuses a checkout the lane registry has
 # not authorized (see `_require_authorized_checkout` in merge_queue.py). Every
 # test in this module drives real throwaway git repositories that were never
 # allocated through any lane authority, so this one shared fixture gives
@@ -2013,7 +2013,7 @@ def test_shadow_generation_marks_base_move_stale_before_trial(
 
 
 # ---------------------------------------------------------------------------
-# RM-GOVERNANCE-04 — enqueue() refuses a checkout the lane registry has not
+# RM-GOVERNANCE-R027 — enqueue() refuses a checkout the lane registry has not
 # authorized (the single admission chokepoint: `_require_authorized_checkout`,
 # called at the top of `enqueue()` before anything else runs).
 # ---------------------------------------------------------------------------

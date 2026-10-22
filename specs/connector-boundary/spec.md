@@ -10,11 +10,11 @@ The repository-manager agent continues to expose its existing Git, worktree, rel
 
 | ID | Contract | Acceptance |
 |---|---|---|
-| RM-CONNECTOR-01 | Inventory every production and test import from the agent orchestration package; classify each as orchestration, connector transport, governance, or obsolete. | Machine-readable import inventory has one disposition for every matching import; no unclassified dynamic import. |
-| RM-CONNECTOR-02 | Replace connector transport imports with the public SDK API and keep orchestration imports only at the orchestrator boundary. | Import and contract tests execute the RM tool entry points without reaching retired private modules. |
-| RM-CONNECTOR-03 | Move/keep development governance imports on the [`RM-GOVERNANCE-R001`](../development-governance/spec.md) repository-manager authority; do not route back through orchestration. | Lane, queue, reservation, and safe-commit tests use RM implementations. |
-| RM-CONNECTOR-04 | Preserve public MCP/CLI action names, typed arguments, validation, and error categories during migration. | Golden tool schema and representative success/refusal responses remain compatible or carry explicit versioned migration. |
-| RM-CONNECTOR-05 | Remove dead adapters, duplicate publishers, and fallback imports after the new path passes. | Source scan finds no active retired import; package build and smoke tests pass. |
+| RM-CONNECTOR-R002 | Inventory every production and test import from the agent orchestration package; classify each as orchestration, connector transport, governance, or obsolete. | Machine-readable import inventory has one disposition for every matching import; no unclassified dynamic import. |
+| RM-CONNECTOR-R003 | Replace connector transport imports with the public SDK API and keep orchestration imports only at the orchestrator boundary. | Import and contract tests execute the RM tool entry points without reaching retired private modules. |
+| RM-CONNECTOR-R004 | Move/keep development governance imports on the [`RM-GOVERNANCE-R001`](../development-governance/spec.md) repository-manager authority; do not route back through orchestration. | Lane, queue, reservation, and safe-commit tests use RM implementations. |
+| RM-CONNECTOR-R005 | Preserve public MCP/CLI action names, typed arguments, validation, and error categories during migration. | Golden tool schema and representative success/refusal responses remain compatible or carry explicit versioned migration. |
+| RM-CONNECTOR-R006 | Remove dead adapters, duplicate publishers, and fallback imports after the new path passes. | Source scan finds no active retired import; package build and smoke tests pass. |
 
 ## Failures and boundaries
 

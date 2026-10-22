@@ -14,13 +14,13 @@ The approved identity manifest declares exact old-email/name match rules and the
 
 | ID | Contract | Acceptance |
 |---|---|---|
-| RM-IDENTITY-01 | Enumerate a selected public repository set, all local refs and annotated/lightweight tags, remote tracking refs, and signed objects; reject incomplete or divergent discovery. | Fixture with hidden ref, detached tag, or inaccessible remote cannot execute. |
-| RM-IDENTITY-02 | Produce a deterministic dry-run identity map and old→new commit/tag/ref plan with counts, affected authors/committers, unchanged object tree digests, and collision warnings. | Repeating preview on same source yields the same digest; changed source invalidates approval. |
-| RM-IDENTITY-03 | Require signed or otherwise authenticated approval bound to repository set, source ref digests, policy digest, target remotes, and expiry. | Missing, expired, or changed approval has zero mutating effects. |
-| RM-IDENTITY-04 | Preserve byte-identical tree objects for every rewritten commit and preserve topology, parent order, messages, commit timestamps, tag payload semantics where possible; signed tags/commits require an explicit re-signing decision. | Independent verifier compares every old/new tree and graph invariant. |
-| RM-IDENTITY-05 | Create immutable, collision-safe backup refs and a durable object map before any ref update. Stage all rewritten refs in quarantine, verify reachability, then update each repository atomically. | Simulated failure before update leaves old refs intact; after update, backups reconstruct old refs. |
-| RM-IDENTITY-06 | Publish to each configured remote with lease-protected ref updates and a per-remote outcome receipt; never treat a partial push as fleet success. | Remote drift, rejected protected branch, or one remote outage yields partial/pending status and reconciliation instructions. |
-| RM-IDENTITY-07 | Make downstream coordination explicit: pause merge queues, notify/refresh open PR branches and forks, resynchronize release baselines, and resume only after remote and CI verification. | Rehearsal proves no queued candidate is merged against stale history. |
+| RM-IDENTITY-R003 | Enumerate a selected public repository set, all local refs and annotated/lightweight tags, remote tracking refs, and signed objects; reject incomplete or divergent discovery. | Fixture with hidden ref, detached tag, or inaccessible remote cannot execute. |
+| RM-IDENTITY-R004 | Produce a deterministic dry-run identity map and old→new commit/tag/ref plan with counts, affected authors/committers, unchanged object tree digests, and collision warnings. | Repeating preview on same source yields the same digest; changed source invalidates approval. |
+| RM-IDENTITY-R005 | Require signed or otherwise authenticated approval bound to repository set, source ref digests, policy digest, target remotes, and expiry. | Missing, expired, or changed approval has zero mutating effects. |
+| RM-IDENTITY-R006 | Preserve byte-identical tree objects for every rewritten commit and preserve topology, parent order, messages, commit timestamps, tag payload semantics where possible; signed tags/commits require an explicit re-signing decision. | Independent verifier compares every old/new tree and graph invariant. |
+| RM-IDENTITY-R007 | Create immutable, collision-safe backup refs and a durable object map before any ref update. Stage all rewritten refs in quarantine, verify reachability, then update each repository atomically. | Simulated failure before update leaves old refs intact; after update, backups reconstruct old refs. |
+| RM-IDENTITY-R008 | Publish to each configured remote with lease-protected ref updates and a per-remote outcome receipt; never treat a partial push as fleet success. | Remote drift, rejected protected branch, or one remote outage yields partial/pending status and reconciliation instructions. |
+| RM-IDENTITY-R009 | Make downstream coordination explicit: pause merge queues, notify/refresh open PR branches and forks, resynchronize release baselines, and resume only after remote and CI verification. | Rehearsal proves no queued candidate is merged against stale history. |
 
 ## Decisions that must be resolved before build or execution
 
@@ -33,14 +33,14 @@ The approved identity manifest declares exact old-email/name match rules and the
 
 1. **Authority.** repository-manager is the only tool permitted to rewrite history. The approving
    authority is the repository owner; every run needs the owner's signed approval bound to the exact
-   repository set, source ref digests, policy digest, target remotes and expiry (RM-IDENTITY-03).
+   repository set, source ref digests, policy digest, target remotes and expiry (RM-IDENTITY-R005).
 2. **Unknown and external identities: refuse.** Only identities that match an explicit rule in the
    approved manifest are rewritten. A commit or tag by any other identity is left unchanged, and a run
    whose plan would need an unmatched identity mapped stops before any mutation and reports it.
 3. **Signed objects and protected branches.** Signed commits and tags are not rewritten unless the
    approval for that run explicitly authorizes re-signing; otherwise the run reports them and leaves them
    unchanged. Branch protection is never lifted by the tool: a protected ref that rejects the lease-guarded
-   update is reported as refused for that remote (RM-IDENTITY-06), and the owner changes protection by
+   update is reported as refused for that remote (RM-IDENTITY-R008), and the owner changes protection by
    hand beforehand if a rewrite there is intended.
 4. **Contributor notice and branch recovery:** still open — not yet decided by the owner.
 

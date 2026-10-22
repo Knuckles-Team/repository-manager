@@ -1,4 +1,4 @@
-"""Tests for RM-IDENTITY-02: deterministic dry-run identity rewrite plan."""
+"""Tests for RM-IDENTITY-R004: deterministic dry-run identity rewrite plan."""
 
 from __future__ import annotations
 

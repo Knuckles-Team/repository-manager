@@ -7,4 +7,4 @@
 - [ ] Run fixture-based entry-point rehearsal and full applicable quality gates at the exact candidate commit.
 - [ ] Merge to main; record source commit, CI, import scan, and queue/recovery evidence; mark LANDED then ACCEPTED only on proof.
 - [ ] Lease heavy gates on counted slots of inventory hosts and refuse when none is free. Closes RM-GOVERNANCE-R023.
-- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-GOVERNANCE-R001`, `RM-GOVERNANCE-01` through `RM-GOVERNANCE-07`, and `RM-GOVERNANCE-R002` through `RM-GOVERNANCE-R022` — is covered by the tasks above; file a follow-up task for any gap found during implementation.
+- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-GOVERNANCE-R001`, `RM-GOVERNANCE-R024` through `RM-GOVERNANCE-R030`, and `RM-GOVERNANCE-R002` through `RM-GOVERNANCE-R022` — is covered by the tasks above; file a follow-up task for any gap found during implementation.

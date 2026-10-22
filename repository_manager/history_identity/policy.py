@@ -1,4 +1,4 @@
-"""``IdentityPolicy/v1`` (RM-IDENTITY-02's mapping input; plan.md data model).
+"""``IdentityPolicy/v1`` (RM-IDENTITY-R004's mapping input; plan.md data model).
 
 An :class:`IdentityPolicy` is an exact old-identity -> canonical-identity
 mapping plus the canonical allowlist its targets must be drawn from, and

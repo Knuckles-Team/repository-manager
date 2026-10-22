@@ -1,4 +1,4 @@
-"""Tests for RM-IDENTITY-01: complete ref and tag discovery before rewrite.
+"""Tests for RM-IDENTITY-R003: complete ref and tag discovery before rewrite.
 
 All fixtures are disposable temporary git repositories (``tmp_path``); none
 of this touches the real fleet workspace.

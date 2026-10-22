@@ -8,4 +8,4 @@
 - [ ] Add the positive/negative tests in `test-spec.md`, including failure/retry and stale-plan tests.
 - [ ] Run full applicable gates and record exact-head CI, digest, source tree, and release rehearsal evidence in `spec.md`.
 - [ ] Mark LANDED and ACCEPTED separately after merge and independent verification.
-- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-RELEASE-R001` and `RM-RELEASE-01` through `RM-RELEASE-06` — is covered by the tasks above; file a follow-up task for any gap found during implementation.
+- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-RELEASE-R001` and `RM-RELEASE-R002` through `RM-RELEASE-R007` — is covered by the tasks above; file a follow-up task for any gap found during implementation.

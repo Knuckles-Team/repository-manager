@@ -10,13 +10,13 @@ A contributor can open an isolated branch, reserve shared concepts, run validati
 
 | ID | Contract | Acceptance |
 |---|---|---|
-| RM-GOVERNANCE-01 | One repository-manager authority owns lane lifecycle, worktree identity, queue admission, and concept reservations. Other packages call it through bounded APIs. | Source search and import tests find no active parallel Git/lane authority. |
-| RM-GOVERNANCE-02 | Allocate a lane with repository ID, base commit, owner, lease/fence, path allowlist, and lifecycle state. Enforce legal transitions and reject stale tokens. | Concurrent allocation conflict and stale heartbeat fail without changing state. |
-| RM-GOVERNANCE-03 | Create a real Git worktree without modifying shared Git config; serialize operations that touch the common repository and keep per-lane state isolated. | Multiple worktrees remain usable; shared `core.bare` remains false. |
-| RM-GOVERNANCE-04 | A commit stages only explicit reviewed paths, runs declared local gates, binds tree and gate identity, and enters the queue only from a clean, authorized lane. | An unrelated untracked file remains uncommitted; a red gate or changed tree refuses admission. |
-| RM-GOVERNANCE-05 | Queue promotion rechecks base and validation identity, records outcome, and handles conflict or process death without reporting a false merge. | Stale base, conflicting patch, and timeout preserve the candidate for recovery. |
-| RM-GOVERNANCE-06 | Cleanup proves merge containment or retains a durable recovery anchor; a dirty/unmerged lane is never deleted by default. | Unsafe prune returns a refusal; safe prune removes only its own worktree and merged branch. |
-| RM-GOVERNANCE-07 | Concept reservations are scoped to repository and candidate identity, expire or release safely, and cannot be silently reused by a different actor. | Duplicate/stale claims fail with typed conflict and a reconciliation path. |
+| RM-GOVERNANCE-R024 | One repository-manager authority owns lane lifecycle, worktree identity, queue admission, and concept reservations. Other packages call it through bounded APIs. | Source search and import tests find no active parallel Git/lane authority. |
+| RM-GOVERNANCE-R025 | Allocate a lane with repository ID, base commit, owner, lease/fence, path allowlist, and lifecycle state. Enforce legal transitions and reject stale tokens. | Concurrent allocation conflict and stale heartbeat fail without changing state. |
+| RM-GOVERNANCE-R026 | Create a real Git worktree without modifying shared Git config; serialize operations that touch the common repository and keep per-lane state isolated. | Multiple worktrees remain usable; shared `core.bare` remains false. |
+| RM-GOVERNANCE-R027 | A commit stages only explicit reviewed paths, runs declared local gates, binds tree and gate identity, and enters the queue only from a clean, authorized lane. | An unrelated untracked file remains uncommitted; a red gate or changed tree refuses admission. |
+| RM-GOVERNANCE-R028 | Queue promotion rechecks base and validation identity, records outcome, and handles conflict or process death without reporting a false merge. | Stale base, conflicting patch, and timeout preserve the candidate for recovery. |
+| RM-GOVERNANCE-R029 | Cleanup proves merge containment or retains a durable recovery anchor; a dirty/unmerged lane is never deleted by default. | Unsafe prune returns a refusal; safe prune removes only its own worktree and merged branch. |
+| RM-GOVERNANCE-R030 | Concept reservations are scoped to repository and candidate identity, expire or release safely, and cannot be silently reused by a different actor. | Duplicate/stale claims fail with typed conflict and a reconciliation path. |
 
 ## Scope and boundaries
 
