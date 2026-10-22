@@ -29,3 +29,12 @@ Attach point: `_resource_lease_file` and `_free_resource_slot` in `repository_ma
 Reuse: the existing per-machine resource lease and the fence token. The inventory file stays owned by tunnel-manager.
 
 Decision: slot accounting stays in repository-manager's lease. The rejected alternative is a second scheduler that picks hosts, which duplicates the engine's placement decision.
+
+
+## Validation hygiene — 2026-10-22
+
+RM-GOVERNANCE-R022 qualification uses current schema-versioned ordinary queue
+fixtures. Legacy-compatibility tests explicitly assert their intended warnings
+instead of leaking deprecations into unrelated acceptance checks. Register the
+existing spec marker so requirement-bound tests remain warning-free. Shipped
+presets may migrate only with parsed-configuration equivalence proof.

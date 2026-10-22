@@ -89,6 +89,7 @@ def repo_with_origin(tmp_path: Path) -> Path:
     (work / bq.CONFIG_FILENAME).write_text(
         textwrap.dedent(
             """
+            schema_version: 2
             base: main
             specs:
               - name: widget

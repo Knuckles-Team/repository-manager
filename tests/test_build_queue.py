@@ -63,6 +63,7 @@ def _counter_spec(counter_path: Path) -> str:
     # nothing about whether the build command actually re-ran.
     return textwrap.dedent(
         f"""
+        schema_version: 2
         base: main
         specs:
           - name: widget
@@ -89,7 +90,9 @@ def _healthy_disk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         bq.shutil,
         "disk_usage",
-        lambda _path: SimpleNamespace(total=total, used=total // 10, free=total - total // 10),
+        lambda _path: SimpleNamespace(
+            total=total, used=total // 10, free=total - total // 10
+        ),
     )
 
 
@@ -120,11 +123,17 @@ def test_missing_config_refuses(tmp_path: Path):
 
 def test_command_must_be_argv_list_not_a_shell_string():
     with pytest.raises(bq.BuildQueueError, match="LIST of argv items"):
-        bq.parse_config({"specs": [{"name": "x", "command": "echo hi"}]}, source="t")
+        bq.parse_config(
+            {"schema_version": 2, "specs": [{"name": "x", "command": "echo hi"}]},
+            source="t",
+        )
 
 
 def test_duplicate_spec_names_refused():
-    data = {"specs": [{"name": "x", "command": ["a"]}, {"name": "x", "command": ["b"]}]}
+    data = {
+        "schema_version": 2,
+        "specs": [{"name": "x", "command": ["a"]}, {"name": "x", "command": ["b"]}],
+    }
     with pytest.raises(bq.BuildQueueError, match="duplicate spec name"):
         bq.parse_config(data, source="t")
 
@@ -206,6 +215,7 @@ def test_two_concurrent_same_key_requests_build_exactly_once(tmp_path: Path):
     (root / bq.CONFIG_FILENAME).write_text(
         textwrap.dedent(
             f"""
+            schema_version: 2
             base: main
             specs:
               - name: widget
@@ -278,6 +288,7 @@ def test_build_that_produces_no_declared_artifact_fails(tmp_path: Path):
     (root / bq.CONFIG_FILENAME).write_text(
         textwrap.dedent(
             """
+            schema_version: 2
             base: main
             specs:
               - name: widget
