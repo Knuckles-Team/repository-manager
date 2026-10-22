@@ -10,7 +10,7 @@ Reuse `repository_manager/worktree.py` for safe repository identity and isolatio
 
 ## Data model
 
-`IdentityPolicy/v1`: exact aliases, canonical human/Claude/Codex identities, unknown-identity rule, and digest. `HistoryPreview/v1`: repository IDs, old ref targets, proposed new ref targets, object mapping digest, signed-object inventory, expected tree parity, remotes, and expiry. `HistoryRewriteReceipt/v1`: approval/preview digests, backup ref namespace, object-map digest, verification result, local transaction outcome, per-remote result, queue pause/resume state, and recovery instructions. Receipts must omit credentials and private filesystem paths.
+`IdentityPolicy/v1`: exact aliases, canonical human and coding-agent identities, unknown-identity rule, and digest. `HistoryPreview/v1`: repository IDs, old ref targets, proposed new ref targets, object mapping digest, signed-object inventory, expected tree parity, remotes, and expiry. `HistoryRewriteReceipt/v1`: approval/preview digests, backup ref namespace, object-map digest, verification result, local transaction outcome, per-remote result, queue pause/resume state, and recovery instructions. Receipts must omit credentials and private filesystem paths.
 
 ## Failure and recovery
 
