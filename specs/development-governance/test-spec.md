@@ -3,6 +3,7 @@
 | Requirement | Positive case | Negative/recovery case |
 |---|---|---|
 | 01 | CLI and MCP dispatch to the same lane/queue service. | Import scanner detects any active duplicate governance implementation. |
+| R031 | Exported manifest entry succeeds in a foreign worktree, with consumer-selected stages. | The same entry refuses staged canonical edits, a hand-edited generated ledger, and unsafe Cargo-target overrides. Fresh installed-hook proof is required before rollout. |
 | 02 | Allocate, heartbeat, transition, complete one lane. | Conflicting repository/path claim and stale fence reject with unchanged state. |
 | 03 | Two temporary worktrees commit independently. | Failed creation leaves shared Git config and first worktree usable. |
 | 04 | Explicit two-path commit records exact tree/gate receipt. | Extra untracked path, red gate, or modified index prevents admission. |

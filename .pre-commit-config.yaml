@@ -206,6 +206,6 @@ repos:
 
 # Generated v2 status is checked against requirements, history and test bindings.
 - repo: https://github.com/Knuckles-Team/pipelines
-  rev: main
+  rev: 4f69ba39290bc72aea545804268832a812db9be3  # canonical exact-ID aliases and rollup ordering
   hooks:
   - id: spec-status

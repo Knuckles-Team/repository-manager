@@ -11,6 +11,7 @@ A contributor can open an isolated branch, reserve shared concepts, run validati
 | ID | Contract | Acceptance |
 |---|---|---|
 | RM-GOVERNANCE-R024 | One repository-manager authority owns lane lifecycle, worktree identity, queue admission, and concept reservations. Other packages call it through bounded APIs. | Source search and import tests find no active parallel Git/lane authority. |
+| RM-GOVERNANCE-R031 | Export the canonical lane guard as an isolated Python pre-commit hook for consumer repositories, without adding a consumer runtime dependency. | The published hook entry guards the caller’s worktree and preserves canonical-checkout, generated-ledger, and Cargo-partition refusals. |
 | RM-GOVERNANCE-R025 | Allocate a lane with repository ID, base commit, owner, lease/fence, path allowlist, and lifecycle state. Enforce legal transitions and reject stale tokens. | Concurrent allocation conflict and stale heartbeat fail without changing state. |
 | RM-GOVERNANCE-R026 | Create a real Git worktree without modifying shared Git config; serialize operations that touch the common repository and keep per-lane state isolated. | Multiple worktrees remain usable; shared `core.bare` remains false. |
 | RM-GOVERNANCE-R027 | A commit stages only explicit reviewed paths, runs declared local gates, binds tree and gate identity, and enters the queue only from a clean, authorized lane. | An unrelated untracked file remains uncommitted; a red gate or changed tree refuses admission. |

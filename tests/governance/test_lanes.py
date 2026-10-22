@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import multiprocessing as mp
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -1572,6 +1573,24 @@ def test_gate_refuses_a_hand_edited_generated_ledger_view(canonical: Path) -> No
     assert refusal is not None and "GENERATED" in refusal
 
 
+# spec: RM-GOVERNANCE-R031
+def test_exported_gate_refuses_a_hand_edited_generated_view(tmp_path: Path) -> None:
+    """The manifest entry must preserve the generated-ledger refusal too."""
+    foreign = _init_foreign_repo(tmp_path / "foreign-ledger")
+    lane = _add_worktree(foreign, "exported-ledger-lane")
+    ca.reserve_concept_id("AU-KG.compute.gated", session_id="lane", repo_root=lane)
+    view = lane / "docs" / "concept_reservations.yaml"
+    view.write_text(
+        view.read_text(encoding="utf-8") + "# hand edit\n", encoding="utf-8"
+    )
+    _run(["git", "add", "docs/concept_reservations.yaml"], lane)
+    proc = subprocess.run(
+        GUARD_COMMAND, cwd=str(lane), capture_output=True, text=True, env=_guard_env()
+    )
+    assert proc.returncode == 1
+    assert "GENERATED" in proc.stderr
+
+
 def test_gate_allows_webui_to_stage_its_canonical_reservation_ledger(
     tmp_path: Path,
 ) -> None:
@@ -1613,14 +1632,36 @@ def test_guard_refusal_names_the_remedy(canonical: Path) -> None:
 # subprocess (exactly how a repo's `.pre-commit-config.yaml` calls it), not by
 # calling its Python functions directly.
 # ---------------------------------------------------------------------------
-GUARD_COMMAND = [sys.executable, "-m", "repository_manager.governance.lane_guard"]
 _PACKAGE_ROOT = str(Path(lane_guard.__file__).resolve().parents[2])
+_GUARD_HOOK = next(
+    hook
+    for hook in yaml.safe_load(
+        (Path(_PACKAGE_ROOT) / ".pre-commit-hooks.yaml").read_text(encoding="utf-8")
+    )
+    if hook["id"] == "lane-guard"
+)
+GUARD_COMMAND = shlex.split(_GUARD_HOOK["entry"])
+
+
+# spec: RM-GOVERNANCE-R031
+def test_exported_lane_guard_uses_isolated_python_and_consumer_stages() -> None:
+    """Export the real guard, not the separate mutation-admission CLI."""
+    assert GUARD_COMMAND == [
+        "python3",
+        "-m",
+        "repository_manager.governance.lane_guard",
+    ]
+    assert _GUARD_HOOK["language"] == "python"
+    assert _GUARD_HOOK["pass_filenames"] is False
+    assert _GUARD_HOOK["always_run"] is True
+    assert "stages" not in _GUARD_HOOK
 
 
 def _guard_env() -> dict[str, str]:
     """The ambient environment minus CARGO_TARGET_DIR, with this checkout's
     package importable from a foreign repo's cwd."""
     env = dict(os.environ)
+    env["PATH"] = os.pathsep.join((str(Path(sys.executable).parent), env["PATH"]))
     env.pop("CARGO_TARGET_DIR", None)
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = os.pathsep.join(p for p in (_PACKAGE_ROOT, existing) if p)
@@ -1647,6 +1688,7 @@ def _init_foreign_repo(root: Path, *, with_cargo: bool = False) -> Path:
     return root
 
 
+# spec: RM-GOVERNANCE-R031
 def test_gate_reaches_a_repo_that_is_not_agent_connector_sdk(tmp_path: Path) -> None:
     """The SAME script, invoked from a foreign repo, guards THAT repo — not AU.
 
@@ -1675,6 +1717,7 @@ def test_gate_reaches_a_repo_that_is_not_agent_connector_sdk(tmp_path: Path) -> 
     assert str(foreign) not in proc.stdout
 
 
+# spec: RM-GOVERNANCE-R031
 def test_gate_still_refuses_a_canonical_commit_in_a_foreign_repo(
     tmp_path: Path,
 ) -> None:
@@ -1694,6 +1737,7 @@ def test_gate_still_refuses_a_canonical_commit_in_a_foreign_repo(
     assert "CANONICAL checkout" in proc.stderr
 
 
+# spec: RM-GOVERNANCE-R031
 def test_gate_detects_a_stray_cargo_target_dir_export_in_a_foreign_cargo_repo(
     tmp_path: Path,
 ) -> None:
