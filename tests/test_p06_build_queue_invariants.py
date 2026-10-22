@@ -112,6 +112,7 @@ def test_run_build_command_injects_no_fail_fast(
 def _buildcache_yaml(*, disk_estimate_mb: int = 0) -> str:
     return textwrap.dedent(
         f"""
+        schema_version: 2
         base: main
         specs:
           - name: widget

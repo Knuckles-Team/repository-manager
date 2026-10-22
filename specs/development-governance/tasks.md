@@ -8,3 +8,5 @@
 - [ ] Merge to main; record source commit, CI, import scan, and queue/recovery evidence; mark LANDED then ACCEPTED only on proof.
 - [ ] Lease heavy gates on counted slots of inventory hosts and refuse when none is free. Closes RM-GOVERNANCE-R023.
 - [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-GOVERNANCE-R001`, `RM-GOVERNANCE-R024` through `RM-GOVERNANCE-R030`, and `RM-GOVERNANCE-R002` through `RM-GOVERNANCE-R022` — is covered by the tasks above; file a follow-up task for any gap found during implementation.
+
+- [x] Export the existing lane guard as an isolated pre-commit hook for consumers, retaining their stages and canonical-checkout, generated-ledger, and Cargo-partition refusals. Closes RM-GOVERNANCE-R031; require exact published-revision installation proof before rollout.

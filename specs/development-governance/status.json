@@ -6,6 +6,7 @@
   "requirement_ids": [
     "RM-GOVERNANCE-R001",
     "RM-GOVERNANCE-R024",
+    "RM-GOVERNANCE-R031",
     "RM-GOVERNANCE-R025",
     "RM-GOVERNANCE-R026",
     "RM-GOVERNANCE-R027",
@@ -62,6 +63,21 @@
         "d84cc3923887"
       ],
       "verified_by": []
+    },
+    {
+      "id": "RM-GOVERNANCE-R031",
+      "title": "Export the canonical development lane hook",
+      "delivery_state": "VERIFIED",
+      "landed_in": [
+        "b8d9c384efdc"
+      ],
+      "verified_by": [
+        "tests/governance/test_lanes.py:1576",
+        "tests/governance/test_lanes.py:1646",
+        "tests/governance/test_lanes.py:1691",
+        "tests/governance/test_lanes.py:1720",
+        "tests/governance/test_lanes.py:1740"
+      ]
     },
     {
       "id": "RM-GOVERNANCE-R025",
@@ -282,8 +298,12 @@
     {
       "id": "RM-GOVERNANCE-R022",
       "title": "The repository passes its own full local gate suite",
-      "delivery_state": "SPECIFIED",
-      "landed_in": [],
+      "delivery_state": "LANDED",
+      "landed_in": [
+        "3f64278035a5",
+        "b8d9c384efdc",
+        "d62a408ce486"
+      ],
       "verified_by": []
     },
     {

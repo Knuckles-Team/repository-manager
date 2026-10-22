@@ -29,3 +29,35 @@ Attach point: `_resource_lease_file` and `_free_resource_slot` in `repository_ma
 Reuse: the existing per-machine resource lease and the fence token. The inventory file stays owned by tunnel-manager.
 
 Decision: slot accounting stays in repository-manager's lease. The rejected alternative is a second scheduler that picks hosts, which duplicates the engine's placement decision.
+
+
+## Amendments — 2026-10-22
+
+RM-GOVERNANCE-R031 exposes `lane-guard` from `.pre-commit-hooks.yaml` as a
+`language: python` development hook. It invokes the existing
+`repository_manager.governance.lane_guard` module without duplicating policy or
+substituting the governance CLI's different mutation-admission check. Existing
+setuptools package discovery and governance YAML package-data include the
+implementation and resource inventory. The hook environment installs the
+repository's declared dependencies; adopting projects add no runtime dependency.
+Consumers pin a published repository-manager commit containing the hook and
+retain their existing stages, `always_run: true`, and `pass_filenames: false`.
+The export intentionally leaves stages unspecified so it inherits consumer
+configuration rather than restricting a commit guard to pre-push.
+
+Validation: the foreign-repository subprocess tests execute the manifest entry,
+including canonical-checkout and Cargo-partition refusal paths. A built wheel
+installed by pre-commit's isolated pip installer passes both consumer stages
+from a foreign linked worktree. Its installed entry also passes eight
+foreign-repository success/refusal cases, without a source/PYTHONPATH overlay.
+This local-wheel proof does not establish installation from a published Git
+revision; that exact-pin consumer check remains required before rollout.
+
+
+## Validation hygiene — 2026-10-22
+
+RM-GOVERNANCE-R022 qualification uses current schema-versioned ordinary queue
+fixtures. Legacy-compatibility tests explicitly assert their intended warnings
+instead of leaking deprecations into unrelated acceptance checks. Register the
+existing spec marker so requirement-bound tests remain warning-free. Shipped
+presets may migrate only with parsed-configuration equivalence proof.

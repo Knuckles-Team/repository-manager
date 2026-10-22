@@ -101,11 +101,14 @@ def test_v2_unknown_keys_fail_closed_but_legacy_unknown_keys_warn() -> None:
             },
             source="strict.buildcache.yaml",
         )
-    with pytest.warns(ConfigCompatibilityWarning, match="ignored"):
+    with pytest.warns(ConfigCompatibilityWarning) as caught:
         config = bq.parse_config(
             {"specs": [{"name": "x", "command": ["true"], "future_safety_key": True}]},
             source="legacy.buildcache.yaml",
         )
+    assert len(caught) == 2
+    assert "unversioned legacy declaration" in str(caught[0].message)
+    assert "ignored" in str(caught[1].message)
     assert config.spec("x").command == ("true",)
 
 
@@ -149,20 +152,26 @@ def test_build_safety_values_refuse_shell_empty_negative_and_escape() -> None:
 
 
 def test_merge_fast_slow_and_regeneration_drift_map_to_explicit_stages() -> None:
-    config = mq.parse_config(
-        {
-            "base": "main",
-            "gates": [
-                {"name": "quick", "command": ["true"], "tier": "fast"},
-                {"name": "full", "command": ["true"], "tier": "slow"},
-            ],
-            "regenerate_on_conflict": {
-                "paths": ["README.md"],
-                "regenerate": "python3 -c \"print('ok')\"",
+    with pytest.warns(ConfigCompatibilityWarning) as caught:
+        config = mq.parse_config(
+            {
+                "base": "main",
+                "gates": [
+                    {"name": "quick", "command": ["true"], "tier": "fast"},
+                    {"name": "full", "command": ["true"], "tier": "slow"},
+                ],
+                "regenerate_on_conflict": {
+                    "paths": ["README.md"],
+                    "regenerate": "python3 -c \"print('ok')\"",
+                },
             },
-        },
-        source="legacy.mergequeue.yaml",
-    )
+            source="legacy.mergequeue.yaml",
+        )
+    assert len(caught) == 4
+    assert "unversioned legacy declaration" in str(caught[0].message)
+    assert "tier='fast'" in str(caught[1].message)
+    assert "tier='slow'" in str(caught[2].message)
+    assert "regenerate_on_conflict" in str(caught[3].message)
     assert [(gate.stage, gate.tier) for gate in config.gates] == [
         ("integration", "fast"),
         ("certification", "slow"),
@@ -264,10 +273,18 @@ def test_migration_preview_apply_is_idempotent_atomic_and_reversible(
         encoding="utf-8",
     )
     before = config_path.read_text(encoding="utf-8")
-    preview = preview_migration(config_path)
+    with pytest.warns(ConfigCompatibilityWarning) as caught:
+        preview = preview_migration(config_path)
+    assert len(caught) == 2
+    assert "unversioned legacy declaration" in str(caught[0].message)
+    assert "tier='fast'" in str(caught[1].message)
     assert preview.changed is True
     assert config_path.read_text(encoding="utf-8") == before
-    applied = apply_migration(config_path)
+    with pytest.warns(ConfigCompatibilityWarning) as caught:
+        applied = apply_migration(config_path)
+    assert len(caught) == 2
+    assert "unversioned legacy declaration" in str(caught[0].message)
+    assert "tier='fast'" in str(caught[1].message)
     assert applied.changed is True
     migrated = config_path.read_text(encoding="utf-8")
     assert "schema_version: 2" in migrated
@@ -291,3 +308,27 @@ def test_duplicate_yaml_keys_and_packaged_presets_are_checked(tmp_path: Path) ->
     report = validate_presets()
     assert report
     assert {entry["kind"] for entry in report} == {"build", "merge"}
+
+
+@pytest.mark.parametrize(
+    "filename", ["agent-utilities.mergequeue.yaml", "epistemic-graph.mergequeue.yaml"]
+)
+def test_versioned_merge_presets_preserve_legacy_execution_contract(
+    filename: str,
+) -> None:
+    """The schema spelling changes, not gate commands or execution policy."""
+    path = Path(mq.__file__).parent / "mergequeue_presets" / filename
+    current = load_yaml_mapping(str(path))
+    legacy = {key: value for key, value in current.items() if key != "schema_version"}
+    legacy["gates"] = [dict(gate) for gate in current["gates"]]
+    for gate in legacy["gates"]:
+        gate["tier"] = {
+            "integration": "fast",
+            "certification": "slow",
+        }[gate.pop("stage")]
+    with pytest.warns(ConfigCompatibilityWarning) as caught:
+        old_config = mq.parse_config(legacy, source=filename)
+    assert len(caught) == 1 + len(legacy["gates"])
+    assert "unversioned legacy declaration" in str(caught[0].message)
+    assert all("tier=" in str(item.message) for item in caught[1:])
+    assert mq.parse_config(current, source=filename) == old_config

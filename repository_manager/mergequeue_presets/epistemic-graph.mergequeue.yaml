@@ -10,6 +10,7 @@
 # fast-forward only, never merge in the canonical checkout). That is exactly the
 # discipline this file hands to the machine.
 
+schema_version: 2
 base: main
 batch_size: 8
 
@@ -40,7 +41,7 @@ gates:
       - short
       - --target-dir
       - target-isolated
-    tier: fast
+    stage: integration
     timeout: 1800
     baseline_timeout: 3600
     compare: lines
@@ -78,7 +79,7 @@ gates:
       - short
       - --target-dir
       - target-isolated
-    tier: fast
+    stage: integration
     timeout: 1800
     baseline_timeout: 3600
     compare: lines
@@ -106,7 +107,7 @@ gates:
     # of what actually runs if copied and run by hand outside the queue.
     command:
       [cargo, test, --all-features, --no-fail-fast, --target-dir, target-isolated]
-    tier: slow
+    stage: certification
     timeout: 5400
     compare: lines
 

@@ -33,3 +33,17 @@
   stages: [pre-push]
   pass_filenames: false
   always_run: true
+
+# Development-only consumer integration. pre-commit installs this repository
+# and its declared Python dependencies in its own environment, never the
+# consumer's runtime environment. Keep the adopting repository's stages;
+# unlike phase-direction, this guard must also run before a commit.
+- id: lane-guard
+  name: Lane guard (canonical checkout, generated ledger, Cargo partition)
+  description: >-
+    Guard the repository containing the current working directory using the
+    canonical development lane checks owned by repository-manager.
+  entry: python3 -m repository_manager.governance.lane_guard
+  language: python
+  pass_filenames: false
+  always_run: true

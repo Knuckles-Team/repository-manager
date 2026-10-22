@@ -207,12 +207,13 @@ def shell_repo(tmp_path: Path) -> Path:
     _write_config(
         repo,
         """
+        schema_version: 2
         base: main
         batch_size: 8
         gates:
           - name: no-broken
             command: ["./gate.sh"]
-            tier: fast
+            stage: integration
             timeout: 60
             compare: lines
         """,
@@ -277,6 +278,7 @@ def test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate(tmp_path: Path) -
     _write_config(
         repo,
         """
+        schema_version: 2
         base: main
         batch_size: 8
         environment_signature: ["cargo", "--version"]
@@ -284,7 +286,7 @@ def test_a_rust_repo_lands_through_the_queue_with_a_cargo_gate(tmp_path: Path) -
           - name: cargo-check
             command: ["cargo", "check", "--all-features", "--message-format", "short",
                       "--target-dir", "target-isolated", "--offline"]
-            tier: fast
+            stage: integration
             timeout: 900
             baseline_timeout: 900
             compare: lines
@@ -358,13 +360,14 @@ def test_the_cargo_gate_is_differential_not_absolute(tmp_path: Path) -> None:
     _write_config(
         repo,
         """
+        schema_version: 2
         base: main
         environment_signature: ["cargo", "--version"]
         gates:
           - name: cargo-check
             command: ["cargo", "check", "--all-features", "--message-format", "short",
                       "--target-dir", "target-isolated", "--offline"]
-            tier: fast
+            stage: integration
             timeout: 900
             compare: lines
             keep_lines: ['^error', '^warning']
@@ -461,11 +464,12 @@ def test_a_baseline_timeout_is_a_refusal_not_an_empty_baseline(tmp_path: Path) -
     _write_config(
         repo,
         """
+        schema_version: 2
         base: main
         gates:
           - name: slow-baseline
             command: ["./gate.sh"]
-            tier: fast
+            stage: integration
             timeout: 60
             baseline_timeout: 2
             compare: lines
@@ -673,11 +677,12 @@ def test_a_conflict_confined_to_generated_files_is_regenerated_not_rejected(
     _write_config(
         repo,
         f"""
+        schema_version: 2
         base: main
         gates:
           - name: always-green
             command: ["true"]
-            tier: fast
+            stage: integration
             compare: exit
         generated_files: ["INDEX.md"]
         regenerate:
@@ -717,11 +722,12 @@ def test_a_conflict_touching_a_handwritten_file_is_still_rejected(
     _write_config(
         repo,
         f"""
+        schema_version: 2
         base: main
         gates:
           - name: always-green
             command: ["true"]
-            tier: fast
+            stage: integration
             compare: exit
         generated_files: ["INDEX.md"]
         regenerate: [["{sys.executable}", "gen.py"]]
@@ -825,11 +831,12 @@ def test_a_gate_that_cannot_be_executed_is_refused_not_assumed_clean(
     _write_config(
         repo,
         """
+        schema_version: 2
         base: main
         gates:
           - name: missing-tool
             command: ["definitely-not-a-real-binary-xyz"]
-            tier: fast
+            stage: integration
             compare: exit
         """,
     )
@@ -851,12 +858,13 @@ def test_materialized_gate_reuses_versioned_repo_venv_without_ambient_python(
     _write_config(
         repo,
         """
+        schema_version: 2
         base: main
         environment_signature: [".venv/bin/python", "--signature"]
         gates:
           - name: repo-python
             command: [".venv/bin/python", "--gate"]
-            tier: fast
+            stage: integration
             compare: exit
         """,
     )
@@ -891,7 +899,7 @@ def test_dropping_a_declared_gate_is_a_refusal(shell_repo: Path) -> None:
     """Deleting the check that guards an invariant is not a way to satisfy it."""
     repo = shell_repo
     _run("git checkout -q -b feat/nogate main", repo)
-    _write_config(repo, "base: main\ngates: []\n")
+    _write_config(repo, "schema_version: 2\nbase: main\ngates: []\n")
     _commit(repo, "remove the gate")
     _run("git checkout -q main", repo)
 
@@ -1159,18 +1167,21 @@ def test_a_repo_with_no_config_is_refused_not_defaulted(tmp_path: Path) -> None:
 
 def test_a_shell_string_command_is_rejected_at_parse_time(tmp_path: Path) -> None:
     with pytest.raises(mq.MergeQueueError, match="must be a LIST of argv"):
-        mq.parse_config({"gates": [{"name": "x", "command": "rm -rf /"}]})
+        mq.parse_config(
+            {"schema_version": 2, "gates": [{"name": "x", "command": "rm -rf /"}]}
+        )
 
 
 def test_generated_files_without_regenerators_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(mq.MergeQueueError, match="no `regenerate` commands"):
-        mq.parse_config({"generated_files": ["a.md"]})
+        mq.parse_config({"schema_version": 2, "generated_files": ["a.md"]})
 
 
 def test_duplicate_gate_names_are_rejected(tmp_path: Path) -> None:
     with pytest.raises(mq.MergeQueueError, match="duplicate gate name"):
         mq.parse_config(
             {
+                "schema_version": 2,
                 "gates": [
                     {"name": "x", "command": ["true"]},
                     {"name": "x", "command": ["false"]},
@@ -1272,7 +1283,9 @@ def test_two_repositories_have_completely_independent_queues(
     """Per-repo by construction, not by a `repo` key someone must remember to set."""
     other = _init_repo(tmp_path / "otherrepo")
     _write_config(
-        other, "base: main\ngates: [{name: t, command: ['true'], compare: exit}]\n"
+        other,
+        "schema_version: 2\nbase: main\n"
+        "gates: [{name: t, command: ['true'], compare: exit}]\n",
     )
     _commit(other, "init")
     _branch_with(other, "feat/other", {"o.txt": "o\n"}, "o")
@@ -1330,11 +1343,12 @@ def test_a_killed_drain_does_not_strand_the_candidate(tmp_path: Path) -> None:
     _write_config(
         repo,
         """
+        schema_version: 2
         base: main
         gates:
           - name: slow-but-clean
             command: ["./slow_gate.sh"]
-            tier: fast
+            stage: integration
             timeout: 60
             compare: exit
         """,
@@ -1505,11 +1519,12 @@ def _parked_repo(tmp_path: Path, name: str = "parked") -> Path:
     _write_config(
         repo,
         """
+        schema_version: 2
         base: main
         gates:
           - name: always-green
             command: ["true"]
-            tier: fast
+            stage: integration
             compare: exit
         """,
     )
@@ -1625,11 +1640,12 @@ def test_landing_pushes_to_the_remote_not_just_local_main(tmp_path: Path) -> Non
     _write_config(
         repo,
         """
+        schema_version: 2
         base: main
         gates:
           - name: always-green
             command: ["true"]
-            tier: fast
+            stage: integration
             compare: exit
         """,
     )
@@ -1972,7 +1988,7 @@ def test_shadow_generation_uses_canonical_repository_identity_for_same_basenames
     first = _init_repo(tmp_path / "one" / "same")
     second = _init_repo(tmp_path / "two" / "same")
     for repo, branch in ((first, "feat/one"), (second, "feat/two")):
-        _write_config(repo, "base: main\ngates: []\n")
+        _write_config(repo, "schema_version: 2\nbase: main\ngates: []\n")
         (repo / "base.txt").write_text("base\n")
         _commit(repo, "init")
         _branch_with(repo, branch, {f"{branch.replace('/', '-')}.txt": "x\n"}, branch)
