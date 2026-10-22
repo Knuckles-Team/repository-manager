@@ -23,3 +23,7 @@ Clone this public repository, install Python from `pyproject.toml` with `uv sync
 ## Compatibility and security
 
 Existing manifest selectors remain readable during migration. Reject traversal, symlinks out of the selected root, URL-shaped IDs, and untrusted artifact evidence before executing commands. Keep credentials in user environment or forge adapters, never in the plan or receipt. The public plan format needs a version and a migration test before changing fields.
+
+## Amendments
+
+2026-10-22: RM-RELEASE-R008 narrows package publication to bump2version-generated v-prefixed tags. Reuse the canonical Python pipeline with require-tag enabled; do not duplicate or bypass its frozen-source/conflicting-tag guard. Source CI remains independent. The next release uses the normal bumper and publishes its matching commit/tag together after validation; existing release tags remain immutable.

@@ -22,3 +22,7 @@ A small offline fixture proves missing, extra, same-count substituted, and
 duplicate identities fail before generation. Missing checkouts fail closed;
 unlisted siblings and unrelated services cannot expand the fleet. This is not
 evidence of dependency census completeness, release activation, or RM-RELEASE-R001 acceptance.
+
+## Package tag admission
+
+RM-RELEASE-R008: tests/test_package_publication_workflow.py checks version tags versus branch pushes, independent main/PR CI, required tag admission, and delegation to the canonical exact-source release guard. Wrapper tests do not claim live PyPI publication.
