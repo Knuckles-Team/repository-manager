@@ -7,7 +7,7 @@ commit in this package: it composes the existing, already-gated primitives
 :mod:`repository_manager.merge_queue`) behind one admission boundary rather
 than adding a second Git-mutating surface. No other function in this package
 creates a worktree, applies a patch, or commits on a proposal's behalf
-(RM-MATERIALIZE-06).
+(RM-MATERIALIZE-R007).
 
 Sequence (plan.md): verify request/approval -> check base and allowlist ->
 create worktree -> apply patch -> validate exact tree -> explicit
@@ -57,7 +57,7 @@ __all__ = [
 
 
 class RepositoryManagerUnavailable(RuntimeError):
-    """Worktree creation itself failed (RM-MATERIALIZE-06's "RM adapter")."""
+    """Worktree creation itself failed (RM-MATERIALIZE-R007's "RM adapter")."""
 
 
 #: Any of these means a DEPENDENCY, not the proposal's content, is the
@@ -78,7 +78,7 @@ def check_binding(
 
     Catches an approval bound to a DIFFERENT proposal (any field changed
     changes ``proposal.digest``), a wrong repository/tenant/actor, or an
-    expired proposal/approval -- every RM-MATERIALIZE-01 negative fixture
+    expired proposal/approval -- every RM-MATERIALIZE-R002 negative fixture
     except forged-signature detection, which only
     :class:`~repository_manager.materialization.ports.ApprovalAuthority` can
     answer.

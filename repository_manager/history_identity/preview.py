@@ -1,4 +1,4 @@
-"""RM-IDENTITY-02: deterministic dry-run identity rewrite plan (``HistoryPreview/v1``).
+"""RM-IDENTITY-R004: deterministic dry-run identity rewrite plan (``HistoryPreview/v1``).
 
 :func:`generate_preview` reads a repository's commit authors/committers
 (never writes anything) and maps each through an injected
@@ -61,7 +61,7 @@ class CommitIdentityMapping:
 
 @dataclass(frozen=True)
 class HistoryPreview:
-    """A deterministic dry-run plan: everything an approval (RM-IDENTITY-03) binds to."""
+    """A deterministic dry-run plan: everything an approval (RM-IDENTITY-R005) binds to."""
 
     repo_id: str
     discovery_digest: str

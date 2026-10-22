@@ -16,7 +16,7 @@ Run `pre-commit run --all-files` where feasible, the repository's CCCC staged co
 ## Documentation readiness identity admission (issue #4)
 
 `tests/test_docs_readiness_fleet_action.py` exercises the narrow documentation
-readiness boundary of RM-RELEASE-01: the caller's canonical workspace manifest owns
+readiness boundary of RM-RELEASE-R002: the caller's canonical workspace manifest owns
 the expected agent identities, including shared skills and excluding agent tests.
 A small offline fixture proves missing, extra, same-count substituted, and
 duplicate identities fail before generation. Missing checkouts fail closed;

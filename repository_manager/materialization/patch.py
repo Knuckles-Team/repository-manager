@@ -1,4 +1,4 @@
-"""Approved-path-restricted patch application (RM-MATERIALIZE-02).
+"""Approved-path-restricted patch application (RM-MATERIALIZE-R003).
 
 A proposal's ``patch_text`` is applied inside an already-isolated worktree
 (never the canonical checkout), and only after its changed paths are proven

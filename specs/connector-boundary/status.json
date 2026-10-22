@@ -5,11 +5,11 @@
   "delivery_state": "LANDED",
   "requirement_ids": [
     "RM-CONNECTOR-R001",
-    "RM-CONNECTOR-01",
-    "RM-CONNECTOR-02",
-    "RM-CONNECTOR-03",
-    "RM-CONNECTOR-04",
-    "RM-CONNECTOR-05"
+    "RM-CONNECTOR-R002",
+    "RM-CONNECTOR-R003",
+    "RM-CONNECTOR-R004",
+    "RM-CONNECTOR-R005",
+    "RM-CONNECTOR-R006"
   ],
   "requirements": [
     {
@@ -24,7 +24,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-CONNECTOR-01",
+      "id": "RM-CONNECTOR-R002",
       "title": "Classify every import from the orchestration package",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -33,7 +33,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-CONNECTOR-02",
+      "id": "RM-CONNECTOR-R003",
       "title": "Route connector transport imports through the public SDK",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -43,7 +43,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-CONNECTOR-03",
+      "id": "RM-CONNECTOR-R004",
       "title": "Keep governance imports under repository-manager authority",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -52,7 +52,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-CONNECTOR-04",
+      "id": "RM-CONNECTOR-R005",
       "title": "Preserve MCP/CLI contract during connector migration",
       "delivery_state": "LANDED",
       "landed_in": [
@@ -63,7 +63,7 @@
       "verified_by": []
     },
     {
-      "id": "RM-CONNECTOR-05",
+      "id": "RM-CONNECTOR-R006",
       "title": "Remove dead connector adapters after cutover",
       "delivery_state": "LANDED",
       "landed_in": [

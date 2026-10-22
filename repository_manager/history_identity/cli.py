@@ -1,9 +1,9 @@
 """Read-only command-line pipeline for ``repository-manager-governance history-identity``.
 
 Wires exactly the read phases this package already builds -- history
-consistency admission (RM-IDENTITY-R002), ref/tag discovery (RM-IDENTITY-01),
-the deterministic preview (RM-IDENTITY-02), and, when an approval file is
-supplied, approval verification (RM-IDENTITY-03) -- into the one command the
+consistency admission (RM-IDENTITY-R002), ref/tag discovery (RM-IDENTITY-R003),
+the deterministic preview (RM-IDENTITY-R004), and, when an approval file is
+supplied, approval verification (RM-IDENTITY-R005) -- into the one command the
 spec's "the tool enumerates…"/"the tool produces a deterministic dry-run
 plan…" language calls for. See :mod:`repository_manager.governance.cli` for
 the argument parser and dispatch wiring.

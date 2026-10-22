@@ -1,5 +1,5 @@
 """Tests for ``repository-manager-governance history-identity`` -- the one read-only
-entry point RM-IDENTITY-01/02/03/R002 are wired through.
+entry point RM-IDENTITY-R003/02/03/R002 are wired through.
 
 Every test drives the real argument parser and dispatch
 (:func:`repository_manager.governance.cli.main`), not the library functions

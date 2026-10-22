@@ -1,4 +1,4 @@
-"""Tests for the ``IdentityPolicy`` container (RM-IDENTITY-02's policy input).
+"""Tests for the ``IdentityPolicy`` container (RM-IDENTITY-R004's policy input).
 
 No real fleet allowlist is read here -- every allowlist file is a disposable
 fixture written under ``tmp_path``, matching "this repository consumes it, it

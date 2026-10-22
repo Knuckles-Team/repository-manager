@@ -46,7 +46,7 @@ __all__ = [
 
 #: A materialization patch is a bounded, reviewed, text-only diff -- not an
 #: artifact channel.  2 MiB comfortably covers a legitimate reviewed change
-#: while keeping "oversized patch" (RM-MATERIALIZE-02) a cheap, pre-worktree
+#: while keeping "oversized patch" (RM-MATERIALIZE-R003) a cheap, pre-worktree
 #: rejection.
 MAX_PATCH_BYTES = 2 * 1024 * 1024
 
@@ -284,7 +284,7 @@ class MaterializationReceipt(BaseModel):
         ``REFUSED`` is a content-based, terminal refusal and must name
         whichever stable error it refused for.  ``PENDING`` carrying
         ``UNCERTAIN_DELIVERY`` is the ONE other shape allowed to hold an
-        error_code -- RM-MATERIALIZE-06's "stays pending" outcome for an
+        error_code -- RM-MATERIALIZE-R007's "stays pending" outcome for an
         unavailable dependency, never a claim about the proposal's content.
         Every other state must carry no error_code at all.
         """

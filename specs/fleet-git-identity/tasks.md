@@ -8,4 +8,4 @@
 - [ ] Integrate merge queue pause/resume and contributor PR recovery instructions.
 - [ ] Add all fixture, negative, crash, remote-drift, and rollback tests in `test-spec.md`.
 - [ ] Run full applicable gates and record exact-main source, CI, rehearsal, and remote receipts before status changes.
-- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-IDENTITY-R001`, `RM-IDENTITY-01` through `RM-IDENTITY-07`, and `RM-IDENTITY-R002` — is covered by the tasks above; file a follow-up task for any gap found during implementation.
+- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-IDENTITY-R001`, `RM-IDENTITY-R003` through `RM-IDENTITY-R009`, and `RM-IDENTITY-R002` — is covered by the tasks above; file a follow-up task for any gap found during implementation.

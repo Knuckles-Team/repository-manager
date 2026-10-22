@@ -6,4 +6,4 @@
 - [ ] Remove private, dead, and fallback adapters after tests prove no caller remains.
 - [ ] Add clean-install, import-direction, MCP/CLI contract, and negative tests in `test-spec.md`.
 - [ ] Run exact-head quality and package gates, merge, and record commit/CI evidence before marking LANDED or ACCEPTED.
-- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-CONNECTOR-R001` and `RM-CONNECTOR-01` through `RM-CONNECTOR-05` — is covered by the tasks above; file a follow-up task for any gap found during implementation.
+- [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-CONNECTOR-R001` and `RM-CONNECTOR-R002` through `RM-CONNECTOR-R006` — is covered by the tasks above; file a follow-up task for any gap found during implementation.

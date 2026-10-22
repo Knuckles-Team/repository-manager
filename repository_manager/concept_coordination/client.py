@@ -20,7 +20,7 @@ the action core a :class:`~repository_manager.concept_coordination.port.ConceptA
   import cannot yield a *live* authority without an engine handle this
   module deliberately does not construct.
 
-**Where the authority module actually lives now (RM-GOVERNANCE-07).** RMDD-16's
+**Where the authority module actually lives now (RM-GOVERNANCE-R030).** RMDD-16's
 authority (``ConceptReservationService``, ``NativeConceptReservationAuthority``,
 ``FixtureConceptReservationAuthority``, states
 reserved/materialized/landed/released/expired/tombstoned, fenced transitions,

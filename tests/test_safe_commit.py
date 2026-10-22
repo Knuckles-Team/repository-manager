@@ -137,7 +137,7 @@ def test_successful_commit_records_baseline_for_subsequent_diagnosis(
 def test_baseline_binds_the_declared_gate_identity_to_the_committed_tree(
     tmp_path: Path,
 ) -> None:
-    """RM-GOVERNANCE-04: the resulting tree and the gate that validated it
+    """RM-GOVERNANCE-R027: the resulting tree and the gate that validated it
     must be bound together in the one persisted baseline record, reachable
     from the real ``safe_commit`` entry point -- not just provable in a unit
     test of ``tree_repair`` in isolation."""

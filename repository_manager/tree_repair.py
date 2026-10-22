@@ -180,7 +180,7 @@ def record_baseline(
     persisted record as the tree's own identity (``head_sha`` plus the
     tracked-content digest), so a later reader of this one file can answer
     "which gate validated exactly this commit" without correlating two
-    separate stores (RM-GOVERNANCE-04). :func:`repository_manager.safe_commit.safe_commit`
+    separate stores (RM-GOVERNANCE-R027). :func:`repository_manager.safe_commit.safe_commit`
     is the one production caller that supplies it; a bare diagnostic run
     passes none and the baseline records tree identity only, as before.
     """

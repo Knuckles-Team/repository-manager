@@ -1,4 +1,4 @@
-"""RM-IDENTITY-01: complete ref and tag discovery before any rewrite.
+"""RM-IDENTITY-R003: complete ref and tag discovery before any rewrite.
 
 :func:`discover` enumerates every local branch, annotated and lightweight
 tag, remote-tracking ref, and note in a repository, records which referenced

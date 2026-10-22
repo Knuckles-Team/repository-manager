@@ -162,7 +162,7 @@ def test_concept_authority_refusal_names_module_and_preserves_cause(tmp_path):
 
     ``resolve_default_authority`` (``repository_manager/concept_coordination/
     client.py``) always refuses when nothing is injected, by design, in
-    either of two states (see that module's docstring, RM-GOVERNANCE-07):
+    either of two states (see that module's docstring, RM-GOVERNANCE-R030):
 
     * the named authority module (``AUTHORITY_MODULE``) is absent -> refusal
       chains the ``ImportError`` as its cause;

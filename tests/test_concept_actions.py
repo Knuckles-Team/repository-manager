@@ -1,4 +1,4 @@
-"""Concept-authority construction chokepoint (RM-GOVERNANCE-07).
+"""Concept-authority construction chokepoint (RM-GOVERNANCE-R030).
 
 ``build_default_concept_authority`` is the one place the ``rm_concepts`` MCP
 tool and the ``--concepts`` CLI family both reach for a default

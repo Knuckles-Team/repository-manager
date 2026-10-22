@@ -10,12 +10,12 @@ An approved change proposal becomes an auditable Git candidate only through repo
 
 | ID | Contract | Acceptance |
 |---|---|---|
-| RM-MATERIALIZE-01 | Accept a versioned `ChangeProposal` with proposal ID, repository ID, exact base SHA, approved path allowlist, patch digest, decision identity, and expiry. Verify caller authorization and signed/verified approval before creating a worktree. | Missing, expired, altered, or wrong-repository approval causes no Git mutation. |
-| RM-MATERIALIZE-02 | Resolve the repository from a portable registry and create an isolated real worktree at the approved base. Apply only approved paths; reject path traversal, symlink escapes, binary surprises, oversized patches, and ref drift. | A valid patch changes only allowed paths; each invalid patch leaves the canonical repository untouched. |
-| RM-MATERIALIZE-03 | Run declared local validation against the resulting tree, stage an explicit path list, and create one commit with approved attribution and exact tree identity. | Gate failure, changed tree, or unreviewed file prevents commit and queue admission. |
-| RM-MATERIALIZE-04 | Submit the candidate to the existing merge queue; never claim landing before the queue verifies base, gates, and merge result. | Conflict or red hosted CI produces pending/failed outcome, not success. |
-| RM-MATERIALIZE-05 | Return an immutable `MaterializationReceipt/v1` bound to proposal, approval, base, resulting commit/tree, gate profile/results, queue result, and idempotency key. Reconcile uncertain delivery before retry. | Repeated same request returns/reconciles one candidate; altered replay is rejected. |
-| RM-MATERIALIZE-06 | No caller has a direct-Git fallback. If repository-manager, authorization, or receipt delivery is unavailable, the request remains pending. | Fault injection cannot cause an ungoverned branch or a false resolved proposal. |
+| RM-MATERIALIZE-R002 | Accept a versioned `ChangeProposal` with proposal ID, repository ID, exact base SHA, approved path allowlist, patch digest, decision identity, and expiry. Verify caller authorization and signed/verified approval before creating a worktree. | Missing, expired, altered, or wrong-repository approval causes no Git mutation. |
+| RM-MATERIALIZE-R003 | Resolve the repository from a portable registry and create an isolated real worktree at the approved base. Apply only approved paths; reject path traversal, symlink escapes, binary surprises, oversized patches, and ref drift. | A valid patch changes only allowed paths; each invalid patch leaves the canonical repository untouched. |
+| RM-MATERIALIZE-R004 | Run declared local validation against the resulting tree, stage an explicit path list, and create one commit with approved attribution and exact tree identity. | Gate failure, changed tree, or unreviewed file prevents commit and queue admission. |
+| RM-MATERIALIZE-R005 | Submit the candidate to the existing merge queue; never claim landing before the queue verifies base, gates, and merge result. | Conflict or red hosted CI produces pending/failed outcome, not success. |
+| RM-MATERIALIZE-R006 | Return an immutable `MaterializationReceipt/v1` bound to proposal, approval, base, resulting commit/tree, gate profile/results, queue result, and idempotency key. Reconcile uncertain delivery before retry. | Repeated same request returns/reconciles one candidate; altered replay is rejected. |
+| RM-MATERIALIZE-R007 | No caller has a direct-Git fallback. If repository-manager, authorization, or receipt delivery is unavailable, the request remains pending. | Fault injection cannot cause an ungoverned branch or a false resolved proposal. |
 
 ## Boundaries
 

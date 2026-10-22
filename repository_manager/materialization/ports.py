@@ -3,7 +3,7 @@
 :mod:`repository_manager.materialization.service` depends on these three
 abstract boundaries rather than on a live approval service, a live receipt
 store, or the real merge queue directly, so that callers can supply their own
-implementation without a second Git-mutating path, and so RM-MATERIALIZE-06
+implementation without a second Git-mutating path, and so RM-MATERIALIZE-R007
 (no direct Git fallback when a dependency is unavailable) is a fault a caller
 can inject by raising the matching ``*Unavailable`` error from their own
 implementation.
