@@ -11,6 +11,7 @@
 # migration plan in docs/merge-queue.md. Placing the file in a repo is what
 # switches that repo over, so this preset is inert until it is copied.
 
+schema_version: 2
 base: main
 batch_size: 8
 
@@ -33,7 +34,7 @@ gates:
       fails=[s for s in sorted(glob.glob('scripts/security/check_*.py'))
       if subprocess.run([sys.executable,s],capture_output=True,text=True).returncode];
       print('\\n'.join(fails)); sys.exit(1 if fails else 0)"]
-    tier: fast
+    stage: integration
     timeout: 60
     baseline_timeout: 180
     compare: lines
@@ -57,7 +58,7 @@ gates:
   - name: targeted-tests
     command: [".venv/bin/python", "-m", "pytest", "-q", "-p", "no:randomly", "-rfE",
               "--timeout", "120", "tests/unit"]
-    tier: fast
+    stage: integration
     timeout: 120
     baseline_timeout: 240
     compare: pytest-ids
@@ -66,7 +67,7 @@ gates:
 
   - name: ruff
     command: [".venv/bin/python", "-m", "ruff", "check", "--output-format", "concise", "."]
-    tier: fast
+    stage: integration
     timeout: 120
     compare: lines
     when_changed: ['*.py', '**/*.py']
@@ -77,7 +78,7 @@ gates:
   # what guards the repo.
   - name: full-suite
     command: [".venv/bin/python", "-m", "pytest", "-q", "tests"]
-    tier: slow
+    stage: certification
     timeout: 3600
     compare: pytest-ids
 
