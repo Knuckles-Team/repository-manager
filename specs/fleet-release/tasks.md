@@ -9,3 +9,4 @@
 - [ ] Run full applicable gates and record exact-head CI, digest, source tree, and release rehearsal evidence in `spec.md`.
 - [ ] Mark LANDED and ACCEPTED separately after merge and independent verification.
 - [ ] Confirm every ID in [`requirements.md`](requirements.md) — `RM-RELEASE-R001` and `RM-RELEASE-R002` through `RM-RELEASE-R007` — is covered by the tasks above; file a follow-up task for any gap found during implementation.
+- [x] Bind this package publication wrapper to version-tag pushes and shared tag admission (RM-RELEASE-R008); preserve source CI and secret wiring.

@@ -2,7 +2,7 @@
   "schema_version": 2,
   "spec_id": "RM-RELEASE",
   "owner_repo": "repository-manager",
-  "delivery_state": "LANDED",
+  "delivery_state": "SPECIFIED",
   "requirement_ids": [
     "RM-RELEASE-R001",
     "RM-RELEASE-R002",
@@ -10,7 +10,8 @@
     "RM-RELEASE-R004",
     "RM-RELEASE-R005",
     "RM-RELEASE-R006",
-    "RM-RELEASE-R007"
+    "RM-RELEASE-R007",
+    "RM-RELEASE-R008"
   ],
   "requirements": [
     {
@@ -82,6 +83,15 @@
         "c930dfd5c01a"
       ],
       "verified_by": []
+    },
+    {
+      "id": "RM-RELEASE-R008",
+      "title": "Publish this package only from version tags",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": [
+        "tests/test_package_publication_workflow.py:10"
+      ]
     }
   ]
 }
