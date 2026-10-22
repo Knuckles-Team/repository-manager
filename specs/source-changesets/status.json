@@ -1,0 +1,212 @@
+{
+  "schema_version": 2,
+  "spec_id": "RM-SCM",
+  "owner_repo": "repository-manager",
+  "delivery_state": "SPECIFIED",
+  "requirement_ids": [
+    "RM-SCM-R001",
+    "RM-SCM-R001.1",
+    "RM-SCM-R001.2",
+    "RM-SCM-R001.3",
+    "RM-SCM-R001.4",
+    "RM-SCM-R001.5",
+    "RM-SCM-R001.6",
+    "RM-SCM-R002",
+    "RM-SCM-R002.1",
+    "RM-SCM-R002.2",
+    "RM-SCM-R002.3",
+    "RM-SCM-R002.4",
+    "RM-SCM-R002.5",
+    "RM-SCM-R002.6",
+    "RM-SCM-R003",
+    "RM-SCM-R003.1",
+    "RM-SCM-R003.2",
+    "RM-SCM-R003.3",
+    "RM-SCM-R004",
+    "RM-SCM-R004.1",
+    "RM-SCM-R004.2",
+    "RM-SCM-R004.3"
+  ],
+  "requirements": [
+    {
+      "id": "RM-SCM-R001",
+      "title": "Import git history into engine changesets (rollup)",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": [],
+      "rollup_of": [
+        "RM-SCM-R001.1",
+        "RM-SCM-R001.2",
+        "RM-SCM-R001.3",
+        "RM-SCM-R001.4",
+        "RM-SCM-R001.5",
+        "RM-SCM-R001.6"
+      ]
+    },
+    {
+      "id": "RM-SCM-R001.1",
+      "title": "Model",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R001.2",
+      "title": "Behavior",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R001.3",
+      "title": "Wiring",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R001.4",
+      "title": "Refusal",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R001.5",
+      "title": "Evidence",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R001.6",
+      "title": "Hot-path proof",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R002",
+      "title": "Mirror sync to the public git hosts (rollup)",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": [],
+      "rollup_of": [
+        "RM-SCM-R002.1",
+        "RM-SCM-R002.2",
+        "RM-SCM-R002.3",
+        "RM-SCM-R002.4",
+        "RM-SCM-R002.5",
+        "RM-SCM-R002.6"
+      ]
+    },
+    {
+      "id": "RM-SCM-R002.1",
+      "title": "Model",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R002.2",
+      "title": "Behavior",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R002.3",
+      "title": "Wiring",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R002.4",
+      "title": "Refusal",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R002.5",
+      "title": "Evidence",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R002.6",
+      "title": "Hot-path proof",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R003",
+      "title": "Served source development tools (rollup)",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": [],
+      "rollup_of": [
+        "RM-SCM-R003.1",
+        "RM-SCM-R003.2",
+        "RM-SCM-R003.3"
+      ]
+    },
+    {
+      "id": "RM-SCM-R003.1",
+      "title": "Tools",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R003.2",
+      "title": "Refusal",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R003.3",
+      "title": "Hot-path proof",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R004",
+      "title": "One migration wave step for one repository (rollup)",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": [],
+      "rollup_of": [
+        "RM-SCM-R004.1",
+        "RM-SCM-R004.2",
+        "RM-SCM-R004.3"
+      ]
+    },
+    {
+      "id": "RM-SCM-R004.1",
+      "title": "Behavior",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R004.2",
+      "title": "Refusal",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "RM-SCM-R004.3",
+      "title": "Evidence",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    }
+  ]
+}

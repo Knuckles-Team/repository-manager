@@ -19,7 +19,7 @@ each requirement ID its own `delivery_state` and evidence, alongside the spec-wi
 `acceptance_state` and `evidence` array).
 Start from [`_template/`](_template/). Keep status and evidence explicit; a planned or tested item
 is not a landed item. Put durable evidence links in the spec directory, never local scratch output.
-This follows GitHub Spec Kit's specify/plan/tasks flow with an explicit test contract. The tracked [constitution](../.specify/memory/constitution.md) records this repository's governing principles.
+This follows a specify, plan and tasks flow with an explicit test contract. The tracked [constitution](../.specify/memory/constitution.md) records this repository's governing principles.
 
 Each spec must name its stable ID and sole owner. Cross-repository work links the other owners'
 public specs by stable ID and GitHub URL; each repository documents the complete contracts and
@@ -61,3 +61,4 @@ bootstrap skill, together with the [SDD full lifecycle](https://github.com/Knuck
 - [`RM-CONNECTOR`](connector-boundary/spec.md) — connector boundary migration.
 - [`RM-GOVERNANCE`](development-governance/spec.md) — repository development governance.
 - [`RM-RELEASE`](fleet-release/spec.md) — dependency aware fleet release.
+- [`RM-SCM`](source-changesets/spec.md) — git import, export and mirror sync for engine changesets.
