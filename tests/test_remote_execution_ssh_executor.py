@@ -20,14 +20,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.subprocess_env import base_install_env
+
 from repository_manager.development import ExecutionCommand
 from repository_manager.execution.cancellation import CancellationToken
 
 
 def _clean_env() -> dict[str, str]:
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
-    return env
+    return base_install_env()
 
 
 def test_base_import_succeeds_without_tunnel_manager() -> None:

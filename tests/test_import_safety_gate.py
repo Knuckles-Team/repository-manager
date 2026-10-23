@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.subprocess_env import with_env
+
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / "scripts" / "check_import_safety.py"
 SECURITY_CONTRACT = ROOT / "scripts" / "security_contract.py"
@@ -20,9 +22,7 @@ def _run_gate(
     cwd: Path,
     env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    process_env = os.environ.copy()
-    if env:
-        process_env.update(env)
+    process_env = with_env(env)
     return subprocess.run(
         [sys.executable, str(GATE), *arguments],
         cwd=cwd,
