@@ -1,4 +1,4 @@
-connector: repository-manager
+connector: repository-manager-mcp
 ontology_source: repository
 schema_version: '1'
 resources:
