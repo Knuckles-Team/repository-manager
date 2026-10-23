@@ -12,7 +12,8 @@
       "title": "Default content",
       "delivery_state": "VERIFIED",
       "landed_in": [
-        "4ae047cc8515"
+        "4ae047cc8515",
+        "570d2d0b88ea"
       ],
       "verified_by": [
         "tests/test_default_content_surfaces.py:15"
