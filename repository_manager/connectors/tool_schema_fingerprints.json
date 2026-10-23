@@ -1,6 +1,6 @@
 {
   "algorithm": "agent-connector-sdk:mcp-tool-contract-compat:v2",
-  "connector": "repository-manager",
+  "connector": "repository-manager-mcp",
   "schema_version": "1",
   "tools": {
     "rm_worktree_list": "fb0e1afb6bb3b9dd244b8cd2d51673a5753fe20c05c4e00f4b11d232070f9d00"
