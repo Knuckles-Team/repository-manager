@@ -532,7 +532,7 @@ def get_packaged_file_path(package: str, file: str) -> str:
     if os.path.exists(local_path):
         return local_path
 
-    return get_library_file_path(file=file)
+    return str(get_library_file_path("repository-manager-mcp", file))
 
 
 # Robust environment variable retrieval with empty string fallbacks

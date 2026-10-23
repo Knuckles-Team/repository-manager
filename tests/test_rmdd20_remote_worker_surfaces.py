@@ -421,8 +421,9 @@ def test_cli_argument_parser_accepts_dispatch_build_as_a_choice(tmp_path):
 
     import os
 
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
+    from tests.subprocess_env import base_install_env
+
+    env = base_install_env()
     env["XDG_STATE_HOME"] = str(tmp_path)
 
     completed = subprocess.run(
@@ -476,8 +477,9 @@ def test_import_mcp_server_without_tunnel_manager():
 
     import os
 
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
+    from tests.subprocess_env import base_install_env
+
+    env = base_install_env()
 
     completed = subprocess.run(
         [

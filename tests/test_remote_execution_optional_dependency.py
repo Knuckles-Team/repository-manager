@@ -24,6 +24,8 @@ import sys
 
 import pytest
 
+from tests.subprocess_env import base_install_env
+
 
 def _clean_env() -> dict[str, str]:
     """A subprocess environment with no inherited ``PYTHONPATH``.
@@ -36,9 +38,7 @@ def _clean_env() -> dict[str, str]:
     strip it rather than relying on the invoking shell's environment.
     """
 
-    env = dict(os.environ)
-    env.pop("PYTHONPATH", None)
-    return env
+    return base_install_env()
 
 
 def test_base_import_succeeds_without_tunnel_manager() -> None:
