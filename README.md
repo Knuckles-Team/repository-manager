@@ -20,7 +20,7 @@
 ![PyPI - Wheel](https://img.shields.io/pypi/wheel/repository-manager)
 ![PyPI - Implementation](https://img.shields.io/pypi/implementation/repository-manager)
 
-*Version: 3.5.1*
+*Version: 3.5.2*
 
 > **Documentation** — Installation, deployment, usage across the CLI, API, MCP, and
 > agent interfaces, and the phased multi-repository release workflows are maintained

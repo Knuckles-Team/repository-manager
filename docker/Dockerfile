@@ -19,7 +19,7 @@ RUN apt-get update \
 # Slim MCP-only dependency closure.
 FROM builder-base AS builder-mcp
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --system --break-system-packages --only-binary :all: repository-manager[mcp]==3.5.1
+    uv pip install --system --break-system-packages --only-binary :all: repository-manager[mcp]==3.5.2
 
 FROM python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6 AS runtime-base
 # repository-manager shells out to `git` at RUNTIME — the validate/release flow runs
