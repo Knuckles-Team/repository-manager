@@ -154,11 +154,14 @@
     {
       "id": "RM-GOVERNANCE-R004",
       "title": "Workspace check refuses credential-embedded remote URLs",
-      "delivery_state": "LANDED",
+      "delivery_state": "VERIFIED",
       "landed_in": [
         "127a8384c249"
       ],
-      "verified_by": []
+      "verified_by": [
+        "tests/test_repository_manager.py:1188",
+        "tests/test_repository_manager.py:1234"
+      ]
     },
     {
       "id": "RM-GOVERNANCE-R005",

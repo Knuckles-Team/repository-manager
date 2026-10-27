@@ -9170,6 +9170,39 @@ class Git:
             and manifest_parts.path.casefold() == checkout_parts.path.casefold()
         )
 
+    def _sanitize_managed_checkout_origin(
+        self, checkout: Path, checkout_origin: str
+    ) -> None:
+        """Persist only a previously identity-validated origin, without userinfo."""
+        safe_origin = self._checkout_origin_without_credentials(checkout_origin)
+        if safe_origin == checkout_origin:
+            return
+        try:
+            update = subprocess.run(
+                [
+                    shutil.which("git") or "git",
+                    "config",
+                    "--local",
+                    "remote.origin.url",
+                    safe_origin,
+                ],
+                cwd=str(checkout),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            sanitized = (
+                update.returncode == 0
+                and self._git_remote_url(str(checkout)) == safe_origin
+            )
+        except OSError:
+            sanitized = False
+        if not sanitized:
+            raise ValueError(
+                "Cannot sanitize managed checkout origin; use a credential "
+                "helper or SSH deploy key instead"
+            )
+
     def _validate_manifest_checkout_origins(self) -> None:
         """Reject an existing checkout whose ``origin`` is not its manifest URL."""
         for manifest_url, project_path in sorted(self.project_map.items()):
@@ -9196,6 +9229,7 @@ class Git:
                     f"manifest checkout {_project_label(checkout)!r} has no origin"
                 )
             self._canonical_checkout_origin(manifest_url, checkout_origin)
+            self._sanitize_managed_checkout_origin(checkout, checkout_origin)
 
     def discover_projects(self) -> dict[str, str]:
         """
