@@ -861,6 +861,10 @@ def test_workspace_sync_revalidates_paths_before_creating_parents(tmp_path):
         ("https://user:secret@github.com/knuckles-team/atlassian-agent.git", True),
         ("https://github.com/knuckles-team/atlassian-agent", True),
         ("https://github.com/Knuckles-Team/a-different-repo.git", False),
+        (
+            "https://synthetic-user:synthetic-pass@github.com/Knuckles-Team/a-different-repo.git",
+            False,
+        ),
     ],
 )
 def test_manifest_url_is_bound_to_existing_checkout_origin(
@@ -868,7 +872,12 @@ def test_manifest_url_is_bound_to_existing_checkout_origin(
 ):
     workspace = tmp_path / "workspace"
     checkout = workspace / "atlassian-agent"
-    (checkout / ".git").mkdir(parents=True)
+    checkout.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    subprocess.run(
+        ["git", "-C", str(checkout), "remote", "add", "origin", checkout_origin],
+        check=True,
+    )
     manifest = tmp_path / "workspace.yml"
     manifest.write_text(
         yaml.safe_dump(
@@ -882,8 +891,6 @@ def test_manifest_url_is_bound_to_existing_checkout_origin(
         )
     )
     manager = Git(path=str(workspace))
-    monkeypatch.setattr(manager, "_git_remote_url", lambda _path: checkout_origin)
-
     loaded = manager.load_projects_from_yaml(str(manifest))
 
     assert loaded is expected
@@ -894,6 +901,7 @@ def test_manifest_url_is_bound_to_existing_checkout_origin(
         )
     else:
         assert manager.project_map == {}
+        assert manager._git_remote_url(str(checkout)) == checkout_origin
 
 
 @pytest.mark.parametrize(
@@ -1175,3 +1183,83 @@ def test_pull_project_checks_out_default_branch_when_clean(canonical_with_origin
 
     assert _current_branch(repo_path) == "main"
     assert result.status == "success"
+
+
+@pytest.mark.spec("RM-GOVERNANCE-R004")
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://synthetic-user:synthetic-pass@example.invalid/repo.git",
+        "https://synthetic-bare-token-value@example.invalid/repo.git",
+        "https://example.invalid/repo.git",
+    ],
+)
+def test_managed_checkout_origin_is_sanitized_without_other_config_changes(
+    tmp_path, origin
+):
+    workspace = tmp_path / "workspace"
+    checkout = workspace / "repo"
+    checkout.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(checkout), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("remote", "add", "origin", origin)
+    git("remote", "add", "upstream", "https://example.invalid/upstream.git")
+    git("config", "http.sslVerify", "true")
+    git("config", "credential.helper", "synthetic-helper")
+    before = git("config", "--local", "--list").splitlines()
+    manager = Git(path=str(workspace))
+    manager.project_map = {"https://example.invalid/repo.git": str(checkout)}
+
+    manager._validate_manifest_checkout_origins()
+
+    assert git("config", "--get", "remote.origin.url") == (
+        "https://example.invalid/repo.git"
+    )
+    after = git("config", "--local", "--list").splitlines()
+    assert [line for line in before if not line.startswith("remote.origin.url=")] == [
+        line for line in after if not line.startswith("remote.origin.url=")
+    ]
+    assert "synthetic-pass" not in (checkout / ".git" / "config").read_text()
+    assert "synthetic-bare-token-value" not in (checkout / ".git" / "config").read_text()
+
+
+@pytest.mark.spec("RM-GOVERNANCE-R004")
+@pytest.mark.parametrize("failure_mode", ["rejected", "no_effect", "os_error"])
+def test_managed_checkout_refuses_failed_origin_sanitization_without_secret_diagnostics(
+    tmp_path, monkeypatch, caplog, failure_mode
+):
+    workspace = tmp_path / "workspace"
+    checkout = workspace / "repo"
+    checkout.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    origin = "https://synthetic-user:synthetic-pass@example.invalid/repo.git"
+    subprocess.run(
+        ["git", "-C", str(checkout), "remote", "add", "origin", origin], check=True
+    )
+    manager = Git(path=str(workspace))
+    manager.project_map = {"https://example.invalid/repo.git": str(checkout)}
+    original_run = subprocess.run
+
+    def refuse_update(command, **kwargs):
+        if command[1:4] == ["config", "--local", "remote.origin.url"]:
+            assert all("synthetic-pass" not in part for part in command)
+            if failure_mode == "os_error":
+                raise OSError(origin)
+            return subprocess.CompletedProcess(
+                command, 1 if failure_mode == "rejected" else 0, "", origin
+            )
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(repository_manager_module.subprocess, "run", refuse_update)
+    with pytest.raises(ValueError, match="credential helper or SSH deploy key") as failure:
+        manager._validate_manifest_checkout_origins()
+    assert "synthetic-user" not in str(failure.value) + caplog.text
+    assert "synthetic-pass" not in str(failure.value) + caplog.text
