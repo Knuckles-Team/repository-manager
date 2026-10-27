@@ -2810,6 +2810,7 @@ def _check_tree_constraints(
     backend: IndexBackend | None,
     timeout: float,
     release_run_state: ReleaseRunProbe | None,
+    fleet_packages: set[str] | None,
 ) -> list[ConstraintCheck]:
     index_urls = resolve_index_urls(repo)
     allowed = allow_source_build(repo)
@@ -2823,7 +2824,7 @@ def _check_tree_constraints(
             allow_source_build=allowed,
             release_run_state=probe,
         )
-        for c in declared_fleet_constraints(repo)
+        for c in declared_fleet_constraints(repo, fleet_packages=fleet_packages)
     ]
 
 
@@ -2846,7 +2847,9 @@ def check_tree(
     audit-logs the bypass loudly before returning ``ok=True``.
     """
     repo = Path(path or Path.cwd())
-    checks = _check_tree_constraints(repo, backend, timeout, release_run_state)
+    checks = _check_tree_constraints(
+        repo, backend, timeout, release_run_state, fleet_packages
+    )
     failures = [c for c in checks if not c.satisfied]
     ok = not failures
 

@@ -551,7 +551,7 @@ The full list is in the [Available MCP Tools](#available-mcp-tools) table above.
 
 ## Security & Governance
 
-Built directly upon the enterprise-ready [`agent-connector-sdk`](https://github.com/Knuckles-Team/agent-connector-sdk) core, standard security parameters are fully supported:
+Built directly upon the enterprise-ready [Scion SDK](https://github.com/Knuckles-Team/scion-sdk) core, standard security parameters are fully supported:
 
 ### Access Control & Policy Enforcement
 - **Eunomia Policies:** Fine-grained, policy-driven tool authorization. Supports `none`, local `embedded` (`mcp_policies.json`), or centralized `remote` modes.

@@ -1,33 +1,33 @@
-name: Agent Packages Workspace
+name: Arbora Workspace
 path: ${CONNECTOR_WORKSPACE_ROOT}/.
-description: Main development environment for the agent-packages ecosystem.
+description: Main development environment for the Arbora ecosystem.
 repositories:
 - url: https://github.com/Knuckles-Team/pipelines.git
   description: GitHub Actions pipelines for the agent ecosystem.
 - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/pipelines/gitlab-pipelines.git
   description: GitLab CI pipelines for the agent ecosystem.
 - url: ${AGENT_UTILITIES_REPO_ORIGIN}/homelab/plans.git
-  description: Versioned planning and evidence record for the agent-packages ecosystem.
+  description: Versioned planning and evidence record for the Arbora ecosystem.
 subdirectories:
-  agent-packages:
-    description: Core utility packages, shared libraries, and agent implementations.
+  arbora:
+    description: Core projects, connectors, and skills for the Arbora ecosystem.
     repositories:
-    - url: https://github.com/Knuckles-Team/agent-utilities.git
+    - url: https://github.com/Knuckles-Team/meristem.git
       description: Shared utility functions, base classes, and server common code.
-    - url: https://github.com/Knuckles-Team/agent-webui.git
+    - url: https://github.com/Knuckles-Team/overstory.git
       description: Standard web UI component library for agents.
-    - url: https://github.com/Knuckles-Team/agent-terminal-ui.git
+    - url: https://github.com/Knuckles-Team/tuig.git
       description: Standard terminal UI component library for agents.
-    - url: https://github.com/Knuckles-Team/geniusbot.git
+    - url: https://github.com/Knuckles-Team/axil.git
       description: Desktop Cockpit for AI agents.
-    - url: https://github.com/Knuckles-Team/epistemic-graph.git
+    - url: https://github.com/Knuckles-Team/medulla.git
       description: Local Knowledge Graph for AI agents.
-    - url: https://github.com/Knuckles-Team/agent-connector-sdk.git
+    - url: https://github.com/Knuckles-Team/scion-sdk.git
       description: 'Connector SDK: MCP server scaffolding, provisioning packs, and
-        the source sync runner that feeds epistemic-graph (RF-ADR-009).'
+        the source sync runner that feeds Medulla (RF-ADR-009).'
     - url: https://github.com/Knuckles-Team/arbora.git
-      description: 'arbora host: MCP server, REST gateway, control plane, fleet
-        gateway and agent-webui hosting (RF-ADR-009).'
+      description: 'arbora host: MCP server, REST gateway, control plane, fleet gateway
+        and Overstory hosting (RF-ADR-009).'
     - url: https://github.com/Knuckles-Team/.github.git
       description: Public Arbora ecosystem entrypoint, contribution guidance, and
         cross-repository specification status.
@@ -39,7 +39,7 @@ subdirectories:
           description: Central repository for agent skills and capabilities.
         - url: https://github.com/Knuckles-Team/skill-graphs.git
           description: Tool for generating and managing skill graph definitions.
-      agents:
+      connectors:
         description: Collection of specialized agent implementations, MCP servers,
           API Wrappers/Core Python Tools.
         repositories:
@@ -60,7 +60,8 @@ subdirectories:
           description: Pythonic ArchiveBox API Wrapper and Fast MCP Server for Agentic
             AI use!
         - url: https://github.com/Knuckles-Team/webarchiver.git
-          description: 'Web-source connector: governed fetch, main-content extract, render, screenshot, crawl and links over MCP.'
+          description: 'Web-source connector: governed fetch, main-content extract,
+            render, screenshot and links over MCP.'
         - url: https://github.com/Knuckles-Team/arr-mcp.git
           description: Arr Suite MCP Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/atlassian-agent.git
@@ -80,7 +81,7 @@ subdirectories:
             containers. MCP+A2A Servers Out of the Box!
         - url: https://github.com/Knuckles-Team/data-science-mcp.git
           description: Data Science MCP Server — Model training, evaluation, and evolution
-            tools for agentic ML workflows. Integrates with agent-utilities IModelEvolver
+            tools for agentic ML workflows. Integrates with Meristem IModelEvolver
             (CONCEPT:AHE-3.8).
         - url: https://github.com/Knuckles-Team/dockerhub-api.git
           description: Docker Hub API Client, MCP Server, and Agent for Agentic AI!
@@ -90,7 +91,7 @@ subdirectories:
             compatible open source document database built on PostgreSQL.
         - url: https://github.com/Knuckles-Team/egeria-mcp.git
           description: Apache Egeria open-metadata API + MCP Server for Agentic AI!
-            Metadata/governance/lineage system-of-record federated with the epistemic-graph
+            Metadata/governance/lineage system-of-record federated with the Medulla
             KG. CONCEPT:EG-001
         - url: https://github.com/Knuckles-Team/emerald-exchange.git
           description: Emerald Exchange — Unified Finance MCP Server with fully abstracted
@@ -227,12 +228,21 @@ subdirectories:
           description: Wger Workout Manager — exercise database, workout routines,
             nutrition plans, body measurements, and progress tracking.
         - url: https://github.com/Knuckles-Team/bellwether-mcp.git
-          description: Crypto discovery/caps (CoinMarketCap), Fed macro series
-            with point-in-time vintages (FRED/ALFRED), and the FOMC decision
-            calendar. MCP Server for Agentic AI!
+          description: Crypto discovery/caps (CoinMarketCap), Fed macro series with
+            point-in-time vintages (FRED/ALFRED), and the FOMC decision calendar.
+            MCP Server for Agentic AI!
         - url: https://github.com/Knuckles-Team/world-reference-mcp.git
-          description: World-reference data (taxonomy, OBO terms, nutrition,
-            observations, Wikidata alignment) MCP Server for Agentic AI!
+          description: World-reference data (taxonomy, OBO terms, nutrition, observations,
+            Wikidata alignment) MCP Server for Agentic AI!
+        - url: https://github.com/Knuckles-Team/craft-suite-api.git
+          description: Craft document suite API connector and MCP Server for Agentic
+            AI!
+        - url: https://github.com/Knuckles-Team/immich-api.git
+          description: Immich photo library API connector and MCP Server for Agentic
+            AI!
+        - url: https://github.com/Knuckles-Team/adguard-home-agent.git
+          description: AdGuard Home DNS filtering API connector and MCP Server for
+            Agentic AI!
   images:
     description: Container images for the homelab
     repositories:
@@ -566,81 +576,84 @@ selectors:
     - '*'
   agent-connectors:
     include:
-    - agent-packages/agents/ansible-tower-mcp
-    - agent-packages/agents/archimate-mcp
-    - agent-packages/agents/aris-mcp
-    - agent-packages/agents/jena-mcp
-    - agent-packages/agents/lakekeeper-mcp
-    - agent-packages/agents/kafka-mcp
-    - agent-packages/agents/archivebox-api
-    - agent-packages/agents/webarchiver
-    - agent-packages/agents/arr-mcp
-    - agent-packages/agents/atlassian-agent
-    - agent-packages/agents/audio-transcriber
-    - agent-packages/agents/caddy-mcp
-    - agent-packages/agents/clarity-api
-    - agent-packages/agents/camunda-mcp
-    - agent-packages/agents/container-manager-mcp
-    - agent-packages/agents/data-science-mcp
-    - agent-packages/agents/dockerhub-api
-    - agent-packages/agents/documentdb-mcp
-    - agent-packages/agents/egeria-mcp
-    - agent-packages/agents/emerald-exchange
-    - agent-packages/agents/erpnext-agent
-    - agent-packages/agents/fan-manager
-    - agent-packages/agents/genius-agent
-    - agent-packages/agents/github-agent
-    - agent-packages/agents/gitlab-api
-    - agent-packages/agents/ciso-assistant-api
-    - agent-packages/agents/home-assistant-agent
-    - agent-packages/agents/hdhomerun-mcp
-    - agent-packages/agents/jellyfin-mcp
-    - agent-packages/agents/keycloak-agent
-    - agent-packages/agents/langfuse-agent
-    - agent-packages/agents/leanix-agent
-    - agent-packages/agents/legal-peripherals-mcp
-    - agent-packages/agents/lgtm-mcp
-    - agent-packages/agents/listmonk-api
-    - agent-packages/agents/mattermost-mcp
-    - agent-packages/agents/mealie-mcp
-    - agent-packages/agents/media-downloader
-    - agent-packages/agents/microsoft-agent
-    - agent-packages/agents/nextcloud-agent
-    - agent-packages/agents/objectstore-mcp
-    - agent-packages/agents/okta-agent
-    - agent-packages/agents/openbao-mcp
-    - agent-packages/agents/lucerna-mcp
-    - agent-packages/agents/owncast-agent
-    - agent-packages/agents/plane-agent
-    - agent-packages/agents/portainer-agent
-    - agent-packages/agents/postiz-agent
-    - agent-packages/agents/qbittorrent-agent
-    - agent-packages/agents/repository-manager
-    - agent-packages/agents/rom-manager
-    - agent-packages/agents/salesforce-agent
-    - agent-packages/agents/pulselink-mcp
-    - agent-packages/agents/scholarx
-    - agent-packages/agents/searxng-mcp
-    - agent-packages/agents/servicenow-api
-    - agent-packages/agents/onetrust-api
-    - agent-packages/agents/spark-mcp
-    - agent-packages/agents/sql-mcp
-    - agent-packages/agents/stirlingpdf-agent
-    - agent-packages/agents/systems-manager
-    - agent-packages/agents/technitium-dns-mcp
-    - agent-packages/agents/twenty-mcp
-    - agent-packages/agents/audiobookshelf-mcp
-    - agent-packages/agents/firefly-iii-mcp
-    - agent-packages/agents/freshrss-agent
-    - agent-packages/agents/paperless-ngx-mcp
-    - agent-packages/agents/gramps-mcp
-    - agent-packages/agents/tunnel-manager
-    - agent-packages/agents/uptime-kuma-agent
-    - agent-packages/agents/vector-mcp
-    - agent-packages/agents/vaultwarden-mcp
-    - agent-packages/agents/wger-agent
-    - agent-packages/agents/bellwether-mcp
-    - agent-packages/agents/world-reference-mcp
+    - arbora/connectors/ansible-tower-mcp
+    - arbora/connectors/archimate-mcp
+    - arbora/connectors/aris-mcp
+    - arbora/connectors/jena-mcp
+    - arbora/connectors/lakekeeper-mcp
+    - arbora/connectors/kafka-mcp
+    - arbora/connectors/archivebox-api
+    - arbora/connectors/webarchiver
+    - arbora/connectors/arr-mcp
+    - arbora/connectors/atlassian-agent
+    - arbora/connectors/audio-transcriber
+    - arbora/connectors/caddy-mcp
+    - arbora/connectors/clarity-api
+    - arbora/connectors/camunda-mcp
+    - arbora/connectors/container-manager-mcp
+    - arbora/connectors/data-science-mcp
+    - arbora/connectors/dockerhub-api
+    - arbora/connectors/documentdb-mcp
+    - arbora/connectors/egeria-mcp
+    - arbora/connectors/emerald-exchange
+    - arbora/connectors/erpnext-agent
+    - arbora/connectors/fan-manager
+    - arbora/connectors/genius-agent
+    - arbora/connectors/github-agent
+    - arbora/connectors/gitlab-api
+    - arbora/connectors/ciso-assistant-api
+    - arbora/connectors/home-assistant-agent
+    - arbora/connectors/hdhomerun-mcp
+    - arbora/connectors/jellyfin-mcp
+    - arbora/connectors/keycloak-agent
+    - arbora/connectors/langfuse-agent
+    - arbora/connectors/leanix-agent
+    - arbora/connectors/legal-peripherals-mcp
+    - arbora/connectors/lgtm-mcp
+    - arbora/connectors/listmonk-api
+    - arbora/connectors/mattermost-mcp
+    - arbora/connectors/mealie-mcp
+    - arbora/connectors/media-downloader
+    - arbora/connectors/microsoft-agent
+    - arbora/connectors/nextcloud-agent
+    - arbora/connectors/objectstore-mcp
+    - arbora/connectors/okta-agent
+    - arbora/connectors/openbao-mcp
+    - arbora/connectors/lucerna-mcp
+    - arbora/connectors/owncast-agent
+    - arbora/connectors/plane-agent
+    - arbora/connectors/portainer-agent
+    - arbora/connectors/postiz-agent
+    - arbora/connectors/qbittorrent-agent
+    - arbora/connectors/repository-manager
+    - arbora/connectors/rom-manager
+    - arbora/connectors/salesforce-agent
+    - arbora/connectors/pulselink-mcp
+    - arbora/connectors/scholarx
+    - arbora/connectors/searxng-mcp
+    - arbora/connectors/servicenow-api
+    - arbora/connectors/onetrust-api
+    - arbora/connectors/spark-mcp
+    - arbora/connectors/sql-mcp
+    - arbora/connectors/stirlingpdf-agent
+    - arbora/connectors/systems-manager
+    - arbora/connectors/technitium-dns-mcp
+    - arbora/connectors/twenty-mcp
+    - arbora/connectors/audiobookshelf-mcp
+    - arbora/connectors/firefly-iii-mcp
+    - arbora/connectors/freshrss-agent
+    - arbora/connectors/paperless-ngx-mcp
+    - arbora/connectors/gramps-mcp
+    - arbora/connectors/tunnel-manager
+    - arbora/connectors/uptime-kuma-agent
+    - arbora/connectors/vector-mcp
+    - arbora/connectors/vaultwarden-mcp
+    - arbora/connectors/wger-agent
+    - arbora/connectors/bellwether-mcp
+    - arbora/connectors/world-reference-mcp
+    - arbora/connectors/craft-suite-api
+    - arbora/connectors/immich-api
+    - arbora/connectors/adguard-home-agent
   service-codebases:
     include:
     - services/gramps
@@ -754,25 +767,25 @@ maintenance:
     - gitlab-pipelines
     - plans
     wait_minutes: 0
-  - name: 'Phase 2: Epistemic Graph'
+  - name: 'Phase 2: Medulla'
     phase: 2
     projects:
-    - epistemic-graph
+    - medulla
     wait_minutes: 30
-  - name: 'Phase 3: agent-connector-sdk'
+  - name: 'Phase 3: scion-sdk'
     phase: 3
     projects:
-    - agent-connector-sdk
+    - scion-sdk
     wait_minutes: 30
-  - name: 'Phase 4: agent-utilities'
+  - name: 'Phase 4: meristem'
     phase: 4
     projects:
-    - agent-utilities
+    - meristem
     wait_minutes: 30
-  - name: 'Phase 5: agent-webui'
+  - name: 'Phase 5: Overstory'
     phase: 5
     projects:
-    - agent-webui
+    - overstory
     wait_minutes: 30
   - name: 'Phase 6: arbora'
     phase: 6
@@ -784,8 +797,8 @@ maintenance:
     projects:
     - universal-skills
     - skill-graphs
-    - agent-terminal-ui
-    - geniusbot
+    - tuig
+    - axil
     wait_minutes: 0
   - name: 'Phase 8: Agents'
     phase: 8
