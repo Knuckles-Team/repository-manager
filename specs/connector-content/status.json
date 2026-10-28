@@ -13,10 +13,11 @@
       "delivery_state": "VERIFIED",
       "landed_in": [
         "4bc7426a1266",
-        "b2ef3c823bf3"
+        "b2ef3c823bf3",
+        "bd26a96f2a3b"
       ],
       "verified_by": [
-        "tests/test_default_content_surfaces.py:15"
+        "tests/test_default_content_surfaces.py:16"
       ]
     }
   ]

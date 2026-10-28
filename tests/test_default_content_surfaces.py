@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastmcp import Client
@@ -16,7 +17,7 @@ pytestmark = pytest.mark.spec("CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R001")
 
 
 def _server():
-    namespace = {"__name__": PACKAGE + ".mcp_server", "ROOT": ROOT}
+    namespace: dict[str, Any] = {"__name__": PACKAGE + ".mcp_server", "ROOT": ROOT}
     exec(
         "from agent_connector_sdk.mcp.content import ConnectorContent\n"
         "from agent_connector_sdk.mcp.server import create_mcp_server\n"
