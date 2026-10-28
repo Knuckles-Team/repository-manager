@@ -32,5 +32,4 @@ def test_development_skill_has_rapid_contract_and_package_binding() -> None:
     project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
     package_data = project["tool"]["setuptools"]["package-data"]["repository_manager"]
     assert "skills/**" in package_data
-    providers = project["project"]["entry-points"]["agent_connector_sdk.skill_providers"]
-    assert providers["repository-manager"] == "repository_manager.skills"
+    assert "agent_connector_sdk.skill_providers" not in project["project"]["entry-points"]

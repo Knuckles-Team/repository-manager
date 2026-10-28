@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 import warnings
+from importlib.metadata import version as _distribution_version
+from pathlib import Path
 
 from fastmcp.utilities.logging import get_logger
 
@@ -26,6 +28,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from agent_connector_sdk.config import load_config, setting
+from agent_connector_sdk.mcp.content import ConnectorContent
 from agent_connector_sdk.mcp.server import create_mcp_server
 from agent_connector_sdk.mcp.tool_surface import register_tool_surface
 from agent_connector_sdk.utilities import to_integer
@@ -53,7 +56,7 @@ from repository_manager.models import GitResult
 from repository_manager.operations_facade import operations_facade
 from repository_manager.repository_manager import Git
 
-__version__ = "3.5.3"
+__version__ = _distribution_version("repository-manager")
 
 DEFAULT_WORKSPACE = setting(
     "REPOSITORY_MANAGER_WORKSPACE",
@@ -969,6 +972,11 @@ def get_mcp_instance() -> tuple[Any, Any, Any, Any]:
         name="RepositoryManager",
         version=__version__,
         instructions="Expert tool for managing hierarchical Git workspaces, engineering bulk operations, and documentation.",
+        content=ConnectorContent(
+            connector="repository-manager",
+            package_root=Path(__file__).resolve().parent,
+            package_version=__version__,
+        ),
     )
 
     registered_tags = register_tool_surface(
