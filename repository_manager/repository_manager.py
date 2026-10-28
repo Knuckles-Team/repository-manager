@@ -25,11 +25,12 @@ import threading
 import tomllib
 import uuid
 from collections.abc import Callable, Iterator
+from importlib.metadata import version as _distribution_version
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit, urlunsplit
 
-__version__ = "3.5.3"
+__version__ = _distribution_version("repository-manager")
 
 __all__ = [
     "Git",
