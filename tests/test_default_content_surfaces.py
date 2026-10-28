@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastmcp import Client
@@ -16,10 +17,12 @@ pytestmark = pytest.mark.spec("CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R001")
 
 
 def _server():
-    namespace = {"__name__": PACKAGE + ".mcp_server"}
+    namespace: dict[str, Any] = {"__name__": PACKAGE + ".mcp_server", "ROOT": ROOT}
     exec(
+        "from agent_connector_sdk.mcp.content import ConnectorContent\n"
         "from agent_connector_sdk.mcp.server import create_mcp_server\n"
-        "result = create_mcp_server('repository-manager-mcp', version='0', command_args=[])",
+        "result = create_mcp_server('repository-manager', version='0', command_args=[],"
+        " content=ConnectorContent('repository-manager', ROOT, '0'))",
         namespace,
     )
     return namespace["result"][1]
@@ -37,7 +40,7 @@ def test_default_content_surfaces() -> None:
     if list(ROOT.glob("skills/*/SKILL.md")):
         assert any(u.startswith("skill://") for u in resources)
     if list(ROOT.glob("ontology/*.ttl")):
-        assert any(u.startswith("ontology://repository-manager-mcp/") for u in resources)
+        assert any(u.startswith("ontology://repository-manager/") for u in resources)
     for path in ROOT.glob("prompts/*.json"):
         if not path.name.startswith("_"):
             assert path.stem in prompts

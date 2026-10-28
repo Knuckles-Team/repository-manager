@@ -66,15 +66,6 @@ override-dependencies = [
     "fastmcp-slim[client,server]>=4.0.0b1",
 ]
 
-[project.entry-points."agent_connector_sdk.skill_providers"]
-repository-manager = "repository_manager.skills"
-
-[project.entry-points."agent_connector_sdk.ontology_providers"]
-repository-manager = "repository_manager.ontology"
-
-[project.entry-points."agent_connector_sdk.source_connector_providers"]
-repository-manager = "repository_manager.connectors"
-
 [tool.setuptools]
 include-package-data = true
 
@@ -112,4 +103,4 @@ exempt = ["specs/*", "specs/**/*"]
 
 # The one declared connector identity: the fleet name (SDK-CONNECTOR-CONTROL-R071).
 [project.entry-points."agent_connector_sdk.connector"]
-repository-manager-mcp = "repository_manager"
+repository-manager = "repository_manager"
