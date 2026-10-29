@@ -98,6 +98,9 @@ where = [ ".",]
 [tool.vulture]
 ignore_names = ["request", "config", "kw"]
 
+[tool.pipelines.codespell]
+ignore_words = ["unparseable"]
+
 [tool.pipelines_hooks.ste]
 exempt = ["specs/*", "specs/**/*"]
 
