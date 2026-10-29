@@ -21,18 +21,18 @@ MANIFEST = """\
 name: Test Workspace
 path: /srv/private-workspace
 repositories:
-  - url: https://git.internal.arpa/root.git
+  - url: https://example-git.internal.arpa/root.git
   - url: https://example.invalid/public.git
 subdirectories:
   agent-packages:
     repositories:
-      - url: https://git.internal.arpa/agent-utilities.git
-      - url: https://git.internal.arpa/repository-manager.git
+      - url: https://example-git.internal.arpa/agent-utilities.git
+      - url: https://example-git.internal.arpa/repository-manager.git
 services:
   items:
     - name: arbora
-      url: https://arbora.internal.arpa/
-      domain: arbora.internal.arpa
+      url: https://example-arbora.internal.arpa/
+      domain: example-arbora.internal.arpa
       description: Private graph runtime
 profiles:
   development:
@@ -91,7 +91,7 @@ def test_realistic_manifest_projects_private_values_without_leaking_them(tmp_pat
     assert seed_data == project_portable_seed(yaml.safe_load(MANIFEST))
     seed_text = seed.read_text(encoding="utf-8")
     assert "/srv/private-workspace" not in seed_text
-    assert "internal.arpa" not in seed_text
+    assert "example-git.internal.arpa" not in seed_text
     assert "${CONNECTOR_WORKSPACE_ROOT}" in seed_text
     assert "${AGENT_UTILITIES_REPO_ORIGIN}" in seed_text
     assert "${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}" in seed_text
@@ -184,19 +184,19 @@ def test_runtime_projection_requires_and_repairs_exact_canonical_bytes(tmp_path)
 def test_free_text_private_hosts_are_projected_and_rejected_by_seed_validator():
     data = yaml.safe_load(MANIFEST)
     data["services"]["items"][0]["description"] = (
-        "Private domain ciso.arpa. at 10.0.0.42 or [fd00::42]."
+        "Private domain example-ciso.arpa. at 10.0.0.42 or [fd00::42]."
     )
 
     portable = project_portable_seed(data)
     portable_text = yaml.safe_dump(portable)
 
-    assert "ciso.arpa" not in portable_text
+    assert "example-ciso.arpa" not in portable_text
     assert "10.0.0.42" not in portable_text
     assert "fd00::42" not in portable_text
-    assert "ciso.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}" in portable_text
+    assert "example-ciso.${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}" in portable_text
     with pytest.raises(WorkspaceManifestError, match="machine-local endpoint"):
         workspace_manifest._validate_portable_seed(
-            {"description": "Private domain ciso.arpa."}
+            {"description": "Private domain example-ciso.arpa."}
         )
 
 

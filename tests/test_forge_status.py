@@ -27,7 +27,7 @@ def test_backend_for_remote_selects_github_for_ssh_shorthand():
 
 
 def test_backend_for_remote_selects_gitlab_for_internal_host():
-    backend = fs.backend_for_remote("https://gitlab.example.internal/org/repository-manager.git")
+    backend = fs.backend_for_remote("https://example-gitlab.internal/org/repository-manager.git")
     assert isinstance(backend, fs.GitLabPipelineBackend)
 
 
@@ -52,7 +52,7 @@ def test_owner_repo_from_remote_ssh_shorthand():
 
 def test_owner_repo_from_remote_nested_gitlab_group():
     assert fs.owner_repo_from_remote(
-        "https://gitlab.example.internal/group/subgroup/repository-manager.git"
+        "https://example-gitlab.internal/group/subgroup/repository-manager.git"
     ) == ("group/subgroup", "repository-manager")
 
 
@@ -185,7 +185,7 @@ def test_gitlab_backend_success_pipeline_is_completed():
         [
             _FakeGitLabPipeline(
                 status="success",
-                web_url="https://gitlab.example.internal/o/r/-/pipelines/1",
+                web_url="https://example-gitlab.internal/o/r/-/pipelines/1",
                 created_at="2026-08-21T00:00:00Z",
             )
         ]
@@ -194,7 +194,7 @@ def test_gitlab_backend_success_pipeline_is_completed():
     status = backend.latest_run_for_ref("o", "r", "v1.0.0")
     assert status.state == "completed"
     assert status.conclusion == "success"
-    assert status.url == "https://gitlab.example.internal/o/r/-/pipelines/1"
+    assert status.url == "https://example-gitlab.internal/o/r/-/pipelines/1"
     assert client.calls == [{"project_id": "o%2Fr", "ref": "v1.0.0"}]
 
 
@@ -274,7 +274,7 @@ def test_gitlab_backend_degrades_when_client_import_unavailable(monkeypatch, cap
     monkeypatch.setattr(fs, "_GitLabPipelinesApi", None)
     monkeypatch.setattr(fs, "_GITLAB_API_UNAVAILABLE", "No module named 'gitlab_api'")
     with caplog.at_level("WARNING", logger="repository_manager.forge_status"):
-        backend = fs.GitLabPipelineBackend(url="https://gitlab.example.internal")
+        backend = fs.GitLabPipelineBackend(url="https://example-gitlab.internal")
         status = backend.latest_run_for_ref("o", "r", "v1.0.0")
     assert status.state == "unknown"
     assert any("FORGE_STATUS_UNAVAILABLE" in rec.message for rec in caplog.records)

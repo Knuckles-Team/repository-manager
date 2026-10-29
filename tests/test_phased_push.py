@@ -505,19 +505,19 @@ def test_phased_push_bulk_push_excludes_infrastructure_even_when_buildable(
     """
     root = mock_repo_manager.path
     mock_repo_manager.project_map = {
-        "https://gitlab.arpa/agent-packages/agents/repo1.git": os.path.join(
+        "https://example-gitlab.arpa/agent-packages/agents/repo1.git": os.path.join(
             root, "agent-packages", "agents", "repo1"
         ),
-        "https://gitlab.arpa/images/foo.git": os.path.join(root, "images", "foo"),
-        "https://gitlab.arpa/services/bar.git": os.path.join(root, "services", "bar"),
+        "https://example-gitlab.arpa/images/foo.git": os.path.join(root, "images", "foo"),
+        "https://example-gitlab.arpa/services/bar.git": os.path.join(root, "services", "bar"),
     }
     mock_repo_manager._project_categories = {
-        "https://gitlab.arpa/agent-packages/agents/repo1.git": (
+        "https://example-gitlab.arpa/agent-packages/agents/repo1.git": (
             "agent-packages",
             "agents",
         ),
-        "https://gitlab.arpa/images/foo.git": ("images",),
-        "https://gitlab.arpa/services/bar.git": ("services",),
+        "https://example-gitlab.arpa/images/foo.git": ("images",),
+        "https://example-gitlab.arpa/services/bar.git": ("services",),
     }
     for url, project_path in mock_repo_manager.project_map.items():
         path = Path(project_path)

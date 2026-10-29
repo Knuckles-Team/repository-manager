@@ -806,12 +806,12 @@ def test_resolve_index_urls_honors_pyproject_uv_index(tmp_path, monkeypatch):
         """
 [[tool.uv.index]]
 name = "internal"
-url = "https://gitlab.example.internal/api/v4/pypi/simple"
+url = "https://example-gitlab.internal/api/v4/pypi/simple"
 default = true
 """
     )
     urls = dr.resolve_index_urls(tmp_path)
-    assert urls[0] == "https://gitlab.example.internal/api/v4/pypi/simple"
+    assert urls[0] == "https://example-gitlab.internal/api/v4/pypi/simple"
 
 
 def test_resolve_index_urls_falls_back_to_pypi_when_nothing_configured(

@@ -81,7 +81,7 @@ def _repository(repository_id: str = "repository:test") -> RepositoryIdentity:
     return RepositoryIdentity(
         contract_version=CONTRACT_VERSION,
         repository_id=repository_id,
-        canonical_path="/home/apps/workspace/agent-packages/agents/repository-manager",
+        canonical_path="/home/app/workspace/agent-packages/agents/repository-manager",
         configured_roots=(),
         origin=None,
     )

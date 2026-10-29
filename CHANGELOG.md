@@ -102,10 +102,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dispatch_build` (P0.7) was unreachable from either adapter** — the action that stages an
   immutable commit SHA onto a registered remote host's own local disk over SSH and runs a build
   command there (`repository_manager.remote_worker_actions.dispatch_build`, built and unit-tested
-  against a fake SSH transport, and previously validated live against R820) predated both the CLI's
+  against a fake SSH transport, and previously validated live against R82X) predated both the CLI's
   `--remote-workers` `choices=[...]` list and the `rm_remote_workers` MCP tool's parameter set, so
   neither had been updated to expose it — it was reachable only via a direct Python import of
-  `remote_worker_actions.dispatch(...)`. Surfaced and re-validated live against R820 while
+  `remote_worker_actions.dispatch(...)`. Surfaced and re-validated live against R82X while
   diagnosing that host's NFSv4 delegation-reaper livelock (2026-08-13; see
   `docs/architecture/nfs-buildhost-migration.md`), where it is exactly the mechanism build/CI hosts
   should use instead of a shared NFS-mounted repository. Now wired into both: `--remote-workers

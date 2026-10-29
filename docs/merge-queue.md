@@ -322,7 +322,7 @@ Four things about that deployment are **load-bearing** — none is cosmetic, and
 three of them were gaps a mount alone will not have closed:
 
 1. **The workspace is mounted at the *identical absolute path*
-   (`/home/apps/workspace`), read-write.** Absolute paths are not a
+   (`/home/app/workspace`), read-write.** Absolute paths are not a
    convenience here: git worktree metadata is absolute-path-based, so mounting
    the tree anywhere else will leave ~55 linked worktrees unresolvable from
    inside the pod. Read-write because the queue moves refs, writes each repo's
@@ -342,7 +342,7 @@ three of them were gaps a mount alone will not have closed:
    work" hazard that motivates `canonical_guard` in the first place. A guard
    that refuses a dirty tree does not help if the process can also rewrite
    everything it touches as root.
-4. **Pinned to `rw710`** via `nodeSelector`. The deployment previously used
+4. **Pinned to `rw71x`** via `nodeSelector`. The deployment previously used
    `hostPath` with no placement constraint at all and worked only by accident.
    The trade was taken deliberately: the queue sits on no serving path, so
    losing it while that node is down is survivable — unlike the

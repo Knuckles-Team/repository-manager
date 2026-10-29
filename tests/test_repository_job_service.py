@@ -158,7 +158,7 @@ def test_service_accepts_the_real_nested_development_request_model() -> None:
     payload.pop("repository_id")
     payload["repository"] = {
         "repository_id": "repo:agent-webui",
-        "canonical_path": "/home/apps/workspace/agent-packages/agents/agent-webui",
+        "canonical_path": "/home/app/workspace/agent-packages/agents/agent-webui",
     }
     payload["fairness_group"] = "frontend"
     request = DevelopmentRequest.model_validate(payload)

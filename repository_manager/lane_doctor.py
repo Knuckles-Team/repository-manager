@@ -159,8 +159,8 @@ def _host_valid_lane_temp_root(tree: Path, scope: Any) -> Path:
     resolving the path and the process using it share one ``$HOME``. That
     assumption holds for the local CLI but not the MCP surface:
     repository-manager-mcp resolves it in the *provider's* identity/container
-    (verified live: exports rooted at ``/home/rm/.al/<hash>`` from a container
-    running as user ``rm``, HOME=``/home/rm``), which a host caller running as
+    (verified live: exports rooted at ``/home/app/.al/<hash>`` from a container
+    running as user ``app``, HOME=``/home/app``), which a host caller running as
     a different user does not have — every one of 30 focused fan-out tests
     ERRORed with ``FileNotFoundError`` applying that basetemp on the host; the
     same tests passed 30/30 against a host-valid ``/tmp``-rooted basetemp.
@@ -1039,7 +1039,7 @@ def _unevaluable_env_check(name: str) -> Check:
     the default intact: omit ``env`` over the MCP surface and the checks still
     read the PROVIDER's ``os.environ`` and rule on it. On 2026-08-11 that gave
     a healthy lane a blocking ``precommit-home`` failure naming
-    ``/home/rm/.cache/pre-commit``, a path belonging to the in-pod server that
+    ``/home/app/.cache/pre-commit``, a path belonging to the in-pod server that
     the lane neither set nor can write.
 
     An opt-in mitigation does not fix a failure mode whose trigger is

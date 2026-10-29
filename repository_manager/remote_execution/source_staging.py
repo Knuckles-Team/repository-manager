@@ -77,7 +77,7 @@ class ImmutableSourceStaging:
         if not origin or " " in origin or "\t" in origin:
             raise ValueError("origin must be a single space-free URL or path")
         if "@" in origin and "://" in origin:
-            # scheme://user[:pass]@host is a credential-bearing URL form.
+            # A scheme://user:secret@host URL is the credential-bearing form.
             scheme_split = origin.split("://", 1)[1]
             if "@" in scheme_split:
                 raise ValueError("origin must not embed credentials")

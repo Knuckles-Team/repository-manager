@@ -74,7 +74,7 @@ arbitrates processes sharing one kernel and one mount; it does
 **not** arbitrate across nodes, and two facts here make that concrete rather
 than theoretical: ``repository-manager-mcp`` is pinned to one node via
 ``nodeSelector``+``hostPath`` (so *it* is a valid same-node arbiter for
-everything routed through it), while ``/home/apps`` — where every lease file
+everything routed through it), while ``/home/app`` — where every lease file
 in this ecosystem lives — is exported **over NFS** to several other nodes, and
 a caller running there sees the *same path* but not the same locking
 guarantee (NFS advisory-lock support is inconsistent, and this workspace's own
@@ -800,7 +800,7 @@ def acquire(
             f"execution class {name!r} is lease-backed ({execution_class.policy.value}) "
             "and this caller has no proof of same-node execution. `fcntl.flock` "
             "arbitrates one kernel/mount, not the workspace, and lease files live "
-            "under /home/apps which is NFS-exported to other nodes. Either pin this "
+            "under /home/app which is NFS-exported to other nodes. Either pin this "
             "operation to the same node as the lease holder and pass colocated=True "
             "(operators: --same-node / RM_TASK_LEDGER_COLOCATED=1), or route the "
             "request through the repository-manager MCP server, which IS the "
