@@ -3046,7 +3046,7 @@ def prune_landed(
 
     The worktree is removed **by the path the candidate recorded at enqueue
     time**, not by ``WorktreeManager.worktree_path()``. Lanes in this workspace
-    create worktrees wherever they like (``/home/apps/worktrees/…``,
+    create worktrees wherever they like (``/home/app/worktrees/…``,
     ``$XDG_STATE_HOME/repository-worktrees/…``), and ``worktree_path()``
     reconstructs a location under ``WORKTREE_ROOT`` — for a lane that used
     another path it would either miss the real worktree or, when handed an

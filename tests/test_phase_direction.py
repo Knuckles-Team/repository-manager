@@ -561,7 +561,7 @@ def test_infer_from_linked_worktree_resolves_to_canonical_identity(
     _git(["commit", "-q", "-m", "add pyproject"], checkout)
 
     # Mirrors the real convention: worktrees live under a SEPARATE tree, not
-    # under the workspace path (`/home/apps/worktrees/<repo>/<branch>`).
+    # under the workspace path (`/home/app/worktrees/<repo>/<branch>`).
     worktree_root = tmp_path / "worktrees"
     worktree_root.mkdir()
     worktree_path = worktree_root / "agent-connector-sdk" / "some-branch"

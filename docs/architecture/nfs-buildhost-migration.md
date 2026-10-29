@@ -2,17 +2,17 @@
 
 ## Incident this responds to (2026-08-13)
 
-R820 (a live k8s worker node, 10.0.0.13) had a kernel thread
+R82X (a live k8s worker node, 10.0.0.13) had a kernel thread
 (`[10.0.0.12-manager]`, the NFSv4 client's per-server state-manager kthread)
 pinned at ~98% CPU for 3.5+ hours, spinning in
 `nfs_server_reap_expired_delegations` / `nfs_client_for_each_server`. Root
 cause, confirmed against live server state
-(`/proc/fs/nfsd/clients/<id>/states` on RW710, the NFS server / dev host,
+(`/proc/fs/nfsd/clients/<id>/states` on RW71X, the NFS server / dev host,
 10.0.0.12):
 
-- R820's NFSv4 client held **555,965 outstanding read delegations** against
-  RW710 — one per file it had opened and not yet had the delegation
-  returned for. R710 (a comparably-loaded host) held 11,582; R510 held
+- R82X's NFSv4 client held **555,965 outstanding read delegations** against
+  RW71X — one per file it had opened and not yet had the delegation
+  returned for. R71X (a comparably-loaded host) held 11,582; R51X held
   158,047. Delegation filenames sampled from the server's client-state dump
   are exactly what heavy build/test activity produces: `.fingerprint`
   (Cargo), `site-packages`/`node_modules` (Python/JS deps), `objects` (git
@@ -32,10 +32,10 @@ cause, confirmed against live server state
   minutes, `index.lock`/partial-index incidents, and epistemic-graph test
   "deadlocks" root-caused across ~70 attempts to host `I/O` saturation
   (`fdatasync` stuck in `D` state) rather than an actual lock cycle.
-- Remediation taken live against R820 (see the session report for the full
+- Remediation taken live against R82X (see the session report for the full
   transcript): confirmed via `fuser`/CWD scan that nothing was actively
-  using `/home/apps/workspace` or `/home/apps/worktrees` (the two
-  NFS-mounted, dev-only mounts on R820 — distinct from the k8s node's own
+  using `/home/app/workspace` or `/home/app/worktrees` (the two
+  NFS-mounted, dev-only mounts on R82X — distinct from the k8s node's own
   `kubelet` NFS volume mounts for the live `agent-webui` pod, which use
   independent local mountpoints and were **not** touched), then `umount -l`
   (lazy) both and stopped their `systemd` `.automount` units to stop them
@@ -82,7 +82,7 @@ for git specifically:
 
 ## Decision: per-host local clones over SSH, not NFS, not rsync
 
-**Git is itself a distributed sync tool.** The dev host (RW710) stays the
+**Git is itself a distributed sync tool.** The dev host (RW71X) stays the
 canonical checkout for interactive work; a build/CI host pulls an immutable
 commit via `git clone`/`fetch`/`checkout` over SSH onto its own local disk,
 runs its work there, and the result is reported back — no shared
@@ -112,28 +112,28 @@ wires it end to end:
    - then runs the caller's fixed command in that freshly materialized
      worktree and returns the outcome.
 
-**This was validated live against R820 during this incident** (the exact
+**This was validated live against R82X during this incident** (the exact
 host the pathology was on), entirely bypassing its wedged NFS mount:
 
 ```
-register_worker(host_id="r820", inventory_alias="R820",
-                 repository_roots={"repository-manager": "/home/apps/build-worktrees"})
-dispatch_build(host_id="r820", repository_id="repository-manager",
-                origin="genius@10.0.0.12:/home/apps/workspace/agent-packages/agents/repository-manager",
+register_worker(host_id="r82x", inventory_alias="R82X",
+                 repository_roots={"repository-manager": "/home/app/build-worktrees"})
+dispatch_build(host_id="r82x", repository_id="repository-manager",
+                origin="user@10.0.0.12:/home/app/workspace/agent-packages/agents/repository-manager",
                 tree_sha=<HEAD>, command=["git","log","-1","--format=verified-remote-build: %H %s"])
-=> staged.destination = "/home/apps/build-worktrees/repository-manager-5f49bf5c4081"
+=> staged.destination = "/home/app/build-worktrees/repository-manager-5f49bf5c4081"
 => build.stdout_tail  = "verified-remote-build: 5f49bf5c408117fd3062b362ba17427ef1ddc470 Merge branch 'feat/rm-invariants-and-hosts'"
 ```
 
-`/home/apps/build-worktrees` is genuinely local (`/dev/sda3`, ext4) — not
-one of the NFS mounts. `findmnt --target /home/apps/build-worktrees` on
-R820 confirms it resolves to the local `/home` filesystem, not
+`/home/app/build-worktrees` is genuinely local (`/dev/sda3`, ext4) — not
+one of the NFS mounts. `findmnt --target /home/app/build-worktrees` on
+R82X confirms it resolves to the local `/home` filesystem, not
 `10.0.0.12:...`.
 
 **What this fixed slice found and closed.** `dispatch_build` was fully
 implemented and unit-tested at the `remote_worker_actions.dispatch()` layer
 (`tests/test_p07_dispatch_build.py`, `tests/test_p07_build_host_dispatch.py`
-— including a prior live validation against R820, per that test module's
+— including a prior live validation against R82X, per that test module's
 own docstring) but **neither adapter exposed it**: the CLI's
 `--remote-workers` `choices=[...]` list and the `rm_remote_workers` MCP
 tool's parameter set both predated the action and had never been updated —
@@ -184,7 +184,7 @@ Not every NFS mount in this workspace is wrong — only "a live git
 repository shared as a mutable mount across hosts" is. Read-mostly,
 genuinely-shared artifact data (package/wheel caches, model weights,
 media libraries) is a legitimate NFS use case and out of scope for this
-migration. The `agent-webui` pod's own NFS-mounted source volumes on R820
+migration. The `agent-webui` pod's own NFS-mounted source volumes on R82X
 (`webui-deps`, `workspace`, `au-src`, `universal-skills-src`,
 `agent-webui-src` — a live-reload/dev-mount pattern, not a build/CI one)
 are a **separate, more disruptive migration**: they share the same NFS
@@ -194,30 +194,30 @@ production-risk step this incident deliberately stopped short of and left
 for explicit approval. A follow-up should evaluate moving that pod to a
 baked image (matching this workspace's own documented lesson in
 `webui-image-build-does-not-deploy-code`) or onto this same
-`dispatch_build`-staged pattern, either of which will let R820's NFS
-mounts to RW710 be removed entirely.
+`dispatch_build`-staged pattern, either of which will let R82X's NFS
+mounts to RW71X be removed entirely.
 
 ## Migrating a build/CI host
 
 1. Pick (or create) a directory on the build host's own **local** disk —
    never under an NFS mount — to be its authorized worktree root, e.g.
-   `/home/apps/build-worktrees` (what this lane used for R820).
+   `/home/app/build-worktrees` (what this lane used for R82X).
 2. `register_worker` that host: `host_id`, `inventory_alias` (the
-   tunnel-manager/SSH-config alias — e.g. `"R820"`, which already resolves
+   tunnel-manager/SSH-config alias — e.g. `"R82X"`, which already resolves
    via `~/.ssh/config`), `repository_roots={"<repo>": "<local root>"}` per
    repository it builds, plus its measured/declared capacity.
 3. Point CI/build dispatch at `dispatch_build(host_id=..., repository_id=...,
    origin=<dev host's canonical checkout over ssh, e.g.
-   "genius@10.0.0.12:/home/apps/workspace/agent-packages/agents/<repo>">,
+   "user@10.0.0.12:/home/app/workspace/agent-packages/agents/<repo>">,
    tree_sha=<the exact commit to build>, command=[...])` instead of
    assuming the repo is already present via an NFS mount.
 4. Leave the dev host's own canonical checkouts exactly as they are — this
    migration only changes how *other* hosts obtain code, never where the
    canonical checkout lives or how interactive development on the dev host
    itself works.
-5. Do **not** unmount `/home/apps/workspace`/`/home/apps/worktrees` on a
+5. Do **not** unmount `/home/app/workspace`/`/home/app/worktrees` on a
    host that still has something depending on them (verify with `fuser -mv`
-   and a CWD scan first, as this incident did) — R820's dev-only mounts were
+   and a CWD scan first, as this incident did) — R82X's dev-only mounts were
    safe to unmount because nothing referenced them; a host running active
    interactive worktree sessions may not be.
 
@@ -237,8 +237,8 @@ mounts to RW710 be removed entirely.
   register-then-dispatch split across two separate CLI invocations is not.
   This is a real, disclosed gap surfaced while validating this lane, not
   something this lane's scope covers fixing.
-- Forcing R820's wedged NFSv4 client to fully release its ~556K stuck
-  delegations (`echo expire > /proc/fs/nfsd/clients/<id>/ctl` on RW710)
+- Forcing R82X's wedged NFSv4 client to fully release its ~556K stuck
+  delegations (`echo expire > /proc/fs/nfsd/clients/<id>/ctl` on RW71X)
   remains undone, deliberately, because it touches state the live
   `agent-webui` pod's own NFS mounts share — see the session report for the
   full recommendation and required approval.

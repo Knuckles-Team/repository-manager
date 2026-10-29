@@ -96,14 +96,14 @@ def test_mkdocs_nav_omitting_required_page_is_reported(tmp_path):
 
 def test_arpa_hostname_is_reported(tmp_path):
     repo = _make_well_formed_repository(tmp_path)
-    (repo / "docs" / "usage.md").write_text("connect to host.arpa now\n", encoding="utf-8")
+    (repo / "docs" / "usage.md").write_text("connect to example-host.arpa now\n", encoding="utf-8")
     errors = cwd_mod.check_repository(repo)
     assert any("private .arpa hostname" in e for e in errors)
 
 
 def test_host_specific_home_path_is_reported(tmp_path):
     repo = _make_well_formed_repository(tmp_path)
-    (repo / "docs" / "usage.md").write_text("path is /home/apps/foo\n", encoding="utf-8")
+    (repo / "docs" / "usage.md").write_text("path is /home/user/foo\n", encoding="utf-8")
     errors = cwd_mod.check_repository(repo)
     assert any("host-specific home path" in e for e in errors)
 

@@ -653,7 +653,7 @@ def _find_fleet_root(start: Path) -> Path | None:
     directory depth from the fleet root is only `scripts/repository-manager/
     agents/agent-packages` in the CANONICAL checkout. A git worktree (this
     repo's own recommended isolation pattern, `git worktree add
-    /home/apps/worktrees/repository-manager/<branch>`) lives at a different
+    /home/app/worktrees/repository-manager/<branch>`) lives at a different
     depth entirely -- a fixed-index default silently resolved to the wrong
     directory here in testing (scanned an unrelated tree one level short of
     real `agent-packages`) rather than failing loudly, which is exactly the

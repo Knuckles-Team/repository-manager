@@ -37,7 +37,10 @@ jobs:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
       - name: Bootstrap
-        run: scripts/bootstrap.sh
+        # The standard connector environment: the locked environment alone sets
+        # up Python and the hooks' interpreter (scripts/bootstrap.sh is no longer
+        # tracked; uv sync + pre-commit install replace it).
+        run: uv sync --frozen --python 3.12 --extra test --extra all
       - name: Put the locked environment on PATH
         # system-language hooks run `python`; it must be the bootstrapped .venv.
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"

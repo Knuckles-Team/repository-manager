@@ -6,7 +6,7 @@ repository-manager:
 
 ```bash
 repository-manager-install-merge-queue-runner \
-  --workspace-root /home/apps/workspace
+  --workspace-root /home/app/workspace
 ```
 
 Installation writes the executable and all four units through same-directory

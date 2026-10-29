@@ -862,7 +862,7 @@ def test_workspace_sync_revalidates_paths_before_creating_parents(tmp_path):
         ("https://github.com/knuckles-team/atlassian-agent", True),
         ("https://github.com/Knuckles-Team/a-different-repo.git", False),
         (
-            "https://synthetic-user:synthetic-pass@github.com/Knuckles-Team/a-different-repo.git",
+            "https://synthetic-user:synthetic-password@github.com/Knuckles-Team/a-different-repo.git",
             False,
         ),
     ],

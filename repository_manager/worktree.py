@@ -685,7 +685,7 @@ class WorktreeManager:
         surfaces of this same package legitimately run with different roots
         (the local CLI defaults to ``~/.local/state/.../worktrees``; the
         deployed MCP server sets ``REPOSITORY_MANAGER_WORKTREE_ROOT=
-        /home/apps/worktrees``), so the identical lane came back
+        /home/app/worktrees``), so the identical lane came back
         ``linked=false`` from one surface and ``linked=true`` from the other
         for the SAME real linked worktree — a fact about git, misreported as
         a fact about a config value neither surface is wrong to have set

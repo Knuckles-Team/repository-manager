@@ -20,7 +20,7 @@ metadata:
 
 Manage git **worktrees** for concurrent multi-session development over the
 repository-manager MCP server. Each session works a repo in its own worktree on its
-own branch under `/home/apps/worktrees/<repo>/<branch>` (shared `.git`, no re-clone),
+own branch under `/home/app/worktrees/<repo>/<branch>` (shared `.git`, no re-clone),
 leaving the canonical checkout on its default branch so a working-tree reset never
 disturbs in-flight work.
 
@@ -48,7 +48,7 @@ Connect via the `mcp-client` skill against the **`repository-manager`** MCP serv
 | Variable | Required | Notes |
 |----------|----------|-------|
 | `REPOSITORY_MANAGER_WORKSPACE` / `WORKSPACE_PATH` | ✅ | Workspace root holding the canonical checkouts |
-| `REPOSITORY_MANAGER_WORKTREE_ROOT` | ✅ | Root under which linked worktrees live (`/home/apps/worktrees`) |
+| `REPOSITORY_MANAGER_WORKTREE_ROOT` | ✅ | Root under which linked worktrees live (`/home/app/worktrees`) |
 | `REPOSITORY_MANAGER_DEFAULT_BRANCH` | optional | Base branch (default `main`) |
 | `WORKSPACE_MANAGEMENTTOOL` / `PROJECT_MANAGEMENTTOOL` | optional | Gate the tool tags on |
 

@@ -67,16 +67,16 @@ logger = logging.getLogger("RepositoryManager")
 def _default_tunnel(alias: str) -> Any:
     """Construct a ``Tunnel`` for *alias*, resolving its real ``HostName``.
 
-    Live-proven gap (found while validating this module against R820):
+    Live-proven gap (found while validating this module against R82X):
     ``tunnel_manager.tunnel_manager.Tunnel.__init__`` looks up
     ``~/.ssh/config`` for auth parameters (user/identity file/proxy) via
     ``self.ssh_config.lookup(self.remote_host)`` — but it never substitutes
     the alias's own ``HostName`` into ``self.remote_host`` FIRST, so
-    ``Tunnel(remote_host="R820")`` hands paramiko the literal string
-    ``"R820"`` to resolve over DNS (fails: `gaierror: Temporary failure in
-    name resolution`) even though ``ssh R820`` from the same host succeeds
+    ``Tunnel(remote_host="R82X")`` hands paramiko the literal string
+    ``"R82X"`` to resolve over DNS (fails: `gaierror: Temporary failure in
+    name resolution`) even though ``ssh R82X`` from the same host succeeds
     immediately, AND its internal auth lookup then queries
-    ``ssh_config.lookup("R820")`` again redundantly on top of that. That is a
+    ``ssh_config.lookup("R82X")`` again redundantly on top of that. That is a
     tunnel-manager defect, out of this package's scope to fix directly (a
     different repository, its own worktree/lane discipline) — so this
     resolves the FULL alias block (hostname, user, identity file, proxy

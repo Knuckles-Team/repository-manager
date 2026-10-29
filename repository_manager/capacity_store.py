@@ -5,7 +5,7 @@ dies with the process." Verified in :mod:`repository_manager.remote_worker_actio
 ``_CAPACITY_INVENTORY``/``_REGISTRY`` are plain module globals with no backing
 store at all, so an MCP server restart (routine — see this repo's own
 container-image work) silently forgets every registered host and every
-worker profile, and any caller who registered R820 an hour ago has to do it
+worker profile, and any caller who registered R82X an hour ago has to do it
 again with no signal that anything was lost.
 
 This module gives the ledger the SAME durability shape

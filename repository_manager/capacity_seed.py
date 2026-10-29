@@ -3,7 +3,7 @@
 
 P0.7 — "seed it from the existing tunnel-manager host inventory rather than
 requiring hand registration." ``~/.config/agent-connectors/inventory.yaml``
-already lists every real host (``r510``, ``r710``, ``r820``, ``rw710``,
+already lists every real host (``r51x``, ``r71x``, ``r82x``, ``rw71x``,
 ``gb10``, ...) — but it is tunnel-manager's own SSH inventory, a DIFFERENT
 system with a different purpose (host discovery + SSH connection material),
 not a capacity ledger. Per the explicit instruction not to couple the two,

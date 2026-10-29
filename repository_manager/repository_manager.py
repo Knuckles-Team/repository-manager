@@ -3619,7 +3619,7 @@ class Git:
     ) -> GitResult | None:
         """Refuse a clone URL that embeds a username or token credential.
 
-        ``https://user:token@host/...`` and the bare-token form
+        ``https://user:password@host/...`` and the bare-token form
         (``https://ghp_xxx@host/...``) both parse with a non-blank userinfo
         component (:attr:`~urllib.parse.SplitResult.username` and/or
         ``.password``) -- the one shape worth checking here, since a

@@ -101,16 +101,16 @@ every action goes in the one JSON blob.
 ## Recipes
 Register a worker's capacity and authorized roots:
 ```
-rm_remote_workers_register_worker(host_id="r820", cpu_weight=64,
+rm_remote_workers_register_worker(host_id="r82x", cpu_weight=64,
                    memory_mib=253952, disk_mib=327680000, process_slots=8,
-                   inventory_alias="r820.arpa",
-                   repository_roots={"epistemic-graph": "/home/apps/worktrees/epistemic-graph"},
+                   inventory_alias="example-r82x.arpa",
+                   repository_roots={"epistemic-graph": "/home/app/worktrees/epistemic-graph"},
                    toolchains=["rust-stable"])
 ```
 Build (without executing) the fixed stage-source command sequence for one commit:
 ```
 rm_remote_workers_stage_source(origin="https://gitlab.example/org/repo.git",
-                   tree_sha="<40-hex-sha>", parent_root="/home/apps/worktrees/repo",
+                   tree_sha="<40-hex-sha>", parent_root="/home/app/worktrees/repo",
                    worktree_name="lane-42")
 ```
 Same, executing and verifying it locally (only meaningful when this call itself
