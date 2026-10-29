@@ -24,5 +24,3 @@ def test_source_ci_still_validates_main_and_pull_requests():
     events = workflow("ci.yml")["on"]
     assert "pull_request" in events
     assert events["push"]["branches"] == ["main"]
-
-
