@@ -1,10 +1,10 @@
 # RM-SCM — Git import, export and mirror sync for engine changesets
 
-Owner: repository-manager. Cross-repo IDs: EG-SCM-R010, ARBORA-OPS-R848, ARBORA-OPS-R851, SDK-SCM-R001, AU-SCM-R001, PIPE-GATES-R006.
+Owner: repository-manager. Cross-repo IDs: MEDULLA-SCM-R010, ARBORA-OPS-R848, ARBORA-OPS-R851, SCION-SCM-R001, MERISTEM-SCM-R001, PIPE-GATES-R006.
 
 ## Purpose and user stories
 
-The engine holds file changesets as the source of truth (EG-SCM). The public and internal git hosts stay mirrors. repository-manager moves history between them. It imports git history into changesets. It exports each landed changeset to the mirrors. It serves the `source.*` development tools inside arbora MCP.
+The engine holds file changesets as the source of truth (MEDULLA-SCM). The public and internal git hosts stay mirrors. repository-manager moves history between them. It imports git history into changesets. It exports each landed changeset to the mirrors. It serves the `source.*` development tools inside arbora MCP.
 
 ## Requirements and acceptance
 
@@ -12,11 +12,11 @@ The rows are in [requirements.md](requirements.md). RM-SCM-R001 imports history.
 
 ## Why a new spec
 
-The search covered RM-MATERIALIZE, RM-IDENTITY, RM-CONNECTOR, RM-GOVERNANCE and RM-RELEASE. RM-MATERIALIZE writes one governed proposal to git. None of them imports history into engine changesets or syncs a mirror. EG-SCM-R010 owns the fidelity of one commit mapping, not the connector behavior.
+The search covered RM-MATERIALIZE, RM-IDENTITY, RM-CONNECTOR, RM-GOVERNANCE and RM-RELEASE. RM-MATERIALIZE writes one governed proposal to git. None of them imports history into engine changesets or syncs a mirror. MEDULLA-SCM-R010 owns the fidelity of one commit mapping, not the connector behavior.
 
 ## Scope and interfaces
 
-In scope: git import, mirror export and pull-back, the served development tools and the per-repository wave step. Out of scope: changeset storage and merge (EG-SCM), served operations and admission (ARBORA-OPS-R848), the source client (SDK-SCM-R001), and the wave order (PIPE-GATES-R006).
+In scope: git import, mirror export and pull-back, the served development tools and the per-repository wave step. Out of scope: changeset storage and merge (MEDULLA-SCM), served operations and admission (ARBORA-OPS-R848), the source client (SCION-SCM-R001), and the wave order (PIPE-GATES-R006).
 
 ## Traceability
 

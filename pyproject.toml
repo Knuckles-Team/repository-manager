@@ -9,7 +9,7 @@ description = "Manage your git projects"
 readme = "README.md"
 classifiers = [ "Development Status :: 5 - Production/Stable", "License :: Public Domain", "Environment :: Console", "Operating System :: POSIX :: Linux", "Programming Language :: Python :: 3",]
 requires-python = ">=3.12,<3.15"
-dependencies = [ "scion-sdk[mcp]>=0.5.6,<1.0.0", "psutil>=7.2.2", "requests>=2.34.2",]
+dependencies = [ "scion-sdk[mcp]>=0.5.9,<0.6.0", "psutil>=7.2.2", "requests>=2.34.2",]
 [[project.authors]]
 name = "Repository Maintainers"
 email = "maintainers@knuckles.team"
@@ -19,12 +19,12 @@ text = "MIT"
 
 [project.optional-dependencies]
 mcp = [
-    "scion-sdk[mcp]>=0.5.6,<1.0.0"]
+    "scion-sdk[mcp]>=0.5.9,<0.6.0"]
 
 all = [
     "pre-commit>=4.7.0",
     "bump2version>=1.0.1",
-    "scion-sdk[mcp]>=0.5.6,<1.0.0"
+    "scion-sdk[mcp]>=0.5.9,<0.6.0"
 ]
 
 test = [
@@ -104,6 +104,6 @@ ignore_words = ["unparseable"]
 [tool.pipelines_hooks.ste]
 exempt = ["specs/*", "specs/**/*"]
 
-# The one declared connector identity: the fleet name (SDK-CONNECTOR-CONTROL-R071).
+# The one declared connector identity: the fleet name (SCION-CONNECTOR-CONTROL-R071).
 [project.entry-points."agent_connector_sdk.connector"]
 repository-manager = "repository_manager"
