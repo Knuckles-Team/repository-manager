@@ -92,7 +92,7 @@
         "bbd7f22f1b5a"
       ],
       "verified_by": [
-        "tests/test_package_publication_workflow.py:10"
+        "tests/test_package_publication_workflow.py:9"
       ]
     }
   ]
