@@ -46,6 +46,17 @@ jobs:
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
       - name: Prepare synthetic Compose environment
         run: install -m 600 scripts/fixtures/precommit-compose.env .env
+      - name: Install the operator-owned identity catalog
+        # Never committed: it comes from the PROHIBITED_IDENTITY_CATALOG Actions
+        # variable, as in the shared connector pipeline. Without it the
+        # tracked-privacy hook fails closed.
+        env:
+          PROHIBITED_IDENTITY_CATALOG: ${{ vars.PROHIBITED_IDENTITY_CATALOG }}
+        run: |
+          if [ -n "${PROHIBITED_IDENTITY_CATALOG:-}" ]; then
+            mkdir -p "$HOME/.config/agent-utilities/governance"
+            printf '%s' "$PROHIBITED_IDENTITY_CATALOG" > "$HOME/.config/agent-utilities/governance/prohibited-identities.json"
+          fi
       - name: Pre-commit gates
         # The locked pre-commit, so system hooks resolve `python` to .venv.
         run: .venv/bin/pre-commit run --all-files --show-diff-on-failure
