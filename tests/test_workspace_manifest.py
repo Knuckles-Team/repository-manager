@@ -61,13 +61,36 @@ def test_packaged_seed_release_order_matches_dependency_publication_dag():
 
     assert [phase["phase"] for phase in phases] == list(range(1, 9))
     assert [phase.get("projects") for phase in phases[3:7]] == [
-        ["agent-utilities"],
-        ["agent-webui"],
+        ["meristem"],
+        ["overstory"],
         ["arbora"],
-        ["universal-skills", "skill-graphs", "agent-terminal-ui", "geniusbot"],
+        ["universal-skills", "skill-graphs", "tuig", "axil"],
     ]
     assert phases[7]["bulk_bump"] is True
     assert phases[7]["bulk_push"] is True
+
+
+def test_packaged_seed_routes_core_skills_and_connectors_under_arbora():
+    """Keep the packaged seed aligned with the public workspace layout."""
+
+    seed = yaml.safe_load(
+        workspace_manifest.default_packaged_seed_path().read_text(encoding="utf-8")
+    )
+    all_repositories, _, _ = select_repositories(seed)
+    connectors, _, _ = select_repositories(seed, selectors=("agent-connectors",))
+    assert {
+        "arbora/medulla",
+        "arbora/scion-sdk",
+        "arbora/meristem",
+        "arbora/overstory",
+        "arbora/tuig",
+        "arbora/axil",
+        "arbora/arbora",
+        "arbora/skills/universal-skills",
+        "arbora/skills/skill-graphs",
+    } <= set(all_repositories)
+    assert connectors
+    assert all(repository.startswith("arbora/connectors/") for repository in connectors)
 
 
 def test_realistic_manifest_projects_private_values_without_leaking_them(tmp_path):

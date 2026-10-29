@@ -1,7 +1,7 @@
 # repository-manager — Concept Overview
 
 > **Category**: Development | **Ecosystem Role**: MCP Server + A2A Agent
-> Built on [`agent-connector-sdk`](https://github.com/Knuckles-Team/agent-connector-sdk) — the unified AGI Harness.
+> Built on [Scion SDK](https://github.com/Knuckles-Team/scion-sdk) — the unified AGI Harness.
 
 ## Description
 
@@ -34,7 +34,7 @@ This project implements or inherits the following ecosystem concepts:
 | KG-2.0 | Active Knowledge Graph | `agent-connector-sdk` (inherited) |
 | OS-5.0 | Agent OS Kernel | `agent-connector-sdk` (inherited) |
 
-> 📖 **Full Registry**: See [`agent-connector-sdk/docs/overview.md`](https://github.com/Knuckles-Team/agent-connector-sdk/blob/main/docs/overview.md) for the complete 5-Pillar concept index.
+> 📖 **Full Registry**: See [`scion-sdk/docs/overview.md`](https://github.com/Knuckles-Team/scion-sdk/blob/main/docs/overview.md) for the complete 5-Pillar concept index.
 
 ## Architecture
 

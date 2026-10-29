@@ -56,8 +56,8 @@ def sample_workspace_yml(tmp_path, real_workspace_data, monkeypatch):
 def test_actual_workspace_config_parsing(real_workspace_data):
     """Validates that the actual production workspace.yml is valid."""
     config = WorkspaceConfig(**real_workspace_data)
-    assert config.name == "Agent Packages Workspace"
-    assert "agent-packages" in config.subdirectories
+    assert config.name == "Arbora Workspace"
+    assert "arbora" in config.subdirectories
     assert config.maintenance is not None
     assert len(config.maintenance.phases) > 0
 
@@ -73,9 +73,9 @@ def test_workspace_config_parsing(sample_workspace_yml):
         data = yaml.safe_load(f)
 
     config = WorkspaceConfig(**data)
-    assert config.name == "Agent Packages Workspace"
+    assert config.name == "Arbora Workspace"
 
-    assert "agent-packages" in config.subdirectories
+    assert "arbora" in config.subdirectories
     assert config.maintenance is not None
     assert config.maintenance.phases[0].name == "Phase 1: GitHub Pipelines"
 
@@ -99,7 +99,7 @@ def test_setup_from_yaml(mock_pull, mock_git, sample_workspace_yml):
 
     assert mock_git.call_count > 0
 
-    (workspace_dir / "agent-packages" / "agent-connector-sdk").mkdir(parents=True)
+    (workspace_dir / "arbora" / "scion-sdk").mkdir(parents=True)
 
     result = wm.setup_from_yaml(str(yml_path))
 
@@ -125,7 +125,7 @@ def test_maintenance_config_loading(sample_workspace_yml):
 
             assert hasattr(git, "config")
             assert git.config is not None
-            assert git.config.name == "Agent Packages Workspace"
+            assert git.config.name == "Arbora Workspace"
             assert git.config.maintenance is not None
             assert git.config.maintenance.phases[0].phase == 1
 
