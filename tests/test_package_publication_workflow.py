@@ -1,6 +1,5 @@
 """Keep source validation independent from tag-authorized publication."""
 
-from fnmatch import fnmatchcase
 from pathlib import Path
 
 import pytest
@@ -16,8 +15,6 @@ def workflow(name):
         (ROOT / ".github" / "workflows" / name).read_text(),
         Loader=yaml.BaseLoader,
     )
-
-
 
 
 def test_source_ci_still_validates_main_and_pull_requests():
