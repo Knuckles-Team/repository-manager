@@ -60,7 +60,7 @@ __version__ = _distribution_version("repository-manager")
 
 DEFAULT_WORKSPACE = setting(
     "REPOSITORY_MANAGER_WORKSPACE",
-    setting("WORKSPACE_PATH", os.getenv("CONNECTOR_WORKSPACE_ROOT", os.getcwd())),
+    setting("WORKSPACE_PATH", os.getenv("REPOSITORY_MANAGER_WORKSPACE_ROOT", os.getcwd())),
 )
 DEFAULT_THREADS = to_integer(setting("REPOSITORY_MANAGER_THREADS", "12"))
 DEFAULT_WORKSPACE_YML = setting("WORKSPACE_YML", "workspace.yml")

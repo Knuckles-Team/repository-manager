@@ -932,7 +932,7 @@ def fleet_package_names(workspace_yml_path: str | Path) -> set[str]:
 
     Only the URL's trailing path segment is used (never the ``${ENV_VAR}``
     host/path prefix), so this works unmodified inside a pre-push git hook's
-    minimal environment, which need not have ``AGENT_UTILITIES_REPO_ORIGIN`` or
+    minimal environment, which need not have ``ARBORA_REPO_ORIGIN`` or
     similar set. Also folds in ``maintenance.phases[].project(s)`` names, which
     is how ``phased_push`` itself names what each phase publishes — those are
     always trusted regardless of which subdirectory they live under, since

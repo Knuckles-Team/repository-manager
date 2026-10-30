@@ -115,8 +115,8 @@ def test_realistic_manifest_projects_private_values_without_leaking_them(tmp_pat
     seed_text = seed.read_text(encoding="utf-8")
     assert "/srv/private-workspace" not in seed_text
     assert "example-git.internal.arpa" not in seed_text
-    assert "${CONNECTOR_WORKSPACE_ROOT}" in seed_text
-    assert "${AGENT_UTILITIES_REPO_ORIGIN}" in seed_text
+    assert "${REPOSITORY_MANAGER_WORKSPACE_ROOT}" in seed_text
+    assert "${ARBORA_REPO_ORIGIN}" in seed_text
     assert "${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}" in seed_text
 
 
@@ -422,3 +422,18 @@ def test_manifest_gate_cli_requires_explicit_source_and_never_touches_defaults(
     with pytest.raises(SystemExit, match="2"):
         main()
     assert "require --manifest-check or --manifest-sync" in capsys.readouterr().err
+
+
+def test_default_workspace_yml_is_the_packaged_seed_and_lists_repositories(monkeypatch):
+    """With no WORKSPACE_YML the default resolves to the packaged seed."""
+
+    import importlib
+
+    from repository_manager import repository_manager as rm
+
+    monkeypatch.delenv("WORKSPACE_YML", raising=False)
+    rm = importlib.reload(rm)
+    assert Path(rm.DEFAULT_WORKSPACE_YML) == workspace_manifest.default_packaged_seed_path()
+    seed = yaml.safe_load(Path(rm.DEFAULT_WORKSPACE_YML).read_text(encoding="utf-8"))
+    repositories, _, _ = select_repositories(seed)
+    assert len(repositories) > 200
