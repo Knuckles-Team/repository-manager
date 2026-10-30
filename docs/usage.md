@@ -53,7 +53,7 @@ Load a workspace from its declarative `workspace.yml`:
 ```python
 import os
 
-git = Git(path=os.environ["CONNECTOR_WORKSPACE_ROOT"])
+git = Git(path=os.environ["REPOSITORY_MANAGER_WORKSPACE_ROOT"])
 git.setup_from_yaml(os.environ["WORKSPACE_YML"])  # use the XDG-managed manifest
 ```
 
@@ -215,8 +215,8 @@ flowchart LR
 For a development bootstrap, the root `workspace.yml` is the only authority.
 The Arbora XDG copy retains its canonical bytes, including private runtime
 values. This package's `workspace.yml` is a separate portable projection: the
-workspace root becomes `${CONNECTOR_WORKSPACE_ROOT}`, private URL origins
-become `${AGENT_UTILITIES_REPO_ORIGIN}`, and private service suffixes become
+workspace root becomes `${REPOSITORY_MANAGER_WORKSPACE_ROOT}`, private URL origins
+become `${ARBORA_REPO_ORIGIN}`, and private service suffixes become
 `${AGENT_UTILITIES_SERVICE_DOMAIN_SUFFIX}`. The gate rejects embedded URL
 credentials, secret fields, and absolute paths outside the declared workspace
 before either destination can be written.
@@ -282,3 +282,12 @@ A manifest with no requested profile or selector exposes every declared
 repository. Automation should consume the reported `selected_repositories`
 identifiers directly; do not collapse them to basenames when the manifest
 contains duplicate names.
+
+## Default workspace definition
+
+With no `-f` and no `WORKSPACE_YML`, `DEFAULT_WORKSPACE_YML` is the packaged seed
+`repository_manager/workspace.yml`; `--setup` and `--clone` provision from it. The runtime
+copy at `~/.config/arbora/workspace.yml` is used only by manifest synchronisation
+(`workspace_manifest`), never as an implicit override of the packaged default. The seed
+reads `${REPOSITORY_MANAGER_WORKSPACE_ROOT}` (workspace root) and `${ARBORA_REPO_ORIGIN}`
+(private git origin).

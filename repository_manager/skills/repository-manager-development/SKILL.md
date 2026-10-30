@@ -66,7 +66,7 @@ receipts.
   `repository-manager = "repository_manager.skills"` SDK entry point.
 - The server's workspace defaults are source-backed by
   `REPOSITORY_MANAGER_WORKSPACE`, `WORKSPACE_PATH`,
-  `CONNECTOR_WORKSPACE_ROOT`, `WORKSPACE_YML`, and
+  `REPOSITORY_MANAGER_WORKSPACE_ROOT`, `WORKSPACE_YML`, and
   `REPOSITORY_MANAGER_THREADS`. Tool-family switches are read by the existing
   registrars; do not document a new switch without adding its real source
   contract.

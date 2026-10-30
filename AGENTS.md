@@ -1005,7 +1005,7 @@ why rather than bypassing it.
 ## Working with Git Worktrees (multi-session)
 
 Multiple agents/sessions work the `agent-packages/*` repos concurrently. **Do not
-edit the canonical checkout** (`$CONNECTOR_WORKSPACE_ROOT/agent-packages/<repo>`) —
+edit the canonical checkout** (`$REPOSITORY_MANAGER_WORKSPACE_ROOT/agent-packages/<repo>`) —
 a background `repository-manager` sync runs checkouts against it (default-branch
 sync, `rm_worktree add`/`merge`'s park/switch checkouts) that can collide with
 concurrent edits there. Take the operator's own git worktree on the operator's own branch instead:

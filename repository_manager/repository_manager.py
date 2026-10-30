@@ -538,7 +538,7 @@ def get_packaged_file_path(package: str, file: str) -> str:
 
 # Robust environment variable retrieval with empty string fallbacks
 _raw_workspace = os.getenv("REPOSITORY_MANAGER_WORKSPACE", "")
-_portable_workspace = os.getenv("CONNECTOR_WORKSPACE_ROOT", "")
+_portable_workspace = os.getenv("REPOSITORY_MANAGER_WORKSPACE_ROOT", "")
 DEFAULT_REPOSITORY_MANAGER_WORKSPACE = os.path.abspath(
     os.path.expanduser(_raw_workspace or _portable_workspace or os.getcwd())
 )

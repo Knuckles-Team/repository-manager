@@ -400,8 +400,8 @@ the detailed transport contract.
 | `EUNOMIA_POLICY_FILE` | `mcp_policies.json` |  |
 | `EUNOMIA_REMOTE_URL` | `http://eunomia-server:8000` |  |
 | `CONNECTOR_CONFIG_DIR` | — | override of ~/.config/agent-connector-sdk for the capacity-seed inventory.yaml lookup |
-| `CONNECTOR_WORKSPACE_ROOT` | — | runtime-injected root; never persist a machine path |
-| `REPOSITORY_MANAGER_WORKSPACE` | — | optional override of CONNECTOR_WORKSPACE_ROOT |
+| `REPOSITORY_MANAGER_WORKSPACE_ROOT` | — | runtime-injected root; never persist a machine path |
+| `REPOSITORY_MANAGER_WORKSPACE` | — | optional override of REPOSITORY_MANAGER_WORKSPACE_ROOT |
 | `WORKSPACE_PATH` | — | compatibility workspace-root override |
 | `WORKSPACE_YML` | `workspace.yml` | prefer the XDG agent-connector-sdk copy at runtime |
 | `WORKSPACE_REPORTS` | — | optional report directory; defaults beneath the workspace root |
