@@ -6,7 +6,8 @@
   "requirement_ids": [
     "CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R001",
     "CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R002",
-    "CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R003"
+    "CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R003",
+    "CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R004"
   ],
   "requirements": [
     {
@@ -32,6 +33,13 @@
     {
       "id": "CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R003",
       "title": "Serve repository hydration through the SDK transport",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
+    },
+    {
+      "id": "CONN-REPOSITORY-MANAGER-CONNECTOR-CONTENT-R004",
+      "title": "Code reads come from the graph",
       "delivery_state": "SPECIFIED",
       "landed_in": [],
       "verified_by": []
