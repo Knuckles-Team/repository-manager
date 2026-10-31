@@ -90,7 +90,7 @@
       "title": "Publish this package only from version tags",
       "delivery_state": "VERIFIED",
       "landed_in": [
-        "0da88ef35ebf",
+        "14869f0f7de5",
         "bbd7f22f1b5a"
       ],
       "verified_by": [
@@ -103,7 +103,7 @@
       "delivery_state": "LANDED",
       "landed_in": [
         "459ef9f61397",
-        "6024540c6453",
+        "8b2693335c86",
         "a64b95f87b4e"
       ],
       "verified_by": []
