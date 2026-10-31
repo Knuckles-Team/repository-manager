@@ -103,7 +103,8 @@
       "title": "Isolated checkouts never corrupt shared Git config",
       "delivery_state": "LANDED",
       "landed_in": [
-        "0454cd888aac"
+        "0454cd888aac",
+        "3b920c78c292"
       ],
       "verified_by": []
     },
