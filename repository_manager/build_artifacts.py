@@ -31,6 +31,7 @@ from typing import Any
 
 from scion_sdk.file_lock import lock_exclusive, unlock
 
+from repository_manager import portable_fs as pfs
 from repository_manager.governance.lanes import lane_scope
 
 _SAFE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
@@ -77,7 +78,7 @@ def _read_bounded_json(path: Path) -> dict[str, Any] | None:
 
     descriptor: int | None = None
     try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
         descriptor = os.open(path, flags)
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = None
@@ -131,7 +132,10 @@ def _sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
     digest = hashlib.sha256()
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = None
             initial = os.fstat(handle.fileno())
@@ -206,14 +210,21 @@ def _copy_file_no_follow(
     source_descriptor: int | None = None
     destination_descriptor: int | None = None
     try:
-        source_descriptor = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        source_descriptor = os.open(
+            source,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
         source_stat = os.fstat(source_descriptor)
         _require_regular_source_stat(source_stat, source, max_bytes)
         _reject_symlink_path(destination.parent)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination_descriptor = os.open(
             destination,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_BINARY", 0),
             0o600,
         )
         with os.fdopen(source_descriptor, "rb") as source_handle:
@@ -620,7 +631,10 @@ def _fsync_file(path: Path) -> None:
 
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
         file_stat = os.fstat(descriptor)
         if not stat.S_ISREG(file_stat.st_mode):
             raise ArtifactStoreError(f"cannot fsync non-regular artifact {path}")
@@ -642,6 +656,10 @@ def _fsync_file(path: Path) -> None:
 def _fsync_directory(path: Path) -> None:
     """Flush a directory entry so an atomic rename survives a crash."""
 
+    if pfs.is_windows():
+        # Windows cannot open a directory as a descriptor, and NTFS journals
+        # directory metadata; there is nothing to flush.
+        return
     try:
         descriptor = os.open(
             path,

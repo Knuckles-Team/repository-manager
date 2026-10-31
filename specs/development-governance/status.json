@@ -7,6 +7,7 @@
     "RM-GOVERNANCE-R001",
     "RM-GOVERNANCE-R024",
     "RM-GOVERNANCE-R031",
+    "RM-GOVERNANCE-R032",
     "RM-GOVERNANCE-R025",
     "RM-GOVERNANCE-R026",
     "RM-GOVERNANCE-R027",
@@ -78,6 +79,13 @@
         "tests/governance/test_lanes.py:1720",
         "tests/governance/test_lanes.py:1740"
       ]
+    },
+    {
+      "id": "RM-GOVERNANCE-R032",
+      "title": "The package runs on Windows as well as POSIX",
+      "delivery_state": "SPECIFIED",
+      "landed_in": [],
+      "verified_by": []
     },
     {
       "id": "RM-GOVERNANCE-R025",

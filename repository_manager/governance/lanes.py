@@ -76,6 +76,8 @@ from scion_sdk.config import setting
 # keep this one scion_sdk import.
 from scion_sdk.file_lock import lock_exclusive, unlock
 
+from repository_manager import portable_fs as pfs
+
 ARBITRATION_DIRNAME = "agent-lanes"
 DEFAULT_LEASE_TTL_SECONDS = 1_800
 MAX_LEASE_TTL_SECONDS = 86_400
@@ -1316,13 +1318,30 @@ def _validate_existing_output(target: Path) -> None:
         )
 
 
-def _output_open_flags(truncate: bool) -> int:
+def _no_follow_flag(refusal: str) -> int:
+    """``O_NOFOLLOW`` where it exists.
+
+    Windows has no such flag; its callers already ``lstat``-reject symlinks and
+    reparse points before opening, so the flag contributes ``0`` there.  Any
+    other platform without it still refuses.
+    """
     no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise LaneArbitrationError(
-            "output_path cannot be opened safely: no-follow is unavailable"
-        )
-    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0) | no_follow
+    if no_follow is not None:
+        return no_follow
+    if pfs.is_windows():
+        return 0
+    raise LaneArbitrationError(f"{refusal}: no-follow is unavailable")
+
+
+def _output_open_flags(truncate: bool) -> int:
+    no_follow = _no_follow_flag("output_path cannot be opened safely")
+    flags = (
+        os.O_WRONLY
+        | os.O_CREAT
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_BINARY", 0)
+        | no_follow
+    )
     return flags if truncate else flags | os.O_APPEND
 
 
@@ -1987,13 +2006,14 @@ LeaseIdentity = tuple[int, int]
 
 
 def _lease_publication_flags() -> int:
-    no_follow = getattr(os, "O_NOFOLLOW", None)
-    if no_follow is None:
-        raise LaneArbitrationError(
-            "lease publication cannot be made safely: no-follow is unavailable"
-        )
+    no_follow = _no_follow_flag("lease publication cannot be made safely")
     return (
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | no_follow
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_BINARY", 0)
+        | no_follow
     )
 
 

@@ -91,7 +91,10 @@ def _read_bounded_untracked(path: Path, limit: int) -> bytes:
 
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
         initial = os.fstat(descriptor)
         if not stat.S_ISREG(initial.st_mode):
             raise BuildServiceError("dirty build snapshot found a non-regular file")

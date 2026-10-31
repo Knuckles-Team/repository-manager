@@ -64,7 +64,17 @@ _OPERATIONAL_ENV_NAMES = frozenset(
         "npm_config_cache",
         # Windows process lookup/toolchain compatibility.
         "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
         "PATHEXT",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "USERNAME",
     }
 )
 

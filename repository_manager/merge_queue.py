@@ -100,6 +100,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
+from repository_manager import portable_fs as pfs
 from repository_manager.candidate_generation import (
     CandidateGenerationError,
     CandidateSnapshot,
@@ -1671,11 +1672,11 @@ def _attach_repo_venv(canonical: Path, snapshot: Path) -> None:
     """
     source = canonical / ".venv"
     target = snapshot / ".venv"
-    if target.exists() or target.is_symlink() or not source.is_dir():
+    if target.exists() or pfs.is_link(target) or not source.is_dir():
         return
     if not _run_git(["check-ignore", "-q", ".venv"], snapshot).ok:
         return
-    target.symlink_to(source.resolve(), target_is_directory=True)
+    pfs.create_dir_link(target, source.resolve())
 
 
 # ---------------------------------------------------------------------------

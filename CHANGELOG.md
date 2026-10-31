@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.5.5]
+
+### Fixed
+- **Windows portability (RM-GOVERNANCE-R032)** -- the package no longer assumes a POSIX host.
+  New `repository_manager/portable_fs.py` is the single platform seam: descriptor-anchored
+  operations (`operation_boundary`) fall back to lstat-verified, token-addressed directory
+  handles where `dir_fd`/directory descriptors do not exist (no more `/proc/self/fd` paths or
+  `pass_fds` on Windows); state/config/cache directories resolve to `%LOCALAPPDATA%`/`%APPDATA%`
+  when no XDG variable is set (`worktree`, `capacity_store`, `gate_ledger`, `lane_registry`,
+  `workspace_manifest`); process groups terminate via `Popen.terminate`/`taskkill /T /F` instead
+  of `os.killpg`/`signal.SIGKILL` (`repository_manager`, `process_supervisor`,
+  `merge_queue_runner`); directory links fall back to junctions when symlinks are not permitted;
+  `os.open` reads/writes add `O_BINARY` so digests are not corrupted by newline translation;
+  directory fsync is a no-op on Windows instead of a swallowed `OSError`; `O_NOFOLLOW` is optional
+  on Windows (callers already `lstat`-reject links); path containment is case-folded;
+  `cmd.exe` replaces `bash -c` for unwrapped stages; the child-env allowlist keeps the Windows
+  process variables. `windows-ci.yml` now runs import-safety and the unit tests as real (non
+  report-only) steps via `uv run`.
+
 ## [3.5.4]
 
 ### Changed
