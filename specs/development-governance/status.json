@@ -83,8 +83,10 @@
     {
       "id": "RM-GOVERNANCE-R032",
       "title": "The package runs on Windows as well as POSIX",
-      "delivery_state": "SPECIFIED",
-      "landed_in": [],
+      "delivery_state": "LANDED",
+      "landed_in": [
+        "fe8f6c2b3d7b"
+      ],
       "verified_by": []
     },
     {
